@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import type { NavigationSnapshot } from "@evener/appwire-client";
 import { expect, test } from "vitest";
+// Loaded through Vite's `?raw` import, which resolves against this file: a
+// filesystem read would resolve against whichever working directory the
+// consumer's test runner uses, and package-test-files.mjs refuses one.
+import timestampFixture from "../../../../cmd/evener-hub/testdata/navigation/timestamps.json?raw";
+import type { NavigationSnapshot } from "../../types.gen";
 import {
   decodeNavigationResponse,
   materializeNavigationResource,
@@ -20,9 +22,7 @@ import {
 const key = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
 const base = { generationId: "g", revision: 1, etag: "tag-1" };
 const privateValues = ["private-generation", "private-body-value", "private-child", "private-owner"];
-const timestampFixtures = JSON.parse(
-  readFileSync(join("..", "testdata", "navigation", "timestamps.json"), "utf8"),
-) as Array<{ value: string; valid: boolean }>;
+const timestampFixtures = JSON.parse(timestampFixture) as Array<{ value: string; valid: boolean }>;
 
 const entityKey = (resource: ResourceKey, digit: string) =>
   `${navigationViewScope(resource)}/entity/${digit.repeat(64)}`;

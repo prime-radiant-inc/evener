@@ -1,4 +1,7 @@
-import type { NavigationDelta, NavigationReadBase, NavigationSnapshot } from "@evener/appwire-client";
+// Applies a navigation delta, or reconciles a fresh snapshot, onto a
+// normalized navigation graph, keeping every unchanged entity and container
+// identity so a view re-renders only what the hub changed.
+import type { NavigationDelta, NavigationReadBase, NavigationSnapshot } from "../../types.gen";
 import {
   type NavigationGraph,
   type NavigationGraphContainer,

@@ -7,7 +7,7 @@ import {
 	HOOK_EXIT_DETAILS,
 	presetContent,
 	type TranscriptDisplayConfigV1,
-} from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+} from "@evener/appwire-client";
 import type { NativePreferencesSnapshot } from "./nativePreferences";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 

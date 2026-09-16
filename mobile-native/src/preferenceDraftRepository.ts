@@ -1,5 +1,4 @@
-import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
-import { normalizeConfig } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+import { normalizeConfig, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 
 export interface TranscriptDraftCheckpoint {
 	id: string;

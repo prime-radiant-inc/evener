@@ -1,16 +1,16 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  type HubTranscriptDisplayDefault,
+  makeTranscriptDisplayConfig,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
-import {
-  type HubTranscriptDisplayDefault,
-  makeTranscriptDisplayConfig,
-  type TranscriptDisplayConfigV1,
-} from "../../../transcriptDisplay/config";
 import { TranscriptDetailControl } from "./TranscriptDetailControl";
 
 const hubDesktop: HubTranscriptDisplayDefault = {

@@ -1,8 +1,8 @@
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";

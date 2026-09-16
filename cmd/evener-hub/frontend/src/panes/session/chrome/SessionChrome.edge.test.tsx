@@ -6,6 +6,7 @@
 // - onDelete error catch (221-222) + skipped warning (216-218)
 
 import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,7 +17,6 @@ import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import "../../sessionPanels";

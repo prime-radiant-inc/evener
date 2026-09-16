@@ -20,7 +20,7 @@ import {
   shippedDefaults,
   toWireConfig,
   visibleCategoryInventory,
-} from "./config";
+} from "./transcriptDisplayConfig";
 
 describe("transcript display config", () => {
   const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;

@@ -10,6 +10,7 @@ import type {
   ThreadStartResponse,
 } from "@evener/appwire-client";
 import { AppwireClient, type ConnectionState, WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -26,7 +27,6 @@ import {
   resetNavigationStoreForTests,
 } from "../stores/navigation/store";
 import { wireV2 } from "../stores/navigation/testing";
-import { keyID } from "../stores/navigation/types";
 import { resetPrefsStoreForTests } from "../stores/prefs";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
 import { AppShell } from "./AppShell";

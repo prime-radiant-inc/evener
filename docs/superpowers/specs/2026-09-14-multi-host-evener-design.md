@@ -1,0 +1,669 @@
+# Multi-host evener — high-level design
+
+Status: design, pre-implementation. Spikes validated the transport (see
+`2026-09-14-multi-host-spikes-findings.md`). This document is the keystone; the
+per-component specs referenced below decompose it into landable PRs.
+
+## 1. Goal
+
+Let any evener hub launch, adopt, and manage sessions on other hosts, so work
+can run on a remote machine's files, compute, credentials, and always-on
+availability, while one hub presents the fleet. The unit of remoteness is the
+**remote hub**: each host runs a full `evener hub`.
+
+## 2. Decisions
+
+These are Jesse's calls, recorded so the specs do not relitigate them.
+
+- **Topology**: any hub can act as a controller for hosts it can see. A static
+  per-hub host list in config. No multi-master, no leader election, no shared
+  state. A hub can also be a host. **Cycle rejection in v1 does not run from the
+  config file alone.** Duplicate names and invalid/reserved names are refused at
+  load/add time, but no cycle check runs on that path: a config-loaded host
+  enters through `Add`, which is `AddWithUpstreams(entry, nil)`, and `[[hosts]]`
+  has no upstream field. Only a caller that supplies an **explicit upstream
+  list** — a direct `AddWithUpstreams`/`SetUpstreams` call — is checked for a
+  self-edge or back-edge, and that is what can yield `ErrHostCycle` (component
+  03, §"Host registry"). The multi-hop case A→B→A is likewise *not*
+  detected, because a controller sees only its own `[[hosts]]` table and no
+  AppWire method reports another hub's host list; that detection is deferred
+  with the host-list RPC (component 03, §Open questions; component 05, §Open
+  questions item 4).
+  **v1 nevertheless enforces a runtime loop guard, independent of topology
+  detection.** Because A→B→A cannot be refused from the config alone, the
+  fan-out path itself must be bounded: a request that arrives over a remote
+  source (a controller that is attached to this hub as a host) is served **only
+  from local state**, and any attempt to route or fan that request out to
+  another remote source is refused with a typed error. Together with the
+  `["local"]` remap **the implementing PR adds** to strip a remote's own nested
+  hosts on the list path (component 05, §"Ref translation detail"; the shipped
+  `remapRemoteSourceIDs` returns `nil` for an empty incoming filter, so this
+  half is the implementing PR's requirement, not a present fact), this caps
+  fan-out at depth 1 and terminates any A→B→A chain regardless of what the
+  config can see — the
+  caller-identity guard that a later host-list RPC would make config-aware. The
+  guard is not thread-fan-out-only: it also covers every **remote dispatch** a
+  hub can initiate — the remote-administration proxy, credential push, remote
+  force-stop, and host attach (component 07, §"Host-routing origin guard") — so a
+  peer hub cannot use the admin surface to make this hub contact a third host.
+  The guard is a v1 requirement; the attach-time upstream-list detection
+  (`AddWithUpstreams`/`SetUpstreams`) stays deferred. The guard's **origin
+  signal is an explicit, cooperative bridge marker on the connection** — the
+  `evener hub attach --stdio` bridge presents `X-Evener-Bridge: 1` (component
+  02, §Contract "Bridge marker"), the hub's edge reads it alongside the
+  bearer token and stamps a remote-originated role into the request context; a
+  token-bearer without the marker is a local session. The token itself cannot
+  carry the role, because the attach bridge, the local TUI, CLI scripts, and
+  browser sessions all present the *same* host capability token. It is never
+  `InitializeParams.ClientInfo`, which is caller-supplied and spoofable. The
+  marker is client-asserted and carries no secret, so it is **not** a security
+  boundary: it stops an honest A→B→A cycle under the explicit assumption that
+  peer hubs are cooperative, while a hostile peer can omit it to be classified
+  `local`. Binding the role to a server-verifiable signal (a distinct bridge
+  credential or the `ssh`-spawned transport's identity) is a tracked code
+  follow-up. The
+  local-only rule is enforced at the typed fan-out seam (component 05, §"Ref
+  translation detail"), not by an advisory check in a handler.
+- **Remote side**: a full `evener hub` per host.
+- **Transport**: AppWire JSON-RPC over an SSH channel on stdin/stdout. No HTTP
+  port exposed beyond the host's loopback.
+- **Lifecycle**: the remote hub runs on demand but **detaches** and persists;
+  the controller re-attaches later by bridging stdio to the hub's existing
+  loopback `/rpc` with the capability token. Re-attach is a client of the
+  running hub, never a second hub (`hostlock` forbids two hubs per machine).
+- **Deployment**: push a matching binary over SSH and/or run the installer. The
+  controller is the version authority: on attach it auto-matches the host to its
+  own build, restarting the host hub; running sessions keep their old binary.
+- **Configuration**: host-owned storage. The Hub UI administers remote config by
+  proxying the host's own RPCs, plus an explicit "copy credentials to this host"
+  action. The controller stores only connection entries.
+- **Fleet view**: live fan-out — query each attached host's hub and merge. No
+  replicated index.
+- **Session targeting**: explicit host picker, local by default.
+- **Offline hosts**: shown offline with last-known sessions marked
+  **stale/offline** (never `Dormant`, which Component 06 defines as a session
+  that has never run and renders as "Not started"; component 06, §"Go changes
+  item 3"); actions refused until reconnect.
+- **Tenancy**: connect as the configured SSH user; a host's sessions seen by the
+  controller are exactly that account's.
+
+## 3. Leverage in the current code
+
+- AppWire is JSON-RPC over WebSocket; the hub dials daemons at `ws://<addr>/rpc`
+  with a bearer token (`hubcore/prober.go`, `appsource/local_daemon.go`). The
+  protocol is already network-capable; the spike proved it crosses hosts.
+- Every thread/turn operation routes through an `appsource.Source` registry
+  (`cmd/evener-hub/app_rpc.go`). Production registers exactly one source,
+  `"local"`; refs are namespaced by source (`appwire.Ref{SourceID,ThreadID}`).
+- The hub is a multi-client AppWire server; its web edge already serves browser
+  and TUI. A controller attach is one more client.
+- `hostlock` allows one hub per machine (`cmd/evener-hub/internal/hostlock`).
+- New sessions already select a source through `launchSourceID(params.Harness)`
+  (`cmd/evener-hub/app_threadlifecycle.go`), where `"evener"` maps to `local`
+  and any other value is treated as a source ID. **That legacy harness-as-source
+  path is not the mechanism for host targeting.** Component 06 has settled on
+  an explicit `ThreadStartParams.Source` field as the sole host selector when
+  set and requires that a harness value naming a configured host source — or any
+  other registered non-local source — be refused with `InvalidParams` rather than
+  routed or forwarded, because `launchSourceID` silently retargets a spawn
+  (component 06, §"Write contract"). The `launchSourceID` fallback itself is
+  **retained** for every other harness value and is consulted only when `Source`
+  is empty; retiring it outright would make a non-empty harness like `"claude"`
+  with an empty `Source` fall through to the local spawner in silence.
+  Harness-as-host targeting is therefore refused, not endorsed.
+- Daemon spawn, run-dir roster discovery, force-stop safety
+  (pidfd/`proc_info`, UID, argv, log ownership), and per-host indexing all stay
+  as they are and stay host-local.
+
+## 4. Components (each its own spec + PR)
+
+Ordered by dependency; each is independently reviewable and landable.
+
+1. **Stream transport** (`appwire`) — `Transport` over an `io.ReadWriteCloser`,
+   newline-delimited JSON framing, frame-size limit. *Spike done.*
+2. **Hub attach bridge** (`cmd/evener` or a new subcommand) — a process that runs
+   on the host, dials the hub's loopback `/rpc` with the capability token, and
+   proxies AppWire between that WebSocket and its own stdin/stdout. stdout
+   carries framed AppWire only; all logs go to stderr. *Spike done.*
+3. **Host configuration** (`cmd/evener-hub`) — the `[[hosts]]` config schema and
+   the in-memory host registry, with config-load rejection (duplicates,
+   invalid/reserved names) and a cycle-check seam for an explicit upstream list.
+4. **SSH connection manager** — spawn `ssh`, own the channel, keepalive and
+   reconnect, preflight (OS/arch, HOME/XDG, existing version/protocol), deploy
+   (push matching binary or run installer), and version auto-match on attach.
+5. **Remote hub source** (`appsource.Source`) — maps the controller's source
+   calls onto the remote hub's **hub-scoped** RPCs over the channel, translates
+   `host:<thread>` ↔ the remote hub's `local:<thread>`, registers one source per
+   configured host, and performs the capability probe (launch config, models,
+   plugins, credential health, host facts).
+6. **Fleet view** (`cmd/evener-hub`, frontend) — enumerate sources, live fan-out
+   and merge, offline/**stale** state (distinct from `Dormant`; component 06,
+   §"Go changes item 3"), and the host picker in the new-session form.
+7. **Remote administration** — per-host settings pages that proxy the host's own
+   RPCs (providers, launch config, plugins, credentials) and the credential-push
+   action.
+
+## 5. Interfaces
+
+- **Host config entry** (`hub.toml`): `{ name, ssh, user?, evener_path?,
+  roots[], config_path?, addr? }` — name is the source ID used in refs and
+  URLs; `config_path`/`addr` are the host's own `hub.toml` and hub loopback
+  address, which the bridge and the manager's restart/health path must agree on
+  (component 03, §"`config_path` / `addr`").
+- **Remote source ID**: the host `name`; refs surface as `name:<sessionID>`.
+- **Capability probe** — **not** one round trip: a short sequence of hub-scoped
+  RPCs over the already-open channel after attach (`evener/launch/getLayer`,
+  `model/list`, `evener/plugin/list`, `evener/auth/list`,
+  `evener/instance/list`), plus the component-04 preflight/attach-handshake
+  facts for protocol version, hub version, OS/arch, and features. Component 05's
+  probe table is authoritative for the exact calls and types.
+- **Bridge contract**: stdin/stdout = newline-delimited AppWire `Message` JSON;
+  stderr = diagnostics; exit closes the channel.
+
+## 6. Risks and open questions
+
+- **Source-method coverage**: `appsource.Source` was written against
+  daemon-scoped calls; some methods may lack a hub-scoped counterpart. Enumerate
+  and either compose or add hub RPCs. This is the biggest unknown.
+- **Multi-hop cycle detection (deferred)**: v1 cannot see an upstream hub's host
+  list, so A→B→A is not refused. From the config alone only duplicates and
+  invalid/reserved names are checked; a self-edge or a supplied upstream
+  back-edge is checked only when an explicit upstream list is passed to
+  `AddWithUpstreams`/`SetUpstreams` (see §2 "Topology"). Closing this needs a
+  new hub-scoped host-list method; until then, treat configuration as acyclic
+  *by convention* for multi-hop chains.
+  **Until then the runtime loop guard of §2 "Topology" is what keeps v1
+  terminating:** a remote-originated request is served from local state only,
+  and fan-out to a second remote source is refused, so an A→B→A chain cannot
+  recurse even though the config still cannot detect it (component 05,
+  §Open questions item 3).
+- **Ref translation**: `host:<thread>` ↔ remote `local:<thread>`, including
+  sub-thread aliases.
+- **Version-match restart** drops live browser/controller connections; decide
+  whether to defer while clients are attached.
+- **Bridge stdout discipline**: any stray write to stdout corrupts the stream;
+  enforce and test.
+- **Backpressure and framing limits** over a stream vs WebSocket.
+- **Secret handling**: capability token never logged; credential push is
+  explicit and per-instance.
+
+## 7. Testing strategy
+
+- Unit: stream transport round-trip and client compatibility (done in spike);
+  bridge proxy over an in-memory pipe pair.
+- Hub-side: a **scripted remote hub** over a stream transport (no real SSH) to
+  exercise `RemoteHubSource`, ref translation, and the capability probe.
+- Version/deploy logic: table tests with a fake SSH runner.
+- Live: an environment-gated SSH test (`EVENER_SSH_E2E=1` plus an explicit host)
+  against a disposable host, never in default `make test`.
+
+## 8. Suggested PR sequence
+
+Land in dependency order, each small and independently reviewable:
+stream transport → hub attach bridge → host config schema → SSH connection
+manager → remote hub source → fleet view → remote administration.
+
+## Non-goals
+
+Multi-master or election; automatic host discovery; remote *tool execution*
+(`agent/execenv`) — a separate concern from where a session runs.
+
+## Tracked code follow-ups (rounds 7–22)
+
+This spec series is the design record; these are the code deltas its reviews
+surfaced and that still need implementing. Each line names the component and the
+exact scope. None is a present fact.
+
+- **[01] stream transport** — `appwire/stream_transport.go`: bound `Close`'s
+  admitted-write drain with a `streamCloseDrainTimeout` constant, and make the
+  accepted-stream contract explicit (`Close` must interrupt a blocked read **and**
+  write); a non-conforming stream must not hang shutdown.
+- **[02/05] hub edge bridge marker** — `cmd/evener-hub/attach.go` (send
+  `X-Evener-Bridge: 1`), `cmd/evener-hub/web.go` +
+  `cmd/evener-hub/internal/hubedge/auth_token.go` (read it beside the bearer
+  token, classify the connection role, stamp `origin` into request context), and
+  bind the role to a **server-verifiable** signal (a distinct bridge credential,
+  or the `ssh`-spawned transport's channel identity) so the marker is not merely
+  cooperative.
+- **[03] host registry** — enforce the 64-source cap (`ErrTooManyHosts`) in
+  `New`/`Add`/`AddWithUpstreams`, not only in `LoadConfig`.
+- **[03] host config** — `validateHostConfigs` (and the pre-probe path) must
+  reject a non-loopback `addr` before any health check or restart; an explicit
+  `--config` that is missing/unparseable exits nonzero instead of falling back
+  to `DefaultConfig()`.
+- **[03] wiring** — `hubcore.WebConfig` gains `RemoteHostClientIfAttached`,
+  `RemoteHostFacts`, and `RemoteHostHandshake`, populated from the `sshconn`
+  manager and installed on each `RemoteHubSource`.
+- **[04] attached-only accessors** — `sshconn.Manager` gains
+  `ClientIfAttached`, `HandshakeIfAttached`, and `PreflightIfAttached`: read the
+  installed channel under the manager-wide mutex, never dial.
+- **[04] run-target resolution** — resolve one canonical **absolute** `run_path`
+  per host (`~/` expanded against `Preflight.Home`, a relative configured path
+  refused, never the literal word `evener`), threaded through the invocation
+  argv, deploy/install target, restart identification, and the health/identity
+  check.
+- **[04] deploy/restart** — `buildinfo` gains a stamped `ReleaseTag`;
+  the installer fallback passes `EVENER_INSTALL_VERSION` and
+  `BINDIR`/`EVENER_SHARE_BINDIR` derived from `evener_path` (else `ErrDeploy`);
+  `ensureOnce` gains the
+  first-attach bootstrap branch (explicit ad hoc argv, `mkdir -p` for the log
+  dir, supervisor detection by unit definition); `hubArgvFromCommandLine`
+  canonicalizes `argv[0]`; darwin restart uses `gui/<numeric-uid>/<label>`.
+  (Corrected round 22: the fallback's `snapshot` arm is **removed** — it is
+  admitted only for the immutable, checksum-verified `release` reference, so a
+  snapshot controller must use the atomic push path; the expected-`backend_git_sha`
+  verification survives for a pushed snapshot build's health probe.)
+- **[04] health probe** — `sshconn/version.go` `waitHealthy` must invoke
+  `curl -fsS --noproxy '*' http://<loopback(addr)>/api/health` (explicit scheme
+  for bracketed IPv6 literals) on the host.
+- **[05] recursive ref translation** — `remote_hub_refs.go` must walk the real
+  `JobActivityTree` schema (`JobActivitySession.Ref`/`.Entries[]`; each
+  `JobActivityEntry`'s `Job.OwnerRef`/`.TranscriptRef` and
+  `Delegate.ChildRef`/`.Child` (recursive) / `.Turns[].OwnerRef`/`.TranscriptRef`),
+  plus `Thread.Evener.Diagnostics` and the `evener/job/*` /
+  `evener/delegate/updated` transcript refs.
+- **[05] loop guard** — `app_rpc.go` records the connection role and threads
+  `origin` into the request context; every fan-out path
+  (`hubThreadListWithSourceTimeout`, `app_threadlist.go`) refuses a
+  remote-originated request to any source other than `local` (depth 1).
+- **[05/06] attached-only list** — the non-explicit empty-`SourceIDs`
+  `thread/list` fan-out gates on `Manager.ClientIfAttached`/`Attached` and skips
+  an unattached source without calling the `Ensure`-backed resolver.
+- **[05] remote force-stop** — `forceStopThread` (`app_force_stop.go`) gains the
+  non-local branch that resolves the host, translates the ref, and forwards on
+  the owning host's client (not via `evener/host/request`).
+- **[06] thread/project identity** — `annotateThreadProjects`
+  (`app_threadlist.go`) must skip non-local rows and preserve the remote
+  `ProjectID`/`ProjectPath`; `identifier.Project` and the navigation projection
+  carry the owning source; `refreshRemoteThreadSnapshot`/`remoteThreadFetch`
+  resolve through the attached-only lookup.
+- **[06] archive/favorite/delete** — `ArchiveParams`/`FavoriteSetParams`/
+  `ProjectDeleteParams` gain `Source`; `app_archive.go`/`app_favorite.go` **accept
+  and key a non-local source** by `(source, id)` (they route archive/favorite by
+  source and must **not** reject it); only project deletion
+  (`evener/project/delete`) rejects a non-local/unknown source server-side; an
+  idempotent SQLite migration backfills `source = "local"`; the frontend hides
+  **deletion** (not archive/favorite) for non-local rows. (Corrected in round 14:
+  the earlier line said a non-local source is rejected server-side and that the
+  frontend hides delete *and* archive, which would break remote archive/favorite.)
+- **[06] connect + picker** — add the `evener/host/attach` protocol row and
+  handler (`registerMiscHandlers`) calling `sshManager.Ensure` with typed-error
+  pass-through; give every offline/never-attached host an enabled Connect/Attach
+  affordance.
+- **[06] harness targeting** — `hubThreadStart` (`app_threadlifecycle.go`)
+  refuses `InvalidParams` for a harness value naming a configured/registered
+  non-local source, while retaining the `launchSourceID` fallback for all other
+  harness values and consulting it only when `Source` is empty.
+- **[06b] frontend discovery routing** — the spawn form's host-dependent
+  discovery calls route through `evener/host/request` with the selected host.
+- **[07a] proxy allow-list** — extend the exact `evener/host/request` method set
+  with the host-dependent discovery methods (`evener/git/head` included) and
+  `evener/auth/apiKey/conditionalSet`, kept in sync with component 06 (or covered
+  by a scripted-host parity test).
+- **[07] notification catalog** — register `evener/host/notification` in
+  `appwire/protocol.go` and regenerate the Go/TS bindings.
+- **[07] credential push** — add the host-side `evener/auth/apiKey/conditionalSet`
+  (`ApiKeyConditionalSetParams{Provider, Value, ExpectedSource,
+  ExpectedRevision}` → `ApiKeyConditionalSetResponse{Action, Reason, Status}`),
+  which re-resolves `ActiveSource`/revision under `credentialWrite` and refuses a
+  no-longer-writable instance; the pusher calls it instead of the racy
+  status-then-`apiKey/set` pair, and classifies `ActiveSource == "none"` by auth
+  scheme, skipping `AuthNone`. The `Provider` value is the instance name and is
+  passed **only** to the provider-keyed auth methods; `evener/instance/list`
+  takes `EmptyParams` (no provider parameter), so the pusher calls it **once**
+  with `{}` and joins the returned `InstanceEntry.Name` /
+  `AvailableProviders[].ID` against the local store keys.
+- **[07] host-routing origin guard (round 14, High)** — enforce the component-05
+  loop guard at the one shared host-routing seam (the per-host client accessor or
+  a `routeToHost(ctx, hostID, …)` helper) so a **remote-originated** request
+  (`origin` non-empty) is refused typed **before any remote dial** for
+  `evener/host/request`, `evener/host/pushCredentials`, the non-local
+  `evener/thread/forceStop` branch, component 06's `evener/host/attach`, and
+  every future remote dispatch; a local-originated request proceeds. Scope:
+  `cmd/evener-hub/app_host_admin.go`, `app_host_credentials.go`,
+  `app_force_stop.go`, the `evener/host/attach` handler, and the request-context
+  `origin` plumbing (`cmd/evener-hub/app_rpc.go`).
+- **[01] bounded `Close` (round 14)** — `appwire/stream_transport.go` `Close`
+  must bound/interrupt the **underlying `rw.Close()`** as well as the
+  admitted-write drain (the underlying close is currently synchronous, so a
+  blocking underlying `Close` prevents `streamCloseDrainTimeout` from being
+  reached); no step of `Close` may wait unboundedly on a non-conforming stream.
+- **[05] pending-escalation ref translation (round 14)** — `remote_hub_refs.go`
+  must also rewrite `Thread.Evener.PendingEscalations[].Ref`
+  (`SandboxEscalationRequested.Ref`) on every thread snapshot and the top-level
+  `Ref` of the `evener/sandbox/escalation/{requested,resolved}` payloads, beside
+  the `JobActivityTree`/`EvenerDiagnostics` walk; `ThreadID` stays bare.
+- **[05] `JobsListResponse.Data` decoding (round 14; recognition tightened in
+  rounds 24–25)** — `evener/jobs/list` defines `JobsListResponse.Data any`
+  (`appwire/types.go`), and it stays generic: typing it as
+  `appwire.JobActivityTree` fails the stream client's `json.Unmarshal` for a
+  legacy flat array, so ref rewriting must first **recognize** an activity-tree
+  payload — a JSON object carrying `revision` as a non-negative integer and
+  `root` as an object carrying `sessionId` and `ref` as strings (the Go encoder
+  emits all of them unconditionally) — and walk only a recognized tree. Every
+  payload that fails the test — `{}`, an unknown object, `{"root":{}}`, a legacy
+  flat array — is preserved as the value it arrived as. "Unmarshals without
+  error" is not recognition: `{}` and unrelated objects decode into a zero-value
+  `appwire.JobActivityTree`, so a decode-only test rewrites payloads the source
+  does not understand instead of passing them through untouched (and a typed
+  recursive walk over a generic map silently rewrites nothing). Tests: empty,
+  unknown, `{"root":{}}`, legacy (flat array), minimal tree, and
+  forward-compatible tree. Verified through the actual stream client.
+- **[06] source-qualified session pins (round 14)** — `hubcore.PinSectionStore`
+  (`cmd/evener-hub/internal/hubcore/pin_section.go`, `session_pin.session_id`),
+  the `SessionPinAssign`/`SessionPinUnpin` handlers (`app_pin_section.go`), and
+  the navigation projection (`navigation_projection.go`
+  `PinSectionBySession`/`PinAssignments`) key session pins by `(source, id)`; the
+  `SessionRef` resolves through its owning source; an idempotent migration adds a
+  `source` column and backfills `source = "local"`.
+- **[04] snapshot health identity (round 15)** — `sshconn/version.go`
+  `waitHealthy` takes the expected `backend_git_sha` (`buildinfo.GitSHA`) in
+  addition to the expected `version`; for a snapshot pin a response whose
+  `backend_git_sha` is empty or not equal to the expected SHA is rejected (keep
+  polling; `ErrRestart` on exhaustion), so a wrong snapshot cannot pass
+  post-restart verification on `version` alone.
+- **[01] nonblocking one-shot close state (round 15)** — `appwire/stream_transport.go`
+  must replace the blocking `sync.Once.Do` in `doClose()` with a nonblocking
+  one-shot close state plus a completion channel: the underlying `rw.Close()`
+  runs on its own goroutine, `Close` and `drainWrites()` `select` on the
+  completion channel against `streamCloseDrainTimeout`, and write admission is
+  gated on the latched close state before taking the serialized-write lock so a
+  later `Send` returns `ErrStreamClosed` instead of blocking behind a stranded
+  waiter. Extends the round-14 bounded-`Close` item above (moving `rw.Close()` to
+  a goroutine under `sync.Once.Do` strands every later caller behind the first
+  `Close()`).
+- **[05] `HostCapabilities.LaunchResolved` (round 16)** — add the root-keyed field
+  `LaunchResolved map[string]appwire.LaunchConfigResolved` to
+  `HostCapabilities` (in `appsource`), populated by the per-root
+  `evener/launch/resolve` probe and keyed by the root path, so the probe table's
+  per-root effective-config call has somewhere to store its result; component 06
+  consumes it through `CapabilitySource.HostCapabilities`.
+- **[07] `ConfigRevision` exposure (round 16)** — add `ConfigRevision string` to
+  `AuthStatusResponse` and `InstanceEntry` (`appwire/types.go`), populated from
+  the host's effective credential-configuration revision (the same value the
+  host re-resolves under `credentialWrite`), so the controller has a defined
+  source for `ApiKeyConditionalSetParams.ExpectedRevision`: it captures the
+  value from the read-only `auth/status`/`instance/list` read it already makes
+  and echoes it, treating the zero value as "no revision fence" (the source
+  fence still applies). Without this field there is nothing to source the
+  required value from.
+- **[04] cold-bootstrap supervisor match (round 16; corrected round 17)** —
+  `sshconn` supervisor detection on the cold-bootstrap path (where no listener
+  exists) must accept a systemd unit / launchd plist only when its definition
+  **both** launches the resolved `run_path` `hub` invocation **and** its own
+  effective address (loopback-normalized) equals the configured address. The
+  effective address is the explicit `--addr` when present, else the `addr`
+  resolved from the definition's own `--config <path>` (read on the host) — a
+  supervisor launched as `evener hub --config …` with no `--addr` must match, or
+  the manager starts an unmanaged duplicate. A definition that merely mentions
+  `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
+  `evener`/`hub` is not a match. Several matches refuse with `ErrRestart` (no
+  signal, no relaunch); when none matches it is the supervisorless branch, whose
+  only launch is the cold-bootstrap **start** (a supervisorless *restart*
+  refuses the same way — component 04, §"Stop/restart mechanics" check 5);
+  **a candidate hub definition whose effective address cannot be
+  resolved refuses with `ErrRestart` and starts nothing** rather than risking a
+  duplicate, unless trusted explicit supervisor metadata recorded in the host
+  entry supplies the match. An inferred substring match may not.
+- **[04] guarded compare-and-kill / atomic-identity pin (round 16; corrected
+  round 17)** — `sshconn/version.go` restart must re-read the pid, recovered
+  argv (with `--config`/`--addr` agreeing with the entry's configured
+  `config_path`/`addr` after normalization), effective user, and listening
+  socket in the **same** remote command that issues the signal, refusing
+  `ErrRestart` (no signal, no relaunch) on any mismatch or on a field it cannot
+  re-read; the shipped `restartBare` (`kill <pid>`) is the unguarded form and is
+  not acceptable. Because the guarded form is still check-then-act — and
+  re-reading the start time at signal time is no better, since the PID can still
+  be reused between that read and the signal — the window is closed only by
+  signaling through an **atomic process handle** (a `pidfd` for the identified
+  process) or a host-side helper holding an equivalent identity pin across the
+  signal; when neither is available the restart refuses `ErrRestart` and emits
+  no signal. (Corrected round 22: **no** atomic handle is reachable today on any
+  platform, not only Darwin — a `pidfd` must be opened and signaled by a process
+  on the host, this component's only host interface is `ssh <dest> <command>`,
+  and no host-side helper is specified, installed, or invoked. Supervisorless
+  restart therefore refuses `ErrRestart` with no signal on Linux exactly as on
+  Darwin; see the round-19/22 item below.) Mirrors component-04 acceptance
+  criterion 20.
+- **[05/06] remote-originated `thread/start` resolution (round 17)** — at the
+  **receiving** hub, `hubThreadStart` (`app_threadlifecycle.go`) and the
+  request-context `origin` plumbing (`cmd/evener-hub/app_rpc.go`) must refuse
+  `InvalidParams` for a remote-originated (`origin` non-empty) `thread/start`
+  whose effective source — a set `ThreadStartParams.Source`, or the legacy
+  `launchSourceID(params.Harness)` fallback — is any non-local source, resolving
+  only `local`; the controller-side harness refusal cannot see a host configured
+  only on the recipient, so without this a preserved harness naming the
+  recipient's own host C lets B route the spawn onward to C and bypasses the
+  loop guard. Component 05c clearing `Source` on forward is not sufficient by
+  itself. Mirrors component-05 acceptance criterion 12 and its §"The receiving
+  hub must reject a non-local resolution for a remote-originated `thread/start`".
+- **[04] verified-missing-executable install trigger (round 18)** — `sshconn`
+  must turn a *verified* missing `run_path` at preflight into a named result
+  (`Preflight.ExecutableMissing` / `ErrExecutableMissing`) and route it into
+  deploy/install — the installer fallback creates the default
+  `<home>/.local/bin/evener` — then **re-run preflight** before version-match
+  and attach, so a fresh host bootstraps instead of dead-ending as a retryable
+  `ErrSSHStart`. Only the verified not-found may start an install; an
+  unreachable host, an auth refusal, an unparseable/empty `launch-check`
+  answer, and a launch-contract/protocol refusal must never run the installer.
+  Scope: `cmd/evener-hub/internal/sshconn/preflight.go` (classify the not-found,
+  surface the result) and `sshconn/manager.go`/`ensureOnce` (the routed branch
+  and the re-preflight). Mirrors component-04 acceptance criterion 21.
+- **[04] ssh-diagnostic separation for a terminal auth state (round 18)** —
+  `RunError.Stderr` (`sshconn/runner.go`) merges ssh's own diagnostics with the
+  remote command's stderr, so an auth marker there cannot be attributed to ssh;
+  the landed 04a contract therefore keeps every completed command failure
+  retryable (`isSSHAuthFailure`/`sshDiagnostic`, `sshconn/preflight.go`;
+  `isTerminal`, `sshconn/manager.go`) and classifies `ErrSSHAuth` only for a
+  failed `Start`. A genuinely terminal auth state requires capturing ssh's
+  diagnostics through a **separate channel** distinct from the remote command's
+  stderr (and keeping the status unambiguous), after which `ErrSSHAuth` could be
+  made terminal. Scope: `sshconn/runner.go` (`RunError` and the runner's
+  diagnostic sink), `preflight.go`, `manager.go`. Until then the retryable
+  contract in component 04's §"Error handling" stands.
+- **[06] composite-key migration for favorite/archive/session_pin (round 18)** —
+  adding and backfilling a `source` column does not fix the local/remote ID
+  collision, because the primary keys stay bare: rebuild `favorite` and
+  `archive` with `PRIMARY KEY (source, kind, id)` and `session_pin` with
+  `PRIMARY KEY (source, session_id)` (create-new/copy-legacy-as-`"local"`/drop/
+  rename), and update every statement naming the key — the upsert conflict
+  targets, the deletes, the per-section count join, and the readback scans/maps
+  (key them `(source, kind, id)` / `(source, session_id)`, not bare). Scope:
+  `cmd/evener-hub/internal/hubcore/favorite.go`, `archive.go`,
+  `pin_section.go`; the handlers `app_archive.go`, `app_favorite.go`,
+  `app_pin_section.go`; and the projection `navigation_projection.go`. Mirrors
+  component-06 §"Migration of existing decisions — the uniqueness keys must be
+  rebuilt, not just widened" and its session-pin migration.
+- **[03] optional hard-loopback `addr` rejection (round 18, not adopted)** — the
+  adopted fix for the wildcard finding is the explicit exposure contract
+  (component 03, §"`addr` host validation, and the exposure contract it must not
+  weaken"), under which `0.0.0.0`/`::` are accepted only as spellings that
+  normalize to loopback for the manager's own dial/probe. A deployment that
+  wants a *hard* loopback guarantee must instead reject `0.0.0.0`/`::` in
+  `validateHostConfigs` **and** refuse to restart or attach a hub actually bound
+  wildcard, superseding component 04's restart-identity normalization (check 4)
+  and acceptance criterion 13. Scope: `cmd/evener-hub/internal/hostreg`
+  validation plus `sshconn/version.go` and `sshconn/preflight.go`.
+- **[04] supervised-only restart / atomic-signal helper (round 19; widened round
+  22)** — the restart's atomic-identity pin (round 17) is a `pidfd`, which must
+  be opened and signaled by a process **on the host**. This component's only
+  host interface is `ssh <dest> <command>` shell execution, and the series
+  specifies, installs, and invokes no host-side helper that could hold the pin,
+  so the guarantee is **not implementable through the described interfaces on
+  any platform** — a supervisorless hub, Linux included, has no way to pin the
+  identified process across the signal and must refuse `ErrRestart` with no
+  signal (never the bare unguarded `kill`, and never a promise of a pidfd path
+  it cannot execute). A restart-capable deployment must therefore be
+  **supervised** (systemd unit `systemctl [--user] restart`; launchd
+  `kickstart -k` pins by label, not PID), or wait for a host-side atomic-signal
+  helper that is specified, provisioned by the installer, and invoked over the
+  channel. The **start** of a stopped hub (last-known-state bootstrap, no PID to
+  signal) is unaffected and keeps its detached launch. Scope:
+  `sshconn/version.go` (`restartBare` / the restart path), the
+  installer/`deploy.go` provisioning, and component-04 §"Stop/restart
+  mechanics" + acceptance criterion 20. Mirrors component-04 acceptance
+  criterion 20.
+- **[04] dedicated executable probe for a missing `run_path` (round 19)** — the
+  verified missing-executable result (round 18) must be recognized from a
+  dedicated probe with a stable exit-code sentinel (`test -x <run_path>`: `0`
+  present, `1` absent; ssh-level `255` is a transport failure) rather than the
+  remote shell's `127` / "no such file or directory" text, and requires the
+  ssh-diagnostic separation (round 18 item) so the merged diagnostic stream is
+  never consulted for the classification. Scope: `sshconn/preflight.go` (the
+  probe and `isSSHAuthFailure`/`sshDiagnostic`), `sshconn/runner.go` (the
+  distinct diagnostic channel), `sshconn/manager.go` (`isTerminal`). Mirrors
+  component-04 criterion 21.
+- **[06] shared versioned transactional migration + local canonicalization
+  (round 19, extends the round-18 composite-key item)** — `favorite`, `archive`,
+  and `session_pin` share `index.db`, so the composite-key rebuild (round 18)
+  must be one **centralized, schema-versioned `BEGIN IMMEDIATE` transaction**
+  applied before any store serves — a single version record, all three tables
+  rebuilt inside the one transaction, concurrent openers serialized on the write
+  lock — not three independent `CREATE`/copy/drop/rename paths in separate
+  `open` calls. Also define the canonical local-source constant `"local"` and
+  normalize every empty/absent/bare source to it in storage, lookups,
+  projections, and `SessionRef` resolution, with a behavioral migration test
+  that reads a migrated bare local row under the canonical key. Scope:
+  `cmd/evener-hub/internal/hubcore/favorite.go`, `archive.go`,
+  `pin_section.go` (the versioned migration + the canonical constant); the
+  handlers `app_archive.go`, `app_favorite.go`, `app_pin_section.go`; and the
+  projection `navigation_projection.go`. Mirrors component-06 §"Migration of
+  existing decisions — the uniqueness keys must be rebuilt, not just widened"
+  and its canonical-local-source requirement.
+- **[04] fail-closed supervisor ambiguity (round 21)** — the cold-bootstrap
+  unit-definition match must preserve the shipped `pickSupervisor` refusal:
+  **more than one match is `ErrRestart` with no kill and no relaunch**
+  ("an ambiguous listing is fatal, not a fallback", `sshconn/version.go`,
+  `multi-host-pr04b-deploy-restart`, pending merge), never a fall-through to
+  the ad hoc launch, and the same refusal applies when an identified launchd
+  label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
+  launch is reached only when **no** candidate definition matches, and only on
+  the cold-bootstrap **start** — a supervisorless *restart* refuses. Scope:
+  `sshconn/version.go` (`pickSupervisor`, `detectSupervisor`,
+  `detectSupervisorsFrom`, the restart path's label gate), `sshconn/version_test.go`.
+  Mirrors component-04 §"Stop/restart mechanics", its supervisor test case, and
+  criterion 19.
+- **[05] remote image bytes (round 21)** — a host-qualified controller route
+  plus an AppWire image-fetch request on the owning host's client, and a
+  rewrite of every image URL the remote hub stamped (`/s/<id>/images/<sha>`,
+  `/doc/image?session=<id>&path=…`) in outbound thread translation and
+  notification translation through **one shared image visitor** over the
+  `Thread`/`Turn`/`ThreadItem` types — both `Images[].URL` and
+  `OutputImages[].URL`, on every response and notification carrier, not just
+  the thread-snapshot `OutputImages` field — **and the exact host-qualified
+  route pair those URLs are rewritten to** (`/s/<host>:<session>/images/<sha>`,
+  `/doc/image?session=<host>:<session>&path=<rel>`; the non-`local` route-id
+  branch of the existing `/s/` and `/doc/image` handlers), so no
+  remote-stamped URL reaches the controller's local handlers (a colliding
+  local session id would otherwise be read).
+  Scope: `appwire/protocol.go` + `appwire/types.go` (the new hub-scoped method
+  and params, regenerated bindings); the host-side handler in
+  `cmd/evener-hub/app_rpc.go` (byte resolution mirroring `handleSessionImage`
+  and `handleDocImage`); the controller route/handler in `cmd/evener-hub/web.go`,
+  `image_serve.go`, `doc_serve.go`; `cmd/evener-hub/internal/appsource/remote_hub_refs.go`
+  (`translateOut`, `translateNotification`); the `EnrichThreadFileBackedImages`
+  gate in `cmd/evener-hub/app_rpc.go`. Mirrors component-05 §"Image URLs are
+  host-scoped and must be rewritten through the controller".
+- **[05] remote item-candidate paging (round 21; implemented on the in-flight
+  05a branch — keep it in scope)** — the spec now *requires*
+  `ItemReadCandidateSource` (`ItemCandidatesFromRead`) and
+  `ItemCandidateSource` (`ReadItemCandidates`/`ListItemCandidates`) on
+  `RemoteHubSource` (controller-minted cursor identity + `RebaseCursor`
+  translation of the remote's native cursor), because the hub packer cannot
+  emit a continuation cursor without an identity.
+  `multi-host-pr05a-remote-hub-source`
+  (`remote_hub_source.go`, `remote_hub_source_paging_test.go`) is the shape;
+  the read path must not fall back to the legacy packer, which errors with
+  `legacy transcript item source cannot page without cursor identity`. Scope:
+  `cmd/evener-hub/internal/appsource/remote_hub_source.go` (+ its paging
+  tests). Mirrors component-05 §"Remote item paging requires a source-owned
+  cursor identity".
+- **[06] source-qualified project identity through navigation (round 22, High)**
+  — the host-qualified project identity must be **one** string,
+  `"<sourceID>:<projectID>"` (the `appwire.Ref` form, `local` canonical), and it
+  must reach every surface, not only the projection: the catalog row keys
+  (`hubapi.NavigationProjectSummary.Key`, `NavigationProjectPage.Key`), the
+  read params (`appwire.NavigationReadParams.ProjectKey`) and the server
+  resource key/scope chain (`navigationReadKeyWithFields`, `app_navigation.go`;
+  `navigationResourceKey.canonical`, `navigationViewScope`,
+  `navigationEntityKey`, `navigationRootContainerKey`,
+  `cmd/evener-hub/navigation_cache.go`), the projection lookups
+  (`navigation_projection.go` `p.Project`/`ProjectPage`),
+  `hubapi.NavigationSessionLocation.ProjectKey`,
+  `appwire.NavigationInvalidationTarget.ProjectKey` with the target-key join in
+  `navigation_service.go`, the `(source, id)` receipt key
+  (`navigationChangeHint.Projects`), and the frontend
+  `ResourceKey`/`keyID`/`navigationViewScope`/`targetBase`/`canonicalResourceKey`/
+  `selectProjectResource` chain (`stores/navigation/types.ts`,
+  `selectors.ts`) plus the mobile `projectKey` route/reveal/readback keys. One
+  format/parse pair owns the encoding; `canonicalResourceKey` must normalize a
+  bare project key to `local:` exactly as it does a ref. Requires the two-host
+  same-key behavior test (distinct rows, reads, view scopes, and invalidation
+  targets; a bare key still local). Scope: the files above plus
+  `cmd/evener-hub/web_api_tree.go` (`selectNavigationProjects`). Mirrors
+  component-06 §"The one source-qualified project identity must be the key on
+  every navigation surface" and acceptance criterion 8.
+- **[05/06] non-dialing direct remote actions (round 22)** — every
+  `RemoteHubSource` call that is not an explicit attach trigger must resolve its
+  client through the shipped `sshconn.Manager.ClientIfAttached`
+  (`cmd/evener-hub/internal/sshconn/manager.go`) and return
+  `appwire.SessionUnavailable("remote hub unavailable: <host>")` when the host
+  is not attached, instead of dialing through the `Ensure`-backed
+  `RemoteHubClientFunc` (`remote_hub_source.go`) — reads, mutations,
+  subscriptions, host-proxy calls, and probes alike. `Ensure` is reached only
+  from `evener/host/attach`, from the explicit-host `thread/list` fan-out seam
+  (which attaches before calling the source), and from the first-attach
+  bootstrap they drive. Scope:
+  `cmd/evener-hub/internal/appsource/remote_hub_source.go` (the client resolver
+  + its tests), `cmd/evener-hub/app_threadlist.go` (the explicit-host attach
+  seam). Mirrors component-05 §"Every other remote call is non-dialing, not just
+  the snapshot and the non-explicit list" and component-06 acceptance
+  criterion 13.
+- **[04] run target must be `evener` (round 22)** — `installableEvenerBasename`
+  (`sshconn/version.go`, `multi-host-pr04b-deploy-restart`) accepts
+  `evener-dev`, which is the development/test tooling binary
+  (`cmd/evener-dev/bin`) with no `hub` subcommand and no `launch-check`; a host
+  configured with an `evener-dev` run target installs and then fails preflight,
+  health, and restart. Narrow the acceptance to `evener` and refuse an
+  `evener-dev` (or otherwise unshipped) run-target basename with `ErrDeploy`
+  before any install, push, or write. Scope:
+  `cmd/evener-hub/internal/sshconn/version.go`,
+  `cmd/evener-hub/internal/sshconn/deploy.go` (+ its tests). No stamped,
+  hub-capable development artifact is defined by this series. Mirrors
+  component-04 §"The installer install path must equal the run target" and
+  acceptance criterion 17.
+- **[04] installer fallback is release-only (round 22)** — the fallback must be
+  admitted only for an **immutable, checksum-verified-before-unpacking**
+  artifact reference, i.e. `Channel == "release"` (immutable tag +
+  `install.sh:88-130`'s sha256 check against that release's `checksums.txt`);
+  a `snapshot` controller must now be refused with `ErrDeploy` (its tag is
+  force-moved and its `checksums.txt` re-uploaded with `--clobber`, so the
+  checksum pins nothing about the commit) instead of installing first and
+  failing the identity probe afterwards. `installerRefFor`
+  (`sshconn/deploy.go`) loses its `snapshot` arm; `deployInstaller`'s
+  post-install `probeLaunchCheck`/terminal `ErrVersionMismatch` stays as the
+  last verification, never as the pin. Scope:
+  `cmd/evener-hub/internal/sshconn/deploy.go` (`installerRefFor`,
+  `deployInstaller`), `install.sh` only if a per-commit reference is added
+  later, and the deploy tests. Mirrors component-04 §"No deploy path may
+  replace the installed binary before the artifact's identity is pinned" and
+  acceptance criterion 16.
+- **[05] `evener/session/image` AppWire method (round 22, extends the round-21
+  image item)** — the image proxy needs a fully specified typed contract:
+  `MethodEvenerSessionImage = "evener/session/image"` (`ScopeHub`,
+  `appwire/protocol.go` + regenerated bindings),
+  `SessionImageParams{SessionID, SHA, Path}` with exactly one of `SHA`/`Path`
+  set, `SessionImageResponse{MediaType, Size, SHA, Data}`, sha-pattern and
+  session-relative-containment validation (`fspaths.ResolveInRoot`), the
+  `outputImageMaxBytes` (8 MiB) bound, media type re-derived with
+  `supportedOutputImageMedia`, `InvalidParams`/`ResourceNotFound` mapping, and
+  no HTTP route. **No `origin` refusal (round 24):** the call arrives over the
+  attach bridge, so it is remote-originated by construction — refusing that
+  role rejects the one request this path exists to make, while the loop guard
+  refuses fan-out from a remote-originated request to a *further* remote source
+  and `SessionImageParams` carries no source selector to fan out with, so the
+  guard is satisfied without a refusal here. Scope: `appwire/protocol.go`, `appwire/types.go`, the host handler
+  (`cmd/evener-hub/app_rpc.go`), the controller route/handler
+  (`cmd/evener-hub/web.go`, `image_serve.go`, `doc_serve.go`), and the
+  controller-side client call. Mirrors component-05 §"Image URLs are host-scoped
+  and must be rewritten through the controller" (its catalog-entry bullet).

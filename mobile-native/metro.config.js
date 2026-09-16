@@ -34,15 +34,19 @@ config.resolver.resolveRequest = (context, name, platform) => {
 	// both and would otherwise surface first on a device.
 	if (name === appwireName || name.startsWith(`${appwireName}/`)) {
 		const subpath = name.slice(appwireName.length).replace(/^\//, "") || "index";
-		// The first extension that exists wins. A subpath the package does not
-		// have falls through rather than resolving to a file that is not there:
-		// Metro's own "unable to resolve" names the specifier and the import
-		// stack, where a missing sourceFile surfaces later as a read error
-		// against a path the author never wrote.
-		for (const extension of sourceExtensions) {
-			const filePath = path.join(appwirePackage, `${subpath}.${extension}`);
-			if (fs.existsSync(filePath)) {
-				return { type: "sourceFile", filePath };
+		// A subpath names a module file (`docContent`) or a directory whose
+		// index is its barrel (`state/navigation`); the file is probed first,
+		// then the index, and the first extension that exists wins. A subpath
+		// the package does not have falls through rather than resolving to a
+		// file that is not there: Metro's own "unable to resolve" names the
+		// specifier and the import stack, where a missing sourceFile surfaces
+		// later as a read error against a path the author never wrote.
+		for (const candidate of [subpath, `${subpath}/index`]) {
+			for (const extension of sourceExtensions) {
+				const filePath = path.join(appwirePackage, `${candidate}.${extension}`);
+				if (fs.existsSync(filePath)) {
+					return { type: "sourceFile", filePath };
+				}
 			}
 		}
 	}
