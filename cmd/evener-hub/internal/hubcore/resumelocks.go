@@ -50,7 +50,7 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 			groups[id] = group
 		}
 		group.aliases = append(group.aliases, alias)
-		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, group: group, durableGroup: id, ResumeSessionID: authority.SessionID}
+		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, LaunchPending: authority.LaunchPending, group: group, durableGroup: id, ResumeSessionID: authority.SessionID}
 	}
 	return r, nil
 }
@@ -93,6 +93,7 @@ func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error
 			state.group = group
 			state.ResumeRequired = true
 			state.ExitConfirmed = false
+			state.LaunchPending = false
 			state.durableGroup = id
 			state.ResumeSessionID = sessionID
 			r.recovery[alias] = state
@@ -256,7 +257,6 @@ func (a *ActiveResume) BeforeLaunch() error {
 	if err := a.ctx.Err(); err != nil {
 		return err
 	}
-	proof := make(map[string]SessionRecoveryState)
 	for _, alias := range a.aliases {
 		for other := range r.active[alias] {
 			if other != a {
@@ -265,32 +265,64 @@ func (a *ActiveResume) BeforeLaunch() error {
 				}
 			}
 		}
+	}
+	proof, err := r.beginLaunchProofLocked(a.target, a.aliases)
+	if err != nil {
+		if len(proof) != 0 {
+			// Start will not run. Retain an uncertain invalidation until the
+			// old, still-valid exit proof can be durably restored.
+			a.proof = proof
+			a.childPrepared, a.childReaped = true, true
+			a.launchFinished, a.launchFailed = true, true
+			a.proofErr = err
+		}
+		return err
+	}
+	a.proof = proof
+	a.childPrepared = true
+	return nil
+}
+
+// beginLaunchProofLocked is the durable half of BeforeLaunch, shared with every
+// other launch path. It records a launch in progress and invalidates the prior
+// owner's exit proof for every verified alias in the group, which is what stops
+// a previous process's proof from describing the child about to start. Both
+// registry locks are held. The returned proof is non-empty exactly when the
+// invalidation may already be durable, so a caller whose commit failed can
+// still restore the proof it replaced.
+func (r *ResumeLocks) beginLaunchProofLocked(target string, aliases []string) (map[string]SessionRecoveryState, error) {
+	proof := make(map[string]SessionRecoveryState)
+	for _, alias := range aliases {
 		state := r.recovery[alias]
 		if !state.ResumeRequired {
 			continue
 		}
 		if !state.ExitConfirmed {
-			return errors.New("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
+			return nil, errors.New("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
 		}
-		if state.group == nil || state.ResumeSessionID != a.target || state.group != r.recovery[a.target].group {
-			return errors.New("resume recovery authority changed before launch")
+		if state.group == nil || state.ResumeSessionID != target || state.group != r.recovery[target].group {
+			return nil, errors.New("resume recovery authority changed before launch")
 		}
 		for _, member := range state.group.aliases {
 			current := r.recovery[member]
-			if !slices.Contains(a.aliases, member) || current.group != state.group || current.durableGroup != state.durableGroup || current.ResumeSessionID != a.target || !current.ResumeRequired || !current.ExitConfirmed {
-				return errors.New("resume recovery aliases changed before launch")
+			if !slices.Contains(aliases, member) || current.group != state.group || current.durableGroup != state.durableGroup || current.ResumeSessionID != target || !current.ResumeRequired || !current.ExitConfirmed {
+				return nil, errors.New("resume recovery aliases changed before launch")
 			}
 			proof[member] = current
 		}
 	}
-	if r.store != nil && len(proof) != 0 {
+	if len(proof) == 0 {
+		return nil, nil
+	}
+	if r.store != nil {
 		next := maps.Clone(r.store.state)
 		for alias, state := range proof {
 			authority := next[alias]
-			if authority.Group != state.durableGroup || authority.SessionID != a.target || !authority.ExitConfirmed {
-				return errors.New("durable resume recovery authority changed before launch")
+			if authority.Group != state.durableGroup || authority.SessionID != target || !authority.ExitConfirmed {
+				return nil, errors.New("durable resume recovery authority changed before launch")
 			}
 			authority.ExitConfirmed = false
+			authority.LaunchPending = true
 			next[alias] = authority
 		}
 		committed, err := r.store.commit(next)
@@ -299,25 +331,166 @@ func (a *ActiveResume) BeforeLaunch() error {
 				for alias := range proof {
 					state := r.recovery[alias]
 					state.ExitConfirmed = false
+					state.LaunchPending = true
 					r.recovery[alias] = state
 				}
-				// Start will not run. Retain an uncertain invalidation until the
-				// old, still-valid exit proof can be durably restored.
-				a.proof = proof
-				a.childPrepared, a.childReaped = true, true
-				a.launchFinished, a.launchFailed = true, true
-				a.proofErr = err
+				return proof, err
 			}
-			return err
+			return nil, err
 		}
 	}
 	for alias := range proof {
 		state := r.recovery[alias]
 		state.ExitConfirmed = false
+		state.LaunchPending = true
 		r.recovery[alias] = state
 	}
-	a.proof = proof
-	a.childPrepared = true
+	return proof, nil
+}
+
+// restoreLaunchProofLocked re-confirms the exit proof a launch invalidated once
+// that launch has produced no child, and clears its durable launch intent, so
+// the ordinary confirmed-stopped resume and force-stop paths can run again. A
+// changed group, target, or membership means a newer authority owns the
+// aliases: it is left completely untouched. Both registry locks are held.
+func (r *ResumeLocks) restoreLaunchProofLocked(proof map[string]SessionRecoveryState, target string) error {
+	matching := true
+	for alias, previous := range proof {
+		current := r.recovery[alias]
+		if current.group != previous.group || current.durableGroup != previous.durableGroup || current.ResumeSessionID != target || !current.ResumeRequired || !slices.Equal(current.group.aliases, previous.group.aliases) {
+			matching = false
+		}
+	}
+	if matching && r.store != nil && len(proof) != 0 {
+		next := maps.Clone(r.store.state)
+		for alias, previous := range proof {
+			authority := next[alias]
+			if authority.Group != previous.durableGroup || authority.SessionID != target {
+				return errors.New("durable resume cleanup authority changed")
+			}
+			authority.ExitConfirmed = true
+			authority.LaunchPending = false
+			next[alias] = authority
+		}
+		if _, err := r.store.commit(next); err != nil {
+			return err
+		}
+	}
+	if matching {
+		for alias := range proof {
+			state := r.recovery[alias]
+			state.ExitConfirmed = true
+			state.LaunchPending = false
+			r.recovery[alias] = state
+		}
+	}
+	return nil
+}
+
+// LaunchGuard is the durable pre-launch invalidation for a launch path that
+// owns no registered ActiveResume lifetime. BeforeLaunch performs the same work
+// for an explicit or automatic resume; a path that holds no resume to own
+// guards its launch with this instead, so the invariant documented on
+// BeforeLaunch holds for every launch.
+type LaunchGuard struct {
+	owner  *ResumeLocks
+	target string
+	proof  map[string]SessionRecoveryState
+}
+
+// BeginLaunchGuard durably records a launch in progress and invalidates the
+// prior owner's exit proof for every verified alias, while the caller owns all
+// of them. Failed must run when the guarded launch produced no child.
+func (r *ResumeLocks) BeginLaunchGuard(ctx context.Context, target string, aliases []string) (*LaunchGuard, error) {
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	proof, err := r.beginLaunchProofLocked(target, aliases)
+	if err != nil {
+		if len(proof) != 0 {
+			// The invalidation may already be durable and no child will start:
+			// put the previous exit proof back rather than retaining a fence.
+			err = errors.Join(err, r.restoreLaunchProofLocked(proof, target))
+		}
+		return nil, err
+	}
+	return &LaunchGuard{owner: r, target: target, proof: proof}, nil
+}
+
+// Failed restores the prior exit proof after a guarded launch produced no
+// child. It is a no-op after a successful handoff, and for a session that
+// carried no exit proof to invalidate.
+func (g *LaunchGuard) Failed() error {
+	if g == nil || g.owner == nil || len(g.proof) == 0 {
+		return nil
+	}
+	g.owner.persistenceMu.Lock()
+	defer g.owner.persistenceMu.Unlock()
+	g.owner.mu.Lock()
+	defer g.owner.mu.Unlock()
+	return g.owner.restoreLaunchProofLocked(g.proof, g.target)
+}
+
+// RecoverInterruptedLaunches settles durable launch intents left by a hub that
+// died after a launch durably invalidated a prior exit proof but before the
+// child started or published a rendezvous claim. claimed reports whether any
+// alias of a pending group is still claimed; a claimed group is left fenced so
+// a previous process's exit proof can never describe a new child. Every
+// unclaimed group's launch intent is cleared and its prior exit proof restored,
+// which is what lets the ordinary resume and force-stop paths run instead of
+// rejecting the session indefinitely. It returns the first discovery error
+// rather than guessing about a group it could not check.
+func (r *ResumeLocks) RecoverInterruptedLaunches(claimed func(aliases []string) (bool, error)) error {
+	if r == nil || claimed == nil {
+		return nil
+	}
+	type pendingLaunch struct {
+		group   *sessionRecoveryGroup
+		target  string
+		aliases []string
+	}
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	seen := make(map[*sessionRecoveryGroup]bool)
+	var pending []pendingLaunch
+	for _, alias := range slices.Sorted(maps.Keys(r.recovery)) {
+		state := r.recovery[alias]
+		if !state.LaunchPending || state.group == nil || !state.ResumeRequired || seen[state.group] {
+			continue
+		}
+		seen[state.group] = true
+		pending = append(pending, pendingLaunch{group: state.group, target: state.ResumeSessionID, aliases: slices.Clone(state.group.aliases)})
+	}
+	r.mu.Unlock()
+	for _, launch := range pending {
+		exists, err := claimed(launch.aliases)
+		if err != nil {
+			return err
+		}
+		if exists {
+			continue
+		}
+		r.mu.Lock()
+		proof := make(map[string]SessionRecoveryState)
+		for _, alias := range launch.aliases {
+			state := r.recovery[alias]
+			if state.LaunchPending && state.group == launch.group && state.ResumeRequired && state.ResumeSessionID == launch.target {
+				proof[alias] = state
+			}
+		}
+		if len(proof) != 0 {
+			err = r.restoreLaunchProofLocked(proof, launch.target)
+		}
+		r.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -353,35 +526,9 @@ func (a *ActiveResume) LaunchFinished(failed bool, cleanupErr error) error {
 func (a *ActiveResume) settleLocked() {
 	r := a.owner
 	if a.childPrepared && a.launchFinished && a.launchFailed && a.childReaped && !a.proofSettled {
-		matching := true
-		for alias, previous := range a.proof {
-			current := r.recovery[alias]
-			if current.group != previous.group || current.durableGroup != previous.durableGroup || current.ResumeSessionID != a.target || !current.ResumeRequired || !slices.Equal(current.group.aliases, previous.group.aliases) {
-				matching = false
-			}
-		}
-		if matching && r.store != nil && len(a.proof) != 0 {
-			next := maps.Clone(r.store.state)
-			for alias, previous := range a.proof {
-				authority := next[alias]
-				if authority.Group != previous.durableGroup || authority.SessionID != a.target {
-					a.proofErr = errors.New("durable resume cleanup authority changed")
-					return
-				}
-				authority.ExitConfirmed = true
-				next[alias] = authority
-			}
-			if _, err := r.store.commit(next); err != nil {
-				a.proofErr = err
-				return
-			}
-		}
-		if matching {
-			for alias := range a.proof {
-				state := r.recovery[alias]
-				state.ExitConfirmed = true
-				r.recovery[alias] = state
-			}
+		if err := r.restoreLaunchProofLocked(a.proof, a.target); err != nil {
+			a.proofErr = err
+			return
 		}
 		a.proofSettled = true
 		a.cleanupErr, a.proofErr = nil, nil
@@ -564,9 +711,13 @@ type SessionRecoveryState struct {
 	Stopping             int
 	ResumeRequired       bool
 	ExitConfirmed        bool
-	ResumeSessionID      string
-	group                *sessionRecoveryGroup
-	durableGroup         string
+	// LaunchPending is set while a resume has durably invalidated this alias's
+	// exit proof and is starting a replacement. It is cleared once that launch
+	// settles, so a restart can recover a launch that produced no child.
+	LaunchPending   bool
+	ResumeSessionID string
+	group           *sessionRecoveryGroup
+	durableGroup    string
 }
 
 type sessionRecoveryGroup struct {
@@ -702,6 +853,7 @@ func (r *ResumeLocks) ExplicitResumeCompleted(sessionID string, epoch uint64) er
 			continue
 		}
 		alias.ResumeRequired = false
+		alias.LaunchPending = false
 		alias.durableGroup = ""
 		alias.ResumeSessionID = ""
 		r.recovery[id] = alias

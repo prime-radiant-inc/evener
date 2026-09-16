@@ -38,8 +38,12 @@ func sourceForThread(sources *appsource.Registry, ref, threadID string) (appsour
 	return source, nil
 }
 
-func sourceForThreadWithDeletionFence(cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
-	return withDeletionTargetOwnership(context.Background(), cfg, ref, threadID, "", func() (appsource.Source, error) {
+// sourceForThreadWithDeletionFence resolves a source while holding the
+// session's ownership alias, so it must acquire that alias with the request's
+// context: a canceled or disconnected RPC returns promptly instead of parking
+// behind a long-running explicit Resume.
+func sourceForThreadWithDeletionFence(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, threadID string) (appsource.Source, error) {
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", func() (appsource.Source, error) {
 		return sourceForThread(sources, ref, threadID)
 	})
 }

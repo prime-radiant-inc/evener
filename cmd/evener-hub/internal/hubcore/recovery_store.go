@@ -19,6 +19,11 @@ type recoveryAuthority struct {
 	ExitConfirmed bool   `json:"exit_confirmed"`
 	Group         string `json:"group"`
 	SessionID     string `json:"session_id"`
+	// LaunchPending records that a resume durably invalidated this alias's exit
+	// proof and was about to start a replacement child. It survives exactly the
+	// window BeforeLaunch opens so a restarted hub can tell "a launch never
+	// produced a child" from "this proof is simply unconfirmed".
+	LaunchPending bool `json:"launch_pending,omitempty"`
 }
 
 type recoveryRecord struct {
@@ -30,6 +35,11 @@ type recoverySnapshot struct {
 	Version int              `json:"version"`
 	Records []recoveryRecord `json:"records"`
 }
+
+// recoveryStateVersion is the format this hub writes. Version 3 is still read:
+// it is every snapshot an older hub could have left behind, and it simply has
+// no launch intents to recover.
+const recoveryStateVersion = 4
 
 type recoveryStoreFaults struct {
 	BeforeRename func() error
@@ -73,7 +83,7 @@ func openRecoveryStore(fs afero.Fs, root string) (*recoveryStore, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return nil, errors.New("decode recovery state: trailing data")
 	}
-	if snapshot.Version != 3 {
+	if snapshot.Version != 3 && snapshot.Version != recoveryStateVersion {
 		return nil, fmt.Errorf("unsupported recovery state version %d", snapshot.Version)
 	}
 	targets := make(map[string]recoveryAuthority)
@@ -98,7 +108,7 @@ func validRecoveryAlias(alias string) bool {
 }
 
 func (s *recoveryStore) commit(next map[string]recoveryAuthority) (bool, error) {
-	snapshot := recoverySnapshot{Version: 3, Records: []recoveryRecord{}}
+	snapshot := recoverySnapshot{Version: recoveryStateVersion, Records: []recoveryRecord{}}
 	for _, alias := range slices.Sorted(maps.Keys(next)) {
 		snapshot.Records = append(snapshot.Records, recoveryRecord{Alias: alias, recoveryAuthority: next[alias]})
 	}

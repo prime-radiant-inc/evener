@@ -1952,7 +1952,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			ref = appwire.Ref{SourceID: sourceID, ThreadID: thread.ID}.String()
 		}
-		source, err := sourceForThreadWithDeletionFence(cfg, sources, ref, thread.ID)
+		source, err := sourceForThreadWithDeletionFence(ctx, cfg, sources, ref, thread.ID)
 		if err != nil {
 			return nil //nolint:nilerr // best-effort relay: an unresolvable source means nothing to relay, not a caller error
 		}

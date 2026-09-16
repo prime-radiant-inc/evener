@@ -290,8 +290,14 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		}
 		acquired++
 	}
-	if err := deletionFenceError(cfg, "", sessionID, ""); err != nil {
-		return false, err
+	// Every alias in the resolved group is an identity a deletion record may
+	// name. The shortcut is only a no-op while none of them is deleted, or a
+	// deletion of another alias in the same group is bypassed and reported as
+	// success.
+	for _, alias := range aliases {
+		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+			return false, err
+		}
 	}
 	currentAliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(currentAliases)

@@ -165,14 +165,22 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	epochs[sessionID] = epoch
 	// Force stop's sorted ownership order, retaining the original mutexes.
-	for _, id := range aliases {
-		cfg.ResumeLocks.For(id).Lock()
-	}
+	// This path is context-aware, so it acquires each alias through the context
+	// and releases the prefix it holds if a later alias blocks past
+	// cancellation; an ordinary Lock here would hang behind a long-running
+	// explicit Resume and retain every earlier alias.
+	acquired := 0
 	defer func() {
-		for _, id := range slices.Backward(aliases) {
+		for _, id := range slices.Backward(aliases[:acquired]) {
 			cfg.ResumeLocks.For(id).Unlock()
 		}
 	}()
+	for _, id := range aliases {
+		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+			return err
+		}
+		acquired++
+	}
 	for _, id := range aliases {
 		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
 			return err
@@ -239,6 +247,6 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// sessionID would drive discovery and spawn for a stale alias whenever
 	// resumeOwnership resolved a different current owner (thread/clear), the
 	// same convention resumeThread follows by assigning sessionID = target.
-	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
+	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target}, aliases)
 	return resumeErr
 }

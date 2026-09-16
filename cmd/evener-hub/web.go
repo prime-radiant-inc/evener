@@ -111,12 +111,21 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume
 	// triggered on either transport serializes a racing resume on the other.
 	var recoveryStoreErr error
+	restoredRecovery := false
 	if cfg.ResumeLocks == nil {
 		if cfg.HubStateRoot == "" {
 			// Embedders without a state root explicitly use process-local state.
 			cfg.ResumeLocks = hubcore.NewResumeLocks()
 		} else {
 			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
+			restoredRecovery = recoveryStoreErr == nil
+		}
+	}
+	// A registry restored from disk may carry a launch intent from a hub that
+	// died mid-launch. Settle it before any request can be served.
+	if restoredRecovery {
+		if err := recoverInterruptedLaunches(cfg); err != nil {
+			recoveryStoreErr = err
 		}
 	}
 	fHash, _ := frontendDistHash(distFS())
