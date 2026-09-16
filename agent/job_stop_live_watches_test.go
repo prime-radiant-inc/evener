@@ -61,6 +61,19 @@ func stopObserverDelegate(t *testing.T, s *Session, args map[string]any) stableJ
 	return stableJobStopInvocation{value: value, err: err}
 }
 
+// settleObserverStop completes the pending stop of the observer delegate. The
+// seeded generation has no run loop, so the test finishes it by hand exactly as
+// the settled-stop tests do; the stop reconcile driver exits once stop.done
+// closes.
+func settleObserverStop(t *testing.T, f *stableWatchRuntimeFixture) {
+	t.Helper()
+	stop := awaitDelegateStopAdmission(t, f.controller)
+	if _, err := f.controller.FinishGeneration(delegateLease{delegateID: "dlg_observer", generation: 1}, delegateFinish{}); err != nil {
+		t.Fatalf("finish observer generation: %v", err)
+	}
+	<-stop.done
+}
+
 // stopObserverDelegateOutput returns the rendered output of a stop invocation.
 func stopObserverDelegateOutput(t *testing.T, invocation stableJobStopInvocation) string {
 	t.Helper()
@@ -104,6 +117,7 @@ func TestJobStopReportsLiveWatchesAdmission(t *testing.T) {
 	if !strings.Contains(output, watchID) || !strings.Contains(output, `job_watch operation="clear"`) {
 		t.Fatalf("output missing clear guidance for %s: %q", watchID, output)
 	}
+	settleObserverStop(t, f)
 }
 
 // TestJobStopReportsLiveWatchesSettled pins the completed stop: after the
@@ -158,6 +172,7 @@ func TestJobStopNoLiveWatches(t *testing.T) {
 	if len(state.LiveWatches) != 0 {
 		t.Fatalf("live watches = %#v, want none", state.LiveWatches)
 	}
+	settleObserverStop(t, f)
 }
 
 // TestJobStopLiveWatchesSettleRefresh pins the settle-time read: a watch
@@ -208,6 +223,7 @@ func TestJobStopLiveWatchesTimeout(t *testing.T) {
 	if len(state.LiveWatches) != 1 || state.LiveWatches[0].ID != watchID {
 		t.Fatalf("timed-out live watches = %#v, want id=%s", state.LiveWatches, watchID)
 	}
+	settleObserverStop(t, f)
 }
 
 // TestJobWatchClearSiblingRefused pins the authority boundary: a sibling
