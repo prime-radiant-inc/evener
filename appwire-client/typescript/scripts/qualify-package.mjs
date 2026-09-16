@@ -392,7 +392,10 @@ assert.rejects(credentialStore.getState().fetch(), /no client connected/).catch(
   console.error(err);
   process.exit(1);
 });
-assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/).catch((err) => {
+Promise.all([
+  assert.rejects(credentialStore.getState().fetch(), /no client connected/),
+  assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/),
+]).catch((err) => {
   console.error(err);
   process.exit(1);
 });
