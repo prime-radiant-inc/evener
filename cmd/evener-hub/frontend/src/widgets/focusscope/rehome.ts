@@ -17,13 +17,20 @@ import { tabbable } from "./tabbable";
 
 /**
  * Hands focus to the root's first tabbable control. Called once the caller has
- * established that the control holding focus INSIDE the root was just removed
- * (useFocusRehome owns that judgement); focus that is anywhere else by now - the
- * user moved it, another component took it - is left where it is.
+ * established that the control holding focus INSIDE the root lost the ability to
+ * hold it (useFocusRehome owns that judgement), passed here as `lost`.
+ *
+ * Focus is handed on when the browser left it nowhere (`<body>` is where an
+ * unmounted control's focus goes) or when it is still sitting on `lost` - which
+ * is how a natively disabled control reads in engines that do not drop focus
+ * themselves (jsdom), while Chrome has already moved it to `<body>`. Focus that
+ * is anywhere else by now is the user's or another component's and is left where
+ * it is.
  */
-export function rehomeFocus(root: HTMLElement | null): void {
+export function rehomeFocus(root: HTMLElement | null, lost: HTMLElement | null = null): void {
   if (root === null) return;
-  if (document.activeElement !== document.body) return;
+  const active = document.activeElement;
+  if (active !== document.body && active !== lost) return;
   const next = tabbable(root)[0];
   next?.focus();
 }
@@ -46,23 +53,33 @@ export function useFocusRehome(root: RefObject<HTMLElement | null>): void {
   // document sees every focus that lands anywhere, including on controls that
   // stop propagation.
   useEffect(() => {
-    const node = root.current;
-    if (node === null) return;
     const remember = (event: FocusEvent): void => {
       const target = event.target;
-      if (target instanceof HTMLElement && node.contains(target)) lastFocused.current = target;
+      // root.current is resolved at EVENT time, not captured when the listener is
+      // bound: a surface can replace the node the ref points at - the connect
+      // dialog's body is unmounted when an editor opens and remounted when it
+      // closes - and a listener holding the old node would stop remembering
+      // anything for the rest of the session.
+      if (target instanceof HTMLElement && root.current?.contains(target)) lastFocused.current = target;
     };
     document.addEventListener("focusin", remember, true);
     return () => document.removeEventListener("focusin", remember, true);
   }, [root]);
 
   // No dependency array on purpose: the condition is "the control this hook
-  // remembered is no longer in the document", and any commit can be the one that
-  // removed it - a listing change, a read starting, a read failing.
+  // remembered can no longer hold focus", and any commit can be the one that made
+  // it so - a listing change, a read starting, a read failing.
   useEffect(() => {
     const remembered = lastFocused.current;
-    if (remembered === null || remembered.isConnected) return;
+    if (remembered === null) return;
+    // Gone, or natively disabled: the browser drops focus to <body> the moment a
+    // focused control is disabled (the instance sheet's pending "Test
+    // credentials" is one), which is the same lost focus this hook exists for.
+    // aria-disabled is deliberately NOT this case - a control refused that way
+    // keeps the keyboard where it is, which is why it is not the native
+    // attribute.
+    if (remembered.isConnected && !remembered.matches(":disabled")) return;
     lastFocused.current = null;
-    rehomeFocus(root.current);
+    rehomeFocus(root.current, remembered);
   });
 }

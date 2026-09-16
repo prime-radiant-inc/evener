@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -29,6 +30,29 @@ func (a *modelMetadataAdapter) Stream(context.Context, llm.Request) (llm.Stream,
 }
 
 func (a *modelMetadataAdapter) LiveModels(context.Context) ([]registry.Model, error) {
+	return append([]registry.Model(nil), a.models...), nil
+}
+
+// modelListAuthRecorder lists models and keeps the request context, so a
+// test can assert which authenticator the hub bound to the fetch.
+type modelListAuthRecorder struct {
+	name       string
+	models     []registry.Model
+	requestCtx context.Context
+}
+
+func (a *modelListAuthRecorder) Name() string { return a.name }
+
+func (a *modelListAuthRecorder) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, nil
+}
+
+func (a *modelListAuthRecorder) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, nil
+}
+
+func (a *modelListAuthRecorder) LiveModels(ctx context.Context) ([]registry.Model, error) {
+	a.requestCtx = ctx
 	return append([]registry.Model(nil), a.models...), nil
 }
 
@@ -87,6 +111,51 @@ func TestFetchLiveModels_CarriesListingCapabilitiesUnchanged(t *testing.T) {
 		t.Fatalf("k3-256k missing from %+v", models)
 	} else if got.ContextWindow == nil || *got.ContextWindow != 123_456 {
 		t.Errorf("k3-256k context_window = %v, want the listing's 123456", got.ContextWindow)
+	}
+}
+
+// TestFetchLiveModels_BindsTheRegistrysCodexScope pins the model-list half of
+// a wrong-record bug: the fetch must authenticate with the registry client's
+// own state root, not whatever root the process-global Codex holds. The
+// adapter records the request context, so the assertion is about what the
+// fetch actually carried.
+func TestFetchLiveModels_BindsTheRegistrysCodexScope(t *testing.T) {
+	root := t.TempDir()
+	writeCodexOAuthRecord(t, root, "codex-work")
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(root),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{"codex-work": {Base: "openai-codex"}}),
+	)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(r))
+	recorder := &modelListAuthRecorder{name: "codex-work", models: []registry.Model{{ID: "gpt-5.6"}}}
+	client.Register(recorder)
+	// Every other instance the registry knows gets a mute lister so no test
+	// client can reach a real transport.
+	for _, inst := range r.Instances() {
+		if inst.Name != "codex-work" {
+			client.Register(&modelMetadataAdapter{name: inst.Name})
+		}
+	}
+	oldLoadClient := liveModelLoadClient
+	liveModelLoadClient = func(string) (*llm.Client, error) { return client, nil }
+	t.Cleanup(func() { liveModelLoadClient = oldLoadClient })
+
+	models := NewWebServer(hubcore.WebConfig{}).fetchLiveModels(context.Background())
+	if len(models) == 0 {
+		t.Fatal("the fetch listed nothing: it never reached the provider seam")
+	}
+	auth := llm.AuthenticatorOverrideFor(recorder.requestCtx, registry.AuthOAuthOpenAICodex)
+	codex, ok := auth.(*tokenauth.Codex)
+	if !ok {
+		t.Fatalf("fetch context carried %T, want a scoped *tokenauth.Codex", auth)
+	}
+	if codex.StateDir != root {
+		t.Fatalf("scoped Codex state dir = %q, want the client registry's %q", codex.StateDir, root)
 	}
 }
 

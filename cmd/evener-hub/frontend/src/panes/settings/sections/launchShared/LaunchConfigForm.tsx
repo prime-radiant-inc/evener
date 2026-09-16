@@ -12,36 +12,37 @@
 // rendered from resolve()/setLayer()'s own returned diagnostics, which this
 // component exposes via onSaved rather than rendering itself).
 
-import type {
-  LaunchConfigLayer,
-  LaunchConfigResolved,
-  LaunchOption,
-  MCPServerSpec,
-  PathValidateResponse,
-} from "@evener/appwire-client";
-import { useMemo, useRef, useState } from "react";
-import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
-import { Button, useToasts } from "../../../../widgets";
-import { requireClass } from "../../../../widgets/internal/requireClass";
-import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
-import { PromptCompositeField, ScalarField } from "./fields";
-import { asEnvObjects, asMcpList, asStringList, inheritedItems } from "./inherited";
-import styles from "./LaunchConfigForm.module.css";
 import {
+  asEnvObjects,
+  asMcpList,
+  asStringList,
   buildFormState,
   collectConfig,
   globalDefaultHint,
   groupOptions,
   inactivePromptDependent,
+  inheritedItems,
   isCollectionKind,
   isPromptCompositeWireField,
+  type LaunchConfigLayer,
+  type LaunchConfigLayerName,
+  type LaunchConfigResolved,
   type LaunchFormState,
+  type LaunchOption,
+  type MCPServerSpec,
   matchesEnvCredentialError,
   optionSupportsLayer,
+  type PathValidateResponse,
   PROMPT_COMPOSITE_SPECS,
   PROMPT_DEPENDENT_WIRE_FIELDS,
   schemaPathKind,
-} from "./schema";
+} from "@evener/appwire-client";
+import { useMemo, useRef, useState } from "react";
+import { Button, useToasts } from "../../../../widgets";
+import { requireClass } from "../../../../widgets/internal/requireClass";
+import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
+import { PromptCompositeField, ScalarField } from "./fields";
+import styles from "./LaunchConfigForm.module.css";
 
 const CLASS = {
   root: requireClass(styles.root, "LaunchConfigForm.module.css", "root"),
@@ -282,7 +283,7 @@ export function LaunchConfigForm({
     // any field submits" shortcut is gone.
     <div className={CLASS.root}>
       {groups.map((group, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: group.group repeats when the legacy header-per-change rule re-opens the same name non-contiguously (see schema.ts's groupOptions) - the segment's position is the only stable identity.
+        // biome-ignore lint/suspicious/noArrayIndexKey: group.group repeats when the legacy header-per-change rule re-opens the same name non-contiguously (see groupOptions) - the segment's position is the only stable identity.
         <div key={`${group.group}-${index}`} className={CLASS.group}>
           <div className={CLASS.groupHeader}>{group.group}</div>
           {group.options.map((opt) => (

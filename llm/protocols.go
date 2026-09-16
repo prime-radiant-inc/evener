@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"context"
 	"fmt"
 	"sync"
 )
@@ -56,6 +57,18 @@ func AuthenticatorFor(scheme string) (Authenticator, bool) {
 	defer registryMu.RUnlock()
 	a, ok := authenticators[scheme]
 	return a, ok
+}
+
+// AuthenticatorForContext returns the call-scoped authenticator carried
+// by ctx (see WithAuthenticatorOverride) when one is set for the call's
+// scheme, else the process-global registration for the scheme. A nil
+// return means no authenticator is bound for the scheme.
+func AuthenticatorForContext(ctx context.Context, scheme string) Authenticator {
+	if auth := AuthenticatorOverrideFor(ctx, scheme); auth != nil {
+		return auth
+	}
+	a, _ := AuthenticatorFor(scheme)
+	return a
 }
 
 // RequestPreparerFor returns the scheme's authenticator as a RequestPreparer

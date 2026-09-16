@@ -46,6 +46,8 @@ function noopHandlers() {
     onClearStoredKey: vi.fn(),
     onRemove: vi.fn(),
     onSetDefault: vi.fn(),
+    onToggleModel: vi.fn(),
+    onRefreshModels: vi.fn(),
   };
 }
 

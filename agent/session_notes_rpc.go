@@ -864,6 +864,106 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 	s.notesLastProjected = ""
 }
 
+// humanNoteSteerPrefix opens the steering text a shared-notes update carries.
+// It is the last-resort marker for a record that persisted neither a
+// SteeringKind nor a mutation method -- see steeringOrigin.isHumanNoteSteer.
+const humanNoteSteerPrefix = "human updated their whiteboard:"
+
+// steeringOrigin names the durable provenance of a steering entry. kind is the
+// recorded SteeringKind, and method is the persisted client-mutation method that
+// wrote the entry; both survive on the journal record a restored session rebuilds
+// from. An empty field means the record predates that provenance.
+type steeringOrigin struct {
+	kind   string
+	method string
+}
+
+// steeringOriginFromJournal returns the durable provenance of one journal
+// record: its recorded kind, else the method that wrote it. A record that kept
+// only the steer method is ordinary steering, whatever its id spells, and one
+// that kept no provenance at all leaves the caller's own rule to decide.
+func steeringOriginFromJournal(journal map[string]clientMutationRecord, id string) steeringOrigin {
+	record := journal[id]
+	return steeringOrigin{kind: record.SteeringKind, method: record.Method}
+}
+
+// isHumanNoteSteer reports whether steering text came from a shared-notes update.
+// A recorded kind decides. Otherwise the persisted mutation method decides:
+// notes/human/set is the note write, and any other named method (turn/steer, a
+// drain or a promote) is ordinary steering, so a kindless steer whose text merely
+// imitates the prefix keeps its bytes. Only when neither field was persisted --
+// a record older than both, or a turn carrying neither -- does the write-path
+// text shape remain the sole marker. Only note-origin steering is normalized:
+// ordinary steering keeps the bytes the user typed, which is what the live path
+// and the persisted transcript already show.
+func (o steeringOrigin) isHumanNoteSteer(text string) bool {
+	if o.kind != "" {
+		// A recorded kind decides. Only the human-note kind is note-origin, so a
+		// user's steering keeps its bytes even when it quotes the words back.
+		return o.kind == events.SteeringKindHumanNote
+	}
+	if o.method != "" {
+		// The mutation journal's method distinguishes the note write from
+		// ordinary steering even when no kind was recorded.
+		return o.method == clientMutationMethodNotesHumanSet
+	}
+	// Neither provenance was persisted, so the exact shape the write path emits
+	// is the only marker left: the prefix followed by the space the note text
+	// always comes after. A user text imitating that shape exactly is
+	// indistinguishable and stays a documented ambiguity for these records alone.
+	return strings.HasPrefix(text, humanNoteSteerPrefix+" ")
+}
+
+// rebuiltSteeringText returns a rebuilt steering entry's text: note-origin text is
+// stripped like every other load path, and ordinary steering keeps its bytes.
+func rebuiltSteeringText(origin steeringOrigin, text string) string {
+	if !origin.isHumanNoteSteer(text) {
+		return text
+	}
+	return stripTextControls(text)
+}
+
+// steeringKind returns the kind a rebuilt entry carries. The recorded kind
+// decides when there is one; otherwise the same evidence isHumanNoteSteer reads
+// for the text decides it, so a kindless notes/human/set record rebuilds with the
+// note label instead of no label at all.
+func (o steeringOrigin) steeringKind() string {
+	if o.kind != "" {
+		return o.kind
+	}
+	if o.method == clientMutationMethodNotesHumanSet {
+		return events.SteeringKindHumanNote
+	}
+	return ""
+}
+
+// steeringOriginForTurn merges a history turn's own provenance with the
+// provenance its journal record persisted. They normally agree -- the turn's kind
+// is a copy of the record's -- and when they do not, note-origin evidence decides:
+// the strip exists to keep note text out of the model copy, so a turn the write
+// path already marked note-origin is not demoted by a record that kept no kind,
+// and a record that proves note origin -- by kind, or by the kindless
+// notes/human/set method its own rule reads -- is not overruled by an unrelated
+// kind on the turn.
+func steeringOriginForTurn(turn schema.Turn, origins map[string]steeringOrigin) steeringOrigin {
+	origin := steeringOrigin{kind: turn.SteeringKind}
+	if origin.kind == events.SteeringKindHumanNote || turn.ClientMutationID == "" {
+		return origin
+	}
+	recorded, ok := origins[turn.ClientMutationID]
+	if !ok {
+		return origin
+	}
+	if recorded.kind == events.SteeringKindHumanNote ||
+		(recorded.kind == "" && recorded.method == clientMutationMethodNotesHumanSet) {
+		return recorded
+	}
+	if origin.kind != "" {
+		return origin
+	}
+	return recorded
+}
+
 // escapeNotesHistoryTurns returns history with every NOTES_CONTEXT turn replaced
 // by its model-facing escaped copy. A history built from a persisted source — a
 // resumed transcript, or a forked delegate's inherited prefix — carries the raw
@@ -871,39 +971,12 @@ func (s *Session) resetNotesProjectionAfterCompaction() {
 // transcript must keep so renderers and tool output show the user's real text,
 // but model context must receive the escaped copy (see escapeNotesContextBlock),
 // or a note carrying the closing tag regains the harness framing on every
-// request the session serves. The input is not modified.
-// humanNoteSteerPrefix opens the steering text a shared-notes update carries.
-// A journal record persisted before SteeringKind was recorded has no kind to
-// read, so the prefix is how a note-origin entry is recognized there.
-const humanNoteSteerPrefix = "human updated their whiteboard:"
-
-// isHumanNoteSteer reports whether steering text came from a shared-notes update,
-// by kind or, for entries older than the kind, by its text. Only note-origin
-// steering is normalized: ordinary steering keeps the bytes the user typed, which
-// is what the live path and the persisted transcript already show.
-func isHumanNoteSteer(kind, text string) bool {
-	if kind != "" {
-		// A recorded kind decides. Only the human-note kind is note-origin, so a
-		// user's steering keeps its bytes even when it quotes the words back.
-		return kind == events.SteeringKindHumanNote
-	}
-	// A record persisted before kinds existed has none to read, so the exact shape
-	// the write path emits is the only marker left: the prefix followed by the
-	// space the note text always comes after. A user text imitating that shape
-	// exactly is indistinguishable and stays a documented ambiguity.
-	return strings.HasPrefix(text, humanNoteSteerPrefix+" ")
-}
-
-// rebuiltSteeringText returns a rebuilt steering entry's text: note-origin text is
-// stripped like every other load path, and ordinary steering keeps its bytes.
-func rebuiltSteeringText(kind, text string) string {
-	if !isHumanNoteSteer(kind, text) {
-		return text
-	}
-	return stripTextControls(text)
-}
-
-func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
+// request the session serves. origins is the journal's steering provenance by
+// client mutation id, which decides a steering turn that keeps no kind of its
+// own (see steeringOrigins); nil means no record is in reach, and every steering
+// turn is then decided by its own kind and the write-path text shape. The input
+// is not modified.
+func escapeNotesHistoryTurns(history []schema.Turn, origins map[string]steeringOrigin) []schema.Turn {
 	out := make([]schema.Turn, len(history))
 	copy(out, history)
 	for i := range out {
@@ -918,7 +991,15 @@ func escapeNotesHistoryTurns(history []schema.Turn) []schema.Turn {
 			// strip the other controls as well before the model copy is built.
 			out[i].Message = llm.User(escapeNotesContextBlock(stripTextControls(text)))
 		case schema.TurnSteering:
-			if !isHumanNoteSteer(out[i].SteeringKind, text) {
+			// The turn's own kind and the record that wrote it decide together
+			// (see steeringOriginForTurn): a turn written before kinds were
+			// stamped otherwise leaves the text shape to guess from, and a normal
+			// steer whose text imitates the note prefix would lose its bytes on
+			// every restart. Daemon steering carries no mutation id, and an
+			// inherited prefix belongs to another session's journal, so both keep
+			// the kind-then-shape decision.
+			origin := steeringOriginForTurn(out[i], origins)
+			if !origin.isHumanNoteSteer(text) {
 				// Ordinary steering is delivered exactly as the user typed it, live
 				// and restored alike; only notes-derived text is normalized, so this
 				// copy keeps its bytes.

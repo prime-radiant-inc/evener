@@ -26,14 +26,18 @@
 // already shows). Not ported - the custom inline error is the only
 // validation UI surfaced here.
 
-import type { LaunchOption, MCPServerSpec, PathValidateResponse } from "@evener/appwire-client";
+import {
+  type LaunchOption,
+  type MCPServerSpec,
+  type PathValidateResponse,
+  validatePathListAdd,
+} from "@evener/appwire-client";
 import { type ReactNode, useId } from "react";
 import { directoryActions, extensionsStore } from "../../../../stores/extensions";
 import type { CollectionAddResult, PathFieldKind } from "../../../../widgets";
 import { Button, CollectionEditor, Input, PathField, Switch } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./collectionFields.module.css";
-import { validatePathListAdd } from "./pathListAdd";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
 
 const CLASS = {

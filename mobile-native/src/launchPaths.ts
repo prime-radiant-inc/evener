@@ -1,5 +1,4 @@
-import { validatePathListAdd } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/launchShared/pathListAdd";
-import type { LaunchOption } from "@evener/appwire-client";
+import { type LaunchOption, validatePathListAdd } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 export async function addLaunchPath(

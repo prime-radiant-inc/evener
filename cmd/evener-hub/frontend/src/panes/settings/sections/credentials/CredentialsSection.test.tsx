@@ -43,6 +43,7 @@ const WORK = instance({
   isDefault: true,
   hasStoredFile: true,
   activeSource: "store",
+  models: [{ id: "claude-opus-4-6" }, { id: "claude-sonnet-5", disabled: true }],
 });
 const PERSONAL = instance({
   name: "personal",
@@ -247,6 +248,31 @@ test("a refresh that swaps the rows for the skeleton keeps the keyboard in the p
     await inFlight;
   });
   expect(await screen.findByRole("button", { name: /work/ })).toBeTruthy();
+});
+
+// Warnings describe the listing that produced them - a providers.toml load
+// error, the user-layer note, a stray OAuth notice - so while the rows on
+// screen belong to a connection that is gone they describe a listing this one
+// never read. The management dialog suppresses them for exactly that reason.
+test("a replaced connection's warnings stay hidden until its own listing lands", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => ({ ...LIST, diagnostics: ['providers.toml: unexpected key "type"'] }));
+  render(<CredentialsSection sectionId="credentials" />);
+  await screen.findByText("work");
+  expect(screen.getByText("Warnings")).toBeTruthy();
+
+  const restored = deferred<InstanceListResponse>();
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => restored.promise);
+  await act(async () => connectionStore.getState().connect(replacement));
+  expect(screen.queryByText("Warnings")).toBeNull();
+
+  await act(async () => {
+    restored.resolve({ ...LIST, diagnostics: ["user layer: /home/x/.config/evener/providers.toml"] });
+    await restored.promise;
+  });
+  expect(await screen.findByText("Warnings")).toBeTruthy();
+  expect(screen.getByText(/user layer/)).toBeTruthy();
 });
 
 describe("the detail sheet", () => {
@@ -1070,6 +1096,271 @@ describe("set default", () => {
     await user.click(within(inspector).getByRole("button", { name: /make default/i }));
     // error is converted via friendlyErrorMessage: raw JS errors become the generic message
     await screen.findByText("Set default failed: Something went wrong.");
+    // Assert the raw string no longer appears
+    expect(screen.queryByText(/boom/)).toBeNull();
+  });
+});
+
+describe("model live refresh", () => {
+  test("opening a sheet does not fetch; the Refresh button does and merges", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/refreshModels", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return {
+        instances: [{ ...WORK, models: [...(WORK.models ?? []), { id: "claude-live-new" }] }],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(false);
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(true));
+    await within(inspector).findByRole("switch", { name: "claude-live-new" });
+  });
+
+  test("an instance with no inventory still offers the Refresh button", async () => {
+    const fake = connectFakeClient();
+    const bare = instance({ name: "work", providerId: "anthropic", authModes: ["apiKey"] });
+    fake.on("evener/instance/list", () => ({ instances: [bare], availableProviders: [] }));
+    fake.on("evener/instance/refreshModels", (params) => {
+      expect(params).toEqual({ name: "work" });
+      return {
+        instances: [{ ...bare, models: [{ id: "claude-live-new" }] }],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/refreshModels")).toBe(true));
+    await within(inspector).findByRole("switch", { name: "claude-live-new" });
+  });
+
+  test("two concurrent refreshes each track their own pending state", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const gates = new Map<string, ReturnType<typeof deferred<InstanceListResponse>>>();
+    fake.on("evener/instance/refreshModels", (params: { name: string }) => {
+      const gate = deferred<InstanceListResponse>();
+      gates.set(params.name, gate);
+      return gate.promise;
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    // Start work's refresh, then personal's while work's is still in
+    // flight: both sheets must show pending independently.
+    const workInspector = await openSheet(user, "work");
+    await user.click(within(workInspector).getByRole("button", { name: "Refresh live models" }));
+    await user.click(within(workInspector).getByRole("button", { name: "Close" }));
+    const personalInspector = await openSheet(user, "personal");
+    await user.click(within(personalInspector).getByRole("button", { name: "Refresh live models" }));
+    await within(personalInspector).findByRole("button", { name: "Refreshing live models…" });
+    // Settle personal's first: work's must still read pending.
+    gates.get("personal")?.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
+    await waitFor(() =>
+      expect(within(personalInspector).queryByRole("button", { name: "Refreshing live models…" })).toBeNull(),
+    );
+    await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
+    const workAgain = await openSheet(user, "work");
+    expect(within(workAgain).getByRole("button", { name: "Refreshing live models…" })).toBeTruthy();
+    gates.get("work")?.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
+    await within(workAgain).findByRole("button", { name: "Refresh live models" });
+  });
+
+  test("a refresh in flight for another instance does not disable this sheet's button", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const gate = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => gate.promise);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    // Start a refresh on personal's sheet, then open work's sheet while it
+    // is still in flight: work's button must stay enabled.
+    const personalInspector = await openSheet(user, "personal");
+    await user.click(within(personalInspector).getByRole("button", { name: "Refresh live models" }));
+    await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
+    const workInspector = await openSheet(user, "work");
+    expect(
+      (within(workInspector).getByRole("button", { name: "Refresh live models" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    gate.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
+    await waitFor(() =>
+      expect(
+        (within(workInspector).getByRole("button", { name: "Refresh live models" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  test("a refresh failure toasts and keeps the cached rows", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/refreshModels", () => {
+      throw new Error("boom");
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
+    await screen.findByText("Live refresh failed: Something went wrong.");
+    expect(screen.queryByText(/boom/)).toBeNull();
+    // Catalog rows from the list fetch still render.
+    within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
+  });
+});
+
+describe("model toggles", () => {
+  test("flipping a switch calls setModelDisabled and applies the returned list", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/setModelDisabled", (params) => {
+      expect(params).toEqual({ name: "work", model: "claude-opus-4-6", disabled: true });
+      return {
+        instances: [
+          {
+            ...WORK,
+            models: [
+              { id: "claude-opus-4-6", disabled: true },
+              { id: "claude-sonnet-5", disabled: true },
+            ],
+          },
+        ],
+        availableProviders: [],
+      };
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
+    await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/setModelDisabled")).toBe(true));
+    await screen.findByText("Disabled claude-opus-4-6");
+  });
+
+  test("a switch disables while its toggle is in flight", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let release!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    const toggle = within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
+    await user.click(toggle);
+    // While the write is out, the same switch is disabled (plain DOM
+    // property — this tree has no jest-dom matchers): a second rapid
+    // click cannot submit a duplicate write.
+    const isDisabled = (el: HTMLElement): boolean => (el as HTMLButtonElement).disabled;
+    await waitFor(() =>
+      expect(isDisabled(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(true),
+    );
+    release({ instances: [{ ...WORK, models: [{ id: "claude-opus-4-6", disabled: true }] }], availableProviders: [] });
+    await screen.findByText("Disabled claude-opus-4-6");
+    await waitFor(() =>
+      expect(isDisabled(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(false),
+    );
+  });
+
+  test("two clicks in the same tick submit one toggle", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let writes = 0;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>(() => {
+          writes += 1;
+        }),
+    );
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    const toggle = within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
+    // Two clicks with nothing awaited between them. The switch only renders
+    // disabled on the next render, so the guard itself has to be
+    // synchronous — a state updater inspected after the fact cannot stop
+    // the second submission.
+    await act(async () => {
+      fireEvent.click(toggle);
+      fireEvent.click(toggle);
+    });
+    expect(writes).toBe(1);
+  });
+
+  test("a toggle failure toasts 'Model toggle failed'", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/setModelDisabled", () => {
+      throw new Error("boom");
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
+    // error is converted via friendlyErrorMessage: raw JS errors become the generic message
+    await screen.findByText("Model toggle failed: Something went wrong.");
     // Assert the raw string no longer appears
     expect(screen.queryByText(/boom/)).toBeNull();
   });
