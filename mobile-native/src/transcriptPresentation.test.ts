@@ -6,13 +6,14 @@ import {
 import type {
 	MobileConversation,
 	MobileTimelineItem,
-} from "../../mobile/src/conversation/model";
+} from "../../mobile/src/conversation/project";
 import { projectNativeTranscript } from "./transcriptPresentation";
 
 function conversation(items: MobileTimelineItem[]): MobileConversation {
 	return {
 		items,
-		usage: { inputTokens: 10, outputTokens: 20, cost: "$1" },
+		usage: { inputTokens: 10, outputTokens: 20 },
+		cost: "$1",
 	} as MobileConversation;
 }
 
@@ -233,11 +234,7 @@ it("applies typed system-event flags and masks usage fields independently", () =
 		"hook",
 		"error",
 	]);
-	expect(result.usage).toMatchObject({
-		inputTokens: undefined,
-		outputTokens: undefined,
-		cost: undefined,
-	});
+	expect(result.usage).toEqual({ usage: null, cost: null });
 });
 
 it("does not mutate clustered members or source items while projecting", () => {

@@ -38,7 +38,7 @@ import { isStaleCursorError } from "@evener/appwire-client";
 import type {
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/model";
+} from "../conversation/project";
 import { projectThread } from "../conversation/project";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";

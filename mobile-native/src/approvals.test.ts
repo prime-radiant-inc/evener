@@ -3,7 +3,6 @@ import type {
   SandboxEscalationRequested,
   Thread,
 } from "@evener/appwire-client";
-import { projectApproval } from "../../mobile/src/conversation/project";
 import {
   type ConversationClientLike,
   createConversationService,
@@ -71,26 +70,26 @@ describe("native approval projection", () => {
     const { service } = boundary();
     const store = createConversationStore();
     await store.getState().open(service, "local:s");
-    expect(store.getState().conversation?.pendingApprovals).toEqual([
-      projectApproval(pending),
+    expect(store.getState().conversation?.pendingEscalations).toEqual([
+      pending,
     ]);
     store.getState().applyNotification({
       method: "evener/sandbox/escalation/resolved",
       params: { threadId: "other", ref: "other:s", escalationId: "approval" },
     });
-    expect(store.getState().conversation?.pendingApprovals).toHaveLength(1);
+    expect(store.getState().conversation?.pendingEscalations).toHaveLength(1);
     store.getState().applyNotification({
       method: "evener/sandbox/escalation/requested",
       params: { ...pending, deniedPath: "/updated" },
     });
-    expect(store.getState().conversation?.pendingApprovals).toEqual([
-      projectApproval({ ...pending, deniedPath: "/updated" }),
+    expect(store.getState().conversation?.pendingEscalations).toEqual([
+      { ...pending, deniedPath: "/updated" },
     ]);
     store.getState().applyNotification({
       method: "evener/sandbox/escalation/resolved",
       params: pending,
     });
-    expect(store.getState().conversation?.pendingApprovals).toEqual([]);
+    expect(store.getState().conversation?.pendingEscalations).toEqual([]);
   });
 });
 
@@ -108,7 +107,7 @@ describe("approval decisions", () => {
         return {};
       },
     } as unknown as ConversationClientLike;
-    const approval = projectApproval(pending);
+    const approval = pending;
     const controls = new ApprovalControls(
       client,
       "local:s",
@@ -135,9 +134,9 @@ describe("approval decisions", () => {
   });
   it("rejects resolved, changed and old-owner approvals before dispatch", async () => {
     let calls = 0;
-    let values = [projectApproval(pending)];
+    let values = [pending];
     let current = true;
-    const displayed = projectApproval(pending);
+    const displayed = pending;
     const client = {
       request: async () => {
         calls++;
@@ -151,7 +150,7 @@ describe("approval decisions", () => {
       () => current,
       async () => {},
     );
-    values = [{ ...displayed, path: "/different" }];
+    values = [{ ...displayed, deniedPath: "/different" }];
     await controls.resolve(displayed, true);
     values = [];
     await controls.resolve(displayed, false);
@@ -165,7 +164,7 @@ describe("approval decisions", () => {
   });
   it("retains failure and never repeats an unconfirmed decision", async () => {
     let calls = 0;
-    const approval = projectApproval(pending);
+    const approval = pending;
     const client = {
       request: async () => {
         calls++;
@@ -190,7 +189,7 @@ describe("approval decisions", () => {
   )(
     "treats malformed resolution receipt $receipt as uncertain",
     async ({ receipt }) => {
-      const approval = projectApproval(pending);
+      const approval = pending;
       let calls = 0;
       const client = {
         request: async () => {
@@ -217,7 +216,7 @@ describe("approval decisions", () => {
     },
   );
   it("requires a successful current refresh before allowing another decision", async () => {
-    const approval = projectApproval(pending);
+    const approval = pending;
     let refreshFails = true;
     let calls = 0;
     const controls = new ApprovalControls(
@@ -250,7 +249,7 @@ describe("approval decisions", () => {
     expect(calls).toBe(2);
   });
   it("does not dispatch a card removed by the recovery read", async () => {
-    const approval = projectApproval(pending);
+    const approval = pending;
     let values = [approval];
     let calls = 0;
     const controls = new ApprovalControls(
@@ -274,7 +273,7 @@ describe("approval decisions", () => {
     expect(calls).toBe(1);
   });
   it("serializes recovery reads and retains uncertainty when the binding changes", async () => {
-    const approval = projectApproval(pending);
+    const approval = pending;
     let current = true;
     let calls = 0;
     let reads = 0;
@@ -312,7 +311,7 @@ describe("approval decisions", () => {
     expect(calls).toBe(0);
   });
   it("ignores late acknowledgments and reads after disposal", async () => {
-    const approval = projectApproval(pending);
+    const approval = pending;
     let release!: () => void;
     let reads = 0;
     const controls = new ApprovalControls(
@@ -376,7 +375,7 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
   });
   release();
   await refresh;
-  expect(store.getState().conversation?.pendingApprovals).toEqual([]);
+  expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
 it("keeps resolutions delivered between the initial snapshot and its response", async () => {
   const base = boundary();
@@ -415,7 +414,7 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
   });
   release();
   await open;
-  expect(store.getState().conversation?.pendingApprovals).toEqual([]);
+  expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
 it("unsubscribes a failed initial read", async () => {
   let unsubscribed = 0;

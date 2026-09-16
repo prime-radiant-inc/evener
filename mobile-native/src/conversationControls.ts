@@ -1,9 +1,9 @@
 import { sessionControls } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 
 /** The slice of a conversation every control decision reads. */
 export type ControlsSource = Pick<MobileConversation, "status" | "capabilities"> & {
-  queue: Pick<MobileConversation["queue"], "depth" | "revision">;
+  queue: Pick<NonNullable<MobileConversation["queue"]>, "depth" | "revision"> | null;
 };
 
 /**
@@ -15,7 +15,7 @@ export type ControlsSource = Pick<MobileConversation, "status" | "capabilities">
  * the client's to apply.
  */
 export function conversationControls(conversation: ControlsSource) {
-  return sessionControls(conversation.status, conversation.capabilities, conversation.queue.depth);
+  return sessionControls(conversation.status.type, conversation.capabilities, conversation.queue?.depth ?? 0);
 }
 
 /** Whether anything can be composed at all: some action, or a goal to set. */

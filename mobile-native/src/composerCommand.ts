@@ -6,9 +6,9 @@ import {
   matchBuiltinInvocation,
   mergeSlashCommands,
 } from "@evener/appwire-client";
-import type { ThreadClearResponse } from "@evener/appwire-client";
+import type { ThreadClearResponse, ThreadStatus } from "@evener/appwire-client";
 import { sessionControls } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import type {
   ConversationClearActions,
   ConversationForkActions,
@@ -55,16 +55,16 @@ const commands = [
 
 /** What the completion registry and submission both read off the session. */
 export interface ComposerCommandSession {
-  status: string;
+  status: ThreadStatus;
   capabilities: Partial<MobileConversation["capabilities"]>;
-  queue: { revision: number; depth: number };
+  queue: { revision: number; depth?: number } | null;
 }
 
 function controlsFor(session: ComposerCommandSession) {
   return sessionControls(
-    session.status,
+    session.status.type,
     session.capabilities,
-    session.queue.depth,
+    session.queue?.depth ?? 0,
   );
 }
 
@@ -191,7 +191,7 @@ export async function submitComposerCommand(
     // uses its own command and the observed queue revision, as on web.
     operation =
       id === "drain-as-steer"
-        ? () => service.steer([], turn.queue.revision)
+        ? () => service.steer([], turn.queue?.revision)
         : () => service[id](input);
   } else if (id === "model") {
     const catalog = await service.models();

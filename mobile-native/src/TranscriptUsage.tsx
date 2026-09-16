@@ -1,17 +1,17 @@
 import { View } from "react-native";
-import type { MobileUsage } from "../../mobile/src/conversation/model";
+import type { SessionAccounting } from "./transcriptPresentation";
 import { Copy } from "./ui";
 
-export function TranscriptUsage({ usage }: { usage: MobileUsage }) {
+export function TranscriptUsage({ usage }: { usage: SessionAccounting }) {
 	const tokens = [
-		["Input", usage.inputTokens],
-		["Output", usage.outputTokens],
-		["Cached", usage.cacheReadTokens],
-		["Total", usage.totalTokens],
+		["Input", usage.usage?.inputTokens],
+		["Output", usage.usage?.outputTokens],
+		["Cached", usage.usage?.cacheReadTokens],
+		["Total", usage.usage?.totalTokens],
 	] as const;
 	if (
 		tokens.every(([, value]) => value === undefined) &&
-		usage.cost === undefined
+		usage.cost === null
 	)
 		return null;
 	return (
@@ -23,7 +23,7 @@ export function TranscriptUsage({ usage }: { usage: MobileUsage }) {
 						{label}: {value?.toLocaleString()} tokens
 					</Copy>
 				))}
-			{usage.cost !== undefined ? (
+			{usage.cost !== null ? (
 				<Copy muted>Estimated cost: {usage.cost}</Copy>
 			) : null}
 		</View>

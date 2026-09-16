@@ -1,19 +1,24 @@
 import type {
-  EvenerUsage,
+  AskQuestionRef,
+  AskUserOption,
   InputItem,
+  ItemImage,
   OutputImage,
-  SandboxEscalationRequested,
   Thread,
-  ThreadCapabilities,
   ThreadItem,
+  ThreadModel,
   Turn,
 } from "@evener/appwire-client";
-import type { MobileApproval } from "./model";
-// Pure AppWire-to-mobile thread projection. projectThread folds a wire
-// Thread (protocol/types.gen.ts) into a MobileConversation view model that
-// React components consume. No DOM, no network, no clock — given the same
-// Thread it produces the same MobileConversation. Protocol DTOs never cross
-// into React props; only the mobile view models in model.ts do.
+// The native shim between the wire and the package's thread model. It shrinks
+// as seam 2 lands (SDK migration plan, D21–D24): D22 replaces projectThread's
+// hydrate half with reducer.hydrateThread, D23 the store's notification
+// appliers with reducer.applyNotification, and D24 replaces the display rows
+// below with transcriptDisplay/projector.ts entries and deletes this file.
+//
+// projectThread folds a wire Thread (types.gen.ts) into a MobileConversation.
+// No DOM, no network, no clock — given the same Thread it produces the same
+// MobileConversation. Protocol DTOs never cross into React props; only the
+// package's model types and the display rows declared here do.
 //
 // Forward-compatibility is load-bearing: an unknown ThreadItem.type never
 // disappears and never exposes raw HTML. It becomes a neutral collapsed
@@ -25,21 +30,144 @@ import {
   hasItemFailure,
   isInProgressStatus,
 } from "@evener/appwire-client";
-import type {
-  ActivityDetail,
-  ActivityMember,
-  ActivityState,
-  AttachmentRef,
-  MobileAskOption,
-  MobileAskQuestion,
-  MobileCapabilities,
-  MobileConversation,
-  MobileQueue,
-  MobileTimelineItem,
-  MobileUsage,
-  NoticeFamily,
-  NoticeTone,
-} from "./model";
+
+// --- the conversation native holds -------------------------------------------
+
+// The package ThreadModel's thread-level contract — every field a native screen
+// reads, in the web's shape — plus the display rows the shim still projects
+// itself. A full ThreadModel is assignable here, which is what D22's
+// hydrateThread hands in; D24 removes `items`.
+export type MobileConversation = Pick<
+  ThreadModel,
+  | "threadId"
+  | "instanceId"
+  | "name"
+  | "status"
+  | "resumeRequired"
+  | "modelProvider"
+  | "visionModel"
+  | "reasoningEffort"
+  | "reasoningEffortLevels"
+  | "supportsReasoning"
+  | "capabilities"
+  | "queue"
+  | "usage"
+  | "cost"
+  | "goal"
+  | "tasks"
+  | "askPending"
+  | "pendingEscalations"
+  | "activeTurnId"
+> & {
+  items: MobileTimelineItem[];
+};
+
+// --- display rows (D24 replaces these with the package's projector) ----------
+// Every field is untrusted plain text; only assistant Markdown is sanitized
+// later (markdown.ts). Treat string fields as display-only, never executable.
+
+// One image attachment row entry: the package's ItemImage (src is the resolved
+// fetch URL, name the wire's own field carried alongside) keyed for display.
+export type AttachmentRef = ItemImage & { id: string };
+
+// Lifecycle state of a collapsed activity row (tool call, reasoning, or an
+// unknown forward-compatible item). "running" while in progress, "completed"
+// on clean settlement, "failed" when the wire carried an error (status stays
+// "completed" even for errored calls — error presence is the real signal).
+export type ActivityState = "running" | "completed" | "failed";
+
+// Durable activity family discriminator, independent of the display `label`.
+// The projection sets this from the wire item's *type* — commandExecution
+// (tool) vs reasoning vs anything else — never from the label string, so a
+// commandExecution whose toolName is "Reasoning" is still family "tool" and a
+// reasoning item is family "reasoning". Closed type: tool | reasoning | unknown.
+// Consumers branch on `family`, never on `label`, so a renamed or localized
+// label cannot change an item's family.
+export type ActivityFamily = "tool" | "reasoning" | "unknown";
+
+// Expandable detail behind a one-line activity card. Every field is plain
+// text — never raw HTML — and may be truncated by the renderer. `arguments`
+// is the tool's argumentsJson verbatim (untrusted JSON text), `output` is the
+// tool result text, `error` is the tool-result error text. `callId` lets a
+// diagnostics disclosure cite the stable identifier without exposing it in
+// the default collapsed row.
+export interface ActivityDetail {
+  description?: string;
+  arguments?: string;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  durationMs?: number;
+  callId?: string;
+}
+
+export interface ActivityMember {
+  id: string;
+  label: string;
+  family: ActivityFamily;
+  state: ActivityState;
+  detail: ActivityDetail;
+  transcriptKey?: string;
+  position?: { entry: number; item: number };
+}
+
+// Tone of a steering/lifecycle notice row. "info" for ordinary steering/system
+// notices, "warning" for loop detection / turn limit / provider failure, and
+// "system" for environment / prelude scaffold that is purely informational.
+export type NoticeTone = "info" | "warning" | "system";
+
+export type NoticeOrigin = "steering" | "system";
+
+export type NoticeFamily =
+  | "informational"
+  | "warning"
+  | "hidden-instruction"
+  | "system-prelude"
+  | "lifecycle"
+  | "diagnostic"
+  | "unknown-system";
+
+// The mobile timeline item union. A pure projection of one thread's turns
+// into the families the phone timeline renders. Discriminated by `kind`.
+export type MobileTimelineItem = (
+  | { kind: "user"; id: string; text: string; transcriptEntryIndex?: number }
+  | { kind: "assistant"; id: string; markdown: string; streaming: boolean }
+  | {
+      kind: "activity";
+      id: string;
+      label: string;
+      // Durable activity-family discriminator, independent of `label`. The
+      // projection sets this from the wire item's type (commandExecution →
+      // "tool", reasoning → "reasoning", anything else → "unknown"), never from
+      // the label text. Required: every activity constructor MUST set it to a
+      // concrete ActivityFamily; consumers branch on `family`, never `label`.
+      family: ActivityFamily;
+      state: ActivityState;
+      detail: ActivityDetail;
+      members?: ActivityMember[];
+    }
+  | {
+      kind: "notice";
+      id: string;
+      origin: NoticeOrigin;
+      steeringKind?: string;
+      eventKind?: string;
+      exitCode?: number;
+      family: NoticeFamily;
+      tone: NoticeTone;
+      text: string;
+    }
+  // The pending ask_user questions of one call, each carrying that call's id
+  // (AskQuestionRef.callId); the composer renders them as interactive cards
+  // with a single "Send answers" action.
+  | { kind: "question"; id: string; questions: AskQuestionRef[] }
+  | { kind: "failure"; id: string; title: string; detail: string }
+  | { kind: "attachments"; id: string; items: AttachmentRef[] }
+) & {
+  transcriptKey?: string;
+  sourceTranscriptKey?: string;
+  position?: { entry: number; item: number };
+};
 
 // --- item classification ------------------------------------------------------
 
@@ -157,12 +285,7 @@ function inputAttachment(
   img: InputItem,
 ): AttachmentRef {
   const src = img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "";
-  return {
-    id: `${itemId}:${index}`,
-    src,
-    name: img.name,
-    mediaType: img.mediaType,
-  };
+  return { id: `${itemId}:${index}`, src, name: img.name };
 }
 
 function outputAttachment(
@@ -171,12 +294,7 @@ function outputAttachment(
   img: OutputImage,
 ): AttachmentRef {
   const src = img.url ?? img.path ?? img.name ?? img.source ?? "";
-  return {
-    id: `${itemId}:out:${index}`,
-    src,
-    name: img.name,
-    mediaType: img.mediaType,
-  };
+  return { id: `${itemId}:out:${index}`, src, name: img.name };
 }
 
 // --- ask_user question parsing ----------------------------------------------
@@ -187,13 +305,13 @@ function outputAttachment(
 interface ParsedAskQuestion {
   header: string;
   question: string;
-  options: MobileAskOption[];
+  options: AskUserOption[];
   multiSelect: boolean;
   why?: string;
   ifUnanswered?: string;
 }
 
-function parseOption(raw: unknown): MobileAskOption | undefined {
+function parseOption(raw: unknown): AskUserOption | undefined {
   if (typeof raw !== "object" || raw === null) return undefined;
   const obj = raw as Record<string, unknown>;
   if (typeof obj.label !== "string" || typeof obj.detail !== "string")
@@ -220,7 +338,7 @@ function parseQuestion(
   }
   const options = obj.options
     .map(parseOption)
-    .filter((o): o is MobileAskOption => o !== undefined);
+    .filter((o): o is AskUserOption => o !== undefined);
   if (options.length === 0) return undefined;
   return {
     header:
@@ -355,8 +473,9 @@ function projectItem(
     const parsed = parseAskUserQuestions(item);
     if (parsed) {
       const callId = item.callId ?? item.id;
-      const questions: MobileAskQuestion[] = parsed.map((q, idx) => ({
+      const questions: AskQuestionRef[] = parsed.map((q, idx) => ({
         key: `${callId}:${idx}`,
+        callId,
         header: q.header,
         question: q.question,
         options: q.options,
@@ -366,11 +485,7 @@ function projectItem(
       }));
       return {
         kind: "final",
-        item: {
-          kind: "question",
-          id: item.id,
-          batch: { callId, questions },
-        },
+        item: { kind: "question", id: item.id, questions },
       };
     }
   }
@@ -552,21 +667,6 @@ export function clusterActivities(
 
 // --- top-level projection ----------------------------------------------------
 
-export function projectApproval(
-  value: SandboxEscalationRequested,
-): MobileApproval {
-  return {
-    id: value.escalationId,
-    tool: value.tool,
-    kind: value.kind,
-    mode: value.mode,
-    path: value.deniedPath,
-    command: value.command,
-    output: value.outputSoFar,
-    partiallyRan: value.partiallyRan === true,
-  };
-}
-
 export function projectThread(thread: Thread): MobileConversation {
   const turns = thread.turns ?? [];
   const pendingAsks = pendingAskUserIds(turns);
@@ -683,37 +783,38 @@ export function projectThread(thread: Thread): MobileConversation {
   }
   flushActivityRun();
 
+  // Thread-level fields follow reducer.hydrateThread's defaults (name,
+  // visionModel, reasoning profile, usage, cost) so a screen reading this
+  // shape reads the same values the web does. Two derivations stay native's
+  // until D22 reconciles them with hydrateThread: instanceId defaults to the
+  // thread id (the store fences on it), and pendingEscalations keeps the
+  // threadId/ref filter.
   return {
-    id: thread.id,
+    threadId: thread.id,
     activeTurnId:
       thread.evener.activeTurnId ||
       thread.turns?.find((turn) => isInProgressStatus(turn.status))?.id,
     instanceId: thread.evener.instanceId ?? thread.id,
-    sessionId: thread.sessionId,
-    name: thread.name,
-    preview: thread.preview,
+    name: thread.name ?? "",
     modelProvider: thread.modelProvider,
-    visionModel: thread.evener.visionModel,
-    status: thread.status.type,
+    visionModel: thread.evener.visionModel ?? "",
+    status: thread.status,
     resumeRequired: thread.evener.resumeRequired === true,
-    mutationStateAuthoritative:
-      thread.evener.mutationStateAuthoritative === true,
     items,
-    capabilities: projectCapabilities(thread.evener.capabilities),
-    queue: projectQueue(thread.evener.queue),
-    usage: projectUsage(thread.evener),
+    capabilities: thread.evener.capabilities,
+    queue: thread.evener.queue,
+    usage: thread.evener.usage ?? null,
+    cost: thread.evener.cost ?? null,
     reasoningEffort: thread.evener.reasoningEffort,
-    reasoningEffortLevels: thread.evener.reasoningEffortLevels,
-    supportsReasoning: thread.evener.supportsReasoning,
+    reasoningEffortLevels: thread.evener.reasoningEffortLevels ?? [],
+    supportsReasoning: thread.evener.supportsReasoning ?? false,
     goal: thread.evener.goal ?? null,
     tasks: thread.evener.tasks ?? null,
     askPending: pendingAsks.size > 0,
-    pendingApprovals: (thread.evener.pendingEscalations ?? [])
-      .filter(
-        (value) =>
-          value.threadId === thread.id && value.ref === thread.evener.ref,
-      )
-      .map(projectApproval),
+    pendingEscalations: (thread.evener.pendingEscalations ?? []).filter(
+      (value) =>
+        value.threadId === thread.id && value.ref === thread.evener.ref,
+    ),
   };
 }
 
@@ -733,40 +834,3 @@ function failureItem(
   };
 }
 
-function projectCapabilities(caps: ThreadCapabilities): MobileCapabilities {
-  return { ...caps };
-}
-
-export function projectQueue(queue: Thread["evener"]["queue"]): MobileQueue {
-  const depth = queue.depth ?? 0;
-  const preview = queue.preview ?? queue.texts ?? [];
-  return {
-    revision: queue.revision,
-    depth,
-    preview: [...preview],
-    ...(queue.ids ? { ids: [...queue.ids] } : {}),
-    ...(queue.texts ? { texts: [...queue.texts] } : {}),
-    ...(queue.clientMutationIds
-      ? { clientMutationIds: [...queue.clientMutationIds] }
-      : {}),
-  };
-}
-
-// projectUsage copies EvenerThread's usage aggregate and context fields into
-// MobileUsage. Values are passed straight through: an absent wire field stays
-// undefined rather than becoming a 0 that would read as a real measurement.
-// Shared with the activity service, which adds only durationMs on top.
-export function projectUsage(evener: Thread["evener"]): MobileUsage {
-  const usage: EvenerUsage | undefined = evener.usage;
-  return {
-    inputTokens: usage?.inputTokens,
-    outputTokens: usage?.outputTokens,
-    cacheReadTokens: usage?.cacheReadTokens,
-    totalTokens: usage?.totalTokens,
-    cost: evener.cost,
-    contextUsed: evener.contextUsed,
-    contextWindow: evener.contextWindow,
-    contextRemaining: evener.contextRemaining,
-    contextPressure: evener.contextPressure,
-  };
-}

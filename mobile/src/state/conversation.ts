@@ -30,21 +30,19 @@ import type {
   QueueState,
   ThreadCapabilities,
   ThreadItem,
+  ThreadStatus,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
-  MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
   ActivityMember,
-} from "../conversation/model";
+} from "../conversation/project";
 import {
   activityState,
   clusterActivities,
   isActiveItem,
-  projectApproval,
   projectItemAttachments,
-  projectQueue,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -745,9 +743,9 @@ function requireControl(
   action: string,
 ): void {
   const controls = sessionControls(
-    conv.status,
+    conv.status.type,
     conv.capabilities,
-    conv.queue.depth,
+    conv.queue?.depth ?? 0,
   );
   if (!controls[control]) {
     throw new Error(
@@ -1181,7 +1179,7 @@ export function createConversationStore() {
           // publication — the two stores stay atomically consistent. The
           // plain-open path (no sink) still updates conversation caps.
           const identity: ActivityIdentity = {
-            threadId: currentConv.id,
+            threadId: currentConv.threadId,
             ref,
             generation: gen,
           };
@@ -1531,7 +1529,7 @@ export function createConversationStore() {
           } = replacement ?? (await service.readProjection(ref));
           if (gen !== conversationGen) return;
           const identity: ActivityIdentity = {
-            threadId: conversation.id,
+            threadId: conversation.threadId,
             ref,
             generation: gen,
           };
@@ -1662,7 +1660,7 @@ export function createConversationStore() {
           }
           const identity = get().conversation
             ? {
-                threadId: get().conversation?.id ?? "",
+                threadId: get().conversation?.threadId ?? "",
                 ref,
                 generation: gen,
               }
@@ -1699,7 +1697,7 @@ export function createConversationStore() {
           const conversation = get().conversation;
           if (conversation) {
             const identity = {
-              threadId: conversation.id,
+              threadId: conversation.threadId,
               ref,
               generation: gen,
             };
@@ -1980,7 +1978,7 @@ export function createConversationStore() {
           });
           mergedItems = attachToSources(mergedItems);
           const identity: ActivityIdentity = {
-            threadId: conversation.id,
+            threadId: conversation.threadId,
             ref,
             generation: gen,
           };
@@ -2047,15 +2045,15 @@ export function createConversationStore() {
             goal:
               entryGoalRev === goalOwnerRev
                 ? conversation.goal
-                : currentConv?.goal,
+                : (currentConv?.goal ?? null),
             tasks:
               entryTasksRev === tasksOwnerRev
                 ? conversation.tasks
-                : currentConv?.tasks,
-            pendingApprovals:
+                : (currentConv?.tasks ?? null),
+            pendingEscalations:
               entryApprovalRev === approvalOwnerRev
-                ? conversation.pendingApprovals
-                : (currentConv?.pendingApprovals ?? []),
+                ? conversation.pendingEscalations
+                : (currentConv?.pendingEscalations ?? []),
             ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
@@ -2669,7 +2667,7 @@ export function createConversationStore() {
         // mismatches.
         const nref = notificationRef(n);
         if (nref !== null) {
-          const currentId = state.conversation.id;
+          const currentId = state.conversation.threadId;
           const currentRef = state.ref;
           const idMatch =
             nref.threadId === undefined || nref.threadId === currentId;
@@ -2681,15 +2679,15 @@ export function createConversationStore() {
         switch (n.method) {
           case "evener/sandbox/escalation/requested": {
             approvalOwnerRev++;
-            const approval = projectApproval(n.params);
+            const escalation = n.params;
             set({
               conversation: {
                 ...conv,
-                pendingApprovals: [
-                  ...conv.pendingApprovals.filter(
-                    (value) => value.id !== approval.id,
+                pendingEscalations: [
+                  ...conv.pendingEscalations.filter(
+                    (value) => value.escalationId !== escalation.escalationId,
                   ),
-                  approval,
+                  escalation,
                 ],
               },
             });
@@ -2700,8 +2698,8 @@ export function createConversationStore() {
             set({
               conversation: {
                 ...conv,
-                pendingApprovals: conv.pendingApprovals.filter(
-                  (value) => value.id !== n.params.escalationId,
+                pendingEscalations: conv.pendingEscalations.filter(
+                  (value) => value.escalationId !== n.params.escalationId,
                 ),
               },
             });
@@ -2709,7 +2707,7 @@ export function createConversationStore() {
           }
           case "thread/status/changed": {
             const params = n.params as {
-              status: { type: string };
+              status: ThreadStatus;
               capabilities?: ThreadCapabilities;
             };
             // I2: increment capability-owner revision if capabilities are
@@ -2720,7 +2718,7 @@ export function createConversationStore() {
             set({
               conversation: {
                 ...conv,
-                status: params.status.type,
+                status: params.status,
                 capabilities: params.capabilities
                   ? { ...params.capabilities }
                   : conv.capabilities,
@@ -2736,7 +2734,7 @@ export function createConversationStore() {
             set({
               conversation: {
                 ...conv,
-                queue: projectQueue(params.queue),
+                queue: params.queue,
               },
             });
             break;
@@ -2774,12 +2772,15 @@ export function createConversationStore() {
               reasoningEffortLevels?: string[];
               supportsReasoning?: boolean;
             };
+            // The payload describes the new model's full reasoning profile,
+            // not a patch: an omitted ladder replaces the old one, as the
+            // package reducer's own case does.
             set({
               conversation: {
                 ...conv,
                 modelProvider: params.modelProvider,
-                reasoningEffortLevels: params.reasoningEffortLevels,
-                supportsReasoning: params.supportsReasoning,
+                reasoningEffortLevels: params.reasoningEffortLevels ?? [],
+                supportsReasoning: params.supportsReasoning ?? false,
               },
             });
             break;
@@ -2845,13 +2846,13 @@ export function createConversationStore() {
             // turn has superseded leaves the status alone.
             const failedActive =
               params.turn.status === "failed" &&
-              conv.status === "active" &&
+              conv.status.type === "active" &&
               (completedActive || conv.activeTurnId === undefined);
             set({
               conversation: {
                 ...conv,
                 activeTurnId: completedActive ? undefined : conv.activeTurnId,
-                status: failedActive ? "idle" : conv.status,
+                status: failedActive ? { type: "idle" } : conv.status,
               },
             });
             break;
@@ -3393,6 +3394,4 @@ async function handleMutationError(
   }
 }
 
-// Re-export the MobileCapabilities type for consumers that import from the
-// store module.
-export type { MobileCapabilities, MobileConversation, MobileTimelineItem };
+export type { MobileConversation, MobileTimelineItem };

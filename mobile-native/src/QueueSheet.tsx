@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { WireError } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import type { QueueConversationService } from "../../mobile/src/services/conversation";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -46,6 +46,7 @@ export function QueueSheet({
     };
   }, []);
   const queue = conversation.queue;
+  const depth = queue?.depth ?? 0;
   const instanceId = conversation.instanceId;
   // Promote and drain follow the conversation's controls
   // (conversationControls.ts): the harness steers, and a turn is running or the
@@ -107,7 +108,7 @@ export function QueueSheet({
         >
           <View style={styles.fill}>
             <Copy>Queued messages</Copy>
-            <Copy muted>{queue.depth} waiting</Copy>
+            <Copy muted>{depth} waiting</Copy>
           </View>
           <Action onPress={close}>Done</Action>
         </View>
@@ -135,10 +136,10 @@ export function QueueSheet({
             />
           ) : null}
           {!ready ? <Copy muted>Reconnect to change this queue.</Copy> : null}
-          {queue.depth === 0 ? <Copy muted>No queued messages.</Copy> : null}
-          {Array.from({ length: queue.depth }, (_, index) => {
-            const id = queue.ids?.[index];
-            const fullText = queue.texts?.[index];
+          {depth === 0 ? <Copy muted>No queued messages.</Copy> : null}
+          {Array.from({ length: depth }, (_, index) => {
+            const id = queue?.ids?.[index];
+            const fullText = queue?.texts?.[index];
             return (
               <View
                 key={id ?? `preview-${index}`}
@@ -155,7 +156,7 @@ export function QueueSheet({
                 </Copy>
                 <Copy>
                   {fullText ??
-                    queue.preview[index] ??
+                    queue?.preview?.[index] ??
                     "Message content is unavailable."}
                 </Copy>
                 <View
@@ -195,7 +196,7 @@ export function QueueSheet({
               </View>
             );
           })}
-          {queue.depth > 1 && canRun ? (
+          {queue && depth > 1 && canRun ? (
             <Action
               disabled={disabled}
               onPress={() => {
