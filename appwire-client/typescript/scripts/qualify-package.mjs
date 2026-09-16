@@ -162,6 +162,9 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.humanizeState("awaiting", true), "question waiting");
+assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("notLoaded", false), "idle");
 const envInstance = {
   name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,
   activeSource: "env:OPENAI_API_KEY", hasStoredFile: true, hasStoredOAuth: false, credentialRequired: true,

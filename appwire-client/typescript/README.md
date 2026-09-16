@@ -19,7 +19,8 @@ the slash invocation and catalog visibility rules the palette and composer
 share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the display formatters both
 apps render counts, durations and clock times with, the text and argument
-helpers a tool call's rendering is built from, the credential labels both
+helpers a tool call's rendering is built from, the one-word session state
+gloss a session row's second line leads with, the credential labels both
 apps describe a provider instance's active credential source, shadowed
 layers and test outcome with, and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
