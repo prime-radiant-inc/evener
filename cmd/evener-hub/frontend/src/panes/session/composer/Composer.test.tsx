@@ -1847,6 +1847,30 @@ test("bare Enter submits when enterToSend is on", async () => {
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 });
 
+test("bare Enter with enterToSend dispatches the message and leaves nothing behind", async () => {
+  prefsStore.getState().setEnterToSend(true);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "go");
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  // The keystroke sent the message; it must not also reach the editor as a
+  // literal newline, which would leave the sent text behind in the composer.
+  await waitFor(() => expect(textarea().textContent).toBe(""));
+  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
+});
+
 test("Shift+Enter with an empty queue and text steers instead of submitting", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {
@@ -1868,6 +1892,77 @@ test("Shift+Enter with an empty queue and text steers instead of submitting", as
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
   const call = fake.calls.find((c) => c.method === "turn/steer");
   expect(call?.params).toMatchObject({ ref: "ref_a" });
+});
+
+test("undo still works after an attachment inserts its marker", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+  const editor = textarea();
+
+  await user.click(editor);
+  await user.type(editor, "hello");
+  expect(editor.textContent).toBe("hello");
+
+  selectEditorText(editor, "hello".length);
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(editor.textContent).toBe("hello[image 1]");
+
+  // The marker arrives through the controlled value, so it is not itself an
+  // undo step - but applying it must not destroy the history either. Undo has
+  // to keep working, rather than becoming a no-op from the first attachment on.
+  await user.keyboard("{Control>}z{/Control}");
+  expect(editor.textContent).toBe("[image 1]");
+
+  await user.keyboard("{Control>}{Shift>}z{/Control}{/Shift}");
+  expect(editor.textContent).toBe("hello[image 1]");
+});
+
+test("a plain typed mention stays prose through a programmatic attachment insert", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_inline_prose_reparse";
+  writeComposerDraft(ref, { text: "Run /cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  // A second, plainly typed mention is prose, not a selection.
+  await selectEditorText(editor, "Run /cleanup".length);
+  await user.keyboard(" then /cleanup");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup", skillNames: ["cleanup"] });
+
+  // A programmatic edit (the attachment marker) must not turn that prose into
+  // a second chip behind the user's back.
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup[image 1]", skillNames: ["cleanup"] });
+});
+
+test("Shift+Enter steering dispatches the draft and leaves nothing behind", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await user.type(textarea(), "steer this");
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
+  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
 });
 
 test("with enterToSend on, Shift+Enter is a literal newline and does not steer", async () => {

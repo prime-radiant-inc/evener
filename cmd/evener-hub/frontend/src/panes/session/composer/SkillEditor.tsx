@@ -106,6 +106,25 @@ const skillIntegrity = new Plugin({
   },
 });
 
+/** Marks a transaction that applies the controlled value rather than an edit. */
+const externalSync = "skillEditorExternalSync";
+
+/** Length of the leading run two serialized values share. */
+function sharedPrefixLength(before: string, after: string): number {
+  const limit = Math.min(before.length, after.length);
+  let index = 0;
+  while (index < limit && before[index] === after[index]) index++;
+  return index;
+}
+
+/** Length of the trailing run two serialized values share, past `prefix`. */
+function sharedSuffixLength(before: string, after: string, prefix: number): number {
+  const limit = Math.min(before.length, after.length) - prefix;
+  let count = 0;
+  while (count < limit && before[before.length - 1 - count] === after[after.length - 1 - count]) count++;
+  return count;
+}
+
 function createState(value: SkillEditorValue): EditorState {
   const newline: Command = (state, dispatch) => {
     dispatch?.(state.tr.insertText("\n"));
@@ -197,7 +216,10 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         dispatchTransaction: (transaction) => {
           view.updateState(view.state.apply(transaction));
           view.dom.dataset.empty = String(view.state.doc.content.size === 0);
-          if (transaction.docChanged) {
+          // An externally applied value is the controlled value arriving, not
+          // the user editing: echoing it back would re-enter the composer's own
+          // edit path during its submission and recovery transitions.
+          if (transaction.docChanged && !transaction.getMeta(externalSync)) {
             latest.current.onChange(
               serializeSkillDocument(view.state.doc),
               documentPositionToTextOffset(view.state.doc, view.state.selection.head),
@@ -247,9 +269,47 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       current.skillNames.length === props.value.skillNames.length &&
       current.skillNames.every((name, index) => props.value.skillNames[index] === name);
     if (!echo) {
-      const replacement = parseSkillDocument(props.value);
-      if (!replacement.eq(view.state.doc))
-        view.updateState(EditorState.create({ doc: replacement, plugins: view.state.plugins }));
+      // Applied as a text patch, never by rebuilding the document from the
+      // whole value: rebuilding re-reads every mention, so a programmatic edit
+      // (an attachment marker, a quote, a spliced command) would promote
+      // plainly typed prose into an activation. Only the span that actually
+      // changed follows the parse rule - which is exactly what a restore
+      // replaces. Through a transaction, the change is also an ordinary
+      // history event and the plugins that hold state keep it, so undo
+      // survives; a fresh EditorState would re-initialize them.
+      const current = serializeSkillDocument(view.state.doc).text;
+      const prefix = sharedPrefixLength(current, props.value.text);
+      const suffix = sharedSuffixLength(current, props.value.text, prefix);
+      if (prefix + suffix < current.length || prefix + suffix < props.value.text.length) {
+        const from = textOffsetToDocumentPosition(view.state.doc, prefix, 1);
+        const to = textOffsetToDocumentPosition(view.state.doc, current.length - suffix, -1);
+        const inserted = parseSkillDocument({
+          text: props.value.text.slice(prefix, props.value.text.length - suffix),
+          skillNames: props.value.skillNames,
+        });
+        // addToHistory: false - the change came from the controlled value, not
+        // from the keyboard, so it must not be its own undo event: undoing a
+        // cleared submission would put the sent message back. Dispatching (as
+        // opposed to rebuilding the state) is what keeps the history the user
+        // already had, so undo still works after an attachment or a splice.
+        view.dispatch(
+          view.state.tr
+            .replaceWith(from, to, inserted.content)
+            .setMeta("addToHistory", false)
+            .setMeta(externalSync, true),
+        );
+      } else {
+        // Same text, different selections: a restore that selects a mention
+        // already spelled out, so the whole value follows the parse rule.
+        const replacement = parseSkillDocument(props.value);
+        if (!replacement.eq(view.state.doc))
+          view.dispatch(
+            view.state.tr
+              .replaceWith(0, view.state.doc.content.size, replacement.content)
+              .setMeta("addToHistory", false)
+              .setMeta(externalSync, true),
+          );
+      }
     }
     view.setProps({
       attributes: {
