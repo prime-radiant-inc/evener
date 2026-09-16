@@ -115,7 +115,7 @@ is no REST fallback on this path either: `startThread` goes to appwire
   drop handler cleared it, `:46-52`). `markerEarly` already contains
   `[image 1]` and `tilesEarly` is already 1: the marker is spliced and the item
   staged **before** `reencodeToPng` is even called
-  (`useAttachments.ts:156-171`, `textareaMarkers.ts:19-21`), so the early read
+  (`useAttachments.ts:156-171`, `appwire-client/typescript/textareaMarkers.ts#markerText`), so the early read
   — taken a macrotask after the drop, long before a canvas round-trip could
   finish — distinguishes "staged, then settled" from "never staged".
   `removeButtons` includes `Remove dropped.png`; while the decode is still in

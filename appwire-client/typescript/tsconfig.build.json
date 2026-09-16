@@ -24,6 +24,7 @@
     "reconcileBatches.ts",
     "attachmentLimits.ts",
     "attachmentMarkers.ts",
+    "textareaMarkers.ts",
     "composerInput.ts",
     "activityData.ts",
     "activityRows.ts",

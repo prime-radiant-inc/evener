@@ -11,6 +11,7 @@ import { navigationStore, resetNavigationStoreForTests } from "../../stores/navi
 import { keyID } from "../../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -217,13 +218,13 @@ test("/notes is unavailable when the focused model lacks shared-notes capability
   expect(notes?.unavailableReason).toBe(UNAVAILABLE_REASON);
 });
 
-test("/notes cannot open an unsupported workspace pane even when invoked directly", () => {
+test("/notes cannot open when unsupported even when invoked directly", () => {
   focusSession("ref_a");
   seedModel("ref_a", { capabilities: { ...CAPS, sharedNotes: false } });
 
   cmd("notes").run?.(runContext());
 
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test("only /notes is unavailable before the focused session model hydrates", () => {
@@ -242,7 +243,7 @@ test("/notes refuses direct invocation before the focused model hydrates", () =>
   const result = cmd("notes").run?.(runContext());
 
   expect.soft(isBlocked(result)).toBe(true);
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test("a previously available /notes invocation rechecks the current capability", () => {
@@ -254,7 +255,7 @@ test("a previously available /notes invocation rechecks the current capability",
 
   notes?.run?.(runContext());
 
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
@@ -268,9 +269,7 @@ test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
 
     notes?.run?.(runContext());
 
-    expect(workspaceStore.getState().panes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
-    );
+    expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
   },
 );
 
@@ -278,6 +277,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  topNotesStore.getState().resetForTests();
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
@@ -1055,17 +1055,56 @@ test("/tasks and /status toggle-close already-open panes", () => {
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });
 
-test("/notes toggles the sessionNotes workspace pane", () => {
+test("/notes toggles the top notes panel and requests focus", () => {
   focusSession("ref_a");
   seedModel("ref_a");
 
   cmd("notes").run?.(runContext());
-  expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
-  );
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
+  expect(topNotesStore.getState().hasPendingFocus("ref_a")).toBe(true);
 
   cmd("notes").run?.(runContext());
-  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionNotes")).toBe(false);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
+});
+
+test("/notes focuses or opens the session pane, not just the notes state", () => {
+  // Only a details pane is mounted: the session pane itself is not open, so
+  // a notes-state change alone would look like a no-op.
+  workspaceStore.setState({
+    panes: [{ id: "pd1", type: "sessionDetails", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "pd1",
+  });
+  seedModel("ref_a");
+
+  cmd("notes").run?.(runContext());
+
+  const session = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: string }).ref === "ref_a");
+  expect(session).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(session?.id);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
+});
+
+test("/notes closing from a companion pane leaves the session pane unfocused", () => {
+  focusSession("ref_a");
+  seedModel("ref_a");
+  cmd("notes").run?.(runContext()); // opens
+
+  // Move focus to a details pane for the same session; notes stay expanded.
+  workspaceStore.setState({
+    panes: [
+      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+      { id: "pd1", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
+    ],
+    focusedPaneId: "pd1",
+  });
+
+  cmd("notes").run?.(runContext()); // closes
+
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
+  // Closing must not yank focus to the session pane the user already left.
+  expect(workspaceStore.getState().focusedPaneId).toBe("pd1");
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend

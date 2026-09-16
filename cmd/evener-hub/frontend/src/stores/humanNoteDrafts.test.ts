@@ -3,6 +3,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore } from "./connection";
 import {
   acknowledgeHumanNote,
@@ -13,10 +14,13 @@ import {
   useHumanNoteDraft,
 } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "./threads";
 
 let storage: MutationOutboxIndexedDB;
 beforeEach(() => {
+  resetPanelStoreEvictionForTests();
+  resetWorkspaceStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   const indexedDB = new IDBFactory();
@@ -298,4 +302,78 @@ test.each([
   expect(result.current?.submitted).toBeUndefined();
   expect(result.current?.error).toContain("Session cannot accept notes");
   expect(seen).toHaveLength(0);
+});
+
+// --- eviction: the drafts store is bounded by open panes ----------------------
+//
+// The always-mounted panel sync creates one record per notes-capable session
+// pane, so without eviction the store grows without bound over a long-lived
+// hub. A record with nothing pending is recreatable from the model's note on
+// the next sync, making it reclaimable once no pane holds its ref. Dirty and
+// submitted records are the retry-after-resume contract and must survive.
+
+test("eviction reclaims a clean record once no pane holds its ref", async () => {
+  syncHumanNote("ref-evict-clean", "recreatable");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-evict-clean"));
+  expect(result.current?.text).toBe("recreatable");
+
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: null });
+  });
+  await waitFor(() => expect(result.current).toBeUndefined());
+});
+
+test("eviction preserves a dirty record - the retry-after-resume contract", async () => {
+  syncHumanNote("ref-evict-dirty", "base");
+  editHumanNote("ref-evict-dirty", "unsaved");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-evict-dirty"));
+
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: null });
+  });
+  // Let the eviction microtask run: the pending edit deliberately survives.
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(result.current).toMatchObject({ text: "unsaved", dirty: true });
+});
+
+test("eviction preserves a record while a pane still holds its ref", async () => {
+  syncHumanNote("ref-evict-open", "kept");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-evict-open"));
+  act(() => {
+    workspaceStore.setState({
+      panes: [{ id: "p_evict", type: "session", params: { ref: "ref-evict-open" }, slot: "main" }],
+      focusedPaneId: "p_evict",
+    });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(result.current?.text).toBe("kept");
+});
+
+test("an acknowledged draft is swept once no pane holds its ref", async () => {
+  const record = await persisted("B");
+  // The sync creates the clean record the persistence adoption upgrades
+  // into a submitted one (the retry-after-resume shape).
+  syncHumanNote("ref-a", "A");
+  const { result } = renderHook(() => useHumanNoteDraft("ref-a"));
+  await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
+
+  // The pane is already gone, so the workspace-change sweep found the
+  // record while it was still submitted and preserved it.
+  act(() => {
+    workspaceStore.setState({ focusedPaneId: null });
+  });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(result.current?.submitted?.id).toBe(record.clientMutationId);
+
+  // The save lands. Nothing is pending anymore, so the acknowledgment
+  // itself must schedule the sweep that reclaims the record - no further
+  // workspace change will ever come to do it.
+  act(() => acknowledgeHumanNote(record, "B"));
+  await waitFor(() => expect(result.current).toBeUndefined());
 });
