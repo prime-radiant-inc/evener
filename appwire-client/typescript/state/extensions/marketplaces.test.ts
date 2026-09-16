@@ -51,7 +51,10 @@ describe("store shape", () => {
     await second.store.getState().fetchMarketplaces();
 
     expect(first.store.getState().marketplaces).toEqual([ACME]);
-    expect(first.store.getState().browseCatalogs.get("acme")).toEqual({ status: "loaded", plugins: [{ name: "linter" }] });
+    expect(first.store.getState().browseCatalogs.get("acme")).toEqual({
+      status: "loaded",
+      plugins: [{ name: "linter" }],
+    });
     expect(first.store.getState().marketplacesError).toBeNull();
     expect(second.store.getState().marketplaces).toBeNull();
     expect(second.store.getState().browseCatalogs.size).toBe(0);
@@ -80,7 +83,11 @@ describe("fetches never throw, mutations reject", () => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, failing("network down"));
     await expect(store.getState().fetchMarketplaces()).resolves.toBeUndefined();
-    expect(store.getState()).toMatchObject({ marketplaces: null, marketplacesLoading: false, marketplacesError: "network down" });
+    expect(store.getState()).toMatchObject({
+      marketplaces: null,
+      marketplacesLoading: false,
+      marketplacesError: "network down",
+    });
   });
 
   test("a failed browse is cached as status:error and resolves", async () => {
@@ -91,10 +98,26 @@ describe("fetches never throw, mutations reject", () => {
   });
 
   test.each([
-    ["addMarketplace", (s: MarketplacesStore) => s.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } }), "evener/marketplace/add"],
-    ["removeMarketplace", (s: MarketplacesStore) => s.getState().removeMarketplace("acme"), "evener/marketplace/remove"],
-    ["refreshMarketplace", (s: MarketplacesStore) => s.getState().refreshMarketplace("acme"), "evener/marketplace/refresh"],
-    ["editMarketplace", (s: MarketplacesStore) => s.getState().editMarketplace({ name: "acme", newName: "acme2" }), "evener/marketplace/edit"],
+    [
+      "addMarketplace",
+      (s: MarketplacesStore) => s.getState().addMarketplace({ source: { kind: "github", repo: "a/b" } }),
+      "evener/marketplace/add",
+    ],
+    [
+      "removeMarketplace",
+      (s: MarketplacesStore) => s.getState().removeMarketplace("acme"),
+      "evener/marketplace/remove",
+    ],
+    [
+      "refreshMarketplace",
+      (s: MarketplacesStore) => s.getState().refreshMarketplace("acme"),
+      "evener/marketplace/refresh",
+    ],
+    [
+      "editMarketplace",
+      (s: MarketplacesStore) => s.getState().editMarketplace({ name: "acme", newName: "acme2" }),
+      "evener/marketplace/edit",
+    ],
   ] as const)("%s rejects with the hub's error and leaves the list alone", async (_name, mutate, method) => {
     const { fake, store } = storeWithFake();
     fake.on(LIST, () => ({ marketplaces: [ACME] }));
@@ -131,9 +154,12 @@ describe("browse cache", () => {
     const first = store.getState().browseMarketplace("acme");
     await Promise.resolve();
     let secondSettled = false;
-    const second = store.getState().browseMarketplace("acme").then(() => {
-      secondSettled = true;
-    });
+    const second = store
+      .getState()
+      .browseMarketplace("acme")
+      .then(() => {
+        secondSettled = true;
+      });
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(secondSettled).toBe(false);
     release({ name: "acme", plugins: [{ name: "linter" }] });
@@ -230,7 +256,7 @@ describe("notifications", () => {
   });
 
   test("a store that never started ignores the notification", async () => {
-    const { fake, store } = storeWithFake();
+    const { fake } = storeWithFake();
     fake.on(LIST, () => ({ marketplaces: [ACME] }));
     fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
     await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
