@@ -13,6 +13,7 @@ const listing = (
   instances: [],
   availableProviders: [],
   diagnostics: [label],
+  userLayer: "",
   writesRefused,
 });
 function deferred<T>() {
