@@ -881,9 +881,10 @@ func appendSteeringMessagesToHistory(history *[]schema.Turn, messages []preCompa
 // transcript-commit phase). The returned errors align with records; they are
 // reported later by emitSteeringTurnRecords, outside the locks, where
 // emitting is safe.
-// It returns, aligned with records, each written entry's durable Seq (0 when
-// the test seam intercepts the write) so the fold record can name the steering
-// turns it kept by Seq.
+// It returns, aligned with records, each written entry's durable Seq — or
+// NoTranscriptEntrySeq for a failed write or a test-seam interception (which
+// produces no transcript entry) — so the fold record can name the steering
+// turns it kept by Seq and omit the ones with no entry.
 func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) (seqs []int, errs []error) {
 	if len(records) == 0 {
 		return nil, nil
