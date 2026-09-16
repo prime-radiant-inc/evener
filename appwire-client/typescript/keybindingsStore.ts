@@ -618,6 +618,47 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return getState().hubSupport === "supported";
   }
 
+  /** The hub a piece of work started against is still the one being acted
+   * on: its ready generation is current and support is still advertised.
+   * Every post-await site fences through one of the two predicates below. */
+  function liveHub(generation: number): boolean {
+    return isCurrent(generation) && isSupported();
+  }
+
+  /** A read's reply is its own to land: live hub, and no later read or
+   * payload retirement has superseded it. */
+  function readStillMine(generation: number, serial: number): boolean {
+    return liveHub(generation) && serial === refreshSerial;
+  }
+
+  /** A write's reply is its own to land: live hub, and no later write or
+   * payload retirement has superseded it. */
+  function writeStillMine(generation: number, token: number): boolean {
+    return liveHub(generation) && token === writeSerial;
+  }
+
+  /** The confirmed payload can no longer be acted on (the generation ended,
+   * support dropped, the hub was replaced): it stops presenting as current,
+   * every reply still in flight is superseded so it lands nothing, and the
+   * in-flight flags end here. A checkpointed write caught mid-flight has an
+   * UNKNOWN outcome - exactly what writeUncertain means, and what its
+   * checkpoint already says on disk; the next authoritative read settles it.
+   * `extra` is the site's own addition (payload arrays, hubError) in the
+   * same publish. */
+  function retirePayload(extra: Partial<KeybindingsStoreFields> = {}): void {
+    refreshSerial += 1;
+    writeSerial += 1;
+    const state = getState();
+    setState({
+      loaded: false,
+      revision: 0,
+      saving: false,
+      hubLoading: false,
+      writeUncertain: state.writeUncertain || state.saving,
+      ...extra,
+    });
+  }
+
   /** Applies a confirmed hub payload (get result, changed params, patch
    * response): stale revisions are ignored, the rest reconcile the registry.
    * A GET carrying loadError is authoritative at ANY revision: the hub is
@@ -689,20 +730,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // revision - applyHubOverrides' stale guard would otherwise reject that
     // authoritative payload on every refresh, leaving the old hub's shortcuts
     // live and editing silently disabled (roborev PR #884 round 11).
-    // Everything in flight is fenced out with the generation, so its flags
-    // end here: a refresh's hubLoading, and a checkpointed write's saving (a
-    // host that reuses the instance across a reconnect would otherwise stay
-    // uneditable). That write's outcome is UNKNOWN - exactly what
-    // writeUncertain means, and what its checkpoint already says on disk;
-    // the next generation's authoritative read settles it.
-    const state = getState();
-    setState({
-      hubLoading: false,
-      saving: false,
-      writeUncertain: state.writeUncertain || state.saving,
-      loaded: false,
-      revision: 0,
-    });
+    retirePayload();
   }
 
   function beginReadyGeneration(): void {
@@ -791,25 +819,25 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // The conflict notice clears with hubError here too (the 2b clear
     // asymmetry): a support drop disconnects the store from the hub state the
     // conflict described, so keeping it would be as stale as keeping hubError.
-    if (
-      state.hubSupport !== support ||
-      state.hubLoading ||
-      state.hubError !== null ||
-      state.conflict !== null ||
-      dropHubState
-    )
-      setState({
+    // A rolled-back un-apply's message survives the unknown window too
+    // (finding 32: a client swap re-runs this with support "unknown" before
+    // the new hub's features resolve, and the wedge it describes is still
+    // live in the registry).
+    const hubError = unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null;
+    if (support === "unsupported") {
+      retirePayload({
         hubSupport: support,
-        hubLoading: false,
-        // A rolled-back un-apply's message survives the unknown window too
-        // (finding 32: a client swap re-runs this with support "unknown"
-        // before the new hub's features resolve, and the wedge it describes
-        // is still live in the registry).
-        hubError: unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
+        hubError,
         conflict: null,
-        ...(support === "unsupported" ? { loaded: false, revision: 0 } : {}),
         ...(dropHubState ? { overrides: [], rawOverrides: [], warnings: [], loadError: null } : {}),
       });
+      return;
+    }
+    // The unknown window is the transient-disconnect case: the payload keeps
+    // presenting until endReadyGeneration retires it, so only the connection
+    // facts publish, and only when one changed.
+    if (state.hubSupport !== support || state.hubLoading || state.hubError !== null || state.conflict !== null)
+      setState({ hubSupport: support, hubLoading: false, hubError, conflict: null });
   }
 
   function onNotification(notification: AnyNotification): void {
@@ -862,15 +890,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   async function refreshFor(generation: number): Promise<void> {
-    if (!isCurrent(generation) || !isSupported()) return;
+    if (!liveHub(generation)) return;
     const serial = ++refreshSerial;
     const writeSerialAtStart = writeSerial;
-    // The read that lands is this one, under the generation it started in,
-    // with support still advertised (finding 23: a refresh rejecting after
-    // support was lost would otherwise overwrite the support-drop cleanup
-    // with a stale "could not load" hubError while the section claims the
-    // built-in defaults are in effect).
-    const stillMine = () => isCurrent(generation) && serial === refreshSerial && isSupported();
+    // Finding 23: a refresh rejecting after support was lost would otherwise
+    // overwrite the support-drop cleanup with a stale "could not load"
+    // hubError while the section claims the built-in defaults are in effect.
+    const stillMine = () => readStillMine(generation, serial);
     setState({ hubLoading: true, ...(unapplyRolledBack ? {} : { hubError: null }) });
     try {
       const result = await client.request("evener/settings/keybindings/get", {});
@@ -929,23 +955,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // kicks next; when that refresh lands it either confirms
       // (applyHubOverrides clears hubError) or re-fails the reconcile against
       // the same wedge and surfaces its own hubError.
-      setState({ revision: 0, hubError: UNAPPLY_ROLLED_BACK_MESSAGE, conflict: null });
+      retirePayload({ hubError: UNAPPLY_ROLLED_BACK_MESSAGE, conflict: null });
       return false;
     }
-    // loaded drops with the payload even when the host has not ended the
-    // generation first: a reset payload that still read as confirmed could be
-    // PATCHed against at expectedRevision 0.
-    setState({
-      loaded: false,
-      revision: 0,
-      overrides: [],
-      rawOverrides: [],
-      warnings: [],
-      loadError: null,
-      hubLoading: false,
-      hubError: null,
-      conflict: null,
-    });
+    retirePayload({ overrides: [], rawOverrides: [], warnings: [], loadError: null, hubError: null, conflict: null });
     return true;
   }
 
@@ -988,7 +1001,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // freshly-loaded clean state - "Hub keybindings settings are
       // unavailable" plus the round-3 editing gate would read the new hub
       // read-only until something cleared it. Throw only.
-      if (!isCurrent(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
+      if (!liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
       // Support resolved to UNSUPPORTED is the same hygiene class as the
       // fence (finding 26): the unsupported state is deliberately clean -
       // the section says the built-in defaults are in effect - and the
@@ -1013,11 +1026,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
       if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
       const token = ++writeSerial;
-      // The reply that lands is this write's, under the generation it left
-      // in, with support still advertised: a response landing after support
-      // loss must not re-apply - the unsupported branch already un-applied and
-      // reset the hub state.
-      const stillMine = () => token === writeSerial && isCurrent(generation) && isSupported();
+      // A response landing after support loss must not re-apply - the
+      // unsupported branch already un-applied and retired the hub state.
+      const stillMine = () => writeStillMine(generation, token);
       try {
         const result = await client.request("evener/settings/keybindings/patch", {
           expectedRevision: state.revision,
@@ -1110,15 +1121,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
-    writeSerial += 1;
+    const token = ++writeSerial;
     const generation = activeEpoch;
+    const stillMine = () => writeStillMine(generation, token);
     setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
     let value: KeybindingsOverrides;
     try {
-      // The saving publish above may have disposed the store (a host tearing
-      // down on the transition): the checkpoint stays for the next instance
-      // to restore, and nothing leaves.
-      if (!isCurrent(generation)) throw new Error("Shortcut save was cancelled.");
+      // The saving publish above may have disposed the store or retired the
+      // payload (a host tearing down on the transition): the checkpoint stays
+      // for the next instance to restore, and nothing leaves.
+      if (!stillMine()) throw new Error("Shortcut save was cancelled.");
       const decoded = fromWireOverrides(
         await client.request("evener/settings/keybindings/patch", {
           expectedRevision: revision,
@@ -1132,7 +1144,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // The write's outcome is unknown; that fact is the state (writeUncertain)
       // rather than a message. A malformed reply is hub-sourced and rides
       // hubError like patchOverrides' does.
-      if (isCurrent(generation))
+      if (stillMine())
         setState({
           saving: false,
           draftConflict: true,
@@ -1146,7 +1158,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // review against it instead of being reported as applied. This is the
     // one place the comparison is `>`, not "differs": an equal revision is
     // this write's own broadcast arriving ahead of its reply.
-    const conflict = isCurrent(generation) && getState().revision > value.revision;
+    const conflict = stillMine() && getState().revision > value.revision;
     let storageError: string | null = null;
     try {
       if (conflict) persistDraft({ ...checkpoint, writeUncertain: false });
@@ -1154,7 +1166,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
-    if (!isCurrent(generation)) return value;
+    if (!stillMine()) return value;
     const settled: Partial<KeybindingsStoreFields> = {
       saving: false,
       draft: conflict || storageError !== null ? getState().draft : null,
@@ -1198,8 +1210,6 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     reapplyOverrides,
     reset() {
       endReadyGeneration();
-      refreshSerial += 1;
-      writeSerial += 1;
       missedChangeNotification = false;
       unapplyRolledBack = false;
       writeQueue = Promise.resolve();

@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { ACTIONS } from "./keybindingActions";
+import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
   fromWireOverrides,
+  type KeybindingsStore,
   type KeybindingsStoreDeps,
   type KeybindingsSupport,
   keybindingsSupport,
@@ -335,6 +337,85 @@ describe("the checkpointed draft editor", () => {
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });
     const store = createKeybindingsStore({ client: new FakeClient("ready"), drafts: drafts.storage });
     expect(store.getState()).toMatchObject({ draft: { revision: 3, rules }, writeUncertain: true });
+  });
+});
+
+describe("a retired payload fences every reply still in flight", () => {
+  const applied = { action: ACTIONS.paletteOpen, chord: "Control+P" };
+  const late = payload(9, [{ action: ACTIONS.paletteOpen, chord: "Control+Shift+P" }]);
+
+  /** Frees the applied override and squats palette.open's default chord (as
+   * a registry with defaults actually registers it) with a foreign binding, so
+   * restoring the default throws and unapplyAll rolls back (the oracle's
+   * wedge). */
+  function wedge(registry: KeybindingsRegistry): void {
+    registry.getState().unregisterBinding(`${ACTIONS.paletteOpen}#override`);
+    const paletteDefault = registryWithDefaults()
+      .getState()
+      .bindings.find((b) => b.id === ACTIONS.paletteOpen);
+    if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
+    registry
+      .getState()
+      .registerBinding({ id: "foreign.squatter", actionId: "foreign", chord: serializeChord(paletteDefault.chord) });
+  }
+
+  const resetSites: [string, (store: KeybindingsStore, registry: KeybindingsRegistry) => void][] = [
+    ["endReadyGeneration", (store) => store.endReadyGeneration()],
+    ["setSupport(unsupported)", (store) => store.setSupport("unsupported")],
+    ["detachHub, clean", (store) => expect(store.detachHub()).toBe(true)],
+    [
+      "detachHub, rollback",
+      (store, registry) => {
+        wedge(registry);
+        expect(store.detachHub()).toBe(false);
+      },
+    ],
+  ];
+
+  const writePaths: [string, string, (store: KeybindingsStore) => Promise<unknown>][] = [
+    ["patchOverrides", patchMethod, (store) => store.getState().patchOverrides([applied])],
+    ["saveDraft", patchMethod, (store) => store.getState().saveDraft([applied])],
+    ["refreshFor", getMethod, (store) => store.getState().refreshOverrides()],
+  ];
+
+  const cells = resetSites.flatMap(([site, reset]) =>
+    writePaths.map(([path, method, start]) => [site, path, reset, method, start] as const),
+  );
+
+  test.each(cells)("%s while a %s reply is in flight", async (_site, _path, reset, method, start) => {
+    const registry = registryWithDefaults();
+    const client = clientServing(3, [applied]);
+    const store = await readyStore(client, { registry, drafts: memoryKeybindingDraftStorage().storage });
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(method, () => reply.promise);
+    const settled = start(store).then(
+      () => undefined,
+      () => undefined,
+    );
+    await vi.waitFor(() =>
+      expect(client.calls.filter((c) => c.method === method)).toHaveLength(method === getMethod ? 2 : 1),
+    );
+
+    reset(store, registry);
+    reply.resolve(late);
+    await settled;
+
+    // The late reply landed nothing: the payload is retired, nothing is in
+    // flight, and neither editor will act on it.
+    expect(store.getState()).toMatchObject({ loaded: false, revision: 0, saving: false, hubLoading: false });
+    expect(store.getState().rawOverrides).not.toContainEqual(late.rules[0]);
+    expect(
+      registry
+        .getState()
+        .bindings.some(
+          (b) =>
+            b.id === `${ACTIONS.paletteOpen}#override` &&
+            b.chord.length > 0 &&
+            JSON.stringify(b.chord).includes("Shift"),
+        ),
+    ).toBe(false);
+    expect(() => store.getState().editDraft([])).toThrow("unavailable");
+    await expect(store.getState().patchOverrides([])).rejects.toThrow("unavailable");
   });
 });
 
