@@ -734,6 +734,23 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
       expect(store.getState().conversation?.capabilities.send).toBe(false);
     });
+
+    // The non-projected open() binds no activity sink and no production screen
+    // uses it (a compatibility surface for test mocks): a refusal there
+    // surfaces the error and issues no read at all.
+    it("plain open(): actionUnavailable surfaces the error and issues no read", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const readsBefore = service.readProjectionCalls.length;
+      service.sendShouldReject = refusal();
+      await store.getState().send(service, textInput("x"));
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().error).not.toBeNull();
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      expect(service.readProjectionCalls.length).toBe(readsBefore);
+    });
   });
 
   describe("applyNotification", () => {

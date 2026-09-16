@@ -199,6 +199,18 @@ export type {
 } from "./keybindingRegistry";
 export { createKeybindingsRegistry, GLOBAL_SCOPE } from "./keybindingRegistry";
 export type {
+  KeybindingDraftCheckpoint,
+  KeybindingDraftStorage,
+  KeybindingsClient,
+  KeybindingsStore,
+  KeybindingsStoreActions,
+  KeybindingsStoreDeps,
+  KeybindingsStoreFields,
+  KeybindingsStoreState,
+  KeybindingsSupport,
+} from "./keybindingsStore";
+export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
+export type {
   KeybindingsPlatform,
   OverrideRule,
   ValidatedOverrides,
