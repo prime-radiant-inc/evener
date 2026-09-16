@@ -58,6 +58,10 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [320, 390, 700, 899, 900, 1024, 1400];
+// Pane widths that bracket the composer card's 399px container threshold (the
+// three-verb wrap, promptcard.module.css): the container is the pane minus its
+// footer padding. Swept only by the verb-cluster check.
+const VERB_WRAP_WIDTHS = [399, 400, 420, 480, 600, 699];
 const GEOMETRY_TOLERANCE = 0.5;
 const COMPOSER_SEND_STATES = [
   { theme: "dark", fontSize: "m" },
@@ -70,7 +74,10 @@ const NARROW_DESKTOP_SEND_GEOMETRY = {
   xl: { width: 82.109375, height: 24 },
 };
 
-async function measureAt(cdpEndpoint, url, width) {
+// lite: window.measure() only, for a check that reads one geometry off the
+// settled page (the verb cluster) and needs none of the disclosure exception
+// probe, the Verbosity detail inspection or the trusted-focus pass.
+async function measureAt(cdpEndpoint, url, width, { lite = false } = {}) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
@@ -115,6 +122,11 @@ async function measureAt(cdpEndpoint, url, width) {
     // after the tree settles, because document.fonts.ready re-arms for each new
     // face and only a mounted tree has asked for the ones being measured.
     await waitForFonts(send);
+
+    if (lite) {
+      const measurement = JSON.parse(await evaluate(send, "JSON.stringify(window.measure())"));
+      return { ...measurement, viewport: { ...viewport, mobile: realizedLayout.mobile } };
+    }
 
     const exceptionSafety = await evaluate(
       send,
@@ -605,6 +617,56 @@ function assertFieldsets(detail, label) {
   if (!detail.fieldsetsNonOverlapping) failures.push(`${label} fieldsets overlap`);
   if (expectedColumns === 1 && !detail.fieldsetStacked)
     failures.push(`${label} one-column fieldsets are not vertically stacked`);
+  return failures;
+}
+
+// measureVerbCluster reads the harness's compose-controls measurement (the
+// verb cluster's geometry plus each control's containment) for one width and
+// one fixture (steer advertised or not) off a lite measurement.
+async function measureVerbCluster(cdpEndpoint, vitePort, width, steer) {
+  const result = await measureAt(
+    cdpEndpoint,
+    `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}${steer ? "&steer=1" : ""}`,
+    width,
+    { lite: true },
+  );
+  return result.currentWork;
+}
+
+function verbClusterWrapped(cluster) {
+  return cluster.top !== null && cluster.statusRowBottom !== null && cluster.top >= cluster.statusRowBottom - 1;
+}
+
+// assertVerbCluster: the wrap rule itself, plus the containment the main pass
+// asserts for the no-steer fixture. At a card container of 399px or less a
+// three-verb cluster sits below the status row; two verbs stay beside it
+// there, and three stay beside it above. The threshold is the container's,
+// measured by the harness, and the verb count is the fixture's own
+// (expectedVerbs, from its capabilities). Every expected control is present,
+// inside the card and the pane, no two overlap, and the current-work strip
+// and the card share the pane without horizontal overflow.
+function assertVerbCluster(work, steer) {
+  const cluster = work.verbCluster;
+  if (!Number.isFinite(cluster.containerWidth)) {
+    return [`card container width unmeasured (${cluster.containerWidth})`];
+  }
+  const failures = [];
+  if (cluster.controls !== cluster.expectedVerbs) {
+    failures.push(`expected ${cluster.expectedVerbs} verbs, got ${cluster.controls}`);
+  }
+  const expectWrapped = steer && cluster.containerWidth <= 399;
+  if (verbClusterWrapped(cluster) !== expectWrapped) {
+    failures.push(
+      `expected the verbs ${expectWrapped ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px), ` +
+        `got top=${cluster.top} against status bottom=${cluster.statusRowBottom}`,
+    );
+  }
+  if (!work.controlsFound || !work.controlsContained || !work.controlsDoNotOverlap || !work.sharedPaneWithoutOverflow) {
+    failures.push(
+      `compose controls geometry: found=${work.controlsFound} contained=${work.controlsContained} ` +
+        `noOverlap=${work.controlsDoNotOverlap} sharedPane=${work.sharedPaneWithoutOverflow} ${JSON.stringify(work.controls)}`,
+    );
+  }
   return failures;
 }
 
@@ -1348,19 +1410,6 @@ async function main() {
       }
       if (widthFailed) failed++;
 
-      const settings = await measureAt(
-        cdpEndpoint,
-        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
-        width,
-      );
-      const settingsFailures = assertSettings(settings, width);
-      if (settingsFailures.length > 0) {
-        failed++;
-        console.log(`${width}px Settings ... FAIL - ${settingsFailures.join("; ")}`);
-      } else {
-        console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
-      }
-
       const detailFailures = assertDetail(result, width);
       if (detailFailures.length > 0) {
         failed++;
@@ -1373,6 +1422,46 @@ async function main() {
             `, root rem=${result.detail.rootRemPx}px, editor=${result.detail.editorContainerWidth}px/${result.detail.fieldsetColumns} fieldset columns` +
             `${result.detail.mobile ? "" : `, internal scroll=${result.detail.overlayScroll.afterTop}/${result.detail.overlayScroll.scrollHeight} in ${result.detail.overlayScroll.clientHeight}px`}`,
         );
+      }
+    }
+
+    // The verb cluster (Stop, Send, Steer against the status row) on its own
+    // lite pass, for both fixtures the harness can draw: without the steer
+    // capability (Stop + Send, the cluster the status row's narrow-pane budget
+    // was measured against) and with it (Stop + Send + Steer, every busy
+    // session on a harness that can steer). Every swept width plus the widths
+    // that bracket the card's 399px threshold, where the three verbs take
+    // their own line (promptcard.module.css).
+    for (const steer of [false, true]) {
+      for (const width of [...sweep, ...VERB_WRAP_WIDTHS]) {
+        const label = `${width}px${steer ? " steer" : ""} verbs`;
+        const work = await measureVerbCluster(cdpEndpoint, vitePort, width, steer);
+        const cluster = work.verbCluster;
+        const failures = assertVerbCluster(work, steer);
+        if (failures.length > 0) {
+          failed++;
+          console.log(`${label} ... FAIL - ${failures.join("; ")}`);
+        } else {
+          console.log(
+            `${label} ... PASS - ${cluster.controls} verbs ${verbClusterWrapped(cluster) ? "below" : "beside"} the status row (card container ${cluster.containerWidth}px)`,
+          );
+        }
+      }
+    }
+    // The settings page has no composer, so it is measured once per width,
+    // outside the steer sweep above.
+    for (const width of sweep) {
+      const settings = await measureAt(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
+        width,
+      );
+      const settingsFailures = assertSettings(settings, width);
+      if (settingsFailures.length > 0) {
+        failed++;
+        console.log(`${width}px Settings ... FAIL - ${settingsFailures.join("; ")}`);
+      } else {
+        console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
       }
     }
   } finally {

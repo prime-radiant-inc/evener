@@ -30,6 +30,7 @@ import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -513,7 +514,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
-              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
+              !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}

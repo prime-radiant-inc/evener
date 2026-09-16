@@ -500,8 +500,11 @@ export function createConversationService(
   let openEpoch = 0;
 
   function requireQueueRun(): void {
-    // Promoting or draining also wakes a held queue when the session is idle.
-    if (!capabilities?.steer && !capabilities?.send)
+    // The capability half of a drain or promote: the harness steers (the
+    // daemon converts the entries into steering, which a send-only harness
+    // cannot take). The status half -- a running turn, or a queue a Stop
+    // parked -- is the caller's, through the SDK's sessionControls.
+    if (!capabilities?.steer)
       throw new Error(
         "Running queued messages is unavailable for this session.",
       );
@@ -1198,7 +1201,7 @@ function projectOlderTurns(
     modelProvider: "",
     createdAt: 0,
     updatedAt: 0,
-    status: { type: "ready" },
+    status: { type: "idle" },
     cwd: "",
     cliVersion: "",
     source: "",

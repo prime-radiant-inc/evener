@@ -9,14 +9,18 @@ import (
 
 // ---- sessionComposerReadOnlyReason ------------------------------------------
 
+// A source that advertises send while a turn runs is not composed into: the
+// status is applied to send (the SDK's sessionControls does the same, and the
+// hub itself folds it into the flag), and turn/start against a running turn
+// would be refused. With no queue either, the composer is read-only for it.
 func TestCovSessionComposerReadOnlyReason_ActionStateNoQueueWithSend(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "active"
 	m.detail.Capabilities.Send = true
 	m.detail.Capabilities.Queue = false
 	m.session.processing = true
-	if got := m.sessionComposerReadOnlyReason(); got != "" {
-		t.Fatalf("active+send+no-queue should not be read-only: %q", got)
+	if got := m.sessionComposerReadOnlyReason(); got != "source does not advertise queue" {
+		t.Fatalf("active+send+no-queue read-only reason = %q, want the queue reason", got)
 	}
 }
 
@@ -338,14 +342,16 @@ func TestCovSessionComposerMode_ReadOnlyWhenRunningNoQueueNoSend(t *testing.T) {
 	}
 }
 
-func TestCovSessionComposerMode_SendWhenRunningWithSendNoQueue(t *testing.T) {
+// Same source as the read-only reason test above: send is not offered while a
+// turn runs, so with no queue the mode is read-only.
+func TestCovSessionComposerMode_ReadOnlyWhenRunningWithSendNoQueue(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.State = "active"
 	m.session.processing = true
 	m.detail.Capabilities.Queue = false
 	m.detail.Capabilities.Send = true
-	if got := m.sessionComposerMode(); got != hubComposerModeSend {
-		t.Fatalf("active+send+no-queue = %v, want hubComposerModeSend", got)
+	if got := m.sessionComposerMode(); got != hubComposerModeReadOnly {
+		t.Fatalf("active+send+no-queue = %v, want hubComposerModeReadOnly", got)
 	}
 }
 

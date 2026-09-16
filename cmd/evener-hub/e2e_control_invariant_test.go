@@ -99,9 +99,10 @@ func requireStopLandsDuringPreTurnWork(ctx context.Context, t *testing.T, provid
 // TestE2E_ControlInvariantDuringPreTurnWorkOnTheFirstTurn is the smallest form
 // of the defect: no queue, no turn boundary, nothing to drain. A thread whose
 // OPENING prompt is a slash command spends the whole expansion with the wire
-// publishing status=active and an id -- which is the entirety of the composer's
-// gate (submitRouting.ts's isTurnActive: statusType === "active" &&
-// !!activeTurnId) -- while the session reports itself idle and refuses Stop.
+// publishing status=active -- which is the entirety of the composer's gate
+// (submitRouting.ts's isTurnActive: statusType === "active"; the published id
+// names the transcript row) -- while the session reports itself idle and
+// refuses Stop.
 //
 // This case exists because the defect was first found at a turn boundary and
 // mis-scoped there. It is not a boundary defect. Pre-turn work runs on EVERY
@@ -433,9 +434,9 @@ func TestE2E_PushedActiveStatusAlwaysCarriesStop(t *testing.T) {
 // client can observe across a boundary between two turns of one drain.
 //
 // The invariant is the one the composer gates on (submitRouting.ts's
-// isTurnActive: statusType === "active" && !!activeTurnId): whenever the wire
-// says a turn is running it must publish an id, and a Stop pressed while it
-// says so must land. Stop carries no turn id any more -- control mutations are
+// isTurnActive: statusType === "active"), plus the id the wire publishes
+// beside it: whenever the wire says a turn is running it must publish an id
+// for the transcript row, and a Stop pressed while it says so must land. Stop carries no turn id any more -- control mutations are
 // session-scoped since appwire v3 -- so "the published id is one the
 // preconditions accept" is no longer the question. "Is Stop accepted at all"
 // is.
@@ -669,8 +670,8 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	}
 
 	// Now the Stop, in the window the samples above prove was open: the wire
-	// says active and publishes an id, which is the whole of isTurnActive, so
-	// the composer is showing the button. The request is session-scoped -- it
+	// says active, which is the whole of isTurnActive, so the composer is
+	// showing the button. The request is session-scoped -- it
 	// names no turn, because appwire v3 removed expectedTurnId from every
 	// control mutation -- so the only thing that can refuse it is the daemon's
 	// own "is this session quiesced" precondition, and turn 2 being claimed is

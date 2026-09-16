@@ -320,9 +320,11 @@ authenticated AppWire socket:
 Read `result.thread.status.type`; repeat until it reaches the state the
 scenario needs. The same response carries
 `result.thread.evener.capabilities` and
-`result.thread.evener.activeTurnId`. A turn is only truly in flight once
-both the `active` status and the active turn id have landed
-(`submitRouting.ts:48-50`'s `isTurnActive`).
+`result.thread.evener.activeTurnId`. The `active` status alone says the
+session is working (`appwire-client/typescript/submitRouting.ts`'s
+`isTurnActive`); the turn id names the open transcript row and is briefly
+absent between the `turn/completed` and `turn/started` of back-to-back
+turns, so do not wait on it to decide idleness.
 
 ### Session operations
 
@@ -727,8 +729,9 @@ JSON.stringify({
 ```
 
 `steerRendered` is the closest thing left to the old `activeTurnId`
-probe: Steer renders only while the turn is genuinely in flight
-(`Composer.tsx:382`). If it never appears while
+probe: Steer renders while `status.type` is `active` and the daemon advertises
+steer (`Composer.tsx`'s `showSteer`; `activeTurnId` is transcript-row metadata,
+not the gate). If it never appears while
 `thread/read` reports `result.thread.status.type=active`, the AppWire socket
 did not hydrate — check `$run/hub.log`, and confirm the page is really
 the one you think it is via the `location.port` assertion above.

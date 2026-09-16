@@ -1194,7 +1194,25 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const params = n.params;
       const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
-      if (model.activeTurnId !== turnId) return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
+      if (model.activeTurnId !== turnId) {
+        const folded = foldNonActiveTurnCompleted(model, turnId, params.turn, now);
+        // The status is authoritative and the transcript's id can be absent
+        // while the session is active (a hydrate cut between turns, or the gap
+        // after turn/completed at an inline boundary). A failed completion
+        // arriving then is still the session's own failure. Its status frame
+        // follows: the agent's failure exit (agent/session_lifecycle.go
+        // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
+        // "turn_failed", announced as thread/status/changed(idle) with the
+        // capabilities inline, and that frame owns the transition. Settling
+        // idle here is a redundant safety net kept pending #1432. A failed
+        // completion for a turn another turn has since superseded (the id
+        // names a different turn) is bookkeeping about the past and leaves the
+        // status. The work-clock anchor goes with the status (the invariant
+        // thread/status/changed keeps below: no live anchor at rest).
+        const failedWithoutId =
+          params.turn.status === "failed" && model.activeTurnId === undefined && model.status.type === "active";
+        return failedWithoutId ? { ...folded, status: { type: "idle" }, activeTurnStartedAt: undefined } : folded;
+      }
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
       let settledTurn: TurnModel;
@@ -1238,6 +1256,15 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // no live push to refresh it), so clear it in lockstep with activeTurnId
         // to stop the work-clock ticking against a completed turn.
         activeTurnStartedAt: undefined,
+        // The status is thread/status/changed's, not this frame's: a completed
+        // turn is followed by one (idle at session end, active when the next
+        // turn runs inline), so it is left alone here. A failed turn gets its
+        // frame too: the agent's failure exit (agent/session_lifecycle.go
+        // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
+        // "turn_failed", announced as thread/status/changed(idle), and that
+        // frame owns the transition. Settling idle here is a redundant safety
+        // net kept pending #1432.
+        status: stamp.status === "failed" && model.status.type === "active" ? { type: "idle" } : model.status,
         lastFrameAt: now,
       };
     }
@@ -1411,10 +1438,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // "nobody counted": clearing it would blank a figure the hydrate
         // legitimately gave us. Absence at HYDRATE is where unknown lives.
         failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
-        // Capabilities are snapshot-only too, and three of them (send, steer,
-        // queue) are defined BY this very transition: the hub gates send on
-        // "no turn in flight" and steer/queue on "a turn in flight"
-        // (server/appwire_runtime.go's appCapabilities). A set cut before the
+        // Capabilities are snapshot-only too, and two of them (send, queue)
+        // are defined BY this very transition: the hub gates send on "no turn
+        // in flight" and queue on "a turn in flight"
+        // (server/appwire_runtime.go's appCapabilities; steer is harness
+        // support alone). A set cut before the
         // turn therefore describes the wrong session by the time the composer
         // reads it back, which is how a running session came to show no Steer,
         // no Stop and a dead Send until the page was reloaded (kata 06t8).

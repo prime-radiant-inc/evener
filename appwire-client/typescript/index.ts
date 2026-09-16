@@ -233,7 +233,23 @@ export { collectAdvancedOverrides, perLaunchEvenerOptions, resolveScalars } from
 export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
-export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export {
+  canDrainQueue,
+  canSteer,
+  decideSteerRoute,
+  decideSubmitRoute,
+  isTurnActive,
+  NO_ACTIVE_TURN,
+  QUEUE_EMPTY,
+  QUEUE_UNAVAILABLE,
+  SEND_UNAVAILABLE,
+  type SessionControlName,
+  type SessionControls,
+  STEER_UNAVAILABLE,
+  STOP_UNAVAILABLE,
+  sessionControls,
+  TURN_RUNNING,
+} from "./submitRouting";
 export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
 export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
