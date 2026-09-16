@@ -127,16 +127,6 @@ describe("fetch and refresh", () => {
     expect(store.getState().data).toEqual(SAMPLE);
   });
 
-  test("describeError decides the error text the store publishes", async () => {
-    const fake = new FakeClient("ready");
-    fake.on(OVERVIEW, failing("private internal detail"));
-    const store = createHubOverviewStore(fake, { describeError: () => "Could not refresh." });
-
-    await store.getState().refresh();
-
-    expect(store.getState().error).toBe("Could not refresh.");
-  });
-
   // The web hands in a port that resolves its connection store's current
   // client and throws synchronously when there is none; FakeClient turns a
   // synchronous throw into a rejection, so this one needs a raw port.

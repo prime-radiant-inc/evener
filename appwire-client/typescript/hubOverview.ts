@@ -28,6 +28,8 @@ export interface HubOverviewState {
    * was last loaded rather than blanking an already-populated screen. */
   data: SettingsOverviewResponse | null;
   loading: boolean;
+  /** The failed request's own text (errorText), for the host to translate at
+   * render; null once a request succeeds. */
   error: string | null;
   /** Loads once: a no-op while `data` is already populated. */
   fetch(): Promise<void>;
@@ -57,12 +59,6 @@ export interface HubOverviewStore {
   dispose(): void;
 }
 
-export interface HubOverviewOptions {
-  /** The text `error` carries for a failed request. Defaults to errorText,
-   * the thrown error's own message. */
-  describeError?: (err: unknown) => string;
-}
-
 /** Go's omitempty encodes empty slices and zero counters as absent fields;
  * this puts the [] and 0 back so readers need no per-field fallback. Sections
  * the hub did not send (storage, mcpDiscovered, pastIndex) stay absent. */
@@ -84,8 +80,7 @@ function normalizeSettingsOverview(data: SettingsOverviewResponse): SettingsOver
   return normalized;
 }
 
-export function createHubOverviewStore(client: HubOverviewClient, options: HubOverviewOptions = {}): HubOverviewStore {
-  const describeError = options.describeError ?? errorText;
+export function createHubOverviewStore(client: HubOverviewClient): HubOverviewStore {
   const listeners = new Set<HubOverviewListener>();
   let inflight: Promise<void> | null = null;
   // Bumped by reset() and dispose(); a request that started under an older
@@ -112,7 +107,7 @@ export function createHubOverviewStore(client: HubOverviewClient, options: HubOv
     } catch (err) {
       // `data` is deliberately left out: the shallow merge keeps whatever was
       // there (null, or the last successful load) through a failed request.
-      publish({ loading: false, error: describeError(err) });
+      publish({ loading: false, error: errorText(err) });
     }
   }
 

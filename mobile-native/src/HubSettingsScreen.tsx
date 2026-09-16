@@ -17,11 +17,13 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import {
+	createHubOverviewStore,
+	friendlyErrorMessage,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { HubUpgradeSection } from "./HubUpgradeSection";
-import { createNativeHubOverview } from "./hubOverview";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
 import type { Routes } from "./screens";
@@ -97,6 +99,12 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 		</View>
 	);
 }
+// The hub overview store keeps the failed request's own text in `error`;
+// this screen shows the same copy for every failure, as the web's sections
+// translate theirs at render.
+const HUB_OVERVIEW_REFRESH_FAILED =
+	"Could not refresh hub information. Try again when connected.";
+
 function HubSettings({
 	client,
 	hubId,
@@ -117,7 +125,7 @@ function HubSettings({
 	openLaunchSettings(): void;
 }) {
 	const colors = useColors();
-	const model = useMemo(() => createNativeHubOverview(client), [client]);
+	const model = useMemo(() => createHubOverviewStore(client), [client]);
 	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
 		() =>
@@ -199,7 +207,9 @@ function HubSettings({
 				{state.loading && !data && (
 					<ActivityIndicator accessibilityLabel="Loading hub information" />
 				)}
-				<ErrorMessage message={state.error} />
+				<ErrorMessage
+					message={state.error === null ? null : HUB_OVERVIEW_REFRESH_FAILED}
+				/>
 				{state.error && (
 					<Action
 						disabled={state.loading}
