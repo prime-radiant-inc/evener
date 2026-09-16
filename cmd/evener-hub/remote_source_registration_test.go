@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -137,5 +138,53 @@ func TestRemoteHubSourceWireMethodsInHubCatalog(t *testing.T) {
 		if !hubMethods[method] {
 			t.Errorf("wire method %q is not in CatalogMethodNames(ScopeHub)", method)
 		}
+	}
+}
+
+// runMain builds one registry entry per validated [[hosts]] entry and hands the
+// same slice to the web config as RemoteHosts (one source per host), so this
+// mapping is the only place a configured field can be lost before either
+// consumer sees it. This asserts every field on purpose, the way config_test.go
+// pins the validation round-trip: a field added to HostConfig or hostreg.Host
+// but not to the mapping would otherwise reach sshconn zeroed — a non-default
+// ConfigPath would make the bridge attach with the wrong hub.toml, and a
+// non-default Addr would make the restart/health probes address the default
+// listener instead of the configured one.
+func TestHostRegistryEntriesCarryEveryHostField(t *testing.T) {
+	want := hostreg.Host{
+		Name:       "alpha",
+		SSH:        "alpha.example",
+		User:       "deploy",
+		EvenerPath: "/opt/evener/bin/evener",
+		ConfigPath: "/etc/evener/alpha-hub.toml",
+		Addr:       "127.0.0.1:9280",
+		Roots:      []string{"/srv/one", "/srv/two"},
+	}
+	cfg := Config{Hosts: []HostConfig{{
+		Name:       want.Name,
+		SSH:        want.SSH,
+		User:       want.User,
+		EvenerPath: want.EvenerPath,
+		ConfigPath: want.ConfigPath,
+		Addr:       want.Addr,
+		Roots:      want.Roots,
+	}}}
+
+	entries := hostRegistryEntries(cfg)
+	if len(entries) != 1 || !reflect.DeepEqual(entries[0], want) {
+		t.Fatalf("hostRegistryEntries() = %+v, want [%+v]", entries, want)
+	}
+
+	// The registry main.go hands to sshconn.New must store the same values.
+	registry, err := hostreg.New(hostRegistryEntries(cfg))
+	if err != nil {
+		t.Fatalf("hostreg.New(hostRegistryEntries(cfg)): %v", err)
+	}
+	registered, ok := registry.Get("alpha")
+	if !ok {
+		t.Fatal("alpha missing from the registry built from the config")
+	}
+	if !reflect.DeepEqual(registered, want) {
+		t.Fatalf("registry.Get(%q) = %+v, want %+v", "alpha", registered, want)
 	}
 }

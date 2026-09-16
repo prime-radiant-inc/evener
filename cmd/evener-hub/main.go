@@ -401,10 +401,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	pluginRoot := plugins.NewManager("").Root
 
 	// Web
-	hostEntries := make([]hostreg.Host, 0, len(cfg.Hosts))
-	for _, h := range cfg.Hosts {
-		hostEntries = append(hostEntries, hostreg.Host{Name: h.Name, SSH: h.SSH, User: h.User, EvenerPath: h.EvenerPath, Roots: h.Roots})
-	}
+	hostEntries := hostRegistryEntries(cfg)
 	// Config loading already validated these through hostreg.New; build the
 	// real registry used by the SSH manager and handle the (impossible) error
 	// like any other startup failure.
@@ -592,6 +589,29 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 	return nil
+}
+
+// hostRegistryEntries maps the validated [[hosts]] entries onto the host
+// registry's values. runMain hands the result to hostreg.New (the registry
+// sshconn consumes) and to the web config's RemoteHosts (one source per host),
+// so this mapping is the last place a configured field can be lost before
+// either consumer sees it: every field belongs here, including the host's
+// non-default locations (EvenerPath, ConfigPath, Addr) that keep the SSH
+// manager attaching with the host's own hub.toml and probing its own listener.
+func hostRegistryEntries(cfg Config) []hostreg.Host {
+	entries := make([]hostreg.Host, 0, len(cfg.Hosts))
+	for _, h := range cfg.Hosts {
+		entries = append(entries, hostreg.Host{
+			Name:       h.Name,
+			SSH:        h.SSH,
+			User:       h.User,
+			EvenerPath: h.EvenerPath,
+			ConfigPath: h.ConfigPath,
+			Addr:       h.Addr,
+			Roots:      h.Roots,
+		})
+	}
+	return entries
 }
 
 func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
