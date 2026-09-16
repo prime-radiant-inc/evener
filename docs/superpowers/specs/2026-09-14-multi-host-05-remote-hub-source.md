@@ -608,7 +608,12 @@ implementing PR's contract:
   §"Client handoff"). That is what lets the rebind run on the event — the
   gap-free requirement — instead of deferring to the next call. Carrying the
   replacement client in the event itself is the equivalent alternative; either
-  form is safe, and neither may call `Ensure`.
+  form is safe, and neither may call `Ensure`. The rebind is registered on the
+  hub's **single `Options.OnEvent` fan-out** (component 04, §"Channel lifecycle
+  states"), beside component 06's navigation poke: a second consumer is added to
+  that fan-out, never by reassigning `Options.OnEvent` to one consumer's
+  closure, or the rebind silently stops running and the reconnect gap this
+  section forbids is lost.
 
 A consumer callback must not be able to stall thread subscriptions: the broker
 hands each consumer its own buffered channel or dispatches on its own goroutine,
@@ -980,10 +985,14 @@ therefore implement:
 - `appsource.ItemCandidateSource` — `ListItemCandidates` decodes the browser's
   controller cursor against the retained identity (`appitempaging.DecodeCursor`),
   validates its boundary against the retained window, and translates it to the
-  remote hub's own cursor for the forwarded `thread/turns/items/list`
-  (`appitempaging.RebaseCursor`), so the cursor the browser round-trips is
-  always re-encoded under the same identity and validated before any remote
-  call. An unrecognized, stale, or identity-mismatched cursor returns
+  remote hub's own cursor for the forwarded `thread/turns/list`
+  (`appitempaging.RebaseCursor`) — the item-mode list API the hub actually
+  implements (`MethodThreadTurnsList`, `ScopeBoth`); the catalog's
+  `MethodThreadTurnItemsList` (`thread/turns/items/list`) is
+  `ScopeUnimplemented` and served by no evener router, so it is never a
+  forwarding target (§"Method-coverage analysis") — so the cursor the browser
+  round-trips is always re-encoded under the same identity and validated before
+  any remote call. An unrecognized, stale, or identity-mismatched cursor returns
   `appwire.TranscriptItemCursorStale()`, never a bare remote error. The
   interface's `ReadItemCandidates` (the item-mode read entry) must be
   implemented too — it satisfies the interface arity and may delegate to the
@@ -1309,8 +1318,10 @@ network.
     hub, a `thread/read` whose remote reply carries `OlderCursor` returns a
     packed first page whose `OlderCursor` is the controller cursor — **not** the
     `legacy transcript item source cannot page without cursor identity` error —
-    and following that cursor through `thread/turns/items/list` returns the next
-    page. Assert the cursor forwarded on the wire is the **remote hub's own**
+    and following that cursor through `thread/turns/list` returns the next
+    page (the forwarded method is the implemented `MethodThreadTurnsList`, never
+    the unimplemented `thread/turns/items/list`). Assert the cursor forwarded on
+    the wire is the **remote hub's own**
     (not the browser's controller-encoded one), that a garbage/unknown cursor
     returns `appwire.TranscriptItemCursorStale()`, and that a cursor minted
     before the retained window was rewritten (rotation) is refused rather than

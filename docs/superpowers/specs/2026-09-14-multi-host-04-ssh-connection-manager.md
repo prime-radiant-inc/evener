@@ -165,7 +165,7 @@ type Options struct {
     ClientVersion       string        // default buildinfo.Version()
     BackoffBase         time.Duration // default 500ms
     BackoffMax          time.Duration // default 30s
-    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock: must not block; may read Attached/ClientIfAttached (manager mutex) but never call Ensure (per-host lock, non-reentrant)
+    OnEvent             func(Event)   // lifecycle sink, called under the per-host lock: must not block; may read Attached/ClientIfAttached (manager mutex) but never call Ensure (per-host lock, non-reentrant). One field, so the hub installs exactly one fan-out callback here that invokes every registered consumer (component 05's broker rebind, component 06's navigation poke); a consumer is added to that fan-out, never by replacing the field
     BuildBinary         func(ctx context.Context, goos, goarch, out string) error // nil = localBuild
     HubAddr             string        // fallback host hub loopback address when the entry sets no addr; default 127.0.0.1:9180
 }
@@ -255,8 +255,10 @@ ssh -T -o BatchMode=yes -o ConnectTimeout=<n> -o ServerAliveInterval=<n> \
     `PATH`-selected executable); when `command -v evener` misses, `run_path` is
     `<home>/.local/bin/evener` — the installer's default resolved against the
     host's captured home directory (`Preflight.Home`), **never** the literal
-    string `~/.local/bin/evener` (the installer fallback then creates it,
-    §"The installer install path must equal the run target").
+    string `~/.local/bin/evener`. That default is creatable, not a dead end: the
+    atomic push creates it when it is missing (§"Push target resolution"), and
+    the installer fallback installs it when the fallback is the deploy path
+    (§"The installer install path must equal the run target").
   `<home>` is the host's captured home directory (`Preflight.Home`). Every one
   of these paths is **absolute and normalized before use** — nothing relative
   and nothing containing an unexpanded `~` is passed to installation, launch,
@@ -436,7 +438,12 @@ The manager is **lazy and event-publishing, not a registry owner**:
   callback and must stay non-blocking for the same reason.
 - Lifecycle events (`EventState`, `EventAttached`, `EventDetached`,
   `EventFailed`, delivered through `Options.OnEvent`) report *connection state*
-  only. They drive `Online()` and navigation invalidation. **No consumer adds or
+  only. They drive `Online()`, the component-05 notification-broker rebind
+  (`EventAttached`/`EventDetached`), and navigation invalidation. `Options.OnEvent`
+  is **one field**: `cmd/evener-hub/main.go` installs a **single fan-out
+  callback** on it that invokes every registered consumer — component 05's rebind
+  and component 06's navigation poke — so wiring one consumer can never silently
+  drop the other. **No consumer adds or
   removes a source in response to them** — component 05 registers one source per
   configured host at startup and never changes the set (components 03/05/06).
 
@@ -620,9 +627,11 @@ Run over non-interactive SSH (no login shell, no TTY):
   guess from the text. Preflight records the verified result (a
   `Preflight.ExecutableMissing` fact, surfaced as the named
   `ErrExecutableMissing` sentinel where an error is needed) and `Ensure`
-  routes it into the deploy/install path (§4), whose installer fallback
-  creates the default run target (`<home>/.local/bin/evener`); preflight then
-  **re-runs** against the installed binary before version-matching or
+  routes it into the deploy/install path (§4), which creates the missing run
+  target — the atomic push creates the resolved `run_path`
+  (`<home>/.local/bin/evener` when nothing resolves, §"Push target resolution"),
+  and the installer fallback installs that default when it is the deploy path;
+  preflight then **re-runs** against the installed binary before version-matching or
   attaching. **Arbitrary SSH failures must not trigger installation:** a
   failure to spawn ssh, a connection/auth refusal, an ssh-level `255`, an
   unparseable or empty `launch-check` answer, or a launch-contract/protocol
@@ -809,7 +818,7 @@ Two paths, chosen per host (open question: which wins when both are viable):
      `command -v evener` (§"SSH channel argv", the `run_path` rule) — never by
      writing a file literally named `evener` into the remote working directory,
      which is neither the `PATH`-selected executable nor a stable location;
-  3. resolves a symlink target with a portable POSIX-sh resolver
+  3. resolves an *existing* target with a portable POSIX-sh resolver
      (`resolvePathScript` + `resolveDeployTarget`), so the atomic `mv` replaces
      the real file a `make install` symlink points at rather than clobbering the
      link and breaking the installed layout. The resolver walks symlinks with
@@ -819,14 +828,27 @@ Two paths, chosen per host (open question: which wins when both are viable):
      avoids `readlink -f`: that flag is a GNU/coreutils extension which BSD
      `readlink` (macOS) rejects with `illegal option -- f`, so every
      `darwin/arm64` deploy failed at resolution. A path that does not resolve to
-     an existing file prints nothing and exits nonzero.
-  A `command -v` miss or a path that does not resolve to a real file is
-  `ErrDeploy` with no write. This is the **atomic push** path, which needs an
-  existing file to replace, so an empty `evener_path` whose `command -v evener`
-  misses is a push-path refusal, not a silent literal-word write: the manager
-  falls to the **installer fallback**, whose target is then the installer's own
-  default `run_path` `<home>/.local/bin/evener` (§"The installer install path must
-  equal the run target").
+     an existing file prints nothing and exits nonzero;
+  4. when the resolve fails **because the target does not exist yet**, a missing
+     target is a **creatable** target, not a refusal:
+     `resolveDeployOrCreateTarget` (`deploy.go`) canonicalizes the
+     not-yet-installed path under its existing parent directory
+     (`createTargetCommand` refuses a path that already exists — a directory, a
+     dangling symlink — and a path whose parent directory does not exist or does
+     not resolve), and the same `mktemp` → byte-count verification → `chmod +x`
+     → `mv` push creates it atomically. An empty `evener_path` whose
+     `command -v evener` misses therefore resolves to the installer's own
+     default `run_path` `<home>/.local/bin/evener` (§"The installer install path
+     must equal the run target") — with `mkdir -p` creating that default's
+     directory when it is absent — and the push creates the binary there.
+     **A fresh host with no evener at all is provisioned by the atomic push
+     path whenever a build source (or `Options.BuildBinary`) is configured —
+     on every channel, `snapshot`/`dev` included, because the push path needs
+     no published artifact — and by the installer fallback otherwise, where
+     that fallback is admitted (§"Installer (fallback)").** Only a
+     target that cannot be created (an unresolvable or missing parent directory,
+     or an existing path that is not a replaceable file) is `ErrDeploy` with no
+     write.
 
 - **The installer install path must equal the run target.** `install.sh` writes
   the real binaries under `share_bindir` (`EVENER_SHARE_BINDIR`, default
@@ -950,8 +972,8 @@ version-match can verify the deploy landed.
     §"Stop/restart mechanics") — and `hub.lock` makes a losing second process
     exit rather than bind;
   - **the cold-bootstrap ad hoc launch needs an explicitly constructed argv,
-    because there is no recovered `ps` line to tokenize.** The restart path's
-    ad hoc launch reuses `relaunchCommand`, which tokenizes the recovered
+    because there is no recovered `ps` line to tokenize.** The recovered-line
+    form is `relaunchCommand`, which tokenizes the recovered
     `ps -o command=` of the *running* process; a stopped host has no such line.
     The first-attach branch must therefore resolve the executable (the host's
     single `run_path`, §"SSH channel argv") and run it as
@@ -982,8 +1004,9 @@ version-match can verify the deploy landed.
     surfaces the failure.
 
   A host whose `run_path` cannot be established — no configured `evener_path`,
-  no `command -v evener`, and the installer fallback refused so the default
-  `<home>/.local/bin/evener` does not exist — and with no identified supervisor
+  no `command -v evener`, and no deploy path able to create the default
+  `<home>/.local/bin/evener` (no build source/`Options.BuildBinary`, and the
+  installer fallback refused or failing) — and with no identified supervisor
   unit, cannot be started: the bootstrap is refused with
   `ErrDeploy`/`ErrRestart`, the host stays offline, and the UI must show that
   refusal (component 06, §"Connecting a configured host").
@@ -1198,8 +1221,10 @@ version-match can verify the deploy landed.
   Supervisor detection obeys the same rules: a launchd label or systemd unit is
   accepted only when **exactly one** candidate names an evener hub *and* the hub
   it names owns the configured address. The three outcomes are distinct:
-  **exactly one ⇒ use it**; **none ⇒ the ad hoc path**
-  (there is genuinely no supervisor to defer to); **several ⇒ refuse
+  **exactly one ⇒ use it**; **none ⇒ the supervisorless branch, which refuses
+  `ErrRestart` with no signal and no relaunch** (a stopped host's cold bootstrap
+  is start-only — it has no PID to pin, §"First attach to a stopped host must be
+  able to start the hub"); **several ⇒ refuse
   `ErrRestart` with no kill and no relaunch**. An ambiguous match means at
   least one matched unit may start or restart its own instance, so an
   unmanaged launch beside it is split supervision and `hub.lock` contention —
@@ -1244,7 +1269,10 @@ version-match can verify the deploy landed.
   facts it can select and start an unrelated service. The exactly-one-candidate
   rule still applies, with the same three outcomes: **several matches refuse
   `ErrRestart` and start nothing** (no ad hoc launch chosen on top of an
-  ambiguity), and **only no match at all** falls through to the ad hoc path.
+  ambiguity), and **only no match at all** is the supervisorless branch: it
+  refuses the restart (`ErrRestart`, no signal, no relaunch) and its only
+  no-supervisor launch is the cold-bootstrap **start** (§"Stop/restart
+  mechanics" check 5).
   **When a candidate hub definition exists but its effective address
   cannot be resolved** (no explicit `--addr` and the `--config` is unreadable or
   carries no address), the cold bootstrap **refuses with `ErrRestart` and
@@ -1276,7 +1304,7 @@ version-match can verify the deploy landed.
      <dest> <command>` interface** (a `pidfd` must be opened by a process on the
      host; no helper is specified, installed, or invoked): a supervisorless
      restart therefore refuses rather than signaling, on every platform
-     (check 5, and the ad hoc path below). The
+     (check 5, and the supervisorless branch below). The
   shipped `restartBare` (`sshconn/version.go`) is the unguarded form: it runs
   `kill <pid>` with no re-validation at all. **Consequence:** on a host where
   the hub exits during identification and the PID is reused, the restart can
@@ -1395,11 +1423,11 @@ hub.toml [[hosts]] →  hostreg.Registry (component 03)
                         ├─ Runner.Run: ssh <dest> launch-check --protocol … --json
                         │     → protocol? launch_flags? version? (preflight)
                         ├─ verified missing executable? (fresh host)
-                        │     └─ deploy/install (installer fallback creates the
-                        │          default run target) → re-run preflight
+                        │     └─ deploy/install (creates the missing run target:
+                        │          push, else the release-only installer) → re-run preflight
                         ├─ protocol/version != controller?
                         │     ├─ deploy target build (cross-compile → scp/chmod)
-                        │     └─ restart host hub (identify → supervisor, else lsof/kill/nohup)
+                        │     └─ restart host hub (identify → supervisor, else refuse ErrRestart)
                         │          → Runner.Run on the host: curl /api/health
                         │            → answer + running version == deployed build
                         ├─ Runner.Start: ssh <dest> <evener_path> hub attach --stdio
@@ -1550,7 +1578,9 @@ with the remote hub and its daemons still running.
   Tokenizer unit tests cover quotes/escapes and each refusal.
   Supervisor cases: exactly one evener-named unit → restarted; two candidates →
   `ErrRestart` with no `kill` and no relaunch argv (the ambiguity refusal, never
-  "first match" and never an ad hoc launch); zero candidates → the ad hoc path.
+  "first match" and never an ad hoc launch); zero candidates → the
+  supervisorless refusal: `ErrRestart` with no `kill` and no relaunch argv, and
+  the cold-bootstrap **start** is the only no-supervisor launch.
 - **Health-verification tests.** Fake runner returns a body reporting the
   previous build's `version` → not accepted; a body reporting the expected
   `version` → accepted; no answer within the bound, or a missing HTTP client →
@@ -1674,8 +1704,12 @@ with the remote hub and its daemons still running.
     validation; a push deploy with an empty `evener_path` whose
     `command -v evener` resolves uses that as the host's `run_path` and
     replaces the POSIX-sh `resolvePathScript` target (plain `readlink`, no
-    `readlink -f`) atomically; a `command -v` miss is `ErrDeploy` on the push
-    path (the installer fallback is the one that can create the default). A
+    `readlink -f`) atomically; a `command -v` miss resolves to the installer's
+    default `<home>/.local/bin/evener`, which the push deploy canonicalizes
+    under its parent directory (created with `mkdir -p` when absent) and
+    creates atomically — a missing target is creatable on every channel, never
+    `ErrDeploy` (the installer fallback installs that default only when it is
+    the deploy path). A
     configured **relative** `evener_path` is refused with `ErrDeploy` and a
     leading `~/` is expanded against the host's captured home
     (`Preflight.Home`), so no relative or unexpanded-`~` path reaches install,
@@ -1752,10 +1786,18 @@ with the remote hub and its daemons still running.
     executable** preflight result (`ErrExecutableMissing`), recognized from the
     **dedicated executable probe's stable sentinel** — `test -x <run_path>`
     exiting `1`, never a parsed `127`/not-found string and never the merged
-    diagnostic stream — routed into deploy/install — the installer fallback
-    creates the default `<home>/.local/bin/evener` — followed by a re-preflight
-    before version-match/attach; it is not surfaced as `ErrSSHStart` and does
-    not dead-end preflight. An unreachable host (`ErrSSHStart`), an ssh-level
+    diagnostic stream — routed into deploy/install, which creates the missing
+    run target: the atomic push creates the resolved path (the installer's
+    default `<home>/.local/bin/evener` when nothing resolves, its parent
+    directory created when absent), and the installer fallback installs that
+    default when it is the deploy path — followed by a re-preflight before
+    version-match/attach; it is not surfaced as `ErrSSHStart` and does not
+    dead-end preflight. Where no deploy path exists (a `snapshot`/`dev`
+    controller with no build source/`Options.BuildBinary`, and an installer
+    fallback that is not admitted) the missing executable is refused
+    `ErrDeploy`: there is nothing that controller can install, so that
+    bootstrap is not a supported path.
+    An unreachable host (`ErrSSHStart`), an ssh-level
     `255`, an auth-shaped refusal, an unparseable/empty `launch-check` answer,
     and a launch-contract/protocol refusal do **not** enter deploy/install —
     asserted by a fake-runner table over the probe cases, where only the
@@ -1786,12 +1828,16 @@ from the component-03 registry.
   "already correct, skip deploy".
 - **How the host hub is stopped for restart (resolved, with identification).**
   No new host-side RPC is needed in v1: restart through the host's supervisor
-  when one is identified unambiguously, otherwise the ops doc's ad hoc recipe —
-  find the listener by port with `lsof`, verify *what it is* (single listener,
-  evener hub argv, effective SSH user, matching address), recover argv/log,
-  `kill` it, wait for the port to clear, relaunch detached. See §5. `hub.lock`
+  when one is identified unambiguously; when **none** is identified the manager
+  refuses the restart (`ErrRestart`, no signal, no relaunch) — it never runs the
+  ops doc's recipe itself. That recipe — find the listener by port with `lsof`,
+  verify *what it is* (single listener, evener hub argv, effective SSH user,
+  matching address), recover argv/log, `kill` it, wait for the port to clear,
+  relaunch detached — is the **operator's** out-of-band procedure for a
+  supervisorless host, and the cold-bootstrap **start** (no process to identify
+  or signal) is the manager's only no-supervisor launch. See §5. `hub.lock`
   stays a pure mutual-exclusion `flock` (`main.go`; `hostlock.go`); it is never
-  read for a PID and never broken. Residual risk: the ad hoc path calls `lsof`/`ps` on
+  read for a PID and never broken. Residual risk: that recipe calls `lsof`/`ps` on
   the host, so a host without those tools (or a hub the controller cannot match
   to the configured address) is restart-refused rather than restarted wrong —
   which is the intended trade.
@@ -1823,11 +1869,14 @@ from the component-03 registry.
   `cmd/evener-hub/app_rpc.go`, surfaced at `appwire/types.go`)
   and must **not** be used to compare builds.
 - **Detach idiom on the host (partly resolved).** Supervised hubs restart
-  through their supervisor (`launchctl kickstart -k`, `systemctl restart`); an
-  ad hoc hub relaunches with `nohup <argv> >> <log> 2>&1 </dev/null &`,
-  preserving the recovered log (ops doc §"Restarting an ad hoc Hub"), or
-  discards output (`</dev/null >/dev/null 2>&1`) when no regular-file log was
-  recovered.
+  through their supervisor (`launchctl kickstart -k`, `systemctl restart`); a
+  supervisorless **restart** is refused, not relaunched (§"Stop/restart
+  mechanics" check 5). An operator relaunches an ad hoc hub with `nohup <argv>
+  >> <log> 2>&1 </dev/null &`, preserving the recovered log (ops doc
+  §"Restarting an ad hoc Hub"), or discards output (`</dev/null >/dev/null
+  2>&1`) when no regular-file log was recovered; the manager's cold-bootstrap
+  **start** detaches the same way but logs under `<stateRoot>`
+  (§"First attach to a stopped host must be able to start the hub").
   A first-class systemd/launchd unit for hosts that have none is still open.
 - **Keepalive ownership (settled).** Keepalive is `ssh -o
   ServerAliveInterval`/`ServerAliveCountMax`; `StreamTransport` deliberately does

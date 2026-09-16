@@ -387,8 +387,11 @@ exact scope. None is a present fact.
   supervisor launched as `evener hub --config …` with no `--addr` must match, or
   the manager starts an unmanaged duplicate. A definition that merely mentions
   `--addr` (e.g. in `Description=`/`Environment=`) or merely contains
-  `evener`/`hub` is not a match. Several matches, or none, fall through to the
-  ad hoc path; **a candidate hub definition whose effective address cannot be
+  `evener`/`hub` is not a match. Several matches refuse with `ErrRestart` (no
+  signal, no relaunch); when none matches it is the supervisorless branch, whose
+  only launch is the cold-bootstrap **start** (a supervisorless *restart*
+  refuses the same way — component 04, §"Stop/restart mechanics" check 5);
+  **a candidate hub definition whose effective address cannot be
   resolved refuses with `ErrRestart` and starts nothing** rather than risking a
   duplicate, unless trusted explicit supervisor metadata recorded in the host
   entry supplies the match. An inferred substring match may not.
@@ -524,7 +527,8 @@ exact scope. None is a present fact.
   `multi-host-pr04b-deploy-restart`, pending merge), never a fall-through to
   the ad hoc launch, and the same refusal applies when an identified launchd
   label fails the bare-safe gate instead of the old ad hoc fallback. The ad hoc
-  path is reached only when **no** candidate definition matches. Scope:
+  launch is reached only when **no** candidate definition matches, and only on
+  the cold-bootstrap **start** — a supervisorless *restart* refuses. Scope:
   `sshconn/version.go` (`pickSupervisor`, `detectSupervisor`,
   `detectSupervisorsFrom`, the restart path's label gate), `sshconn/version_test.go`.
   Mirrors component-04 §"Stop/restart mechanics", its supervisor test case, and

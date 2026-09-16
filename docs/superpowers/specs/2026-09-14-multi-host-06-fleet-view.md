@@ -608,8 +608,11 @@ only `local`, so the fan-out currently degenerates to one source.
     but `NavigationManifest.Sources` is served from the navigation snapshot, so
     without an invalidation the flipped flag is invisible until the 30s
     background refresh, and the fleet view reports a down host as online (or
-    vice versa) for up to half a minute. Wire
-    `sshconn.Options.OnEvent` in `cmd/evener-hub/main.go` so `EventAttached` and
+    vice versa) for up to half a minute. Register this poke on the hub's
+    **single `sshconn.Options.OnEvent` fan-out** in `cmd/evener-hub/main.go`
+    (component 04, §"Channel lifecycle states") — the same fan-out component 05's
+    broker rebind is registered on, and never by assigning `Options.OnEvent` to
+    one consumer's closure — so `EventAttached` and
     `EventDetached` invalidate navigation through the same
     `pokeAttention`/`navigation.Invalidate` path the roster/past changes use.
     The callback runs **synchronously under component 04's per-host lock and is
