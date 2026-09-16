@@ -2475,16 +2475,24 @@ export function createConversationStore() {
       applyNotification(n) {
         const state = get();
         if (state.conversation === null) return;
-        const conv = state.conversation;
 
         // The package reducer's routing: a frame names its thread by ref
         // when it carries one, else by threadId; a frame naming neither is
         // not about this thread. Silently drop everything else.
-        if (!notificationTargetsThread(n, conv)) return;
+        if (!notificationTargetsThread(n, state.conversation)) return;
 
-        // The cases below are what native still applies onto its display
-        // rows itself (D23c hands them to the package reducer one by one);
-        // every other frame about this thread is the reducer's, in `default`.
+        // Dual-write until c-2b. Every frame about this thread folds into the
+        // package reducer's model first — turns, pendingText and output, the
+        // failure count, modelRetry — and the cases below then update today's
+        // display rows from the wire frame, spreading that updated model. c-2b
+        // flips the rows to projectConversation(model) and deletes the row
+        // appliers: the same intermediate the web store had before its
+        // projector. A row applier that bails (a missing target, a frozen row,
+        // a reread request) still publishes the model half.
+        const conv = applyThreadNotification(state.conversation, n);
+        const publishModel = () => {
+          if (conv !== state.conversation) set({ conversation: conv });
+        };
         switch (n.method) {
           case "item/started":
           case "item/completed": {
@@ -2624,9 +2632,10 @@ export function createConversationStore() {
               const cappedItems = capItems(items);
               pruneEvictedIds(cappedItems);
               set({ conversation: { ...conv, items: cappedItems } });
-            } else if (state.ref !== null) {
+            } else {
+              publishModel();
               // Unsupported transitions require the canonical projection.
-              requestRehydrate(state.ref);
+              if (state.ref !== null) requestRehydrate(state.ref);
             }
             break;
           }
@@ -2642,6 +2651,7 @@ export function createConversationStore() {
               // not by text suffix, so genuine content ending with the
               // marker doesn't freeze.
               if (truncatedItemIds.has(timelineIdentity(existing))) {
+                publishModel();
                 break;
               }
               const combined =
@@ -2665,6 +2675,7 @@ export function createConversationStore() {
               });
             } else {
               // Delta targeting missing item — trigger resync.
+              publishModel();
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
@@ -2695,6 +2706,7 @@ export function createConversationStore() {
                 },
               });
             } else {
+              publishModel();
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
@@ -2711,6 +2723,7 @@ export function createConversationStore() {
             // no mutation/live revision/freeze change, request authoritative
             // reread.
             if (target === null || target.activity.family !== "reasoning") {
+              publishModel();
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
@@ -2719,6 +2732,7 @@ export function createConversationStore() {
             const identity = activityIdentity(target.activity);
             // F12: Per-item truncation ownership — frozen guard.
             if (truncatedItemIds.has(identity)) {
+              publishModel();
               break;
             }
             const combined =
@@ -2756,6 +2770,7 @@ export function createConversationStore() {
             // mutation/live revision/freeze change, request authoritative
             // reread.
             if (target === null) {
+              publishModel();
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
@@ -2763,6 +2778,7 @@ export function createConversationStore() {
             }
             if (target.activity.family !== "tool") {
               // Wrong family or unknown family — not a tool item.
+              publishModel();
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
@@ -2776,6 +2792,7 @@ export function createConversationStore() {
                 itemCallId !== params.callId
               ) {
                 // Missing either callId, or mismatch — no mutation.
+                publishModel();
                 if (state.ref !== null) {
                   requestRehydrate(state.ref);
                 }
@@ -2785,6 +2802,7 @@ export function createConversationStore() {
             const identity = activityIdentity(target.activity);
             // F12: Per-item truncation ownership — frozen guard.
             if (truncatedItemIds.has(identity)) {
+              publishModel();
               break;
             }
             const combined =
@@ -2842,19 +2860,14 @@ export function createConversationStore() {
           }
 
           default: {
+            // Everything without a row applier above is the reducer's alone.
+            publishModel();
             // An item/* transition the cases above do not handle needs the
             // canonical projection; only those resync, not every unknown
             // family, to avoid reread storms from unrelated notifications.
-            if (n.method.startsWith("item/")) {
-              if (state.ref !== null) requestRehydrate(state.ref);
-              break;
+            if (n.method.startsWith("item/") && state.ref !== null) {
+              requestRehydrate(state.ref);
             }
-            // Everything else about this thread is the package reducer's. It
-            // reads the ThreadModel half of the conversation and leaves the
-            // display rows alone.
-            const applied = applyThreadNotification(conv, n);
-            if (applied === conv) break;
-            set({ conversation: applied });
             break;
           }
         }
