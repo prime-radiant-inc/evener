@@ -581,13 +581,15 @@ test("a recovery that leaves the text unchanged does not move the caret on the n
   // recovered draft is empty: only that path removes the durable row.
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
-  expect(textarea().value).toBe("");
+  const editor = textarea();
+  expect(editor.textContent).toBe("");
 
-  fireEvent.change(textarea(), { target: { value: "h" } });
+  const user = userEvent.setup();
+  selectEditorText(editor, 0);
+  await user.keyboard("h");
 
-  expect(textarea().value).toBe("h");
-  expect(textarea().selectionStart).toBe(1);
-  expect(textarea().selectionEnd).toBe(1);
+  expect(editor.textContent).toBe("h");
+  expect(editorCursor(editor)).toBe(1);
 });
 
 test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
