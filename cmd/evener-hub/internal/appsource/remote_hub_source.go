@@ -31,10 +31,12 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // "local:<thread>" namespace.
 //
 // This is component 05a: the read path (ID, ListThreads, ReadThread, ListTurns,
-// ListModels, and the item-mode paging seam) plus registration. Subscription
-// fan-out (05b), turn/thread lifecycle mutations and mutation-unknown mapping
-// (05c), and the capability probe (05d) are staged; their interface methods
-// exist and fail loudly until then.
+// ListModels, and the item-mode paging seam) plus registration, and
+// component 05b: SubscribeThread and the per-host notification fan-out that
+// routes remote notifications to the controller relays watching each remote
+// thread. Turn/thread lifecycle mutations and mutation-unknown mapping (05c)
+// and the capability probe (05d) are staged; their interface methods exist
+// and fail loudly until then.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -61,6 +63,15 @@ type RemoteHubSource struct {
 	// replay a stale boundary under a newer incarnation. The key is the
 	// controller-side ref, the same key the paging cache uses.
 	itemPagingLocks keyedMutexRegistry
+	subMu           sync.Mutex
+	subs            map[string]*remoteHubSubscription // key: remote thread ID
+	drains          map[*appwire.Client]struct{}      // clients whose notification stream is being drained
+	// remoteMu serializes the wire-level subscribe and unsubscribe a
+	// subscription's lifecycle emits against the routing-table mutation that
+	// decides them, so a replacement's subscribe can never land before its
+	// predecessor's unsubscribe for the same remote thread. subMu is always
+	// taken inside it, never the other way around.
+	remoteMu sync.Mutex
 }
 
 var (
@@ -70,23 +81,24 @@ var (
 )
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
-	return &RemoteHubSource{id: id, roots: roots, client: client}
+	return &RemoteHubSource{
+		id:     id,
+		roots:  roots,
+		client: client,
+		subs:   map[string]*remoteHubSubscription{},
+		drains: map[*appwire.Client]struct{}{},
+	}
 }
 
 func (s *RemoteHubSource) ID() string { return s.id }
 
-// RelayOnThreadRead reports that a plain thread/read must not start a relay.
-// SubscribeThread is staged until 05b, and the hub's default relay policy is
-// true, so without this override every successful remote read would be
-// discarded by startRelay's notImplemented SubscribeThread call. It is deleted
-// when 05b wires a real subscription.
-func (s *RemoteHubSource) RelayOnThreadRead() bool { return false }
-
-// SupportsThreadRelay reports that this source has no relay fan-out at all, so
-// the web client's subscribe:true first-hydration read is not relayed either;
-// startRelay would call the notImplemented SubscribeThread and fail the read.
-// It is deleted when 05b wires a real subscription.
-func (s *RemoteHubSource) SupportsThreadRelay() bool { return false }
+// 05a staged two relay overrides here that 05b deletes: RelayOnThreadRead and
+// SupportsThreadRelay both reported false only because SubscribeThread was
+// notImplemented, and the hub's defaults (true for both) are the truth now. A
+// thread/read — plain or subscribe:true — starts a controller relay, which
+// attaches through SubscribeThread and retires that attach with its own
+// thread/unsubscribe. See stripRemoteSubscription for why a read's own Subscribe
+// flag still never reaches the wire on its own.
 
 // EnrichThreadFileBackedImages reports that this source's threads name files on
 // the remote host, not this one. The hub's file-backed output-image pass reads
@@ -292,7 +304,30 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 	}
 	remote := params
 	remote.Ref = ref.String()
-	remote.ThreadID = ref.ThreadID
+	// Preserve the caller's ThreadID, empty included: the remote hub resolves a
+	// bare non-empty ThreadID in preference to Ref, so sending the translated
+	// ref's suffix here would address the thread by its stable identity and be
+	// rejected as an unknown bare ID once an identity replacement has moved the
+	// live thread ID. An empty ThreadID lets the remote resolve the ref, which
+	// is stable-aware. The ref's suffix stays this hub's local routing key.
+	remote.ThreadID = params.ThreadID
+	// The remote client is shared by every controller relay for this host, so
+	// controller-level replacement semantics must never reach it: the remote
+	// hub's replaceSubscription read scopes the whole connection to this one
+	// thread, silently dropping every other remote thread's subscription while
+	// their local routing entries stayed live. Replacement is a controller-side
+	// concept — app_relay.go applies it to the controller's own subscriptions —
+	// and SubscribeThread clears the flag for the same reason.
+	// The snapshot read must not subscribe either. This source's subscription is
+	// established solely by SubscribeThread, which owns the one remote
+	// subscription per thread and its thread/unsubscribe on teardown. A
+	// subscribed read here would attach the shared connection to this thread
+	// with no local routing entry tracking it, so nothing would drop it when the
+	// relay never attaches (an empty thread ID, a deletion fence, a failed
+	// subscribe) and the long-lived connection would keep forwarding that thread
+	// — into a notification stream nothing is draining — for the rest of its
+	// life. The relay path subscribes explicitly (app_relay.go startRelay), so
+	// no subscription is lost.
 	remote = stripRemoteSubscription(remote)
 	var out appwire.ThreadReadResponse
 	if err := s.call(ctx, appwire.MethodThreadRead, remote, &out); err != nil {
@@ -302,11 +337,16 @@ func (s *RemoteHubSource) ReadThread(ctx context.Context, params appwire.ThreadR
 }
 
 // stripRemoteSubscription removes the controller's subscription intent from a
-// remote read. Subscription fan-out is staged until 05b (SubscribeThread is not
-// implemented), so forwarding Subscribe would make the remote hub register a
-// persistent subscription the controller can never manage or retire — an
-// orphan that outlives the read. The controller-side relay gate is
-// RelayOnThreadRead; this only keeps the intent off the wire.
+// plain remote read. A remote subscription is created by SubscribeThread and by
+// nothing else: it is the controller relay that owns the attach — it holds the
+// returned channel open, re-attaches it through its recovery path, and retires
+// it with thread/unsubscribe when the relay ends (remote_hub_subscription.go).
+// A read that forwarded Subscribe would make the remote hub register a second,
+// persistent subscription nothing on this side owns or can retire: an orphan
+// that outlives the read. ReplaceSubscription is stripped for a sharper reason —
+// it is connection-scoped on the shared per-host client, so forwarding it would
+// drop every other thread's remote subscription while their local routing
+// entries stayed live.
 func stripRemoteSubscription(params appwire.ThreadReadParams) appwire.ThreadReadParams {
 	params.Subscribe = false
 	params.ReplaceSubscription = false
@@ -320,7 +360,10 @@ func (s *RemoteHubSource) ListTurns(ctx context.Context, params appwire.ThreadTu
 	}
 	remote := params
 	remote.Ref = ref.String()
-	remote.ThreadID = ref.ThreadID
+	// Preserve the caller's ThreadID for the same reason ReadThread does: a bare
+	// threadId the remote cannot resolve is rejected, while an empty one lets
+	// the remote resolve the (stable-aware) ref.
+	remote.ThreadID = params.ThreadID
 	var out appwire.ThreadTurnsListResponse
 	if err := s.call(ctx, appwire.MethodThreadTurnsList, remote, &out); err != nil {
 		return appwire.ThreadTurnsListResponse{}, err
@@ -1350,8 +1393,4 @@ func (s *RemoteHubSource) ListJobs(context.Context, appwire.JobsListParams) (app
 
 func (s *RemoteHubSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
 	return appwire.JobsOutputResponse{}, s.notImplemented("JobOutput")
-}
-
-func (s *RemoteHubSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
-	return nil, s.notImplemented("SubscribeThread")
 }

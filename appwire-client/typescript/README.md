@@ -8,7 +8,9 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
-answer's questions frozen while late ones arrive, the attachment count, size
+answer's questions frozen while late ones arrive, the ask-dock store that
+reconciliation feeds (`createAskDockStore({ send })`, a framework-free store
+each app points at its thread source with `followThreads`), the attachment count, size
 and type limits every composer rejects a staged file against, the `[image N]`
 marker splicing that anchors a staged image in the composer text and removes
 it again, the translation that turns those markers into prose at send and

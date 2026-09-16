@@ -40,6 +40,12 @@ export function pageStatus(
 	if (page.remaining > 0) return "more";
 	return null;
 }
+/** Whether a list should say "Updating…": its rows are known to be outdated
+ * and no error is on screen. Unlike the boundary row, this holds while the
+ * re-read is in flight, since stale stays set until that read lands. */
+export function updating(page: Parameters<typeof pageStatus>[0]) {
+	return page.stale && !page.error;
+}
 type NativeNavigationParams = Omit<
 	NavigationReadParams,
 	"representationVersion"

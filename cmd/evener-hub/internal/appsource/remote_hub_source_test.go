@@ -248,8 +248,11 @@ func TestRemoteHubSourceReadThread(t *testing.T) {
 	if remote.Ref != "local:t2" {
 		t.Fatalf("remote Ref = %q, want local:t2", remote.Ref)
 	}
-	if remote.ThreadID != "t2" {
-		t.Fatalf("remote ThreadID = %q, want t2", remote.ThreadID)
+	// The caller addressed the thread by ref alone, so the forwarded ThreadID
+	// stays empty: the remote resolves the ref itself, which is stable-aware,
+	// while a bare threadId it cannot resolve is rejected outright.
+	if remote.ThreadID != "" {
+		t.Fatalf("remote ThreadID = %q, want empty (the caller sent no thread id)", remote.ThreadID)
 	}
 	if !remote.IncludeTurns {
 		t.Fatal("IncludeTurns was not forwarded")
@@ -265,10 +268,12 @@ func TestRemoteHubSourceReadThread(t *testing.T) {
 	}
 }
 
-// Subscription fan-out is staged until 05b, so a controller read's subscribe
-// intent must not reach the remote hub: it would register a remote subscription
-// the controller can never retire. The controller-side relay gate is
-// RelayOnThreadRead, which reports false for this source.
+// A controller read's subscribe intent must not reach the remote hub as a read:
+// forwarding it would register a remote subscription nothing on this side owns
+// or can retire. The controller relay is what owns a remote subscription, and it
+// attaches through SubscribeThread instead, so this source must report the hub's
+// defaults for RelayOnThreadRead and SupportsThreadRelay — 05a overrode both to
+// false only because SubscribeThread was staged, and 05b implements it.
 func TestRemoteHubSourceReadThreadStripsSubscription(t *testing.T) {
 	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
 		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
@@ -289,13 +294,17 @@ func TestRemoteHubSourceReadThreadStripsSubscription(t *testing.T) {
 		t.Fatalf("decode remote params: %v", err)
 	}
 	if remote.Subscribe || remote.ReplaceSubscription {
-		t.Fatalf("forwarded subscription intent = %+v, want both cleared", remote)
+		t.Fatalf("forwarded subscription intent = %+v, want both cleared: the relay's SubscribeThread owns the remote subscription", remote)
 	}
-	if source.RelayOnThreadRead() {
-		t.Fatal("RelayOnThreadRead = true; the hub would start a staged relay on a plain read")
+	// The hub reads both answers through its own optional interfaces
+	// (cmd/evener-hub/app_rpc.go), where a source that does not implement one gets
+	// the default true. 05a's overrides reported false and that is exactly what
+	// kept the relay unreachable, so either shape must now report a relay.
+	if policy, ok := any(source).(interface{ RelayOnThreadRead() bool }); ok && !policy.RelayOnThreadRead() {
+		t.Fatal("RelayOnThreadRead = false; a plain remote read would never start the relay 05b implemented")
 	}
-	if source.SupportsThreadRelay() {
-		t.Fatal("SupportsThreadRelay = true; the hub would start a staged relay on a subscribe read")
+	if capable, ok := any(source).(interface{ SupportsThreadRelay() bool }); ok && !capable.SupportsThreadRelay() {
+		t.Fatal("SupportsThreadRelay = false; a subscribed remote read would never reach SubscribeThread")
 	}
 }
 
@@ -491,5 +500,97 @@ func wireErrorInfo(wire appwire.WireError) string {
 		return info
 	default:
 		return ""
+	}
+}
+
+// TestRemoteHubSourceReadThreadTranslatesNestedDiagnostics pins the read-path
+// half of nested session-ref translation: a thread's Evener.Diagnostics carries
+// the transcript handles of the child sessions (and jobs) a remote hub hosts, so
+// they must move into the controller namespace with the rest of the thread.
+// Opaque handles are left alone.
+func TestRemoteHubSourceReadThreadTranslatesNestedDiagnostics(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("method = %q, want %q", method, appwire.MethodThreadRead)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "t4",
+			Source: "local",
+			Evener: appwire.EvenerThread{
+				Ref: "local:t4",
+				Diagnostics: &appwire.EvenerDiagnostics{
+					Jobs: []appwire.EvenerJobInfo{
+						{JobID: "j1", TranscriptRef: "local:child"},
+						{JobID: "j2", TranscriptRef: "job:job_abc"},
+					},
+					Delegates: []appwire.EvenerDelegateInfo{
+						{DelegateID: "d1", TranscriptRef: "local:child"},
+					},
+				},
+			},
+		}}}
+	})
+
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "host:t4"})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	diagnostics := resp.Thread.Evener.Diagnostics
+	if diagnostics == nil {
+		t.Fatal("diagnostics were dropped")
+	}
+	if got := diagnostics.Jobs[0].TranscriptRef; got != "host:child" {
+		t.Fatalf("job transcriptRef = %q, want host:child", got)
+	}
+	if got := diagnostics.Jobs[1].TranscriptRef; got != "job:job_abc" {
+		t.Fatalf("opaque job transcriptRef = %q, want job:job_abc untouched", got)
+	}
+	if got := diagnostics.Delegates[0].TranscriptRef; got != "host:child" {
+		t.Fatalf("delegate transcriptRef = %q, want host:child", got)
+	}
+}
+
+// TestRemoteHubSourceReadThreadTranslatesPendingEscalationRefs pins the
+// escalation-card half of the read path: a thread snapshot's
+// Evener.PendingEscalations entries carry the ref a client routes the card by
+// (SandboxEscalationRequested.Ref), so it must move into the controller
+// namespace with the rest of the thread. Opaque handles are left alone.
+func TestRemoteHubSourceReadThreadTranslatesPendingEscalationRefs(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("method = %q, want %q", method, appwire.MethodThreadRead)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:     "t5",
+			Source: "local",
+			Evener: appwire.EvenerThread{
+				Ref: "local:t5",
+				PendingEscalations: []appwire.SandboxEscalationRequested{
+					{ThreadID: "child", Ref: "local:child", EscalationID: "e1", DeniedPath: "/tmp/denied"},
+					{ThreadID: "t5", Ref: "job:job_abc", EscalationID: "e2"},
+				},
+			},
+		}}}
+	})
+
+	resp, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "host:t5"})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	escalations := resp.Thread.Evener.PendingEscalations
+	if len(escalations) != 2 {
+		t.Fatalf("pendingEscalations = %+v, want two entries", escalations)
+	}
+	if got := escalations[0].Ref; got != "host:child" {
+		t.Fatalf("escalation ref = %q, want host:child", got)
+	}
+	if got := escalations[0].ThreadID; got != "child" {
+		t.Fatalf("escalation threadId = %q, want child (never rewritten)", got)
+	}
+	if got := escalations[0].DeniedPath; got != "/tmp/denied" {
+		t.Fatalf("escalation deniedPath = %q, want the payload preserved", got)
+	}
+	if got := escalations[1].Ref; got != "job:job_abc" {
+		t.Fatalf("opaque escalation ref = %q, want job:job_abc untouched", got)
 	}
 }
