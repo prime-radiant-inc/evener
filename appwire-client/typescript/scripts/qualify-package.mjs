@@ -60,6 +60,7 @@ const askItem = {
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
 assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
@@ -334,6 +335,41 @@ assert.throws(
   () => client.applyDelta({ key: { kind: "manifest" }, graph: navigationGraph, version: navigationVersion }, emptyDelta, navigationVersion),
   client.NavigationBaseInvalidError,
 );
+`,
+    },
+    // The extensions state layer - the marketplaces store, with the plugins
+    // and directories stores to follow - published as one subpath for the same
+    // reason state/navigation is: a layer both apps build their settings
+    // surfaces on, not part of the client surface every consumer takes.
+    "./state/extensions": {
+      esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
+const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
+const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;`,
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;`,
+      // A store built over a client that rejects everything: the list fetch
+      // records the rejection as state and resolves, a mutation rejects, and
+      // a browse caches the failure - the two conventions the layer keeps. A
+      // promise chain rather than await: the CommonJS consumer has no
+      // top-level await, and a failure inside exits the consumer non-zero.
+      smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
+const marketplacesStore = client.createMarketplacesStore(offline);
+assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+marketplacesStore
+  .getState()
+  .fetchMarketplaces()
+  .then(() => {
+    assert.equal(marketplacesStore.getState().marketplacesError, "offline");
+    return assert.rejects(marketplacesStore.getState().removeMarketplace("acme"), /offline/);
+  })
+  .then(() => marketplacesStore.getState().browseMarketplace("acme"))
+  .then(() => {
+    assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
+    marketplacesStore.dispose();
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 `,
     },
   };

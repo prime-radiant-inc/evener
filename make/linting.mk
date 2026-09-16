@@ -219,7 +219,7 @@ lint-fuzz-registry:
 ## path instead of by its package name.
 ## proves: Every import specifier under cmd/evener-hub/frontend/src,
 ##   mobile-native and mobile/src spells the package @evener/appwire-client
-##   (or one of its two in-repo subpaths), with no file exempt but the resolver
+##   (or a subpath its exports map publishes), with no file exempt but the resolver
 ##   configs and mobile-native/src/metroResolver.test.ts, which asserts that
 ##   mapping - each named one by one.
 ## trigger: Required CI (via make lint); local pre-merge. Well under a second.
