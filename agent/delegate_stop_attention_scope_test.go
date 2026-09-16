@@ -60,7 +60,7 @@ func TestDelegateStopDrainScopesAttentionToMembers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != string(corrupt) {
+	if !bytes.Equal(got, corrupt) {
 		t.Fatal("stop modified unrelated transcript")
 	}
 	if _, err := collectDelegateReconcileEvidence(c.stateDir, c.ReconcileRequirements()); err == nil {

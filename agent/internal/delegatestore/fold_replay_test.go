@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -89,7 +90,7 @@ func replayRegressionEvents() []Event {
 func TestFoldReplayMatchesTransactionalReference(t *testing.T) {
 	events := replayRegressionEvents()
 	for end := 0; end <= len(events); end++ {
-		t.Run(fmt.Sprint(end), func(t *testing.T) {
+		t.Run(strconv.Itoa(end), func(t *testing.T) {
 			want, err := replayReference(events[:end])
 			if err != nil {
 				t.Fatalf("reference fixture: %v", err)
