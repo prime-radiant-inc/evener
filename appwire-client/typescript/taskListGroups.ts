@@ -1,7 +1,7 @@
-// Status grouping for the tasks panel's focus-group layout (spec:
+// Status grouping for a task list's focus-group layout (spec:
 // docs/superpowers/specs/2026-08-09-task-list-ui-design.md §Groups).
 // Presentational only: a stable partition that never reorders within a
-// group - the wire's id order is the session's own chronology and the panel
+// group - the wire's id order is the session's own chronology and the view
 // has no business re-sorting it. done and cancelled share `settled`: the
 // per-row glyph and strikethrough keep the distinction visible inside the
 // collapsed history group. Shared by the web tasks panel and native's tasks

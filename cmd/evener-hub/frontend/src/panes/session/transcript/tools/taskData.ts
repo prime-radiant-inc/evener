@@ -17,8 +17,6 @@
 // case, never an empty checklist or a fabricated auto-start.
 import { parseTaskListData, type TaskRow } from "@evener/appwire-client";
 
-export type { TaskRow };
-
 export function parseTaskState(raw: unknown): TaskRow[] | null {
   return parseTaskListData(raw);
 }

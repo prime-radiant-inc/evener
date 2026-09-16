@@ -20,13 +20,12 @@ delegate status rule,
 the slash invocation and catalog visibility rules the palette and composer
 share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
-and picker ladders every effort chip and select share, the task-list parser
-(`TaskListResponse.data` is `unknown` on the wire; `null` means no data and
-stays distinct from an empty list), the aggregate sentence, status grouping
-and timestamp formatters the tasks panel and native tasks sheet render from,
-the display formatters both apps render counts, durations and clock times
-with, the text and argument helpers a tool call's rendering is built from,
-the marketplace source label both apps show beside a registered marketplace,
+and picker ladders every effort chip and select share, the task-list
+parser, aggregate sentence, status grouping and timestamp formatters the
+tasks panel and native tasks sheet render from, the display formatters
+both apps render counts, durations and clock times with, the text and
+argument helpers a tool call's rendering is built from, the marketplace
+source label both apps show beside a registered marketplace,
 the short lowercase session-state gloss a session row's second line leads
 with, the credential labels both apps describe a provider instance's active
 credential source, shadowed layers and test outcome with, the path picker's
