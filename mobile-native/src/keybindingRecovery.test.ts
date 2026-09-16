@@ -26,9 +26,6 @@ function fixture() {
 			if (failSave) throw new Error("disk unavailable");
 			stored = structuredClone(value);
 		},
-		remove: () => {
-			stored = null;
-		},
 		removeIf: (value) => {
 			if (JSON.stringify(value) === JSON.stringify(stored)) stored = null;
 		},

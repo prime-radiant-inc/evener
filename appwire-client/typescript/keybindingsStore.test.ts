@@ -49,9 +49,6 @@ function memoryDraftStorage() {
     save: (checkpoint) => {
       stored = structuredClone(checkpoint);
     },
-    remove: () => {
-      stored = null;
-    },
     removeIf: (checkpoint) => {
       if (JSON.stringify(checkpoint) === JSON.stringify(stored)) stored = null;
     },

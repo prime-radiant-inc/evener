@@ -8,6 +8,7 @@ import {
 	type KeybindingsRule,
 	type KeybindingsStore,
 	type KeybindingsStoreState,
+	type KeybindingsSupport,
 	keybindingsSupport,
 	normalizeConfig,
 	toWireConfig,
@@ -24,10 +25,8 @@ type NativeFeatures = Pick<
 	FeatureSet,
 	"keybindingsSettings" | "transcriptDisplaySettings"
 >;
-type Support = "unknown" | "supported" | "unsupported";
-
 export interface PreferenceState<T> {
-	support: Support;
+	support: KeybindingsSupport;
 	loading: boolean;
 	saving: boolean;
 	confirmed: T | null;
@@ -97,50 +96,51 @@ const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
 const KEYBINDINGS_LOAD_ERROR_MESSAGE =
 	"The hub could not load its saved shortcuts. Repair the hub settings file before editing.";
 
+function hubErrorMessage(state: KeybindingsStoreState): string | null {
+	if (state.loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
+	return state.hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
+}
+
 // The keybinding domain is a projection of the shared store's state: the
 // confirmed payload is rebuilt from the store's revision and raw rules, and a
 // hub-sourced failure surfaces as fixed copy (a raw client error may carry a
-// token or a path) while the draft editor's own messages pass through.
-function keybindingsDomain(
-	state: KeybindingsStoreState,
-): PreferenceState<KeybindingsOverrides> {
-	const hubError =
-		state.hubError === null
-			? null
-			: state.loadError !== null
-				? KEYBINDINGS_LOAD_ERROR_MESSAGE
-				: HUB_UNCONFIRMED_MESSAGE;
-	return {
-		support: state.hubSupport,
-		loading: state.hubLoading,
-		saving: state.saving,
-		confirmed: state.loaded
-			? {
-					version: 1,
-					revision: state.revision,
-					rules: state.rawOverrides.map((rule) => ({
-						action: rule.action,
-						chord: rule.chord,
-					})),
-					...(state.loadError === null ? {} : { loadError: state.loadError }),
-				}
-			: null,
-		draft: state.draft,
-		error: state.draftError ?? hubError,
-		conflict: state.draftConflict,
-		writeUncertain: state.writeUncertain,
-		storageUnavailable: state.storageUnavailable,
+// token or a path) while the draft editor's own messages pass through. The
+// projection keeps `confirmed.rules` identity-stable across notifications
+// that did not apply a payload: the shortcut screen memoizes its preview
+// (a registry build plus validation) on that array.
+function keybindingsProjection() {
+	let rules: {
+		raw: readonly KeybindingsRule[];
+		copy: KeybindingsRule[];
+	} | null = null;
+	return (
+		state: KeybindingsStoreState,
+	): PreferenceState<KeybindingsOverrides> => {
+		if (rules?.raw !== state.rawOverrides)
+			rules = { raw: state.rawOverrides, copy: [...state.rawOverrides] };
+		return {
+			support: state.hubSupport,
+			loading: state.hubLoading,
+			saving: state.saving,
+			confirmed: state.loaded
+				? {
+						version: 1,
+						revision: state.revision,
+						rules: rules.copy,
+						...(state.loadError === null ? {} : { loadError: state.loadError }),
+					}
+				: null,
+			draft: state.draft,
+			error: state.draftError ?? hubErrorMessage(state),
+			conflict: state.draftConflict,
+			writeUncertain: state.writeUncertain,
+			storageUnavailable: state.storageUnavailable,
+		};
 	};
 }
 
 export class NativePreferences {
-	private state: NativePreferencesSnapshot = {
-		keybindings: initialDomain<KeybindingsOverrides>(),
-		transcriptMobile: initialDomain<{
-			revision: number;
-			config: TranscriptDisplayConfigV1;
-		}>(),
-	};
+	private state: NativePreferencesSnapshot;
 	private readonly listeners = new Set<() => void>();
 	private readonly client: ConversationClientLike;
 	private readonly unsubscribe: () => void;
@@ -169,10 +169,11 @@ export class NativePreferences {
 		});
 		this.keybindings.setSupport(keybindingsSupport(features));
 		this.keybindings.beginReadyGeneration();
+		const keybindingsDomain = keybindingsProjection();
 		this.state = {
 			keybindings: keybindingsDomain(this.keybindings.getState()),
 			transcriptMobile: {
-				...this.state.transcriptMobile,
+				...initialDomain(),
 				support:
 					features.transcriptDisplaySettings === true
 						? "supported"

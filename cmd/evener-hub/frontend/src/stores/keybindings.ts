@@ -27,10 +27,14 @@ function requireClient(): AppwireClientLike {
   return client;
 }
 
-// The client port resolves connectionStore's CURRENT client on every call:
-// the store subscribes to notifications once per ready generation, and this
-// file begins a generation only once a client is wired, so each subscription
-// lands on the client that generation belongs to.
+// The client port resolves connectionStore's CURRENT client on every call.
+// Two ordering contracts make the singleton behave like one store per
+// connection: the store subscribes to notifications once per ready
+// generation and this file begins a generation only once a client is wired
+// (including the generation setSupport begins on a flap back to supported),
+// so each subscription lands on the client that generation belongs to; and
+// onConnectionChange publishes support BEFORE rewiring, so the refresh a
+// rewire kicks reads the connection's current feature set.
 const connectedClient: KeybindingsClient = {
   request: async (method, params, opts) => requireClient().request(method, params, opts),
   onNotification: (cb) => requireClient().onNotification(cb),
@@ -54,7 +58,6 @@ function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   keybindingsStore.endReadyGeneration();
   unwireReady?.();
-  unwireReady = null;
   wiredClient = client;
   // The loaded state belongs to the PREVIOUS hub: un-apply its overrides and
   // reset its payload before this client's first refresh can land.
@@ -67,9 +70,8 @@ function onConnectionChange(
   state: ReturnType<typeof connectionStore.getState>,
   previous: ReturnType<typeof connectionStore.getState>,
 ): void {
-  // Support is published FIRST so every refresh kicked below reads the
-  // connection's current feature set. On a flap back to supported the store
-  // begins a new ready generation here (finding 24), and the flap-back
+  // Support FIRST (see connectedClient). On a flap back to supported the
+  // store begins a new ready generation here (finding 24), and the flap-back
   // refresh at the end runs under that new epoch.
   keybindingsStore.setSupport(keybindingsSupport(state.features));
   if (state.client !== wiredClient && state.client !== null) rewireClient(state.client);

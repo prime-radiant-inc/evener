@@ -29,7 +29,6 @@ export function nativeKeybindingDrafts(
 		createId: () => backend.createId(),
 		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
-		remove: () => backend.delete(key),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
 	};
 }

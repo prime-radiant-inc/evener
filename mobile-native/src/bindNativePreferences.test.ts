@@ -70,7 +70,8 @@ describe("native preferences connection binding", () => {
 		f.connection.resolve(f.hello);
 		await f.connection.promise;
 		expect(f.models).toHaveLength(1);
-		expect(f.notifications.size).toBeGreaterThan(0);
+		// The keybindings store's subscription and the class's transcript one.
+		expect(f.notifications.size).toBe(2);
 		f.dispose();
 		expect(f.notifications.size).toBe(0);
 	});

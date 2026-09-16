@@ -28,7 +28,7 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
-import { WireError } from "./errors";
+import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
 import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
@@ -65,7 +65,6 @@ export interface KeybindingDraftStorage {
   createId(): string;
   load(): unknown;
   save(checkpoint: KeybindingDraftCheckpoint): void;
-  remove(): void;
   /** Removes the stored checkpoint only if it is still this one. */
   removeIf(checkpoint: KeybindingDraftCheckpoint): void;
 }
@@ -263,6 +262,16 @@ export function fromWireOverrides(value: unknown): KeybindingsOverrides | undefi
   return value as KeybindingsOverrides;
 }
 
+function cloneRules(rules: readonly OverrideRule[]): OverrideRule[] {
+  return rules.map((rule) => ({ action: rule.action, chord: rule.chord }));
+}
+
+/** A draft composed against one confirmed revision is stale once the hub has
+ * confirmed a different one. */
+function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: number): boolean {
+  return draft !== null && draft.revision !== confirmedRevision;
+}
+
 function invalidDraft(): never {
   throw new Error("Invalid keybinding draft.");
 }
@@ -270,7 +279,7 @@ function invalidDraft(): never {
 /** The strict rule check the draft editor runs on user input and on a
  * restored checkpoint: an action id and a chord must be non-empty strings
  * (or a null chord for an unbind). Throws on anything else. */
-export function keybindingRules(value: unknown): KeybindingsRule[] {
+function keybindingRules(value: unknown): KeybindingsRule[] {
   if (!Array.isArray(value)) invalidDraft();
   return value.map((item): KeybindingsRule => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) invalidDraft();
@@ -319,53 +328,216 @@ function draftRepository(storage: KeybindingDraftStorage) {
   };
 }
 
-/** The fields a restored checkpoint (or its absence) sets: shared by the
- * creation-time restore, which has no state yet, and the recovery restore. */
-function restoredDraftFields(
-  checkpoint: KeybindingDraftCheckpoint | null,
-  confirmed: { loaded: boolean; revision: number },
-): Pick<StateFields, "draft" | "writeUncertain" | "storageUnavailable" | "draftError" | "draftConflict"> {
+/** Extracts a payload the hub attached to a rejection under `key` when the
+ * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
+ * `current` (the server's state after a lost revision race) and the
+ * post-rename durable failure's `applied` (the hub's rename already published
+ * the patch and only a follow-up sync failed, so the write must be treated as
+ * applied - not as a hubError that leaves editing disabled over live new
+ * bindings; roborev PR #884 round 2). The discriminator is the string, never
+ * the code - siblings share a code. */
+function rejectionPayload(error: unknown, info: string, key: string): KeybindingsOverrides | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
+  return fromWireOverrides((error.data as Record<string, unknown>)[key]);
+}
+
+/** What applying a confirmed payload does to the host's bindings. The
+ * registry-backed reconciler owns the applied map, the delta rebind and the
+ * rollback; the verbatim one is for a host with no dispatcher. */
+interface OverrideReconciler {
+  /** Reconciles the host to `rules`; throws with the host rolled back. */
+  apply(rules: readonly OverrideRule[]): Pick<StateFields, "overrides" | "warnings">;
+  /** See registryReconciler's doc. Returns false when the restore rolled back. */
+  unapplyAll(): boolean;
+  /** The warnings `rules` would introduce over what `baseline` already produces. */
+  introducedWarnings(baseline: readonly OverrideRule[], rules: readonly OverrideRule[]): ValidationWarning[];
+  /** Mirrors the character-key pref into the host before a re-apply. */
+  prepareReapply(): void;
+}
+
+function verbatimReconciler(): OverrideReconciler {
   return {
-    draft: checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null,
-    writeUncertain: checkpoint?.writeUncertain ?? false,
-    storageUnavailable: false,
-    draftError: null,
-    draftConflict: !!checkpoint && confirmed.loaded && checkpoint.baseRevision !== confirmed.revision,
+    apply: (rules) => ({ overrides: rules, warnings: [] }),
+    unapplyAll: () => true,
+    introducedWarnings: () => [],
+    prepareReapply: () => {},
   };
 }
 
-/** Extracts the server's current payload from a revision-conflict rejection
- * (appwire CodeConflict -32013 with data.evenerErrorInfo "conflict"). */
-function conflictCurrent(error: unknown): KeybindingsOverrides | undefined {
-  if (!(error instanceof WireError) || error.code !== -32013 || typeof error.data !== "object" || error.data === null)
-    return undefined;
-  const data = error.data as Record<string, unknown>;
-  if (data.evenerErrorInfo !== "conflict") return undefined;
-  return fromWireOverrides(data.current);
-}
+function registryReconciler(registry: KeybindingsRegistry, characterKeyTriggers: () => boolean): OverrideReconciler {
+  /** The action -> effective override (serialized chord, or null for an
+   * unbind) currently applied to the registry. */
+  const applied = new Map<string, string | null>();
 
-/** Extracts the APPLIED canonical payload from a post-rename durable-failure
- * rejection (appwire CodeInternalError -32603 with data.evenerErrorInfo
- * "keybindingsPostRename"): the hub's rename already published the patch and
- * only a follow-up sync failed, so the write must be treated as applied -
- * not as a hubError that leaves editing disabled over live new bindings
- * (roborev PR #884 round 2). */
-function postRenameApplied(error: unknown): KeybindingsOverrides | undefined {
-  if (!(error instanceof WireError) || error.code !== -32603 || typeof error.data !== "object" || error.data === null)
-    return undefined;
-  const data = error.data as Record<string, unknown>;
-  if (data.evenerErrorInfo !== "keybindingsPostRename") return undefined;
-  return fromWireOverrides(data.applied);
-}
+  /** Restores a bindings snapshot taken before a failed reconcile: unwinds
+   * every current binding and re-registers the snapshot in order, returning
+   * the registry to its last good state. Re-registering a previously-valid
+   * set cannot conflict. */
+  function rollback(snapshot: readonly Binding[]): void {
+    const state = registry.getState();
+    for (const binding of state.bindings) state.unregisterBinding(binding.id);
+    for (const binding of snapshot) {
+      state.registerBinding({
+        id: binding.id,
+        actionId: binding.actionId,
+        chord: binding.chord,
+        scope: binding.scope,
+        ...(binding.when === undefined ? {} : { when: binding.when }),
+        allowInEditable: binding.allowInEditable,
+        allowInModal: binding.allowInModal,
+        ignoreIfDefaultPrevented: binding.ignoreIfDefaultPrevented,
+      });
+    }
+  }
 
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  function validate(rules: readonly OverrideRule[], pref: boolean) {
+    return validateOverrideRules(rules, registry, undefined, new Set(applied.keys()), pref);
+  }
+
+  return {
+    /** Reconciles the registry to the payload's effective overrides:
+     * validates, strips the bindings of every action whose effective chord
+     * changed, then re-establishes each (override or restored default).
+     * Two-phase so a payload that moves a chord between actions never trips a
+     * transient conflict. The mutation is atomic: a throw rolls the registry
+     * back to its pre-reconcile state before propagating, so callers surface
+     * the failure with the last good bindings intact. */
+    apply(rules) {
+      // The pref gates BOTH the restore simulation and the actual restore
+      // below (finding 27): with character-key triggers off the live registry
+      // has no "?" cheatsheet binding, so neither a simulated nor a real
+      // restore may claim one - a real restore registering it would collide
+      // with a user rule holding exactly [Shift]+? and throw mid-reconcile.
+      const pref = characterKeyTriggers();
+      const validated = validate(rules, pref);
+      const next = new Map<string, string | null>();
+      for (const rule of validated.rules) {
+        next.set(rule.action, rule.chord === null ? null : serializeChord(rule.chord));
+      }
+      const changedActions = new Set<string>();
+      for (const [action, chord] of next) {
+        if (!applied.has(action) || applied.get(action) !== chord) changedActions.add(action);
+      }
+      for (const action of applied.keys()) {
+        if (!next.has(action)) changedActions.add(action);
+      }
+      if (changedActions.size > 0) {
+        const snapshot = registry.getState().bindings;
+        try {
+          for (const action of changedActions) removeActionBindings(registry, action);
+          for (const action of changedActions) {
+            if (next.has(action)) {
+              rebindAction(registry, action, next.get(action) ?? null);
+            } else {
+              restoreDefaultBinding(registry, action, { characterKeyTriggers: pref });
+            }
+          }
+        } catch (error) {
+          rollback(snapshot);
+          throw error;
+        }
+      }
+      applied.clear();
+      for (const [action, chord] of next) applied.set(action, chord);
+      return {
+        overrides: validated.rules.map((rule) => ({
+          action: rule.action,
+          chord: rule.chord === null ? null : serializeChord(rule.chord),
+        })),
+        warnings: validated.warnings,
+      };
+    },
+
+    /** Restores defaults for every applied override and clears the applied
+     * map: the registry must stop presenting a hub's overrides the moment that
+     * hub's state stops being current (client replacement, test reset) - that
+     * staleness one layer down is the same defect as a stale store payload.
+     * Atomic, mirroring apply: two-phase (strip every applied action's
+     * bindings first, THEN restore each default) so a chord that moved between
+     * two overridden actions never trips a transient conflict mid-unwind, and
+     * any throw rolls the registry back to its pre-unwind snapshot. On rollback
+     * the applied map stays INTACT - clearing it while the registry still holds
+     * overrides would detach the unwind bookkeeping from the registry, and the
+     * next reconcile's delta math would misread the wedged bindings. The reset
+     * itself never propagates (a wedged registry - a foreign binding squatting
+     * a default chord - must not make reset throw); the next reconcile or the
+     * next test's registry rebuild retries from the intact map.
+     *
+     * ORDERING (the web cheatsheetController's contract): this mutates the
+     * registry ONLY. Callers must fire any store setState - which is what the
+     * character-key reconcile subscribes to - AFTER this returns, so the
+     * reconcile sees the final shape (restore re-registers the conditional "?"
+     * entry with no knowledge of the pref; the reconcile then removes it if the
+     * pref is off).
+     *
+     * Returns false when the restore rolled back (the registry still holds the
+     * overrides and the applied map is intact), true otherwise - callers that
+     * discard the hub payload state after un-applying must NOT do so on false:
+     * the retained payload is the only thing that can re-drive reconciliation
+     * once the wedge clears (finding 31). */
+    unapplyAll() {
+      if (applied.size === 0) return true;
+      const snapshot = registry.getState().bindings;
+      try {
+        for (const action of applied.keys()) removeActionBindings(registry, action);
+        // Pref-aware like apply's restore: while the character-key pref is off
+        // the conditional "?" entry is not re-registered (the
+        // cheatsheetController owns it), so the restore cannot collide with a
+        // user rule holding exactly [Shift]+? (finding 27).
+        for (const action of applied.keys())
+          restoreDefaultBinding(registry, action, { characterKeyTriggers: characterKeyTriggers() });
+      } catch {
+        // See above: roll back, keep the applied map, never propagate.
+        rollback(snapshot);
+        return false;
+      }
+      applied.clear();
+      return true;
+    },
+
+    /** Pre-flight semantic validation (the parked 2b minor the settings
+     * editor makes live): the SAME simulation apply runs on a confirmed
+     * payload, run BEFORE the hub write. A rule the reconcile would skip -
+     * unknown action, unparseable or platform-reserved chord, or a conflict on
+     * the simulated final map - would otherwise be accepted by the hub (the
+     * server validates structure only) and then silently not apply. The
+     * payload is composed from the hub's RAW rules, so it can carry a
+     * PRESERVED rule validation skips - an unknown action from a newer client,
+     * say. That is a pre-existing condition, not a defect this call
+     * introduced: only warnings the CURRENT raw set does not already produce
+     * count, keyed by action+message (the baseline simulation runs against the
+     * same live registry and applied set, so a preserved rule reproduces its
+     * apply-time warning verbatim). */
+    introducedWarnings(baseline, rules) {
+      const pref = characterKeyTriggers();
+      const key = (warning: ValidationWarning) => `${warning.rule.action} ${warning.message}`;
+      const baselineKeys = new Set(validate(baseline, pref).warnings.map(key));
+      return validate(rules, pref).warnings.filter((warning) => !baselineKeys.has(key(warning)));
+    },
+
+    /** The registry must mirror the pref BEFORE the re-apply mutates: tinykeys
+     * canonicalizes the shifted character, so the conditional entry and a
+     * Shift+? claim serialize identically - a pref-off re-apply registering
+     * that claim while the entry is still live would hit registerBinding's
+     * exact-match conflict and roll back. Unregistering is idempotent and
+     * mirrors what the web's cheatsheetController reconcile is about to do (it
+     * re-derives the same end state and no-ops). The pref-ON direction needs
+     * no mirror: the re-apply's pref-authoritative simulation un-applies a
+     * conflicting claim first, and the reconcile - fired by the store's
+     * setState - registers "?" against the clean map. */
+    prepareReapply() {
+      if (!characterKeyTriggers()) registry.getState().unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+    },
+  };
 }
 
 /** Builds a store over `client`, reconciling into `registry` when given. */
 export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsStore {
-  const { client, registry } = deps;
-  const characterKeyTriggers = deps.characterKeyTriggers ?? (() => true);
+  const { client } = deps;
+  const reconciler =
+    deps.registry === undefined
+      ? verbatimReconciler()
+      : registryReconciler(deps.registry, deps.characterKeyTriggers ?? (() => true));
   const drafts = deps.drafts === undefined ? null : draftRepository(deps.drafts);
 
   // Ready-generation wiring. `activeEpoch` is -1 while no generation is
@@ -395,21 +567,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * next test. */
   let writeQueue: Promise<void> = Promise.resolve();
   /** Bumps when a checkpointed write leaves: a GET that started BEFORE the
-   * write must not resolve the write's outcome (clear writeUncertain), so a
-   * refresh compares the epoch it captured against this one after the read
-   * lands and discards a read from before the write. */
+   * write says nothing about the write's outcome, so only a read that started
+   * after it may settle `writeUncertain`. */
   let writeEpoch = 0;
-  /** The action -> effective override (serialized chord, or null for an
-   * unbind) currently applied to the registry. Closure state like the rest
-   * of the wiring: it describes the registry, not store state. */
-  const appliedOverrides = new Map<string, string | null>();
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
     // The draft restore is part of the initial state so a host that builds
     // the store synchronously (native, per connection) sees the persisted
     // proposal on its first read, before any refresh.
-    ...(drafts === null ? {} : restoreDraft(drafts, { loaded: false, revision: 0 })),
+    ...(drafts === null ? {} : restoreDraft({ loaded: false, revision: 0 })),
     refreshOverrides,
     patchOverrides,
     editDraft,
@@ -419,12 +586,20 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }));
   const { getState, setState } = store;
 
-  function restoreDraft(
-    repository: ReturnType<typeof draftRepository>,
-    confirmed: { loaded: boolean; revision: number },
-  ): Partial<StateFields> {
+  /** The fields a restored checkpoint (or its absence, or a failed restore)
+   * sets; `confirmed` is passed in because the creation-time restore runs
+   * before there is any state to read. */
+  function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<StateFields> {
     try {
-      return restoredDraftFields(repository.load(), confirmed);
+      const checkpoint = drafts?.load() ?? null;
+      const draft = checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null;
+      return {
+        draft,
+        writeUncertain: checkpoint?.writeUncertain ?? false,
+        storageUnavailable: false,
+        draftError: null,
+        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision),
+      };
     } catch {
       return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
     }
@@ -438,131 +613,6 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return getState().hubSupport === "supported";
   }
 
-  /** Restores a bindings snapshot taken before a failed reconcile: unwinds
-   * every current binding and re-registers the snapshot in order, returning
-   * the registry to its last good state. Re-registering a previously-valid
-   * set cannot conflict. */
-  function rollbackBindings(target: KeybindingsRegistry, snapshot: readonly Binding[]): void {
-    const state = target.getState();
-    for (const binding of state.bindings) state.unregisterBinding(binding.id);
-    for (const binding of snapshot) {
-      state.registerBinding({
-        id: binding.id,
-        actionId: binding.actionId,
-        chord: binding.chord,
-        scope: binding.scope,
-        ...(binding.when === undefined ? {} : { when: binding.when }),
-        allowInEditable: binding.allowInEditable,
-        allowInModal: binding.allowInModal,
-        ignoreIfDefaultPrevented: binding.ignoreIfDefaultPrevented,
-      });
-    }
-  }
-
-  /** Restores defaults for every applied override and clears the applied map:
-   * the registry must stop presenting a hub's overrides the moment that hub's
-   * state stops being current (client replacement, test reset) - that
-   * staleness one layer down is the same defect as a stale store payload.
-   * Atomic, mirroring applyOverrideRules: two-phase (strip every applied
-   * action's bindings first, THEN restore each default) so a chord that moved
-   * between two overridden actions never trips a transient conflict mid-unwind,
-   * and any throw rolls the registry back to its pre-unwind snapshot. On
-   * rollback the applied map stays INTACT - clearing it while the registry
-   * still holds overrides would detach the unwind bookkeeping from the
-   * registry, and the next reconcile's delta math would misread the wedged
-   * bindings. The reset itself never propagates (a wedged registry - a foreign
-   * binding squatting a default chord - must not make reset throw); the next
-   * reconcile or the next test's registry rebuild retries from the intact map.
-   *
-   * ORDERING (the web cheatsheetController's contract): this mutates the
-   * registry ONLY. Callers must fire any store setState - which is what the
-   * character-key reconcile subscribes to - AFTER this returns, so the
-   * reconcile sees the final shape (restore re-registers the conditional "?"
-   * entry with no knowledge of the pref; the reconcile then removes it if the
-   * pref is off).
-   *
-   * Returns false when the restore rolled back (the registry still holds the
-   * overrides and the applied map is intact), true otherwise - callers that
-   * discard the hub payload state after un-applying must NOT do so on false:
-   * the retained payload is the only thing that can re-drive reconciliation
-   * once the wedge clears (finding 31). */
-  function unapplyAllOverrides(): boolean {
-    if (registry === undefined || appliedOverrides.size === 0) return true;
-    const snapshot = registry.getState().bindings;
-    try {
-      for (const action of appliedOverrides.keys()) removeActionBindings(registry, action);
-      // Pref-aware like the reconcile's restore: while the character-key
-      // pref is off the conditional "?" entry is not re-registered (the
-      // cheatsheetController owns it), so the restore cannot collide with a
-      // user rule holding exactly [Shift]+? (finding 27).
-      for (const action of appliedOverrides.keys())
-        restoreDefaultBinding(registry, action, { characterKeyTriggers: characterKeyTriggers() });
-    } catch {
-      // See the doc comment: roll back, keep the applied map, never propagate.
-      rollbackBindings(registry, snapshot);
-      return false;
-    }
-    appliedOverrides.clear();
-    return true;
-  }
-
-  /** Reconciles the registry to the payload's effective overrides: validates,
-   * strips the bindings of every action whose effective chord changed, then
-   * re-establishes each (override or restored default). Two-phase so a payload
-   * that moves a chord between actions never trips a transient conflict. The
-   * mutation is atomic: a throw rolls the registry back to its pre-reconcile
-   * state before propagating, so callers surface the failure with the last
-   * good bindings intact. Without a registry the rules publish verbatim. */
-  function applyOverrideRules(rules: readonly OverrideRule[]): void {
-    if (registry === undefined) {
-      setState({ overrides: rules.map((rule) => ({ action: rule.action, chord: rule.chord })), warnings: [] });
-      return;
-    }
-    // The pref gates BOTH the restore simulation and the actual restore
-    // below (finding 27): with character-key triggers off the live registry
-    // has no "?" cheatsheet binding, so neither a simulated nor a real
-    // restore may claim one - a real restore registering it would collide
-    // with a user rule holding exactly [Shift]+? and throw mid-reconcile.
-    const pref = characterKeyTriggers();
-    const validated = validateOverrideRules(rules, registry, undefined, new Set(appliedOverrides.keys()), pref);
-    const next = new Map<string, string | null>();
-    for (const rule of validated.rules) {
-      next.set(rule.action, rule.chord === null ? null : serializeChord(rule.chord));
-    }
-    const changedActions = new Set<string>();
-    for (const [action, chord] of next) {
-      if (!appliedOverrides.has(action) || appliedOverrides.get(action) !== chord) changedActions.add(action);
-    }
-    for (const action of appliedOverrides.keys()) {
-      if (!next.has(action)) changedActions.add(action);
-    }
-    if (changedActions.size > 0) {
-      const snapshot = registry.getState().bindings;
-      try {
-        for (const action of changedActions) removeActionBindings(registry, action);
-        for (const action of changedActions) {
-          if (next.has(action)) {
-            rebindAction(registry, action, next.get(action) ?? null);
-          } else {
-            restoreDefaultBinding(registry, action, { characterKeyTriggers: pref });
-          }
-        }
-      } catch (error) {
-        rollbackBindings(registry, snapshot);
-        throw error;
-      }
-    }
-    appliedOverrides.clear();
-    for (const [action, chord] of next) appliedOverrides.set(action, chord);
-    setState({
-      overrides: validated.rules.map((rule) => ({
-        action: rule.action,
-        chord: rule.chord === null ? null : serializeChord(rule.chord),
-      })),
-      warnings: validated.warnings,
-    });
-  }
-
   /** Applies a confirmed hub payload (get result, changed params, patch
    * response): stale revisions are ignored, the rest reconcile the registry.
    * A GET carrying loadError is authoritative at ANY revision: the hub is
@@ -571,11 +621,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * whose PATCH rejects. The revision advances ONLY after a successful
    * reconcile: a failed apply leaves the previous revision in place so the
    * payload stays retryable and a later `changed` with the same revision is
-   * not eaten by the stale guard. Returns false for an ignored payload. */
-  function applyHubOverrides(payload: KeybindingsOverrides): boolean {
+   * not eaten by the stale guard. `extra` lands in the same publish as the
+   * confirmed state. Returns false for an ignored payload. */
+  function applyHubOverrides(payload: KeybindingsOverrides, extra: Partial<StateFields> = {}): boolean {
     const state = getState();
-    if (payload.revision < state.revision && payload.loadError === undefined) return false;
-    applyOverrideRules(payload.rules);
+    if (payload.revision < state.revision && payload.loadError === undefined) {
+      if (Object.keys(extra).length > 0) setState(extra);
+      return false;
+    }
+    const rules = cloneRules(payload.rules);
+    const reconciled = reconciler.apply(rules);
     // The reconcile succeeded, so any rolled-back un-apply's wedge is cleared
     // with it: the rollback hubError is now stale and may clear normally.
     unapplyRolledBack = false;
@@ -585,12 +640,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // parked 2b asymmetry: a stale conflict notice outlived the state it
     // described (only a successful PATCH cleared it).
     // rawOverrides is retained VERBATIM (validation filtering already happened
-    // inside applyOverrideRules): an edit's whole-payload PATCH is composed
-    // from this set so a rule validation skips survives an unrelated edit.
-    // Only a successful reconcile advances it - a failed apply leaves the last
-    // good raw set beside the last good revision.
+    // inside the reconciler): an edit's whole-payload PATCH is composed from
+    // this set so a rule validation skips survives an unrelated edit. Only a
+    // successful reconcile advances it - a failed apply leaves the last good
+    // raw set beside the last good revision.
     setState({
-      rawOverrides: payload.rules.map((rule) => ({ action: rule.action, chord: rule.chord })),
+      ...reconciled,
+      rawOverrides: rules,
       revision: payload.revision,
       // Row-level error clearing keys on this bump (finding 33): preflight and
       // generation-fence rejections deliberately never set hubError, so the
@@ -609,8 +665,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       hubError: payload.loadError ?? null,
       loadError: payload.loadError ?? null,
       conflict: null,
-      // The draft's base is stale once the confirmed revision moved past it.
-      draftConflict: state.draft !== null && payload.revision !== state.draft.revision,
+      draftConflict: staleDraft(state.draft, payload.revision),
+      ...extra,
     });
     return true;
   }
@@ -675,8 +731,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // advertise keybindings, so the settings section claims "the built-in
       // defaults are in effect". The registry must match that claim. Un-apply
       // BEFORE the setState - the character-key reconcile subscribes to the
-      // store and must see the final registry shape (see unapplyAllOverrides).
-      unrestored = !unapplyAllOverrides();
+      // store and must see the final registry shape (see unapplyAll).
+      unrestored = !reconciler.unapplyAll();
       unapplyRolledBack = unrestored;
     }
     // The unsupported drop also discards the hub PAYLOAD state: retaining
@@ -726,12 +782,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // (finding 32: a client swap re-runs this with support "unknown"
         // before the new hub's features resolve, and the wedge it describes
         // is still live in the registry).
-        hubError: unrestored || unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
+        hubError: unapplyRolledBack ? UNAPPLY_ROLLED_BACK_MESSAGE : null,
         conflict: null,
-        ...(dropHubState
-          ? { loaded: false, revision: 0, overrides: [], rawOverrides: [], warnings: [], loadError: null }
-          : {}),
-        ...(unrestored ? { loaded: false, revision: 0 } : {}),
+        ...(support === "unsupported" ? { loaded: false, revision: 0 } : {}),
+        ...(dropHubState ? { overrides: [], rawOverrides: [], warnings: [], loadError: null } : {}),
       });
   }
 
@@ -762,33 +816,45 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // Same posture as refreshFor: a reconcile failure surfaces as hubError
       // (the registry has already rolled back to its last good state), never
       // as an exception escaping the client's notification dispatch.
-      setState({ hubError: messageOf(error) });
+      setState({ hubError: errorText(error) });
     }
+  }
+
+  /** What an authoritative read (a GET without loadError) settles for the
+   * draft editor: an uncertain write's outcome is now whatever the hub
+   * confirmed, so the checkpoint is re-marked and edits unblock. A read that
+   * started before the write left, or landed while one is in flight, says
+   * nothing about that write and settles nothing. */
+  function settledWrite(payload: KeybindingsOverrides, writeEpochAtStart: number): Partial<StateFields> {
+    const { draft, writeUncertain, saving } = getState();
+    if (payload.loadError !== undefined || writeEpochAtStart !== writeEpoch || saving) return {};
+    if (draft !== null && writeUncertain) {
+      try {
+        persistDraft({ baseRevision: draft.revision, rules: draft.rules, writeUncertain: false });
+      } catch {
+        return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
+      }
+    }
+    return { writeUncertain: false };
   }
 
   async function refreshFor(generation: number): Promise<void> {
     if (!isCurrent(generation) || !isSupported()) return;
     const serial = ++refreshSerial;
     const writeEpochAtStart = writeEpoch;
+    // The read that lands is this one, under the generation it started in,
+    // with support still advertised (finding 23: a refresh rejecting after
+    // support was lost would otherwise overwrite the support-drop cleanup
+    // with a stale "could not load" hubError while the section claims the
+    // built-in defaults are in effect).
+    const stillMine = () => isCurrent(generation) && serial === refreshSerial && isSupported();
     setState({ hubLoading: true, ...(unapplyRolledBack ? {} : { hubError: null }) });
     try {
       const result = await client.request("evener/settings/keybindings/get", {});
-      if (!isCurrent(generation) || serial !== refreshSerial || !isSupported()) return;
+      if (!stillMine()) return;
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
-      // A read that started before a checkpointed write left, or landed while
-      // one is in flight, says nothing about that write's outcome: the write's
-      // own reply (or the next read) resolves it.
-      if (writeEpochAtStart !== writeEpoch || getState().saving) return;
-      const { draft, writeUncertain } = getState();
-      // An authoritative read (no loadError) settles an uncertain write: the
-      // hub's current state IS the outcome, and the checkpoint is re-marked
-      // so a later restore does not block edits on a resolved question.
-      if (draft !== null && writeUncertain && payload.loadError === undefined) {
-        persistDraft({ baseRevision: draft.revision, rules: [...draft.rules], writeUncertain: false });
-      }
-      applyHubOverrides(payload);
-      if (payload.loadError === undefined) setState({ writeUncertain: false });
+      applyHubOverrides(payload, { hubLoading: false, ...settledWrite(payload, writeEpochAtStart) });
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
@@ -800,15 +866,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         void refreshFor(generation);
       }
     } catch (error) {
-      // isSupported() is rechecked here as on the success path: a refresh
-      // rejecting after support was lost would otherwise overwrite the
-      // support-drop cleanup with a stale "could not load" hubError while the
-      // section claims the built-in defaults are in effect (finding 23).
-      if (isCurrent(generation) && serial === refreshSerial && isSupported()) {
-        setState({ hubError: messageOf(error) });
-      }
-    } finally {
-      if (isCurrent(generation) && serial === refreshSerial && isSupported()) setState({ hubLoading: false });
+      if (stillMine()) setState({ hubError: errorText(error), hubLoading: false });
     }
   }
 
@@ -817,8 +875,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // hub read waits until the local proposal is in hand again, so an edit
     // cannot compose against a confirmed payload with the draft unknown.
     if (drafts !== null && getState().storageUnavailable) {
-      const { loaded, revision } = getState();
-      setState(restoreDraft(drafts, { loaded, revision }));
+      setState(restoreDraft(getState()));
       if (getState().storageUnavailable) return;
     }
     if (activeEpoch < 0) return;
@@ -832,9 +889,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // config on a revision collision, and the registry firing the old hub's
     // overrides is the same staleness one layer down. Un-apply first, THEN
     // setState - the character-key reconcile subscribes to the store and must
-    // see the final registry shape (see unapplyAllOverrides). hubSupport is
+    // see the final registry shape (see unapplyAll). hubSupport is
     // connection-sourced, not hub state, so it is left to setSupport.
-    const unrestored = !unapplyAllOverrides();
+    const unrestored = !reconciler.unapplyAll();
     unapplyRolledBack = unrestored;
     if (unrestored) {
       // Finding 32 (mirror of finding 31's support-loss rollback): the restore
@@ -866,25 +923,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function reapplyOverrides(): void {
-    if (registry === undefined) return;
-    // The registry must mirror the pref BEFORE the re-apply mutates: tinykeys
-    // canonicalizes the shifted character, so the conditional entry and a
-    // Shift+? claim serialize identically - a pref-off re-apply registering
-    // that claim while the entry is still live would hit registerBinding's
-    // exact-match conflict and roll back. Unregistering is idempotent and
-    // mirrors what the web's cheatsheetController reconcile is about to do
-    // (it re-derives the same end state and no-ops). The pref-ON direction
-    // needs no mirror: the re-apply's pref-authoritative simulation un-applies
-    // a conflicting claim first, and the reconcile - fired by the setState
-    // below - registers "?" against the clean map.
-    if (!characterKeyTriggers()) registry.getState().unregisterBinding(CHARACTER_KEY_TRIGGER_BINDING_ID);
+    reconciler.prepareReapply();
     try {
-      applyOverrideRules(getState().rawOverrides);
+      setState(reconciler.apply(getState().rawOverrides));
     } catch (error) {
       // Same posture as the changed-notification path: a reconcile failure
       // surfaces as hubError (the registry has already rolled back to its last
       // good state), never as an exception escaping the pref dispatch.
-      setState({ hubError: messageOf(error) });
+      setState({ hubError: errorText(error) });
     }
   }
 
@@ -935,42 +981,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         setState({ hubError: UNAVAILABLE_MESSAGE });
         throw new Error(UNAVAILABLE_MESSAGE);
       }
-      if (registry !== undefined) {
-        // Pre-flight semantic validation (the parked 2b minor the settings
-        // editor makes live): the SAME simulation the reconcile path runs on
-        // a confirmed payload, run BEFORE the hub write. A rule the reconcile
-        // would skip - unknown action, unparseable or platform-reserved
-        // chord, or a conflict on the simulated final map - would otherwise
-        // be accepted by the hub (the server validates structure only) and
-        // then silently not apply. Reject instead, with the validation
-        // layer's own message, and leave hubError/conflict untouched: nothing
-        // hub-sourced happened. The payload is composed from the hub's RAW
-        // rules (rawOverrides), so it can carry a PRESERVED rule validation
-        // skips - an unknown action from a newer client, say. That is a
-        // pre-existing condition, not a defect this call introduced: reject
-        // only on warnings the CURRENT raw set does not already produce,
-        // keyed by action+message (the baseline simulation runs against the
-        // same live registry and applied set, so a preserved rule reproduces
-        // its apply-time warning verbatim).
-        const applied = new Set(appliedOverrides.keys());
-        const pref = characterKeyTriggers();
-        const baseline = validateOverrideRules(state.rawOverrides, registry, undefined, applied, pref);
-        const baselineKeys = new Set(baseline.warnings.map((warning) => `${warning.rule.action} ${warning.message}`));
-        const preflight = validateOverrideRules(rules, registry, undefined, applied, pref);
-        const introduced = preflight.warnings.filter(
-          (warning) => !baselineKeys.has(`${warning.rule.action} ${warning.message}`),
-        );
-        if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
-      }
+      // Reject with the validation layer's own message and leave
+      // hubError/conflict untouched: nothing hub-sourced happened.
+      const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
+      if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
       const token = ++patchSerial;
+      // The reply that lands is this write's, under the generation it left
+      // in, with support still advertised: a response landing after support
+      // loss must not re-apply - the unsupported branch already un-applied and
+      // reset the hub state.
+      const stillMine = () => token === patchSerial && isCurrent(generation) && isSupported();
       try {
         const result = await client.request("evener/settings/keybindings/patch", {
           expectedRevision: state.revision,
-          config: { version: 1, rules: rules.map((rule) => ({ action: rule.action, chord: rule.chord })) },
+          config: { version: 1, rules: cloneRules(rules) },
         });
-        if (token !== patchSerial || !isCurrent(generation) || !isSupported()) {
-          // A response landing after support loss must not re-apply: the
-          // unsupported branch already un-applied and reset the hub state.
+        if (!stillMine()) {
           const current = getState();
           return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
         }
@@ -979,20 +1005,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         applyHubOverrides(payload);
         return payload;
       } catch (error) {
-        if (token === patchSerial && isCurrent(generation) && isSupported()) {
+        if (stillMine()) {
           // Post-rename durable failure: the patch APPLIED on the hub (the
           // error carries the canonical applied state, and the broadcast
           // reconciles every client). Apply locally and report success -
           // surfacing hubError here would disable editing over bindings that
           // are already live.
-          const applied = postRenameApplied(error);
+          const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
           if (applied !== undefined) {
             applyHubOverrides(applied);
             return applied;
           }
-          const current = conflictCurrent(error);
+          // A lost revision race: the rejection carries the server's current
+          // state, so refresh to it and surface the conflict.
+          const current = rejectionPayload(error, "conflict", "current");
           if (current !== undefined) applyHubOverrides(current);
-          const message = messageOf(error);
+          const message = errorText(error);
           setState({ hubError: message, ...(current === undefined ? {} : { conflict: message }) });
         }
         throw error;
@@ -1043,11 +1071,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const checked = keybindingRules(rules);
     const revision = getState().draft?.revision ?? current.revision;
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
-    setState({
-      draft: { version: 1, revision, rules: checked },
-      draftConflict: revision !== current.revision,
-      draftError: null,
-    });
+    const draft = { version: 1, revision, rules: checked };
+    setState({ draft, draftConflict: staleDraft(draft, current.revision), draftError: null });
   }
 
   async function saveDraft(rules?: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
@@ -1080,7 +1105,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (isCurrent(generation))
         setState({
           saving: false,
-          draftError: messageOf(error) === MALFORMED_MESSAGE ? MALFORMED_MESSAGE : WRITE_UNCONFIRMED_MESSAGE,
+          draftError: errorText(error) === MALFORMED_MESSAGE ? MALFORMED_MESSAGE : WRITE_UNCONFIRMED_MESSAGE,
           draftConflict: true,
           writeUncertain: true,
         });
@@ -1088,7 +1113,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
     // A genuinely newer external revision may have landed (through the
     // broadcast) while the reply was in flight: the proposal then stays for
-    // review against it instead of being reported as applied.
+    // review against it instead of being reported as applied. This is the
+    // one place the comparison is `>`, not "differs": an equal revision is
+    // this write's own broadcast arriving ahead of its reply.
     const conflict = isCurrent(generation) && getState().revision > value.revision;
     let storageError: string | null = null;
     try {
@@ -1098,15 +1125,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
     if (!isCurrent(generation)) return value;
-    if (!conflict) applyHubOverrides(value);
-    setState({
+    const settled: Partial<StateFields> = {
       saving: false,
       draft: conflict || storageError !== null ? getState().draft : null,
       draftConflict: conflict,
       writeUncertain: false,
       storageUnavailable: storageError !== null,
       draftError: storageError,
-    });
+    };
+    if (conflict) setState(settled);
+    else applyHubOverrides(value, settled);
     return value;
   }
 
@@ -1127,7 +1155,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const { draft, hubLoading } = getState();
     if (draft === null || hubLoading || current.revision !== reviewedRevision)
       throw new Error("Shortcuts changed again. Review the current values.");
-    persistDraft({ baseRevision: current.revision, rules: [...draft.rules], writeUncertain: false });
+    persistDraft({ baseRevision: current.revision, rules: draft.rules, writeUncertain: false });
     setState({ draft: { ...draft, revision: current.revision }, draftConflict: false, draftError: null });
   }
 
@@ -1148,7 +1176,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).
-      unapplyAllOverrides();
+      reconciler.unapplyAll();
       setState({ ...initialState() });
     },
     dispose() {
