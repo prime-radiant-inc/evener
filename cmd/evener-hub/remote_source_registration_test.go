@@ -114,13 +114,18 @@ func TestNewHubSourceRegistrySkipsHostsWithoutClient(t *testing.T) {
 	}
 }
 
-// A plain (non-subscribe) thread/read must not start a relay for a remote hub
-// source: startRelay calls SubscribeThread unconditionally, which is staged
-// until 05b, so the default relay policy would discard every successful read.
-func TestRemoteHubSourceDoesNotRelayPlainThreadRead(t *testing.T) {
+// A plain (non-subscribe) thread/read starts a relay for a remote hub source,
+// exactly as it does for the local daemon: the hub's default relay policy is
+// true and 05b implements SubscribeThread, so the relay's attach is a real
+// subscription the source can retire. 05a overrode both answers to false only
+// while SubscribeThread was staged, which would have discarded every read.
+func TestRemoteHubSourceRelaysPlainThreadRead(t *testing.T) {
 	source := appsource.NewRemoteHubSource("h1", nil, unusedRemoteHostClient)
-	if relayOnThreadRead(source) {
-		t.Fatal("RemoteHubSource relays a plain thread read; SubscribeThread is not implemented until 05b")
+	if !relayOnThreadRead(source) {
+		t.Fatal("RemoteHubSource does not relay a plain thread read; SubscribeThread is implemented and owns the subscription")
+	}
+	if !sourceSupportsThreadRelay(source) {
+		t.Fatal("RemoteHubSource reports no relay fan-out; a subscribed read would never reach SubscribeThread")
 	}
 }
 
