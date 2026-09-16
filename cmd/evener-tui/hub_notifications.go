@@ -79,9 +79,17 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			previous := m.detail.State
 			m.detail.State = params.Status.Type
 			m.session.processing = params.Status.Type == appwire.ThreadStatusActive
-			// Refresh on any transition so capabilities (interrupt, steer, send, etc.)
-			// reflect the source's current view. Without this, the cached idle snapshot
-			// keeps Interrupt=false for the entire turn (kata 4yvd).
+			// The set that goes with the announced status rides inline (kata
+			// 06t8; the web reducer and the mobile store apply it the same way):
+			// apply it now, so Send, Steer and Stop follow the frame instead of
+			// the read below. Absent means "no update", never "nothing offered".
+			if params.Capabilities != nil {
+				m.detail.Capabilities = hubCapabilitiesFromWire(*params.Capabilities, m.detail.Capabilities.ResumeRequired)
+			}
+			// Refresh on any transition so the rest of the detail (and a set an
+			// older daemon did not send inline) reflects the source's current
+			// view. Without this, the cached idle snapshot keeps Interrupt=false
+			// for the entire turn (kata 4yvd).
 			if previous != params.Status.Type && m.client != nil {
 				if ref, ok := m.currentRef(); ok {
 					m.statusRefreshToken++
@@ -187,24 +195,14 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			// inline behind this one, turn/started and thread/status/changed(active)
 			// ride right behind it as separate messages and the status never
 			// leaves active, so flipping idle here took Stop, Steer and Ctrl+S
-			// away at every inline turn boundary (the TUI's #1330). The one turn
-			// that never gets a status frame is a genuine failure (kata s8x8):
-			// session_lifecycle.go's processInputKindWithProvenance returns on a
-			// non-cancelled error before the EventSessionEnd emit that only the
-			// clean-completion tail and the interrupt branch reach, so for a
-			// failed turn the status and the optimistic processing flag are
-			// reconciled here. The transcript's id is not required: it can be
-			// empty while the session is active (a thread/read cut between turns,
-			// the gap after turn/completed at a boundary), and the failure is
-			// still this session's. A failed completion naming a turn another
-			// turn has superseded is bookkeeping about the past and leaves the
-			// status alone.
-			if params.Turn.Status == appwire.TurnStatusFailed && (completedActive || m.detail.ActiveTurnID == "") {
-				m.session.processing = false
-				if m.detail.State == appwire.ThreadStatusActive {
-					m.detail.State = appwire.ThreadStatusIdle
-				}
-			}
+			// away at every inline turn boundary (the TUI's #1330). A failed turn
+			// gets its frame too: the agent's failure exit
+			// (agent/session_lifecycle.go endInputAtTurnFailure) emits
+			// EventSessionEnd with Reason "turn_failed", announced as
+			// thread/status/changed(idle) with the capabilities inline. Settling
+			// idle here ahead of it made that frame read as no transition, so the
+			// capability refresh above never fired and Send stayed withheld; the
+			// frame owns the status and the processing flag.
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(params.Turn.Error, "Session error"))
 			}

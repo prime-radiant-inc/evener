@@ -2474,19 +2474,49 @@ func TestHubModelStatusRefreshDoesNotRegressTheQueueRevision(t *testing.T) {
 	}
 }
 
-// The status is authoritative and the transcript's turn id can be empty while
-// the session is active (a thread/read cut between turns, or the gap after
-// turn/completed at an inline boundary). A failed completion arriving then
-// still settles the session idle; one for a superseded turn is left alone.
-func TestHubModelFailedTurnWithoutAnIdSettlesIdle(t *testing.T) {
-	m := newSessionHubModel(nil)
+// A failed turn is followed by its own status frame: the agent's failure exit
+// (agent/session_lifecycle.go endInputAtTurnFailure) emits EventSessionEnd with
+// Reason "turn_failed", which the projector announces as thread/status/changed
+// (idle), capabilities riding inline. The frame owns the transition: the
+// failed turn/completed leaves the status alone, so the frame is seen as a
+// change (the capability refresh fires) and its inline set is applied at once.
+func TestHubModelFailedTurnSettlesOnItsStatusFrame(t *testing.T) {
+	reads := 0
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			reads++
+			thread := appwireThread(hubTreeNode{Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true}, "/tmp/evener")
+			thread.Evener.Capabilities.Send = true
+			return appwire.ThreadReadResponse{Thread: thread}, nil
+		})
+	})
+	defer cleanup()
+
+	m := newSessionHubModel(client)
 	m.detail.State = appwire.ThreadStatusActive
 	m.detail.ActiveTurnID = ""
+	m.detail.Capabilities.Send = false
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Interrupt = true
 	m.session.processing = true
 	failed := appwire.NotificationMessage(appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{ThreadID: "01SEND", Ref: "local:01SEND", Turn: appwire.Turn{ID: "turn_x", Status: appwire.TurnStatusFailed, Error: &appwire.TurnError{Message: "boom"}}})
 	m.applyHubNotification(*failed.Notification)
+
+	idle := appwire.NotificationMessage(appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+		ThreadID:     "01SEND",
+		Ref:          "local:01SEND",
+		Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Capabilities: &appwire.ThreadCapabilities{Send: true, Steer: true, Interrupt: false},
+	})
+	cmd := m.applyHubNotification(*idle.Notification)
 	if m.detail.State != appwire.ThreadStatusIdle || m.session.processing {
-		t.Fatalf("after a failed completion with no active turn id: state=%q processing=%v, want idle and not processing", m.detail.State, m.session.processing)
+		t.Fatalf("after the failed turn's status frame: state=%q processing=%v, want idle and not processing", m.detail.State, m.session.processing)
+	}
+	if c := m.sessionControls(); !c.send || c.stop {
+		t.Fatalf("controls after the failed turn's status frame = %+v, want send offered and stop withdrawn from the frame's inline capabilities", c)
+	}
+	if cmd == nil {
+		t.Fatal("the failed turn's status frame issued no capability refresh: the transition was not seen as one")
 	}
 
 	m = newSessionHubModel(nil)
