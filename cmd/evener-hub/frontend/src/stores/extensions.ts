@@ -18,7 +18,12 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type { AnyNotification, AppwireClientLike, LaunchConfigLayer, PathValidateResponse } from "@evener/appwire-client";
+import type {
+  AnyNotification,
+  AppwireClientLike,
+  LaunchConfigLayer,
+  PathValidateResponse,
+} from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import {
   createMarketplacesStore,
