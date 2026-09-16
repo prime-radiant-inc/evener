@@ -332,6 +332,23 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ hubLoading: false, loaded: false, revision: 0 });
   });
 
+  test("discardDraft removes the checkpoint editDraft saved through a port that compares JSON bytes", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+
+    store.getState().editDraft(rules);
+    const saved = drafts.stored();
+    expect(saved).not.toBeNull();
+    store.getState().discardDraft();
+
+    // The port received, byte for byte, what it had stored: the repository
+    // normalizes both sides, so the host's own id generator and key order
+    // cannot make the two disagree.
+    expect(JSON.stringify(drafts.lastRemoveIf())).toBe(JSON.stringify(saved));
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState().draft).toBeNull();
+  });
+
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
     const drafts = memoryKeybindingDraftStorage();
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });

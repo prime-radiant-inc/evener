@@ -320,16 +320,22 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
   };
 }
 
-/** The draft port with load() as the trust boundary: a malformed stored
- * draft surfaces as a storage failure, never as state. Writes pass through -
- * every checkpoint written here was built from checked rules. */
+/** The draft port with every checkpoint normalized through draftCheckpoint in
+ * BOTH directions. load() is the trust boundary (a malformed stored draft
+ * surfaces as a storage failure, never as state); save() and removeIf() go
+ * through the same constructor so a port that compares serialized bytes
+ * (native compares JSON strings) sees one key order on both sides - a
+ * checkpoint spread as `{ ...input, id }` and one rebuilt by load() would
+ * otherwise differ only in where `id` sits, and removeIf would never match. */
 function draftRepository(storage: KeybindingDraftStorage) {
   return {
-    ...storage,
+    createId: () => storage.createId(),
     load(): KeybindingDraftCheckpoint | null {
       const value = storage.load();
       return value === null || value === undefined ? null : draftCheckpoint(value);
     },
+    save: (checkpoint: KeybindingDraftCheckpoint) => storage.save(draftCheckpoint(checkpoint)),
+    removeIf: (checkpoint: KeybindingDraftCheckpoint) => storage.removeIf(draftCheckpoint(checkpoint)),
   };
 }
 
