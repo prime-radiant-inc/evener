@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { queueActionRefusal, queueSheetPresentation } from "./conversationControls";
+import {
+  type QueueAction,
+  queueActionRefusal,
+  queueSheetPresentation,
+} from "./conversationControls";
 import {
   ActivityIndicator,
   Modal,
@@ -49,11 +53,11 @@ export function QueueSheet({
   const { canRun, runLabel, runAllLabel, explanation } =
     queueSheetPresentation(conversation);
   const disabled = !ready || pending || !!error || !instanceId;
-  async function act(operation: () => Promise<unknown>) {
+  async function act(action: QueueAction, operation: () => Promise<unknown>) {
     if (disabled || busy.current) return;
-    // Re-check the control against the live conversation: the status may
-    // have flipped since the render that offered this action.
-    const refusal = queueActionRefusal(latest() ?? conversation);
+    // Re-check the action's control against the live conversation: the
+    // status may have flipped since the render that offered it.
+    const refusal = queueActionRefusal(latest() ?? conversation, action);
     if (refusal !== null) {
       setError(refusal);
       return;
@@ -166,7 +170,7 @@ export function QueueSheet({
                     disabled={disabled || !id}
                     onPress={() => {
                       if (id && instanceId)
-                        void act(() =>
+                        void act("cancel", () =>
                           service.cancelQueued(index, id, instanceId),
                         );
                     }}
@@ -179,7 +183,7 @@ export function QueueSheet({
                       disabled={disabled || !id}
                       onPress={() => {
                         if (id && instanceId)
-                          void act(() =>
+                          void act("promote", () =>
                             service.promoteQueuedAsSteer(index, id, instanceId),
                           );
                       }}
@@ -196,7 +200,7 @@ export function QueueSheet({
               disabled={disabled}
               onPress={() => {
                 if (instanceId)
-                  void act(() =>
+                  void act("drainAll", () =>
                     service.drainAsSteer(queue.revision, instanceId),
                   );
               }}

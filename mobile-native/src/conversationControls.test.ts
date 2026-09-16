@@ -56,9 +56,18 @@ it("can compose when any action or a goal is available, not otherwise", () => {
 // the render that offered the action and the press refuses with the status
 // reason, and a harness without steer with the capability reason.
 it("refuses a queue action pressed after the status flipped, with the control's reason", () => {
-  expect(queueActionRefusal(conversation("active", 1))).toBeNull();
-  expect(queueActionRefusal(conversation("awaiting", 1))).toBe("no active turn");
-  expect(queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }))).toBe(
-    "Steer is not available for this session",
-  );
+  for (const action of ["promote", "drainAll"] as const) {
+    expect(queueActionRefusal(conversation("active", 1), action)).toBeNull();
+    expect(queueActionRefusal(conversation("awaiting", 1), action)).toBe("no active turn");
+    expect(queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }), action)).toBe(
+      "Steer is not available for this session",
+    );
+  }
+});
+
+// Cancel takes a message out of the queue; it neither steers nor drains, so
+// the steering controls have nothing to say about it.
+it("never refuses a cancel on the drain control", () => {
+  expect(queueActionRefusal(conversation("awaiting", 1), "cancel")).toBeNull();
+  expect(queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }), "cancel")).toBeNull();
 });

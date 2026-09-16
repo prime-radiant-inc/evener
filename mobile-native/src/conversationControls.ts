@@ -37,13 +37,19 @@ export function queueSheetPresentation(conversation: ControlsSource) {
   };
 }
 
+/** The queue sheet's presses. Promote and drain-all steer the running turn
+ * with queued text; cancel only takes a message out of the queue. */
+export type QueueAction = "cancel" | "promote" | "drainAll";
+
 /**
- * Why a queue-sheet steering press must be refused right now, or null when it
- * may proceed. Read at press time against the live conversation, not the one
- * the sheet rendered with: a status that flipped in between (awaiting, idle
- * with the queue gone) is caught here with the control's own reason.
+ * Why a queue-sheet press must be refused right now, or null when it may
+ * proceed. Read at press time against the live conversation, not the one the
+ * sheet rendered with: a status that flipped in between (awaiting, idle with
+ * the queue gone) is caught here with the control's own reason. Cancel neither
+ * steers nor drains, so the steering controls never refuse it.
  */
-export function queueActionRefusal(conversation: ControlsSource): string | null {
+export function queueActionRefusal(conversation: ControlsSource, action: QueueAction): string | null {
+  if (action === "cancel") return null;
   const controls = conversationControls(conversation);
   return controls.drain ? null : (controls.reason.drain ?? "Steer is not available for this session");
 }
