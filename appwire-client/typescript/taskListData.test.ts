@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
-import { parseTaskListData, taskAggregateLabel } from "./taskData";
+import { parseTaskListData, taskAggregateLabel } from "./taskListData";
 
 // parseTaskListData narrows TaskListResponse.data (typed `unknown` on the
 // wire - appwire/types.go:896-898, `TaskListResponse{Data any}`) into a

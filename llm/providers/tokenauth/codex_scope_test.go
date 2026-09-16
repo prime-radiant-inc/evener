@@ -59,3 +59,26 @@ func idTokenWithClaims(t *testing.T, claims map[string]any) string {
 	}
 	return "header." + base64.RawURLEncoding.EncodeToString(payload) + ".signature"
 }
+
+// TestCodexScopedPreservesCredentialsSeam pins the M5 fix: a scope must
+// inherit the receiver's Credentials seam (and ScopedCodex the shared
+// instance's), or fetches built on scopes silently fall back to real
+// filesystem/network resolution wherever a test or caller set a mock.
+func TestCodexScopedPreservesCredentialsSeam(t *testing.T) {
+	called := false
+	seam := func(context.Context, string, string) (authopenai.RuntimeCredentials, error) {
+		called = true
+		return authopenai.RuntimeCredentials{}, nil
+	}
+	c := &Codex{StateDir: "root", Credentials: seam}
+	if _, err := c.ScopedFrom("other").credentials(context.Background(), "inst"); !called {
+		t.Fatalf("ScopedFrom scope did not use the receiver's Credentials seam: %v", err)
+	}
+	prev := DefaultCodex.Credentials
+	DefaultCodex.Credentials = seam
+	defer func() { DefaultCodex.Credentials = prev }()
+	called = false
+	if _, err := ScopedCodex("root").credentials(context.Background(), "inst"); !called {
+		t.Fatalf("ScopedCodex scope did not use DefaultCodex's Credentials seam: %v", err)
+	}
+}

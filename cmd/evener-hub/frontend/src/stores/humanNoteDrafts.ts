@@ -3,6 +3,7 @@ import { sessionActionError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
+import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
 export interface HumanNoteDraft {
@@ -208,11 +209,16 @@ function flushPendingHumanNoteSaves(): void {
 export function acknowledgeHumanNote(record: MutationRecord, note: string): void {
   const draft = get(record.targetRef);
   if (!draft || draft.submitted?.id !== record.clientMutationId) return;
-  if (draft.generation !== draft.submitted.generation) {
-    put(record.targetRef, { ...draft, submitted: undefined });
-    return;
-  }
-  put(record.targetRef, { ...draft, text: note, dirty: false, saved: true, error: null, submitted: undefined });
+  const next =
+    draft.generation !== draft.submitted.generation
+      ? { ...draft, submitted: undefined }
+      : { ...draft, text: note, dirty: false, saved: true, error: null, submitted: undefined };
+  put(record.targetRef, next);
+  // Clearing the pending state can make the record reclaimable while its
+  // pane is already gone - the workspace-change sweep that preserved it
+  // will not come again, so the transition itself must schedule the sweep,
+  // or the acknowledged draft lingers in the map forever.
+  schedulePanelStoreEviction();
 }
 export function useHumanNoteDraft(ref: string): HumanNoteDraft | undefined {
   return useStore(drafts, (state) => state.records.get(ref));
@@ -241,3 +247,31 @@ export function canWriteHumanNote(model: ThreadModel | undefined): boolean {
     !["ended", "closed", "notLoaded", "restartRequired"].includes(model.status.type)
   );
 }
+
+// The always-mounted panel sync creates one record per notes-capable session
+// pane, so without an evictor the store grows without bound over a
+// long-lived hub. A record with nothing pending is recreatable from the
+// model's note on the next sync, making it reclaimable once no pane holds its
+// ref. Dirty and submitted records are the retry-after-resume contract (an
+// edit made before a fence or close stays queued for retry) and deliberately
+// outlive the pane.
+function hasNothingPending(draft: HumanNoteDraft): boolean {
+  return (
+    !draft.dirty &&
+    draft.submitted === undefined &&
+    draft.focusOwners.size === 0 &&
+    draft.timer === undefined &&
+    draft.flush === undefined
+  );
+}
+
+registerPanelStoreEvictor({
+  refs: () => drafts.getState().records.keys(),
+  evict: (ref: string) => {
+    const draft = get(ref);
+    if (!draft || !hasNothingPending(draft)) return;
+    const next = new Map(drafts.getState().records);
+    next.delete(ref);
+    drafts.setState({ records: next });
+  },
+});

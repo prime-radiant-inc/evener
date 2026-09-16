@@ -1,9 +1,9 @@
-import { MAX_ATTACHMENTS } from "@evener/appwire-client";
 import {
 	insertMarker,
 	markerText,
+	MAX_ATTACHMENTS,
 	stripMarker,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/textareaMarkers";
+} from "@evener/appwire-client";
 import type { InputAttachment } from "@evener/appwire-client";
 import type { DraftImage, DraftImageData } from "./draftImages";
 import { restoreUnconfirmedDraft } from "./draftRecovery";

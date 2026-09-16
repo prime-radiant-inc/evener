@@ -53,8 +53,8 @@ func FuzzFc1EstimateUsedTokens(f *testing.F) {
 			return
 		}
 
-		used := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
-		if used2 := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars); used != used2 {
+		used := testEstimateUsedTokens(t, lastTokens, measuredLen, history, sysPromptChars)
+		if used2 := testEstimateUsedTokens(t, lastTokens, measuredLen, history, sysPromptChars); used != used2 {
 			t.Fatalf("non-deterministic: %d vs %d", used, used2)
 		}
 		if used < 0 {
@@ -70,7 +70,7 @@ func FuzzFc1EstimateUsedTokens(f *testing.F) {
 			Kind:    schema.TurnUserInput,
 			Message: llm.User("one more appended turn of content"),
 		})
-		usedGrown := estimateUsedTokens(lastTokens, measuredLen, grown, sysPromptChars)
+		usedGrown := testEstimateUsedTokens(t, lastTokens, measuredLen, grown, sysPromptChars)
 		if usedGrown < used {
 			t.Fatalf("appending a turn lowered the estimate: %d -> %d", used, usedGrown)
 		}
