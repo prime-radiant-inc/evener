@@ -8,9 +8,6 @@ import {
   type PanelLoadFailure,
   reconcileActivityState,
 } from "@evener/appwire-client";
-
-export { graftContinuationTree } from "@evener/appwire-client";
-
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
@@ -154,7 +151,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       const current = entryFor(state.entries, ref);
       requestID = ++nextRequestID;
       const tree = retainedTree(current.load);
-      const summaryRequestID = summaryLink?.summaryGeneration(ref);
+      const summaryRequestID = continuation ? summaryLink?.summaryGeneration(ref) : undefined;
       const next: ActivityPanelEntry = continuation
         ? {
             ...current,
@@ -193,9 +190,8 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   },
 
   publishFetch(ref, requestID, result) {
-    // What this page owes the summary store, decided inside the updater and
-    // paid after it: the updater stays a pure function of panel state, and a
-    // nested set can no longer land inside this store's own commit.
+    // What this page owes the summary store is decided inside the updater and
+    // reported after it, so the updater stays a pure function of panel state.
     let settlement: ContinuationSettlement | undefined;
     set((state) => {
       const current = state.entries.get(ref);

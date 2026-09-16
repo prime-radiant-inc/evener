@@ -1,7 +1,4 @@
-// The seam between the panel store and the summary store. activitySummary.ts
-// imports activityPanel.ts; the panel must not import back, so what a
-// continuation page owes the badge crosses through the link the summary
-// store registers, and the tests here drive that link directly.
+// The ActivitySummaryLink seam, driven directly with a fake summary side.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,7 +7,6 @@ import { describe, expect, test, vi } from "vitest";
 import {
   type ActivitySummaryLink,
   activityPanelStore,
-  type ContinuationSettlement,
   linkActivitySummary,
   resetActivityPanelStoreForTests,
 } from "./activityPanel";
@@ -34,16 +30,12 @@ function tree(revision = 1): ActivityTree {
 }
 
 function linkWithGeneration(generation: number | undefined) {
-  const settled = vi.fn<(ref: string, settlement: ContinuationSettlement) => void>();
-  const link: ActivitySummaryLink = {
-    summaryGeneration: () => generation,
-    onContinuationSettled: settled,
-  };
-  linkActivitySummary(link);
+  const settled = vi.fn<ActivitySummaryLink["onContinuationSettled"]>();
+  linkActivitySummary({ summaryGeneration: () => generation, onContinuationSettled: settled });
   return settled;
 }
 
-function readyRoot(): void {
+function publishRoot(): void {
   const root = activityPanelStore.getState().beginFetch("ref_a");
   activityPanelStore.getState().publishFetch("ref_a", root, { kind: "ready", tree: tree() });
 }
@@ -59,7 +51,7 @@ describe("the summary link", () => {
   test("a merged page settles with the generation it began under and the merged counts", () => {
     resetActivityPanelStoreForTests();
     const settled = linkWithGeneration(7);
-    readyRoot();
+    publishRoot();
     const page = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
     expect(settled).not.toHaveBeenCalled();
     activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree(2) });
@@ -75,7 +67,7 @@ describe("the summary link", () => {
   test("a failed page settles as a failure debt", () => {
     resetActivityPanelStoreForTests();
     const settled = linkWithGeneration(7);
-    readyRoot();
+    publishRoot();
     const page = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
     activityPanelStore.getState().publishFetch("ref_a", page, {
       kind: "continuation-failed",
@@ -88,17 +80,19 @@ describe("the summary link", () => {
   test("a page begun with no summary entry still settles, so a queued root can be issued", () => {
     resetActivityPanelStoreForTests();
     const settled = linkWithGeneration(undefined);
-    readyRoot();
+    publishRoot();
     const page = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
     activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree(2) });
-    expect(settled).toHaveBeenCalledTimes(1);
-    expect(settled.mock.calls[0]?.[1].summaryRequestID).toBeUndefined();
+    expect(settled).toHaveBeenCalledWith("ref_a", {
+      summaryRequestID: undefined,
+      debt: { kind: "counts", counts: expect.anything() },
+    });
   });
 
-  test("a root publication and a dropped stale page settle nothing", () => {
+  test("a dropped stale page settles nothing", () => {
     resetActivityPanelStoreForTests();
     const settled = linkWithGeneration(7);
-    readyRoot();
+    publishRoot();
     const stale = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
     activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", stale, { kind: "ready", tree: tree(2) });

@@ -306,23 +306,18 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
   },
 }));
 
-// The panel store's side of the continuation protocol. The panel cannot
-// import this module (the dependency points one way: summary → panel), so it
-// reads the generation a page begins under and reports the page's settlement
-// through this link instead.
+// The summary side of ActivitySummaryLink.
 linkActivitySummary({
   summaryGeneration: (ref) => activitySummaryStore.getState().entries.get(ref)?.requestID,
   onContinuationSettled(ref, { summaryRequestID, debt }) {
-    // Same order the merge relied on when these ran inside the panel's
-    // updater: the badge settles against the tree just committed, and only
-    // then does a root refresh queued behind this page get its turn.
+    // The badge settles against the tree the panel just committed; only then
+    // does a root refresh queued behind this page (refreshRoot deferred it
+    // rather than replace the tree mid-page) get its turn.
     const summary = activitySummaryStore.getState();
     if (debt && summaryRequestID !== undefined) {
       if (debt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
       else summary.publishContinuationCounts(ref, summaryRequestID, debt.counts);
     }
-    // A root refresh queued while this continuation was in flight waited for
-    // the merge rather than replacing the panel tree mid-page.
     summary.issuePendingRootFetch(ref);
   },
 });
