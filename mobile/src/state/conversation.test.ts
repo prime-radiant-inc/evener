@@ -13,6 +13,7 @@ import {
 } from "@evener/appwire-client";
 import type {
   AnyNotification,
+  EvenerThread,
   InputItem,
   MutationReceipt,
   Thread,
@@ -213,9 +214,15 @@ class FakeConversationService implements LiveConversationService {
 
   // Like the real service, the conversation returned is hydrated under the
   // ref that was opened: the store routes notifications by the model's ref.
+  private hydratedUnder(
+    ref: string,
+    conversation: MobileConversation,
+  ): MobileConversation {
+    return { ...conversation, ref };
+  }
   async open(ref: string, _cursor?: string): Promise<MobileConversation> {
     this.ref = ref;
-    return { ...this.openConv, ref };
+    return this.hydratedUnder(ref, this.openConv);
   }
   async readProjection(ref: string): Promise<ConversationReadProjection> {
     this.readProjectionCalls.push({ ref });
@@ -223,11 +230,11 @@ class FakeConversationService implements LiveConversationService {
     if (this.readProjectionResult) {
       return {
         ...this.readProjectionResult,
-        conversation: { ...this.readProjectionResult.conversation, ref },
+        conversation: this.hydratedUnder(ref, this.readProjectionResult.conversation),
       };
     }
     return {
-      conversation: { ...this.openConv, ref },
+      conversation: this.hydratedUnder(ref, this.openConv),
       activity: {
         tasks: [],
         work: [],
@@ -7504,251 +7511,207 @@ describe("ConversationStore", () => {
     });
   });
 
-  // I2: Monotonic capability-owner revision. Increment on every capability
-  // publication/transition. Capture at rehydrate start. If unchanged after
-  // await, commit authoritative projected capabilities. If advanced during
-  // await, preserve current caps.
-  describe("a capability publication during a reread wins over the snapshot", () => {
-    it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: true },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Initial caps have send=true.
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
-      // Reread returns caps with send=false.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: false },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      const ctrl = makeControlledRead(service);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      // No capability owner advanced during the await — rehydrate commits
-      // the projected capabilities (send=false).
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-    });
-
-    it("concurrent newer cap refresh wins — rehydrate preserves current caps", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: true },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Start a rehydrate (R) that hangs.
-      const ctrl = makeControlledRead(service);
-      // R's projection has send=false.
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          evener: {
-            ref: "ref-1",
-            capabilities: { ...ALL_TRUE_CAPS, send: false },
-            queue: { revision: 0 },
-          },
-        }),
-      );
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      // While R is in-flight, a cap refresh publishes caps with send=false,
-      // queue=false (a newer capability owner). Use a notification to change
-      // caps — this is a capability publication that increments capOwnerRev.
-      store.getState().applyNotification({
-        method: "thread/status/changed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          status: { type: "ready" },
-          capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
-        },
-      } as AnyNotification);
-      // The current caps now have send=false, queue=false.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().conversation?.capabilities.queue).toBe(false);
-      // Release R — its projected caps have send=false (but not queue=false).
-      // Since the cap owner advanced during the await, R must preserve the
-      // current caps (queue=false), NOT overwrite with its stale projection.
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      // Current caps preserved — queue=false from the notification wins.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      expect(store.getState().conversation?.capabilities.queue).toBe(false);
-    });
-  });
-
   // A live write accepted while a reread is in flight is newer than the
   // snapshot that reread returns, whichever thread-level field it touched.
   // The snapshot is replayed onto (the web's replayHydrationNotifications),
   // so no field can be rolled back by a reread that raced it.
-  describe("live writes during a reread replay onto the snapshot", () => {
-    async function rereadRacing(
-      liveWrite: (store: ReturnType<typeof createConversationStore>) => void,
-      snapshot: Thread,
-    ) {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(makeThread());
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      service.readProjectionResult = makeReadProjectionResult(snapshot);
-      const ctrl = makeControlledRead(service);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask();
-      liveWrite(store);
-      ctrl.release();
-      await ctrl.completed(1);
-      await yieldMicrotask();
-      return store.getState().conversation;
-    }
-    const target = { threadId: "thread-1", ref: "ref-1" };
+  async function rereadRacing(
+    liveWrite: (store: ReturnType<typeof createConversationStore>) => void,
+    snapshot: Thread,
+    initial: Thread = makeThread(),
+  ) {
+    const service = new FakeConversationService();
+    service.readProjectionResult = makeReadProjectionResult(initial);
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+    service.readProjectionResult = makeReadProjectionResult(snapshot);
+    const ctrl = makeControlledRead(service);
+    store.getState().applyNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thread-1", ref: "ref-1" },
+    } as AnyNotification);
+    await ctrl.started(1);
+    await yieldMicrotask();
+    liveWrite(store);
+    ctrl.release();
+    await ctrl.completed(1);
+    await yieldMicrotask();
+    return store.getState().conversation;
+  }
+  const target = { threadId: "thread-1", ref: "ref-1" };
+  const evenerWith = (over: Partial<EvenerThread>): Thread["evener"] => ({
+    ref: "ref-1",
+    capabilities: ALL_TRUE_CAPS,
+    queue: { revision: 0 },
+    ...over,
+  });
 
-    it("keeps a status change over the snapshot's status", async () => {
+  describe("a capability publication during a reread wins over the snapshot", () => {
+    it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
+      const conv = await rereadRacing(
+        () => {},
+        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
+        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
+      );
+      expect(conv?.capabilities.send).toBe(false);
+    });
+
+    it("concurrent newer cap refresh wins — rehydrate preserves current caps", async () => {
+      // The snapshot carries send=false; the publication that raced it also
+      // turned queue off, and that newer set is what the commit shows.
       const conv = await rereadRacing(
         (store) =>
           store.getState().applyNotification({
             method: "thread/status/changed",
-            params: { ...target, status: { type: "active" } },
-          } as AnyNotification),
-        makeThread({ status: { type: "idle" } }),
-      );
-      expect(conv?.status).toEqual({ type: "active" });
-    });
-
-    it("keeps a queue change over the snapshot's queue", async () => {
-      const conv = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "thread/queueChanged",
-            params: { ...target, queue: { revision: 4, depth: 1, texts: ["later"] } },
-          } as AnyNotification),
-        makeThread(),
-      );
-      expect(conv?.queue).toEqual({ revision: 4, depth: 1, texts: ["later"] });
-    });
-
-    it("keeps a rename over the snapshot's name", async () => {
-      const conv = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "evener/thread/name/changed",
-            params: { ...target, name: "renamed live" },
-          } as AnyNotification),
-        makeThread({ name: "snapshot name" }),
-      );
-      expect(conv?.name).toBe("renamed live");
-    });
-
-    it("keeps a model change over the snapshot's model", async () => {
-      const conv = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "thread/model/changed",
             params: {
               ...target,
-              modelProvider: "openai/gpt-x",
-              model: "gpt-x",
-              reasoningEffortLevels: ["low", "high"],
-              supportsReasoning: true,
+              status: { type: "ready" },
+              capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
             },
           } as AnyNotification),
-        makeThread({ modelProvider: "anthropic" }),
+        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
+        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
       );
-      expect(conv?.modelProvider).toBe("openai/gpt-x");
-      expect(conv?.reasoningEffortLevels).toEqual(["low", "high"]);
+      expect(conv?.capabilities.send).toBe(false);
+      expect(conv?.capabilities.queue).toBe(false);
     });
+  });
 
-    it("keeps a goal update over the snapshot's goal", async () => {
-      const conv = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "evener/goal/updated",
-            params: { ...target, goal: { objective: "live", status: "active", iterations: 2 } },
-          } as AnyNotification),
-        makeThread({
-          evener: { ref: "ref-1", capabilities: ALL_TRUE_CAPS, queue: { revision: 0 }, goal: { objective: "stale", status: "active", iterations: 1 } },
+  describe("live writes during a reread replay onto the snapshot", () => {
+    const liveEscalation = {
+      ...target,
+      escalationId: "esc-live",
+      mode: "workspace",
+      tool: "exec",
+      kind: "read",
+      deniedPath: "/outside",
+    };
+    it.each<{
+      name: string;
+      method: string;
+      params: Record<string, unknown>;
+      snapshot: Thread;
+      read: (conv: NonNullable<MobileConversation>) => unknown;
+      expected: unknown;
+    }>([
+      {
+        name: "a status change over the snapshot's status",
+        method: "thread/status/changed",
+        params: { status: { type: "active" } },
+        snapshot: makeThread({ status: { type: "idle" } }),
+        read: (conv) => conv.status,
+        expected: { type: "active" },
+      },
+      {
+        name: "a queue change over the snapshot's queue",
+        method: "thread/queueChanged",
+        params: { queue: { revision: 4, depth: 1, texts: ["later"] } },
+        snapshot: makeThread(),
+        read: (conv) => conv.queue,
+        expected: { revision: 4, depth: 1, texts: ["later"] },
+      },
+      {
+        name: "a rename over the snapshot's name",
+        method: "evener/thread/name/changed",
+        params: { name: "renamed live" },
+        snapshot: makeThread({ name: "snapshot name" }),
+        read: (conv) => conv.name,
+        expected: "renamed live",
+      },
+      {
+        name: "a model change over the snapshot's model",
+        method: "thread/model/changed",
+        params: {
+          modelProvider: "openai/gpt-x",
+          model: "gpt-x",
+          reasoningEffortLevels: ["low", "high"],
+          supportsReasoning: true,
+        },
+        snapshot: makeThread({ modelProvider: "anthropic" }),
+        read: (conv) => [conv.modelProvider, conv.reasoningEffortLevels],
+        expected: ["openai/gpt-x", ["low", "high"]],
+      },
+      {
+        name: "a goal update over the snapshot's goal",
+        method: "evener/goal/updated",
+        params: { goal: { objective: "live", status: "active", iterations: 2 } },
+        snapshot: makeThread({
+          evener: evenerWith({ goal: { objective: "stale", status: "active", iterations: 1 } }),
         }),
-      );
-      expect(conv?.goal).toEqual({ objective: "live", status: "active", iterations: 2 });
-    });
-
-    it("keeps a task update over the snapshot's tasks", async () => {
+        read: (conv) => conv.goal,
+        expected: { objective: "live", status: "active", iterations: 2 },
+      },
+      {
+        name: "a task update over the snapshot's tasks",
+        method: "evener/task/updated",
+        params: { total: 3, done: 2 },
+        snapshot: makeThread({ evener: evenerWith({ tasks: { total: 3, done: 1 } }) }),
+        read: (conv) => conv.tasks,
+        expected: { total: 3, done: 2 },
+      },
+      {
+        name: "a started turn over the snapshot's idle turn state",
+        method: "turn/started",
+        params: { turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
+        snapshot: makeThread(),
+        read: (conv) => conv.activeTurnId,
+        expected: "t-live",
+      },
+      {
+        name: "an approval requested live over a snapshot without it",
+        method: "evener/sandbox/escalation/requested",
+        params: liveEscalation,
+        snapshot: makeThread(),
+        read: (conv) => conv.pendingEscalations,
+        expected: [liveEscalation],
+      },
+    ])("keeps $name", async ({ method, params, snapshot, read, expected }) => {
       const conv = await rereadRacing(
         (store) =>
           store.getState().applyNotification({
-            method: "evener/task/updated",
-            params: { ...target, total: 3, done: 2 },
+            method,
+            params: { ...target, ...params },
           } as AnyNotification),
-        makeThread({
-          evener: { ref: "ref-1", capabilities: ALL_TRUE_CAPS, queue: { revision: 0 }, tasks: { total: 3, done: 1 } },
-        }),
+        snapshot,
       );
-      expect(conv?.tasks).toEqual({ total: 3, done: 2 });
+      if (!conv) throw new Error("conversation gone");
+      expect(read(conv)).toEqual(expected);
     });
 
-    it("keeps a started turn over the snapshot's idle turn state", async () => {
-      const conv = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "turn/started",
-            params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
-          } as AnyNotification),
-        makeThread(),
+    // The buffer belongs to the conversation the reread was for: closing it
+    // drops the buffer, and frames for the next conversation neither collect
+    // for the dead read nor land when that read finally returns.
+    it("drops the buffer when the conversation closes under an in-flight reread", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ name: "old read's snapshot" }),
       );
-      expect(conv?.activeTurnId).toBe("t-live");
-    });
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: target,
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      store.getState().close();
 
-    it("keeps an approval requested live over a snapshot without it", async () => {
-      const escalation = {
-        ...target,
-        escalationId: "esc-live",
-        mode: "workspace",
-        tool: "exec",
-        kind: "read",
-        deniedPath: "/outside",
-      };
-      const conv = await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "evener/sandbox/escalation/requested",
-            params: escalation,
-          } as AnyNotification),
-        makeThread(),
-      );
-      expect(conv?.pendingEscalations).toEqual([escalation]);
+      const next = new FakeConversationService();
+      next.openConv = makeConversation({ threadId: "thread-2", name: "second" });
+      await store.getState().open(next, "ref-2");
+      store.getState().applyNotification({
+        method: "evener/thread/name/changed",
+        params: { threadId: "thread-2", ref: "ref-2", name: "second, renamed live" },
+      } as AnyNotification);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(store.getState().conversation).toMatchObject({
+        threadId: "thread-2",
+        name: "second, renamed live",
+      });
     });
   });
 
