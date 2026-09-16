@@ -1,6 +1,8 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
-import type { ModelCatalog, ModelCatalogEntry } from "./index";
-import { buildPickerRows, pickableRows, rowMeta, unavailableLine } from "./pickerRows";
+import { buildPickerRows, pickableRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
+import type { ModelCatalog, ModelCatalogEntry } from "./modelCatalogTypes";
 
 function entry(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry {
   return {

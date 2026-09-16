@@ -1,12 +1,13 @@
 // The picker's list shape: one flat row array combining Recent, the
 // provider-grouped models, and one dim in-place line per provider the hub
-// couldn't reach. Pure (no React, no wire) and built on catalogView's
-// filter/group helpers, so the panel component only maps rows to markup.
-//
-// Why rows and not nested groups: the panel is an ARIA listbox whose options
-// must be linearly navigable by ArrowUp/Down. A flat array with a `kind`
-// discriminant makes "skip the heads and the unavailable lines" a filter
-// (pickableRows) instead of a tree walk.
+// couldn't reach. Pure (no React, no wire) and built on modelCatalogView's
+// helpers, so the web panel (widgets/modelCatalog/index.tsx) and native's
+// LaunchModelPicker only map rows to markup. Why rows and not nested groups:
+// the panel is an ARIA listbox whose options must be linearly navigable by
+// ArrowUp/Down. A flat array with a `kind` discriminant makes "skip the
+// heads and the unavailable lines" a filter (pickableRows) instead of a
+// tree walk.
+import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./modelCatalogTypes";
 import {
   type CatalogOption,
   capabilityLabels,
@@ -15,8 +16,7 @@ import {
   formatCost,
   toCatalogOptions,
   withGroupHeads,
-} from "./catalogView";
-import type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
+} from "./modelCatalogView";
 
 export type PickerRow =
   | { kind: "group"; key: string; label: string }

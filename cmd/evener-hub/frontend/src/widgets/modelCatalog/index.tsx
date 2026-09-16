@@ -11,7 +11,13 @@
 // options-list: it needs provider group heads, non-interactive diagnostic
 // lines, and a list expanded the moment it opens.
 
-import { friendlyLaunchErrorMessage } from "@evener/appwire-client";
+import {
+  buildPickerRows,
+  friendlyLaunchErrorMessage,
+  type ModelCatalogEntry,
+  type ModelCatalog as ModelCatalogShape,
+  pickableRows,
+} from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 // Import siblings directly, never through the widgets barrel: this module is
 // itself barrel-exported, so importing the barrel here would be a cycle (the
@@ -21,10 +27,8 @@ import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
-import { buildPickerRows, pickableRows } from "./pickerRows";
-import type { ModelCatalogEntry, ModelCatalog as ModelCatalogShape } from "./types";
 
-export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "./types";
+export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "@evener/appwire-client";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),

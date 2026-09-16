@@ -165,6 +165,20 @@ assert.equal(client.canReadSharedNotes(undefined), false);
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
 assert.equal(client.humanizeState("awaiting", false), "your move");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
+const catalogEntry = { provider: "openai", model: "gpt-5", displayName: "GPT-5", supportsTools: true, contextWindow: 200000 };
+const catalogOptions = client.toCatalogOptions([catalogEntry]);
+assert.equal(catalogOptions[0].qualified, "openai/gpt-5");
+assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
+assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
+assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
+assert.equal(client.formatCost(catalogEntry), null);
+assert.equal(client.contextWindowLabel(catalogEntry), "200k");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
+const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
+assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
+assert.equal(client.pickableRows(pickerRows).length, 1);
+assert.deepEqual(client.buildPickerRows(null, ""), []);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

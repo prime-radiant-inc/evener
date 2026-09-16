@@ -1,9 +1,10 @@
 // Pure view helpers for the rich model catalog: turning model/list entries
 // into the picker's searchable options, provider grouping, and the
 // per-row metadata (capability badges, cost, context window). No React, no
-// wire - unit-tested in isolation (catalogView.test.ts). The widget
-// (index.tsx) composes these into rows; the swap sites never see them.
-import type { ModelCatalogEntry } from "./types";
+// wire - unit-tested in isolation (modelCatalogView.test.ts).
+// modelCatalogPickerRows composes these into the flat row list both apps'
+// pickers render; the swap sites never see them.
+import type { ModelCatalogEntry } from "./modelCatalogTypes";
 
 /** One selectable row of the model picker: an identified, labelled option plus
  * the catalog metadata its rich row renders. */

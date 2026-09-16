@@ -20,7 +20,9 @@ share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the display formatters both
 apps render counts, durations and clock times with, the text and argument
 helpers a tool call's rendering is built from, the one-word session state
-gloss a session row's second line leads with, and the doc-pane URL
+gloss a session row's second line leads with, the model catalog view helpers
+both apps' model pickers are built from (searchable options, provider
+grouping, per-row metadata and the flat picker row list), and the doc-pane URL
 builders, which hang their hrefs off a base origin the host supplies (empty
 for a same-origin web page). The doc-pane data layer is published at the
 `./docContent` subpath as well, where `readDocFile` takes the host's

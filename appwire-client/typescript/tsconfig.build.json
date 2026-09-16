@@ -46,6 +46,9 @@
     "catalogCommands.ts",
     "slashCompletion.ts",
     "sharedNotesAvailability.ts",
-    "railSessionState.ts"
+    "railSessionState.ts",
+    "modelCatalogTypes.ts",
+    "modelCatalogView.ts",
+    "modelCatalogPickerRows.ts"
   ]
 }

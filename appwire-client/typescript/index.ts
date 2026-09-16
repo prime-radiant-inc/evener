@@ -120,6 +120,18 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { PickerModelRow, PickerRow } from "./modelCatalogPickerRows";
+export { buildPickerRows, pickableRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
+export type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./modelCatalogTypes";
+export type { CatalogOption } from "./modelCatalogView";
+export {
+  capabilityLabels,
+  contextWindowLabel,
+  filterCatalog,
+  formatCost,
+  toCatalogOptions,
+  withGroupHeads,
+} from "./modelCatalogView";
 export { humanizeState } from "./railSessionState";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";

@@ -1,4 +1,7 @@
+// @vitest-environment node
+
 import { describe, expect, test } from "vitest";
+import type { ModelCatalogEntry } from "./modelCatalogTypes";
 import {
   type CatalogOption,
   capabilityLabels,
@@ -7,8 +10,7 @@ import {
   formatCost,
   toCatalogOptions,
   withGroupHeads,
-} from "./catalogView";
-import type { ModelCatalogEntry } from "./index";
+} from "./modelCatalogView";
 
 function entry(overrides: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry {
   return { provider: "openai", model: "gpt-5", displayName: "GPT-5", ...overrides };
