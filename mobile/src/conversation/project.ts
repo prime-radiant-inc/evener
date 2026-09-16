@@ -1,22 +1,18 @@
 import type {
   AskQuestionRef,
-  InputItem,
   ItemFailureSignals,
   ItemImage,
   ItemModel,
-  OutputImage,
-  ThreadItem,
   ThreadModel,
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
 // The native shim between the package's thread model and the phone timeline.
 // It shrinks as seam 2 lands (SDK migration plan, D21–D24): the conversation is
-// hydrated by reducer.hydrateThread (D22), D23 replaces the store's
-// notification appliers with reducer.applyNotification (the wire-item helpers
-// marked below exist for that live path until then), and D24 replaces the
-// display rows with transcriptDisplay/projector.ts entries and deletes this
-// file.
+// hydrated by reducer.hydrateThread (D22), every notification folds through
+// reducer.applyNotification and the rows are this file's projection of the
+// model it returns (D23c), and D24 replaces the display rows with
+// transcriptDisplay/projector.ts entries and deletes this file.
 //
 // projectConversation folds a ThreadModel's turns into the display rows. No
 // DOM, no network, no clock — given the same model it produces the same rows.
@@ -40,17 +36,28 @@ import {
 // --- the conversation native holds -------------------------------------------
 
 // The package ThreadModel, as reducer.hydrateThread produces it, plus the
-// display rows this shim still projects from its turns; D24 removes `items`.
-// Item frames fold through reducer.applyNotification (state/conversation.ts)
-// before the store's row appliers run, so `turns` is live between rereads and
-// `items` is the dual-written display half until c-2b projects the rows from
-// the model.
+// display rows this shim projects from its turns; D24 removes `items`. Every
+// notification folds into the model (state/conversation.ts) and the rows are
+// re-projected from it, so `items` is always a function of `turns` — the
+// older pages loadOlder prepends are the one exception, until D23d moves
+// them into the model too.
 export type MobileConversation = ThreadModel & {
   items: MobileTimelineItem[];
 };
 
 export function projectConversation(model: ThreadModel): MobileConversation {
-  return { ...model, items: projectTimeline(model) };
+  const items = projectTimeline(model);
+  return {
+    ...model,
+    items,
+    // The hub stamps askPending on the thread it serves; a question row is
+    // the same fact derived from the model a frame just changed (both come
+    // from the package's liveAskQuestions rule). A question the phone shows
+    // is answerable at once — it does not wait for the next snapshot to say
+    // so — so a row on screen counts as a pending ask.
+    askPending:
+      model.askPending || items.some((item) => item.kind === "question"),
+  };
 }
 
 // --- display rows (D24 replaces these with the package's projector) ----------
@@ -228,10 +235,8 @@ function isSystemMessage(item: ItemModel): boolean {
 // A live item can arrive without any status of its own while the turn that
 // contains it is still running — a sparse running tool/reasoning row would
 // otherwise read as settled. Such an item is active exactly when its turn
-// is; an item that carries its own status always keeps it. Exported so the
-// store's incremental projection applies the same rule against the turn
-// status it derives from the active turn.
-export function isActiveItem(
+// is; an item that carries its own status always keeps it.
+function isActiveItem(
   item: ItemFailureSignals,
   turnStatus: string | undefined,
 ): boolean {
@@ -241,9 +246,7 @@ export function isActiveItem(
 
 // --- activity state ----------------------------------------------------------
 
-// Exported so the store's incremental projection settles a tool item exactly
-// as the canonical projector does, instead of keeping a second copy.
-export function activityState(
+function activityState(
   item: ItemFailureSignals,
   turnStatus: string | undefined,
 ): ActivityState {
@@ -276,51 +279,6 @@ function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
   }
   if (isCommandExecution(item)) {
     return attachmentRows(item.id, item.outputImages, "out:");
-  }
-  return undefined;
-}
-
-// The store's live path (item/started, item/completed) still holds a wire
-// ThreadItem, so it resolves image sources itself with the reducer's
-// precedence (url, inline bytes, path, name); D23 hands that path to the
-// package reducer and deletes this.
-function inlineImageSrc(img: InputItem): string | undefined {
-  if (
-    img.data === undefined ||
-    img.data === "" ||
-    img.mediaType === undefined ||
-    img.mediaType === ""
-  ) {
-    return undefined;
-  }
-  return `data:${img.mediaType};base64,${img.data}`;
-}
-
-function inputImage(img: InputItem): ItemImage {
-  return {
-    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
-    name: img.name,
-  };
-}
-
-function outputImage(img: OutputImage): ItemImage {
-  return {
-    src: img.url ?? img.path ?? img.name ?? img.source ?? "",
-    name: img.name,
-  };
-}
-
-export function projectItemAttachments(
-  item: ThreadItem,
-): AttachmentRef[] | undefined {
-  if (
-    item.type === "userMessage" ||
-    (item.type === "steering" && item.source === "user")
-  ) {
-    return attachmentRows(item.id, item.images?.map(inputImage));
-  }
-  if (item.type === "commandExecution") {
-    return attachmentRows(item.id, item.outputImages?.map(outputImage), "out:");
   }
   return undefined;
 }
@@ -360,6 +318,20 @@ function itemMarkdown(item: ItemModel): string {
   return item.pendingText
     ? item.text + pendingTextJoined(item.pendingText)
     : item.text;
+}
+
+// A reasoning item's text as the reader sees it: the per-summaryIndex chunks
+// the model accumulated — seeded from the item's own text at hydrate and
+// extended by item/reasoning/summaryTextDelta — joined one paragraph per
+// summary, the same string[][] the web's think block renders
+// (reasoningFormat.ts's joinedReasoningParagraphs). The model keeps those
+// chunks across a settle (reducer.ts's mergeReasoning), so a completion that
+// carries no text of its own shows what streamed in. An item with no chunks
+// at all shows its text.
+function reasoningText(item: ItemModel): string {
+  const summaries = item.reasoningSummaries;
+  if (!summaries?.length) return item.text;
+  return summaries.map((chunks) => pendingTextJoined(chunks)).join("\n\n");
 }
 
 function projectItem(
@@ -419,7 +391,7 @@ function projectItem(
           label: "Reasoning",
           family: "reasoning",
           state,
-          detail: { ...activityDetail(item), output: item.text },
+          detail: { ...activityDetail(item), output: reasoningText(item) },
         },
       },
     };
@@ -502,6 +474,23 @@ function projectItem(
     };
   }
 
+  // A warning the reducer folded into the active turn (reducer.ts's `case
+  // "warning"`): its own item type, carrying the notice's title and hint
+  // beside the message text. The phone shows it as the same failure card a
+  // turn error produces.
+  if (item.type === "warning") {
+    const hint = item.warning?.hint;
+    return {
+      kind: "final",
+      item: {
+        kind: "failure",
+        id: item.id,
+        title: item.warning?.title ?? "Warning",
+        detail: hint ? `${item.text}\n${hint}` : item.text,
+      },
+    };
+  }
+
   // Unknown / forward-compatible item type — neutral collapsed activity, never
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
@@ -563,7 +552,7 @@ function activityDetail(item: ItemModel): ActivityDetail {
 // if any member is running; otherwise completed (failed members never join a
 // run, so a cluster is never failed).
 
-export function clusterActivities(
+function clusterActivities(
   preItems: PreActivity[],
 ): Extract<MobileTimelineItem, { kind: "activity" }>[] {
   const result: Extract<MobileTimelineItem, { kind: "activity" }>[] = [];

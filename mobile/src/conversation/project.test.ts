@@ -1872,3 +1872,112 @@ it("keeps failures of unknown activity types individually visible", () => {
       .map((value) => value.id),
   ).toEqual(["a", "b"]);
 });
+
+// --- what the live model carries into the rows (D23c-2b) ---------------------
+
+it("projects a warning item as the failure card its notice is", () => {
+  // A warning only ever reaches the model through the reducer's own
+  // `case "warning"` fold, which stamps ItemModel.warning beside the text —
+  // warnings are not transcript-persisted, so no snapshot carries one.
+  const model = hydrateThread(
+    { thread: thread([turn("t", [item({ id: "item_warning_live_t_0", type: "warning", text: "Retrying the provider", status: "completed" })])]) },
+    "ref-1",
+    0,
+  );
+  const warning = model.turns[0]?.items[0];
+  if (!warning) throw new Error("expected the warning item");
+  warning.warning = { title: "Provider warning", hint: "attempt 2 of 3" };
+  expect(projectConversation(model).items).toMatchObject([
+    {
+      kind: "failure",
+      id: "item_warning_live_t_0",
+      title: "Provider warning",
+      detail: "Retrying the provider\nattempt 2 of 3",
+    },
+  ]);
+});
+
+it("titles a warning that carries none", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({ id: "w", type: "warning", text: "something happened", status: "completed" }),
+      ]),
+    ]),
+  );
+  expect(projected.items).toMatchObject([
+    { kind: "failure", title: "Warning", detail: "something happened" },
+  ]);
+});
+
+it("reads a reasoning row from the per-summaryIndex chunks the model keeps", () => {
+  const model = hydrateThread(
+    { thread: thread([turn("t", [item({ id: "r", type: "reasoning", text: "seed", status: "inProgress" })], { status: "inProgress" })]) },
+    "ref-1",
+    0,
+  );
+  const reasoning = model.turns[0]?.items[0];
+  if (!reasoning) throw new Error("expected the reasoning item");
+  // The reducer accumulates one chunk list per summary index; the row joins
+  // them in order, one paragraph each.
+  reasoning.reasoningSummaries = [["first ", "thought"], ["second thought"]];
+  expect(projectConversation(model).items).toMatchObject([
+    {
+      kind: "activity",
+      family: "reasoning",
+      state: "running",
+      detail: { output: "first thought\n\nsecond thought" },
+    },
+  ]);
+});
+
+it("falls back to a reasoning item's own text when no chunks were kept", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [item({ id: "r", type: "reasoning", status: "completed" })]),
+    ]),
+  );
+  expect(projected.items).toMatchObject([
+    { kind: "activity", family: "reasoning", detail: { output: "" } },
+  ]);
+});
+
+it("counts a question row on screen as a pending ask", () => {
+  const askArgs =
+    '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({
+          id: "ask-1",
+          type: "commandExecution",
+          toolName: "ask_user",
+          status: "completed",
+          argumentsJson: askArgs,
+        }),
+      ]),
+    ]),
+  );
+  // The hub's own askPending is absent from this fixture: the answerable
+  // question the projection found is what makes the ask pending.
+  expect(projected.items.some((row) => row.kind === "question")).toBe(true);
+  expect(projected.askPending).toBe(true);
+});
+
+it("leaves askPending false when nothing is answerable", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({
+          id: "ask-bad",
+          type: "commandExecution",
+          toolName: "ask_user",
+          status: "completed",
+          argumentsJson: "{{not valid json",
+        }),
+      ]),
+    ]),
+  );
+  expect(projected.items.some((row) => row.kind === "question")).toBe(false);
+  expect(projected.askPending).toBe(false);
+});
