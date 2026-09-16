@@ -221,6 +221,25 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(lifecycle.listCalls(fake)).toBe(2);
     });
 
+    test("a reconnect inside the debounce window reads once, not twice", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+      store.start();
+
+      // The notification's read is scheduled, then the connection it would
+      // have been sent on goes away. The recovery read replaces it: leaving
+      // the timer up sends a second read for the same change, and a timer
+      // that fires while the connection is down records an error the user
+      // never has to see.
+      lifecycle.notifyUpdated(fake);
+      store.connectionChanged(fake, "reconnecting");
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs * 2);
+      expect(lifecycle.listCalls(fake)).toBe(2);
+    });
+
     test("a list nothing has read is not read by a reconnect", async () => {
       const { fake, store } = lifecycle.create();
       lifecycle.answerList(fake);

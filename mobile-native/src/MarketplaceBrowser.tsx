@@ -22,6 +22,7 @@ import {
   type PluginsStore,
 } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
 import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -33,23 +34,34 @@ const MARKETPLACES_FAILED =
 const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
 export const INSTALLED_PLUGINS_FAILED =
   "Could not load installed plugins. Try again when connected.";
+const WRITE_FAILED =
+  "Could not confirm the change. Refresh and check its status before trying again.";
 
 export function MarketplaceBrowser({
   client,
   hubName,
   installed,
+  gate,
   onOpenPlugin,
 }: {
   client: ConversationClientLike;
   hubName: string;
   installed: PluginsStore;
+  // The screen's plugin-mutation gate, shared with the installed list: an
+  // install started here keeps running after this view is gone, so the lock
+  // it takes has to outlive the view.
+  gate: PluginMutationGate;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
   const colors = useColors();
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
+  const pluginBusy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [selected, setSelected] = useState<string | null>(null);
+  // Marketplace writes (add, remove, refresh) are this view's own and end with
+  // it; the plugin install is the one that outlives it, so only that one takes
+  // the screen's gate.
   const [mutating, setMutating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
@@ -94,6 +106,8 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
+  // A marketplace write is this view's own: it marks this view busy and ends
+  // with it.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
@@ -101,13 +115,22 @@ export function MarketplaceBrowser({
     try {
       await action();
     } catch {
-      if (revision.current === version)
-        setError(
-          "Could not confirm the change. Refresh and check its status before trying again.",
-        );
+      if (revision.current === version) setError(WRITE_FAILED);
     } finally {
       setMutating(false);
     }
+  }
+  // An install is the write that outlives this view, so it takes the screen's
+  // gate rather than the flag above - the installed list disables on the same
+  // gate, and a tab switch cannot start a second one.
+  function install(target: PluginRefParams) {
+    const version = revision.current;
+    setError(null);
+    void gate
+      .run(() => plugins.installPlugin(target.plugin, target.marketplace))
+      .catch(() => {
+        if (revision.current === version) setError(WRITE_FAILED);
+      });
   }
   const marketplace = state.marketplaces?.find(
     (item) => item.name === selected,
@@ -256,14 +279,13 @@ export function MarketplaceBrowser({
                 {item.description && <Copy muted>{item.description}</Copy>}
                 {item.author && <Copy muted>{item.author}</Copy>}
                 <Action
-                  disabled={mutating || !plugins.plugins || !!installedError}
+                  disabled={
+                    mutating || pluginBusy || !plugins.plugins || !!installedError
+                  }
                   label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
                   onPress={() => {
                     if (existing) onOpenPlugin(target);
-                    else
-                      void act(() =>
-                        plugins.installPlugin(target.plugin, target.marketplace),
-                      );
+                    else install(target);
                   }}
                 >
                   {existing ? "Installed · Open" : "Install"}

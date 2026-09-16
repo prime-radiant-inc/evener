@@ -110,6 +110,13 @@ export function createStoreLifecycle<S>(
     connectionChanged(client, state) {
       const previous = connection;
       connection = { client, state };
+      // A read scheduled on the connection that is changing has nothing left
+      // to say: on the way down it would fire against a socket that is gone
+      // and record an error nobody has to see, and on the way up the recovery
+      // read below replaces it - keeping it would send a second read for the
+      // same change.
+      clearTimeout(refetchTimer);
+      refetchTimer = undefined;
       if (disposed || state !== "ready") return;
       // Keyed on the client as well as the state: a replacement that arrives
       // already ready is a different hub's answer to the same question, and
