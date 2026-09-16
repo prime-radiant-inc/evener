@@ -26,7 +26,7 @@
 //
 // EVERY ITEM IS AN IMAGE, so there is exactly one branch and no
 // "attachment that isn't an image" fallback to drift out of sync with this
-// one. Both doors enforce it: attachments/limits.ts's rejectionReason
+// one. Both doors enforce it: the package's attachmentLimits rejectionReason
 // refuses any file whose type is not image/*, and recovery/recoveryDraft.ts
 // only lifts input items of type "image" out of a recovered mutation.
 import { useState } from "react";

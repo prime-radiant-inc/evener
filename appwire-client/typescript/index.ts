@@ -59,6 +59,8 @@ export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
+export type { RejectableFile } from "./attachmentLimits";
+export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
