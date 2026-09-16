@@ -558,6 +558,40 @@ test("confirmed goal replacement invalidates pending attachments without later c
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
 
+test("a recovery that leaves the text unchanged does not move the caret on the next keystroke", async () => {
+  // A drain sent while a turn/queue was still in flight comes back rejected
+  // ("queue revision changed") carrying no input; its auto-activation writes
+  // the same empty text the composer already holds. The cursor restore that
+  // write schedules must not wait for a later, unrelated text change: that
+  // change is the user's next keystroke, and restoring 0 there puts every
+  // following character ahead of the first (#1308).
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/drainAsSteer",
+    payload: { ref: "ref_a", input: [] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
+  });
+  const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!recovered) throw new Error("failed to seed recovery");
+  await mountComposer("ref_a", { status: { type: "idle" } });
+  await flushPendingTurnsProjectionForTests();
+  // Activated, then discarded again by the recovery persistence because the
+  // recovered draft is empty: only that path removes the durable row.
+  expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+  expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
+  expect(textarea().value).toBe("");
+
+  fireEvent.change(textarea(), { target: { value: "h" } });
+
+  expect(textarea().value).toBe("h");
+  expect(textarea().selectionStart).toBe(1);
+  expect(textarea().selectionEnd).toBe(1);
+});
+
 test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
