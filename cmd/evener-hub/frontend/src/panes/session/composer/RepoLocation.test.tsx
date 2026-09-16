@@ -246,34 +246,31 @@ test("a string too short to split renders as a single span", () => {
   expect(path.textContent).toBe("/");
 });
 
-// The pressure grammar itself (ToolRow's .clamped pair in
-// toolcallitem.module.css): the path and the reference lay their spans out as
-// flex rows, the head yields and ellipsizes, and the tail never shrinks -
-// capped at 60% of the line the same way .clampedTail is capped.
+// The pressure grammar itself: the path and the reference lay their spans out
+// as flex rows, and the pair is COMPOSED from the grammar's home
+// (toolcallitem.module.css's .clampedHead/.clampedTail) rather than copied, so
+// the two implementations cannot drift apart - toolRowGrammar.test.tsx pins
+// the declarations where they live.
 test("the head and tail spans carry the middle-truncation grammar", () => {
   const css = locationCss();
   expect(css).toMatch(/\.path \{[^}]*display: flex;/);
   expect(css).toMatch(/\.ref \{[^}]*display: flex;/);
-  expect(css).toMatch(/\.head \{[^}]*flex: 0 1 auto;[^}]*text-overflow: ellipsis;/);
-  expect(css).toMatch(/\.tail \{[^}]*flex: none;[^}]*max-width: 60%;[^}]*text-overflow: ellipsis;/);
+  expect(css).toMatch(/\.head \{[^}]*composes: clampedHead from "\.\.\/transcript\/toolcallitem\.module\.css";/);
+  expect(css).toMatch(/\.tail \{[^}]*composes: clampedTail from "\.\.\/transcript\/toolcallitem\.module\.css";/);
 });
 
 // On the phone the footer's bottom padding is the home-indicator band
 // (PaneScaffold publishes it as --pane-footer-pad-bottom). The line spends up
-// to one of its own line-heights of that band so the strip under it stops
-// reading as dead padding - bounded so its text never comes closer than
-// --space-2 to the pane's bottom edge, and never drops at all when the band is
-// too small to hold it (keyboard open, or a desktop window squeezed to phone
-// width where env() is 0). Desktop is untouched.
+// to one of its own line-heights of that band beyond its breathing room
+// (--space-3), so the strip under it stops reading as dead padding - and
+// exactly zero once the band is down to that breathing room, so the keyboard
+// open or a desktop window squeezed to phone width (env() is 0, band is
+// plain --space-3) drops nothing at all. Desktop is untouched.
 test("the line translates down into the footer's padding band on the phone only", () => {
   const css = locationCss();
   expect(css).toMatch(
-    /@media \(max-width: 899px\) \{[\s\S]*?\.line \{[^}]*--repo-line-drop: min\(\s*var\(--font-size-caption\) \* var\(--line-height-body\),\s*max\(0px, var\(--pane-footer-pad-bottom, 0px\) - var\(--space-2\)\)/,
-  );
-  expect(css).toMatch(
-    /@media \(max-width: 899px\) \{[\s\S]*?\.line \{[^}]*transform: translateY\(var\(--repo-line-drop\)\)/,
+    /@media \(max-width: 899px\) \{[\s\S]*?\.line \{[^}]*transform: translateY\(\s*clamp\(\s*0px,\s*calc\(var\(--pane-footer-pad-bottom, 0px\) - var\(--space-3\)\),\s*calc\(var\(--font-size-caption\) \* var\(--line-height-body\)\)/,
   );
   const baseLine = css.match(/^\.line \{([^}]*)\}/m)?.[1] ?? "";
   expect(baseLine).not.toContain("transform");
-  expect(baseLine).not.toContain("--repo-line-drop");
 });

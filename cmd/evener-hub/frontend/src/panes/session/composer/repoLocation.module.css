@@ -43,29 +43,19 @@
   color: var(--ink-mid);
 }
 
-/* The middle-truncation pair (RepoLocation.tsx's MiddleTruncated), the same
- * grammar toolcallitem.module.css's .clampedHead/.clampedTail pair set: the
- * head yields under pressure and ellipsizes, so the cut lands wherever the
- * width puts it; the tail never shrinks, so the string's ENDING - the project
- * directory, the branch - is what stays on screen. The tail's 60% cap is the
- * same ceiling .clampedTail carries: a tail long enough to crowd out its own
- * head ellipsizes rather than clipping glyph-less at the container edge. An
- * unpressured line renders head then tail as one unbroken string. */
+/* The middle-truncation pair (RepoLocation.tsx's MiddleTruncated), composed
+ * from the grammar's home rather than copied so the two cannot drift: the
+ * head (.clampedHead) yields under pressure and ellipsizes, so the cut lands
+ * wherever the width puts it; the tail (.clampedTail) never shrinks and caps
+ * at 60% of the line, so the string's ENDING - the project directory, the
+ * branch - is what stays on screen. An unpressured line renders head then
+ * tail as one unbroken string. */
 .head {
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: clampedHead from "../transcript/toolcallitem.module.css";
 }
 
 .tail {
-  flex: none;
-  max-width: 60%;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  composes: clampedTail from "../transcript/toolcallitem.module.css";
 }
 
 .link {
@@ -100,17 +90,20 @@
  * The bound is the footer's own published padding
  * (panescaffold.module.css's .footer publishes --pane-footer-pad-bottom), so
  * the drop never exceeds the room that actually exists: capped at one
- * caption line, never closer than --space-2 to the pane's bottom edge (the
- * .pane clips at its edge), and nothing at all when the band is too small to
- * hold it - the keyboard open, or a desktop window squeezed to phone width,
- * where env() is 0 and the band is plain --space-3. Desktop keeps the base
- * rule: no transform, no drop. */
+ * caption line, and exactly zero once the band is down to its own breathing
+ * room - the keyboard open, or a desktop window squeezed to phone width,
+ * where env() is 0 and the band is plain --space-3. The 0px floor only
+ * matters outside a pane footer (no --pane-footer-pad-bottom above, as in
+ * tests), where it clamps the absent band to no drop at all. Desktop keeps
+ * the base rule: no transform, no drop. */
 @media (max-width: 899px) {
   .line {
-    --repo-line-drop: min(
-      var(--font-size-caption) * var(--line-height-body),
-      max(0px, var(--pane-footer-pad-bottom, 0px) - var(--space-2))
+    transform: translateY(
+      clamp(
+        0px,
+        calc(var(--pane-footer-pad-bottom, 0px) - var(--space-3)),
+        calc(var(--font-size-caption) * var(--line-height-body))
+      )
     );
-    transform: translateY(var(--repo-line-drop));
   }
 }

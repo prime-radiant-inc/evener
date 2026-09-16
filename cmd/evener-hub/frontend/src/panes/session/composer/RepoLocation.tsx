@@ -30,7 +30,7 @@
 // share the path; such a session still shows its working dir, just no branch.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { resolveGitLocation } from "../../../shell/gitLocation";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -69,13 +69,13 @@ const CLASS = {
  * middleTruncationCut uses the same 60%. */
 const HEAD_SHARE = 0.6;
 
-/** Splits `text` at `cut` (a code-point index) into its head and tail halves,
- * or returns null when the cut would empty either side - a one-sided split is
- * not a middle truncation. The cut first walks left off boundary whitespace:
- * head and tail render as separate spans, and CSS white-space processing drops
- * a space at a span edge, so every space must stay interior to one half. */
-function splitMiddle(text: string, cut: number): [string, string] | null {
-  const chars = Array.from(text);
+/** Splits `chars` (the text's code points, materialized once by
+ * MiddleTruncated) at `cut` into its head and tail halves, or returns null
+ * when the cut would empty either side - a one-sided split is not a middle
+ * truncation. The cut first walks left off boundary whitespace: head and tail
+ * render as separate spans, and CSS white-space processing drops a space at a
+ * span edge, so every space must stay interior to one half. */
+function splitChars(chars: string[], cut: number): [string, string] | null {
   let position = cut;
   while (position > 0 && position < chars.length) {
     if (/\s/.test(chars[position - 1] ?? "") || /\s/.test(chars[position] ?? "")) position -= 1;
@@ -86,19 +86,21 @@ function splitMiddle(text: string, cut: number): [string, string] | null {
 }
 
 /** The default cut: ~60% of the code points to the head. */
-function proportionalCut(text: string): number {
-  return Math.ceil(Array.from(text).length * HEAD_SHARE);
+function proportionalCut(chars: string[]): number {
+  return Math.ceil(chars.length * HEAD_SHARE);
 }
 
 /** The repo reference's cut: at its `#`, so the branch marker and everything
  * after it ride the never-shrinking tail and the branch cannot ellipsize away.
- * -1 (no marker) leaves the reference to its fallback: one head span. */
-function branchMarkerCut(text: string): number {
-  return Array.from(text).indexOf("#");
+ * The reference is always built with a literal `#`, so -1 cannot occur today;
+ * splitChars' one-sided guard keeps a stray -1 from splitting anything. */
+function branchMarkerCut(chars: string[]): number {
+  return chars.indexOf("#");
 }
 
-function MiddleTruncated({ text, cut }: { text: string; cut: number }) {
-  const split = splitMiddle(text, cut);
+function MiddleTruncated({ text, cutOf }: { text: string; cutOf: (chars: string[]) => number }) {
+  const chars = Array.from(text);
+  const split = splitChars(chars, cutOf(chars));
   if (split === null) return <span className={CLASS.head}>{text}</span>;
   const [head, tail] = split;
   return (
@@ -120,7 +122,11 @@ interface ResolvedLocation {
   originUrl: string;
 }
 
-export function RepoLocation({ cwd, local }: RepoLocationProps) {
+// Memoized: the composer re-renders on every keystroke (it owns the draft
+// state), while this line's inputs change only when the session's cwd or its
+// locality does (session resume, cwd switch) - the same per-row-props reason
+// ToolCallItem memoizes the transcript's rows.
+export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocationProps) {
   const client = useClient();
   const [resolved, setResolved] = useState<ResolvedLocation | null>(null);
 
@@ -145,7 +151,7 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
   return (
     <div className={CLASS.line} data-testid="composer-repo-location">
       <span className={CLASS.path} title={cwd} data-testid="composer-repo-path">
-        <MiddleTruncated text={cwd} cut={proportionalCut(cwd)} />
+        <MiddleTruncated text={cwd} cutOf={proportionalCut} />
       </span>
       {branch !== "" &&
         (remote !== null ? (
@@ -165,7 +171,7 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
           >
             <ForgeMark forge={remote.forge} />
             <span className={CLASS.ref} data-testid="composer-repo-ref">
-              <MiddleTruncated text={reference} cut={branchMarkerCut(reference)} />
+              <MiddleTruncated text={reference} cutOf={branchMarkerCut} />
             </span>
           </a>
         ) : (
@@ -175,4 +181,4 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
         ))}
     </div>
   );
-}
+});
