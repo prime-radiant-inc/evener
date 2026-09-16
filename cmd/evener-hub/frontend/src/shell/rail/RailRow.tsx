@@ -395,19 +395,40 @@ function spawnInProject(project: RailProject): void {
 // own project of the same ID or path, which is a different project.
 // Component 06a's round-six finding left that half to the rail.
 //
-// Two readings of ownership, unioned because either one settles it: the row's
-// own sessions, each of which names the host it belongs to (the signal this
-// tree carries today), and the summary's own `sources` - the field the
-// navigation read model carries alongside its summary shape, omitted for a
-// controller-only project, which RailProject's own interface does not declare
-// on this branch yet and so is read structurally.
+// Two readings, in order. When the summary carries `sources` it is the whole
+// answer: NavigationProjectSummary.Sources names every source that owns
+// sessions in the project and is omitted for a controller-only one, so a
+// present list with a non-local entry settles it either way regardless of what
+// has loaded. That field arrives with this component's base branch
+// (multi-host-pr06a-fleet-view-go, whose head 179dc5cad carries it on the wire
+// in hubapi/navigation.go, in the regenerated TypeScript as `sources?:
+// string[]`, and in the navigation codec's PROJECT_OPTIONAL - the codec rejects
+// a summary field it does not allow, so the field and its admission land
+// together). RailProject's own interface predates it here, hence the structural
+// read, and the value survives the trip to the row: both projectFromGraph and
+// projectFromSummary spread the wire summary into the RailProject.
+//
+// Until that base lands, the row's own sessions are the only live signal, and
+// they are a signal only once they have LOADED. A collapsed project loads its
+// sessions on expand (Rail.tsx's loadProject effect skips unexpanded rows), so
+// an unexpanded row reads sessions: [] and "no remote session is visible" says
+// nothing about ownership. Round eleven's low finding: reading that emptiness
+// as controller-only offered the item to remote-only and merged rows alike -
+// the wrong-host delete this guard exists to prevent - so an unloaded row whose
+// project has rows is now withheld rather than treated as this controller's.
+// The one exception is a project with no rows at all: session_count counts
+// every source's top-level rows (hubcore.TreeProject.TotalSessionCount), so
+// zero means no host owns a session here and there is nothing wrong-host to
+// address. Withholding is the conservative side of the call: a controller-only
+// row regains the item as soon as its sessions load (and immediately, once
+// `sources` arrives with the base), while offering it early would delete the
+// local twin of a merged row.
 function ownedByRemoteHost(project: RailProject): boolean {
   const sources = (project as { sources?: unknown }).sources;
-  if (
-    Array.isArray(sources) &&
-    sources.some((source) => typeof source === "string" && source.trim() !== "" && source.trim() !== "local")
-  )
-    return true;
+  if (Array.isArray(sources))
+    return sources.some((source) => typeof source === "string" && source.trim() !== "" && source.trim() !== "local");
+  if (project.session_count === 0) return false;
+  if (project.loaded !== true) return true;
   return project.sessions.some((session) => session.host_id !== "" && session.host_id !== "local");
 }
 

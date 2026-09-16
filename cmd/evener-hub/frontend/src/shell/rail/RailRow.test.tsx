@@ -2118,7 +2118,11 @@ describe("project row", () => {
 
   test("menu offers 'Delete project…' and calls onDeleteProjectRequest on select", async () => {
     const acts = actions();
-    const project = apiProject();
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [apiNode({ row_id: "project:p1:local:a" })],
+    });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={acts} />);
     const user = await openMenu(/actions for/i);
     await user.click(screen.getByRole("menuitem", { name: "Delete project…" }));
@@ -2129,10 +2133,20 @@ describe("project row", () => {
   // non-local or unknown source), so a row a remote host also owns must not
   // offer the item: a source-less request addresses THIS hub's own project of
   // the same ID or path, which is a different project. Component 06a's
-  // round-six finding left this rail half here (round ten).
+  // round-six finding left this rail half here (round ten); round eleven
+  // tightened it to the two readings below.
+  //
+  // The first reading, `sources`, is the live one on this component's base
+  // (multi-host-pr06a-fleet-view-go, head 179dc5cad): the tests below that stamp
+  // it exercise that path. The second, the row's own sessions, is the live one
+  // on this branch, where the summary type predates the field - those tests set
+  // `loaded` so they exercise the sessions path rather than the withheld-because
+  // -unloaded path, which has its own test below.
   test("menu omits 'Delete project…' for a project row a remote host also owns", async () => {
     const acts = actions();
     const project = apiProject({
+      loaded: true,
+      session_count: 2,
       sessions: [
         apiNode({ row_id: "project:p1:local:a" }),
         apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
@@ -2150,6 +2164,8 @@ describe("project row", () => {
 
   test("menu omits 'Delete project…' for a remote-only project row", async () => {
     const project = apiProject({
+      loaded: true,
+      session_count: 1,
       sessions: [
         apiNode({ row_id: "project:p1:buildbox:t1", ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }),
       ],
@@ -2159,10 +2175,38 @@ describe("project row", () => {
     expect(screen.queryByRole("menuitem", { name: "Delete project…" })).toBeNull();
   });
 
+  // Round eleven's concrete harm, and the reason the sessions reading now
+  // requires the list to have loaded: a collapsed project loads its sessions on
+  // expand, so an unexpanded remote-only or merged row reads sessions: [] and
+  // "no remote session is visible" said nothing. Reading that emptiness as
+  // controller-only offered the item to exactly the rows it was meant to
+  // withhold it from.
+  test("menu omits 'Delete project…' when the project's sessions have not loaded", async () => {
+    const project = apiProject({ loaded: false, session_count: 2, sessions: [] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.queryByRole("menuitem", { name: "Delete project…" })).toBeNull();
+    // The rest of the project menu is unaffected.
+    expect(screen.getByRole("menuitem", { name: "Archive project" })).toBeTruthy();
+  });
+
+  // The one unloaded row that is still knowably controller-only: a project with
+  // no rows at all. session_count counts every source's top-level rows
+  // (hubcore.TreeProject.TotalSessionCount), so zero means no host owns a
+  // session here and the source-less request cannot address another project.
+  test("menu keeps 'Delete project…' for an empty controller project", async () => {
+    const project = apiProject({ loaded: false, session_count: 0, sessions: [] });
+    render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
+    await openMenu(/actions for/i);
+    expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
+  });
+
   // The other reading of the same verdict: the navigation summary's own owning
   // sources, which a controller-only project omits. RailProject's interface on
   // this branch predates that field (component 06a's read model), so the test
-  // stamps it the way the wire will.
+  // stamps it the way the wire will; these two exercise the post-base path and
+  // deliberately leave the row unloaded, because a present `sources` list
+  // settles ownership on its own once the base lands.
   test("menu omits 'Delete project…' when the summary names a remote owner", async () => {
     const project = withSources(apiProject(), ["local", "buildbox"]);
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
@@ -2179,7 +2223,11 @@ describe("project row", () => {
   });
 
   test("menu keeps 'Delete project…' for a project row only this controller owns", async () => {
-    const project = apiProject({ sessions: [apiNode({ row_id: "project:p1:local:a" })] });
+    const project = apiProject({
+      loaded: true,
+      session_count: 1,
+      sessions: [apiNode({ row_id: "project:p1:local:a" })],
+    });
     render(<RailRow node={projectRailNode(project)} info={info()} actions={actions()} />);
     await openMenu(/actions for/i);
     expect(screen.getByRole("menuitem", { name: "Delete project…" })).toBeTruthy();
