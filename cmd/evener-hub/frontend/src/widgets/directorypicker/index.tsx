@@ -1,10 +1,9 @@
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import { basename, childrenPrefix, friendlyErrorMessage, parentOf } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "../button";
 import { OverlayPanel } from "../dialog/OverlayPanel";
 import { requireClass } from "../internal/requireClass";
-import { basename, childrenPrefix, parentOf } from "../pathfield/pathRows";
 import styles from "./directorypicker.module.css";
 
 export interface DirectoryPickerProps {
