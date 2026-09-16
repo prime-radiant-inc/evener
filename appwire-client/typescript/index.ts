@@ -127,6 +127,8 @@ export {
   sessionActionHeadline,
   WireError,
 } from "./errors";
+export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
+export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
