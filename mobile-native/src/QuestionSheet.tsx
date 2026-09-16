@@ -9,8 +9,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { AskResolution } from "@evener/appwire-client";
-import type { MobileAskQuestion } from "../../mobile/src/conversation/model";
+import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {
@@ -34,7 +33,7 @@ export function QuestionSheet({
 }: {
   visible: boolean;
   destination: DraftDestination;
-  questions: MobileAskQuestion[];
+  questions: AskQuestionRef[];
   hubName: string;
   ready: boolean;
   pending: boolean;

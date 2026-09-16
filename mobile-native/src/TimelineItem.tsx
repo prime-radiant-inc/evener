@@ -179,7 +179,7 @@ export function TimelineItem({
 		case "question":
 			content = (
 				<>
-					{item.batch.questions.map((question) => (
+					{item.questions.map((question) => (
 						<View key={question.key} style={{ gap: 8 }}>
 							<Copy>{question.header}</Copy>
 							<Copy>{question.question}</Copy>

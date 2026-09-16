@@ -19,7 +19,6 @@ import type {
   Thread,
   ThreadCapabilities,
 } from "@evener/appwire-client";
-import type { MobileCapabilities } from "../conversation/model";
 import {
   ActivityProjectionError,
   createActivityService,
@@ -545,7 +544,7 @@ describe("ActivityService — projectActivity", () => {
       };
       const t = thread({ evener: evenerThread({ capabilities: caps }) });
       const view = service.projectActivity(t);
-      expect(view.capabilities).toEqual(caps as MobileCapabilities);
+      expect(view.capabilities).toEqual(caps);
     });
 
     it("projects reasoning effort and levels", () => {

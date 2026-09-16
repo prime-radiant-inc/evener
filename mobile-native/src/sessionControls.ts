@@ -4,7 +4,7 @@ import {
 	effortOptionLevels,
 	sessionEffortLevels,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import type {
 	ConversationModelCatalog,
 	ConversationRecoveryActions,
