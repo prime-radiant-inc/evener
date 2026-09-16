@@ -642,15 +642,19 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	resumeDone(err)
 	if err != nil {
-		if launch.guard != nil {
+		cleanup, cleanupUnconfirmed := errors.AsType[*resumeCleanupError](err)
+		if cleanupUnconfirmed {
+			launch.cleanupErr = cleanup
+		}
+		if launch.guard != nil && !cleanupUnconfirmed {
 			// The guarded launch produced no child: restore the exit proof it
-			// invalidated so the session is not left fenced behind it.
+			// invalidated so the session is not left fenced behind it. A launch
+			// whose child cleanup is unconfirmed may still have a live child, so
+			// its fence stays: restoring the proof would let it describe that
+			// child, which is the invariant BeforeLaunch exists to hold.
 			if guardErr := launch.guard.Failed(); guardErr != nil {
 				err = errors.Join(err, guardErr)
 			}
-		}
-		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
-			launch.cleanupErr = cleanup
 		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}

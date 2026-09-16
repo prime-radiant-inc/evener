@@ -136,3 +136,25 @@ func TestRecoveryStateReadsOlderVersionWithoutLaunchIntents(t *testing.T) {
 		t.Fatalf("upgraded snapshot %s invented a launch intent", raw)
 	}
 }
+
+// TestRecoveryStateReadsVersion4Snapshot pins that a version-4 snapshot this
+// hub itself wrote before the signal-attempt marker was added still loads, with
+// its launch intent intact and no invented signal attempt.
+func TestRecoveryStateReadsVersion4Snapshot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "recovery"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	older := `{"version":4,"records":[{"alias":"owner","group":"one","session_id":"owner","exit_confirmed":false,"launch_pending":true}]}`
+	if err := os.WriteFile(filepath.Join(root, "recovery", "state.json"), []byte(older), 0600); err != nil {
+		t.Fatal(err)
+	}
+	locks, err := NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatalf("version-4 snapshot did not load: %v", err)
+	}
+	state := locks.RecoveryState("owner")
+	if state.ExitConfirmed || !state.LaunchPending || state.SignalAttempted {
+		t.Fatalf("version-4 snapshot state = %+v, want the launch intent and no signal attempt", state)
+	}
+}

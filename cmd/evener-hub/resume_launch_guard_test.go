@@ -76,3 +76,46 @@ func TestUnregisteredResumeLaunchInvalidatesPriorExitProof(t *testing.T) {
 		t.Fatal("failed unregistered launch did not restore the prior exit proof")
 	}
 }
+
+// TestUnregisteredResumeCleanupFailureKeepsLaunchFence is the Low regression:
+// when a guarded (no ActiveResume) launch returns a *resumeCleanupError, the
+// child's cleanup is unconfirmed and it may still be alive. guard.Failed must
+// not restore the prior owner's exit proof, or that proof would describe a live
+// child; the launch fence must stay in place.
+func TestUnregisteredResumeCleanupFailureKeepsLaunchFence(t *testing.T) {
+	root, runDir := t.TempDir(), t.TempDir()
+	locks, err := hubcore.NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := hubtest.SessionID(t)
+	aliases := []string{sessionID}
+	finish := locks.BeginForceStop(aliases)
+	if err := locks.PersistForceStop(aliases, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	if !locks.RecoveryState(sessionID).ExitConfirmed {
+		t.Fatal("fixture did not establish a confirmed exit proof")
+	}
+
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      hubcore.NewRoster(runDir, nil),
+		ResumeLocks: locks,
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{}, &resumeCleanupError{cause: errors.New("child exit cannot be confirmed")}
+		}},
+	}
+	_, err = resumeThreadLocked(t.Context(), cfg, nil, appwire.ThreadResumeParams{Ref: "local:" + sessionID, Session: sessionID}, aliases)
+	if err == nil {
+		t.Fatal("cleanup-unconfirmed launch failure was not reported")
+	}
+	state := locks.RecoveryState(sessionID)
+	if state.ExitConfirmed || !state.LaunchPending {
+		t.Fatalf("cleanup-unconfirmed launch state = %+v, want the launch fence retained", state)
+	}
+}

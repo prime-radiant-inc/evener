@@ -84,6 +84,94 @@ func TestInterruptedLaunchDoesNotStrandSessionAcrossRestart(t *testing.T) {
 	next.Complete(nil)
 }
 
+// unconfirmedForceStopState leaves the durable recovery record in the exact
+// state a hub crash produces between PersistForceStop and ConfirmForceStop: an
+// explicit Stop committed a new recovery group with no exit proof, and then the
+// hub died before the daemon's exit was recorded. The daemon exits gracefully
+// and removes its rendezvous claim, so at restart no alias is claimed.
+func unconfirmedForceStopState(t *testing.T) (root, sessionID string) {
+	t.Helper()
+	root, sessionID = t.TempDir(), hubtest.SessionID(t)
+	locks, err := hubcore.NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	// The crash: the daemon exits and drops its marker, but the hub dies before
+	// ConfirmForceStop records the confirmed exit.
+	finish(true)
+	return root, sessionID
+}
+
+// TestUnconfirmedForceStopDoesNotStrandSessionAcrossRestart is the Medium
+// regression: a hub that dies between the durable force-stop intent and its
+// confirmation, while the daemon then exits gracefully and drops its marker,
+// leaves a session with ResumeRequired && !ExitConfirmed, no launch intent, no
+// signal attempt, and no claim. Explicit resume cannot clear it (the exit is
+// unconfirmed) and forceStopEntry cannot confirm it (no claim), so startup
+// recovery must settle an unsignaled, unclaimed, unconfirmed group.
+func TestUnconfirmedForceStopDoesNotStrandSessionAcrossRestart(t *testing.T) {
+	root, sessionID := unconfirmedForceStopState(t)
+	runDir := t.TempDir()
+	web := NewWebServer(hubcore.WebConfig{HubStateRoot: root, RunDir: runDir, Roster: hubcore.NewRoster(runDir, nil)})
+	restarted := web.cfg.ResumeLocks
+	if restarted == nil {
+		t.Fatal("restarted hub has no recovery registry")
+	}
+
+	state := restarted.RecoveryState(sessionID)
+	if !state.ExitConfirmed || state.LaunchPending {
+		t.Fatalf("stranded force-stop recovery = %+v, want the exit proof reconciled", state)
+	}
+	persisted, err := hubcore.NewPersistentResumeLocks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if durable := persisted.RecoveryState(sessionID); !durable.ExitConfirmed || durable.LaunchPending {
+		t.Fatalf("recovery was not durable: %+v", durable)
+	}
+
+	// The ordinary resume path runs again.
+	next, err := restarted.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: restarted.RecoveryState(sessionID).Epoch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.BeforeLaunch(); err != nil {
+		t.Fatalf("restarted hub refused to launch a replacement for the stranded session: %v", err)
+	}
+	next.Complete(nil)
+}
+
+// TestUnconfirmedForceStopKeepsFenceForPublishedClaim guards the safety
+// invariant: recovery must never settle an unconfirmed group while any alias is
+// claimed, so a live child can never be described by a restored exit proof.
+func TestUnconfirmedForceStopKeepsFenceForPublishedClaim(t *testing.T) {
+	root, sessionID := unconfirmedForceStopState(t)
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID: 4242, SessionID: sessionID, ThreadID: sessionID, StateDir: t.TempDir(), StartedAt: time.Now(),
+	})
+	web := NewWebServer(hubcore.WebConfig{HubStateRoot: root, RunDir: runDir, Roster: hubcore.NewRoster(runDir, nil)})
+	restarted := web.cfg.ResumeLocks
+	if restarted == nil {
+		t.Fatal("restarted hub has no recovery registry")
+	}
+	if state := restarted.RecoveryState(sessionID); state.ExitConfirmed {
+		t.Fatalf("recovery confirmed a group with a published claim: %+v", state)
+	}
+	next, err := restarted.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: restarted.RecoveryState(sessionID).Epoch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := next.BeforeLaunch(); err == nil {
+		t.Fatal("recovery let a replacement launch over a published claim")
+	}
+	next.Complete(nil)
+}
+
 // TestInterruptedLaunchKeepsFenceForPublishedClaim guards the BeforeLaunch
 // invariant: a previous process's exit proof must never describe a new child.
 // A hub that died mid-launch must keep the fence whenever any alias is still

@@ -55,6 +55,12 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	stateDirs := map[string]string{threadID: pe.StateDir}
 	release, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, stateDirs)
 	if ownerErr != nil {
+		// A canceled or expired request must fail, as the fresh project-delete
+		// path does, rather than answer success-with-skip for a request that was
+		// abandoned before it could decide.
+		if err := ctx.Err(); err != nil {
+			return appwire.SessionDeleteResponse{}, err
+		}
 		var skipped []projectDeleteSkip
 		if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
 			skipped = appendProjectDeleteLiveSkip(nil, threadID)

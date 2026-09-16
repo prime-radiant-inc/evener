@@ -312,6 +312,44 @@ func TestForceStopPreservesSuccessAfterRosterRefreshFailure(t *testing.T) {
 	}
 }
 
+// TestConfirmedStoppedShortcutRefreshesAfterStop is the Low regression: the
+// confirmed-stopped fast path returns success without running the same
+// post-stop refresh/invalidation every other successful stop path runs, so the
+// roster, inputs, and attention are left stale.
+func TestConfirmedStoppedShortcutRefreshesAfterStop(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	finish := locks.BeginForceStop([]string{webTestSessionID})
+	if err := locks.PersistForceStop([]string{webTestSessionID}, webTestSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(webTestSessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	inputs := &hubcore.InputsVersion{}
+	poked := false
+	cfg := hubcore.WebConfig{
+		RunDir:        t.TempDir(),
+		ResumeLocks:   locks,
+		Inputs:        inputs,
+		PokeAttention: func() { poked = true },
+		DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			t.Error("confirmed-stopped shortcut attempted process control")
+			return nil, errors.New("unexpected process control")
+		}),
+	}
+	before := inputs.Load()
+	if err := forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + webTestSessionID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !poked {
+		t.Error("confirmed-stopped shortcut did not invalidate attention")
+	}
+	if got := inputs.Load(); got <= before {
+		t.Errorf("confirmed-stopped shortcut did not bump inputs: %d <= %d", got, before)
+	}
+}
+
 type forceStopProberFunc func(rendezvous.Entry) hubcore.ProbeResult
 
 func (f forceStopProberFunc) Probe(entry rendezvous.Entry) hubcore.ProbeResult { return f(entry) }

@@ -50,7 +50,7 @@ func NewPersistentResumeLocks(stateRoot string) (*ResumeLocks, error) {
 			groups[id] = group
 		}
 		group.aliases = append(group.aliases, alias)
-		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, LaunchPending: authority.LaunchPending, group: group, durableGroup: id, ResumeSessionID: authority.SessionID}
+		r.recovery[alias] = SessionRecoveryState{ResumeRequired: true, ExitConfirmed: authority.ExitConfirmed, LaunchPending: authority.LaunchPending, SignalAttempted: authority.SignalAttempted, group: group, durableGroup: id, ResumeSessionID: authority.SessionID}
 	}
 	return r, nil
 }
@@ -94,6 +94,7 @@ func (r *ResumeLocks) PersistForceStop(aliases []string, sessionID string) error
 			state.ResumeRequired = true
 			state.ExitConfirmed = false
 			state.LaunchPending = false
+			state.SignalAttempted = false
 			state.durableGroup = id
 			state.ResumeSessionID = sessionID
 			r.recovery[alias] = state
@@ -143,6 +144,58 @@ func (r *ResumeLocks) ConfirmForceStop(sessionID string) error {
 		current := r.recovery[alias]
 		if current.group == previous.group {
 			current.ExitConfirmed = true
+			r.recovery[alias] = current
+		}
+	}
+	return nil
+}
+
+// MarkForceStopSignaled durably records, before a termination signal is
+// delivered, that the intent may have reached a live process. Recovery keeps a
+// signaled group fenced even when no alias is claimed and the exit proof is
+// still missing, because a failed termination must never be mistaken for the
+// graceful exit that removes a rendezvous marker. Without this marker an
+// unclaimed, unconfirmed group is indistinguishable from a force stop the hub
+// died on before signaling, which recovery is free to settle.
+func (r *ResumeLocks) MarkForceStopSignaled(aliases []string, sessionID string) error {
+	if len(aliases) == 0 {
+		return errors.New("recovery alias set is empty")
+	}
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	state := r.recovery[sessionID]
+	eligible := make(map[string]SessionRecoveryState)
+	for _, alias := range aliases {
+		current := r.recovery[alias]
+		if current.group != nil && current.group == state.group && current.durableGroup == state.durableGroup {
+			eligible[alias] = current
+		}
+	}
+	r.mu.Unlock()
+	if len(eligible) == 0 {
+		return errors.New("session has no committed recovery authority")
+	}
+	if r.store != nil {
+		next := maps.Clone(r.store.state)
+		for alias, current := range eligible {
+			authority := next[alias]
+			if authority.Group != current.durableGroup {
+				return errors.New("session recovery authority changed")
+			}
+			authority.SignalAttempted = true
+			next[alias] = authority
+		}
+		if _, err := r.store.commit(next); err != nil {
+			return err
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for alias, previous := range eligible {
+		current := r.recovery[alias]
+		if current.group == previous.group && current.durableGroup == previous.durableGroup {
+			current.SignalAttempted = true
 			r.recovery[alias] = current
 		}
 	}
@@ -435,15 +488,20 @@ func (g *LaunchGuard) Failed() error {
 	return g.owner.restoreLaunchProofLocked(g.proof, g.target)
 }
 
-// RecoverInterruptedLaunches settles durable launch intents left by a hub that
-// died after a launch durably invalidated a prior exit proof but before the
-// child started or published a rendezvous claim. claimed reports whether any
-// alias of a pending group is still claimed; a claimed group is left fenced so
-// a previous process's exit proof can never describe a new child. Every
-// unclaimed group's launch intent is cleared and its prior exit proof restored,
-// which is what lets the ordinary resume and force-stop paths run instead of
-// rejecting the session indefinitely. It returns the first discovery error
-// rather than guessing about a group it could not check.
+// RecoverInterruptedLaunches settles durable recovery records a hub could not
+// finish. Two interrupted shapes reach here with no child to protect: a launch
+// that durably invalidated a prior exit proof but never started or published a
+// claim (LaunchPending), and a force stop that durably committed its intent but
+// was never confirmed because the hub died before it signaled (an unconfirmed
+// group with no signal attempt). A group whose force stop may have delivered a
+// signal is deliberately left fenced: a failed termination with a lost marker
+// must not be read as the graceful exit that removes a marker. claimed reports
+// whether any alias of an eligible group is still claimed; a claimed group is
+// left fenced in every case, so a previous process's exit proof can never
+// describe a new child. Every eligible unclaimed group's record is cleared and
+// its exit proof restored, which is what lets the ordinary resume and force-stop
+// paths run instead of rejecting the session indefinitely. It returns the first
+// discovery error rather than guessing about a group it could not check.
 func (r *ResumeLocks) RecoverInterruptedLaunches(claimed func(aliases []string) (bool, error)) error {
 	if r == nil || claimed == nil {
 		return nil
@@ -460,7 +518,13 @@ func (r *ResumeLocks) RecoverInterruptedLaunches(claimed func(aliases []string) 
 	var pending []pendingLaunch
 	for _, alias := range slices.Sorted(maps.Keys(r.recovery)) {
 		state := r.recovery[alias]
-		if !state.LaunchPending || state.group == nil || !state.ResumeRequired || seen[state.group] {
+		if state.group == nil || !state.ResumeRequired || state.ExitConfirmed || seen[state.group] {
+			continue
+		}
+		// A group whose force stop may have signaled keeps its fence even with no
+		// claim: a failed termination is not the graceful exit that removes a
+		// marker, so recovery must not settle it.
+		if !state.LaunchPending && state.SignalAttempted {
 			continue
 		}
 		seen[state.group] = true
@@ -479,9 +543,13 @@ func (r *ResumeLocks) RecoverInterruptedLaunches(claimed func(aliases []string) 
 		proof := make(map[string]SessionRecoveryState)
 		for _, alias := range launch.aliases {
 			state := r.recovery[alias]
-			if state.LaunchPending && state.group == launch.group && state.ResumeRequired && state.ResumeSessionID == launch.target {
-				proof[alias] = state
+			if state.group != launch.group || !state.ResumeRequired || state.ExitConfirmed || state.ResumeSessionID != launch.target {
+				continue
 			}
+			if !state.LaunchPending && state.SignalAttempted {
+				continue
+			}
+			proof[alias] = state
 		}
 		if len(proof) != 0 {
 			err = r.restoreLaunchProofLocked(proof, launch.target)
@@ -714,7 +782,12 @@ type SessionRecoveryState struct {
 	// LaunchPending is set while a resume has durably invalidated this alias's
 	// exit proof and is starting a replacement. It is cleared once that launch
 	// settles, so a restart can recover a launch that produced no child.
-	LaunchPending   bool
+	LaunchPending bool
+	// SignalAttempted is set once a force stop has durably committed its intent
+	// and is about to deliver a termination signal. It keeps the group fenced
+	// across a restart even when its marker disappears, so a failed termination
+	// is never read as a graceful exit.
+	SignalAttempted bool
 	ResumeSessionID string
 	group           *sessionRecoveryGroup
 	durableGroup    string
@@ -854,6 +927,7 @@ func (r *ResumeLocks) ExplicitResumeCompleted(sessionID string, epoch uint64) er
 		}
 		alias.ResumeRequired = false
 		alias.LaunchPending = false
+		alias.SignalAttempted = false
 		alias.durableGroup = ""
 		alias.ResumeSessionID = ""
 		r.recovery[id] = alias
