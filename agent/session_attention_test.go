@@ -614,7 +614,7 @@ func TestDelegateAttention_StabilizationRetryPreservesFailedBarrier(t *testing.T
 	if err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	fs.failNextAmbiguousDurability(2)
+	fs.failNextAmbiguousDurability(3)
 	if err := runtime.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err == nil {
 		t.Fatal("ambiguous resolution unexpectedly succeeded")
 	}
@@ -824,14 +824,16 @@ func TestDelegateAttention_ColdCallerCommitRequiresRenewedDurabilityBeforeSource
 	commit := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate_send", "done", false))
 	commit.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: plans[0].deliveryID}}
 	fs.failNextAmbiguousDurability(3)
-	// The writer owns durability: a retained entry (whole line in the file,
-	// unsynced) returns nil and poisons the writer. The commit is a record, but
-	// not durable — the poison is what stops the source ack downstream.
+	// The commit's whole line lands but its fsync fails: a record, so
+	// AppendDurable returns nil, tracked as dirty debt (not poison — the writer
+	// stays usable). Durability is unestablished, and the cold replay below is
+	// what must not source-ack until a renewed barrier confirms it; Close's own
+	// flush fails too, surfacing the unsynced debt.
 	if err := writer.AppendDurable(commit); err != nil {
 		t.Fatalf("ambiguous caller commit append error = %v, want nil: the whole line is a record", err)
 	}
-	if !writer.Poisoned() {
-		t.Fatal("ambiguous caller commit left the writer accepting appends over an unsynced tail")
+	if writer.Poisoned() {
+		t.Fatal("a retained whole line poisoned the writer; retained is debt the next fsync settles")
 	}
 	if err := writer.Close(); err == nil {
 		t.Fatal("ambiguous caller commit close unexpectedly succeeded")
@@ -879,7 +881,7 @@ func TestDelegateAttention_LiveNotificationRetryReestablishesDurabilityBeforeSou
 	if len(plans) != 1 {
 		t.Fatalf("ReplayDeliveries = %#v", plans)
 	}
-	fs.failNextAmbiguousDurability(2)
+	fs.failNextAmbiguousDurability(3)
 	if _, err := deliverDelegatePacket(plans[0], root); err == nil {
 		t.Fatal("ambiguous live notification append unexpectedly succeeded")
 	}
@@ -943,7 +945,7 @@ func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettl
 	if err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	fs.failNextAmbiguousDurability(2)
+	fs.failNextAmbiguousDurability(3)
 	if err := runtime.resolveAttentionDurably([]string{attentionID}, delegateAttentionConsumed); err == nil {
 		t.Fatal("ambiguous live resolution unexpectedly succeeded")
 	}
@@ -4130,7 +4132,11 @@ func (fs *attentionAmbiguousSyncFS) OpenFile(name string, flag int, perm os.File
 }
 
 func (fs *attentionAmbiguousSyncFS) failNextResolutionDurability() {
-	fs.failNextAmbiguousDurability(1)
+	// Two syncs: the durable append's own fsync, and the AppendSynced barrier
+	// that would otherwise settle the retained record. Failing both is what
+	// makes the resolution genuinely non-durable now that a whole line is debt
+	// the next fsync clears rather than a poison.
+	fs.failNextAmbiguousDurability(2)
 }
 
 func (fs *attentionAmbiguousSyncFS) failNextAmbiguousDurability(syncFailures int) {

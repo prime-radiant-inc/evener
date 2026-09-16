@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1752,57 +1751,29 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// its length cannot name a durable transcript turn.
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
-	// The writer owns durability, and the environment tracker is the named
-	// exception that must still second-guess it: a retained entry (whole line
-	// in the file, unsynced) returns nil and poisons the writer, so the write
-	// is written first — not through the auto-appending pair helper — and the
-	// tracker advance is committed only once a barrier proves the model will
-	// see the turn on restart. writeTranscriptDurableLocked queues the retained
-	// diagnostic on the writer; this producer drains and returns it itself
-	// rather than leaving it for the next unrelated turn to surface.
-	writeErr := s.writeTranscriptDurableLocked(turn)
-	poisoned := s.attachedTranscript().Poisoned()
-	appendTurnLocked := func() {
-		s.mu.Lock()
-		s.history = append(s.history, turn)
-		s.logPairPersistedLocked(turn)
-		s.mu.Unlock()
-	}
-	committed := writeErr == nil && !poisoned
-	if committed {
-		appendTurnLocked()
-	}
+	// The environment tracker is a durability owner: it may only claim the
+	// model saw a turn once that turn is durably in the transcript, or a
+	// restart renders every later block as a diff against a baseline the model
+	// never received. So the write goes through AppendSynced (records AND
+	// syncs, or errors) via the pair helper: on success the pair commits
+	// (history + pair log) and the tracker advance below stands; on error the
+	// turn is not durably in front of the model, so the tracker rewinds to the
+	// last state it did see and the next turn re-renders the whole observation.
+	// A failed AppendSynced can leave a retained record behind — a redundant
+	// entry a reader reconciles — which is strictly safer than a tracker
+	// advanced past context no restart can see. RenderDiff advanced the tracker
+	// before the write so it could render the diff; attentionMu holds the pair
+	// whole against a fold publication exactly as the clean path's is held.
+	err := s.appendTurnAfterTranscriptWriteLocked(
+		turn,
+		func() error { return s.writeTranscriptSyncedLocked(turn) },
+		func() { s.history = append(s.history, turn) },
+	)
+	committed := err == nil
 	if !committed {
-		// RenderDiff advances the tracker before the transcript write so it can
-		// render the diff. What becomes of that advance depends on what the
-		// transcript can be shown to hold. attentionMu keeps compaction from
-		// replacing the tracker during this transaction, and holds a late
-		// commit's append whole against a fold publication exactly as the clean
-		// path's pair is held.
-		switch s.reconcileEnvironmentEntryAfterFailedWriteLocked(turn, writeErr, poisoned) {
-		case environmentEntryAbsent, environmentEntryUnknown:
-			// Neither outcome puts the turn in front of the model, so the
-			// tracker must not claim the model saw it: rewind to the last state
-			// it did see and let the next turn render the whole observation
-			// again. When an unknown entry turns out to have landed after all,
-			// that costs a redundant entry in the transcript — which a reader
-			// can see and reconcile, unlike a tracker advanced past unseen
-			// context, which renders every later block as a diff against a
-			// baseline the model never received.
-			s.mu.Lock()
-			s.envTracker = envctx.NewTracker(before)
-			s.mu.Unlock()
-		case environmentEntryDurable:
-			// The entry is in the transcript and now synced, so the write
-			// committed after all. Complete the half of the pair the failure
-			// skipped; everything below then runs as it does for a clean
-			// append, because the entry is late rather than different.
-			s.mu.Lock()
-			s.history = append(s.history, turn)
-			s.logPairPersistedLocked(turn)
-			s.mu.Unlock()
-			committed = true
-		}
+		s.mu.Lock()
+		s.envTracker = envctx.NewTracker(before)
+		s.mu.Unlock()
 	}
 	if committed {
 		// Persist tracker state so resume stays silent when nothing changed.
@@ -1839,88 +1810,14 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if committed {
 		s.maybeAutoSave()
 	}
-	// A write that was not cleanly durable rejects the input even when
-	// reconciliation later commits the entry: the write could not complete
-	// inline, so the turn that owns it is rolled back and its provisional count
-	// checkpointed (TestRejectedInputDoesNotPersistItsProvisionalTurn). The
-	// typed sync error no longer crosses the writer boundary, so the failure is
-	// reported from the writer's drained diagnostic and reads back as an
-	// unresolved durability barrier.
-	if writeErr == nil && !poisoned {
-		return nil
+	// A durability failure rejects the input: the turn that owns this append is
+	// rolled back and its provisional count checkpointed
+	// (TestRejectedInputDoesNotPersistItsProvisionalTurn). AppendSynced settled
+	// its own warning channel, so the error is the only report needed.
+	if err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	retErr := writeErr
-	if warning, ok := s.attachedTranscript().TakeWarning(); ok {
-		s.emit(events.EventWarning, events.WarningData{Message: warning})
-		if retErr == nil {
-			retErr = fmt.Errorf("environment transcript not durable: %s: %w", warning, transcript.ErrWriterPoisoned)
-		}
-	}
-	if retErr == nil {
-		retErr = fmt.Errorf("environment transcript not durable: %w", transcript.ErrWriterPoisoned)
-	}
-	if writeErr != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", writeErr)})
-	}
-	return retErr
-}
-
-// environmentEntryOutcome is what reconciliation could establish about the
-// entry a failed environment append left, or did not leave, in the transcript.
-type environmentEntryOutcome int
-
-const (
-	// environmentEntryUnknown: reconciliation could establish neither, so the
-	// entry cannot be treated as something the model was shown. It takes the
-	// zero value because the outcome nobody set must be the one that claims
-	// nothing about the transcript; environmentEntryDurable commits a turn on
-	// the strength of a confirmation, and a confirmation is exactly what an
-	// unset outcome does not carry.
-	environmentEntryUnknown environmentEntryOutcome = iota
-	// environmentEntryAbsent: the transcript does not hold the entry, so the
-	// next turn must render the observation again.
-	environmentEntryAbsent
-	// environmentEntryDurable: the transcript holds the entry and it is synced,
-	// so the append committed late and owes its in-memory side effects.
-	environmentEntryDurable
-)
-
-// reconcileEnvironmentEntryAfterFailedWriteLocked settles what a failed
-// environment append left behind. A rollback that succeeded took the entry
-// back out, and that is the whole answer. A rollback that failed leaves the
-// entry's line possibly still in the file, so the entry is looked up by its
-// stable ID behind a durability barrier that makes what a reader can see
-// authoritative.
-//
-// Absence is only ever reported when it is established. A barrier that cannot
-// be raised or a transcript that cannot be read leaves the outcome unknown,
-// which is its own answer: only a confirmed entry may be treated as one the
-// model was shown. The caller holds attentionMu, so no other writer can append
-// between the failure and this read.
-func (s *Session) reconcileEnvironmentEntryAfterFailedWriteLocked(turn schema.Turn, err error, poisoned bool) environmentEntryOutcome {
-	// The entry is ambiguous when a durable append reported a rollback failure
-	// (its line may still be in the file) or when it returned nil but poisoned
-	// the writer with a retained whole line (a record nothing synced). A clean
-	// rollback took the entry back out, and there is nothing to look up.
-	if !errors.Is(err, transcript.ErrRollbackFailed) && !poisoned {
-		return environmentEntryAbsent
-	}
-	// EstablishDurability fsyncs the whole file, which also clears a retained
-	// poison — so a barrier that succeeds both confirms the entry can be read
-	// back and returns the writer to service for the next turn.
-	if durabilityErr := s.attachedTranscript().EstablishDurability(); durabilityErr != nil {
-		return environmentEntryUnknown
-	}
-	data, readErr := readTranscriptFull(s.TranscriptPath())
-	if readErr != nil {
-		return environmentEntryUnknown
-	}
-	for _, entry := range data.Entries {
-		if entry.Turn.StableTurnID == turn.StableTurnID {
-			return environmentEntryDurable
-		}
-	}
-	return environmentEntryAbsent
+	return err
 }
 
 // resetEnvContextTrackerLocked clears the environment-context tracker when a
@@ -2114,27 +2011,42 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 	return s.attachedTranscript().AppendDurable(t)
 }
 
+// writeTranscriptSyncedLocked is the durability owner's write: it records AND
+// establishes durability, returning an error unless the entry is both a record
+// and synced. Only the environment producer uses it, through the pair helper;
+// ordinary producers use writeTranscriptDurableLocked and never inspect
+// durability.
+func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
+	if s.holdTurnUntilTranscriptReady(t) {
+		return nil
+	}
+	return s.attachedTranscript().AppendSynced(t)
+}
+
 func (s *Session) attachedTranscript() *transcript.Writer {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transcript
 }
 
-// surfaceTranscriptWarnings drains the writer's retained-entry diagnostics and
-// emits each once. A retained entry (whole line in the file, no fsync) is a
-// record the durable append committed and returned nil for, so its sync
-// failure reaches a client only through this channel. MUST run outside
-// attentionMu and s.mu: an EventWarning fires the notification hook, which
-// takes locks a transcript write is holding.
-func (s *Session) surfaceTranscriptWarnings() {
-	w := s.attachedTranscript()
-	for {
-		warning, ok := w.TakeWarning()
-		if !ok {
-			return
-		}
-		s.emit(events.EventWarning, events.WarningData{Message: warning})
+// drainTranscriptWarnings formats every pending retained-entry diagnostic and
+// hands it to sink. A retained entry (whole line in the file, no fsync) is a
+// record the durable append committed and returned nil for, so its sync failure
+// reaches a client only here. The one formatter serves all three sinks (the two
+// write-site emits and the pre-SESSION_START buffer). Emitting MUST run outside
+// attentionMu and s.mu: an EventWarning fires the notification hook, which takes
+// locks a transcript write is holding — the emit sinks call this after the
+// locks release.
+func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
+	for _, err := range s.attachedTranscript().DrainWarnings() {
+		sink(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
+}
+
+// surfaceTranscriptWarnings emits every pending retained-entry diagnostic. Its
+// callers have already released the transcript locks.
+func (s *Session) surfaceTranscriptWarnings() {
+	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(events.EventWarning, w) })
 }
 
 func (s *Session) closeAttachedTranscript() error {
@@ -2181,13 +2093,9 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	// A replayed append whose whole line landed but did not sync returned nil
 	// and queued its diagnostic on the writer; buffer it the same way, since
 	// SESSION_START has not fired yet.
-	for {
-		warning, ok := w.TakeWarning()
-		if !ok {
-			break
-		}
-		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: warning})
-	}
+	s.drainTranscriptWarnings(func(warning events.WarningData) {
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, warning)
+	})
 }
 
 // sclock returns the session's injected clock. Production always sets s.clock

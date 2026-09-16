@@ -246,15 +246,14 @@ func TestAppend_SyncFailsNoRollback(t *testing.T) {
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x"))); err != nil {
 		t.Fatalf("Append error = %v, want nil: the whole line is a record", err)
 	}
-	warning, ok := w.TakeWarning()
-	if !ok {
-		t.Fatal("no warning surfaced for the faulted buffered sync")
+	warnings := w.DrainWarnings()
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %d, want the one faulted buffered sync", len(warnings))
 	}
-	if !strings.HasPrefix(warning, "sync transcript entry") {
-		t.Fatalf("warning = %q, want prefix %q", warning, "sync transcript entry")
-	}
-	if strings.Contains(warning, "rollback") {
-		t.Fatalf("plain append must not roll back, got %q", warning)
+	if msg := warnings[0].Error(); !strings.HasPrefix(msg, "sync transcript entry") {
+		t.Fatalf("warning = %q, want prefix %q", msg, "sync transcript entry")
+	} else if strings.Contains(msg, "rollback") {
+		t.Fatalf("plain append must not roll back, got %q", msg)
 	}
 	if w.Poisoned() {
 		t.Fatal("a buffered sync failure poisoned the writer; its whole line is a record and it stays usable")
@@ -362,15 +361,18 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 				if err != nil {
 					t.Fatalf("AppendDurable error = %v, want nil: the truncate failed, so the whole line is a record", err)
 				}
-				warning, ok := w.TakeWarning()
-				if !ok {
-					t.Fatal("no warning surfaced for the retained entry")
+				warnings := w.DrainWarnings()
+				if len(warnings) != 1 {
+					t.Fatalf("warnings = %d, want the one retained entry", len(warnings))
 				}
-				if !strings.Contains(warning, "rollback failed") || !strings.Contains(warning, tc.wantRollback) {
-					t.Fatalf("warning = %q, want a rollback-failed %q detail", warning, tc.wantRollback)
+				if msg := warnings[0].Error(); !strings.Contains(msg, "rollback failed") || !strings.Contains(msg, tc.wantRollback) {
+					t.Fatalf("warning = %q, want a rollback-failed %q detail", msg, tc.wantRollback)
 				}
-				if !w.Poisoned() {
-					t.Fatal("a retained durable entry left the writer accepting appends over an unsynced tail")
+				if !errors.Is(warnings[0], ErrRollbackFailed) {
+					t.Fatalf("warning = %v, want it to wrap ErrRollbackFailed", warnings[0])
+				}
+				if w.Poisoned() {
+					t.Fatal("a retained whole line poisoned the writer; retained is debt the next fsync settles, not poison")
 				}
 				return
 			}
@@ -411,21 +413,20 @@ func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T
 	w.TrackFailures(nil, 0)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	// The entry is a record, so the durable append returns nil; the writer
-	// stops over the unsynced tail (a retained poison the barrier can clear),
-	// and the sync failure surfaces as a warning.
+	// The entry is a record, so the durable append returns nil; it is not yet
+	// durable (retained debt), which the writer tracks as dirty and the sync
+	// failure surfaces as a warning. The writer stays usable.
 	if err := w.AppendDurable(retained); err != nil {
 		t.Fatalf("append error = %v, want nil: the whole line is a record", err)
 	}
-	if !w.Poisoned() {
-		t.Fatal("the retained entry left the writer accepting appends over an unsynced tail")
+	if w.Poisoned() {
+		t.Fatal("a retained whole line poisoned the writer; retained is debt, not poison")
 	}
-	if _, ok := w.TakeWarning(); !ok {
+	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the retained entry surfaced no warning")
 	}
-	if err := w.EstablishDurability(); err != nil {
-		t.Fatalf("EstablishDurability: %v", err)
-	}
+	// The next durable append settles the debt with its own fsync; no barrier
+	// is needed to keep writing.
 	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
 		t.Fatalf("append after retained entry: %v", err)
 	}
@@ -492,7 +493,7 @@ func TestAppend_SyncFailureSpendsTheSequenceOfTheLineItLeft(t *testing.T) {
 	if err := w.Append(retained); err != nil {
 		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
 	}
-	if _, ok := w.TakeWarning(); !ok {
+	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the buffered sync failure surfaced no warning")
 	}
 	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {

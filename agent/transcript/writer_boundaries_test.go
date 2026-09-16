@@ -237,7 +237,7 @@ func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 	if err := w.AppendDurable(retained); err != nil {
 		t.Fatalf("append error = %v, want nil: the whole line is a record", err)
 	}
-	if _, ok := w.TakeWarning(); !ok {
+	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the retained write surfaced no warning")
 	}
 	if w.seq != 1 {
@@ -246,8 +246,10 @@ func TestAppendDurable_WholeLineWriteFailureSpendsSequence(t *testing.T) {
 	if count, ok := w.FailedToolCalls(); !ok || count != 1 {
 		t.Fatalf("failure count = %d (counted=%v), want the 1 a reader of the transcript counts", count, ok)
 	}
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); !errors.Is(err, ErrWriterPoisoned) {
-		t.Fatalf("append after an unresolved write = %v, want ErrWriterPoisoned", err)
+	// A whole line that landed is a record, not a partial-line poison: the
+	// writer stays usable and the next fsync settles the debt.
+	if w.Poisoned() {
+		t.Fatal("a retained whole line poisoned the writer; only a partial line does")
 	}
 
 	data, err := afero.ReadFile(fs, faultTranscriptPath)
@@ -312,7 +314,7 @@ func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
 	if err := w.Append(retained); err != nil {
 		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
 	}
-	if _, ok := w.TakeWarning(); !ok {
+	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the retained buffered write surfaced no warning")
 	}
 	if w.seq != 1 {
@@ -321,8 +323,10 @@ func TestAppend_WholeLineFailureSpendsSequence(t *testing.T) {
 	if count, ok := w.FailedToolCalls(); !ok || count != 1 {
 		t.Fatalf("failure count = %d (counted=%v), want the 1 a reader of the transcript counts", count, ok)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); !errors.Is(err, ErrWriterPoisoned) {
-		t.Fatalf("append after an unresolved write = %v, want ErrWriterPoisoned", err)
+	// The whole line is a record, so the writer stays usable — a partial line
+	// is the only thing that poisons it.
+	if w.Poisoned() {
+		t.Fatal("a retained whole line poisoned the buffered writer; only a partial line does")
 	}
 }
 
