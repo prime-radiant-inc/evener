@@ -162,6 +162,9 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.humanizeState("awaiting", true), "question waiting");
+assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("notLoaded", false), "idle");
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
 assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
