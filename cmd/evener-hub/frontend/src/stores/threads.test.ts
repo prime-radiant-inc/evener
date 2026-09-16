@@ -9686,3 +9686,196 @@ test("a healthy authoritative refresh releases the fence after refused force sto
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
 });
+
+// A stopped local session's Send resumes it; the client serializes resumes
+// behind one resumePending guard. The fixtures below drive the real store,
+// outbox and Appwire client, and their only seam is the hub WebSocket.
+describe("review regressions: stopped-session resume admission", () => {
+  function stoppedSnapshot(ref: string, stopped: boolean, instanceId = `thr_${ref}`): ThreadReadResponse {
+    return readResponse(ref, {
+      status: { type: stopped ? "notLoaded" : "idle" },
+      evener: {
+        ref,
+        instanceId,
+        capabilities: stopped ? { ...CAPABILITIES, send: false } : CAPABILITIES,
+        resumeRequired: stopped,
+        mutationStateAuthoritative: !stopped,
+        queue: { revision: 0 },
+      },
+    });
+  }
+
+  test("review regression: a fresh Send issued before the canceled resume drains serializes behind it", async ({
+    onTestFinished,
+  }) => {
+    const ref = "local:resume-pending-serialize";
+    setMutationStorageForTests(new MutationOutboxIndexedDB());
+    let stopped = true;
+    let releaseResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const { client, requests, resumeReceived } = recoveryClientFixture({
+      ref,
+      snapshot: () => stoppedSnapshot(ref, stopped),
+      resume: async () => {
+        await resumeGate;
+        stopped = false;
+      },
+      stop: () => {
+        stopped = true;
+      },
+    });
+    onTestFinished(() => {
+      releaseResume();
+      client.close();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    await threadsStore.getState().ensureThread(ref);
+    const canceled = threadsStore
+      .getState()
+      .send(ref, "canceled input")
+      .catch((error: unknown) => error);
+    await resumeReceived;
+    await threadsStore.getState().forceStop(ref);
+    // Stop canceled the in-flight resume but the client's resumePending guard
+    // is still held until that resume settles. A fresh Send admitted now must
+    // wait for the release instead of racing it.
+    const fresh = threadsStore
+      .getState()
+      .send(ref, "fresh input")
+      .then(
+        () => "sent",
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+    releaseResume();
+    expect(await fresh).toBe("sent");
+    expect(await canceled).toBeInstanceOf(Error);
+    expect(requests.filter(({ method }) => method === "thread/resume")).toHaveLength(2);
+    // The fresh intent's dispatch is the durable handoff; wait for the wire
+    // request rather than assuming the enqueue and the dispatch share a tick.
+    await vi.waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+    expect(requests.find(({ method }) => method === "turn/start")?.params.input).toEqual([
+      { type: "text", text: "fresh input" },
+    ]);
+  });
+
+  test("review regression: Stop while the replacement destination hydrates still releases its claim", async ({
+    onTestFinished,
+  }) => {
+    const ref = "local:replaced-claim-origin";
+    const destination = "local:replaced-claim-destination";
+    setMutationStorageForTests(new MutationOutboxIndexedDB());
+    // The resume RPC answers with a replacement ref; only reads that follow it
+    // belong to the destination's own hydration.
+    let destinationMode = false;
+    let readHeld = false;
+    let announceDestinationRead!: () => void;
+    const destinationReadReceived = new Promise<void>((resolve) => {
+      announceDestinationRead = resolve;
+    });
+    let releaseDestinationRead!: () => void;
+    const destinationReadGate = new Promise<void>((resolve) => {
+      releaseDestinationRead = resolve;
+    });
+    const destinationSnapshot = () => stoppedSnapshot(destination, false, "replacement-instance");
+    const { client, requests } = recoveryClientFixture({
+      ref,
+      snapshot: () => (destinationMode ? destinationSnapshot() : stoppedSnapshot(ref, true)),
+      read: async () => {
+        if (destinationMode && !readHeld) {
+          readHeld = true;
+          announceDestinationRead();
+          await destinationReadGate;
+        }
+        return destinationMode ? destinationSnapshot() : stoppedSnapshot(ref, true);
+      },
+      resume: () => {
+        destinationMode = true;
+      },
+      stop: () => {},
+    });
+    onTestFinished(() => {
+      releaseDestinationRead();
+      client.close();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    await threadsStore.getState().ensureThread(ref);
+    // Witness the destination's own claim: the hydration publishes its model
+    // while the claim holds it, so a later removal proves the claim ran and
+    // was released rather than never being taken.
+    let sawDestinationClaimed = false;
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if (state.threads.has(destination)) sawDestinationClaimed = true;
+    });
+    onTestFinished(unsubscribe);
+    const send = threadsStore
+      .getState()
+      .send(ref, "canceled input")
+      .catch((error: unknown) => error);
+    // The destination's own claim is what keeps this read pending.
+    await destinationReadReceived;
+    expect(requests.filter(({ method }) => method === "thread/read").map(({ params }) => params)).toContainEqual(
+      expect.objectContaining({ ref: destination }),
+    );
+    await threadsStore.getState().forceStop(ref);
+    releaseDestinationRead();
+    expect(await send).toMatchObject({ message: "Stop canceled this pending action; send again when ready." });
+    expect(sawDestinationClaimed).toBe(true);
+    expect(threadsStore.getState().threads.has(destination)).toBe(false);
+    expect(
+      requests.filter(({ method, params }) => method === "thread/unsubscribe" && params.ref === destination),
+    ).toHaveLength(1);
+  });
+
+  test("review regression: a Retry whose resume lands on a replacement ref reports that specific outcome", async ({
+    onTestFinished,
+  }) => {
+    const ref = "local:retry-resumed-elsewhere";
+    const destination = "local:retry-resumed-elsewhere-replacement";
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    let destinationMode = false;
+    const destinationSnapshot = () => stoppedSnapshot(destination, false, "replacement-instance");
+    const { client, requests } = recoveryClientFixture({
+      ref,
+      snapshot: () => (destinationMode ? destinationSnapshot() : stoppedSnapshot(ref, true)),
+      resume: () => {
+        destinationMode = true;
+      },
+    });
+    onTestFinished(() => client.close());
+    connectionStore.getState().connect(client);
+    await client.connect();
+    await threadsStore.getState().ensureThread(ref);
+    const record = await storage.enqueueIntent({
+      targetRef: ref,
+      method: "turn/start",
+      payload: { ref, expectedInstanceId: `thr_${ref}`, input: [{ type: "text", text: "uncertain original" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "uncertain original" }] },
+    });
+    await storage.markAttempted(record.clientMutationId);
+    await storage.markUnknown(record.clientMutationId, "blockedUnknown");
+    const outcome = await retryBlockedMutation(record.clientMutationId).then(
+      (value: boolean) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    // The session resumed somewhere else, so the record's own ref cannot carry
+    // the retry. That is a specific outcome, not a generic retry failure.
+    expect(outcome).toEqual({
+      error: expect.objectContaining({
+        message: "Resumed in another instance; the original message's delivery is still uncertain.",
+      }),
+    });
+    // The payload and its identity are never retargeted or rejected.
+    expect(await storage.getOutbox(record.clientMutationId)).toEqual({
+      ...record,
+      attempted: true,
+      state: "blockedUnknown",
+    });
+    expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+  });
+});
