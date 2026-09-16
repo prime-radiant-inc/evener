@@ -11,6 +11,8 @@
 // shared - this project has no cross-test-file test-utils module; see that
 // file's and AppShell.test.tsx's notes on the convention).
 
+import type { KeybindingsOverrides, KeybindingsRule } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ACTIONS } from "../../keybindings/actions";
@@ -22,8 +24,6 @@ import {
 } from "../../keybindings/defaults";
 import { keybindingsRegistry } from "../../keybindings/registry";
 import { initNotifications, resetNotificationsForTests } from "../../notifications";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { KeybindingsOverrides, KeybindingsRule } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { keybindingsStore, resetKeybindingsStoreForTests } from "../../stores/keybindings";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";

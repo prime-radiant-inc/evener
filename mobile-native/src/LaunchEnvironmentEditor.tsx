@@ -8,7 +8,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { LaunchOption } from "../../appwire-client/typescript/types.gen";
+import type { LaunchOption } from "@evener/appwire-client";
 import {
   addEnvironmentVariable,
   assertEnvironmentCurrent,

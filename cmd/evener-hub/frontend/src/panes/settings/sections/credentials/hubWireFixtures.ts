@@ -13,7 +13,7 @@
 // with `make fuzz-goldens`.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { InstanceEntry } from "../../../../protocol/types.gen";
+import type { InstanceEntry } from "@evener/appwire-client";
 
 interface AuthWireFixture {
   case: string;

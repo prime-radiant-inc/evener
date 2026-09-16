@@ -4,7 +4,7 @@
 // contains the local overrides (resolve includes them), so subtracting the
 // local keys yields exactly the inherited entries under each kind's merge
 // semantics.
-import type { MCPServerSpec } from "../../../../protocol/types.gen";
+import type { MCPServerSpec } from "@evener/appwire-client";
 
 /** Effective value minus local entries, keyed by the caller's key extractor.
  * Returns [] when the effective value is absent or the wrong shape. */

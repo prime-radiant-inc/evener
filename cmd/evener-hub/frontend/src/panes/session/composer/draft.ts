@@ -18,7 +18,7 @@
 // {text, skillNames} as a single atomic localStorage value, so a draft's
 // canonical skill selections survive a reload next to its text. The v1 key
 // held plain text only; see readComposerDraft for the approved transition.
-import { canonicalSkillNames } from "../../../protocol/composerInput";
+import { canonicalSkillNames } from "@evener/appwire-client";
 
 const STORAGE_PREFIX = "evener.composer.draft.v1.";
 const STRUCTURED_STORAGE_PREFIX = "evener.composer.draft.v2.";

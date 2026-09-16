@@ -4,7 +4,7 @@
 // all operating on a plain in-memory LaunchFormState instead of the legacy's
 // direct DOM reads/writes. LaunchConfigForm.tsx (the rendering half) and the
 // field components under this directory are the only callers.
-import type { LaunchConfigLayer, LaunchOption, MCPServerSpec } from "../../../../protocol/types.gen";
+import type { LaunchConfigLayer, LaunchOption, MCPServerSpec } from "@evener/appwire-client";
 import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 
 export function optionSupportsLayer(opt: LaunchOption, layer: LaunchConfigLayerName): boolean {

@@ -2,11 +2,17 @@
 // renders exactly one card in its own ToolCallItem body. Only the `delegate`
 // spawn materializes a frozen pre-hydration row in the shared store; once the
 // owning stable delegate projection exists, it supplies the hydrated state.
+
+import type { EvenerDelegateInfo } from "@evener/appwire-client";
+import {
+  formatElapsed,
+  type ItemModel,
+  parseJSONObject,
+  plainQuoteLine,
+  SYSTEM_PRELUDE_TURN_ID,
+  str,
+} from "@evener/appwire-client";
 import { useEffect } from "react";
-import { formatElapsed, plainQuoteLine } from "../../../../protocol/displayFormat";
-import { type ItemModel, SYSTEM_PRELUDE_TURN_ID } from "../../../../protocol/model";
-import { parseJSONObject, str } from "../../../../protocol/toolCallText";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { Chevron, IconButton, Timestamp } from "../../../../widgets";

@@ -1,7 +1,7 @@
+import type { SearchResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { type RenderResult, render } from "@testing-library/react";
 import type { ReactElement } from "react";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { SearchResponse } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { ClientProvider } from "../clientContext";
 

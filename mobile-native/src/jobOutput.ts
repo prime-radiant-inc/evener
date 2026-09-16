@@ -1,5 +1,4 @@
-import { parseJobLogTail } from "../../appwire-client/typescript/jobOutput";
-import { sessionActionError } from "../../appwire-client/typescript/errors";
+import { parseJobLogTail, sessionActionError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface OutputState {

@@ -3,7 +3,7 @@ import type {
 	AnyNotification,
 	NavigationReadParams,
 	NavigationReadResponse,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/testing";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { createProjectBrowserController } from "./projectBrowser";

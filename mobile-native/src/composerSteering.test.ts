@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type {
   InputItem,
   Thread,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
   type ConversationClientLike,
   createConversationService,

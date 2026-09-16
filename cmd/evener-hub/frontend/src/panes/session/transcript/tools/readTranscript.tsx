@@ -28,8 +28,8 @@
 // not a transcript - a different renderer's job. It has its own descriptor
 // (worktreeTool.tsx's findSessionsSummary registration), not this one.
 
-import type { ItemModel } from "../../../../protocol/model";
-import { clip, parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { clip, parseArgs, parseJSONObject, str } from "@evener/appwire-client";
 import { CodeBlock } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { MCPToolArguments } from "../MCPToolArguments";

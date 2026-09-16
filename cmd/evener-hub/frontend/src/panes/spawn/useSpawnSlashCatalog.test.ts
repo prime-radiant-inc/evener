@@ -1,8 +1,8 @@
+import type { SpawnSlashCatalogResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { SpawnSlashCatalogResponse } from "../../protocol/types.gen";
 import {
   type SpawnSlashCatalogLoadState,
   type UseSpawnSlashCatalogArgs,
@@ -121,7 +121,7 @@ describe("useSpawnSlashCatalog", () => {
           cwd: "/repo",
           harness: "evener",
           // cast through unknown to satisfy LaunchConfigLayer without importing extra typing
-          launchOverrides: overrides as unknown as import("../../protocol/types.gen").LaunchConfigLayer,
+          launchOverrides: overrides as unknown as import("@evener/appwire-client").LaunchConfigLayer,
           pluginRevision: 0,
         }),
       { initialProps: { overrides: {} as Record<string, unknown> } },

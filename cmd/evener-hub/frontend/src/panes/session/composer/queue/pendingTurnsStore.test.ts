@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
+import type { Thread, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { IDBFactory, IDBObjectStore } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { Thread, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { setMutationClientIdentityForTests } from "../../../../stores/mutationClientIdentity";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";

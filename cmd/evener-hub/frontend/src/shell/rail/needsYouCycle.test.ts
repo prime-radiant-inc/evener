@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
+
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { afterEach, expect, test } from "vitest";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./needsYouCycle";
 
 afterEach(() => {

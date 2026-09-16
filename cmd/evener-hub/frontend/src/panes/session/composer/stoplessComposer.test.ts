@@ -2,8 +2,9 @@
 // with no Stop, the next person to see it should not have to reproduce it.
 // These cover the two ways that job fails -- not firing, and firing so much
 // that the evidence is buried.
+
+import type { ThreadCapabilities } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import {
   recordStoplessComposer,
   resetStoplessComposerSightingsForTests,

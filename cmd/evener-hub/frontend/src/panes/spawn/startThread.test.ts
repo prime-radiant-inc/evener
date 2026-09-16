@@ -1,8 +1,8 @@
 // @vitest-environment node
 
+import type { Thread, ThreadCapabilities, ThreadStartResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadStartResponse } from "../../protocol/types.gen";
 
 import { startThread } from "./startThread";
 

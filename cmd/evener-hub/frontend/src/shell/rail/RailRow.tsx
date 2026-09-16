@@ -37,20 +37,17 @@
 // (row hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
-import { memo, type ReactNode } from "react";
-import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
-// The watch vocabulary lives in shell/watchText.ts so the session panel's pure
-// row model can import it without pulling this React module (and every widget
-// stylesheet) into its own graph. Re-exported here so the rail's existing
-// callers and tests keep their import path.
+
 import {
+  canReadSharedNotes,
   watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
   watchGloss,
   watchTitle,
-} from "../../protocol/watchText";
+} from "@evener/appwire-client";
+import { memo, type ReactNode } from "react";
+import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { useThreadsStore } from "../../stores/threads";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";

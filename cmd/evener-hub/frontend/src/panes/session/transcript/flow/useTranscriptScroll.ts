@@ -32,8 +32,9 @@
 //    not an out-of-band "a loadOlder call is in flight" flag: a live append
 //    can land while a loadOlder request is still in flight, and diffing the
 //    data's own shape stays correct regardless of that interleaving.
+
+import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";

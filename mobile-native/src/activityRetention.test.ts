@@ -1,6 +1,5 @@
 import { expect, it } from "vitest";
-import { parseActivityTree } from "../../appwire-client/typescript/activityData";
-import { ActivityList } from "../../appwire-client/typescript/activityList";
+import { ActivityList, parseActivityTree } from "@evener/appwire-client";
 import { retainedActivityTree } from "./activityRetention";
 
 function activityTree() {

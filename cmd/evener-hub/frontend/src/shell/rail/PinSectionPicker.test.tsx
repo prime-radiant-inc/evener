@@ -1,8 +1,8 @@
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../protocol/errors";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";

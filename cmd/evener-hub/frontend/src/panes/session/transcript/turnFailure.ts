@@ -6,7 +6,7 @@
 // "Retry turn" and a "Reconnect & retry" action; this reproduces that decision
 // purely from the TurnError the reducer already maps onto TurnModel.error
 // (reducer.ts:216, wireToTurnScalars).
-import type { TurnError } from "../../../protocol/types.gen";
+import type { TurnError } from "@evener/appwire-client";
 
 // The reconnect-class message substrings the legacy hub-recovery button keyed
 // off (renderer.js:4463-4471) - a daemon/session that went away, where the
