@@ -28,7 +28,7 @@ import { Popover } from "../popover";
 import { Skeleton } from "../skeleton";
 import styles from "./modelCatalog.module.css";
 
-export type { ModelCatalogDiagnostic, ModelCatalogEntry } from "@evener/appwire-client";
+export type { ModelCatalogEntry } from "@evener/appwire-client";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "modelCatalog.module.css", "trigger"),

@@ -61,9 +61,10 @@ test("describeMissingCoverage fails an empty expectation rather than passing on 
 });
 
 // The package's declaration-only modules. The guard excuses them through
-// hasRuntimeExport, not through this list; the list pins which modules are
-// expected to emit nothing, so a module that loses its runtime surface by
-// accident turns this test red instead of quietly leaving the report.
+// hasRuntimeExport, not through this list; the list pins exactly which modules
+// emit nothing, so a module that loses its runtime surface by accident (or a
+// listed one that grows a runtime surface) turns this test red instead of
+// quietly leaving the report.
 const DECLARATION_ONLY_MODULES = new Set(["clientLike.ts", "modelCatalogTypes.ts"]);
 
 test("the real build config lists the package's modules, so the expectation is not empty", () => {
@@ -74,7 +75,7 @@ test("the real build config lists the package's modules, so the expectation is n
   for (const file of DECLARATION_ONLY_MODULES) assert(modules.includes(file), `${file} is not in the build`);
   assert(
     modules.every(
-      (file) => hasRuntimeExport(readFileSync(path.join(real, file), "utf8")) || DECLARATION_ONLY_MODULES.has(file),
+      (file) => hasRuntimeExport(readFileSync(path.join(real, file), "utf8")) === !DECLARATION_ONLY_MODULES.has(file),
     ),
   );
 });

@@ -4,6 +4,7 @@
 // wire - unit-tested in isolation (modelCatalogView.test.ts).
 // modelCatalogPickerRows composes these into the flat row list both apps'
 // pickers render; the swap sites never see them.
+import { formatTokenCount } from "./displayFormat";
 import type { ModelCatalogEntry } from "./modelCatalogTypes";
 
 /** One selectable row of the model picker: an identified, labelled option plus
@@ -83,6 +84,5 @@ export function contextWindowLabel(entry: ModelCatalogEntry): string | null {
   const cw = entry.contextWindow;
   if (cw === undefined) return null;
   if (cw >= 1_000_000) return `${cw / 1_000_000}M`;
-  if (cw >= 1000) return `${Math.round(cw / 1000)}k`;
-  return String(cw);
+  return formatTokenCount(cw);
 }
