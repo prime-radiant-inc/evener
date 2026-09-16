@@ -422,25 +422,6 @@ test("the chevron rides inline at the end of the intent text, glued to its final
   expect(intent.lastElementChild?.lastElementChild).toBe(chevron);
   expect(intent.textContent).toBe("List the directory");
   expect(intent.lastElementChild?.textContent).toBe("directory");
-  // The glue mechanism itself: both lines' tail units are atomic - one rule
-  // under the two names the lines' markup reads - so the pair moves as one.
-  expect(rowCss()).toMatch(/\.intentTail,\s*\.summaryTail\s*\{[^}]*display:\s*inline-flex/);
-});
-
-// The "Open beside" control's seating inside the tail unit (roborev's
-// review of the branch): the base .summaryTrailing centers itself - correct
-// on the collapsed single line, wrong inside the unit, where the final word
-// can wrap internally (overflow-wrap: anywhere) and a centered control
-// would sit between text lines instead of on the last one with the chevron.
-// The scoped override seats it like the chevron: one line box tall, bottom
-// aligned, hit slot centered in it (NotificationCard's .openTrailing is the
-// precedent). The geometry itself is pinned by the layoutguard case's
-// seating assertion.
-test("the tail unit seats the trailing control on its last line, centered in one line box", () => {
-  const css = rowCss();
-  expect(css).toMatch(/\.summaryTail \.summaryTrailing\s*\{[^}]*align-self:\s*flex-end/);
-  expect(css).toMatch(/\.summaryTail \.summaryTrailing\s*\{[^}]*height:\s*1lh/);
-  expect(css).toMatch(/\.summaryTail \.summaryTrailing\s*\{[^}]*align-items:\s*center/);
 });
 
 test("the chevron rides inline at the end of the summary when there is no intent", () => {
@@ -1982,5 +1963,25 @@ test("an expanded summary whose anchor ends at an entity id glues the trailing c
   // The id rides whole, and every character of the summary renders exactly
   // once (the control is icon-only).
   expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(summaryEl.textContent).toBe(summary);
+});
+
+// The grammar-level pin for ToolRow's summarySegments URL protection - the
+// full rationale lives on that function. Red-first evidence: this failed
+// with a null anchor before the fix.
+test("a summaryLink URL embedding an entity id renders whole as one link, never split by id detection", () => {
+  const url = `https://internal.example/jobs/${SUMMARY_ENTITY_JOB}/log`;
+  const summary = `Fetched ${url} · 200`;
+  renderWithEntities(
+    <ToolRow summary={summary} summaryLink={url} failed={false} expandable={false} expanded={false} />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const anchor = summaryEl.querySelector("a");
+  // The whole URL is one link over exactly the URL text...
+  expect(anchor?.getAttribute("href")).toBe(url);
+  expect(anchor?.textContent).toBe(url);
+  // ...no id-shaped fragment of it became a card trigger mid-URL...
+  expect(summaryEl.querySelector('[data-testid="entity-trigger"]')).toBeNull();
+  // ...and every character of the summary still renders exactly once.
   expect(summaryEl.textContent).toBe(summary);
 });

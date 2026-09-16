@@ -23,7 +23,7 @@ selectors are gone with the vanilla frontend (`660376f78`). Both web
 pickers are the same shared ARIA combobox
 (`widgets/modelCatalog/`): the `Recent` head is an
 `li[role="presentation"]` labelled exactly `Recent`
-(`widgets/modelCatalog/pickerRows.ts:31,88-99`) and its rows are the
+(`appwire-client/typescript/modelCatalogPickerRows.ts:31,88-99`) and its rows are the
 `li[role="option"]` entries between it and the next
 `role="presentation"` row.
 
@@ -125,7 +125,7 @@ Recent — spawn real sessions.
   (`Gemma4:e4b`, `Gpt 5.5`, `Gpt 5.4 Mini`, `Gpt 5.4`,
   `Gpt 5.3 Codex Spark`). Each Recent row's meta text **leads with the
   provider name** — `rowMeta(entry, true)` for the Recent block only
-  (`pickerRows.ts:37-45,96`), because Recent mixes providers and
+  (`appwire-client/typescript/modelCatalogPickerRows.ts:37-45,96`), because Recent mixes providers and
   the row would otherwise be unattributable.
 - **Step 7**: the `RECENT` header (uppercased,
   `cmd/evener-tui/internal/tuipick/model_picker.go:165-167`) leads the

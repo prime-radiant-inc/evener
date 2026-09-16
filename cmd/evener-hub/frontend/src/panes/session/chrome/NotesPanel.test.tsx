@@ -9,11 +9,11 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
-import { createRef } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
-import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
+import { editHumanNote, resetHumanNoteDrafts, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetPendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import {
@@ -24,7 +24,7 @@ import {
 } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { fileURLToPath, NotesPanel, NotesPanelBody, type NotesPanelHandle } from "./NotesPanel";
+import { fileURLToPath, NotesPanelBody } from "./NotesPanel";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -95,7 +95,25 @@ function noteResponse(params: { clientMutationId: string; note?: string }, note 
   };
 }
 
+function holdSessionPane(...refs: string[]) {
+  // The mounted panel implies its session pane in production; holding the
+  // refs keeps acknowledged drafts from the pane-store eviction sweep a save
+  // acknowledgment schedules. Sibling sessions sit in secondary panes.
+  act(() => {
+    workspaceStore.setState({
+      panes: refs.map((ref, index) => ({
+        id: `p_notes_${index}`,
+        type: "session",
+        params: { ref },
+        slot: index === 0 ? "main" : "secondary",
+      })),
+      focusedPaneId: "p_notes_0",
+    });
+  });
+}
+
 function openPanel(model: ThreadModel) {
+  holdSessionPane(model.ref);
   render(<NotesPanelBody sessionRef={model.ref} model={model} />);
 }
 
@@ -306,6 +324,14 @@ test("a definite refusal stays visible and keeps its draft across close and reop
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
+  // Draft records persist across renders by design, and most tests here
+  // share one default session ref: a leftover record from the previous
+  // test would be the one the eviction sweep (scheduled by the workspace
+  // reset above) races against the fresh mount to reclaim, and whichever
+  // lands last decides whether this test's edits find a record at all.
+  // Each test starts with none (TopNotesPanel.test.tsx does the same).
+  resetHumanNoteDrafts();
   resetPendingUrlRemovals();
   resetToastStoreForTests();
 });
@@ -465,65 +491,6 @@ test("notes panel body renders nothing when capability unset", () => {
   expect(screen.queryByTestId("shared-notes-section")).toBeNull();
 });
 
-test("standalone Notes navigation hides when capability is unset", () => {
-  const model = testModel({ capabilities: { ...FULL_CAPABILITIES, sharedNotes: false } });
-  render(<NotesPanel sessionRef={model.ref} model={model} />);
-
-  expect(screen.queryByRole("button", { name: "Notes" })).toBeNull();
-});
-
-test.each(["idle", "ended", "notLoaded", "restartRequired"] as const)(
-  "imperative Notes opening rechecks capability for %s sessions",
-  async (status) => {
-    const user = userEvent.setup();
-    const handle = createRef<NotesPanelHandle>();
-    const supported = testModel({ status: { type: status }, humanNote: "imperative note sentinel" });
-    const unsupported = { ...supported, capabilities: { ...FULL_CAPABILITIES, sharedNotes: false } };
-    const panel = render(<NotesPanel ref={handle} sessionRef={supported.ref} model={supported} hideTrigger />);
-    panel.rerender(<NotesPanel ref={handle} sessionRef={supported.ref} model={unsupported} hideTrigger />);
-
-    act(() => handle.current?.open());
-    expect.soft(screen.queryByRole("dialog", { name: "Session notes" })).toBeNull();
-    // Keep the positive control runnable on the unguarded implementation too.
-    const close = screen.queryByRole("button", { name: "Close" });
-    if (close) await user.click(close);
-
-    panel.rerender(<NotesPanel ref={handle} sessionRef={supported.ref} model={supported} hideTrigger />);
-    act(() => handle.current?.open());
-    expect(screen.getByRole("dialog", { name: "Session notes" })).toBeTruthy();
-    if (status === "idle") expect(editor().value).toBe("imperative note sentinel");
-    else expect(screen.getByTestId("shared-notes-human").textContent).toBe("imperative note sentinel");
-  },
-);
-
-// The sheet's Notes button is read navigation, not a forbidden edit trigger.
-// Hiding it on all non-live sessions would remove this supported read path.
-test.each(["ended", "closed", "notLoaded", "restartRequired"] as const)(
-  "Notes sheet opens saved %s content without editor or removal controls",
-  async (status) => {
-    const user = userEvent.setup();
-    const fake = connectFakeClient();
-    const model = testModel({
-      status: { type: status },
-      humanNote: "human sheet sentinel",
-      agentNote: "agent sheet sentinel",
-      sessionUrls: [{ id: "u1", url: "https://notes.test/sheet", label: "sheet reference" }],
-    });
-    threadsStore.setState({ threads: new Map([[model.ref, model]]) });
-    render(<NotesPanel sessionRef={model.ref} model={model} />);
-
-    await user.click(screen.getByRole("button", { name: "Notes" }));
-
-    expect(screen.getByRole("dialog", { name: "Session notes" })).toBeTruthy();
-    expect(screen.getByTestId("shared-notes-human").textContent).toBe("human sheet sentinel");
-    expect(screen.getByTestId("shared-notes-agent").textContent).toBe("agent sheet sentinel");
-    expect(screen.getByRole("link", { name: "sheet reference" }).getAttribute("href")).toBe("https://notes.test/sheet");
-    expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Remove sheet reference" })).toBeNull();
-    expect(fake.calls.filter((call) => call.method === "notes/human/set" || call.method === "urls/remove")).toEqual([]);
-  },
-);
-
 // --- rule 2: set but not live shows read-only --------------------------------
 
 test("notes panel is read-only when ended: values shown, no editor, no remove buttons", () => {
@@ -593,6 +560,15 @@ test("ended-empty session shows inert text with no editor", () => {
   expect(screen.getByTestId("shared-notes-section")).toBeTruthy();
   expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
   expect(screen.queryByRole("textbox", { name: "Human note" })).toBeNull();
+});
+
+test("a whitespace-only note reads as empty in the read-only body, matching the summary", () => {
+  openPanel(testModel({ status: { type: "ended" }, humanNote: "   ", agentNote: "  " }));
+  // The collapsed bar judges emptiness by trimmed text; the expanded body
+  // must agree, or expanding an "Add a note…" bar shows blank paragraphs.
+  expect(screen.queryByTestId("shared-notes-human")).toBeNull();
+  expect(screen.queryByTestId("shared-notes-agent")).toBeNull();
+  expect(screen.getByTestId("shared-notes-empty")).toBeTruthy();
 });
 
 // --- rule 3: live shows the always-visible editor -----------------------------
@@ -1348,6 +1324,7 @@ test("a B-save queued behind a failing A-save still persists and reports", async
   });
   void threadsStore.getState().ensureThread(modelA.ref);
   void threadsStore.getState().ensureThread(modelB.ref);
+  holdSessionPane(modelA.ref, modelB.ref);
   const { rerender } = render(
     <>
       <NotesPanelBody sessionRef={modelA.ref} model={modelA} />
@@ -1470,6 +1447,7 @@ test("an earlier success still reports Saved when a sibling fails later in the d
     ]),
   });
   void threadsStore.getState().ensureThread(modelA.ref);
+  holdSessionPane(modelA.ref, modelB.ref);
   const { rerender } = render(<NotesPanelBody sessionRef={modelA.ref} model={modelA} />);
   await user.click(editor());
   await user.clear(editor());
@@ -1595,14 +1573,4 @@ test("idle live session shows the wake warning under the editor", () => {
 test("busy live session shows no idle-wake warning", () => {
   openPanel(testModel({ status: { type: "active" }, humanNote: "old note" }));
   expect(screen.queryByTestId("shared-notes-idle-wake")).toBeNull();
-});
-
-// --- mobile Sheet trigger ---------------------------------------------------------
-
-test("NotesPanel trigger opens a sheet holding the notes body", async () => {
-  const user = userEvent.setup();
-  const model = testModel({ humanNote: "old note" });
-  render(<NotesPanel sessionRef={model.ref} model={model} />);
-  await user.click(screen.getByRole("button", { name: "Notes" }));
-  expect(screen.getByRole("textbox", { name: "Human note" })).toBeTruthy();
 });

@@ -186,7 +186,7 @@ combobox, as a real gesture.
   text settles from `red.png (processing…)` to `red.png`
   (`Spawn.tsx:574`), and `promptText` contains the marker `[image 1]`
   spliced in at the cursor (`markerText`,
-  `attachments/textareaMarkers.ts:19-21`). Falsify: no remove button
+  `appwire-client/typescript/textareaMarkers.ts#markerText`). Falsify: no remove button
   (the picker isn't wired — the kata 65mm regression), or the chip is
   still `(processing…)` after a couple of seconds (the canvas re-encode
   never settled — check the CSP, first Sharp edge).

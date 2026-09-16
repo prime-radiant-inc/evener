@@ -500,7 +500,7 @@ export function TranscriptBody({
         </>
       );
     }
-    content = <div className={styles.transcript}>{transcriptContent}</div>;
+    content = <div className={styles.transcriptBody}>{transcriptContent}</div>;
   }
 
   return (

@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1879,21 +1880,24 @@ func countReloadOutcomes(s *Session, invocationID string) int {
 	return n
 }
 
-// plantReloadReceipt seeds one valid-selection handoff for opaque under the
-// given publication identity — the deterministic invocation identity a retry
-// re-derives is publicationID + ":" + name.
-func plantReloadReceipt(s *Session, publicationID string) {
+// plantReloadReceipt seeds one delivered handoff carrying selection under the
+// given publication identity — for a valid selection, the deterministic
+// invocation identity a retry re-derives is publicationID + ":" + name.
+func plantReloadReceipt(s *Session, publicationID string, selection schema.SkillReloadSelection) {
 	s.mu.Lock()
 	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
 		Phase: skillCompactionReceiptDelivered,
 		Operation: schema.SkillCompactionOperation{
 			Generation:    1,
-			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+			Selection:     selection,
 			PublicationID: publicationID,
 		},
 	}}
 	s.mu.Unlock()
 }
+
+// opaqueReloadSelection selects the fixture skill "opaque" for reload.
+var opaqueReloadSelection = schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}}
 
 // TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure pins the
 // idempotence of a reload-failure notice across a transient admission-save
@@ -1916,7 +1920,7 @@ func TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 		t.Fatalf("remove the fixture source: %v", err)
 	}
 	const publication = "pub-notice-retry"
-	plantReloadReceipt(s, publication)
+	plantReloadReceipt(s, publication, opaqueReloadSelection)
 	invocationID := publication + ":opaque"
 
 	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
@@ -1964,7 +1968,7 @@ func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 	}, reloadSummaryResponder("SUMMARY_reuse_retry", nil))
 	plantOrdinaryRecord(t, s, root, "opaque", true)
 	const publication = "pub-reuse-retry"
-	plantReloadReceipt(s, publication)
+	plantReloadReceipt(s, publication, opaqueReloadSelection)
 	invocationID := publication + ":opaque"
 
 	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
@@ -2005,4 +2009,224 @@ func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 	if got := countReloadOutcomes(s, invocationID); got != 1 {
 		t.Fatalf("reuse notices after the retry = %d, want 1: the durable notice must not be re-appended", got)
 	}
+}
+
+// plantReminderReceipt stages one delivered handoff whose selection authorized
+// no reload, the shape preparation answers with a complete inventory reminder.
+func plantReminderReceipt(s *Session, publicationID string) {
+	plantReloadReceipt(s, publicationID, schema.SkillReloadSelection{State: "absent"})
+}
+
+// TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn:
+// the reminder turn IS the admission, so its receipt leaves with the turn's
+// durable commit whatever the metadata save then does. A retry after a failed
+// save therefore finds no receipt and appends no second turn saying the same
+// thing, which would deliver the same inventory twice for one handoff.
+func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn(t *testing.T) {
+	t.Parallel()
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	drainSessionEvents(s)
+	plantPreloadRecord(t, s, "opaque", "fixture description")
+	const publication = "pub-reminder-retry"
+	plantReminderReceipt(s, publication)
+
+	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
+		t.Fatal("a failed consumption save must surface an error")
+	}
+	if got := countSkillReloadReminderTurns(s); got != 1 {
+		t.Fatalf("reminders after the failed save = %d, want exactly one", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("the recorded reminder must consume its receipt whatever the save did, got %+v", handoffs)
+	}
+
+	// A fold between the failed save and the retry compacts the reminder out
+	// of the live history. Recognizing an already-recorded reminder by scanning
+	// that history would re-append it here; the consumed receipt is what keeps
+	// the retry from delivering the inventory a second time.
+	s.mu.Lock()
+	s.history = slices.DeleteFunc(s.history, func(turn schema.Turn) bool {
+		return turn.SkillState != nil && turn.SkillState.ReloadReminder != nil
+	})
+	s.mu.Unlock()
+	if got := countSkillReloadReminderTurns(s); got != 0 {
+		t.Fatalf("test setup: %d reminder turn(s) survived the fold", got)
+	}
+
+	metaFS.fail = false
+	if _, _, staged, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	} else if staged != 0 {
+		t.Fatalf("the retry staged %d input tokens for a reminder it appended nothing for, want 0", staged)
+	}
+	if got := countSkillReloadReminderTurns(s); got != 0 {
+		t.Fatalf("the retry appended %d reminder(s): the transcript already holds the only reminder this handoff is owed", got)
+	}
+	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
+		t.Fatalf("handoffs after the retry = %+v, want the receipt consumed", handoffs)
+	}
+}
+
+// TestSkillReloadReminder_ConsumingAnEmptyPublicationRetiresNoCancellation: a
+// terminal cancellation receipt carries no publication identity. Consuming a
+// reminder whose receipt also names none must not sweep those cancellations
+// away with it — they are retired on their own schedule.
+func TestSkillReloadReminder_ConsumingAnEmptyPublicationRetiresNoCancellation(t *testing.T) {
+	t.Parallel()
+	s := newSession(t, withoutGitSnapshot())
+	s.mu.Lock()
+	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{
+		{Phase: skillCompactionReceiptCancelled, Operation: schema.SkillCompactionOperation{Generation: 1}},
+		{Phase: skillCompactionReceiptDelivered, Operation: schema.SkillCompactionOperation{Generation: 2, Selection: schema.SkillReloadSelection{State: "absent"}}},
+	}
+	revision := s.skillLifecycle.Revision
+	s.consumeSkillReloadReminderLocked("")
+	kept := len(s.skillLifecycle.PendingHandoffs)
+	bumped := s.skillLifecycle.Revision != revision
+	s.mu.Unlock()
+	if kept != 2 || bumped {
+		t.Fatalf("consuming an identity-less reminder kept %d of 2 receipts (revision bumped: %v), want all of them untouched", kept, bumped)
+	}
+}
+
+// TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff: the admission
+// save runs without s.mu, so a fold publishing in that window records a handoff
+// of its own. A rollback that restores a pre-admission snapshot discards it,
+// and one that skips the restore because the lifecycle moved loses the receipt
+// the failed save was supposed to keep. Only what this admission changed comes
+// back, and everything else stays.
+func TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff(t *testing.T) {
+	t.Parallel()
+	const consumed = "pub-consumed-reload"
+	const arrived = "pub-arrived-mid-save"
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	drainSessionEvents(s)
+	// A selection naming only a preload-only skill is consumed with no outcome
+	// at all, so an empty batch is a complete admission for it.
+	plantPreloadRecord(t, s, "opaque", "fixture description")
+	plantReloadReceipt(s, consumed, opaqueReloadSelection)
+	metaFS.before = func() {
+		s.mu.Lock()
+		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     opaqueReloadSelection,
+				PublicationID: arrived,
+			},
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+	}
+
+	budget := &llm.TokenBudget{}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, budget, 0, &skillActivationBatch{}, nil); err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	pending := map[string]bool{}
+	for _, handoff := range pendingHandoffsSnapshot(s) {
+		pending[handoff.Operation.PublicationID] = true
+	}
+	if !pending[arrived] {
+		t.Fatalf("handoffs after the failed save = %v, want the handoff recorded while the save ran kept", pending)
+	}
+	if !pending[consumed] {
+		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reload receipt back", pending)
+	}
+}
+
+// TestSkillReload_FailedAdmissionSaveRestoresTheReceiptAheadOfLaterHandoffs:
+// pending handoffs are processed in slice order, so the slice order is the
+// delivery order. A receipt the failed save puts back must return to the
+// position it held, ahead of a handoff a fold published while the save ran;
+// appended after it, the retry would deliver the newer publication's reload
+// before the older one's.
+func TestSkillReload_FailedAdmissionSaveRestoresTheReceiptAheadOfLaterHandoffs(t *testing.T) {
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "older", "---\nname: older\ndescription: fixture\n---\nBODY_order_older\n")
+	writeSkillMD(t, root, "newer", "---\nname: newer\ndescription: fixture\n---\nBODY_order_newer\n")
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("unused")}
+	}, reloadSummaryResponder("SUMMARY_order", nil),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+	)
+	drainSessionEvents(s)
+	plantOrdinaryRecord(t, s, root, "older", true)
+	plantOrdinaryRecord(t, s, root, "newer", true)
+	const olderPublication = "pub-order-older"
+	const newerPublication = "pub-order-newer"
+	plantReloadReceipt(s, olderPublication, schema.SkillReloadSelection{State: "valid", Names: []string{"older"}})
+	metaFS.before = func() {
+		s.mu.Lock()
+		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"newer"}},
+				PublicationID: newerPublication,
+			},
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+	}
+
+	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads: %v", err)
+	}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	wantPending := []string{olderPublication, newerPublication}
+	if got := pendingPublicationIDs(s); !slices.Equal(got, wantPending) {
+		t.Fatalf("handoffs after the failed save = %v, want the restored receipt back at its position: %v", got, wantPending)
+	}
+
+	// The retry delivers the publications in the order they were published.
+	metaFS.before = nil
+	metaFS.fail = false
+	batch, outcomes, staged, err = s.prepareCompactedSkillReloads(context.Background())
+	if err != nil {
+		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
+	}
+	wantInvocations := []string{olderPublication + ":older", newerPublication + ":newer"}
+	var gotInvocations []string
+	for _, outcome := range outcomes {
+		gotInvocations = append(gotInvocations, outcome.InvocationID)
+	}
+	if !slices.Equal(gotInvocations, wantInvocations) {
+		t.Fatalf("retry prepared %v, want the older publication's reload first: %v", gotInvocations, wantInvocations)
+	}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, &llm.TokenBudget{}, staged, batch, outcomes); err != nil {
+		t.Fatalf("admitCompactedSkillReloads (retry): %v", err)
+	}
+	var gotCarriers []string
+	for _, state := range skillTurnStates(s) {
+		for _, obligation := range state.Obligations {
+			gotCarriers = append(gotCarriers, obligation.InvocationID)
+		}
+	}
+	if !slices.Equal(gotCarriers, wantInvocations) {
+		t.Fatalf("retry recorded carriers %v, want the older publication's body first: %v", gotCarriers, wantInvocations)
+	}
+}
+
+// pendingPublicationIDs reports the pending handoffs' publication identities
+// in slice order, the order preparation processes them.
+func pendingPublicationIDs(s *Session) []string {
+	var ids []string
+	for _, handoff := range pendingHandoffsSnapshot(s) {
+		ids = append(ids, handoff.Operation.PublicationID)
+	}
+	return ids
 }
