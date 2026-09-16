@@ -226,6 +226,36 @@ describe("hub defaults", () => {
     expect(store.getState().hub.mobile).toEqual(hubDefault(1, proposed));
     expect(store.getState().loaded).toBe(true);
   });
+  test("a change relayed before the first read is not lost: the read follows up once", async () => {
+    const client = new FakeClient("ready");
+    const first = deferred<TranscriptDisplayDefaults>();
+    let reads = 0;
+    client.on(getMethod, () => {
+      reads += 1;
+      return reads === 1
+        ? first.promise
+        : { desktop: toWireDefault(hubDefault(3, desktopConfig)), mobile: toWireDefault(hubDefault(9, proposed)) };
+    });
+    const store = createTranscriptDisplayStore({ client });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    const refresh = store.getState().refreshHubDefaults();
+    await vi.waitFor(() => expect(reads).toBe(1));
+
+    // Relayed by the host rather than delivered to this store's own
+    // subscription - the same cargo, and the same problem: the in-flight
+    // read's response may PREDATE it.
+    store.getState().applyHubChange({ layout: "mobile", revision: 9, config: proposed });
+
+    first.resolve({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, mobileConfig)),
+    });
+    await refresh;
+    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed)));
+    expect(reads).toBe(2);
+  });
+
   test("a broadcast relayed before the generation's first read does not make that read stale", async () => {
     const client = serving(hubDefault(7, desktopConfig), hubDefault(7, mobileConfig));
     const store = await readyStore(client);
@@ -372,6 +402,41 @@ describe("the direct write", () => {
 
     store.setSupport("unsupported");
     expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a direct write is refused while a checkpointed write owns the layer", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // The checkpointed write holds the layer. A direct write would take the
+    // layer's token, fence the save's own reply out, and leave it saving
+    // forever.
+    await expect(store.getState().patchHubDefault("mobile", mobileConfig)).rejects.toThrow(/unavailable/);
+
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await save;
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
+  });
+
+  test("a superseded checkpointed reply always clears saving", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // Whatever fenced this reply out, the editor may not be left mid-write.
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await save;
+    expect(store.getState().saving).toBe(false);
   });
 
   test("a malformed success changes no hub state and reports it", async () => {
@@ -539,6 +604,30 @@ describe("the checkpointed draft editor", () => {
       mobile: toWireDefault(hubDefault(2, mobileConfig)),
     });
     await refresh;
+    expect(store.getState().draft?.config).toEqual(proposed);
+  });
+
+  test("an unreadable stored record never locks the section: the hub loads, discard clears it, edits resume", async () => {
+    // The shape the native host wrote before layouts were recorded - and any
+    // other value this build cannot read.
+    const legacy = memoryDrafts({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: legacy.storage });
+
+    // The record is unreadable, not the port, and neither is the hub's
+    // business: the section still has its defaults.
+    expect(store.getState().draft).toBeNull();
+    expect(store.getState().loaded).toBe(true);
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().storageUnavailable).toBe(true);
+
+    // One tap throws the unreadable record away.
+    store.getState().discardDraft();
+    expect(legacy.current()).toBeNull();
+    expect(store.getState().storageUnavailable).toBe(false);
+
+    // And the editor is usable again.
+    expect(() => store.getState().editDraft("mobile", proposed)).not.toThrow();
     expect(store.getState().draft?.config).toEqual(proposed);
   });
 

@@ -313,8 +313,13 @@ function decodePatchReply(
   return canonical;
 }
 
+/** What the port held is not a checkpoint this build can read. Distinct from
+ * a port that could not be reached: the record is the problem, so the section
+ * can still load the hub and can still throw the record away. */
+class UnreadableDraftError extends Error {}
+
 function invalidDraft(): never {
-  throw new Error("Invalid transcript preference draft.");
+  throw new UnreadableDraftError("Invalid transcript preference draft.");
 }
 
 /** The strict checkpoint check the draft editor runs on a restored
@@ -361,6 +366,13 @@ function draftRepository(storage: TranscriptDraftStorage) {
     removeIf(checkpoint: TranscriptDraftCheckpoint): void {
       storage.removeIf(draftCheckpoint(checkpoint));
     },
+    /** Removes whatever is stored, readable or not. The raw value goes back to
+     * the port, which matches its own bytes, so a record this build cannot
+     * decode is still the record removed - the port needs no clear(). */
+    discardUnreadable(): void {
+      const value = storage.load();
+      if (value !== null && value !== undefined) storage.removeIf(value as TranscriptDraftCheckpoint);
+    },
   };
 }
 
@@ -380,6 +392,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   // it started under and fences its reply on the shared fence.
   const fence = createReadyGenerationFence(isSupported);
   let unwireNotification: (() => void) | null = null;
+  /** The port answered but what it held could not be read. The record is the
+   * problem, not the port: the hub read still runs, and discardDraft can
+   * still throw the record away. */
+  let storedDraftUnreadable = false;
   /** Set when a changed-notification is dropped because the current
    * generation has no confirmed state yet: the refresh that lands the state
    * may carry a response PREDATING the dropped change, so a successful
@@ -421,7 +437,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         draftError: null,
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.hub),
       };
-    } catch {
+    } catch (error) {
+      storedDraftUnreadable = error instanceof UnreadableDraftError;
       return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
     }
   }
@@ -569,16 +586,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // A late notification landing during an unsupported window carries a hub
     // state the section says is not in effect.
     if (!isSupported()) return;
-    // A notification arriving before the CURRENT generation's refresh has
-    // confirmed state carries pre-refresh cargo: its revision predates what
-    // the in-flight read will confirm, and applying it would let the stale
-    // guard eat the read's authoritative payload. Drop it; the read fetches
-    // the truth, and fires ONE follow-up so a change the read's response
-    // predates is not lost.
-    if (!getState().loaded) {
-      missedChangeNotification = true;
-      return;
-    }
+    if (changeArrivedBeforeConfirmation()) return;
     const change = fromWireChange(notification.params);
     if (change === undefined) {
       // The hub said something changed and this store could not read what:
@@ -590,12 +598,32 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     applyHubDefault(change.layout, { revision: change.revision, config: change.config });
   }
 
+  /** A change arriving before the CURRENT generation's refresh has confirmed
+   * state carries pre-refresh cargo: its revision predates what the in-flight
+   * read will confirm, and applying it would let the stale guard eat the
+   * read's authoritative payload. It is dropped; the read fetches the truth,
+   * and fires ONE follow-up so a change the read's response predates is not
+   * lost. Both delivery paths - this store's own subscription and a change
+   * the host relays - ask here, because the cargo is the same either way.
+   * A notification only ever fires under a live generation, so this is the
+   * relayed path's answer that differs: with no generation there is no read
+   * to predate. */
+  function changeArrivedBeforeConfirmation(): boolean {
+    // Only a LIVE generation has a read to be predated by. With none - a host
+    // seeding this store from its own cache before it connects - there is
+    // nothing in flight to lose the change to, and nothing to follow up.
+    if (fence.generation < 0 || getState().loaded) return false;
+    missedChangeNotification = true;
+    return true;
+  }
+
   /** A change the HOST relayed rather than the store's own subscription (the
    * web's one client feeds several stores). Like a notification it is not
    * this generation's confirmation: it merges into `hub` under the ordinary
    * stale guard and leaves the authoritative read to confirm. */
   function applyHubChange(change: TranscriptDisplayChange): void {
     if (!isViewportClass(change.layout) || !isRevision(change.revision)) return;
+    if (changeArrivedBeforeConfirmation()) return;
     let config: TranscriptDisplayConfigV1;
     try {
       config = normalizeConfig(change.config);
@@ -667,12 +695,15 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   }
 
   async function refreshHubDefaults(): Promise<void> {
-    // A draft port that failed gets one more restore attempt per refresh; the
-    // hub read waits until the local proposal is in hand again, so an edit
-    // cannot compose against a confirmed payload with the draft unknown.
+    // A draft port that failed gets one more restore attempt per refresh. The
+    // hub read waits only on a port that could not be READ FROM, so an edit
+    // cannot compose against a confirmed payload with the draft unknown. An
+    // unreadable RECORD is not that: the draft is simply absent, and holding
+    // the section's defaults hostage to it would lock a user out of settings
+    // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable) return;
+      if (getState().storageUnavailable && !storedDraftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -696,7 +727,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   ): Promise<HubTranscriptDisplayDefault> {
     const state = getState();
     const generation = fence.generation;
-    if (!fence.liveHub(generation) || !state.loaded || state.hubLoading) {
+    // The checkpointed editor's sibling gate. Both paths claim the same
+    // layer token, so a direct write starting while a checkpointed one is
+    // in flight - or while its outcome is still unknown - would take the
+    // layer, fence that write's own reply out and leave the editor saving
+    // with nothing left to settle it.
+    if (!fence.liveHub(generation) || !state.loaded || state.hubLoading || state.saving || state.writeUncertain) {
       setState(layoutError(layout, UNAVAILABLE_MESSAGE));
       throw new Error(UNAVAILABLE_MESSAGE);
     }
@@ -756,7 +792,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * against confirmed state is the editor's extra requirement, not this one. */
   function assertDiscardable(): void {
     const state = getState();
-    if (fence.disposed || state.saving || state.writeUncertain || state.storageUnavailable)
+    // An unreadable record is the one storage failure discarding can FIX, so
+    // it is not a reason to refuse: throwing the record away is exactly what
+    // the user is asking for.
+    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !storedDraftUnreadable))
       throw new Error(UNAVAILABLE_MESSAGE);
   }
 
@@ -873,7 +912,14 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     //     the proposal stays for review; a cleanup failure keeps the draft in
     //     view with the port marked unavailable, and never turns a confirmed
     //     write back into an unknown outcome.
-    if (!stillMine()) return getState().hub[layout] ?? confirmed;
+    if (!stillMine()) {
+      // Whatever fenced this reply out, the editor may not be left mid-write:
+      // the retirement sites already publish saving false, and this makes the
+      // fenced branch say so itself rather than depend on the site that
+      // superseded it.
+      if (getState().saving) setState({ saving: false, writeUncertain: true });
+      return getState().hub[layout] ?? confirmed;
+    }
     let value: HubTranscriptDisplayDefault;
     try {
       value = decodePatchReply(result, layout, confirmed, config);
@@ -911,13 +957,17 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   function discardDraft(): void {
     assertDiscardable();
     try {
-      const checkpoint = drafts.load();
-      if (checkpoint) drafts.removeIf(checkpoint);
+      if (storedDraftUnreadable) drafts.discardUnreadable();
+      else {
+        const checkpoint = drafts.load();
+        if (checkpoint) drafts.removeIf(checkpoint);
+      }
     } catch {
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
     }
-    setState({ draft: null, draftConflict: false, draftError: null });
+    storedDraftUnreadable = false;
+    setState({ draft: null, draftConflict: false, draftError: null, storageUnavailable: false });
   }
 
   function rebaseDraft(reviewedRevision: number): void {

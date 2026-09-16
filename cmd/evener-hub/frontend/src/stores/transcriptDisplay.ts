@@ -150,7 +150,7 @@ function publishEffectiveTransition(
   before: EffectiveLayers,
   after: EffectiveLayers,
   publish: () => void,
-  targetLayout: ViewportClass,
+  targetLayout: ViewportClass | readonly ViewportClass[],
   force = false,
 ): void {
   const beforeConfig = effectiveForLayers(before, before.viewport);
@@ -404,13 +404,15 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
 
 // Every hub transition the core publishes lands here. A hub value that moved
 // runs through the effective-configuration transition (the panes announce and
-// remount for the layer that changed); everything else mirrors in place. The
-// core applies one layout per transition, so `changed` names at most one.
+// remount for the layers that changed); everything else mirrors in place. The
+// core applies one layout per transition for an ordinary change, but ONE
+// publish clears both (detachHub, a support drop, reset), and a layer left out
+// of the transition has its pending remount discarded as another layer's.
 hubStore.subscribe((next, previous) => {
   const state = transcriptDisplayStore.getState();
   const mirrored = mirroredHubFields(next);
-  const changed = (["desktop", "mobile"] as const).find((layout) => next.hub[layout] !== previous.hub[layout]);
-  if (changed === undefined) {
+  const changed = (["desktop", "mobile"] as const).filter((layout) => next.hub[layout] !== previous.hub[layout]);
+  if (changed.length === 0) {
     transcriptDisplayStore.setState(mirrored);
     return;
   }

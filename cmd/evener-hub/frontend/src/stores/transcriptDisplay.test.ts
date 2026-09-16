@@ -159,6 +159,57 @@ describe("effective transcript display state", () => {
     unregisterRight();
   });
 
+  test("a publish clearing both layers transitions both, and announces once", async () => {
+    const announcements: string[] = [];
+    const restored: string[] = [];
+    // A mobile pane, given a prepared remount by a breakpoint transition.
+    const mobileView = {
+      id: "mobile-pane",
+      layout: "mobile" as const,
+      capture: vi.fn(() => viewSnapshot("mobile-pane")),
+      restore: vi.fn(() => restored.push("mobile-pane")),
+      announce: vi.fn((summary: string) => announcements.push(summary)),
+    };
+    let unregister = registerTranscriptView(mobileView);
+    // A real breakpoint transition, so the mobile pane gets a PREPARED
+    // remount; unregistering hands it to the pending-remount set.
+    transcriptDisplayStore.getState().setViewport("desktop");
+    transcriptDisplayStore.getState().setViewport("mobile");
+    unregister();
+    // The breakpoint transition restored the pane while it was mounted; only
+    // a restore AFTER the both-layer publish is what this test is about.
+    restored.length = 0;
+
+    // A pane that stays mounted, so the announcement has somewhere to land.
+    const heard = registerTranscriptView({
+      id: "listener",
+      capture: vi.fn(() => viewSnapshot("listener")),
+      restore: vi.fn(),
+      announce: vi.fn((summary: string) => announcements.push(summary)),
+    });
+
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: toWireConfig(preset("full")) },
+      mobile: { revision: 3, config: toWireConfig(preset("chat")) },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    announcements.length = 0;
+
+    // ONE core publish clears both layers. Both moved, so neither layer's
+    // pending remount may be discarded as belonging to "some other layout".
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: false } });
+    expect(transcriptDisplayStore.getState().hub).toEqual({});
+    expect(announcements).toHaveLength(1);
+
+    unregister = registerTranscriptView(mobileView);
+    expect(restored).toEqual(["mobile-pane"]);
+    unregister();
+    heard();
+  });
+
   test("does not capture or announce a hub update hidden by a local override", () => {
     const capture = vi.fn(() => viewSnapshot("pane"));
     const announce = vi.fn();

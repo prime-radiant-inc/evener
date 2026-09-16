@@ -27,8 +27,11 @@ interface RemountCapture {
 export interface TranscriptViewTransitionOptions {
   /** Fingerprint of the effective configuration after the publish. */
   readonly fingerprint?: string;
-  /** Layout the view is entering; enables deterministic host-remount reuse. */
-  readonly targetLayout?: string;
+  /** The layer or layers this transition moves; enables deterministic
+   * host-remount reuse. A pending remount belonging to a layer this
+   * transition does NOT move is stale and is dropped, so one publish that
+   * moves both layers must name both or it discards the other's. */
+  readonly targetLayout?: string | readonly string[];
   /** Capture even when the effective fingerprint is unchanged (breakpoints). */
   readonly force?: boolean;
   /** Arm deterministic host-remount reuse for a viewport transition only. */
@@ -146,17 +149,26 @@ export function transitionTranscriptViews(
   const shouldCapture = options?.force === true || fingerprintChanged;
   const shouldAnnounce = options?.announce ?? fingerprintChanged;
 
-  if (options?.targetLayout !== undefined) {
+  const targetLayouts =
+    options?.targetLayout === undefined
+      ? undefined
+      : typeof options.targetLayout === "string"
+        ? [options.targetLayout]
+        : options.targetLayout;
+  if (targetLayouts !== undefined) {
     for (const captures of [preparedRemounts, remountCaptures]) {
       for (const [id, remount] of captures) {
-        if (remount.targetLayout !== options.targetLayout) captures.delete(id);
+        if (!targetLayouts.includes(remount.targetLayout)) captures.delete(id);
       }
     }
   }
 
   const captured = shouldCapture ? captureTranscriptViews() : new Map<string, CapturedTranscriptView>();
-  if (shouldCapture && options?.prepareRemount && options.targetLayout !== undefined) {
-    prepareTranscriptViewRemount(captured, options.targetLayout);
+  // A remount is prepared for ONE entering layer: only the breakpoint
+  // transition prepares, and it moves the viewport to a single layout.
+  const entering = targetLayouts?.length === 1 ? targetLayouts[0] : undefined;
+  if (shouldCapture && options?.prepareRemount && entering !== undefined) {
+    prepareTranscriptViewRemount(captured, entering);
   }
   let published = false;
   try {
