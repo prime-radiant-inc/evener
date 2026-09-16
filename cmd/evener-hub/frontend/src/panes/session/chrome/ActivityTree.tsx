@@ -161,22 +161,11 @@ function parseMillis(value: string | undefined): number | undefined {
   return Number.isNaN(parsed) ? undefined : parsed;
 }
 
-// terminalSegment renders the duration (endedAt - startedAt, quiet-age
-// bucketed) when both endpoints parse, else the status text - colored danger
-// when the outcome is failure, so a failed row with no endedAt
-// never needs a second "failed" suffix.
-function terminalSegment(
-  job: { startedAt: string; endedAt?: string } | undefined,
-  statusText: string,
-  failed: boolean,
-): MetaSegment {
-  if (job) {
-    const start = parseMillis(job.startedAt);
-    const end = parseMillis(job.endedAt);
-    if (start !== undefined && end !== undefined) {
-      return { key: "duration", text: formatQuietAge(end - start) };
-    }
-  }
+// terminalSegment renders the duration (quiet-age bucketed) when the row has
+// one, else the status text - colored danger when the outcome is failure, so
+// a failed row with no duration never needs a second "failed" suffix.
+function terminalSegment(durationMs: number | undefined, statusText: string, failed: boolean): MetaSegment {
+  if (durationMs !== undefined) return { key: "duration", text: formatQuietAge(durationMs) };
   return { key: "status", text: statusText, tone: failed ? "failed" : undefined };
 }
 
@@ -200,34 +189,24 @@ function jobMetaSegments(row: ActivityJobRow, now: number): MetaSegment[] {
     return liveMetaSegments(undefined, rowStatusText(row), now - quietAnchorMillis(job));
   }
   // No "failed" suffix: the colored kind glyph already carries the outcome.
-  return [terminalSegment(job, rowStatusText(row), jobIsFailed(job))];
+  const start = parseMillis(job.startedAt);
+  const end = parseMillis(job.endedAt);
+  const durationMs = start !== undefined && end !== undefined ? end - start : undefined;
+  return [terminalSegment(durationMs, rowStatusText(row), jobIsFailed(job))];
 }
 
 function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegment[] {
   const { delegate } = row;
   const tokens = formatUsagePair(delegate.usage);
+  // Timing is the shared delegateTiming rule: the quiet age measured live
+  // from the daemon's own anchor against the ticking `now` (never the frozen
+  // quietForMs while an anchor parses), the duration from the terminal run
+  // window, else the snapshot.
   const timing = delegateTiming(delegate, now);
-  if (row.live) {
-    // The age is the shared delegateTiming measurement (the newer of
-    // latestActivityAt and runStartedAt against the ticking `now`; the frozen
-    // quietForMs only when no anchor parses), shown only when the snapshot
-    // carries quiet evidence of its own. A snapshot with neither
-    // latestActivityAt nor quietForMs gets no age inferred from its start alone:
-    // the dense row shows what the daemon vouched for, nothing it did not.
-    const hasQuietEvidence = delegate.latestActivityAt !== undefined || delegate.quietForMs != null;
-    return liveMetaSegments(tokens ?? undefined, rowStatusText(row), hasQuietEvidence ? timing.quietForMs : undefined);
-  }
+  if (row.live) return liveMetaSegments(tokens ?? undefined, rowStatusText(row), timing.quietForMs);
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
-  segments.push(
-    timing.durationMs !== undefined
-      ? { key: "duration", text: formatQuietAge(timing.durationMs) }
-      : {
-          key: "status",
-          text: rowStatusText(row),
-          tone: activityDelegateState(delegate).failed ? "failed" : undefined,
-        },
-  );
+  segments.push(terminalSegment(timing.durationMs, rowStatusText(row), activityDelegateState(delegate).failed));
   return segments;
 }
 

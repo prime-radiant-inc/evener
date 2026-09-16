@@ -7,9 +7,11 @@
 // Timing trusts the run window only for a terminal delegate: a resumed run can
 // carry the previous run's runEndedAt and outcome, so a non-terminal delegate
 // always measures live from runStartedAt. The quiet anchor is the newer of
-// latestActivityAt and runStartedAt, and every live measurement falls back to
-// the snapshot's frozen value only when no anchor parses or the clock is not a
-// finite number.
+// latestActivityAt and runStartedAt, and exists only when the daemon sent
+// quiet evidence of its own (a latestActivityAt or a quietForMs): a snapshot
+// with runStartedAt alone gets no quiet age, not a number the daemon declined
+// to compute. Every live measurement falls back to the snapshot's frozen value
+// only when no anchor parses or the clock is not a finite number.
 import type { ActivityDelegate } from "./activityData";
 
 export type DelegateTimingFields = Pick<
@@ -75,7 +77,12 @@ export function delegateTiming(delegate: DelegateTimingFields, now: number): Del
   }
 
   const latest = timestamp(delegate.latestActivityAt);
-  const quietAnchor = latest !== undefined && started !== undefined ? Math.max(latest, started) : (latest ?? started);
+  const hasQuietEvidence = delegate.latestActivityAt !== undefined || delegate.quietForMs != null;
+  const quietAnchor = !hasQuietEvidence
+    ? undefined
+    : latest !== undefined && started !== undefined
+      ? Math.max(latest, started)
+      : (latest ?? started);
   if (quietAnchor !== undefined) {
     result.quietForMs = elapsed(now, quietAnchor);
     if (result.quietForMs !== undefined) result.quietLive = true;
@@ -99,10 +106,11 @@ export function delegateModel(delegate: DelegateModelFields): {
   const model = nonblank(delegate.model);
   const requestedModel = nonblank(delegate.requestedModel);
   const selected = resolvedModel ?? model ?? requestedModel;
+  const reasoning = nonblank(delegate.reasoningEffort);
   return {
     ...(selected ? { model: selected } : {}),
     ...(requestedModel !== undefined && requestedModel !== selected ? { requestedModel } : {}),
-    ...(nonblank(delegate.reasoningEffort) !== undefined ? { reasoning: nonblank(delegate.reasoningEffort) } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
   };
 }
 

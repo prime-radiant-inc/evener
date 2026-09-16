@@ -195,20 +195,25 @@ function ActivityWatchTimeline({ watch, now }: { watch: NavigationWatchSummary; 
   );
 }
 
+function parseMillis(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
+}
+
 // detailSubject projects both row kinds onto one shape so the meta line has a
-// single code path. A job carries its quiet anchor for the meta line to
-// measure from; a delegate's quiet age arrives already measured, through the
-// shared delegateTiming rule (newer of latestActivityAt and runStartedAt
-// against the ticking `now`, the frozen quietForMs only when no anchor
-// parses), and its run window counts only once the run is terminal.
+// single code path: the quiet age already measured against the ticking `now`
+// (never the snapshot's frozen number, which a quiet subject emits no frames
+// to refresh), and the duration the dense row shows for a terminal subject. A
+// job measures from its own anchor here; a delegate takes the shared
+// delegateTiming rule.
 interface DetailSubject {
   status: string;
   startedAt?: string;
-  endedAt?: string;
   exitCode?: number;
   outputBytes: number;
   quietForMs?: number;
-  quietAnchor?: { lastOutputAt?: string; startedAt: string };
+  durationMs?: number;
 }
 
 function subjectOf(row: ActivityJobRow | ActivityDelegateRow, now: number): DetailSubject {
@@ -218,9 +223,11 @@ function subjectOf(row: ActivityJobRow | ActivityDelegateRow, now: number): Deta
       status: job.status,
       startedAt: job.startedAt,
       outputBytes: job.outputBytes,
-      quietAnchor: job,
+      quietForMs: now - quietAnchorMillis(job),
     };
-    if (job.endedAt !== undefined) subject.endedAt = job.endedAt;
+    const start = parseMillis(job.startedAt);
+    const end = parseMillis(job.endedAt);
+    if (start !== undefined && end !== undefined) subject.durationMs = end - start;
     if (job.exitCode !== undefined) subject.exitCode = job.exitCode;
     return subject;
   }
@@ -231,15 +238,9 @@ function subjectOf(row: ActivityJobRow | ActivityDelegateRow, now: number): Deta
     outputBytes: 0,
   };
   if (timing.startedAt !== undefined) subject.startedAt = timing.startedAt;
-  if (timing.endedAt !== undefined) subject.endedAt = timing.endedAt;
   if (timing.quietForMs !== undefined) subject.quietForMs = timing.quietForMs;
+  if (timing.durationMs !== undefined) subject.durationMs = timing.durationMs;
   return subject;
-}
-
-function parseMillis(value: string | undefined): number | undefined {
-  if (!value) return undefined;
-  const parsed = Date.parse(value);
-  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 // metaText renders the live contract ("running 12s · 512b ·
@@ -248,22 +249,14 @@ function parseMillis(value: string | undefined): number | undefined {
 // row already shows the duration, and a successful exit is the expected
 // case - only a non-zero exit code earns a segment. Segments whose inputs
 // are absent drop out instead of printing a guess: no "started" without a
-// parseable start, and a terminal row with no parseable span falls back to
-// its status text rather than a fabricated duration.
+// parseable start, and a terminal row with no duration for the dense row to
+// show falls back to its status text rather than a fabricated one.
 function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): string {
   const subject = subjectOf(row, now);
   const bytes = `${subject.outputBytes}b`;
   if (row.live) {
-    // A job's anchor plus the ticking `now` keeps counting real silence, where
-    // the snapshot's frozen quietForMs would stick (a quiet job emits no
-    // frames to refresh it). A delegate's quietForMs is already that live
-    // measurement, so it is used as is.
     const segments: string[] = [
-      subject.quietAnchor
-        ? `${subject.status} ${formatQuietAge(now - quietAnchorMillis(subject.quietAnchor))}`
-        : subject.quietForMs !== undefined
-          ? `${subject.status} ${formatQuietAge(subject.quietForMs)}`
-          : subject.status,
+      subject.quietForMs !== undefined ? `${subject.status} ${formatQuietAge(subject.quietForMs)}` : subject.status,
       bytes,
     ];
     const started = formatClockTime(subject.startedAt);
@@ -271,11 +264,7 @@ function metaText(row: ActivityJobRow | ActivityDelegateRow, now: number): strin
     return segments.join(" · ");
   }
   const segments: string[] = [];
-  const start = parseMillis(subject.startedAt);
-  const end = parseMillis(subject.endedAt);
-  if (start === undefined || end === undefined) {
-    segments.push(subject.status);
-  }
+  if (subject.durationMs === undefined) segments.push(subject.status);
   if (subject.exitCode !== undefined && subject.exitCode !== 0) segments.push(`exit ${subject.exitCode}`);
   segments.push(bytes);
   return segments.join(" · ");

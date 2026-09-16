@@ -144,6 +144,14 @@ test("anchors quiet age at the newer valid activity or start timestamp", () => {
   expect(result.quietForMs).toBe(60_000);
 });
 
+test("does not infer a quiet age from runStartedAt alone", () => {
+  const result = delegateTiming(delegate({ runStartedAt: "2026-09-07T00:00:00Z" }), Date.parse("2026-09-07T00:01:00Z"));
+
+  expect(result.durationMs).toBe(60_000);
+  expect(result.quietForMs).toBeUndefined();
+  expect(result.quietLive).toBe(false);
+});
+
 test("selects the resolved model and exposes requested model only when distinct", () => {
   expect(
     delegateModel(
