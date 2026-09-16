@@ -12,6 +12,8 @@
 import type { CommandDescriptor, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
 import {
   canReadSharedNotes,
+  effortLabel,
+  effortOptionLevels,
   NO_ACTIVE_TURN,
   sessionControls,
   slashCommandInvocation,
@@ -27,7 +29,6 @@ import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
-import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";

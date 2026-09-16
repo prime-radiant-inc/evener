@@ -433,6 +433,7 @@ before acting on it.
 | C15 | #1230 | **merged** as `0acebbb0d` — `shell/palette/catalogCommands.ts` → `protocol/catalogCommands.ts` |
 | C14 | #1401 | open — `shell/rail/sessionState.ts` → `appwire-client/typescript/railSessionState.ts` (renamed: a bare `sessionState` beside `sessionErrors` in the package root is ambiguous); `humanizeState` gets its first test, both importers move to the package name, no stub at the old path |
 | C26 | #1226 | **merged** as `b9a98151c` — `messages/format.ts` → `protocol/displayFormat.ts` |
+| C16 | #1404 | open — `shell/reasoningEffort.ts` → `appwire-client/typescript/reasoningEffort.ts`, with the oracle test the module never had; nine importers (five web, four native) take the package-name import |
 | — | #1224 | **closed by A3** (`57509ffd5`) — `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, so a shipped module cannot go missing from it |
 | — | #1228 | open issue — `formatDurationMs`/`formatToolDuration` and `formatCharCount`/`formatByteCount` now sit together at the package root with different rules; naming pass after C11b |
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
