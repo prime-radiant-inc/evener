@@ -372,6 +372,59 @@ describe("mutations returning the updated instance list", () => {
     expect(credentialsStore.getState().instances).toEqual([{ ...ONE_INSTANCE, models: workModels }]);
   });
 
+  test("a refresh that landed before the read began is not newer than the read's answer", async () => {
+    const fake = connectFakeClient();
+    const OTHER: InstanceEntry = { ...ONE_INSTANCE, name: "personal" };
+    fake.on("evener/instance/list", () => ({ instances: [ONE_INSTANCE, OTHER], availableProviders: [] }));
+    await credentialsStore.getState().fetch();
+
+    // A refresh for "work" lands BEFORE this read starts: the answer the read
+    // is about to receive postdates it, so none of this row is newer than the
+    // answer.
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...ONE_INSTANCE, models: [{ id: "refresh-before-read" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("work");
+    expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["refresh-before-read"]);
+
+    let finishRead!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/list",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          finishRead = resolve;
+        }),
+    );
+    const read = credentialsStore.getState().fetch();
+    await Promise.resolve();
+    // A refresh for a DIFFERENT instance lands while the read is out: that is
+    // what makes this answer stale for its own rows, and it is why the earlier
+    // "work" refresh must not be read as one of them.
+    fake.on("evener/instance/refreshModels", () => ({
+      instances: [{ ...OTHER, models: [{ id: "personal-live" }] }],
+      availableProviders: [],
+    }));
+    await credentialsStore.getState().refreshModels("personal");
+
+    // The answer carries the newer inventory for "work".
+    finishRead({
+      instances: [
+        { ...ONE_INSTANCE, models: [{ id: "answer-newer" }] },
+        { ...OTHER, models: [{ id: "personal-old" }] },
+      ],
+      availableProviders: [],
+    });
+    await read;
+    const rows = credentialsStore.getState().instances;
+    expect(rows.find((entry) => entry.name === "work")?.models?.map((model) => model.id)).toEqual(["answer-newer"]);
+    // The row a refresh landed for during the read keeps that refresh's
+    // inventory, which is the merge this read still owes.
+    expect(rows.find((entry) => entry.name === "personal")?.models?.map((model) => model.id)).toEqual([
+      "personal-live",
+    ]);
+  });
+
   test("a background fetch in flight does not discard a landing refresh", async () => {
     const fake = connectFakeClient();
     const workModels = [{ id: "work-live-model" }];
