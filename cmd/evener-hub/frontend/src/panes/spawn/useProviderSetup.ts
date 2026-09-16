@@ -1,12 +1,30 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useConnectionStore } from "../../stores/connection";
-import { useCredentialsStore } from "../../stores/credentials";
+import { hostPartition, useCredentialsStore } from "../../stores/credentials";
+import { hostRequest, isLocalHost, LOCAL_HOST } from "../../stores/hostRouting";
 
 /** Credential configuration is read from the hub, never a browser first-run flag.
  * A failed lookup is unknown; it must not send a configured user through setup. */
-export function useProviderSetup() {
+export function useProviderSetup(host: string = LOCAL_HOST) {
   const { client, state: connection } = useConnectionStore();
-  const { instances, loading, error, writesRefused, fetch } = useCredentialsStore();
+  // The instance list is host-dependent (component 07b). The controller's own
+  // (LOCAL_HOST) listing lives in the store's top-level fields; a remote host's
+  // lives in its own `hosts[host]` partition. Read the selected host's slot so
+  // the controller's evener/auth/updated refetch -- and the controller-scoped
+  // Settings/ConnectProviderDialog writers -- can never replace the remote
+  // host's registry underneath this form.
+  const local = isLocalHost(host);
+  const instances = useCredentialsStore((state) => (local ? state.instances : hostPartition(state, host).instances));
+  const loading = useCredentialsStore((state) => (local ? state.loading : hostPartition(state, host).loading));
+  const error = useCredentialsStore((state) => (local ? state.error : hostPartition(state, host).error));
+  const writesRefused = useCredentialsStore((state) =>
+    local ? state.writesRefused : hostPartition(state, host).writesRefused,
+  );
+  const fetchHost = useCredentialsStore((state) => state.fetchHost);
+  // The instance list is host-dependent (component 07b): fetch it from the
+  // selected host. The retry path must carry the same host, not silently fall
+  // back to the controller's instances.
+  const retry = useCallback(() => fetchHost(host), [fetchHost, host]);
   const [checkedClient, setCheckedClient] = useState<typeof client>(null);
   const [keyless, setKeyless] = useState<{ instances: typeof instances; status: "ready" | "missing" | "error" } | null>(
     null,
@@ -16,7 +34,7 @@ export function useProviderSetup() {
     let cancelled = false;
     setCheckedClient(null);
     if (client && connection === "ready") {
-      void fetch()
+      void fetchHost(host)
         .finally(() => {
           if (!cancelled) setCheckedClient(client);
         })
@@ -25,7 +43,7 @@ export function useProviderSetup() {
     return () => {
       cancelled = true;
     };
-  }, [client, connection, fetch]);
+  }, [client, connection, fetchHost, host]);
 
   const configured = instances.some(
     (instance) =>
@@ -52,7 +70,7 @@ export function useProviderSetup() {
       !configured &&
       implicitKeyless
     ) {
-      void client.request("model/list", {}).then(
+      void hostRequest(client, host, "model/list", {}).then(
         (response) => {
           if (cancelled) return;
           const available = (response.data ?? []).some((model) =>
@@ -70,7 +88,7 @@ export function useProviderSetup() {
     return () => {
       cancelled = true;
     };
-  }, [client, connection, checkedClient, loading, error, configured, implicitKeyless, instances]);
+  }, [client, connection, host, checkedClient, loading, error, configured, implicitKeyless, instances]);
   const status =
     !client || connection !== "ready" || checkedClient !== client || loading
       ? "loading"
@@ -83,5 +101,5 @@ export function useProviderSetup() {
               ? keyless.status
               : "loading"
             : "missing";
-  return { status, instances, retry: fetch };
+  return { status, instances, retry };
 }

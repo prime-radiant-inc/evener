@@ -8,6 +8,8 @@ import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
+  HostForwardedResult,
+  HostRequestParams,
   InstanceListResponse,
   LaunchConfigResolved,
   LaunchOption,
@@ -26,6 +28,7 @@ import { navigate } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
+import { HOST_DEPENDENT_DISCOVERY_METHODS } from "../../stores/hostRouting";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import type { ResourceState } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests } from "../../stores/threads";
@@ -35,7 +38,7 @@ import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
 import Spawn from "./Spawn";
-import { resetSpawnDraftsForTests, setDraftField, spawnDraftsStore } from "./spawnDrafts";
+import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
 let modelListOverride: ModelDescriptor[] | null = null;
 
@@ -5356,4 +5359,491 @@ test("a draft naming a host removed from the manifest shows local and omits sour
 
   const params = fake.calls.find((call) => call.method === "thread/start")?.params as ThreadStartParams;
   expect(params).not.toHaveProperty("source");
+});
+
+// --- host-routed discovery (Component 07b) ---------------------------------
+
+// The discovery methods the spawn form's mount path issues for the selected
+// host. The on-demand methods (path completion/validation, dirs/create, recent
+// projects, the slash catalog, plugin preview) are covered by their own seams'
+// tests; stores/hostRouting.test.ts covers the whole spec set at the seam.
+const MOUNT_DISCOVERY_METHODS = [
+  "model/list",
+  "evener/harnesses/list",
+  "evener/launch/schema",
+  "evener/launch/resolve",
+  "evener/git/head",
+  "evener/instance/list",
+] as const;
+
+test("a selected remote host routes every discovery call through evener/host/request", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = new FakeClient("ready");
+  const forwarded: Record<string, unknown> = {
+    "model/list": {
+      data: [{ provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" }],
+    },
+    "evener/harnesses/list": { data: [{ id: "evener", label: "evener", kind: "evener" }] },
+    "evener/launch/schema": { options: [] },
+    "evener/launch/resolve": { effective: {}, layers: {}, provenance: {} },
+    "evener/git/head": { head: "main" },
+    "evener/instance/list": { instances: [], availableProviders: [] },
+    "evener/projects/recent": { data: [] },
+    "evener/paths/complete": { data: [] },
+    "evener/path/validate": { path: "", valid: true },
+    "evener/dirs/create": { path: "", created: true },
+    "evener/plugin/preview": { plugins: [] },
+    "evener/spawn/slashCatalog": { commands: [], skills: [] },
+  };
+  fake.on("evener/host/request", (params) => {
+    const method = (params as HostRequestParams).method;
+    return (forwarded[method] ?? {}) as HostForwardedResult;
+  });
+  connectionStore.getState().connect(fake);
+
+  // Select the remote host before the form mounts, so the mount-time discovery
+  // calls are issued against it from the first render.
+  const draft = selectSpawnDirectory("/tmp/remote-routing");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-routing");
+  renderSpawn(fake);
+  await settled();
+
+  await waitFor(() => {
+    const routed = new Set(
+      fake.calls
+        .filter((call) => call.method === "evener/host/request")
+        .map((call) => (call.params as HostRequestParams).method),
+    );
+    for (const method of MOUNT_DISCOVERY_METHODS) expect(routed.has(method)).toBe(true);
+  });
+
+  // Every proxied call names the selected host...
+  for (const call of fake.calls.filter((call) => call.method === "evener/host/request")) {
+    expect((call.params as HostRequestParams).host).toBe("buildbox");
+  }
+  // ...and nothing was left controller-scoped.
+  for (const method of HOST_DEPENDENT_DISCOVERY_METHODS) {
+    expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  }
+});
+
+// The "buildbox" host's answers for every discovery call the spawn form can
+// issue. `fail` names methods the remote host refuses (an offline host, a proxy
+// rejection); every other answer is a well-formed empty/minimal response.
+function answerRemoteHost(
+  fake: FakeClient,
+  options: { overrides?: Record<string, unknown>; fail?: readonly string[] } = {},
+): void {
+  const answers: Record<string, unknown> = {
+    "model/list": { data: [{ provider: "openai", model: "gpt-4o", displayName: "openai/gpt-4o" }] },
+    "evener/harnesses/list": { data: [{ id: "evener", label: "evener", kind: "evener" }] },
+    "evener/launch/schema": { options: [] },
+    "evener/launch/resolve": { effective: {}, layers: {}, provenance: {} },
+    "evener/git/head": { head: "main" },
+    "evener/instance/list": { instances: [], availableProviders: [] },
+    "evener/projects/recent": { data: [] },
+    "evener/paths/complete": { data: [] },
+    "evener/path/validate": { path: "", valid: true },
+    "evener/dirs/create": { path: "", created: true },
+    "evener/plugin/preview": { plugins: [] },
+    "evener/spawn/slashCatalog": { commands: [], skills: [] },
+    ...options.overrides,
+  };
+  fake.on("evener/host/request", (params) => {
+    const forwarded = params as HostRequestParams;
+    if (forwarded.host !== "buildbox") throw new Error(`unexpected host "${forwarded.host}"`);
+    if (options.fail?.includes(forwarded.method)) throw new Error(`remote ${forwarded.method} unavailable`);
+    return (answers[forwarded.method] ?? {}) as HostForwardedResult;
+  });
+}
+
+const REMOTE_SOURCES: NavigationManifest["sources"] = [
+  { id: "local", label: "Local", kind: "local", online: true },
+  { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+];
+
+// buildbox's own credentialed provider instance, the same shape readyClient
+// gives the controller. answerRemoteHost's default is an EMPTY registry (what the
+// provider-setup tests want: "configure one on that host to use a model"), so a
+// host that is launch-ready has to say so itself - otherwise providerRequired
+// holds Start disabled and nothing can be submitted.
+const REMOTE_CREDENTIALED_INSTANCE = {
+  name: "anthropic",
+  providerId: "anthropic",
+  protocol: "anthropic",
+  auth: "bearer",
+  implicit: false,
+  isDefault: true,
+  activeSource: "store",
+  hasStoredOAuth: false,
+  credentialRequired: true,
+};
+
+function readyRemoteHost(fake: FakeClient, overrides: Record<string, unknown> = {}): void {
+  answerRemoteHost(fake, {
+    overrides: {
+      "evener/instance/list": { instances: [REMOTE_CREDENTIALED_INSTANCE], availableProviders: [] },
+      ...overrides,
+    },
+  });
+}
+
+// A remote host's catalog describes only that host. The controller's persisted
+// spawn defaults are controller-scoped: sweeping them against another machine's
+// model list would permanently delete models the controller still offers, and
+// switching back to Local would leave those project defaults lost.
+test("a remote host's catalog never sweeps the controller's saved model defaults", async () => {
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-sweep");
+  const savedBlob = JSON.stringify({ harness: "evener", model: "openai/gpt-5" });
+  localStorage.setItem("evener-hub.spawn-defaults./tmp/remote-sweep", savedBlob);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  seedSources(REMOTE_SOURCES);
+  // The remote catalog offers the openai provider but not the saved model, so
+  // modelValidityAgainstList would classify "openai/gpt-5" as stale.
+  const fake = readyClient((f) => answerRemoteHost(f));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/remote-sweep");
+  setDraftField(draft, "source", "buildbox");
+  renderSpawn(fake);
+  await settled();
+
+  // The remote catalog has been consumed by the sweep effect and the draft
+  // validator (which reports the in-memory draft's model as discarded).
+  expect(await screen.findByText(/discarded last-used model openai\/gpt-5/i)).toBeTruthy();
+  expect(localStorage.getItem("evener-hub.spawn-defaults./tmp/remote-sweep")).toBe(savedBlob);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+});
+
+// A host change drops the previous host's harness/schema catalogs: they describe
+// the machine that answered, and a failed load for the new host must show an
+// empty catalog rather than the previous host's, which the user could otherwise
+// select and only discover is missing at thread/start.
+test("a failed remote catalog load shows an empty harness list, not the previous host's", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => answerRemoteHost(f, { fail: ["evener/harnesses/list", "evener/launch/schema"] }));
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/host-catalog");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const harness = screen.getByLabelText("Harness") as HTMLSelectElement;
+  expect(within(harness).getByRole("option", { name: "external" })).toBeTruthy();
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+
+  await waitFor(() => expect(within(harness).queryByRole("option", { name: "external" })).toBeNull());
+  // The fallback the select renders with no host catalog, not the controller's.
+  expect(
+    within(harness)
+      .queryAllByRole("option")
+      .map((option) => option.textContent),
+  ).toEqual(["evener"]);
+});
+
+// On-demand discovery for a remote host reads that host's filesystem too: the
+// directory picker's recent-projects list and path completion are proxied, and
+// the controller's own methods are never called.
+test("a remote spawn reads recent projects and completes paths from the selected host", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: {
+        "evener/projects/recent": { data: ["/srv/remote-project"] },
+        "evener/paths/complete": { data: ["/srv/remote-project/src"] },
+      },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/remote-project");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/remote-project");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(workingDir());
+  await screen.findByRole("textbox", { name: "Path" });
+  expect(await screen.findByRole("button", { name: "Open /srv/remote-project/src" })).toBeTruthy();
+
+  await waitFor(() => {
+    const routed = fake.calls
+      .filter((call) => call.method === "evener/host/request")
+      .map((call) => call.params as HostRequestParams);
+    expect(routed.filter((call) => call.method === "evener/projects/recent" && call.host === "buildbox")).toHaveLength(
+      1,
+    );
+    expect(routed.some((call) => call.method === "evener/paths/complete" && call.host === "buildbox")).toBe(true);
+  });
+  // Neither on-demand call was left controller-scoped.
+  expect(fake.calls.some((call) => call.method === "evener/projects/recent")).toBe(false);
+  expect(fake.calls.some((call) => call.method === "evener/paths/complete")).toBe(false);
+});
+
+// A credential or model change made ON the selected remote host arrives wrapped
+// in evener/host/notification tagged with that host (app_host_admin.go's
+// fan-out). The pane's scoped model/list cache is keyed on the credential
+// generation, so the wrapper must advance it exactly as the unwrapped
+// evener/auth/updated does for the controller -- otherwise a remote spawn keeps
+// validating against a catalog the host no longer serves.
+test("a selected remote host's wrapped config notification reloads the pane model catalog", async () => {
+  seedSources(REMOTE_SOURCES);
+  // The host's instance refetch never lands, so nothing but the pane's own
+  // generation key can invalidate the catalog: this pins the FORM's observation
+  // of the wrapper, not the credentials store's debounced fetchHost.
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, { overrides: { "evener/instance/list": new Promise(() => {}) } }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/remote-notify");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-notify");
+  renderSpawn(fake);
+  await settled();
+
+  // Every model/list this form issues is forwarded to buildbox: the pane
+  // catalog, the default-model preview, and the global sweep all share the
+  // selected host.
+  const paneLoads = () =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === "buildbox" &&
+        (call.params as HostRequestParams).method === "model/list",
+    ).length;
+  await waitFor(() => expect(paneLoads()).toBeGreaterThan(0));
+  const before = paneLoads();
+
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+
+  await waitFor(() => expect(paneLoads()).toBeGreaterThan(before));
+});
+
+// The provider editor (ConnectProviderDialog) is controller-scoped: it reads and
+// writes the credentialsStore's top-level fields on the plain connection. A
+// remote host's provider verdict now comes from that host's own partition, so
+// offering the controller editor for a remote host would "connect" the wrong
+// machine and leave Start disabled. The controller's own path is unchanged.
+test("a remote spawn never offers the controller's Connect provider editor", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => {
+    answerRemoteHost(f);
+    f.on("evener/instance/list", () => ({ instances: [], availableProviders: [] }));
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/remote-connect");
+  renderSpawn(fake);
+  await settled();
+
+  // Controller with no usable instance: the dialog action is still offered.
+  await screen.findByRole("button", { name: "Connect provider" });
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+
+  // The remote partition reports missing too, but the only offered remediation
+  // is a message naming the host, never the controller's editor.
+  await screen.findByText(/configure one on that host to use a model/i);
+  expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  // Back on the controller, the editor returns.
+  await user.selectOptions(screen.getByLabelText("Host"), "local");
+  await screen.findByRole("button", { name: "Connect provider" });
+});
+
+// The branch readout describes the SELECTED host's working tree. Switching
+// hosts with the same directory must drop the previous host's HEAD immediately,
+// not display it until (or after) the new host's evener/git/head resolves.
+test("switching hosts with the same directory drops the previous host's branch readout", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => {
+    f.on("evener/git/head", () => ({ head: "local-branch" }));
+    // The remote host's HEAD never lands: the controller's readout must not
+    // stand in for it.
+    answerRemoteHost(f, { overrides: { "evener/git/head": new Promise(() => {}) } });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/host-branch");
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("local-branch"));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+
+  await waitFor(() => expect(screen.queryByTestId("spawn-branch")).toBeNull());
+});
+
+// The resolved default launch config is a property of the selected host, not
+// just the directory. Switching hosts with the same directory must not let the
+// previous host's default satisfy -- or fail -- the Start model check while the
+// new host's evener/launch/resolve is pending.
+test("switching hosts with the same directory drops the previous host's default-model verdict", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => {
+    // The controller has no default model: Start reads as model-required.
+    f.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
+    // The remote host's resolve never lands, so only the host key can clear the
+    // controller's stale "no default" verdict.
+    answerRemoteHost(f, { overrides: { "evener/launch/resolve": new Promise(() => {}) } });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/host-default");
+  renderSpawn(fake);
+  await settled();
+  await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/no default model/i));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+
+  await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+});
+
+// The draft's launch config is chosen from the SELECTED host's catalogs, and the
+// draft store carries it across a host switch. Left alone, a harness that exists
+// only on the host that produced it still rides thread/start - and the form
+// cannot even show the mismatch, because an empty harness catalog renders the
+// "evener" fallback label. buildbox offers only "evener".
+test("switching to a host that does not offer the draft's harness drops it from the launch", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => readyRemoteHost(f));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-harness");
+  setDraftField(draft, "harness", "external");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-harness");
+  renderSpawn(fake);
+  await settled();
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  // The controller offered "external"; buildbox does not, so the draft's
+  // selection drops back to the host's own default.
+  await waitFor(() => expect(draft.fields.getState().harness).toBe(""));
+
+  // And the launch carries no harness: the host resolves its own default rather
+  // than being handed a harness only the controller has.
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const started = fake.calls.find((entry) => entry.method === "thread/start");
+  expect(started?.params).toMatchObject({ model: "openai/gpt-4o" });
+  expect(started?.params).not.toHaveProperty("harness");
+});
+
+// The same defect class for Advanced options: the override map is keyed by the
+// schema field names the selected host exposes, and an empty schema renders no
+// Advanced fields at all - so a stale override would ride thread/start with
+// nothing on screen to account for it.
+test("switching to a host whose schema lacks the draft's advanced options drops them", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const controllerOption: LaunchOption = {
+    field: "agent",
+    wireField: "agent",
+    label: "Agent",
+    group: "general",
+    kind: "text",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({ options: [controllerOption] }));
+    // buildbox's own schema (answerRemoteHost) exposes nothing.
+    readyRemoteHost(f);
+  });
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-schema");
+  setDraftField(draft, "advancedOverrides", { agent: "controller-agent" });
+  setDraftField(draft, "advancedValues", { agent: { value: "controller-agent" } });
+  window.history.pushState({}, "", "/new?dir=/tmp/host-schema");
+  renderSpawn(fake);
+  await settled();
+  expect(draft.fields.getState().advancedOverrides).toEqual({ agent: "controller-agent" });
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+
+  await waitFor(() => expect(draft.fields.getState().advancedOverrides).toEqual({}));
+  expect(draft.fields.getState().advancedValues).toEqual({});
+});
+
+// Until the SELECTED host's catalogs answer, the form has no authority about
+// what that host offers - and the draft's launch config has not been reconciled
+// against them. A submit through that window could carry a value the host does
+// not have, so Start is blocked until the answers land (either way: an empty
+// catalog is an answer, so a host that refuses one can never hold Start
+// hostage).
+test("Start is blocked only until the selected host's catalog answers settle", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  let releaseHarnesses!: (result: HostForwardedResult) => void;
+  const fake = readyClient((f) =>
+    readyRemoteHost(f, {
+      "evener/harnesses/list": new Promise<HostForwardedResult>((resolve) => {
+        releaseHarnesses = resolve;
+      }),
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  // A chosen model keeps modelRequired out of the picture, so the only thing
+  // that can disable Start here is the catalog block itself (buildbox's
+  // evener/launch/resolve reports no default model).
+  const draft = selectSpawnDirectory("/tmp/host-pending");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-pending");
+  renderSpawn(fake);
+  await settled();
+  // Nothing about the controller's own catalogs is pending.
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  await settled();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  act(() => releaseHarnesses({ data: [{ id: "evener", label: "evener", kind: "evener" }] }));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+});
+
+// The persisted defaults a submit writes are controller-scoped localStorage. A
+// remote launch's cwd and model belong to the selected host, so a later LOCAL
+// spawn must not inherit them - while the remote project's own per-cwd layer is
+// still remembered.
+test("a remote submit never writes the controller's global spawn defaults", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => readyRemoteHost(f));
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/remote-submit");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/srv/remote-submit");
+  renderSpawn(fake);
+  await settled();
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  const started = fake.calls.find((entry) => entry.method === "thread/start");
+  expect(started?.params).toMatchObject({ source: "buildbox" });
+
+  // The remote project's own layer is written...
+  expect(localStorage.getItem("evener-hub.spawn-defaults./srv/remote-submit")).toContain("openai/gpt-4o");
+  // ...but the controller-wide scalars a local Spawn reads are untouched.
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBeNull();
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBeNull();
 });
