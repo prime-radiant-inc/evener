@@ -11,13 +11,13 @@
 // typed by FakeClient exactly as it is in the store's own tests.
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { FrameworkFreeStore } from "../../frameworkFreeStore";
+import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import { deferRequest, FakeClient } from "../../testing/fakeClient";
 import type { LaunchConfigLayer, MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
-import type { StoreLifecycle } from "./storeLifecycle";
+import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 type LifecycleStore<S> = FrameworkFreeStore<S> & Omit<StoreLifecycle<S>, "guard">;
 
@@ -203,6 +203,63 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(store.getState()).toBe(before);
     });
 
+    test("an established list is read again when the connection is ready again", async () => {
+      const { fake, store } = lifecycle.create();
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+      expect(lifecycle.listCalls(fake)).toBe(1);
+
+      // The hub broadcasts a change to every CONNECTED client, so a change
+      // made while this one was away reaches it as nothing at all: the
+      // notification the lifecycle follows is not a recovery path, and the
+      // reconnect is.
+      store.connectionChanged(fake, "reconnecting");
+      lifecycle.notifyUpdated(fake);
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lifecycle.listCalls(fake)).toBe(2);
+    });
+
+    test("a list nothing has read is not read by a reconnect", async () => {
+      const { fake, store } = lifecycle.create();
+      lifecycle.answerList(fake);
+
+      store.connectionChanged(fake, "reconnecting");
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(fake.calls).toHaveLength(0);
+      expect(store.getState()).toMatchObject(lifecycle.initial);
+    });
+
+    test("a replacement client that arrives ready reads an established list", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready"); // the connection the host reports before anything reads
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lifecycle.listCalls(fake)).toBe(1); // the same connection, still ready: nothing to recover
+
+      const replacement = lifecycle.create().fake;
+      store.connectionChanged(replacement, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(lifecycle.listCalls(fake)).toBe(2);
+    });
+
+    test("a reconnect after dispose() reads nothing", async () => {
+      const { fake, store } = lifecycle.create();
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+
+      store.dispose();
+      store.connectionChanged(fake, "reconnecting");
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(lifecycle.listCalls(fake)).toBe(1);
+    });
+
     test("reset() returns to the initial state and fences the list still in flight", async () => {
       const { fake, store } = lifecycle.create();
       const release = lifecycle.deferList(fake);
@@ -228,3 +285,57 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 runLifecycleSuite("marketplaces", MARKETPLACES);
 runLifecycleSuite("plugins", PLUGINS);
 runLifecycleSuite("launch layer", LAUNCH_LAYER);
+
+// dispose() unsubscribes, but unsubscribing is only the cooperative half: a
+// dispatcher that snapshots its handler set - AppwireClient.setState does,
+// and stores/connection.ts documents the same class for its own listener -
+// still calls a handler removed during that dispatch. The stub below is that
+// dispatcher, reduced to the one behaviour: it hands back an unsubscribe that
+// does nothing, so the callback outlives the store it belonged to.
+describe("a notification callback that outlives dispose()", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("publishes nothing and schedules no read", async () => {
+    let deliver!: (n: { method: string }) => void;
+    const client = {
+      onNotification(cb: (n: { method: string }) => void) {
+        deliver = cb;
+        return () => undefined; // the handler stays reachable
+      },
+    } as unknown as FakeClient;
+
+    let reads = 0;
+    let notified = 0;
+    const lifecycle = createStoreLifecycle<{ marker: number }>(client, {
+      method: "evener/plugin/updated",
+      debounceMs: 250,
+      store: () => store,
+      refetch: () => {
+        reads += 1;
+      },
+      onNotified: () => store.setState((s) => ({ marker: s.marker + 1 })),
+      established: () => true,
+    });
+    const store = createFrameworkFreeStore<{ marker: number }>((publish) => {
+      void lifecycle.guard(publish);
+      return { marker: 0 };
+    });
+    lifecycle.start();
+    store.subscribe(() => {
+      notified += 1;
+    });
+
+    lifecycle.dispose();
+    deliver({ method: "evener/plugin/updated" });
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(notified).toBe(0);
+    expect(store.getState().marker).toBe(0);
+    expect(reads).toBe(0);
+  });
+});

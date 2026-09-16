@@ -26,7 +26,7 @@ import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { LaunchConfigLayer } from "../../types.gen";
 import { createListRevision } from "./listRevision";
-import { createStoreLifecycle } from "./storeLifecycle";
+import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type LaunchLayerClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -40,7 +40,9 @@ export interface LaunchLayerState {
   setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
 }
 
-export interface LaunchLayerStore extends FrameworkFreeStore<LaunchLayerState> {
+export interface LaunchLayerStore
+  extends FrameworkFreeStore<LaunchLayerState>,
+    Omit<StoreLifecycle<LaunchLayerState>, "guard"> {
   /** Follows evener/launch/updated, which the hub broadcasts to every client
    * after any client's successful setLayer, so a change made in one window
    * reaches every other window's loaded layer after a short debounce.
@@ -71,6 +73,7 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
     store: () => store,
     refetch: (state) => state.fetchLaunchLayer(),
     onFence: () => listRevision.fence(),
+    established: (s) => s.launchLayer !== null || s.launchLayerError !== null,
   });
 
   const store = createFrameworkFreeStore<LaunchLayerState>((publish) => {
@@ -115,6 +118,6 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
     };
   });
 
-  const { start, reset, dispose } = lifecycle;
-  return { ...store, start, reset, dispose };
+  const { start, connectionChanged, reset, dispose } = lifecycle;
+  return { ...store, start, connectionChanged, reset, dispose };
 }

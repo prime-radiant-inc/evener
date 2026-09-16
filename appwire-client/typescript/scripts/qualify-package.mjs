@@ -426,7 +426,7 @@ const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces;
 const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient);
 const revision: ListRevision = createListRevision(); void plugins; void revision;
-const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins() }); void lifecycle;
+const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), established: (state) => state.plugins !== null }); void lifecycle;
 const layerClient: LaunchLayerClient = marketplacesClient;
 const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
@@ -443,6 +443,7 @@ assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
 const pluginsStore = client.createPluginsStore(offline);
 assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
+pluginsStore.connectionChanged(offline, "ready");
 const layerStore = client.createLaunchLayerStore(offline);
 assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(layerStore.getState().launchLayer, null);

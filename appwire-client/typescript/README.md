@@ -116,8 +116,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   skill directory lists and the MCP server list are four fields of, read and
   written at cwd `/` and layer `global`), and the pieces they are built over:
   `createListRevision`, the fence on a list every response replaces whole, and
-  `createStoreLifecycle`, the notification subscription, debounced refetch and
-  `start`/`reset`/`dispose` trio a host drives from its screen. In every store
+  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  `connectionChanged` recovery (a list a host has read is read again when the
+  connection is ready again, because the hub's broadcast only reaches clients
+  that were connected) and the `start`/`reset`/`dispose` trio a host drives
+  from its screen. In every store
   fetches record their failure in state and mutations reject. The subpath
   resolves to `state/extensions/index.ts`, a barrel over the layer's modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:

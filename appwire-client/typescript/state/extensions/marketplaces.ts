@@ -25,7 +25,7 @@ import type {
   MarketplaceEntry,
 } from "../../types.gen";
 import { createListRevision } from "./listRevision";
-import { createStoreLifecycle } from "./storeLifecycle";
+import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -66,7 +66,9 @@ export interface MarketplacesState {
   reloadCatalog(name: string): Promise<void>;
 }
 
-export interface MarketplacesStore extends FrameworkFreeStore<MarketplacesState> {
+export interface MarketplacesStore
+  extends FrameworkFreeStore<MarketplacesState>,
+    Omit<StoreLifecycle<MarketplacesState>, "guard"> {
   /** Follows evener/marketplace/updated, which the hub broadcasts to every
    * client after any client's successful mutation: every cached catalog is
    * retired (the notification names nothing) and the list is refetched after
@@ -157,6 +159,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       for (const name of browseInFlight.keys()) retireGeneration(name);
       browseInFlight.clear();
     },
+    established: (s) => s.marketplaces !== null || s.marketplacesError !== null,
   });
 
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
@@ -250,6 +253,6 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     };
   });
 
-  const { start, reset, dispose } = lifecycle;
-  return { ...store, start, reset, dispose };
+  const { start, connectionChanged, reset, dispose } = lifecycle;
+  return { ...store, start, connectionChanged, reset, dispose };
 }
