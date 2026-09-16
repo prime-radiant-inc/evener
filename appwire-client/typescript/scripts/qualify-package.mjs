@@ -174,6 +174,9 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.humanizeState("awaiting", true), "question waiting");
+assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("notLoaded", false), "idle");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
