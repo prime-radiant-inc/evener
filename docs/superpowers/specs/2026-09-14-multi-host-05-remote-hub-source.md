@@ -905,17 +905,26 @@ Ref translation detail (`remote_hub_refs.go`):
     as a JSON object carrying `sessionId` and `ref` as strings (empty strings
     allowed — the Go encoder emits all of them unconditionally; none of
     `JobActivityTree.Root`, `.Revision`, `JobActivitySession.SessionID`, or
-    `.Ref` carries `omitempty`). A legacy flat array, an empty object, an
-    unknown object, an object that carries `root` but not its required fields
-    (`{"root":{}}`), and a payload whose required fields carry another type all
-    fail that test, and every payload that fails it — or that passes it but
-    still fails to decode as a tree — is preserved as the `any` value it
-    arrived as, never rewritten. Semantic recognition plus pass-through is
+    `.Ref` carries `omitempty`). An empty object, an unknown object, an object
+    that carries `root` but not its required fields (`{"root":{}}`), and a
+    payload whose required fields carry another type all fail that test, and
+    every payload that fails it — or that passes it but still fails to decode
+    as a tree — is preserved as the `any` value it arrived as, never rewritten.
+    The retired flat array of `EvenerJobInfo` is recognized as its own shape
+    and is **not** pass-through: it is the array form `evener/jobs/list`
+    answered before the activity tree (docs/appwire-protocol.md,
+    `evener/jobs/list`), its only ref-valued field is `transcriptRef` (a
+    session ref for a delegate turn, the opaque `job:<id>` for a shell job),
+    and that field is translated by the same declared-field policy as a tree
+    node's. Leaving it untranslated would hand the controller a remote
+    `local:<id>` — the wrong-machine failure this section exists to prevent.
+    Recognition plus pass-through is
     therefore the only acceptable shape, and it keeps the wire field generic:
     making the wire field itself typed (`Data appwire.JobActivityTree`) breaks
     pass-through, because the stream client decodes the result with
     `json.Unmarshal` (`appwire.Client.Request`, `appwire/client.go`) and a
-    legacy flat array fails that decode instead of arriving untouched. What is
+    legacy flat array fails that decode instead of arriving as the array shape
+    the translation recognizes. What is
     not acceptable is a typed walk that silently no-ops because the runtime
     value is a `map[string]any`, or one that rewrites (and replaces) a payload
     it did not recognize. This
@@ -925,6 +934,19 @@ Ref translation detail (`remote_hub_refs.go`):
     object that carries `root` without its required fields (`{"root":{}}`), a
     legacy flat array, an unknown object, a minimal (zero-value) tree, and a
     forward-compatible tree carrying an extra field.
+    **Implementation status:** the shipped translator (`translateActivityRefs`
+    and its walk helpers, `remote_hub_refs.go`) recognizes **structurally**
+    rather than by the required-field/type test above: it walks the declared
+    containers (`root`/`entries`/`job`/`delegate`/`child`/`turns`, or the
+    retired array's `transcriptRef`) and rewrites only the ref fields those
+    nodes declare, preserving every other key byte-for-byte, so a payload with
+    none of those positions is untouched in practice. The required-field test
+    itself (`revision` a non-negative integer, `root` carrying `sessionId` and
+    `ref` as strings) is **not implemented**, and its named pass-through cases
+    (an empty object, `{"root":{}}`, a tree whose required fields carry another
+    type) are not pinned by a test; the requirement stands as an open code
+    item. The legacy-array translation is shipped and pinned
+    (`TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs`).
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
     `appwire/types.go`) on any thread snapshot (a `ReadThread`/`ListThreads`
     response or a `thread/started` notification): `Jobs[].TranscriptRef`
@@ -1437,10 +1459,11 @@ network.
     Feed the `ListJobs` response through the **actual stream client**
     (`appwire.Client.Request` over a `StreamTransport` answering with the real
     JSON `{"data":{…}}` envelope) so the `Data any` decode step is exercised;
-    assert a recognized tree is walked and an unrecognized `Data` payload —
-    an empty object, an object carrying `root` without its required fields, an
-    unrelated object, or a legacy flat array — passes through untouched as the
-    value it received.
+    assert a recognized tree is walked, an unrecognized `Data` payload — an
+    empty object, an object carrying `root` without its required fields, or an
+    unrelated object — passes through untouched as the value it received, and a
+    legacy flat array's session-valued `transcriptRef` is translated while its
+    opaque `job:<id>` refs and bare ids are preserved.
 14. **Remote item paging round trip.** Over the scripted (or in-process) remote
     hub, a `thread/read` whose remote reply carries `OlderCursor` returns a
     packed first page whose `OlderCursor` is the controller cursor — **not** the
@@ -1518,15 +1541,18 @@ network.
   `local:<id>` reaches the controller unrewritten. Because
   `JobsListResponse.Data` is `any` today — and stays generic, because typing it
   as `appwire.JobActivityTree` fails the stream client's decode for a legacy
-  flat array — the translation first **recognizes** an activity-tree payload
-  by its required fields and their types (`revision` a non-negative integer,
-  `root` an object carrying `sessionId` and `ref` as strings) and walks only a
-  recognized tree; every payload that is not recognized — an empty object, an
-  unknown object, an object carrying `root` without its required fields, a
-  legacy flat array — passes through untouched as the value it received.
-  "Decodes without error" is not recognition: `{}` and unrelated objects decode
-  into a zero-value `appwire.JobActivityTree`. Verified through the actual
-  stream client.
+  flat array — the translation **recognizes** an activity-tree payload by its
+  required fields and their types (`revision` a non-negative integer, `root` an
+  object carrying `sessionId` and `ref` as strings) and walks only a recognized
+  tree; every payload that is not recognized — an empty object, an unknown
+  object, an object carrying `root` without its required fields — passes
+  through untouched as the value it received. The retired flat array is
+  recognized separately and translated by its declared field: each element's
+  session-valued `transcriptRef` moves into the controller namespace while its
+  opaque `job:<id>` ref and bare ids are preserved, or the remote `local:<id>`
+  would leak to the controller. "Decodes without error" is not recognition:
+  `{}` and unrelated objects decode into a zero-value `appwire.JobActivityTree`.
+  Verified through the actual stream client.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
 - The loop guard's origin signal comes from the explicit, cooperative bridge marker
