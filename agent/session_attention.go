@@ -98,8 +98,7 @@ type delegateAttentionFold struct {
 func foldDelegateAttention(entries []transcript.Entry) (delegateAttentionFold, error) {
 	fold := newDelegateAttentionFold()
 	for _, entry := range entries {
-		turn := entry.Turn
-		turn.Seq = entry.Seq // seed the durable per-line id so a retained attention turn carries its own entry, not Seq 0
+		turn := entry.Turn // Turn.Seq is seeded from Entry.Seq by DecodeEntry
 		if err := foldDelegateDeliveryCommits(&fold, turn); err != nil {
 			return delegateAttentionFold{}, err
 		}
@@ -411,7 +410,7 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	if err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
-	turn.Seq = recordedSeq(seq, err)
+	turn.Seq = seq // err is nil here (AppendSynced is fully durable or it errored above), so this is the recorded Seq
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
 	}

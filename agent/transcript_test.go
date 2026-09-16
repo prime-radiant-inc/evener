@@ -965,6 +965,11 @@ func TestResumeHistoryFoldRecord_KeepsRetainedTailBeforeMarker(t *testing.T) {
 		{Kind: "entry", Seq: 8, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after fold"))},
 		{Kind: "entry", Seq: 9, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reply"))},
 	}
+	// DecodeEntry seeds Turn.Seq from Entry.Seq in production; these hand-built
+	// entries mimic that so the resumed turns carry their durable Seqs.
+	for i := range entries {
+		entries[i].Turn.Seq = entries[i].Seq
+	}
 
 	history := ResumeHistory(entries)
 

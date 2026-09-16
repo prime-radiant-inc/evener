@@ -182,6 +182,10 @@ func DecodeEntry(line []byte) (Entry, error) {
 	if err := decodeStrictJSON(line, &entry); err != nil {
 		return Entry{}, fmt.Errorf("decode transcript entry: %w", err)
 	}
+	// Seed the turn's in-memory Seq from the entry's durable per-line id (it is
+	// json:"-", so not decoded): a reader invariant, so every consumer that
+	// resumes or folds by Seq sees it without re-seeding at each call site.
+	entry.Turn.Seq = entry.Seq
 	return entry, nil
 }
 

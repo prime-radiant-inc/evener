@@ -1987,10 +1987,9 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.attentionMu.Lock()
 	seq, err := s.writeTranscriptLocked(persisted)
 	s.mu.Lock()
-	// The turn stays in model history even when the write failed, but it must
-	// carry no durable Seq then: a hard failure returns the UNSPENT next seq,
-	// which a later successful append reuses, so stamping it would make the
-	// fold name another turn's entry.
+	// The turn stays in model history even on a failed write, but carries no
+	// durable Seq then (recordedSeq — see its doc for why the unspent seq must
+	// not be stamped).
 	live.Seq = recordedSeq(seq, err)
 	s.history = append(s.history, live)
 	s.mu.Unlock()
@@ -2167,37 +2166,37 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
-	// The held turns were appended to history carrying the seqHeldPreAttach
-	// marker, in this same flush order, so the i-th held turn is the i-th
-	// still-marked turn in history. Consume the markers with a forward cursor —
-	// held[i] to the i-th marker — rather than rescanning from the start each
-	// time: a rescan would let a FAILED write's turn (still marked) absorb a
-	// later successful write's Seq, naming the wrong entry and stranding the
-	// successful turn. The cursor is used, not held[i]==history[i]: a fork
-	// delegate's history leads with its inherited prefix, so the markers do not
-	// start at index 0. Every held turn's marker is consumed (a failed write's
-	// turn becomes NoTranscriptEntrySeq via recordedSeq) so none is left marked.
-	cursor := 0
-	for _, t := range held {
+	// Flush each held turn, collecting the durable Seq it spent (recordedSeq
+	// gives NoTranscriptEntrySeq on a failed write). Buffered, not emitted
+	// directly (kata et0x): attachTranscript always runs before its caller's
+	// emitSessionStartEnvelope, so SESSION_START has not fired yet.
+	flushed := make([]int, len(held))
+	for i, t := range held {
 		seq, err := w.Append(t)
 		if err != nil {
-			// Buffered, not emitted directly (kata et0x): attachTranscript always
-			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
-			// has not fired yet — same reasoning as the NewSession transcript-
-			// create-failed warning above it in the buffer's doc comment.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 		}
-		s.mu.Lock()
-		for cursor < len(s.history) {
-			j := cursor
-			cursor++
-			if s.history[j].Seq == seqHeldPreAttach {
-				s.history[j].Seq = recordedSeq(seq, err) // NoTranscriptEntrySeq on a failed write, so a later success cannot land on it
-				break
-			}
-		}
-		s.mu.Unlock()
+		flushed[i] = recordedSeq(seq, err)
 	}
+	// Stamp in one lock: the held turns were appended to history carrying the
+	// seqHeldPreAttach marker in this same order, so the k-th still-marked turn
+	// is held[k]. A single forward pass stamps each (even a failed write's, as
+	// NoTranscriptEntrySeq) so no marker is left for a later fold to misread,
+	// and no later success rescans back onto a failed turn. Matched by the
+	// marker, not by index: a fork delegate's history leads with its inherited
+	// prefix, so the markers do not start at index 0.
+	s.mu.Lock()
+	k := 0
+	for i := range s.history {
+		if k >= len(flushed) {
+			break
+		}
+		if s.history[i].Seq == seqHeldPreAttach {
+			s.history[i].Seq = flushed[k]
+			k++
+		}
+	}
+	s.mu.Unlock()
 	// A replayed append whose whole line landed but did not sync returned nil
 	// and queued its diagnostic on the writer; buffer it the same way, since
 	// SESSION_START has not fired yet.

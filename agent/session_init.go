@@ -104,7 +104,18 @@ func escapeHistoryWithSessionProvenance(history []schema.Turn, divergenceTurn in
 // must never decide what an inherited turn was. The prefix is decided by its own
 // kinds and the write-path text shape alone.
 func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
-	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
+	turns := escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
+	// These turns carry the PARENT transcript's Seqs (seeded from its entries),
+	// which do not name entries in the child's own transcript. Mark them as
+	// having no child entry so a child fold never names an inherited turn by
+	// Seq: the inherited prefix is background the child re-folds into its own
+	// summary, never a resumable tail it owns. (The child re-writes these turns
+	// into its transcript at its own Seqs, but s.history is not re-seeded from
+	// them.)
+	for i := range turns {
+		turns[i].Seq = schema.NoTranscriptEntrySeq
+	}
+	return turns
 }
 
 // initEnvContext constructs the session's environment-context collector and
@@ -514,20 +525,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}
 		}
-		// The inherited prefix in s.history carries the parent transcript's Seqs
-		// (ResumeHistory seeded them), which do not name entries in THIS child's
-		// transcript. A child fold must therefore not name an inherited turn by
-		// Seq; mark the whole inherited prefix as having no child entry so the
-		// fold omits it (the inherited prefix is background the child re-folds
-		// into its own summary, never a resumable tail it owns).
-		s.mu.Lock()
-		for i := range s.history {
-			if s.history[i].Seq == seqHeldPreAttach {
-				break // reached the boundary turn; the inherited prefix ends here
-			}
-			s.history[i].Seq = schema.NoTranscriptEntrySeq
-		}
-		s.mu.Unlock()
 	}
 	s.attachTranscript(tw)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {

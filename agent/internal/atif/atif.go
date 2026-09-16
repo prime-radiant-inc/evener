@@ -157,7 +157,7 @@ func ConvertTranscriptWithOptions(header transcript.Header, entries []transcript
 			// Resolution markers are private and transparent to tool-round
 			// structure, so look through them for this assistant's observation.
 			resultIndex := i + 1
-			for resultIndex < len(entries) && (entries[resultIndex].Turn.Kind == schema.TurnAttentionResolution || entries[resultIndex].Turn.Kind == schema.TurnFoldRecord) {
+			for resultIndex < len(entries) && entries[resultIndex].Turn.Kind.IsPrivateRecord() {
 				resultIndex++
 			}
 			if resultIndex < len(entries) && entries[resultIndex].Turn.Kind == schema.TurnToolResults {

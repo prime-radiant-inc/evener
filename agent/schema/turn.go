@@ -11,6 +11,19 @@ import (
 // TurnKind identifies the category of a Turn in the Session history.
 type TurnKind string
 
+// IsPrivateRecord reports whether a turn of this kind is durable bookkeeping
+// with no model-visible content: an attention-resolution marker or a
+// compaction fold record. Every public projection over transcript entries
+// (markdown, outline, ATIF, the read_transcript tool, doctor reconstruction,
+// fork-context inheritance) omits these; the model-request builders drop them
+// too. Sites with attention-mechanics semantics (resolution matching,
+// attention-transparent history) are NOT this predicate — they act on
+// TurnAttentionResolution specifically and a fold record is not an attention
+// turn.
+func (k TurnKind) IsPrivateRecord() bool {
+	return k == TurnAttentionResolution || k == TurnFoldRecord
+}
+
 // NoTranscriptEntrySeq marks a Turn.Seq that names no durable transcript
 // entry: a repair synthetic, a strategy injection, or a turn whose write
 // failed. It is negative so it can never collide with a real 0-based Entry.Seq;

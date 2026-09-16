@@ -2213,10 +2213,8 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 		s.attentionMu.Unlock()
 		return errors.Join(writeErr, errTranscriptRefusesRecords())
 	}
-	// The turn stays in model history even when the write failed, but it must
-	// then carry no durable Seq: a hard failure returns the UNSPENT next seq,
-	// which the next successful append reuses — stamping it would make a fold
-	// name one seq for two turns.
+	// The turn stays in model history even on a failed write, but carries no
+	// durable Seq then (recordedSeq — see its doc).
 	turn.Seq = recordedSeq(seq, writeErr)
 	s.mu.Lock()
 	s.history = append(s.history, turn)

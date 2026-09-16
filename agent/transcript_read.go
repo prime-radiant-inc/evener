@@ -140,71 +140,68 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-// lastMarkerAnchor is the index of the first entry a pre-#1200 (fold-record
-// absent) resume keeps: the last compaction turn, or 0 when the transcript
-// never compacted. It is the legacy anchor, kept only for transcripts written
-// before the fold record existed — those carry a marker with no record, and
-// resuming them exactly as the shipped daemon did (marker + everything after)
-// avoids suddenly replaying their long-discarded prefix on the first restart
-// after the upgrade. A2 transcripts carry a fold record and never reach it.
-func lastMarkerAnchor(entries []transcript.Entry) int {
+// resumeAnchor finds where a resume begins, scanning backward to the FIRST
+// (newest) compaction marker or fold record it meets. When that anchor is a
+// fold record, it drives the reconstruction (record != nil). When it is a bare
+// marker — a newer fold whose own record write failed left recordless markers,
+// or a pre-#1200 transcript — resume falls back to that marker plus everything
+// after it (record == nil). Because a valid fold always writes its record AFTER
+// its own markers, a record older than the newest marker is never reached: the
+// marker is met first and wins, which is exactly the "stale record" rule. An
+// uncompacted transcript yields (0, nil): the whole transcript.
+func resumeAnchor(entries []transcript.Entry) (idx int, record *schema.FoldRecord) {
 	for i := range slices.Backward(entries) {
-		kind := entries[i].Turn.Kind
-		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
-			return i
+		switch entries[i].Turn.Kind {
+		case schema.TurnFoldRecord:
+			if entries[i].Turn.Fold != nil {
+				return i, entries[i].Turn.Fold
+			}
+		case schema.TurnCheckpoint, schema.TurnSummary:
+			return i, nil
 		}
 	}
-	return 0
-}
-
-// lastFoldRecordIndex is the index of the last TurnFoldRecord entry, or -1 when
-// the transcript has none (never compacted, or compacted only by a pre-#1200
-// build). The last record is the one whose published history is live.
-func lastFoldRecordIndex(entries []transcript.Entry) int {
-	for i := range slices.Backward(entries) {
-		if entries[i].Turn.Kind == schema.TurnFoldRecord && entries[i].Turn.Fold != nil {
-			return i
-		}
-	}
-	return -1
+	return 0, nil
 }
 
 // resumeTurns reconstructs the pre-repair resumed history and, for each turn,
 // the index in entries it came from (its origin), so a caller can map a
 // full-transcript position onto the resumed history. A fold record drives the
-// reconstruction when present: the head marker(s) it names (Layers), then the
-// pre-existing turns it kept (RetainedSeqs), each looked up by Seq, then every
-// entry recorded after the record. Absent a record, the legacy last-marker
-// anchor (or the whole transcript) does, contiguously from lastMarkerAnchor.
+// reconstruction when it is the anchor: the head marker(s) it names (Layers),
+// then the pre-existing turns it kept (RetainedSeqs), each looked up by Seq,
+// then every entry recorded after the record. Absent a record, the anchor is a
+// bare marker (or index 0) and resume is that entry plus everything after it.
 func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int) {
+	turns = make([]schema.Turn, 0, len(entries))
+	origins = make([]int, 0, len(entries))
 	appendEntry := func(i int) {
-		t := entries[i].Turn
-		t.Seq = entries[i].Seq // seed the durable per-line id the fold names retained turns by
-		turns = append(turns, t)
+		// A fold record is durable bookkeeping, never a live turn: skip it once
+		// here, so neither a Seq that a write bug pointed at the record (e.g. an
+		// unspent seq reused after a failed marker write) nor a stray post-anchor
+		// record can inject the record into history. Turn.Seq was seeded from
+		// Entry.Seq by DecodeEntry.
+		if entries[i].Turn.Kind == schema.TurnFoldRecord {
+			return
+		}
+		turns = append(turns, entries[i].Turn)
 		origins = append(origins, i)
 	}
-	// A fold record is authoritative only when it is NEWER than the newest
-	// compaction marker. If a later fold wrote its markers but its own record
-	// write failed (the "restart resumes from the newest compaction marker"
-	// warning), the last surviving record belongs to an OLDER fold; using it
-	// would replay that fold's summarized-away turns plus the newer markers.
-	// Treat such a stale record as absent and fall back to the last-marker
-	// anchor (newest summary + everything after it) — a valid fold always
-	// writes its record AFTER its own markers, so recordIdx > lastMarkerAnchor
-	// exactly when the record is the newest fold's.
-	if recordIdx := lastFoldRecordIndex(entries); recordIdx >= 0 && recordIdx > lastMarkerAnchor(entries) {
-		rec := entries[recordIdx].Turn.Fold
-		bySeq := make(map[int]int, len(entries))
-		for i := range entries {
-			bySeq[entries[i].Seq] = i
+	// lookup maps a durable Seq to its entry index. Entry.Seq is strictly
+	// monotonic in file order (the writer assigns firstSeq+i per append,
+	// resumes at maxSeq+1, and a failed write spends no Seq), so entries are
+	// sorted by Seq: index == Seq in the common gap-free case (fast path), with
+	// a binary search as the general fallback. A negative sentinel
+	// (NoTranscriptEntrySeq) matches nothing.
+	lookup := func(seq int) (int, bool) {
+		if seq >= 0 && seq < len(entries) && entries[seq].Seq == seq {
+			return seq, true
 		}
+		return slices.BinarySearchFunc(entries, seq, func(e transcript.Entry, s int) int { return e.Seq - s })
+	}
+
+	anchorIdx, rec := resumeAnchor(entries)
+	if rec != nil {
 		add := func(seq int) {
-			// A negative sentinel (NoTranscriptEntrySeq) misses bySeq, and a
-			// fold record must never name another fold record — skip both, so a
-			// seq that a write bug pointed at the FOLD_RECORD entry (e.g. an
-			// unspent seq reused after a failed marker write) can never inject
-			// the record itself into history.
-			if i, ok := bySeq[seq]; ok && entries[i].Turn.Kind != schema.TurnFoldRecord {
+			if i, ok := lookup(seq); ok {
 				appendEntry(i)
 			}
 		}
@@ -214,21 +211,13 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 		for _, seq := range rec.RetainedSeqs {
 			add(seq)
 		}
-		for i := recordIdx + 1; i < len(entries); i++ {
-			// Everything after the last record is live post-fold history; a
-			// stray fold record there (there should be none) is bookkeeping,
-			// never a live turn.
-			if entries[i].Turn.Kind == schema.TurnFoldRecord {
-				continue
-			}
+		for i := anchorIdx + 1; i < len(entries); i++ {
 			appendEntry(i)
 		}
 		return turns, origins
 	}
 
-	from := lastMarkerAnchor(entries)
-	turns = make([]schema.Turn, 0, len(entries)-from)
-	for i := from; i < len(entries); i++ {
+	for i := anchorIdx; i < len(entries); i++ {
 		appendEntry(i)
 	}
 	return turns, origins

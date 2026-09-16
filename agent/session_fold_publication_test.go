@@ -242,18 +242,22 @@ func newScriptedSummaryCompactSession(t *testing.T, provider string, responder f
 
 // foldRecordFromTranscript returns the last fold record written to a session's
 // transcript, or nil when none was written.
-func foldRecordFromTranscript(t *testing.T, s *Session) *schema.FoldRecord {
+// sessionTranscriptEntries reads a session's durable transcript entries.
+func sessionTranscriptEntries(t *testing.T, s *Session) []transcript.Entry {
 	t.Helper()
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	full, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
 	if err != nil {
 		t.Fatalf("readTranscriptFull: %v", err)
 	}
-	var rec *schema.FoldRecord
-	for _, e := range data.Entries {
-		if e.Turn.Kind == schema.TurnFoldRecord && e.Turn.Fold != nil {
-			rec = e.Turn.Fold
-		}
-	}
+	return full.Entries
+}
+
+// foldRecordFromTranscript returns the fold record the resume path would anchor
+// on (via the production resumeAnchor), or nil when the newest anchor is a bare
+// marker or there is none.
+func foldRecordFromTranscript(t *testing.T, s *Session) *schema.FoldRecord {
+	t.Helper()
+	_, rec := resumeAnchor(sessionTranscriptEntries(t, s))
 	return rec
 }
 
@@ -285,7 +289,7 @@ func TestSyntheticToolResultsTurn_HasNoDurableEntrySeq(t *testing.T) {
 	}
 }
 
-// M2: a keptTail turn with no durable entry (a repair synthetic or strategy
+// A keptTail turn with no durable entry (a repair synthetic or strategy
 // injection, carrying the sentinel) must be OMITTED from the fold record, not
 // treated as an injected steering turn — otherwise it consumes a real steering
 // turn's Seq and the steering turn is dropped or duplicated on restart.
@@ -307,7 +311,7 @@ func TestWriteFoldRecordLocked_NoEntryTurnDoesNotStealSteeringSeq(t *testing.T) 
 	steer.Seq = seqFoldInjectedSteering // the fold-injected marker; its durable Seq is the steering write's
 	published := []schema.Turn{summary, noEntry, steer}
 	// steeringSeqs holds the durable Seq the fold wrote the steering turn at.
-	if _, err := s.writeFoldRecordLocked(published, 0, []schema.Turn{summary}, []int{headSeq}, []int{42}, "fold-x"); err != nil {
+	if _, err := s.writeFoldRecordLocked(published, 0, headSeq, []int{42}, "fold-x"); err != nil {
 		s.attentionMu.Unlock()
 		t.Fatalf("writeFoldRecordLocked: %v", err)
 	}
@@ -322,7 +326,7 @@ func TestWriteFoldRecordLocked_NoEntryTurnDoesNotStealSteeringSeq(t *testing.T) 
 	}
 }
 
-// M1 defense: a fold record must never resolve one of its named Seqs to another
+// A fold record must never resolve one of its named Seqs to another
 // fold record — a write bug (e.g. a failed head marker leaving the unspent seq
 // that the fold record itself then takes) could otherwise inject the record
 // into live history. resumeTurns must skip such a resolution.
@@ -351,12 +355,9 @@ func TestResumeHistoryFoldRecord_NeverInjectsAFoldRecord(t *testing.T) {
 // hand-stamped-unspent Seq that names the wrong entry fails it.
 func assertHistorySeqsNameEntries(t *testing.T, s *Session) {
 	t.Helper()
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
+	entries := sessionTranscriptEntries(t, s)
 	bySeq := map[int]bool{}
-	for _, e := range data.Entries {
+	for _, e := range entries {
 		bySeq[e.Seq] = true
 	}
 	s.mu.Lock()
@@ -397,7 +398,7 @@ func TestFold_HistoryTurnSeqsNameTheirEntries(t *testing.T) {
 	assertHistorySeqsNameEntries(t, s)
 }
 
-// Instance 2: a decoded attention turn must carry the durable Seq of the entry
+// A decoded attention turn must carry the durable Seq of the entry
 // it was read from, not a bare 0 — otherwise a fold's merge-back names it Seq 0
 // and resume resolves it to the session's FIRST entry, resurrecting a
 // summarized-away turn.
@@ -405,11 +406,18 @@ func TestFoldDelegateAttention_SeedsTurnSeq(t *testing.T) {
 	t.Parallel()
 	attn := schema.NewTurn(schema.TurnSteering, llm.User("attend to X"))
 	attn.AttentionID = "attn-1"
-	entries := []transcript.Entry{
-		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hi"))},
-		{Kind: "entry", Seq: 5, Turn: attn},
+	// Round-trip through DecodeEntry (the sole seed site): it stamps Turn.Seq
+	// from Entry.Seq, and foldDelegateAttention must carry that through, so a
+	// retained attention turn names its own entry, not Seq 0.
+	line, err := json.Marshal(transcript.Entry{Kind: "entry", Seq: 5, Turn: attn})
+	if err != nil {
+		t.Fatal(err)
 	}
-	fold, err := foldDelegateAttention(entries)
+	decoded, err := transcript.DecodeEntry(line)
+	if err != nil {
+		t.Fatalf("DecodeEntry: %v", err)
+	}
+	fold, err := foldDelegateAttention([]transcript.Entry{decoded})
 	if err != nil {
 		t.Fatalf("foldDelegateAttention: %v", err)
 	}
@@ -418,7 +426,7 @@ func TestFoldDelegateAttention_SeedsTurnSeq(t *testing.T) {
 	}
 }
 
-// Instance 3: attachTranscript must stamp a held turn at its real position, not
+// attachTranscript must stamp a held turn at its real position, not
 // assume held[i] is history[i]. A fork delegate's history leads with an
 // inherited prefix, so the held boundary turn is not at index 0.
 func TestAttachTranscript_StampsHeldTurnAfterInheritedPrefix(t *testing.T) {
@@ -507,7 +515,7 @@ func TestAttachTranscript_FailedHeldWriteDoesNotStealNextSeq(t *testing.T) {
 	}
 }
 
-// M1 unit: when a fold's head-marker write failed (markerSeqs carries
+// When a fold's head-marker write failed (markerSeqs carries
 // NoTranscriptEntrySeq), stampFoldWrittenSeqsLocked must still stamp the live
 // marker with that sentinel — never leave it at Seq 0, where a later fold would
 // name entry 0 for it.
@@ -518,13 +526,13 @@ func TestStampFoldWrittenSeqs_FailedHeadMarkerMarkedNoEntry(t *testing.T) {
 	kept := schema.NewTurn(schema.TurnUserInput, llm.User("kept"))
 	kept.Seq = 4
 	s.history = []schema.Turn{summary, kept}
-	s.stampFoldWrittenSeqsLocked([]schema.Turn{summary, kept}, []schema.Turn{summary}, []int{schema.NoTranscriptEntrySeq}, nil)
+	s.stampFoldWrittenSeqsLocked([]schema.Turn{summary, kept}, schema.NoTranscriptEntrySeq, nil)
 	if s.history[0].Seq != schema.NoTranscriptEntrySeq {
 		t.Fatalf("failed head marker live Seq = %d, want NoTranscriptEntrySeq (not left at 0 for a later fold to name)", s.history[0].Seq)
 	}
 }
 
-// M1 end-to-end: a fold whose head-marker write failed leaves its marker in
+// A fold whose head-marker write failed leaves its marker in
 // history; a follow-on fold that retains it must NOT name entry 0 for it, and
 // a restart must not resurrect the transcript's first entry.
 func TestFold_FailedHeadMarkerNotNamedByLaterFold(t *testing.T) {
@@ -545,7 +553,7 @@ func TestFold_FailedHeadMarkerNotNamedByLaterFold(t *testing.T) {
 	fold1Summary := schema.NewTurn(schema.TurnSummary, llm.User("fold 1 summary"))
 	s.history = append([]schema.Turn{fold1Summary}, s.history...)
 	s.mu.Unlock()
-	s.stampFoldWrittenSeqsLocked([]schema.Turn{fold1Summary}, []schema.Turn{fold1Summary}, []int{schema.NoTranscriptEntrySeq}, nil)
+	s.stampFoldWrittenSeqsLocked([]schema.Turn{fold1Summary}, schema.NoTranscriptEntrySeq, nil)
 
 	// Fold 2 succeeds and retains fold 1's (write-failed) marker in its tail.
 	fold2Summary := schema.NewTurn(schema.TurnSummary, llm.User("fold 2 summary"))
@@ -565,7 +573,7 @@ func TestFold_FailedHeadMarkerNotNamedByLaterFold(t *testing.T) {
 	s.mu.Lock()
 	published := []schema.Turn{fold2Summary, s.history[0], s.history[2]} // [fold2Summary, fold1Summary(no-entry), kept(seq 1)]
 	s.mu.Unlock()
-	if _, err := s.writeFoldRecordLocked(published, 0, []schema.Turn{fold2Summary}, []int{headSeq2}, nil, "fold-2"); err != nil {
+	if _, err := s.writeFoldRecordLocked(published, 0, headSeq2, nil, "fold-2"); err != nil {
 		s.attentionMu.Unlock()
 		t.Fatalf("writeFoldRecordLocked: %v", err)
 	}
@@ -580,18 +588,15 @@ func TestFold_FailedHeadMarkerNotNamedByLaterFold(t *testing.T) {
 			t.Fatalf("fold record named entry 0 for the write-failed head marker: RetainedSeqs=%v", rec.RetainedSeqs)
 		}
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	for _, turn := range ResumeHistory(data.Entries) {
+	entries := sessionTranscriptEntries(t, s)
+	for _, turn := range ResumeHistory(entries) {
 		if turn.Message.Text() == "first entry — must not be resurrected" {
 			t.Fatal("restart resurrected the transcript's first entry via a Seq-0 name")
 		}
 	}
 }
 
-// L end-to-end: a turn recorded during a fold whose write fails becomes a
+// A turn recorded during a fold whose write fails becomes a
 // merge-back turn with no durable entry; the fold must surface the loss.
 func TestFold_MergeBackWriteFailureIsSurfaced(t *testing.T) {
 	entered := make(chan struct{})
@@ -641,7 +646,7 @@ func TestFold_MergeBackWriteFailureIsSurfaced(t *testing.T) {
 	}
 }
 
-// L: a merge-back turn whose own write failed has no durable entry, so the fold
+// A merge-back turn whose own write failed has no durable entry, so the fold
 // record cannot name it and it is dropped on restart while the model still
 // holds it. writeFoldRecordLocked must report that loss so the transaction can
 // warn rather than diverge silently.
@@ -661,7 +666,7 @@ func TestWriteFoldRecordLocked_ReportsLostMergeBack(t *testing.T) {
 	lostMB := schema.NewTurn(schema.TurnUserInput, llm.User("recorded during fold, write failed"))
 	lostMB.Seq = schema.NoTranscriptEntrySeq // its recordTurn write failed
 	published := []schema.Turn{summary, kept, lostMB}
-	lost, err := s.writeFoldRecordLocked(published, 1, []schema.Turn{summary}, []int{headSeq}, nil, "fold-x")
+	lost, err := s.writeFoldRecordLocked(published, 1, headSeq, nil, "fold-x")
 	s.attentionMu.Unlock()
 	if err != nil {
 		t.Fatalf("writeFoldRecordLocked: %v", err)
@@ -674,7 +679,7 @@ func TestWriteFoldRecordLocked_ReportsLostMergeBack(t *testing.T) {
 	}
 }
 
-// Instance 1: a failed-but-usable write returns the UNSPENT next seq;
+// A failed-but-usable write returns the UNSPENT next seq;
 // appendUserInputTurnRefusingPoison must mark the turn as having no entry, not
 // stamp that seq (which the next successful append reuses).
 func TestAppendUserInputRefusingPoison_MarksFailedWriteNoEntry(t *testing.T) {
@@ -702,28 +707,6 @@ func TestAppendUserInputRefusingPoison_MarksFailedWriteNoEntry(t *testing.T) {
 	}
 }
 
-// foldRecordWriteFailFS fails exactly the fold-record write (its line carries
-// the fold_record field) with a clean rollback (0 bytes, writer stays usable),
-// so the markers land but the record does not.
-type foldRecordWriteFailFS struct{ afero.Fs }
-
-func (fs *foldRecordWriteFailFS) Create(name string) (afero.File, error) {
-	f, err := fs.Fs.Create(name)
-	if err != nil {
-		return nil, err
-	}
-	return &foldRecordWriteFailFile{File: f}, nil
-}
-
-type foldRecordWriteFailFile struct{ afero.File }
-
-func (f *foldRecordWriteFailFile) Write(p []byte) (int, error) {
-	if bytes.Contains(p, []byte("fold_record")) {
-		return 0, errors.New("injected fold record write failure")
-	}
-	return f.File.Write(p)
-}
-
 // M: the fold record's write outcome must not be discarded. When the markers
 // land but the record's write fails (clean rollback, nothing recorded), a
 // restart silently falls back to the last-marker anchor and drops the retained
@@ -737,7 +720,7 @@ func TestFold_RecordWriteFailureIsSurfaced(t *testing.T) {
 		s.recordTurn(turn, turn)
 	}
 	// Swap in a transcript whose fold-record write fails cleanly.
-	fw, err := transcript.NewWriterWithFS(&foldRecordWriteFailFS{Fs: afero.NewMemMapFs()}, "/t.jsonl", transcript.Header{SessionID: s.id})
+	fw, err := transcript.NewWriterWithFS(&contentWriteFailFS{Fs: afero.NewMemMapFs(), failMark: "fold_record"}, "/t.jsonl", transcript.Header{SessionID: s.id})
 	if err != nil {
 		t.Fatalf("NewWriterWithFS: %v", err)
 	}
@@ -789,11 +772,8 @@ func TestFoldPublication_RetainedTailSurvivesRestart(t *testing.T) {
 		t.Fatalf("Compact: %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	resumed := ResumeHistory(data.Entries)
+	entries := sessionTranscriptEntries(t, s)
+	resumed := ResumeHistory(entries)
 	if len(resumed) == 0 || resumed[0].Kind != schema.TurnSummary {
 		t.Fatalf("resumed history does not head with the summary: %+v", resumed)
 	}
@@ -1041,12 +1021,9 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 		t.Fatalf("Compact (A): %v", err)
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
+	entries := sessionTranscriptEntries(t, s)
 	aMarker, bMarker := -1, -1
-	for i, e := range data.Entries {
+	for i, e := range entries {
 		if e.Turn.Kind != schema.TurnSummary {
 			continue
 		}
@@ -1063,7 +1040,7 @@ func TestFoldPublication_CompetingFoldsCommitTranscriptEntriesInPublishOrder(t *
 	if aMarker > bMarker {
 		t.Fatalf("fold A's summary entry (index %d) landed after fold B's (index %d) despite A publishing first -- compaction markers out of publish order", aMarker, bMarker)
 	}
-	resumed := ResumeHistory(data.Entries)
+	resumed := ResumeHistory(entries)
 	if len(resumed) == 0 {
 		t.Fatal("resumed history is empty")
 	}
@@ -1126,11 +1103,8 @@ func TestFoldPublication_ConcurrentAppendTranscriptEntryLandsAfterCompactionMark
 	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
 		t.Fatal("test setup: the concurrently recorded turn is not in live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	if indexOfTurnText(ResumeHistory(data.Entries), concurrentText) < 0 {
+	entries := sessionTranscriptEntries(t, s)
+	if indexOfTurnText(ResumeHistory(entries), concurrentText) < 0 {
 		t.Fatal("a turn recorded after the fold published is missing from the resumed history -- its transcript entry was sequenced before the compaction marker")
 	}
 }
@@ -1174,11 +1148,8 @@ func TestFoldPublication_TurnRecordedDuringFoldSurvivesRestart(t *testing.T) {
 	if indexOfTurnText(currentHistory(t, s), concurrentText) < 0 {
 		t.Fatal("test setup: the merge-back did not carry the concurrently recorded turn into live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	resumed := ResumeHistory(data.Entries)
+	entries := sessionTranscriptEntries(t, s)
+	resumed := ResumeHistory(entries)
 	if indexOfTurnText(resumed, concurrentText) < 0 {
 		t.Fatal("a turn recorded during the fold survives in live history but is missing from the resumed history -- merged-back turns must be durably represented after the compaction marker")
 	}
@@ -1338,15 +1309,15 @@ func toolResultContents(turns []schema.Turn) []string {
 	return contents
 }
 
-// TestFoldPublication_MergedTailRewriteUsesPersistedForm pins the merged-tail
-// rewrite's projection contract: tool results deliberately diverge —
-// projectToolResultsForTranscript persists a bounded re-read placeholder in
-// place of private API-log evidence, and durable delegate tool results
-// carry DelegateDeliveryCommits only on the persisted form. Rewriting the
-// live form would leak private evidence into the durable transcript and drop
-// the delivery metadata, so the rewrite reuses the exact persisted
-// counterpart the pair originally wrote.
-func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
+// TestFoldPublication_DuringFoldTurnResumesFromPersistedForm pins the projection
+// contract for a turn recorded during a fold and named by the fold record:
+// tool results deliberately diverge — projectToolResultsForTranscript persists
+// a bounded re-read placeholder in place of private API-log evidence, and
+// durable delegate tool results carry DelegateDeliveryCommits only on the
+// persisted form. The fold names the turn's original (pre-marker) entry, which
+// recordTurn wrote as the persisted form, so resume replays that form — the
+// live form's private evidence never reaches the durable transcript.
+func TestFoldPublication_DuringFoldTurnResumesFromPersistedForm(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
 	proceed := make(chan struct{})
@@ -1396,21 +1367,18 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 		t.Fatal("test setup: the live history no longer carries the private evidence")
 	}
 
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
+	entries := sessionTranscriptEntries(t, s)
 	var entryTurns []schema.Turn
-	for _, e := range data.Entries {
+	for _, e := range entries {
 		entryTurns = append(entryTurns, e.Turn)
 	}
 	for _, c := range toolResultContents(entryTurns) {
 		if c == secret {
-			t.Fatal("private API-log evidence leaked into the durable transcript -- the merged-tail rewrite must persist the projected (placeholder) form, never the live form")
+			t.Fatal("private API-log evidence leaked into the durable transcript -- the fold names the persisted (placeholder) entry, never the live form")
 		}
 	}
 
-	resumed := ResumeHistory(data.Entries)
+	resumed := ResumeHistory(entries)
 	var resumedMatches []schema.Turn
 	for _, rt := range resumed {
 		for _, c := range toolResultContents([]schema.Turn{rt}) {
@@ -1427,16 +1395,15 @@ func TestFoldPublication_MergedTailRewriteUsesPersistedForm(t *testing.T) {
 	}
 }
 
-// TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected pins
-// the rewrite against attention-turn resurrection:
+// TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected pins the
+// fold record against attention-turn resurrection:
 // removeUnverifiedDelegateAttentionTurn (which takes only s.mu) can delete a
-// merged-back attention turn between publish and the merged-tail rewrite, and
-// a rewrite that persisted it after the marker would resurrect, on resume, a
-// turn whose durability verification had FAILED. Attention turns
-// enter live history without a session-transcript pair (their durability is
-// owned by the attention transcript machinery and their restart path is the
-// attention re-fold), so the rewrite must never manufacture
-// session-transcript entries for them at all.
+// merged-back attention turn between publish and the fold-record write, and a
+// record that named it would resurrect, on resume, a turn whose durability
+// verification had FAILED. Attention turns enter live history without a
+// session-transcript pair (their durability is owned by the attention
+// transcript machinery and their restart path is the attention re-fold), so
+// the fold record must never name a session-transcript entry for them.
 func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
@@ -1477,7 +1444,7 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 	s.mu.Unlock()
 
 	close(proceed)
-	<-inCommit // published; the merged tail has not been written
+	<-inCommit // published; the fold record has not been written
 
 	s.removeUnverifiedDelegateAttentionTurn(unverified) // durability verification failed: the turn must vanish
 
@@ -1489,13 +1456,10 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 	if indexOfTurnText(currentHistory(t, s), attnText) >= 0 {
 		t.Fatal("test setup: the removed attention turn is still in live history")
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
-	for _, e := range data.Entries {
+	entries := sessionTranscriptEntries(t, s)
+	for _, e := range entries {
 		if e.Turn.Message.Text() == attnText {
-			t.Fatal("the removed (durability-unverified) attention turn was written to the session transcript by the merged-tail rewrite -- it resurrects on resume")
+			t.Fatal("the removed (durability-unverified) attention turn was named by the fold record -- it resurrects on resume")
 		}
 	}
 }
@@ -1997,13 +1961,10 @@ func TestFoldPublication_ConcurrentFoldsShareNoCompactionMeta(t *testing.T) {
 	if err := s.Compact(context.Background()); err != nil {
 		t.Fatalf("final quiescent Compact: %v", err)
 	}
-	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
-	if err != nil {
-		t.Fatalf("readTranscriptFull: %v", err)
-	}
+	entries := sessionTranscriptEntries(t, s)
 	found := false
 	var survey []string
-	for _, e := range data.Entries {
+	for _, e := range entries {
 		text := e.Turn.Message.Text()
 		if e.Turn.Kind == schema.TurnCheckpoint &&
 			strings.Contains(text, "This session's id is "+s.id) {
@@ -2169,11 +2130,10 @@ func restoreAttentionCompactionFixture(t *testing.T, withMarker bool) (restored 
 
 // TestRootDelegateAttention_PendingContentSurvivesCompactionRestart pins the
 // attention machinery's side of the restart story: attention turns are
-// deliberately excluded from the fold-publication rewrite (no
-// session-transcript pair, no pair-log entry), and ResumeHistory drops every
-// entry before the last compaction marker — so an UNRESOLVED attention
-// recorded before a fold marker would re-arm after restart as a pending
-// attention ID with NO model-visible content. The rearm folds the full
+// deliberately not named by the fold record (their durability is
+// attention-owned), so an UNRESOLVED attention recorded before a fold and not
+// kept in the retained tail would re-arm after restart as a pending attention
+// ID with NO model-visible content. The rearm folds the full
 // durable turns from the transcript already; it must also restore a pending
 // attention's turn into the resumed history. Guards both directions: a
 // RESOLVED attention must not resurrect, and a boundary-free restart must
@@ -2468,15 +2428,12 @@ func (file *syncSnapshotFile) Sync() error {
 	return nil
 }
 
-// TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync
-// pins the durability of the merged-tail rewrite: a turn appended DURABLY
-// while a fold runs has its only durable entry before the compaction marker,
-// which ResumeHistory discards, so the post-marker rewrite is the entry a
-// restart depends on — and it must be durable before the publication counts
-// as persisted. A crash after the marker's fsync but before a later sync
-// covers the rewrite must not lose a turn the session already promised was
-// durable.
-func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *testing.T) {
+// TestFoldPublication_DurablyRecordedTurnSurvivesRestart pins that a turn
+// appended DURABLY while a fold runs survives a restart: its entry is written
+// before the compaction marker, and the fold record names it by Seq, so resume
+// rebuilds it. The turn the session already promised was durable must not be
+// lost.
+func TestFoldPublication_DurablyRecordedTurnSurvivesRestart(t *testing.T) {
 	t.Parallel()
 	entered := make(chan struct{})
 	proceed := make(chan struct{})
@@ -2539,6 +2496,6 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestartBeforeRewriteSync(t *
 		t.Fatal("test setup: the compaction marker did not reach the durable transcript")
 	}
 	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
-		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the merged-tail rewrite after the compaction marker was not durable, and the pre-marker durable entry is the one ResumeHistory discards")
+		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the fold record must name its durable entry")
 	}
 }
