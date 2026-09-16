@@ -356,6 +356,23 @@ test("shows a loading placeholder before the thread hydrates", async () => {
   await waitFor(() => expect(screen.queryByText(/loading/i)).toBeNull());
 });
 
+test("mounts TopNotesPanel at the top of the session content once hydrated", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => Promise.resolve(readResponse("ref_notes_top")));
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_notes_top" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  await waitFor(() => expect(screen.getByTestId("top-notes-panel")).toBeTruthy());
+  // "Top" is DOM order, not just presence: the panel sits above the
+  // transcript area below it in the pane scaffold.
+  const below = screen.getByText("Send the first message");
+  expect(screen.getByTestId("top-notes-panel").compareDocumentPosition(below)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
 test("a read-only entity consumer resolves only its ref when another ref's activity stores are populated", async () => {
   const owner = "02wMz5TxvEMoJEDTDGOTil";
   const ref = `local:${owner}`;

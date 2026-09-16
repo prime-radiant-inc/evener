@@ -630,7 +630,7 @@ func TestSessionSettlesProviderResolutionFailureBeforeTransport(t *testing.T) {
 	}))
 
 	ctx := llm.WithAPILogContext(context.Background(), s.ID())
-	_, _, attempt, callErr := s.callModelWithFallback(ctx, NewOpenAIProfile("model-a"), llm.Request{
+	_, _, attempt, _, callErr := s.callModelWithFallback(ctx, NewOpenAIProfile("model-a"), llm.Request{
 		Provider: "openai",
 		Model:    "model-a",
 		Messages: []llm.Message{llm.User("hello")},

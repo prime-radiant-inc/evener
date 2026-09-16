@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
-import { WireError } from "@evener/appwire-client";
+import { absoluteTime, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -13,7 +13,6 @@ import { Toast } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { STATUS_TONE, TasksPanel, TasksPanelBody } from "./TasksPanel";
-import { absoluteTime } from "./taskTime";
 
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
@@ -73,7 +72,7 @@ function connectFakeClient(): FakeClient {
 }
 
 // Wire-true fixture: the real daemon Task shape (agent/task/task_store.go:
-// 54-79), same fixture family as taskData.test.ts's own.
+// 54-79), same fixture family as the package's taskListData.test.ts.
 const TASKS_DATA = [
   { id: 1, type: "implement", description: "Wire up the status row", prompt: "", status: "done" },
   { id: 2, type: "implement", description: "Wire up session actions", prompt: "", status: "in_progress" },

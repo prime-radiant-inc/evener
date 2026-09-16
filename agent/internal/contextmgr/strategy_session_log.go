@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -54,16 +55,20 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := s.cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return nil
 	}
 
-	estimatePressure := func() float64 {
-		return s.cm.EstimatePressure(*history, sysPromptChars)
-	}
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
+	// decide a layer by one model and describe it by another.
+	estimatePressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
-	p := estimatePressure()
+	p, prof := estimatePressure()
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -77,9 +82,9 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 
 	// Layer 1: Observation masking.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		maskObservations(*history, s.cm.PreserveRecentTurns, s.cm.resultToolName())
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "observation_mask",
 			TurnsBefore:     len(*history),
@@ -88,14 +93,14 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = estimatePressure()
+		p, prof = estimatePressure()
 	}
 
 	// Layer 2: Thinking clearing.
 	if p >= s.cm.ThinkingClearThreshold {
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		clearThinking(*history, s.cm.PreserveRecentTurns)
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "thinking_clear",
 			TurnsBefore:     len(*history),
@@ -104,15 +109,15 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = estimatePressure()
+		p, prof = estimatePressure()
 	}
 
 	// Layer 3 (replaced): Session-log checkpoint.
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		*history = s.sessionLogCheckpointWithMeta(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx))
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "session_log_checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -124,13 +129,13 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			s.cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
-		p = estimatePressure()
+		p, prof = estimatePressure()
 	}
 
 	// Layer 4: LLM summarization fallback.
 	if p >= s.cm.SummarizeThreshold && s.cm.client != nil {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		result, err := s.cm.summarizeWithLLM(ctx, *history, s.cm.PreserveRecentTurns)
 		if err != nil {
 			emitFn(events.EventWarning, events.WarningData{
@@ -138,7 +143,7 @@ func (s *SessionLogStrategy) ManageContext(ctx context.Context, history *[]schem
 			})
 		} else {
 			*history = result
-			after := estimateTokens(*history)
+			after := s.cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

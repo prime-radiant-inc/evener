@@ -55,7 +55,7 @@ func TestFallbackChain_ContinuationRejectionRetriesFullHistoryBeforeModelFallbac
 	drainSessionEvents(sess)
 
 	req := phase8DeltaRequest()
-	_, usedReq, attempt, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), req, phase8FullHistory(), "", 1)
+	_, usedReq, attempt, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), req, phase8FullHistory(), "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestFallbackChain_ContinuationRecoveryFailureThenModelFallback(t *testing.T
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	_, usedReq, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
+	_, usedReq, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestFallbackChain_NonContinuationErrorSkipsFullHistoryRetry(t *testing.T) {
 	defer sess.Close()
 	drainSessionEvents(sess)
 
-	_, _, _, err = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
+	_, _, _, _, err = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("primary"), phase8DeltaRequest(), phase8FullHistory(), "", 1)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}

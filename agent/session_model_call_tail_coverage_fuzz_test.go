@@ -59,7 +59,7 @@ func FuzzModelCallTailCoverage(f *testing.F) {
 		// The nil context-manager path must remain a no-op.
 		contextMgr := s.contextMgr
 		s.contextMgr = nil
-		s.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: int(selector) + 1}}, llm.Request{})
+		s.recordResponseUsage(llm.Response{Usage: llm.Usage{InputTokens: int(selector) + 1}}, llm.Request{}, s.currentProfile())
 		s.contextMgr = contextMgr
 
 		// Populate the per-session continuation circuit breaker from its nil map.
@@ -186,7 +186,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 		if mode == 4 {
 			s.cfg.testOnly.responsesContinuationHistoryCurrentFunc = func(responsesContinuationHistoryReservation, []schema.Turn) bool { return false }
 		}
-		out, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, history, false)
+		out, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), s.currentProfile(), req, history, false)
 		if out.HistoryMode == "" {
 			t.Fatalf("planning mode %d returned empty history mode", mode)
 		}
@@ -195,7 +195,7 @@ func modelCallTailPlanningCases(t *testing.T) {
 	s := modelCallTailSession(t)
 	s.cfg.OpenAIResponsesContinuation = "auto"
 	s.cfg.testOnly.responsesContinuationSupportRegistry = map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{}
-	if got, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), req, nil, false); got.HistoryMode != llm.HistoryModeFullHistory {
+	if got, _ := s.applyResponsesContinuationAnchorPlanning(context.Background(), s.currentProfile(), req, nil, false); got.HistoryMode != llm.HistoryModeFullHistory {
 		t.Fatalf("disabled registry mode = %q", got.HistoryMode)
 	}
 }
@@ -233,7 +233,7 @@ func modelCallTailCatalogFallback(t *testing.T, selector byte) {
 	s.cfg.LLMRetryPolicy = &policy
 	s.cfg.ModelFallbacks = []string{"gpt-5.4"}
 	req := llm.Request{Provider: "openai", Model: "missing-primary", Messages: []llm.Message{llm.User("tail")}}
-	_, _, _, _ = s.callModelWithFallback(context.Background(), s.currentProfile(), req, nil, []string{"high", "xhigh"}[int(selector)&1], 1)
+	_, _, _, _, _ = s.callModelWithFallback(context.Background(), s.currentProfile(), req, nil, []string{"high", "xhigh"}[int(selector)&1], 1)
 }
 
 func modelCallTailSession(t *testing.T) *Session {

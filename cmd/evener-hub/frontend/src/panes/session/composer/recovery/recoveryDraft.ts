@@ -1,7 +1,6 @@
 import type { InputItem } from "@evener/appwire-client";
-import { canonicalSkillNames } from "@evener/appwire-client";
+import { canonicalSkillNames, markerText } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
-import { markerText } from "../attachments/textareaMarkers";
 import type { PendingAttachment } from "../attachments/useAttachments";
 
 export interface RecoveredComposerDraft {

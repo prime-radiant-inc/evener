@@ -63,6 +63,8 @@ export type { RejectableFile } from "./attachmentLimits";
 export { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, rejectionReason } from "./attachmentLimits";
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
+export type { BuiltinMatch } from "./builtinInvocation";
+export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
@@ -128,6 +130,28 @@ export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
+export { asEnvEntries, asEnvObjects, asMcpList, asStringList, inheritedItems } from "./launchInherited";
+export type { PathListAddOutcome, PathValidation } from "./launchPathListAdd";
+export { validatePathListAdd } from "./launchPathListAdd";
+export type { LaunchConfigLayerName, LaunchFormState, OptionGroup, PromptCompositeSpec } from "./launchSchema";
+export {
+  buildFormState,
+  collectConfig,
+  emptyChoiceLabel,
+  globalDefaultHint,
+  groupOptions,
+  inactivePromptDependent,
+  isCollectionKind,
+  isPromptCompositeWireField,
+  listSupportsExplicitEmpty,
+  matchesEnvCredentialError,
+  optionSupportsLayer,
+  PROMPT_COMPOSITE_SPECS,
+  PROMPT_DEPENDENT_WIRE_FIELDS,
+  resolvedDefaultLabel,
+  resolvedEmptyChoice,
+  schemaPathKind,
+} from "./launchSchema";
 export { marketplaceSourceLabel } from "./marketplaceSourceLabel";
 export type {
   CapabilitySource,
@@ -139,6 +163,18 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { PickerModelRow, PickerRow } from "./modelCatalogPickerRows";
+export { buildPickerRows, pickableModelRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
+export type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./modelCatalogTypes";
+export type { CatalogOption } from "./modelCatalogView";
+export {
+  capabilityLabels,
+  contextWindowLabel,
+  filterCatalog,
+  formatCost,
+  toCatalogOptions,
+  withGroupHeads,
+} from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
@@ -184,6 +220,13 @@ export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
+export { parseTaskListData, taskAggregateLabel } from "./taskListData";
+export type { TaskGroups } from "./taskListGroups";
+export { groupTasks } from "./taskListGroups";
+export { absoluteTime, relativeTime } from "./taskListTime";
+export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
+export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 export {
   clip,
   clipJobID,
