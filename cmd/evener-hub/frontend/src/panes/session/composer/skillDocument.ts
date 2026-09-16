@@ -30,22 +30,37 @@ export const skillSchema = new Schema({
 // A namespace or path continuation cannot turn a prefix into an active skill.
 const tokenCharacter = /[\p{L}\p{N}_./:-]/u;
 
+/** Whether a character continues a skill token rather than bounding one. */
+export function isSkillTokenCharacter(character: string): boolean {
+  return tokenCharacter.test(character);
+}
+
+/**
+ * The name `text` spells as a complete reference at `offset`, if any. `names`
+ * must be longest-first so a longer canonical name wins over its own prefix.
+ * This is the single definition of "complete reference": the document parser
+ * and the editor both read it, so an atom can never outlive the text rule.
+ */
+export function completeSkillReferenceAt(text: string, offset: number, names: readonly string[]): string | undefined {
+  if (text[offset] !== "/" || (offset > 0 && tokenCharacter.test(text.charAt(offset - 1)))) return undefined;
+  return names.find((candidate) => {
+    const end = offset + candidate.length + 1;
+    return (
+      text.startsWith(`/${candidate}`, offset) &&
+      (end === text.length ||
+        !tokenCharacter.test(text.charAt(end)) ||
+        (text.charAt(end) === "." && !tokenCharacter.test(text.charAt(end + 1))))
+    );
+  });
+}
+
 /** Only complete visible mentions in skillNames become atoms; never append hidden selections. */
 export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
   const names = canonicalSkillNames(value.skillNames).sort((a, b) => b.length - a.length);
   const nodes: ProseMirrorNode[] = [];
   let textStart = 0;
   for (let offset = 0; offset < value.text.length; offset++) {
-    if (value.text[offset] !== "/" || (offset > 0 && tokenCharacter.test(value.text.charAt(offset - 1)))) continue;
-    const name = names.find((candidate) => {
-      const end = offset + candidate.length + 1;
-      return (
-        value.text.startsWith(`/${candidate}`, offset) &&
-        (end === value.text.length ||
-          !tokenCharacter.test(value.text.charAt(end)) ||
-          (value.text.charAt(end) === "." && !tokenCharacter.test(value.text.charAt(end + 1))))
-      );
-    });
+    const name = completeSkillReferenceAt(value.text, offset, names);
     if (!name) continue;
     if (textStart < offset) nodes.push(skillSchema.text(value.text.slice(textStart, offset)));
     nodes.push(skillSchema.nodes.skill.create({ name }));

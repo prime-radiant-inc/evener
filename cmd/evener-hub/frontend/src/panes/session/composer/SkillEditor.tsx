@@ -1,12 +1,15 @@
 import { baseKeymap, deleteSelection } from "prosemirror-commands";
 import { closeHistory, history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
-import { type Command, EditorState, TextSelection } from "prosemirror-state";
+import type { Node as ProseMirrorNode } from "prosemirror-model";
+import { type Command, EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { forwardRef, type HTMLAttributes, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
 import {
+  completeSkillReferenceAt,
   documentPositionToTextOffset,
+  isSkillTokenCharacter,
   parseSkillDocument,
   type SkillEditorValue,
   serializeSkillDocument,
@@ -53,6 +56,51 @@ function deleteAtom(direction: -1 | 1): Command {
   };
 }
 
+/** Each skill atom's UTF-16 offset in the serialized text, with its doc position. */
+function skillAtomOffsets(doc: ProseMirrorNode): { offset: number; pos: number; name: string }[] {
+  const atoms: { offset: number; pos: number; name: string }[] = [];
+  let offset = 0;
+  doc.forEach((node, pos) => {
+    if (node.isText) offset += node.nodeSize;
+    else {
+      atoms.push({ offset, pos, name: node.attrs.name });
+      offset += node.attrs.name.length + 1;
+    }
+  });
+  return atoms;
+}
+
+// A chip is a whole reference or it is nothing: typing a token character
+// straight against its label (`/skill-1d`, `BEFORE_/skill-1`) makes text the
+// parser no longer reads as that skill, so the atom would survive on screen
+// and then be dropped, without warning, by the next re-derivation - another
+// write, a remount, a recovery. Separate the two instead, in the same edit, so
+// the label stays whole and nothing the user typed is lost. Only the side the
+// typed run actually collided with gains a space; characters that already
+// bound the reference (`/skill-1,`) are left exactly as typed.
+const skillIntegrity = new Plugin({
+  appendTransaction: (transactions, _oldState, newState) => {
+    if (!transactions.some((transaction) => transaction.docChanged)) return null;
+    const text = serializeSkillDocument(newState.doc).text;
+    const broken = skillAtomOffsets(newState.doc).filter(
+      (atom) => completeSkillReferenceAt(text, atom.offset, [atom.name]) !== atom.name,
+    );
+    if (broken.length === 0) return null;
+    const tr = closeHistory(newState.tr);
+    // Back to front, and each atom's own trailing side before its leading one,
+    // so an insertion never invalidates a position still to be used.
+    for (const atom of broken.reverse()) {
+      const prefixBlocked = atom.offset > 0 && isSkillTokenCharacter(text.charAt(atom.offset - 1));
+      const separated = prefixBlocked ? `${text.slice(0, atom.offset)} ${text.slice(atom.offset)}` : text;
+      const suffixBlocked =
+        completeSkillReferenceAt(separated, atom.offset + (prefixBlocked ? 1 : 0), [atom.name]) !== atom.name;
+      if (suffixBlocked) tr.insertText(" ", atom.pos + 1);
+      if (prefixBlocked) tr.insertText(" ", atom.pos);
+    }
+    return tr;
+  },
+});
+
 function createState(value: SkillEditorValue): EditorState {
   const newline: Command = (state, dispatch) => {
     dispatch?.(state.tr.insertText("\n"));
@@ -62,6 +110,7 @@ function createState(value: SkillEditorValue): EditorState {
     doc: parseSkillDocument(value),
     plugins: [
       history(),
+      skillIntegrity,
       keymap({
         "Mod-z": undo,
         "Mod-Shift-z": redo,

@@ -3987,6 +3987,54 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
 });
 
+test("a token typed directly against a chip is separated so the reference stays whole", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_adjacent_token";
+  writeComposerDraft(ref, { text: "Use /cleanup ", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  // Step over the completion's own separator so the caret sits directly
+  // against the chip, then type a token character into that position.
+  await selectEditorText(editor, "Use /cleanup ".length);
+  await user.keyboard("{Backspace}");
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup", skillNames: ["cleanup"] });
+
+  await selectEditorText(editor, "Use /cleanup".length);
+  await user.keyboard("d");
+
+  // `/cleanupd` is not a reference to `cleanup`, so the two are separated: the
+  // label stays whole, the activation stays with it, and nothing typed is lost.
+  expect(editor.textContent).toBe("Use /cleanup d");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
+
+  // The same holds after a re-derivation, which re-reads the persisted value.
+  cleanup();
+  render(<Composer ref={ref} focused={false} />);
+  expect(textarea().textContent).toBe("Use /cleanup d");
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
+});
+
+test("a character that already bounds the reference is left exactly as typed", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_bounding_character";
+  writeComposerDraft(ref, { text: "Use /cleanup ", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+
+  await selectEditorText(editor, "Use /cleanup ".length);
+  await user.keyboard("{Backspace}");
+  await selectEditorText(editor, "Use /cleanup".length);
+  await user.keyboard(",");
+
+  expect(editor.textContent).toBe("Use /cleanup,");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup,", skillNames: ["cleanup"] });
+});
+
 test.each([
   { text: "Use ", skillNames: ["simplify"], chips: [], input: [{ type: "text", text: "Use " }] },
   {

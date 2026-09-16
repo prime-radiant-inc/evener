@@ -395,6 +395,28 @@ export class Driver {
     }
   }
 
+  // typeTextAgainstAtom delivers a run that lands directly against a skill
+  // atom's label, which the editor answers by separating the two with a space
+  // so the reference stays whole. The oracle is that separated result, caret
+  // included - not the raw insertion the browser handed over.
+  async typeTextAgainstAtom(ref, text, side) {
+    const before = await evaluate(this.send, this.composerEditStateExpr(ref));
+    check(before?.focused, `typeTextAgainstAtom(${ref}): editor is not focused`);
+    check(before.start !== null && before.end !== null, `typeTextAgainstAtom(${ref}): selection is outside the editor`);
+    const inserted = side === "before" ? `${text} ` : ` ${text}`;
+    const want = before.value.slice(0, before.start) + inserted + before.value.slice(before.end);
+    const caret = before.start + inserted.length;
+    await this.send("Input.insertText", { text });
+    try {
+      await this.waitPage(`(() => { const state = ${this.composerEditStateExpr(ref)};
+        return state && state.value === ${JSON.stringify(want)} && state.start === ${caret} && state.end === ${caret} ? state : null; })()`,
+        { label: `separated edit ${JSON.stringify(want)} with caret ${caret}` });
+    } catch (error) {
+      const after = await evaluate(this.send, this.composerEditStateExpr(ref));
+      throw new Error(`${error.message}; native state ${JSON.stringify({ before, after })}`, { cause: error });
+    }
+  }
+
   async selectRange(ref, start, end = start) {
     const selected = await evaluate(this.send, `(async () => {
       const editor = ${this.editorExpr(ref)};
@@ -1574,13 +1596,19 @@ async function runInlineEditing(driver) {
   await driver.assertComposerDraft(ref, "undo selection replacement", two);
 
   await driver.selectRange(ref, firstStart);
-  await driver.typeText(ref, "BEFORE_");
-  await driver.selectRange(ref, firstEnd + "BEFORE_".length);
-  await driver.typeText(ref, "_AFTER");
-  await driver.assertComposerDraft(ref, "typing around atom", { ...two, text: "Run BEFORE_/skill-1_AFTER and then /skill-2" });
-  await driver.selectRange(ref, firstEnd + "BEFORE_".length, firstEnd + "BEFORE_".length + "_AFTER".length);
+  // Both runs end in a token character, so each is separated from the label
+  // rather than allowed to swallow it; the offsets below include that space.
+  await driver.typeTextAgainstAtom(ref, "BEFORE_", "before");
+  await driver.selectRange(ref, firstEnd + "BEFORE_".length + 1);
+  await driver.typeTextAgainstAtom(ref, "_AFTER", "after");
+  await driver.assertComposerDraft(ref, "typing around atom", { ...two, text: "Run BEFORE_ /skill-1 _AFTER and then /skill-2" });
+  await driver.selectRange(
+    ref,
+    firstEnd + "BEFORE_".length + 1,
+    firstEnd + "BEFORE_".length + 1 + "_AFTER".length + 1,
+  );
   await driver.press(ref, "Backspace");
-  await driver.selectRange(ref, firstStart, firstStart + "BEFORE_".length);
+  await driver.selectRange(ref, firstStart, firstStart + "BEFORE_".length + 1);
   await driver.press(ref, "Backspace");
   await driver.assertComposerDraft(ref, "surrounding edits preserve atoms", two);
 
@@ -1638,14 +1666,21 @@ async function runInlineEditing(driver) {
   await driver.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
   await driver.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 229, nativeVirtualKeyCode: 229 });
   await driver.send("Input.insertText", { text: "あ" });
-  await driver.assertComposerDraft(ref, "IME Enter retains draft", { ...two, text: `${TWO_SKILLS}あ` });
+  // Composed straight against the last chip, which is exactly where a token
+  // character has to be separated from it.
+  await driver.assertComposerDraft(ref, "IME Enter retains draft", { ...two, text: `${TWO_SKILLS} あ` });
   const ime = await driver.composerState(ref);
   check(!ime.steerVisible, `IME Enter started a turn: ${JSON.stringify(ime)}`);
   const durable = await evaluate(driver.send, driver.durableRecordsExpr());
   check(![...durable.outbox, ...durable.optimistic, ...durable.recovery].some((record) => JSON.stringify(record.input).includes("あ")), "IME Enter persisted a submit");
   driver.milestone("inline-ime", ime);
   await driver.press(ref, "Backspace");
-  await driver.assertComposerDraft(ref, "composition cleanup", two);
+  await driver.assertComposerDraft(ref, "composition cleanup", { ...two, text: `${TWO_SKILLS} ` });
+  // The composed character sat directly against the last chip, so the editor
+  // separated the two; drop that separator as well and the draft is back where
+  // it started.
+  await driver.press(ref, "Backspace");
+  await driver.assertComposerDraft(ref, "composition cleanup separator", two);
 
   await driver.waitForTurnIdle(ref);
   driver.milestone("submitted-two-skills", await driver.composerState(ref));
