@@ -374,6 +374,8 @@ const listing: CredentialListing = listingOf(store.getState()); void held; void 
       smoke: `const credentialStore = client.createCredentialInstancesStore();
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.equal(typeof credentialStore.getState().setApiKey, "function");
+assert.equal(typeof credentialStore.getState().devicePoll, "function");
 assert.deepEqual(client.listingOf(credentialStore.getState()), {
   instances: [],
   availableProviders: [],

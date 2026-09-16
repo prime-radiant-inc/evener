@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { CONNECTION_REPLACED_ERROR } from "../../credentialLabels";
+import { errorText, friendlyErrorMessage, sessionActionError } from "../../errors";
 import { deferred } from "../../testing/deferred";
 import { FakeClient } from "../../testing/fakeClient";
-import { errorText, friendlyErrorMessage, sessionActionError } from "../../errors";
 import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../types.gen";
 import { createCredentialInstancesStore, isStaleListingRefusal, staleListingHeld } from "./instances";
 
@@ -245,7 +245,10 @@ describe("never echo a secret", () => {
     fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
     fake.on("evener/auth/credentialJson/set", () => SIGNED_IN);
     fake.on("evener/auth/apiKey/clear", () => ({ ...SIGNED_IN, signedIn: false, activeSource: "none" }));
-    fake.on("evener/auth/logout", () => ({ removed: true, status: { ...SIGNED_IN, signedIn: false, activeSource: "none" } }));
+    fake.on("evener/auth/logout", () => ({
+      removed: true,
+      status: { ...SIGNED_IN, signedIn: false, activeSource: "none" },
+    }));
     fake.on("evener/auth/test", () => ({ provider: "work", status: "success", message: "" }));
     fake.on("evener/auth/device/poll", () => ({ state: "pending" }));
     store.connectionChanged(fake, "ready");
