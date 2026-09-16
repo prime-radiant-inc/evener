@@ -96,14 +96,6 @@ type RemoteHubSource struct {
 	// stalled consumer cannot stall thread routing; this counter makes the
 	// tradeoff observable.
 	hostNotifyDropped atomic.Int64
-	// threadReadAheadDropped counts thread notifications that overflowed a
-	// subscription's own read-ahead buffer (remoteHubDrainReadAheadCap) because
-	// that consumer had stalled. Each such overflow also resets the saturated
-	// subscription so the relay re-reads the thread snapshot (see
-	// routeNotification) — the frame counted here is lost from the buffer, but
-	// the subscription recovers instead of silently dropping terminal state. The
-	// counter makes the overflow policy observable.
-	threadReadAheadDropped atomic.Int64
 
 	// probeMu guards probe (the last successful probe, cached against the
 	// client it ran on) and facts (the preflight seam HostCapabilities reads
@@ -270,17 +262,19 @@ func (s *RemoteHubSource) mapConnectError(err error) error {
 // and the auto-resume gate can attribute it.
 //
 // A write-side connection failure counts as transport loss, which is what makes
-// io.ErrClosedPipe, os.ErrClosed, and net.ErrClosed listed here (round eight).
-// The send path reports them when the stream's write side is already gone — a
-// partial write onto a connection the peer has torn down, or the first write
-// after this end closed it — and they are deliberately not distinguishable from
-// the read-side failures around it: like io.EOF or EPIPE they say the
-// connection failed mid-call, not that the request was never sent. All three
-// shapes are needed because each layer reports its own: a pipe gives
-// io.ErrClosedPipe, the SSH stdio path's closed descriptor gives os.ErrClosed
-// ("file already closed", often wrapped in an *fs.PathError), and a closed
-// network connection gives net.ErrClosed. For a forwarded read that is
-// SessionUnavailable either way, and for a forwarded mutation
+// io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and appwire.ErrStreamClosed
+// listed here (round eight). The send path reports them when the stream's write
+// side is already gone — a partial write onto a connection the peer has torn
+// down, or the first write after this end closed it — and they are deliberately
+// not distinguishable from the read-side failures around it: like io.EOF or
+// EPIPE they say the connection failed mid-call, not that the request was never
+// sent. All four shapes are needed because each layer reports its own: a pipe
+// gives io.ErrClosedPipe, the SSH stdio path's closed descriptor gives
+// os.ErrClosed ("file already closed", often wrapped in an *fs.PathError), a
+// closed network connection gives net.ErrClosed, and the stream transport's
+// closed or poisoned state gives appwire.ErrStreamClosed, which is the shape a
+// host channel's teardown produces on the next write. For a forwarded read that
+// is SessionUnavailable either way, and for a forwarded mutation
 // remoteHubAdminMutationCallError re-labels exactly this unavailability to
 // outcome-unknown/blocked, so a closed write cannot escape as a raw error a
 // caller might blind-retry.
@@ -312,6 +306,7 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
 		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, appwire.ErrStreamClosed) ||
 		errors.Is(err, os.ErrClosed) ||
 		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, io.EOF) ||
