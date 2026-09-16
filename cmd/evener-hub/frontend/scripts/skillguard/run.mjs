@@ -104,6 +104,16 @@ const STEERED_TURN_INPUT_TIMEOUT_MS = envMillis("SKILLGUARD_STEERED_TURN_TIMEOUT
 // it releases. Overridable for triage.
 const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 
+// The retry budget for a baseline read (turnIds, replyBaseline). A baseline is
+// captured immediately before the release that would dispatch the leg it
+// proves, so it is normally one round trip; under load a poll can reject while
+// the page is busy, and a rejected read must be retried rather than read as
+// "no turns yet". The budget is deliberately longer than the wire's own 30s
+// bound on a single Runtime.evaluate, so a stalled call is retried too instead
+// of failing the scenario; it is still a hard bound, and a read that never
+// comes back fails with the last reading that stood in for a baseline.
+const TURN_BASELINE_RETRY_MS = envMillis("SKILLGUARD_TURN_BASELINE_TIMEOUT_MS", 45_000);
+
 // envMillis reads a millisecond budget from the environment, defaulting when
 // unset or BLANK and refusing anything else non-numeric rather than silently
 // treating it as NaN (which would disable a timeout entirely). Blank is not
@@ -580,6 +590,16 @@ class Driver {
   // kind of load-dependent behaviour this barrier exists to remove. Only a
   // reading that CAME BACK, including one that answers "not yet", ends a hold.
   //
+  // Error time is not idle time either. A failed poll is unobserved wall
+  // clock, so it cannot stand as proof that the condition held across it: the
+  // settle window is SHIFTED FORWARD by the span since the last reading that
+  // came back -- the successful idle time already accumulated is kept (the
+  // window does not restart, which is what a hiccup used to cost), while the
+  // unobserved span itself is excluded from the proof. The deadline moves with
+  // the window, by exactly that lost span: a proof cannot complete inside a
+  // budget the failure has eaten, and the wait still fails once readings come
+  // back past the shifted deadline.
+  //
   // The settle window itself is part of the budget the caller asked for, so
   // the deadline is extended once, to `settleMs` after the condition is first
   // held. Without it a condition that first holds inside the last settleMs of
@@ -591,14 +611,26 @@ class Driver {
     let deadline = Date.now() + timeoutMs;
     let heldSince = null;
     let settleAccounted = false;
+    // When the last reading that CAME BACK landed. Everything after it is
+    // unobserved, and that span is what an error shifts out of the proof.
+    let readAt = Date.now();
     for (;;) {
       let errored = false;
       const value = await evaluate(this.send, exprSource).catch(() => {
         errored = true;
         return null;
       });
-      const held = !errored && value !== null && value !== undefined && value !== false;
       const now = Date.now();
+      if (errored) {
+        const unobserved = now - readAt;
+        if (heldSince !== null) {
+          heldSince += unobserved;
+          deadline += unobserved;
+        }
+      } else {
+        readAt = now;
+      }
+      const held = !errored && value !== null && value !== undefined && value !== false;
       if (held) {
         if (settleMs <= 0) return value;
         if (heldSince === null) {
@@ -661,9 +693,22 @@ class Driver {
     })()`;
   }
 
-  queueStripExpr() {
+  // The root a reading belongs to: the whole document by default (the waits
+  // that ask "is the app's queue empty?" are about the app, and the rail is not
+  // inside any session's pane), or one session's own pane when a `ref` is
+  // passed. A FAILURE DIAGNOSIS passes one: with more than one pane mounted, a
+  // document-wide sweep answers with whichever session happened to render a
+  // match, which is exactly how a failure in this session gets diagnosed using
+  // another session's turns or queue.
+  paneOrDocumentExpr(ref = null) {
+    return ref === null || ref === undefined ? `document` : this.paneScopeExpr(ref);
+  }
+
+  queueStripExpr(ref = null) {
     return `(() => {
-      const header = [...document.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
+      const root = ${this.paneOrDocumentExpr(ref)};
+      if (!root) return null;
+      const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
       if (!header) return null;
       const strip = header.closest("section");
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
@@ -691,9 +736,12 @@ class Driver {
 
   // Every rendered turn-block's text, truncated per block. Used by failure
   // reporting: a wait on a turn-block says only that nothing matched, while
-  // this says what the transcript actually contained.
-  transcriptBlocksExpr() {
-    return `(() => [...document.querySelectorAll("[data-testid='turn-block']")].map((el) => (el.textContent ?? "").slice(0, 240)))()`;
+  // this says what the transcript actually contained -- in the session the
+  // report is about when it is given a ref (see paneOrDocumentExpr).
+  transcriptBlocksExpr(ref = null) {
+    return `(() => { const root = ${this.paneOrDocumentExpr(ref)};
+      if (!root) return null;
+      return [...root.querySelectorAll("[data-testid='turn-block']")].map((el) => (el.textContent ?? "").slice(0, 240)); })()`;
   }
 
   durableRecordsExpr() {
@@ -869,6 +917,26 @@ class Driver {
     return labels[0].label;
   }
 
+  // One staged attachment tile, removed through its own control. The tile's
+  // buttons carry no testid beyond the tile itself (AttachmentTile renders
+  // `View <name>` and `Remove <name>`), so the remove button is the one whose
+  // label starts with "Remove ". The tile count is re-read between removals:
+  // each click takes one tile, and the caller's loop ends when none are left.
+  async removeAttachmentTile(ref) {
+    const labels = await evaluate(
+      this.send,
+      `(() => { const pane = ${this.paneScopeExpr(ref)};
+        const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
+        const buttons = tiles
+          .map((tile) => [...tile.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Remove ")))
+          .filter(Boolean);
+        return buttons.map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label") }; }); })()`,
+    );
+    if (!labels || labels.length === 0) throw new Error("no attachment remove button");
+    await this.clickAt(labels[0].x, labels[0].y);
+    return labels[0].label;
+  }
+
   // Every action that SENDS the composer's draft states the draft it means to
   // send, and the composer is held to it first. A draft that arrived
   // corrupted used to be discovered much later, as a wait timing out on a
@@ -1032,7 +1100,10 @@ class Driver {
   //      (send/steer/drain entries) and the "Queued messages" strip (queue
   //      rows, plus recovery/blocked records) render, from the same durable
   //      outbox and authoritative pending-mutation projections the durable
-  //      reads use, so either one being on screen blocks the release; and
+  //      reads use, so either one being on screen blocks the release -- and
+  //      the stores those surfaces are projected from are read directly too,
+  //      because a render lands a commit after the durable write and a poll
+  //      can land in that gap; and
   //   4. the session's DURABLE recovery records, because (3)'s strip is not
   //      authoritative for them: QueueStrip filters out the record its own
   //      composer has taken ownership of (activeRecoveryId), so a failed
@@ -1075,6 +1146,33 @@ class Driver {
     })()`;
   }
 
+  // The same reading for the OTHER two durable stores the pending surfaces are
+  // projected from. PendingChips and the queue strip render send/steer/drain
+  // and queue entries out of the outbox and the accepted-mutation store, but
+  // they render them a commit LATER than the durable write: the projection is
+  // another IndexedDB round trip plus a React commit, so a poll can see a
+  // quiet pane while the durable record for the session is already there. The
+  // barrier must not release into that gap -- the next hold would capture the
+  // request this record is about to dispatch. True only when both stores were
+  // read AND hold no record for this session; an unreadable store (null) and a
+  // pending record (false) both keep the barrier from releasing.
+  //
+  // `notes/human/set` is the one mutation kind this app never treats as
+  // pending turn work (QueueStrip and Composer's fresh-recovery effect both
+  // filter it out by that exact method), so it is excluded here for the same
+  // reason the recovery read excludes it.
+  noPendingTurnRecordExpr(ref) {
+    return `(async () => {
+      const durable = await ${this.durableRecordsExpr()};
+      if (!durable || !Array.isArray(durable.outbox) || !Array.isArray(durable.optimistic)) return null;
+      return [...durable.outbox, ...durable.optimistic].some(
+        (record) => record.targetRef === ${JSON.stringify(ref)} && record.method !== "notes/human/set",
+      )
+        ? false
+        : true;
+    })()`;
+  }
+
   // One expression, so every reading of "this session is idle" is the same
   // reading: the barrier below waits on it, and nothing else has a private
   // copy that could drift from it.
@@ -1090,6 +1188,7 @@ class Driver {
       if (pane.querySelector("[data-testid='pending-chips']") !== null) return null;
       if ([...pane.querySelectorAll("h3")].some((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}))) return null;
       if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
+      if ((await ${this.noPendingTurnRecordExpr(ref)}) !== true) return null;
       return true;
     })()`;
   }
@@ -1123,6 +1222,13 @@ class Driver {
   // the draft again, because the restore effect can only fire while a record
   // exists. Waiting for the store, rather than for a quiet poll window, is what
   // makes the state the retry types into final.
+  //
+  // ATTACHMENTS COUNT. The discard predicate requires the staged attachments
+  // to be empty as well as the text and the selections, so a tile left behind
+  // keeps the record -- and with it the restorable draft -- alive forever, and
+  // the wait below could never see the store empty: it would time out after
+  // its whole budget. Removing the tiles is therefore part of emptying the
+  // composer, not a convenience.
   async clearComposerDraft(ref, { timeoutMs = 20000 } = {}) {
     const settled = await this.settleComposer(ref);
     if (settled.value !== "") {
@@ -1145,14 +1251,39 @@ class Driver {
       if (!chips) break;
       await this.removeSkillChip(ref);
     }
-    await this.waitPage(
-      `(async () => {
-        const state = ${this.composerStateExpr(ref)};
-        if (!state || state.text !== "" || state.chips.length > 0) return null;
-        return (await ${this.noPendingRecoveryExpr(ref)}) === true ? true : null;
-      })()`,
-      { timeoutMs, label: `composer cleared and no pending recovery for ${ref}` },
-    );
+    // Attachment tiles go the same way, and for the same reason: each tile
+    // carries its own remove button (AttachmentTile's `Remove <name>`), and
+    // the record's discard predicate reads the staged attachment list, not the
+    // rendered tiles.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const tiles = await evaluate(
+        this.send,
+        `(() => { const pane = ${this.paneScopeExpr(ref)};
+          return pane
+            ? [...pane.querySelectorAll("[data-testid='attachment-tile'] button")].filter((b) =>
+                (b.getAttribute("aria-label") ?? "").startsWith("Remove ")).length
+            : 0; })()`,
+      );
+      if (!tiles) break;
+      await this.removeAttachmentTile(ref);
+    }
+    await this.waitPage(this.composerDrainedExpr(ref), {
+      timeoutMs,
+      label: `composer cleared (text, chips and tiles) and no pending recovery for ${ref}`,
+    });
+  }
+
+  // The emptied composer, as ONE reading: text, skill chips AND attachment
+  // tiles all empty, with no durable recovery record left to restore a draft
+  // from. Named separately from its one wait so the state it means is
+  // inspectable on its own -- the wait, a failure report and a test all read
+  // the same predicate.
+  composerDrainedExpr(ref) {
+    return `(async () => {
+      const state = ${this.composerStateExpr(ref)};
+      if (!state || state.text !== "" || state.chips.length > 0 || state.tiles !== 0) return null;
+      return (await ${this.noPendingRecoveryExpr(ref)}) === true ? true : null;
+    })()`;
   }
 
   // The turn-block ids this session's pane currently renders. Captured before
@@ -1183,12 +1314,31 @@ class Driver {
   // exact false pass the baseline exists to prevent. A missing pane, a null
   // result or a page error therefore fails here, BEFORE the release that would
   // dispatch the continuation leg it is meant to prove.
-  async turnIds(ref = this.sessionA) {
-    const ids = await evaluate(this.send, this.turnIdsExpr(ref));
-    if (!Array.isArray(ids)) {
-      throw new Error(`turnIds(${ref}): no turn ids read for this session (got ${JSON.stringify(ids)})`);
+  //
+  // A TRANSIENT failure is not that verdict. A single evaluate rejection under
+  // load used to hard-fail the scenario this barrier exists to stabilize, so
+  // an unsuccessful read is retried until it comes back or the budget expires;
+  // only then does it fail, naming the last reading (or the last error) that
+  // stood in for a baseline.
+  async readTurnIdBaseline(exprSource, label, { timeoutMs = TURN_BASELINE_RETRY_MS } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let last = null;
+      const ids = await evaluate(this.send, exprSource).catch((error) => {
+        last = `read failed: ${error}`;
+        return null;
+      });
+      if (Array.isArray(ids)) return ids;
+      if (last === null) last = `got ${JSON.stringify(ids)}`;
+      if (Date.now() > deadline) {
+        throw new Error(`${label}: no turn ids read after ${timeoutMs}ms (${last})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
     }
-    return ids;
+  }
+
+  async turnIds(ref = this.sessionA) {
+    return this.readTurnIdBaseline(this.turnIdsExpr(ref), `turnIds(${ref})`);
   }
 
   // waitForContinuationReply is the POSITIVE end-of-turn proof for a turn whose
@@ -1271,7 +1421,7 @@ class Driver {
         label: `the continuation leg carrying ${JSON.stringify(text)} to complete in its own turn`,
       });
     } catch (error) {
-      await this.dumpPageState(ref, error);
+      throw await this.dumpPageState(ref, error);
     }
   }
 
@@ -1322,18 +1472,14 @@ class Driver {
   // Like turnIds, this is a BASELINE: a read that failed is not an empty one.
   // `[]` here claims "no turn carried a reply", so an earlier reply would
   // satisfy waitForReply -- a false pass over the very completion the wait
-  // exists to prove.
+  // exists to prove. The read is retried (see readTurnIdBaseline): the same
+  // single CDP hiccup that must not fail turnIds must not fail this one
+  // either, and the budget keeps a read that never comes back a loud failure.
   async replyBaseline(text = REPLY_TEXT) {
-    const ids = await evaluate(
-      this.send,
-      `(() => [...document.querySelectorAll("[data-testid='turn-block']")]
+    const exprSource = `(() => [...document.querySelectorAll("[data-testid='turn-block']")]
         .filter((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}))
-        .map((el) => el.getAttribute("data-turn-id")))()`,
-    );
-    if (!Array.isArray(ids)) {
-      throw new Error(`replyBaseline(${JSON.stringify(text)}): no reply-turn ids read (got ${JSON.stringify(ids)})`);
-    }
-    return ids;
+        .map((el) => el.getAttribute("data-turn-id")))()`;
+    return this.readTurnIdBaseline(exprSource, `replyBaseline(${JSON.stringify(text)})`);
   }
 
   async waitForReply(text, baselineIds, { timeoutMs = 25000 } = {}) {
@@ -1352,18 +1498,27 @@ class Driver {
   // this condition is fed by a daemon push, so the useful question when it fails
   // is not "how long did we wait" but "which of a late render, a queue-routed
   // submit, or a wrong-session pane happened" -- and that is only answerable
-  // from the page, not the label. It rethrows the caller's error with what the
-  // transcript, the queue strip and the composer actually showed appended.
-  // `ref` names the session whose composer the dump reads: two composers are
-  // mounted, so a dump that assumed one of them would answer about the wrong
-  // session the moment a wait ran for the other.
+  // from the page, not the label. It RETURNS the caller's error with what the
+  // transcript, the queue strip and the composer actually showed appended, and
+  // the caller throws it: a report that threw on its own left the caller
+  // depending on that throw to fail its wait, so a dump that ever returned
+  // normally would have turned the timeout into a silent pass. Returning makes
+  // the propagation total -- the caller has the error in hand and rethrows it
+  // on every path.
+  //
+  // `ref` names the session the dump is ABOUT: two composers can be mounted,
+  // so a dump that assumed one of them would answer about the wrong session,
+  // and every read here is scoped to that session's own pane for the same
+  // reason (with more than one pane mounted, a document-wide sweep reports
+  // whichever session rendered a match -- which is how a failure in this
+  // session gets diagnosed using another session's turns or queue).
   async dumpPageState(ref, error) {
     const [blocks, queue, composer] = await Promise.all([
-      evaluate(this.send, this.transcriptBlocksExpr()).catch((e) => `turn-block read failed: ${e}`),
-      evaluate(this.send, this.queueStripExpr()).catch((e) => `queue read failed: ${e}`),
+      evaluate(this.send, this.transcriptBlocksExpr(ref)).catch((e) => `turn-block read failed: ${e}`),
+      evaluate(this.send, this.queueStripExpr(ref)).catch((e) => `queue read failed: ${e}`),
       this.composerState(ref).catch((e) => `composer read failed: ${e}`),
     ]);
-    throw new Error(
+    return new Error(
       `${error instanceof Error ? error.message : String(error)}\n` +
         `  transcript turn-blocks: ${JSON.stringify(blocks)}\n` +
         `  queue strip: ${JSON.stringify(queue)}\n` +
@@ -1393,7 +1548,7 @@ class Driver {
         { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
       );
     } catch (error) {
-      await this.dumpPageState(ref, error);
+      throw await this.dumpPageState(ref, error);
     }
   }
 }
