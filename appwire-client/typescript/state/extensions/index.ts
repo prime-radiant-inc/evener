@@ -6,3 +6,4 @@
 export * from "./listRevision";
 export * from "./marketplaces";
 export * from "./plugins";
+export * from "./storeLifecycle";

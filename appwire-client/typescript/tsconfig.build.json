@@ -85,6 +85,7 @@
     "state/extensions/listRevision.ts",
     "state/extensions/marketplaces.ts",
     "state/extensions/plugins.ts",
+    "state/extensions/storeLifecycle.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
     "spawnHarnessModels.ts",

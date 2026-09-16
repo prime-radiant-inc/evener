@@ -21,6 +21,7 @@ import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { PluginEntry, PluginListResponse } from "../../types.gen";
 import { createListRevision } from "./listRevision";
+import { createStoreLifecycle } from "./storeLifecycle";
 
 export type PluginsClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -75,26 +76,20 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
   // its own response; see listRevision.ts for the fence.
   const listRevision = createListRevision();
 
-  let stopNotifications: (() => void) | undefined;
-  let refetchTimer: ReturnType<typeof setTimeout> | undefined;
-  let disposed = false;
-
-  /** Fences every list response still on the wire and cancels a pending
-   * refetch: reset and dispose both want a reply that started before them to
-   * land nothing. */
-  function fenceInFlight(): void {
-    listRevision.fence();
-    clearTimeout(refetchTimer);
-    refetchTimer = undefined;
-  }
+  const lifecycle = createStoreLifecycle<PluginsState>(client, {
+    method: "evener/plugin/updated",
+    debounceMs: PLUGIN_REFETCH_DEBOUNCE_MS,
+    store: () => store,
+    refetch: (state) => state.fetchPlugins(),
+    // The revision moves now, not when the refetch lands: a host keying
+    // derived data on it wants to know the set changed as soon as the hub
+    // says so.
+    onNotified: () => store.setState((s) => ({ pluginRevision: s.pluginRevision + 1 })),
+    onFence: () => listRevision.fence(),
+  });
 
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
-    // Every write goes through here: a request that resolves after dispose()
-    // - a mutation, whose response no revision fences - must publish nothing
-    // to a host whose screen is gone.
-    const set: typeof publish = (partial) => {
-      if (!disposed) publish(partial);
-    };
+    const set = lifecycle.guard(publish);
 
     /** Runs one mutation: its response's list is written only if no later
      * revision has committed since. Rejects as the request does. */
@@ -141,34 +136,6 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     };
   });
 
-  function handleNotification(n: { method: string }): void {
-    if (n.method !== "evener/plugin/updated") return;
-    // The notification names nothing, so a debounced refetch of the list is
-    // the only way to apply it. The revision moves now, not when the refetch
-    // lands: a host keying derived data on it wants to know the set changed
-    // as soon as the hub says so.
-    store.setState((s) => ({ pluginRevision: s.pluginRevision + 1 }));
-    clearTimeout(refetchTimer);
-    refetchTimer = setTimeout(() => {
-      void store.getState().fetchPlugins();
-    }, PLUGIN_REFETCH_DEBOUNCE_MS);
-  }
-
-  return {
-    ...store,
-    start() {
-      if (disposed || stopNotifications) return;
-      stopNotifications = client.onNotification(handleNotification);
-    },
-    reset() {
-      fenceInFlight();
-      store.setState(store.getInitialState());
-    },
-    dispose() {
-      fenceInFlight();
-      stopNotifications?.();
-      stopNotifications = undefined;
-      disposed = true;
-    },
-  };
+  const { start, reset, dispose } = lifecycle;
+  return { ...store, start, reset, dispose };
 }

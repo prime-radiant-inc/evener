@@ -25,6 +25,7 @@ import type {
   MarketplaceEntry,
 } from "../../types.gen";
 import { createListRevision } from "./listRevision";
+import { createStoreLifecycle } from "./storeLifecycle";
 
 export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -108,10 +109,6 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // under the older list is stale under the newer one too.
   const listRevision = createListRevision();
 
-  let stopNotifications: (() => void) | undefined;
-  let refetchTimer: ReturnType<typeof setTimeout> | undefined;
-  let disposed = false;
-
   function browseGeneration(name: string): number {
     return browseGenerations.get(name) ?? 0;
   }
@@ -140,23 +137,30 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     return next;
   }
 
-  /** Fences every list response and browse still on the wire: reset and
-   * dispose both want a reply that started before them to land nothing. */
-  function fenceInFlight(): void {
-    listRevision.fence();
-    for (const name of browseInFlight.keys()) retireGeneration(name);
-    browseInFlight.clear();
-    clearTimeout(refetchTimer);
-    refetchTimer = undefined;
-  }
+  const lifecycle = createStoreLifecycle<MarketplacesState>(client, {
+    method: "evener/marketplace/updated",
+    debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
+    store: () => store,
+    refetch: (state) => state.fetchMarketplaces(),
+    // The notification names nothing, so every cached catalog may now
+    // describe a marketplace another client has since added to, removed,
+    // refreshed, renamed or re-sourced. All of them are retired, and the
+    // generation bump fences the browses already in flight, which would
+    // otherwise land their pre-change catalogs after this. Expanded views
+    // re-request their own.
+    onNotified: () =>
+      store.setState((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]) })),
+    // Every browse still on the wire is fenced with the list: reset and
+    // dispose both want a reply that started before them to land nothing.
+    onFence: () => {
+      listRevision.fence();
+      for (const name of browseInFlight.keys()) retireGeneration(name);
+      browseInFlight.clear();
+    },
+  });
 
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
-    // Every write goes through here: a request that resolves after dispose()
-    // - a mutation, whose response no generation or revision fences - must
-    // publish nothing to a host whose screen is gone.
-    const set: typeof publish = (partial) => {
-      if (!disposed) publish(partial);
-    };
+    const set = lifecycle.guard(publish);
 
     /** Runs one mutation: its response's list is written only if no later
      * revision has committed since, and the catalogs it names are retired
@@ -246,35 +250,6 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     };
   });
 
-  function handleNotification(n: { method: string }): void {
-    if (n.method !== "evener/marketplace/updated") return;
-    // The notification names nothing, so every cached catalog may now describe
-    // a marketplace another client has since added to, removed, refreshed,
-    // renamed or re-sourced. All of them are retired, and the generation bump
-    // fences the browses already in flight, which would otherwise land their
-    // pre-change catalogs after this. Expanded views re-request their own.
-    store.setState((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]) }));
-    clearTimeout(refetchTimer);
-    refetchTimer = setTimeout(() => {
-      void store.getState().fetchMarketplaces();
-    }, MARKETPLACE_REFETCH_DEBOUNCE_MS);
-  }
-
-  return {
-    ...store,
-    start() {
-      if (disposed || stopNotifications) return;
-      stopNotifications = client.onNotification(handleNotification);
-    },
-    reset() {
-      fenceInFlight();
-      store.setState(store.getInitialState());
-    },
-    dispose() {
-      fenceInFlight();
-      stopNotifications?.();
-      stopNotifications = undefined;
-      disposed = true;
-    },
-  };
+  const { start, reset, dispose } = lifecycle;
+  return { ...store, start, reset, dispose };
 }
