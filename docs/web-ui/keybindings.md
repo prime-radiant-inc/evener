@@ -1,8 +1,10 @@
 # Web UI keybindings
 
 Status: **current** (Phase 4b). The web hub's global keyboard chords are
-owned by one module, `cmd/evener-hub/frontend/src/keybindings/`, and one
-window-level dispatcher, instead of each component installing its own
+owned by one shared keybinding group (the `keybinding*.ts` modules of the
+AppWire package, `appwire-client/typescript/`), one app-side registry
+instance and one window-level dispatcher (both in
+`cmd/evener-hub/frontend/src/keybindings/`), instead of each component installing its own
 `keydown` listener. User overrides persist on the hub and sync to every
 paired browser. Phase 3 added the navigation bindings (session-pane
 cycling, transcript scroll) on that infrastructure, plus full keyboard
@@ -16,23 +18,38 @@ unbind/reset (the Settings section below).
 
 ## Architecture
 
-Seven pieces, all in `src/keybindings/` and all React-free:
+Seven pieces in the AppWire package (`appwire-client/typescript/`, shared
+with the native app, imported as `@evener/appwire-client`) plus two in this
+app's `src/keybindings/`, all React-free. The package has no runtime
+dependencies, so it names neither tinykeys nor a store library: chord
+parsing goes through an injected `KeybindingParser` port (tinykeys'
+`parseKeybinding` shape), and the registry is a framework-free store
+factory.
 
-- **chord.ts** — the chord AST (`Chord` = required modifiers + optional
-  modifiers + key; `KeySequence` = a list of presses). `parseChord` wraps
-  tinykeys' `parseKeybinding`, so `$mod` resolves to `Meta` on Apple
-  platforms and `Control` elsewhere at parse time. `serializeChord`
-  round-trips an AST to a tinykeys string; `formatChord`/`formatSequence`
-  render one for humans.
-- **registry.ts** — a vanilla zustand store holding three things: the
-  **action registry** (action id → its handlers, in registration order), the
-  **bindings** (chord → action id, plus scope and policy flags), and the
-  **scope stack**. The app-wide singleton is `keybindingsRegistry`; tests
-  build their own with `createKeybindingsRegistry()`.
-- **dispatcher.ts** — the single window-level `keydown` listener. On every
-  registry change it rebuilds a tinykeys `createKeybindingsHandler` over the
-  active scope set: the scope stack top-down, then the `global` scope.
-- **defaults.ts** — the built-in binding map (the six legacy shell chords,
+- **keybindingActions.ts** — `ACTIONS`, the canonical action ids.
+- **keybindingChord.ts** — the chord AST (`Chord` = required modifiers +
+  optional modifiers + key; `KeySequence` = a list of presses) and the
+  `KeybindingParser` port. `parseChord(parse, input)` canonicalizes what the
+  injected parser returns; with tinykeys' `parseKeybinding` as the parser,
+  `$mod` resolves to `Meta` on Apple platforms and `Control` elsewhere at
+  parse time. `serializeChord` round-trips an AST to a tinykeys string;
+  `formatChord`/`formatSequence` render one for humans.
+- **keybindingRegistry.ts** — `createKeybindingsRegistry(parse)` builds a
+  framework-free store (`getState`/`setState`/`subscribe`, plus
+  `getInitialState` so zustand's `useStore` binds to it unchanged) holding
+  three things: the **action registry** (action id → its handlers, in
+  registration order), the **bindings** (chord → action id, plus scope and
+  policy flags), and the **scope stack**. The registry exposes the parser it
+  was built with as `registry.parseKeybinding`, and every helper that takes
+  a registry parses through it. This app's one instance is
+  `keybindingsRegistry` in `src/keybindings/appRegistry.ts`, bound to
+  tinykeys' `parseKeybinding`; tests build their own with
+  `createKeybindingsRegistry(parseKeybinding)`.
+- **dispatcher.ts** (`src/keybindings/`, the web's platform adapter) — the
+  single window-level `keydown` listener. On every registry change it
+  rebuilds a tinykeys `createKeybindingsHandler` over the active scope set:
+  the scope stack top-down, then the `global` scope.
+- **keybindingDefaults.ts** — the built-in binding map (the six legacy shell chords,
   the six Phase 3 navigation chords, and the Phase 4a additions:
   `settings`, `transcript.scrollTop`/`scrollBottom`, and the cheatsheet
   triggers) and `registerDefaultBindings`, which also registers each
@@ -46,18 +63,19 @@ Seven pieces, all in `src/keybindings/` and all React-free:
   character-key-triggers pref is on (see the cheatsheet section below).
   `registerDefaultBindingsForAction` and `defaultBindingChordsForAction`
   are the per-action variants the overrides layer uses to restore and to
-  simulate restorations.
-- **overrides.ts** — `rebindAction(registry, actionId, chord | null)`
+  simulate restorations (the registry-less helpers take the parser as
+  their first argument).
+- **keybindingOverrides.ts** — `rebindAction(registry, actionId, chord | null)`
   replaces an action's current bindings (default + `#mod-twin` + any earlier
   `#override`) with a single `#override` binding that keeps the default's
   scope and policy flags, or unbinds it on `null`. No twin expansion for user
   chords. Every throwing path throws before mutating.
   `restoreDefaultBinding` re-registers the action's defaults.
-- **validation.ts** — `validateOverrideRules(rules, registry, platform?)`
+- **keybindingValidation.ts** — `validateOverrideRules(rules, registry, platform?)`
   never throws: unknown actions, unparseable chords, reserved
   (browser/OS-claimed) chords, and conflicts each become a typed
   `ValidationWarning` and the rule is skipped.
-- **display.ts** — the shared read model for the two binding-list UIs
+- **keybindingDisplay.ts** — the shared read model for the two binding-list UIs
   (Settings → Keybindings and the cheatsheet overlay):
   `ACTION_DISPLAY_ROWS` (one row per action, in default-map order) and
   `displayBindingsFor`, which picks an action's effective display bindings
@@ -382,7 +400,7 @@ Holding the primary modifier ALONE — ⌘ on Apple platforms, Ctrl elsewhere
 (`src/shell/holdhints/`): the palette trigger, the rail toggle, the
 session tabs (one chip carrying both cycling chords), and the composer.
 Each chip shows the action's effective chord from the live registry (the
-same `display.ts` read the overlay and Settings make), so overrides show
+same `keybindingDisplay.ts` read the overlay and Settings make), so overrides show
 truthfully and an unbound action renders no chip. Chips anchor to the real
 elements at show time via their data attributes — never
 absolutely-positioned guesses — so an affordance that is not mounted (the
@@ -435,9 +453,10 @@ it pushes `SETTINGS_SCOPE` and registers `settings.close` in one effect.
 
 ## Testing conventions
 
-- Module tests (`src/keybindings/*.test.ts`) use a private
-  `createKeybindingsRegistry()` and attach a dispatcher to `window`
-  directly. jsdom resolves `$mod` to `Control` on every host, so module
+- Module tests (the package's `keybinding*.test.ts` and this app's
+  `src/keybindings/*.test.ts`) use a private
+  `createKeybindingsRegistry(parseKeybinding)` and, on the app side, attach
+  a dispatcher to `window` directly. jsdom resolves `$mod` to `Control` on every host, so module
   tests press Mod chords with `ctrlKey`.
 - App-level tests press chords the way the existing suites do
   (`user.keyboard("{Meta>}k{/Meta}")`, `fireEvent.keyDown(...)`) — the

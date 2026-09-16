@@ -500,14 +500,15 @@ func TestEnvironmentAmbiguousWriteDoesNotDuplicateEntry(t *testing.T) {
 	}
 }
 
-// TestEnvironmentRolledBackWriteReemitsEntry is the other half of the
-// reconciliation contract. A rollback that truncates the entry away and then
-// fails its closing seek reports the same indeterminate outcome as one that
-// left the entry behind, over a transcript the entry is genuinely absent from.
-// Reconciling by the stable ID has to find that absence and rewind the tracker,
-// so the next turn emits the environment the session still owes the model. An
-// implementation that never reconciles — treating every rollback failure as a
-// surviving entry — keeps the environment silent forever and fails here.
+// TestEnvironmentRolledBackWriteReemitsEntry is the NOT-RECORDED half of the
+// contract. A rollback that truncates the entry away and then fails its closing
+// seek records nothing — the line is gone — so AppendSynced returns a plain
+// error (not ErrRetainedUnsynced), the pair appends nothing, and the tracker
+// rewinds so the next turn re-emits the environment the session still owes the
+// model. This is the case that DOES reject and re-emit, in contrast to a
+// retained record (whole line in the file), which is adopted; an implementation
+// that treated this absent entry as retained would keep the environment silent
+// forever and fail here.
 func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 	sess := newTestSessionForEnvctx(t)
 	syncFailure := errors.New("environment transcript durability failure")
@@ -518,8 +519,10 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 	if !errors.Is(err, syncFailure) || !errors.Is(err, seekFailure) {
 		t.Fatalf("rolled-back append error = %v, want both the sync and the rollback failure", err)
 	}
-	if !errors.Is(err, transcript.ErrRollbackFailed) {
-		t.Fatalf("rolled-back append error = %v, want the indeterminate-outcome marker the reconciliation keys on", err)
+	// The entry was taken back out, so this is a plain not-recorded error, not
+	// the retained-record signal the owner would adopt.
+	if errors.Is(err, transcript.ErrRetainedUnsynced) {
+		t.Fatalf("rolled-back append error = %v, want a not-recorded error, not ErrRetainedUnsynced", err)
 	}
 	if got := durableEnvironmentTurnIDs(t, sess); len(got) != 0 {
 		t.Fatalf("durable environment entries after the rollback truncated the entry = %v, want none", got)
@@ -538,13 +541,6 @@ func TestEnvironmentRolledBackWriteReemitsEntry(t *testing.T) {
 	assertEnvironmentTrackerMatchesModelHistory(t, sess)
 }
 
-// TestEnvironmentUnestablishedDurabilityReemitsForTheModel: AppendSynced records
-// the entry, but its barrier cannot be raised, so durability is never
-// established — the entry is not something the model can be shown to have seen.
-// The tracker rewinds to the last state the model did see, and the write
-// reports the barrier failure so the input is rejected. A whole line is debt,
-// not poison, so the writer stays usable and the NEXT turn re-renders the whole
-// observation rather than being refused.
 // When the environment append's fsync AND the recovery barrier both fail, the
 // whole record is still in the file — a retained record. AppendSynced reports
 // that (ErrRetainedUnsynced), and the owner ADOPTS it: it commits the tracker

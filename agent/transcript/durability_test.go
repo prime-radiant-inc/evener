@@ -262,3 +262,30 @@ func TestAppendSyncedFailsClosedOnAClosedWriter(t *testing.T) {
 		t.Fatalf("AppendSynced on a nil writer = %v, want nil no-op", err)
 	}
 }
+
+// The closed check must be made under appendBatch's lock, or a Close that lands
+// between a caller's own unlocked check and the append leaves AppendSynced in
+// the retained==nil branch, returning nil — durable — for a write that recorded
+// nothing. This asserts the locked path directly: with failClosed the closed
+// writer is ErrWriterClosed; without it, the silent nil no-op the ordinary
+// doors depend on.
+func TestAppendBatchFailClosedDistinguishesClosedFromRecorded(t *testing.T) {
+	w, err := NewWriterWithFS(afero.NewMemMapFs(), "/closed-batch.jsonl", Header{SessionID: "sess-closed-batch"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User("after close"))
+
+	// Ordinary door (failClosed=false): a closed writer is a silent nil no-op.
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, true, true, false); err != nil || retained != nil {
+		t.Fatalf("ordinary appendBatch on a closed writer = (retained %v, err %v), want the silent nil no-op", retained, err)
+	}
+	// Synced owner (failClosed=true): a closed writer fails closed, so
+	// AppendSynced never reads a dropped write as durable.
+	if _, retained, err := w.appendBatch([]schema.Turn{turn}, true, false, true); !errors.Is(err, ErrWriterClosed) || retained != nil {
+		t.Fatalf("synced appendBatch on a closed writer = (retained %v, err %v), want ErrWriterClosed", retained, err)
+	}
+}
