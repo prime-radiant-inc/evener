@@ -1,6 +1,5 @@
 import type {
 	NavigationInvalidatedPayload,
-	NavigationInvalidationTarget,
 	NavigationMutation,
 	NavigationReadParams,
 } from "@evener/appwire-client";
@@ -8,10 +7,13 @@ import {
 	applyDelta,
 	type DecodedNavigationResponse,
 	decodeNavigationResponse,
+	isSequenceGap,
+	matchingTargets,
 	materializeNavigationResource,
 	type NormalizedResource,
 	normalizedGraphFromSnapshot,
 	reconcileSnapshot,
+	requiredRevision,
 	type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -115,6 +117,9 @@ export class NavigationPages<T> {
 	private mutationFloor = 0;
 	private mutationGeneration: string | null = null;
 	private normalized: NormalizedResource | null = null;
+	/** The resource these pages read, as invalidation targets name it; the
+	 * page offsets play no part in matching. */
+	readonly resourceKey: ResourceKey;
 	private owner: (() => void) | null = null;
 	private paused = false;
 	private rereads = singleFlight(
@@ -127,7 +132,9 @@ export class NavigationPages<T> {
 		private field: "projects" | "sessions" | "pin_sections",
 		private key: (row: T) => string,
 		private limit = 50,
-	) {}
+	) {
+		this.resourceKey = resourceKeyFor({ ...params, representationVersion: 2 });
+	}
 	/** Follow hub invalidations. Newer data is re-read here without user
 	 * action unless an owner takes every re-read to run a wider read of its
 	 * own (the pin screens also re-read a session's location). */
@@ -173,13 +180,15 @@ export class NavigationPages<T> {
 			this.requiredRevision = 0;
 		}
 		if (p.sequence <= this.sequence) return;
-		const gap = p.sequence > this.sequence + 1;
+		const gap = isSequenceGap(this.sequence, p.sequence);
 		this.sequence = p.sequence;
 		this.notificationEpoch++;
-		const targets = p.targets.filter((target) => this.matchesTarget(target));
+		const targets = matchingTargets(this.resourceKey, p.targets);
 		if (gap || targets.some((t) => t.revision === undefined)) this.uncertain++;
-		for (const t of targets)
-			this.requiredRevision = Math.max(this.requiredRevision, t.revision ?? 0);
+		this.requiredRevision = Math.max(
+			this.requiredRevision,
+			requiredRevision(this.resourceKey, p.targets),
+		);
 		const loaded = this.version;
 		const held =
 			!gap &&
@@ -196,33 +205,6 @@ export class NavigationPages<T> {
 		// cancelled read still leaves the owed re-read behind.
 		if (this.state.stale && !this.state.loading) this.scheduleReread();
 	}
-	private matchesTarget(t: NavigationInvalidationTarget) {
-		const p = this.params;
-		return (
-			(p.resource === "section" &&
-				t.kind === "section" &&
-				t.section === p.section) ||
-			(p.resource === "pin_catalog" && t.kind === "pin_catalog") ||
-			(p.resource === "pin_section" &&
-				t.kind === "pin_section" &&
-				t.sectionId === p.sectionId) ||
-			(p.resource === "catalog" &&
-				t.kind === "catalog" &&
-				t.catalog === p.catalog) ||
-			(p.resource === "project_page" &&
-				(t.kind === "all_loaded_projects" ||
-					(t.kind === "project" && t.projectKey === p.projectKey)))
-		);
-	}
-	private receiptRevision(receipt: NavigationMutation) {
-		return Math.max(
-			0,
-			...receipt.targets
-				.filter((target) => this.matchesTarget(target))
-				.map((target) => target.revision ?? 0),
-		);
-	}
-
 	/** Drop the read in flight and stop re-reading on the owner's behalf until
 	 * resume(); a re-read the hub still owes waits for it. */
 	cancel() {
@@ -253,7 +235,7 @@ export class NavigationPages<T> {
 		this.mutationGeneration = receipt.generation_id;
 		this.mutationFloor = Math.max(
 			this.mutationFloor,
-			this.receiptRevision(receipt),
+			requiredRevision(this.resourceKey, receipt.targets),
 		);
 		if (!(await this.load(true, receipt)))
 			throw new Error(
@@ -306,7 +288,9 @@ export class NavigationPages<T> {
 					"Could not read this navigation page. Refresh to try again.",
 				);
 			}
-			const receiptRevision = receipt ? this.receiptRevision(receipt) : 0;
+			const receiptRevision = receipt
+				? requiredRevision(this.resourceKey, receipt.targets)
+				: 0;
 			if (
 				reset &&
 				epoch === this.notificationEpoch &&
