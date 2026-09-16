@@ -184,7 +184,10 @@ func renderOutline(entries []transcript.Entry, start, end int) (content string, 
 // Empty segments are dropped, so a plain user turn is just "<seq> · User · <text>".
 func outlineLine(entries []transcript.Entry, seq int, idx *resultIndex) (string, bool) {
 	t := entries[seq].Turn
-	if t.Kind == schema.TurnToolResults || t.Kind == schema.TurnAttentionResolution {
+	if t.Kind == schema.TurnToolResults || t.Kind == schema.TurnAttentionResolution || t.Kind == schema.TurnFoldRecord {
+		// TurnFoldRecord is durable resume bookkeeping with no model-visible
+		// content; like the markdown renderer, the outline skips it (no
+		// "<seq> · FOLD_RECORD" line per compaction).
 		return "", false
 	}
 

@@ -1973,12 +1973,14 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 	return err
 }
 
-// recordTurn adds a turn to the live model history and writes its persisted
-// counterpart to the durable transcript — one atomic pair under attentionMu
-// (append first, then the entry), for the same publication-transaction
-// wholeness appendTurnAfterTranscriptWrite documents. The two turns differ
-// only when a tool exposes explicitly private evidence; every other caller
-// passes the same turn twice.
+// recordTurn writes a turn's persisted counterpart to the durable transcript
+// and adds the turn to live model history — one atomic pair under attentionMu,
+// for the same publication-transaction wholeness appendTurnAfterTranscriptWrite
+// documents. The entry is written first so the turn can be stamped with the
+// durable Seq it spent (via recordedSeq), then appended to history carrying
+// that Seq; a failed write records nothing and carries NoTranscriptEntrySeq.
+// The two turns differ only when a tool exposes explicitly private evidence;
+// every other caller passes the same turn twice.
 func (s *Session) recordTurn(live, persisted schema.Turn) {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()

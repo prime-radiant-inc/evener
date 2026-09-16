@@ -389,6 +389,29 @@ func TestConvertToATIF_AttentionResolutionIsTransparentToToolRound(t *testing.T)
 	}
 }
 
+// A compaction fold record is private resume bookkeeping (the entries a fold's
+// history is made of, by Seq); ATIF export must omit it rather than emit an
+// empty source:"system" step tagged evener_kind fold_record.
+func TestConvertToATIF_FoldRecordIsOmitted(t *testing.T) {
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hi"))},
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{FoldID: "fold-3", Layers: []int{0}, RetainedSeqs: []int{0}}}},
+	}
+	traj := Convert(transcript.Header{SessionID: "fold-record-session"}, entries)
+	for _, step := range traj.Steps {
+		if k, ok := step.Extra["evener_kind"]; ok && k == "fold_record" {
+			t.Fatalf("ATIF exported a fold-record step: %#v", step)
+		}
+	}
+	encoded, err := json.Marshal(traj)
+	if err != nil {
+		t.Fatalf("marshal trajectory: %v", err)
+	}
+	if strings.Contains(string(encoded), "fold_record") {
+		t.Fatalf("ATIF export leaked fold_record: %s", encoded)
+	}
+}
+
 func TestConvertToATIF_ToolError(t *testing.T) {
 	ts := time.Date(2026, 3, 1, 10, 0, 0, 0, time.UTC)
 

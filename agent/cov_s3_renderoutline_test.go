@@ -86,3 +86,29 @@ func s3cov_twoResults(id1, c1 string, e1 bool, id2, c2 string, e2 bool) llm.Mess
 	m.Content = append(m.Content, r2.Content...)
 	return m
 }
+
+// A compaction fold's record is durable resume bookkeeping with no
+// model-visible content; the outline (which promises to mirror the markdown
+// renderer) must emit no line for it, and skipping it must not renumber the
+// turns around it — line numbers are entry indices.
+func TestS3Cov_RenderOutline_FoldRecordSkippedNumberingUnchanged(t *testing.T) {
+	t.Parallel()
+	entries := s3cov_entries(
+		schema.NewTurn(schema.TurnUserInput, llm.User("do a thing")),
+		schema.NewTurn(schema.TurnSummary, llm.User("summary of earlier work")),
+		schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{FoldID: "fold-1", Layers: []int{1}, RetainedSeqs: []int{0}}},
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("after the fold")),
+	)
+	content, _, _ := renderOutline(entries, 0, len(entries)-1)
+	if strings.Contains(content, "FOLD_RECORD") {
+		t.Fatalf("outline emitted a FOLD_RECORD line:\n%s", content)
+	}
+	if strings.Contains(content, "2 · ") {
+		t.Fatalf("outline emitted a line for the fold record at index 2:\n%s", content)
+	}
+	// Numbering is unchanged: the post-fold assistant turn keeps entry index 3,
+	// it is not renumbered down to fill the skipped record's slot.
+	if !strings.Contains(content, "3 · ") {
+		t.Fatalf("outline renumbered turns after skipping the fold record:\n%s", content)
+	}
+}
