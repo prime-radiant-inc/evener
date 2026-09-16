@@ -14,6 +14,7 @@ export interface PinAssignmentEditorProps {
 	connected: boolean;
 	canEdit: boolean;
 	loading: boolean;
+	stale: boolean;
 	remaining: number;
 	pending: boolean;
 	uncertain: boolean;
@@ -38,6 +39,7 @@ export function PinAssignmentEditor({
 	connected,
 	canEdit,
 	loading,
+	stale,
 	remaining,
 	pending,
 	uncertain,
@@ -146,6 +148,7 @@ export function PinAssignmentEditor({
 				{loading ? (
 					<ActivityIndicator accessibilityLabel="Loading pinned sections" />
 				) : null}
+				{stale ? <Copy muted>Updating…</Copy> : null}
 				{!loading && remaining > 0 ? (
 					<Action disabled={blocked} onPress={more}>
 						{`Load more sections (${remaining} remaining)`}

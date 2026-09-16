@@ -160,23 +160,21 @@ export class NavigationPages<T> {
 		if (gap || targets.some((t) => t.revision === undefined)) this.uncertain++;
 		for (const t of targets)
 			this.requiredRevision = Math.max(this.requiredRevision, t.revision ?? 0);
-		if (targets.length === 0 && !gap) return;
 		const loaded = this.version;
-		if (
+		const held =
 			!gap &&
 			loaded?.generationId === p.generationId &&
 			targets.every(
 				(t) => t.revision !== undefined && t.revision <= loaded.revision,
-			)
-		)
-			return;
+			);
+		if ((targets.length > 0 || gap) && !held) this.publish({ stale: true });
 		// A read in flight sees this notification through its revision checks
 		// and retries itself once, so only an idle store starts a re-read. That
-		// bounds a hub that notifies on every read to one retry per read. The
-		// rows are stale either way, so a cancelled read still leaves the owed
-		// re-read behind.
-		this.publish({ stale: true });
-		if (!this.state.loading) this.scheduleReread();
+		// bounds a hub that notifies on every read to one retry per read; a hub
+		// that served an older revision than it announced gets one more read per
+		// later notification, never a loop. The rows stay stale either way, so a
+		// cancelled read still leaves the owed re-read behind.
+		if (this.state.stale && !this.state.loading) this.scheduleReread();
 	}
 	private matchesTarget(t: NavigationInvalidationTarget) {
 		const p = this.params;
@@ -215,6 +213,7 @@ export class NavigationPages<T> {
 	}
 	resume() {
 		this.paused = false;
+		if (this.state.stale) this.scheduleReread();
 		this.rereads.drain();
 	}
 	/** An explicit read means the owner is active again; its result stands

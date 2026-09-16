@@ -8,6 +8,7 @@ export function PinCatalogList({
 	connected,
 	loaded,
 	loading,
+	stale,
 	remaining,
 	pending,
 	uncertain,
@@ -21,6 +22,7 @@ export function PinCatalogList({
 	connected: boolean;
 	loaded: boolean;
 	loading: boolean;
+	stale: boolean;
 	remaining: number;
 	pending: boolean;
 	uncertain: boolean;
@@ -53,6 +55,8 @@ export function PinCatalogList({
 						<Copy muted>Reconnect to view pinned sections.</Copy>
 					) : uncertain ? (
 						<Copy muted>Refresh to confirm the previous pin change.</Copy>
+					) : stale ? (
+						<Copy muted>Updating…</Copy>
 					) : null}
 					<ErrorMessage message={error} />
 					{!connected || uncertain || error ? (

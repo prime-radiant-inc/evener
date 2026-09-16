@@ -47,6 +47,7 @@ type BrowserRow =
 			tier: ProjectSessionTier;
 			loading: boolean;
 			error: string | null;
+			stale: boolean;
 	  }
 	| { kind: "empty"; key: string }
 	| { kind: "limited"; key: string };
@@ -137,7 +138,7 @@ export function ProjectSessionsList({
 						depth,
 					});
 				}
-				if (page.loading || page.error || page.remaining > 0) {
+				if (page.loading || page.error || page.stale || page.remaining > 0) {
 					result.push({
 						kind: "page",
 						key: `page:${project.key}:${tier}`,
@@ -145,6 +146,7 @@ export function ProjectSessionsList({
 						tier,
 						loading: page.loading,
 						error: page.error,
+						stale: page.stale,
 					});
 				}
 			}
@@ -280,7 +282,9 @@ export function ProjectSessionsList({
 						{state.projects.loading && !refreshing ? (
 							<ActivityIndicator accessibilityLabel="Loading more projects" />
 						) : null}
-						{state.projects.error ? (
+						{state.projects.stale ? (
+							<Copy muted>Updating…</Copy>
+						) : state.projects.error ? (
 							<>
 								<Copy muted>Could not load more projects.</Copy>
 								<Action
@@ -426,6 +430,8 @@ export function ProjectSessionsList({
 						<View style={{ paddingHorizontal: 40, paddingVertical: 8 }}>
 							{item.loading ? (
 								<ActivityIndicator accessibilityLabel="Loading sessions" />
+							) : item.stale ? (
+								<Copy muted>Updating…</Copy>
 							) : item.error ? (
 								<>
 									<Copy muted>Could not load more sessions.</Copy>

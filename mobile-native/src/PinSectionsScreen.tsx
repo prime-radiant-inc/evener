@@ -32,6 +32,7 @@ export function PinSectionsScreen({
 					connected={pin.ready}
 					loaded={pin.confirmed}
 					loading={pin.page?.loading ?? false}
+					stale={pin.page?.stale ?? false}
 					remaining={pin.page?.remaining ?? 0}
 					pending={pin.action?.pending ?? false}
 					uncertain={

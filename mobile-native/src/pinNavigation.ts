@@ -172,9 +172,11 @@ export async function refreshPinNavigation(
 }
 
 /** Re-read the pin navigation whenever the hub says the pin catalog changed,
- * one read at a time. A read that ends stale is retried once, so a change
- * that landed between its location and catalog steps is not lost, and no
- * more, so a hub that notifies on every read cannot keep this reading. */
+ * one read at a time. A run only reads while the catalog is still stale, so
+ * a change that a read in flight (or a mutation's own confirmation) already
+ * absorbed costs nothing and a hub that notifies on every read cannot keep
+ * this reading. A read that ends stale is retried once, so a change that
+ * landed between its location and catalog steps is not lost. */
 export function followPinCatalog(
 	pages: Pick<
 		NavigationPages<NavigationPinSectionDescriptor>,
@@ -185,19 +187,22 @@ export function followPinCatalog(
 ) {
 	const reads = singleFlight(
 		() =>
-			read()
+			(pages.getSnapshot().stale ? read() : Promise.resolve())
 				.catch(() =>
 					pages.getSnapshot().stale && canRead() ? read() : undefined,
 				)
 				.catch(() => undefined),
 		canRead,
 	);
-	return {
-		drain: reads.drain,
-		// A change announced during a read is absorbed by that read's own
-		// catalog refresh.
-		stop: pages.watch(() => {
-			if (!reads.running) reads.request();
-		}),
-	};
+	return { drain: reads.drain, stop: pages.watch(reads.request) };
+}
+
+/** True while the catalog still lists a section exactly as the user was
+ * shown it; a renamed, recounted or missing section is a change. */
+export function pinSectionAsShown(
+	rows: readonly NavigationPinSectionDescriptor[],
+	shown: NavigationPinSectionDescriptor,
+) {
+	const now = rows.find((row) => row.id === shown.id);
+	return !!now && now.name === shown.name && now.count === shown.count;
 }

@@ -11,6 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { sectionDrafts } from "./nativeOrganization";
+import { pinSectionAsShown } from "./pinNavigation";
 import type { PinSectionDraft } from "./pinSectionDrafts";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -52,11 +53,14 @@ export function PinSectionEditorScreen({
 		}
 	}, [repository, proposal.owner]);
 	const section = pin.observed?.section;
+	// Editing stays open while the catalog re-reads itself; only the labels
+	// wait for it.
 	const settled =
 		pin.confirmed &&
 		pin.ready &&
 		!pin.action?.pending &&
 		!pin.action?.uncertain;
+	const fresh = settled && !pin.page?.stale;
 	const blocked =
 		!settled ||
 		!section ||
@@ -128,15 +132,9 @@ export function PinSectionEditorScreen({
 					onPress: () => {
 						// The catalog re-reads itself while the alert is up; delete only
 						// the section as it was shown.
-						const now = pin.pages
-							?.getSnapshot()
-							.rows.find((row) => row.id === sectionId);
-						if (
-							now &&
-							(now.name !== section.name || now.count !== section.count)
-						)
-							setChangedUnderAlert(true);
-						else void execute(true);
+						if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section))
+							void execute(true);
+						else setChangedUnderAlert(true);
 					},
 				},
 			],
@@ -187,12 +185,14 @@ export function PinSectionEditorScreen({
 						) : null}
 						{pin.action?.pending ? (
 							<Copy muted>Checking the section…</Copy>
+						) : pin.page?.stale ? (
+							<Copy muted>Updating…</Copy>
 						) : null}
 						{pin.confirmed && !section ? (
 							<Copy>This section no longer exists. Its sessions are kept.</Copy>
 						) : section ? (
 							<Copy muted>
-								{settled ? "Currently" : "Last seen"}: {section.count}{" "}
+								{fresh ? "Currently" : "Last seen"}: {section.count}{" "}
 								{section.count === 1 ? "session" : "sessions"}
 							</Copy>
 						) : null}

@@ -496,6 +496,66 @@ it("an explicit refresh resumes a cancelled store and satisfies the owed re-read
 	await settled(pages);
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "c" }]);
 });
+it("re-reads a page the hub under-served on the next notification, once per notification", async () => {
+	// Round 3 (#1462): after the hub served an older revision than it
+	// announced the page stayed stale with no trigger left to read it again.
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[1].resolve(response(["a"], 0, 1));
+	await until(pages, (state) => !state.loading);
+	await tick();
+	expect(pages.getSnapshot().stale).toBe(true);
+	expect(requests).toHaveLength(2);
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 2,
+		targets: [{ kind: "catalog", catalog: "archived_projects", revision: 5 }],
+	});
+	expect(requests).toHaveLength(3);
+	expect(requests[2].params.offset).toBe(0);
+	requests[2].resolve(response(["a"], 0, 1));
+	await until(pages, (state) => !state.loading);
+	await tick();
+	expect(requests).toHaveLength(3);
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 3,
+		targets: [{ kind: "catalog", catalog: "archived_projects", revision: 6 }],
+	});
+	expect(requests).toHaveLength(4);
+	requests[3].resolve(response(["b"], 0, 2));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+});
+it("re-reads a page the hub under-served when it is resumed", async () => {
+	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[1].resolve(response(["a"], 0, 1));
+	await until(pages, (state) => !state.loading);
+	await tick();
+	pages.cancel();
+	pages.resume();
+	expect(requests).toHaveLength(3);
+	requests[2].resolve(response(["b"], 0, 2));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+});
 it("loads more on a stale idle page by reading from the first page", async () => {
 	const { requests, pages, invalidate } = boundary();
 	pages.watch();

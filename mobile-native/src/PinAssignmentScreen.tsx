@@ -61,7 +61,11 @@ export function PinAssignmentScreen({
 	const available =
 		ready && focused && confirmed && !!observed?.location?.top_level;
 	const currentAssignment =
-		ready && confirmed && !action?.pending && !action?.uncertain;
+		ready &&
+		confirmed &&
+		!page?.stale &&
+		!action?.pending &&
+		!action?.uncertain;
 	const blocked =
 		!available ||
 		!page?.loaded ||
@@ -170,6 +174,7 @@ export function PinAssignmentScreen({
 						connected={ready && focused}
 						canEdit={available && !selected?.error && !!page?.loaded}
 						loading={page?.loading ?? false}
+						stale={page?.stale ?? false}
 						remaining={page?.remaining ?? 0}
 						pending={action?.pending ?? false}
 						uncertain={!!action?.uncertain || !!action?.storageUnavailable}

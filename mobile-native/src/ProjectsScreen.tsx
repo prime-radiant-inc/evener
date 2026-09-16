@@ -315,6 +315,11 @@ export function PageList<T>({
 					</Action>
 				</View>
 			) : null}
+			{state.stale ? (
+				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+					<Copy muted>Updating…</Copy>
+				</View>
+			) : null}
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
 					<ErrorMessage message={state.error} />
