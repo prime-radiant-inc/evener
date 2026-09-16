@@ -3315,6 +3315,177 @@ test("stopped-session Send keeps the composer writable and resumes the same sess
   expect(threadsStore.getState().threads.get(ref)?.threadId).toBe(snapshot().thread.id);
 });
 
+// A stopped session's SAVED snapshot is the last daemon's capability answer and
+// does not advertise skillInput (ThreadCapabilities.skillInput is omitempty, and
+// a cold/discovered thread keeps its own answer - server/appwire_runtime.go's
+// appCapabilitiesLocked). Send to a stopped local session resumes it first, and
+// threads.ts's composerMutationIntent then validates the selection against the
+// RESUMED destination's refreshed capabilities; gating on the saved snapshot
+// instead refused the draft before the resume Send exists for ever started.
+test("review regression: a staged skill resumes a stopped session instead of being refused by the saved snapshot", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "local:stopped-skill-send";
+  const input = [
+    { type: "text" as const, text: "skillful follow up" },
+    { type: "skill" as const, name: "pkg:probe" },
+  ];
+  let stopped = true;
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const snapshot = () =>
+    readResponse(ref, {
+      status: { type: stopped ? "notLoaded" : "idle" },
+      evener: {
+        ref,
+        // The capability that answers for this send is the RESUMED one.
+        capabilities: { ...CAPABILITIES, send: !stopped, skillInput: !stopped },
+        resumeRequired: stopped,
+        mutationStateAuthoritative: !stopped,
+        queue: { revision: 0 },
+      },
+    });
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id || request.method === "initialize" || request.method === "ping") return;
+        requests.push(request);
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result = snapshot();
+            break;
+          case "thread/resume":
+            stopped = false;
+            result = snapshot();
+            break;
+          case "evener/jobs/list":
+            result = { data: emptyActivityTree(ref) };
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+          case "turn/start":
+            result = {
+              turn: { id: "new-turn", status: "inProgress", itemsView: "full" },
+              receipt: {
+                clientMutationId: request.params.clientMutationId,
+                threadId: snapshot().thread.id,
+                disposition: "applied",
+                projectionState: "pending",
+              },
+            };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  writeComposerDraft(ref, { text: "skillful follow up", skillNames: ["pkg:probe"] });
+  render(
+    <ClientProvider client={client}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(requests.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
+  expect((screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement).value).toBe("skillful follow up");
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  // The refusal is synchronous and leaves no request behind, so asserting its
+  // absence first makes a red run name the gate itself rather than a later
+  // timeout.
+  expect(screen.queryByText(/Skill selections/)).toBeNull();
+  await waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+  expect(requests.filter(({ method }) => method === "thread/resume")).toEqual([
+    expect.objectContaining({ params: { ref } }),
+  ]);
+  expect(requests.find(({ method }) => method === "turn/start")?.params).toMatchObject({ ref, input });
+});
+
+// The deferral above must move the check, not drop it: a destination that
+// still cannot accept a selection refuses the send AFTER the resume (the same
+// promise the pre-resume gate made), with nothing durable written and the
+// draft untouched.
+test("review regression: a staged skill is still refused when the resumed destination cannot accept it", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  const ref = "local:stopped-skill-refused";
+  let stopped = true;
+  const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+  // Neither the saved snapshot nor the resumed one advertises skillInput.
+  const snapshot = () => stoppedRecoverySnapshot(ref, stopped, stopped ? "saved-instance" : "resumed-instance");
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      const send = socket.send.bind(socket);
+      socket.send = (raw) => {
+        send(raw);
+        const request = JSON.parse(raw);
+        if (!request.id || request.method === "initialize" || request.method === "ping") return;
+        requests.push(request);
+        let result: unknown = {};
+        switch (request.method) {
+          case "thread/read":
+            result = snapshot();
+            break;
+          case "thread/resume":
+            stopped = false;
+            result = snapshot();
+            break;
+          case "evener/jobs/list":
+            result = { data: emptyActivityTree(ref) };
+            break;
+          case "thread/turns/list":
+            result = { data: [], nextCursor: null };
+            break;
+        }
+        socket.receive({ id: request.id, result });
+      };
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  onTestFinished(() => client.close());
+  connectionStore.getState().connect(client);
+  await client.connect();
+  writeComposerDraft(ref, { text: "skillful follow up", skillNames: ["pkg:probe"] });
+  render(
+    <ClientProvider client={client}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = screen.getByRole("textbox", { name: "Message" }) as HTMLTextAreaElement;
+  expect(editor.value).toBe("skillful follow up");
+  expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Send" }));
+  // The refusal is the composer's own inline failure, which is this flow's
+  // completion signal; nothing else is awaited to make the state settle.
+  expect(await screen.findByText(/skill selections are not supported on this target/)).toBeTruthy();
+  expect(requests.filter(({ method }) => method === "thread/resume")).toEqual([
+    expect.objectContaining({ params: { ref } }),
+  ]);
+  expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
+  expect(await mutationStorage.listOutbox(ref)).toEqual([]);
+  expect(editor.value).toBe("skillful follow up");
+  expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+});
+
 function stoppedRecoverySnapshot(ref: string, stopped: boolean, instanceId = "same-instance"): ThreadReadResponse {
   return readResponse(ref, {
     status: { type: stopped ? "notLoaded" : "idle" },

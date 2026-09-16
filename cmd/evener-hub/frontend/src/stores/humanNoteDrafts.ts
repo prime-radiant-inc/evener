@@ -22,6 +22,16 @@ export interface HumanNoteDraft {
 }
 
 const drafts = createStore<{ records: Map<string, HumanNoteDraft> }>(() => ({ records: new Map() }));
+// The retained draft's status when the blocked row it was waiting on is no
+// longer in this tab's own records at all: another connection settled or
+// removed it without a canonical acknowledgement arriving here, so nothing is
+// left to settle this save and the note really is unsaved. It replaces the
+// "blocked pending session recovery" status, which claimed the write was only
+// waiting - a wait that will now never end. The draft keeps its text, stays
+// dirty, and keeps the submitted identity an acknowledgement may still arrive
+// under; absence is not an acknowledgement and is never treated as one.
+const SETTLED_ELSEWHERE_STATUS =
+  "Note is still unsaved: the blocked save it was waiting on is no longer pending in this tab";
 let unsubscribePersistence: (() => void) | undefined;
 let persistenceRead = 0;
 function observePersistence(): void {
@@ -147,7 +157,23 @@ export function blurHumanNote(ref: string, owner: symbol): void {
       const active = get(ref);
       if (!active?.dirty || active.focusOwners.size || active.generation !== current.generation) return;
       if (current.submitted?.generation === current.generation && current.submitted.state === "blockedUnknown") {
-        await retryBlockedMutation(current.submitted.id, "backgroundNote");
+        const blockedId = current.submitted.id;
+        if (await retryBlockedMutation(blockedId, "backgroundNote")) return;
+        // `false` is every way the retry can decline: this tab fenced by a Stop,
+        // a closed write gate, a stalled reconciliation, or the row simply no
+        // longer being blocked here. Only the last leaves this draft with
+        // nothing left to settle it, so that is the one question asked - of
+        // this ref's own records (readMutationPersistence), never a queue-wide
+        // freshen, and never a resave: the row's absence is not a canonical
+        // acknowledgement, so the dirty note stays exactly where it is and only
+        // its status changes.
+        const { outbox, recovery } = await readMutationPersistence(ref);
+        if ([...outbox, ...recovery].some((record) => record.clientMutationId === blockedId)) return;
+        const latest = get(ref);
+        // The same generation AND the same submitted identity: a newer edit, or
+        // an acknowledgement that landed while the read ran, owns the status now.
+        if (!latest || latest.generation !== current.generation || latest.submitted?.id !== blockedId) return;
+        put(ref, { ...latest, error: SETTLED_ELSEWHERE_STATUS });
         return;
       }
       // The daemon's ExpectedInstanceID check is the authority on session

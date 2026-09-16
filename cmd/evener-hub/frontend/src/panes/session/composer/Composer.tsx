@@ -832,6 +832,13 @@ export function Composer({ ref, focused }: ComposerProps) {
   // comment on why every handler reads a pre-narrowed local).
   const localNotLoaded = ref.startsWith("local:") && model.status.type === "notLoaded";
   const canResumeOnSend = localNotLoaded && recoveryRequired;
+  // Whether a send to this ref resumes a stopped local session before the store
+  // builds its intent: the predicate threads.ts's resumeSessionForUserIntent
+  // itself applies (a local ref, and either the notLoaded status or a
+  // restart-blocking obligation already on the session), so this composer
+  // defers the skillInput gate to the store-side check exactly when the
+  // destination whose capabilities will answer is not this snapshot.
+  const resumesOnSend = localNotLoaded || (ref.startsWith("local:") && recoveryRequired);
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -1204,7 +1211,19 @@ export function Composer({ ref, focused }: ComposerProps) {
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
     // why, instead of minting durable intent the wire would refuse.
-    if (submittedSkillNames.length > 0 && !skillInputSupported) {
+    //
+    // Except when this send RESUMES the session first: the saved snapshot of a
+    // stopped session is the previous daemon's answer and does not advertise
+    // skillInput (ThreadCapabilities.skillInput is omitempty, and the capability
+    // belongs to the live daemon - server/appwire_runtime.go's
+    // appCapabilitiesLocked), so reading it here refused the draft before the
+    // very resume Send exists for could run. threads.ts's
+    // resumeSessionForUserIntent hydrates the resumed destination before
+    // composerMutationIntent reads ITS capabilities, so the store-side half is
+    // already the check the finding asks for: the gate still refuses a
+    // selection the destination cannot accept, it just refuses it after the
+    // resume, against the destination that answers for it.
+    if (submittedSkillNames.length > 0 && !skillInputSupported && !resumesOnSend) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
