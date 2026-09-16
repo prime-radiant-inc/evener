@@ -40,7 +40,6 @@ func TestRouteNoToolCalls(t *testing.T) {
 		{name: "user input", kind: EntryUserInput, want: runNoToolCalls},
 		{name: "continuation", kind: EntryContinuation, want: runNoToolCalls},
 		{name: "delegate attention", kind: EntryDelegateAttention, want: runNoToolCalls},
-		{name: "steering carrier", kind: EntrySteeringCarrier, want: runNoToolCalls},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -80,7 +80,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			if endTurn {
 				// Drain daemon-authored steering context into the terminal inbox.
 				// Client-authored steering remains durable pending work for
-				// wakeForPendingSteering and EntrySteeringCarrier: incorporating
+				// wakeForPendingSteering and the steering carrier: incorporating
 				// it into a result that ends the turn would create a durable
 				// transcript item without a model request that can act on it.
 				// The inbox is text-only in the wire shape, so image-bearing

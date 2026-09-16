@@ -1267,7 +1267,7 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 						text = undisposedBackgroundJobsFinalWarning(undisposed, canDetach)
 					}
 					bgAnnounced[setKey]++
-					// EntryNotification, not EntrySteeringCarrier: Steer enqueues
+					// EntryNotification, not the steering carrier: Steer enqueues
 					// DAEMON-sourced steering, and the carrier's entry gate counts
 					// only user-sourced steering, so a carrier turn stands down
 					// before any model call — which is exactly how an earlier

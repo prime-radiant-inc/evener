@@ -1,12 +1,16 @@
 import type { EntityView, ThreadModel } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+  makeTranscriptDisplayConfig,
+  presetContent,
+  scopedDisclosureId,
+  type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import {
   disclosureDefault,
   isDisclosureOpen,
   resetDisclosureStoreForTests,
-  scopedDisclosureId,
   setDisclosureOpen,
 } from "../widgets/disclosure/disclosureStore";
 import type { TranscriptMetadataVisibility } from "./projector";

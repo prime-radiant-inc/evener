@@ -31,10 +31,25 @@ export interface ProjectBrowserController {
 	loadMoreSessions(projectKey: string, tier: ProjectSessionTier): Promise<void>;
 	retry(projectKey?: string, tier?: ProjectSessionTier): Promise<void>;
 	refresh(): Promise<void>;
+	/** Stop re-reading on the hub's behalf while the list is not shown. */
+	pause(): void;
+	resume(): void;
 	dispose(): void;
 }
 
 type Page = NavigationPages<NavigationSessionSummary>;
+export type PageStatus = "loading" | "error" | "stale" | "more";
+/** What a page's boundary row should show. An error keeps its retry even
+ * while the page is stale: a failed automatic re-read leaves both set. */
+export function pageStatus(
+	page: ReturnType<NavigationPages<unknown>["getSnapshot"]>,
+): PageStatus | null {
+	if (page.loading) return "loading";
+	if (page.error) return "error";
+	if (page.stale) return "stale";
+	if (page.remaining > 0) return "more";
+	return null;
+}
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionKey = (row: NavigationSessionSummary) => row.ref;
 
@@ -61,6 +76,7 @@ export function createProjectBrowserController(
 	let loading = false;
 	let error: string | null = null;
 	let disposed = false;
+	let paused = false;
 	let epoch = 0;
 	const inFlightPages = new Set<string>();
 	const unsubs = new Set<() => void>();
@@ -107,6 +123,13 @@ export function createProjectBrowserController(
 		rebuildSnapshot();
 		for (const listener of listeners) listener();
 	};
+	const eachPage = (visit: (page: Page | typeof catalog) => void) => {
+		visit(catalog);
+		for (const group of groups.values()) {
+			visit(group.current);
+			visit(group.recent);
+		}
+	};
 	const pageFor = (
 		project: NavigationProjectSummary,
 		tier: ProjectSessionTier,
@@ -131,6 +154,7 @@ export function createProjectBrowserController(
 		for (const page of [group.current, group.recent]) {
 			unsubs.add(page.subscribe(publish));
 			unsubs.add(page.watch());
+			if (paused) page.cancel();
 		}
 		return group[tier];
 	};
@@ -217,7 +241,6 @@ export function createProjectBrowserController(
 			if (
 				disposed ||
 				catalog.getSnapshot().loading ||
-				catalog.getSnapshot().stale ||
 				catalog.getSnapshot().error ||
 				!catalog.getSnapshot().loaded ||
 				!catalog.getSnapshot().remaining
@@ -239,7 +262,6 @@ export function createProjectBrowserController(
 			const pageKey = `${key}:${tier}`;
 			if (
 				page.getSnapshot().loading ||
-				page.getSnapshot().stale ||
 				page.getSnapshot().error ||
 				!page.getSnapshot().loaded ||
 				!page.getSnapshot().remaining
@@ -264,7 +286,7 @@ export function createProjectBrowserController(
 				await Promise.all(
 					pages.map((page) => {
 						const state = page.getSnapshot();
-						if (state.loading || state.stale) return Promise.resolve();
+						if (state.loading) return Promise.resolve();
 						return state.loaded ? page.more() : page.refresh();
 					}),
 				);
@@ -273,7 +295,7 @@ export function createProjectBrowserController(
 			}
 			if (catalog.getSnapshot().error) {
 				const state = catalog.getSnapshot();
-				if (state.loading || state.stale) return;
+				if (state.loading) return;
 				if (state.loaded && state.rows.length > 0) await catalog.more();
 				else await catalog.refresh();
 				publish();
@@ -300,6 +322,14 @@ export function createProjectBrowserController(
 			loading = false;
 			publish();
 		},
+		pause() {
+			paused = true;
+			eachPage((page) => page.cancel());
+		},
+		resume() {
+			paused = false;
+			eachPage((page) => page.resume());
+		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
@@ -307,11 +337,7 @@ export function createProjectBrowserController(
 			for (const unsubscribe of unsubs) unsubscribe();
 			unwatchCatalog();
 			unsubs.clear();
-			catalog.cancel();
-			for (const group of groups.values()) {
-				group.current.cancel();
-				group.recent.cancel();
-			}
+			eachPage((page) => page.cancel());
 			listeners.clear();
 		},
 	};

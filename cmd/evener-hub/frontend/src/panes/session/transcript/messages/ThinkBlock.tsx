@@ -45,7 +45,7 @@
 // Expanded-trace anatomy adapted from Beautiful UI's Thinking component (beautifului.dev, MIT © 2026 Shane Levine) — see LICENSES/beautiful-ui.txt.
 
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { formatTokenCount } from "@evener/appwire-client";
+import { formatTokenCount, scopedDisclosureId } from "@evener/appwire-client";
 import { memo } from "react";
 import {
   disclosureScopeForSession,
@@ -53,12 +53,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { Chevron, Loader, Markdown, ToolIcon } from "../../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  scopedDisclosureId,
-  toggleDisclosure,
-} from "../../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "../types";
 import {
