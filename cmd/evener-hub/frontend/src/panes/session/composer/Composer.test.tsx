@@ -2193,7 +2193,7 @@ test("submit after the pending send cleared in the same task routes to send on t
   await user.type(textarea(), "second");
   await user.click(submitButton());
   await waitFor(async () => expect(await routeOf("second")).toBe("turn/queue"));
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   // The next message renders in the same queue mode; its pending send clears
   // in the same task as the press, so the press has to read the store.
   await user.type(textarea(), "third");
