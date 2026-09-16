@@ -1061,6 +1061,39 @@ func TestResumeHistoryFoldRecord_LastRecordWins(t *testing.T) {
 	}
 }
 
+// When the newest fold's record write failed, its markers are durable but its
+// record is not, so the last surviving fold record belongs to an OLDER fold.
+// Using it would replay that fold's summarized-away turns plus the newer
+// markers; resume must instead treat the stale record as absent and fall back
+// to the newest compaction marker (its summary + everything after it).
+func TestResumeHistory_StaleFoldRecordFallsBackToNewestMarker(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("discarded by fold 1"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary 1"))},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{FoldID: "1", Layers: []int{1}, RetainedSeqs: []int{0}}}},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("recorded after fold 1"))},
+		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary 2"))},
+		// fold 2's record write failed: no FOLD_RECORD entry here.
+		{Kind: "entry", Seq: 5, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("after fold 2"))},
+	}
+	history := ResumeHistory(entries)
+	wantText := []string{"summary 2", "after fold 2"}
+	if len(history) != len(wantText) {
+		t.Fatalf("resumed %d turns, want %d (newest summary + post-marker): %+v", len(history), len(wantText), history)
+	}
+	for i, want := range wantText {
+		if history[i].Message.Text() != want {
+			t.Errorf("turn %d = %q, want %q", i, history[i].Message.Text(), want)
+		}
+	}
+	for _, turn := range history {
+		if txt := turn.Message.Text(); txt == "summary 1" || txt == "discarded by fold 1" || txt == "recorded after fold 1" {
+			t.Errorf("stale fold-1 record replayed content %q", txt)
+		}
+	}
+}
+
 // --- Session-integration tests ---
 
 func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {

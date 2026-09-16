@@ -183,7 +183,16 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 		turns = append(turns, t)
 		origins = append(origins, i)
 	}
-	if recordIdx := lastFoldRecordIndex(entries); recordIdx >= 0 {
+	// A fold record is authoritative only when it is NEWER than the newest
+	// compaction marker. If a later fold wrote its markers but its own record
+	// write failed (the "restart resumes from the newest compaction marker"
+	// warning), the last surviving record belongs to an OLDER fold; using it
+	// would replay that fold's summarized-away turns plus the newer markers.
+	// Treat such a stale record as absent and fall back to the last-marker
+	// anchor (newest summary + everything after it) — a valid fold always
+	// writes its record AFTER its own markers, so recordIdx > lastMarkerAnchor
+	// exactly when the record is the newest fold's.
+	if recordIdx := lastFoldRecordIndex(entries); recordIdx >= 0 && recordIdx > lastMarkerAnchor(entries) {
 		rec := entries[recordIdx].Turn.Fold
 		bySeq := make(map[int]int, len(entries))
 		for i := range entries {

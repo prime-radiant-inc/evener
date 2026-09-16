@@ -507,6 +507,90 @@ func TestAttachTranscript_FailedHeldWriteDoesNotStealNextSeq(t *testing.T) {
 	}
 }
 
+// M1 unit: when a fold's head-marker write failed (markerSeqs carries
+// NoTranscriptEntrySeq), stampFoldWrittenSeqsLocked must still stamp the live
+// marker with that sentinel — never leave it at Seq 0, where a later fold would
+// name entry 0 for it.
+func TestStampFoldWrittenSeqs_FailedHeadMarkerMarkedNoEntry(t *testing.T) {
+	t.Parallel()
+	s := &Session{}
+	summary := schema.NewTurn(schema.TurnSummary, llm.User("summary")) // fresh marker: Seq 0
+	kept := schema.NewTurn(schema.TurnUserInput, llm.User("kept"))
+	kept.Seq = 4
+	s.history = []schema.Turn{summary, kept}
+	s.stampFoldWrittenSeqsLocked([]schema.Turn{summary, kept}, []schema.Turn{summary}, []int{schema.NoTranscriptEntrySeq}, nil)
+	if s.history[0].Seq != schema.NoTranscriptEntrySeq {
+		t.Fatalf("failed head marker live Seq = %d, want NoTranscriptEntrySeq (not left at 0 for a later fold to name)", s.history[0].Seq)
+	}
+}
+
+// M1 end-to-end: a fold whose head-marker write failed leaves its marker in
+// history; a follow-on fold that retains it must NOT name entry 0 for it, and
+// a restart must not resurrect the transcript's first entry.
+func TestFold_FailedHeadMarkerNotNamedByLaterFold(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "failed-head-marker", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("ok")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	// Real entries 0 and 1 in the transcript.
+	first := schema.NewTurn(schema.TurnUserInput, llm.User("first entry — must not be resurrected"))
+	s.recordTurn(first, first)
+	keptTurn := schema.NewTurn(schema.TurnUserInput, llm.User("kept"))
+	s.recordTurn(keptTurn, keptTurn)
+
+	// Simulate fold 1 whose head-marker write failed: the marker is in history
+	// at the head, and stampFoldWrittenSeqsLocked resolves it from a failed
+	// markerSeqs (NoTranscriptEntrySeq).
+	s.attentionMu.Lock()
+	s.mu.Lock()
+	fold1Summary := schema.NewTurn(schema.TurnSummary, llm.User("fold 1 summary"))
+	s.history = append([]schema.Turn{fold1Summary}, s.history...)
+	s.mu.Unlock()
+	s.stampFoldWrittenSeqsLocked([]schema.Turn{fold1Summary}, []schema.Turn{fold1Summary}, []int{schema.NoTranscriptEntrySeq}, nil)
+
+	// Fold 2 succeeds and retains fold 1's (write-failed) marker in its tail.
+	fold2Summary := schema.NewTurn(schema.TurnSummary, llm.User("fold 2 summary"))
+	headSeq2, err := s.writeTranscriptLocked(fold2Summary)
+	if err != nil {
+		s.mu.Lock()
+		published := append([]schema.Turn{fold2Summary}, s.history...)
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		t.Fatalf("write fold 2 marker: %v; published=%v", err, published)
+	}
+	// Fold 2 DISCARDS the original first entry (seq 0) and retains fold 1's
+	// write-failed marker plus the kept turn. If the marker were left at Seq 0
+	// it would be named 0 and resurrect the discarded first entry.
+	// s.history is [fold1Summary(no-entry), first(seq 0), kept(seq 1)]; take the
+	// stamped copies. Fold 2 keeps fold1Summary and kept, discards first.
+	s.mu.Lock()
+	published := []schema.Turn{fold2Summary, s.history[0], s.history[2]} // [fold2Summary, fold1Summary(no-entry), kept(seq 1)]
+	s.mu.Unlock()
+	if _, err := s.writeFoldRecordLocked(published, 0, []schema.Turn{fold2Summary}, []int{headSeq2}, nil, "fold-2"); err != nil {
+		s.attentionMu.Unlock()
+		t.Fatalf("writeFoldRecordLocked: %v", err)
+	}
+	s.attentionMu.Unlock()
+
+	rec := foldRecordFromTranscript(t, s)
+	if rec == nil {
+		t.Fatal("no fold record written")
+	}
+	for _, seq := range rec.RetainedSeqs {
+		if seq == 0 {
+			t.Fatalf("fold record named entry 0 for the write-failed head marker: RetainedSeqs=%v", rec.RetainedSeqs)
+		}
+	}
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	for _, turn := range ResumeHistory(data.Entries) {
+		if turn.Message.Text() == "first entry — must not be resurrected" {
+			t.Fatal("restart resurrected the transcript's first entry via a Seq-0 name")
+		}
+	}
+}
+
 // L end-to-end: a turn recorded during a fold whose write fails becomes a
 // merge-back turn with no durable entry; the fold must surface the loss.
 func TestFold_MergeBackWriteFailureIsSurfaced(t *testing.T) {

@@ -671,11 +671,12 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if foldRecordWriteErr != nil {
 			// The fold's markers landed but its record did not (a hard write
 			// failure; a whole-line-unsynced record is queued on the writer and
-			// surfaced separately). Without the record a restart falls back to
-			// the last-marker anchor and drops the retained tail — the #1200
-			// bug — so this must never be silent, even though the in-memory
-			// publish already stands.
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fold record write failed; retained tail will not survive restart: %v", foldRecordWriteErr)})
+			// surfaced separately). Without the record, resume treats this
+			// fold's now-recordless markers as the newest anchor and rebuilds
+			// from the newest compaction marker plus everything after it — the
+			// retained tail is not carried. Never silent, even though the
+			// in-memory publish already stands.
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fold record write failed; restart resumes from the newest compaction marker, the retained tail is not carried: %v", foldRecordWriteErr)})
 		}
 		if foldLostMergeBack > 0 {
 			// A turn recorded during the fold never became durable (its own
@@ -939,7 +940,12 @@ func (s *Session) stampFoldWrittenSeqsLocked(published, markers []schema.Turn, m
 	headSeq, haveHead := headMarkerSeq(published, markers, markerSeqs)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if haveHead && headSeq >= 0 {
+	if haveHead {
+		// Stamp the live head marker with headSeq UNCONDITIONALLY, even when it
+		// is NoTranscriptEntrySeq (the marker's own write failed). Leaving the
+		// marker at its zero Seq would let a LATER fold's writeFoldRecordLocked
+		// name Seq 0 for it and resume resolve it to the transcript's first
+		// entry. The steering branch below stamps the same way.
 		for i := range s.history {
 			if s.history[i].Kind == published[0].Kind && s.history[i].Seq == 0 {
 				s.history[i].Seq = headSeq
