@@ -111,6 +111,14 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // under the older list is stale under the newer one too.
   const listRevision = createListRevision();
 
+  // What reset() and dispose() end. The list revision alone cannot say it: an
+  // outrun mutation still retires the catalogs it names, because retiring is
+  // monotonic and a catalog stale under the older list is stale under the
+  // newer one too. That holds only WITHIN a generation - after a reset the
+  // store has forgotten what it read, and a browse since then is about the
+  // state the reset left behind, not the one an older reply belongs to.
+  let generation = 0;
+
   function browseGeneration(name: string): number {
     return browseGenerations.get(name) ?? 0;
   }
@@ -153,8 +161,10 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     onNotified: () =>
       store.setState((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, [...s.browseCatalogs.keys()]) })),
     // Every browse still on the wire is fenced with the list: reset and
-    // dispose both want a reply that started before them to land nothing.
+    // dispose both want a reply that started before them to land nothing -
+    // its catalogs included, which is what the generation below counts.
     onFence: () => {
+      generation += 1;
       listRevision.fence();
       for (const name of browseInFlight.keys()) retireGeneration(name);
       browseInFlight.clear();
@@ -167,13 +177,16 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
 
     /** Runs one mutation: its response's list is written only if no later
      * revision has committed since, and the catalogs it names are retired
-     * either way (retiring is monotonic). Rejects as the request does. */
+     * either way within the generation it was issued in (retiring is
+     * monotonic). Rejects as the request does. */
     async function mutate(
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
     ): Promise<void> {
       const revision = listRevision.next();
+      const issued = generation;
       const resp = await request();
+      if (issued !== generation) return;
       set((s) => ({
         // The same three fields a read's success writes; see plugins.ts's
         // mutate for why a committing response owns all three.

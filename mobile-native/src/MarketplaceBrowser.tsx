@@ -230,7 +230,7 @@ export function MarketplaceBrowser({
           Add marketplace
         </Action>
       )}
-      {mutating && (
+      {(mutating || pluginBusy) && (
         <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" />
       )}
     </View>
