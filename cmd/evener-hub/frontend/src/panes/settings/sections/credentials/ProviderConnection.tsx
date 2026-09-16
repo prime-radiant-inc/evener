@@ -8,10 +8,14 @@ import {
   isEndpointConflict,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
-import { foreignListingChange } from "@evener/appwire-client/state/credentials";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
-import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
+import {
+  credentialsStore,
+  foreignListingChange,
+  isStaleListingRefusal,
+  useCredentialsStore,
+} from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";
 import { useConnectedEffect } from "../useConnectedEffect";
 import { AddInstanceDialog } from "./instanceDialogs";

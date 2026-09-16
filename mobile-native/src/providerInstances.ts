@@ -71,12 +71,12 @@ export class ProviderInstances {
   }
   private project(state: CredentialInstancesState, previous: CredentialInstancesState) {
     const change: Partial<ProviderState> = {};
-    if (listingChanged(state, previous) || state.listingEstablished !== previous.listingEstablished)
-      change.data = this.listing(state);
+    const moved = listingChanged(state, previous);
+    if (moved || state.listingEstablished !== previous.listingEstablished) change.data = this.listing(state);
     // A credential test was checked against rows that a foreign change - another
     // client, the TUI, a failed read - has moved from under it; the store's own
     // post-write refresh is this screen's change and leaves the result standing.
-    if (foreignListingChange(state, previous)) Object.assign(change, this.invalidateTest());
+    if (foreignListingChange(state, previous, moved)) Object.assign(change, this.invalidateTest());
     if (state.loading !== previous.loading) change.loading = state.loading;
     if (state.error !== previous.error) change.error = this.loadFailure(state.error);
     if (Object.keys(change).length > 0) this.publish(change);
@@ -124,9 +124,8 @@ export class ProviderInstances {
       throw new Error("Provider configuration is unavailable for editing");
     this.connect();
     this.publish({ busy: true, ...this.invalidateTest() });
-    // A failed reply can still follow a write the hub applied: the store
-    // re-reads after a refused instance write, and a credential write's echo
-    // refetches; never retry a credential or instance mutation.
+    // Never retry a credential or instance mutation: a lost reply is the hub's
+    // echo to reconcile.
     try {
       await action();
     } finally {

@@ -14,7 +14,12 @@ import { useStore } from "zustand";
 import { type ConnectionStoreState, connectionStore } from "./connection";
 import { ownClientId } from "./mutationClientIdentity";
 
-export { isStaleListingRefusal, StaleListingRefusal, staleListingHeld } from "@evener/appwire-client/state/credentials";
+export {
+  foreignListingChange,
+  isStaleListingRefusal,
+  StaleListingRefusal,
+  staleListingHeld,
+} from "@evener/appwire-client/state/credentials";
 
 export type CredentialsStoreState = CredentialInstancesState;
 

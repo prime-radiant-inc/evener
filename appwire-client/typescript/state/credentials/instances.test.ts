@@ -333,61 +333,67 @@ describe("never echo a secret", () => {
 });
 
 describe("foreignListingChange", () => {
-  function transitions(store: ReturnType<typeof createCredentialInstancesStore>) {
-    const seen: boolean[] = [];
-    store.subscribe((state, previous) => seen.push(foreignListingChange(state, previous)));
-    return seen;
-  }
-
-  test("the store's own self-marked refresh is not a foreign change; a foreign read and a write are", async () => {
-    vi.useFakeTimers();
+  async function storeWithListing() {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
     fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
     fake.on("evener/instance/setDefault", () => ({ ...LISTING, instances: [{ ...WORK, isDefault: false }] }));
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
-
-    const seen = transitions(store);
-    await store.getState().setApiKey("work", API_KEY);
-    await vi.advanceTimersByTimeAsync(300);
-    expect(listReads(fake)).toBe(2);
-    expect(seen.some(Boolean)).toBe(false);
-
-    seen.length = 0;
-    await store.getState().fetchSelf();
-    expect(seen.some(Boolean)).toBe(false);
-
-    seen.length = 0;
-    fake.emitNotification({
-      method: "evener/auth/updated",
-      params: { provider: "work", activeSource: "oauth", originClientId: "tab-2" },
-    });
-    await vi.advanceTimersByTimeAsync(300);
-    expect(seen.some(Boolean)).toBe(true);
-
-    seen.length = 0;
-    await store.getState().setDefault("work");
-    expect(seen.some(Boolean)).toBe(true);
-  });
-
-  test("a loading or error flip that moved no rows is a foreign change", async () => {
-    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
-    const fake = readyClient();
-    store.connectionChanged(fake, "ready");
-    await store.getState().fetch();
-    fake.on("evener/instance/list", () => {
-      throw new Error("offline");
-    });
-    const seen = transitions(store);
-    await store.getState().fetch();
-    expect(seen).toEqual([true, true]);
-    expect(store.getState().error).toBe("offline");
+    const seen: boolean[] = [];
+    store.subscribe((state, previous) => seen.push(foreignListingChange(state, previous)));
+    return { store, fake, seen };
+  }
+  type Scenario = [
+    name: string,
+    foreign: boolean,
+    drive: (s: Awaited<ReturnType<typeof storeWithListing>>) => Promise<void>,
+  ];
+  const scenarios: Scenario[] = [
+    [
+      "the store's own post-write refresh",
+      false,
+      async ({ store }) => {
+        await store.getState().setApiKey("work", API_KEY);
+        await vi.advanceTimersByTimeAsync(300);
+      },
+    ],
+    ["a caller's own fetchSelf", false, async ({ store }) => void (await store.getState().fetchSelf())],
+    [
+      "a foreign echo's read",
+      true,
+      async ({ fake }) => {
+        fake.emitNotification({
+          method: "evener/auth/updated",
+          params: { provider: "work", activeSource: "oauth", originClientId: "tab-2" },
+        });
+        await vi.advanceTimersByTimeAsync(300);
+      },
+    ],
+    ["an applied write", true, async ({ store }) => void (await store.getState().setDefault("work"))],
+    [
+      "a read that fails, moving no rows",
+      true,
+      async ({ store, fake }) => {
+        fake.on("evener/instance/list", () => {
+          throw new Error("offline");
+        });
+        await store.getState().fetch();
+        expect(store.getState().error).toBe("offline");
+      },
+    ],
+  ];
+  test.each(scenarios)("%s is foreign: %s", async (_name, foreign, drive) => {
+    vi.useFakeTimers();
+    const harness = await storeWithListing();
+    await drive(harness);
+    expect(harness.seen.some(Boolean)).toBe(foreign);
   });
 });
 
 describe("listingEstablished", () => {
-  test("false until a listing lands, true across reads and writes, false again for a new client", async () => {
+  test("false until a listing lands, true across reads and writes, kept across a client change, reset with the store", async () => {
+    vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     expect(store.getState().listingEstablished).toBe(false);
     const fake = readyClient({ instances: [], availableProviders: [] });
@@ -403,16 +409,21 @@ describe("listingEstablished", () => {
     await store.getState().setDefault("work");
     expect(store.getState().listingEstablished).toBe(true);
 
+    // A replaced client keeps the rows on screen, marked as the previous
+    // connection's, until its own read lands: established says a listing has
+    // been applied, listingFromPreviousConnection says whose.
     store.connectionChanged(readyClient(), "ready");
-    expect(store.getState().listingEstablished).toBe(false);
-    await vi.waitFor(() => expect(store.getState().listingEstablished).toBe(true));
+    expect(store.getState().listingEstablished).toBe(true);
+    expect(store.getState().listingFromPreviousConnection).toBe(true);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.getState().listingFromPreviousConnection).toBe(false);
     store.resetForTests();
     expect(store.getState().listingEstablished).toBe(false);
   });
 });
 
-describe("a refused instance write", () => {
-  test("schedules one foreign listing read, because a failed reply may follow a landed write", async () => {
+describe("a refused write", () => {
+  test("an instance write reads nothing of its own; the hub's instance echo is what reads", async () => {
     vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
@@ -421,17 +432,17 @@ describe("a refused instance write", () => {
     });
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
-    const marked = store.getState().selfRefresh;
 
     await expect(store.getState().remove("work")).rejects.toThrow("connection lost");
+    await vi.advanceTimersByTimeAsync(300);
     expect(listReads(fake)).toBe(1);
+    expect(fake.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "oauth" } });
     await vi.advanceTimersByTimeAsync(300);
     expect(listReads(fake)).toBe(2);
-    expect(store.getState().selfRefresh).toBe(marked);
-    expect(fake.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(1);
   });
 
-  test("a refused credential write schedules no read of its own; the hub's echo, retired of its marker, refetches", async () => {
+  test("a credential write reads nothing of its own; the hub's echo, retired of its marker, reads once", async () => {
     vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();

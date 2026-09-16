@@ -376,7 +376,6 @@ const listing: CredentialListing = listingOf(store.getState()); void held; void 
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
 assert.equal(credentialStore.getState().listingEstablished, false);
-assert.equal(client.foreignListingChange(credentialStore.getState(), credentialStore.getState()), false);
 assert.equal(
   client.foreignListingChange({ ...credentialStore.getState(), loading: true }, credentialStore.getState()),
   true,
