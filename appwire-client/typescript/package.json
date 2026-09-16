@@ -24,6 +24,11 @@
       "types": "./dist/state/navigation/index.d.ts",
       "import": "./dist/state/navigation/index.js",
       "require": "./dist/state/navigation/index.js"
+    },
+    "./state/credentials": {
+      "types": "./dist/state/credentials/index.d.ts",
+      "import": "./dist/state/credentials/index.js",
+      "require": "./dist/state/credentials/index.js"
     }
   },
   "scripts": {

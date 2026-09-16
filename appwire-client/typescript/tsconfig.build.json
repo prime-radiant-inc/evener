@@ -71,6 +71,8 @@
     "state/navigation/immutable.ts",
     "state/navigation/merge.ts",
     "state/navigation/types.ts",
+    "state/credentials/index.ts",
+    "state/credentials/instances.ts",
     "spawnSchema.ts",
     "spawnPluginSelectionState.ts",
     "spawnHarnessModels.ts",
