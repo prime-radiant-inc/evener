@@ -1944,3 +1944,46 @@ func TestRosterListsARestartRequiredEntryOnlyForItsOwnProcess(t *testing.T) {
 		}
 	}
 }
+
+// A spawned daemon's confirmation can replace a prior session on the same PID
+// before any full refresh sees the swap; the old session's subscribers are
+// owed the same departure announcement a refresh would give them, once.
+func TestRosterConfirmedReplacementOnAPIDAnnouncesTheOldSessionGone(t *testing.T) {
+	dir := t.TempDir()
+	old := rendezvous.Entry{PID: 1001, SessionID: "01OLD", ThreadID: "01OLD", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	writeRendezvous(t, dir, old)
+	prober := &flakyProber{sessionID: "01OLD"}
+	roster := NewRoster(dir, prober)
+	roster.SetProcessAlive(func(int) bool { return true })
+	var announced []string
+	roster.SetOnSessionGone(func(gone LiveEntry) { announced = append(announced, gone.SessionID) })
+	roster.Refresh()
+	if _, ok := roster.Find("01OLD"); !ok {
+		t.Fatal("the old session was not confirmed")
+	}
+
+	// The spawner writes the replacement's file for the same PID, and the
+	// daemon behind it answers for the new session.
+	replacement := old
+	replacement.SessionID, replacement.ThreadID = "01NEW", "01NEW"
+	writeRendezvous(t, dir, replacement)
+	prober.sessionID = "01NEW"
+	if _, err := roster.ReadSpawnedThread(context.Background(), replacement, func(context.Context) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "01NEW", SessionID: "01NEW"}}, nil
+	}); err != nil {
+		t.Fatalf("confirm the replacement: %v", err)
+	}
+	if _, ok := roster.Find("01NEW"); !ok {
+		t.Fatal("the replacement was not published")
+	}
+	if _, ok := roster.Find("01OLD"); ok {
+		t.Fatal("the replaced session is still listed")
+	}
+	if len(announced) != 1 || announced[0] != "01OLD" {
+		t.Fatalf("replacement announced %v, want the old session gone once", announced)
+	}
+	roster.Refresh()
+	if len(announced) != 1 {
+		t.Fatalf("the next refresh announced the departure again: %v", announced)
+	}
+}

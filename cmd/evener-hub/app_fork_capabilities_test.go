@@ -369,7 +369,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 func TestHubForkCapabilityFencesOnlyUnconfirmedTarget(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), SessionID: "uncertain", ThreadID: "uncertain"})
-	roster := hubcore.NewRoster(runDir, &fakeProber{shouldFail: true})
+	roster := liveClaimRoster(runDir, &fakeProber{shouldFail: true})
 	roster.Refresh()
 	if roster.OwnershipError() != nil || len(roster.UnconfirmedEntries()) != 1 {
 		t.Fatalf("expected target-specific uncertainty: error=%v entries=%v", roster.OwnershipError(), roster.UnconfirmedEntries())
@@ -631,7 +631,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			runDir := t.TempDir()
 			cfg := hubcore.WebConfig{
 				StateDir: root, Past: past, RunDir: runDir,
-				Roster: liveClaimRoster(runDir), ResumeLocks: hubcore.NewResumeLocks(),
+				Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
 				DaemonProcesses: liveClaimController(),
 			}
 			if tc.fence != nil {
@@ -1787,7 +1787,7 @@ func TestHubForkReportsDeletionEvenWhenTheRefreshFails(t *testing.T) {
 
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, DeletionStore: store,
-				Roster: liveClaimRoster(runDir), ResumeLocks: hubcore.NewResumeLocks(),
+				Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
 			}
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {

@@ -30,15 +30,16 @@ func processAlive(pid int) bool {
 // own PID is a stale one whose PID the hub reused. An entry without the fields
 // verification needs answers Unknown.
 func processIdentity(entry rendezvous.Entry) ProcessIdentity {
-	if !processAlive(entry.PID) {
+	// Positive evidence that needs nothing from the entry comes first: the
+	// hub's own PID, and a process that is gone. A legacy entry naming
+	// either, without the fields verification needs, must not read as
+	// unknown and stay parked.
+	if entry.PID == os.Getpid() || !processAlive(entry.PID) {
 		return ProcessNotOwner
 	}
 	target := DaemonTarget(entry)
 	if target.SessionID == "" || !filepath.IsAbs(target.StateDir) || target.StartedAt.IsZero() {
 		return ProcessIdentityUnknown
-	}
-	if entry.PID == os.Getpid() {
-		return ProcessNotOwner
 	}
 	switch identity, _ := daemonprocess.Identify(target); identity {
 	case daemonprocess.IdentityOwner:

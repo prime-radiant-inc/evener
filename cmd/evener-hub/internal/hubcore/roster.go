@@ -652,7 +652,6 @@ func (r *Roster) refresh() error {
 		byPID[e.PID] = live
 	}
 
-	fp := rosterFingerprint(bySess)
 	r.mu.Lock()
 	if generation < r.publishedGen {
 		r.mu.Unlock()
@@ -682,48 +681,72 @@ func (r *Roster) refresh() error {
 				bySess[live.SessionID] = live
 			}
 		}
-		fp = rosterFingerprint(bySess)
 	}
 	r.publishedGen = generation
-	// Departures are measured against the publication immediately before
-	// this one, taken here under the lock: two refreshes that overlapped
-	// each snapshot the same earlier state, and would both announce one
-	// session gone.
-	prevBySess, prevUnconfirmed := r.bySess, r.unconfirmed
-	r.bySess = bySess
-	r.byPID = byPID
-	ownershipChanged := r.ownershipErr != nil || !slices.Equal(r.unconfirmed, unconfirmed)
+	ownershipCleared := r.ownershipErr != nil
 	r.ownershipErr = nil
-	r.unconfirmed = unconfirmed
-	changed := fp != r.fingerprint || ownershipChanged
-	r.fingerprint = fp
-	statusChanges := make([]string, 0)
+	publication := r.publishListingLocked(bySess, byPID, unconfirmed)
+	publication.changed = publication.changed || ownershipCleared
+	r.mu.Unlock()
+	publication.fire()
+	return nil
+}
+
+// listingPublication is one swap of the listing and what it owes the hooks:
+// which sessions changed status, which left, and whether anything observable
+// moved at all.
+type listingPublication struct {
+	changed        bool
+	statusChanges  []string
+	gone           []LiveEntry
+	onStatusChange func(sessionID string)
+	onSessionGone  func(gone LiveEntry)
+	onChange       func()
+}
+
+// publishListingLocked replaces the listing and accounts for it against the
+// publication immediately before, under r.mu (the caller holds it, and fires
+// the result after unlocking). It is the one place a session can leave the
+// listing, however the publication came about - a full refresh or a single
+// spawned daemon's confirmation - so a departure is announced from here and
+// nowhere else, and measured against the state actually being replaced:
+// two publications that overlapped each snapshot the same earlier state, and
+// would otherwise both announce one session gone.
+func (r *Roster) publishListingLocked(bySess map[string]LiveEntry, byPID map[int]LiveEntry, unconfirmed []rendezvous.Entry) listingPublication {
+	prevBySess, prevUnconfirmed := r.bySess, r.unconfirmed
+	fp := rosterFingerprint(bySess)
+	publication := listingPublication{
+		changed:        fp != r.fingerprint || !slices.Equal(prevUnconfirmed, unconfirmed),
+		gone:           sessionsGone(prevBySess, prevUnconfirmed, bySess, unconfirmed),
+		onStatusChange: r.onStatusChange,
+		onSessionGone:  r.onSessionGone,
+		onChange:       r.onChange,
+	}
 	for id, cur := range bySess {
 		if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
-			statusChanges = append(statusChanges, id)
+			publication.statusChanges = append(publication.statusChanges, id)
 		}
 	}
-	sort.Strings(statusChanges)
-	gone := sessionsGone(prevBySess, prevUnconfirmed, bySess, unconfirmed)
-	onStatusChange := r.onStatusChange
-	onSessionGone := r.onSessionGone
-	onChange := r.onChange
-	r.mu.Unlock()
+	sort.Strings(publication.statusChanges)
+	r.bySess, r.byPID, r.unconfirmed, r.fingerprint = bySess, byPID, unconfirmed, fp
+	return publication
+}
 
-	if onStatusChange != nil {
-		for _, id := range statusChanges {
-			onStatusChange(id)
+// fire runs the hooks a publication owes, outside the lock.
+func (p listingPublication) fire() {
+	if p.onStatusChange != nil {
+		for _, id := range p.statusChanges {
+			p.onStatusChange(id)
 		}
 	}
-	if onSessionGone != nil {
-		for _, entry := range gone {
-			onSessionGone(entry)
+	if p.onSessionGone != nil {
+		for _, entry := range p.gone {
+			p.onSessionGone(entry)
 		}
 	}
-	if changed && onChange != nil {
-		onChange()
+	if p.changed && p.onChange != nil {
+		p.onChange()
 	}
-	return nil
 }
 
 // sessionsGone is every session the previous publication still held - listed
@@ -1206,9 +1229,10 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
 		}
 		return nil
 	}
-	previous, hadPrevious := r.bySess[live.SessionID]
 	bySess, byPID := maps.Clone(r.bySess), maps.Clone(r.byPID)
 	if old, ok := byPID[entry.PID]; ok && bySess[old.SessionID].PID == entry.PID {
+		// A prior session on the same PID leaves the listing here, and
+		// publishListingLocked announces it exactly as a refresh would.
 		delete(bySess, old.SessionID)
 	}
 	bySess[live.SessionID], byPID[entry.PID] = live, live
@@ -1218,18 +1242,9 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
 			unconfirmed = append(unconfirmed, claim)
 		}
 	}
-	fp := rosterFingerprint(bySess)
-	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
-	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
+	publication := r.publishListingLocked(bySess, byPID, unconfirmed)
 	r.entryPublishedGen[entry.PID] = generation
-	r.fingerprint = fp
-	onChange, onStatusChange := r.onChange, r.onStatusChange
 	r.mu.Unlock()
-	if hadPrevious && previous.Status != live.Status && onStatusChange != nil {
-		onStatusChange(live.SessionID)
-	}
-	if changed && onChange != nil {
-		onChange()
-	}
+	publication.fire()
 	return nil
 }

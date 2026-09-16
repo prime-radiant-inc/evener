@@ -113,3 +113,13 @@ func TestRosterTreatsItsOwnPIDAsAnotherProcess(t *testing.T) {
 		t.Fatalf("the file should read as crashed, got ok=%v entry=%+v", ok, live)
 	}
 }
+
+// A legacy entry names the hub's own PID and none of the fields verification
+// needs. The hub is never a daemon, so that is positive evidence before
+// anything else is asked; read as unknown it would stay unconfirmed forever.
+func TestProcessIdentityOfTheHubsOwnPIDIsNotOwnerBeforeAnyOtherCheck(t *testing.T) {
+	legacy := rendezvous.Entry{PID: os.Getpid(), ThreadID: "01LEGACY", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
+	if got := processIdentity(legacy); got != ProcessNotOwner {
+		t.Fatalf("processIdentity(hub's own PID, no state dir) = %v, want NotOwner", got)
+	}
+}

@@ -9691,7 +9691,7 @@ func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method 
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
 	writeRendezvous(t, runDir, entry)
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	if !roster.HasConfirmedEntry(entry) {
 		t.Fatal("owner not confirmed")
