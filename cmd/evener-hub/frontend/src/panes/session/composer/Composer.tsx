@@ -198,12 +198,8 @@ export function Composer({ ref, focused }: ComposerProps) {
   // cursor-restore layout effect in the commit that carries the edit.
   const cursorToRestoreRef = useRef<number | null>(null);
   const [cursorRestoreSeq, setCursorRestoreSeq] = useState(0);
-  // A programmatic edit parks the caret it wants and bumps the sequence, so
-  // the layout effect below applies it in the same commit as the edit whether
-  // or not the edit changed `text`. Keyed on `text` alone, an edit that left
-  // the text as it was (an empty recovered draft activated into an empty
-  // composer) parked a caret that the user's NEXT keystroke then applied,
-  // sending every following character ahead of the first.
+  // Parks the caret a programmatic edit wants and forces a commit, so the
+  // layout effect below applies it even when the edit left `text` unchanged.
   const scheduleCursorRestore = useCallback((cursor: number): void => {
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
@@ -742,7 +738,8 @@ export function Composer({ ref, focused }: ComposerProps) {
   // reconciliation - only then is it safe to move the native cursor without
   // React clobbering it. Keyed on the schedule, not on `text`: ordinary typing
   // schedules nothing and never runs this, and an edit that left the text as
-  // it was still lands its caret now rather than on the user's next keystroke.
+  // it was (an empty recovered draft activated into an empty composer) still
+  // lands its caret in this commit instead of parking it for the next edit.
   // biome-ignore lint/correctness/useExhaustiveDependencies: cursorRestoreSeq is a deliberate trigger-only dep - the effect body reads the ref the schedule filled
   useLayoutEffect(() => {
     const cursor = cursorToRestoreRef.current;

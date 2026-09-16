@@ -332,15 +332,23 @@ function notAcceptedError(clientMutationId: string): WireError {
   });
 }
 
-async function seedRejectedRecovery(storage: MutationOutboxIndexedDB, ref: string, text: string) {
-  const input = [{ type: "text", text }];
+// `intent` overrides the record's method and input; the default is a turn/start
+// carrying `text`, and a drain rejected with nothing queued carries no input.
+async function seedRejectedRecovery(
+  storage: MutationOutboxIndexedDB,
+  ref: string,
+  text: string,
+  intent: { method?: string; input?: unknown[] } = {},
+) {
+  const method = intent.method ?? "turn/start";
+  const input = intent.input ?? [{ type: "text", text }];
   const outbox = await storage.enqueueIntent({
     targetRef: ref,
     threadId: "thread_a",
-    method: "turn/start",
+    method,
     payload: { ref, input },
     attachments: [],
-    optimisticDisplay: { method: "turn/start", input },
+    optimisticDisplay: { method, input },
   });
   const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!recovered) throw new Error("failed to seed recovery");
@@ -559,24 +567,11 @@ test("confirmed goal replacement invalidates pending attachments without later c
 });
 
 test("a recovery that leaves the text unchanged does not move the caret on the next keystroke", async () => {
-  // A drain sent while a turn/queue was still in flight comes back rejected
-  // ("queue revision changed") carrying no input; its auto-activation writes
-  // the same empty text the composer already holds. The cursor restore that
-  // write schedules must not wait for a later, unrelated text change: that
-  // change is the user's next keystroke, and restoring 0 there puts every
-  // following character ahead of the first (#1308).
+  // A rejected turn/drainAsSteer recovers with no input, so its activation
+  // writes the same empty text the composer already holds (#1308).
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
-  const outbox = await storage.enqueueIntent({
-    targetRef: "ref_a",
-    threadId: "thread_a",
-    method: "turn/drainAsSteer",
-    payload: { ref: "ref_a", input: [] },
-    attachments: [],
-    optimisticDisplay: { method: "turn/drainAsSteer", input: [] },
-  });
-  const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
-  if (!recovered) throw new Error("failed to seed recovery");
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "", { method: "turn/drainAsSteer", input: [] });
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
   // Activated, then discarded again by the recovery persistence because the

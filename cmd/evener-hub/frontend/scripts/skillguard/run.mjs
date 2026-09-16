@@ -951,9 +951,7 @@ class Driver {
         label: `${label} click to take effect (attempt ${attempt}/${attempts})`,
       }).catch(() => false);
       if (landed) return;
-      // A re-click is a second gesture the product really receives; name it,
-      // so a failure downstream can be read against what the app was asked.
-      console.error(`skillguard: ${label}: click ${attempt} had no observed effect; re-clicking`);
+      if (attempt < attempts) console.error(`skillguard: ${label}: click ${attempt} had no observed effect; re-clicking`);
     }
     const diagnosis = await evaluate(
       this.send,
@@ -962,27 +960,31 @@ class Driver {
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
-  // Every scripted turn replies with the SAME sentinel, and the transcript
-  // VIRTUALIZES its rows: only the rows near the end are mounted, and which
-  // ones changes with the footer's height (a draft and its chip row shrink
-  // the viewport, a cleared composer grows it back). A baseline of the
-  // mounted reply rows therefore cannot tell a new reply from an older row
-  // mounting back in; the transport scenario once passed 3ms after the
-  // network came back, with the retried mutation still in the outbox, on
-  // exactly that. The reply is awaited in the turn that carries the submitted
-  // prose instead: a user message and the reply it earned live in the same
-  // turn, so a turn holding both is evidence of THIS turn's reply whatever
-  // else is mounted. Grouped by turn id because a turn can render as several
-  // segments that share it.
-  async waitForReply(prose, { timeoutMs = 25000 } = {}) {
+  // turnTextsExpr evaluates to one session's mounted transcript text per turn:
+  // the pane's turn-blocks that share a data-turn-id, concatenated, because a
+  // turn can render as several segments (TranscriptBody's turnRow). Scoped to
+  // the pane because turn ids are session-local and two sessions are mounted.
+  // Only the rows near the end are mounted, and which ones changes with the
+  // footer's height, so a wait must ask about a turn's own content, never
+  // about which rows exist.
+  turnTextsExpr(ref) {
+    return `(() => { const byTurn = new Map();
+      const pane = ${this.paneScopeExpr(ref)};
+      for (const el of pane ? pane.querySelectorAll("[data-testid='turn-block']") : []) {
+        const id = el.getAttribute("data-turn-id");
+        byTurn.set(id, (byTurn.get(id) ?? "") + (el.textContent ?? ""));
+      }
+      return [...byTurn.values()]; })()`;
+  }
+
+  // Every scripted turn replies with the SAME sentinel, so a reply is only
+  // evidence of THIS turn when it sits in the turn that carries the submitted
+  // prose; a baseline of mounted reply rows cannot tell a new reply from an
+  // older row mounting back in.
+  async waitForReply(ref, prose, { timeoutMs = 25000 } = {}) {
     await this.waitPage(
-      `(() => { const byTurn = new Map();
-        for (const el of document.querySelectorAll("[data-testid='turn-block']")) {
-          const id = el.getAttribute("data-turn-id");
-          byTurn.set(id, (byTurn.get(id) ?? "") + (el.textContent ?? ""));
-        }
-        return [...byTurn.values()].some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null; })()`,
-      { timeoutMs, label: `the reply to ${JSON.stringify(prose)}` },
+      `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`,
+      { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
     );
   }
 }
@@ -1054,7 +1056,7 @@ async function runScenarios(driver) {
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("submitted-canonical", { ref: driver.sessionA, prose: PROSE.canonical });
   driver.milestone("draft-after-commit", await evaluate(driver.send, driver.draftStorageExpr()));
-  await driver.waitForReply(PROSE.canonical);
+  await driver.waitForReply(driver.sessionA, PROSE.canonical);
 
   // ---- scenario: draft thread-switch / remount ----
   await driver.focusComposer(driver.sessionA);
@@ -1157,7 +1159,7 @@ async function runScenarios(driver) {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
   driver.control("release");
-  await driver.waitForReply(PROSE.queueTurn);
+  await driver.waitForReply(driver.sessionA, PROSE.queueTurn);
   driver.milestone("drain-released", {});
 }
 
@@ -1185,7 +1187,7 @@ async function runScenariosPart2(driver) {
   // texts into ONE user message (interrupt semantics), which is a different
   // shape than the one this scenario's provider assertions describe.
   await driver.waitPage(
-    `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(PROSE.steerTurn)})) ? true : null)()`,
+    `(() => ${driver.turnTextsExpr(driver.sessionA)}.some((text) => text.includes(${JSON.stringify(PROSE.steerTurn)})) ? true : null)()`,
     { label: "steered turn's input visible in the transcript" },
   );
   driver.milestone("steer-turn-started", { prose: PROSE.steerTurn });
@@ -1196,7 +1198,7 @@ async function runScenariosPart2(driver) {
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("steered", { prose: PROSE.steer });
   driver.control("release");
-  await driver.waitForReply(PROSE.steerTurn);
+  await driver.waitForReply(driver.sessionA, PROSE.steerTurn);
   driver.milestone("steer-released", {});
 
   // ---- scenario: attachment preservation ----
@@ -1234,7 +1236,7 @@ async function runScenariosPart2(driver) {
     prose: PROSE.attachment,
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
-  await driver.waitForReply(PROSE.attachment);
+  await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
   // ---- scenario: capability loss ----
   await driver.openSession(driver.sessionB);
@@ -1315,7 +1317,7 @@ async function runScenariosPart2(driver) {
   await driver.selectSkillChip(driver.sessionA);
   await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   await driver.waitForComposerCleared(driver.sessionA);
-  await driver.waitForReply(PROSE.fail);
+  await driver.waitForReply(driver.sessionA, PROSE.fail);
   driver.milestone("fail-retried", { prose: PROSE.fail });
 
   // ---- scenario: delayed accepted-send vs newer chip edit ----
@@ -1345,7 +1347,7 @@ async function runScenariosPart2(driver) {
   driver.milestone("delay-edited", editedState);
   await driver.removeSkillChip(driver.sessionA);
   driver.control("release");
-  await driver.waitForReply(PROSE.delay);
+  await driver.waitForReply(driver.sessionA, PROSE.delay);
   const keptState = await driver.composerState(driver.sessionA);
   check(keptState.text.includes(PROSE.delayExtra), `delayed commit clobbered the newer draft: ${JSON.stringify(keptState)}`);
   check(keptState.chips.length === 0, `delayed commit restored the removed chip: ${JSON.stringify(keptState)}`);
@@ -1381,7 +1383,7 @@ async function runScenariosPart2(driver) {
   // Connectivity restored: the outbox retries (the window's online event and
   // the heartbeat's reconnect both wake it) and the same durable mutation is
   // delivered exactly once.
-  await driver.waitForReply(PROSE.transport, { timeoutMs: 45000 });
+  await driver.waitForReply(driver.sessionA, PROSE.transport, { timeoutMs: 45000 });
   const onlineDurable = await evaluate(driver.send, driver.durableRecordsExpr());
   driver.milestone("net-restored", { durable: onlineDurable });
 }
