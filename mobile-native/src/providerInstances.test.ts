@@ -3,12 +3,14 @@ import type {
   AnyNotification,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import type { CredentialListing } from "@evener/appwire-client/state/credentials";
+import {
+  type CredentialListing,
+  createCredentialInstancesStore,
+} from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderInstances } from "./providerInstances";
 
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -43,8 +45,11 @@ function boundary() {
       };
     },
   } as ConversationClientLike;
-  const model = new ProviderInstances(client);
-  return { model, io, requests, handlers };
+  // The screen owns the store and its connection; the model drives it.
+  const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
+  store.connectionChanged(client, "ready");
+  const model = new ProviderInstances(store);
+  return { model, io, requests, handlers, store, client };
 }
 // Another client (or the TUI) changed a provider's credentials: the hub's
 // broadcast reaches every listener on the connection.
@@ -75,6 +80,9 @@ it("drops a late response after leaving a hub and detaches its notifications", a
   a.io.request = () => pending.promise;
   a.model.start();
   a.model.dispose();
+  // Leaving the hub is the screen's to say: it tells the store the connection
+  // closed, which detaches the store's listener from that client.
+  a.store.connectionChanged(null, "closed");
   await b.model.refresh();
   pending.resolve(listing("hub A"));
   await pending.promise;
@@ -83,6 +91,27 @@ it("drops a late response after leaving a hub and detaches its notifications", a
   expect(b.model.getSnapshot().data).toEqual(listing("initial"));
   await expect(a.model.remove("old hub")).rejects.toThrow("closed");
   expect(a.requests).toHaveLength(1);
+});
+// held is a listing with rows: what a list remounted after a sign-in finds
+// already in the store.
+const held = { ...listing("held"), availableProviders: [{ id: "anthropic", protocol: "anthropic", auth: "bearer", implicit: true }] };
+it("start publishes the rows the store already holds for this connection without a read", async () => {
+  const { model, io, requests, store } = boundary();
+  io.request = async () => held;
+  await store.getState().fetch();
+  const reads = requests.length;
+  model.start();
+  expect(model.getSnapshot().data).toEqual(held);
+  expect(requests).toHaveLength(reads);
+});
+it("start reads when the rows the store holds belong to a replaced connection", async () => {
+  const { model, io, requests, store, client } = boundary();
+  io.request = async () => held;
+  await store.getState().fetch();
+  store.connectionChanged({ ...client } as typeof client, "ready");
+  const reads = requests.length;
+  model.start();
+  await vi.waitFor(() => expect(requests.length).toBe(reads + 1));
 });
 it("refetches when auth changes during a read instead of publishing the stale result", async () => {
   vi.useFakeTimers();
