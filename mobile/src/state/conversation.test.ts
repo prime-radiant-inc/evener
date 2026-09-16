@@ -5040,12 +5040,14 @@ describe("ConversationStore", () => {
     return { type: "userMessage", id, text };
   }
 
+  // text undefined is a sparse wire item (no text field), as a live
+  // item/started or a sparse item/completed carries.
   function agentMessageItem(
     id: string,
-    text: string,
+    text: string | undefined,
     status = "completed",
   ): ThreadItem {
-    return { type: "agentMessage", id, text, status };
+    return { type: "agentMessage", id, status, ...(text === undefined ? {} : { text }) };
   }
 
   function reasoningItem(
@@ -5087,6 +5089,16 @@ describe("ConversationStore", () => {
       },
       olderCursor: null,
     };
+  }
+
+  // A store opened through openProjected onto a fresh fake service serving
+  // `thread` as its projection.
+  async function openProjectedThread(thread: Thread) {
+    const service = new FakeConversationService();
+    service.readProjectionResult = makeReadProjectionResult(thread);
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+    return store;
   }
 
   // Helper: wrap a real ActivityStore as a LiveActivitySink.
@@ -6852,20 +6864,11 @@ describe("ConversationStore", () => {
         turns: [makeTurn({ id: "t1", status: "inProgress", items })],
         evener: evenerWith({ activeTurnId: "t1" }),
       });
-    const agentMessage = (over: Partial<ThreadItem> = {}): ThreadItem =>
-      ({ id: "a1", type: "agentMessage", turnId: "t1", status: "inProgress", ...over }) as ThreadItem;
-    async function openLive(thread: Thread) {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(thread);
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      return store;
-    }
     const modelItem = (store: ReturnType<typeof createConversationStore>, id: string) =>
       store.getState().conversation?.turns.flatMap((turn) => turn.items).find((item) => item.id === id);
 
     it("carries a delta stream into the model's item, and a sparse completion keeps it", async () => {
-      const store = await openLive(withActiveTurn([agentMessage()]));
+      const store = await openProjectedThread(withActiveTurn([agentMessageItem("a1", undefined, "inProgress")]));
       for (const delta of ["hello ", "world"]) {
         store.getState().applyNotification({
           method: "item/agentMessage/delta",
@@ -6874,7 +6877,7 @@ describe("ConversationStore", () => {
       }
       store.getState().applyNotification({
         method: "item/completed",
-        params: { ...target, turnId: "t1", item: agentMessage({ status: "completed" }) },
+        params: { ...target, turnId: "t1", item: agentMessageItem("a1", undefined, "completed") },
       } as AnyNotification);
       expect(modelItem(store, "a1")).toMatchObject({ text: "hello world", status: "completed" });
       // The row applier is untouched until c-2b: today it re-projects the
@@ -6883,7 +6886,7 @@ describe("ConversationStore", () => {
     });
 
     it("appends one steering item to the active turn in the model", async () => {
-      const store = await openLive(withActiveTurn([]));
+      const store = await openProjectedThread(withActiveTurn([]));
       store.getState().applyNotification({
         method: "evener/steering/injected",
         params: { ...target, text: "go left", kind: "user", source: "user", startedAt: 1000 },
@@ -6895,7 +6898,7 @@ describe("ConversationStore", () => {
     });
 
     it("clears modelRetry when the model's own output item completes", async () => {
-      const store = await openLive(withActiveTurn([agentMessage()]));
+      const store = await openProjectedThread(withActiveTurn([agentMessageItem("a1", undefined, "inProgress")]));
       store.getState().applyNotification({
         method: "evener/thread/modelRetry",
         params: { ...target, attempt: 1, maxAttempts: 3, delayMs: 10, groupElapsedMs: 5, attemptCap: 3, turnId: "t1" },
@@ -6903,7 +6906,7 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.modelRetry).toMatchObject({ attempt: 1, maxAttempts: 3 });
       store.getState().applyNotification({
         method: "item/completed",
-        params: { ...target, turnId: "t1", item: agentMessage({ status: "completed", text: "done" }) },
+        params: { ...target, turnId: "t1", item: agentMessageItem("a1", "done", "completed") },
       } as AnyNotification);
       expect(store.getState().conversation?.modelRetry).toBeUndefined();
     });
@@ -6912,7 +6915,7 @@ describe("ConversationStore", () => {
     // wire-true to land and is dropped. The row applier still appends its
     // failure row until c-2b — model-only until then.
     it("drops a warning without an active turn in the model while the row applier still shows it", async () => {
-      const store = await openLive(makeThread());
+      const store = await openProjectedThread(makeThread());
       store.getState().applyNotification({
         method: "warning",
         params: { ...target, title: "Provider", message: "careful" },

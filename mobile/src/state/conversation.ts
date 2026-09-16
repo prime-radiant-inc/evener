@@ -864,8 +864,9 @@ export function createConversationStore() {
   // path. Nothing awaits between the response and the commit (the service's
   // readProjection and rehydrate below each await the read alone), so there
   // is no window to buffer for; the web's applyHydrationResponseCut drops its
-  // buffer at the same point for the same reason. Item-level notifications
-  // still merge through liveOwnedRevs below until D23c routes them here too.
+  // buffer at the same point for the same reason. Every item frame folds into
+  // this model too (dual-write, see applyNotification); liveOwnedRevs below
+  // survives only for the display rows until c-2b projects them from here.
   //
   // The package reducer over the conversation. Every reducer case spreads the
   // model it was given, so the display rows (and anything else native keeps
@@ -2853,6 +2854,7 @@ export function createConversationStore() {
           // evener/thread/resync triggers a coalesced rehydrate via the store-owned
           // drain scheduler. The store does not re-read on its own.
           case "evener/thread/resync": {
+            publishModel();
             if (state.ref !== null) {
               requestRehydrate(state.ref);
             }
