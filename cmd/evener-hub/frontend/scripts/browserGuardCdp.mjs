@@ -304,18 +304,18 @@ export async function navigateTo({ ws, send }, url) {
     ws.addEventListener("message", handler);
   }), 30000, "navigateTo").finally(() => ws.removeEventListener("message", handler));
   try {
-    await withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate");
-  } catch (error) {
-    // The navigate never happened, so nothing will ever load. Settling the wait
-    // here is what takes the listener off and clears its timer: left pending it
-    // would hold the guard's event loop open for another 30 seconds and then
-    // reject with nobody awaiting it, which Node turns into a crash that buries
-    // the error being thrown right here.
+    // Observe both immediately: the load tripwire can fire while Page.navigate
+    // is still pending. Serial awaits leave that first rejection unhandled.
+    await Promise.all([
+      loaded,
+      withTimeout(send("Page.navigate", { url }), 30000, "Page.navigate"),
+    ]);
+  } finally {
+    // A failed command may never produce a load event. Release that wait (and
+    // its listener/timer) without replacing the error Promise.all observed.
     abandonLoad();
-    await loaded.catch(() => {});
-    throw error;
+    await Promise.allSettled([loaded]);
   }
-  await loaded;
 }
 
 /**
