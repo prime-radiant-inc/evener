@@ -15,6 +15,17 @@
 // the replacement would have accepted, so the "one new turn" assertion fails.
 // The committed value is false; the RED run flips it, observes the named
 // assertion fail, then restores it.
+
+import type {
+  AnyNotification,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+  TurnStartParams,
+  WebSocketLike,
+} from "@evener/appwire-client";
+import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
+import { FAKE_INITIALIZE_RESULT } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test } from "vitest";
@@ -25,16 +36,6 @@ import {
   subscribeComposerSubmissionCommitted,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
-import { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "@evener/appwire-client";
-import { FAKE_INITIALIZE_RESULT } from "@evener/appwire-client/testing/fakeSocket";
-import type {
-  AnyNotification,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-  TurnStartParams,
-  WebSocketLike,
-} from "@evener/appwire-client";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";

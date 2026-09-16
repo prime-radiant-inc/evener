@@ -17,9 +17,9 @@
 // allow retire when probe is stale"; this component does not carry eligibility
 // hints forward from a previous render.
 
-import { useCallback, useEffect, useState } from "react";
-import { friendlyErrorMessage } from "@evener/appwire-client";
 import type { DaemonBlocker, DaemonIdentity, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
+import { useCallback, useEffect, useState } from "react";
 import { daemonResidentsStore, residentRowKey, useDaemonResidentsStore } from "../../../stores/daemonResidents";
 import { Button, ConfirmDialog, EmptyState, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

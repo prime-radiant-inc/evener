@@ -9,16 +9,11 @@
 // directly, matching the convention established in QueueStrip.test.tsx and
 // the widget tests.
 
+import type { DaemonIdentity, DaemonListResponse, DaemonResident, DaemonRetireResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import type {
-  DaemonIdentity,
-  DaemonListResponse,
-  DaemonResident,
-  DaemonRetireResponse,
-} from "@evener/appwire-client";
 import { connectionStore } from "../../../stores/connection";
 import { resetDaemonResidentsStoreForTests } from "../../../stores/daemonResidents";
 import { HubResidents } from "./hubResidents";

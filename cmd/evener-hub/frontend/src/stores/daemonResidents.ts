@@ -14,10 +14,10 @@
 //   • On request failure, existing data is kept (not blanked); only `error`
 //     is updated. This matches the "retain stale rows" requirement.
 
+import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { errorText } from "@evener/appwire-client";
-import type { DaemonIdentity, DaemonListResponse, DaemonRetireResponse } from "@evener/appwire-client";
 import { connectionStore } from "./connection";
 
 export interface DaemonResidentsStoreState {
