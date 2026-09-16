@@ -307,7 +307,10 @@ func TestWriteFoldRecordLocked_NoEntryTurnDoesNotStealSteeringSeq(t *testing.T) 
 	steer.Seq = seqFoldInjectedSteering // the fold-injected marker; its durable Seq is the steering write's
 	published := []schema.Turn{summary, noEntry, steer}
 	// steeringSeqs holds the durable Seq the fold wrote the steering turn at.
-	s.writeFoldRecordLocked(published, 0, []schema.Turn{summary}, []int{headSeq}, []int{42}, "fold-x")
+	if _, err := s.writeFoldRecordLocked(published, 0, []schema.Turn{summary}, []int{headSeq}, []int{42}, "fold-x"); err != nil {
+		s.attentionMu.Unlock()
+		t.Fatalf("writeFoldRecordLocked: %v", err)
+	}
 	s.attentionMu.Unlock()
 
 	rec := foldRecordFromTranscript(t, s)
@@ -444,6 +447,146 @@ func TestAttachTranscript_StampsHeldTurnAfterInheritedPrefix(t *testing.T) {
 	}
 	if s.history[1].Seq < 0 {
 		t.Fatalf("held boundary Seq = %d, want a real durable Seq after attach (it was stamped at index 0 instead)", s.history[1].Seq)
+	}
+}
+
+// contentWriteFailFS fails, with a clean rollback, any write whose payload
+// contains failMark, and passes every other write through.
+type contentWriteFailFS struct {
+	afero.Fs
+	failMark string
+}
+
+func (fs *contentWriteFailFS) Create(name string) (afero.File, error) {
+	f, err := fs.Fs.Create(name)
+	if err != nil {
+		return nil, err
+	}
+	return &contentWriteFailFile{File: f, mark: fs.failMark}, nil
+}
+
+type contentWriteFailFile struct {
+	afero.File
+	mark string
+}
+
+func (f *contentWriteFailFile) Write(p []byte) (int, error) {
+	if f.mark != "" && bytes.Contains(p, []byte(f.mark)) {
+		return 0, errors.New("injected write failure")
+	}
+	return f.File.Write(p)
+}
+
+// M: attachTranscript must consume the seqHeldPreAttach markers in flush order
+// with a cursor. When one held write fails, its marker must be consumed (set
+// NoTranscriptEntrySeq) so a later successful write cannot rescan back onto the
+// failed turn — which would name the failed turn the success's entry and strand
+// the successful turn at the marker.
+func TestAttachTranscript_FailedHeldWriteDoesNotStealNextSeq(t *testing.T) {
+	fs := &contentWriteFailFS{Fs: afero.NewMemMapFs(), failMark: "first-held-fails"}
+	w, err := transcript.NewWriterWithFS(fs, "/session.jsonl", transcript.Header{SessionID: "held-fail"})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+	s := &Session{id: "held-fail", stateDir: t.TempDir()}
+	first := schema.NewTurn(schema.TurnUserInput, llm.User("first-held-fails"))
+	first.Seq = seqHeldPreAttach
+	second := schema.NewTurn(schema.TurnUserInput, llm.User("second-held-ok"))
+	second.Seq = seqHeldPreAttach
+	s.history = []schema.Turn{first, second}
+	s.pendingTranscriptTurns = []schema.Turn{first, second}
+
+	s.attachTranscript(w)
+
+	if s.history[0].Seq != schema.NoTranscriptEntrySeq {
+		t.Fatalf("failed held turn Seq = %d, want NoTranscriptEntrySeq (its marker consumed, not stamped with the next success's Seq)", s.history[0].Seq)
+	}
+	if s.history[1].Seq < 0 {
+		t.Fatalf("successful held turn Seq = %d, want its real durable Seq (it was stranded at the marker)", s.history[1].Seq)
+	}
+}
+
+// L end-to-end: a turn recorded during a fold whose write fails becomes a
+// merge-back turn with no durable entry; the fold must surface the loss.
+func TestFold_MergeBackWriteFailureIsSurfaced(t *testing.T) {
+	entered := make(chan struct{})
+	proceed := make(chan struct{})
+	var calls atomic.Int32
+	s := newScriptedSummaryCompactSession(t, "mergeback-write-fail", func(llm.Request) llm.Response {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-proceed
+		}
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	seedNumberedSessionHistory(t, s, 12)
+
+	const concurrentText = "recorded mid-fold; its write fails"
+	fw, err := transcript.NewWriterWithFS(&contentWriteFailFS{Fs: afero.NewMemMapFs(), failMark: concurrentText}, "/t.jsonl", transcript.Header{SessionID: s.id})
+	if err != nil {
+		t.Fatalf("NewWriterWithFS: %v", err)
+	}
+	t.Cleanup(func() { _ = fw.Close() })
+	s.mu.Lock()
+	s.transcript = fw
+	s.mu.Unlock()
+	drainPendingEvents(s)
+
+	compactErr := make(chan error, 1)
+	go func() { compactErr <- s.Compact(context.Background()) }()
+	<-entered
+	turn := schema.NewTurn(schema.TurnUserInput, llm.User(concurrentText))
+	s.recordTurn(turn, turn) // its write fails (clean rollback); the turn stays in history with no durable entry
+	close(proceed)
+	if err := <-compactErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	surfaced := false
+	for _, ev := range drainPendingEvents(s) {
+		if ev.Kind != events.EventWarning {
+			continue
+		}
+		if wd, ok := ev.Data.(events.WarningData); ok && strings.Contains(wd.Message, "no durable entry and will not survive restart") {
+			surfaced = true
+		}
+	}
+	if !surfaced {
+		t.Fatal("a merge-back turn with a failed write was dropped without a warning")
+	}
+}
+
+// L: a merge-back turn whose own write failed has no durable entry, so the fold
+// record cannot name it and it is dropped on restart while the model still
+// holds it. writeFoldRecordLocked must report that loss so the transaction can
+// warn rather than diverge silently.
+func TestWriteFoldRecordLocked_ReportsLostMergeBack(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "lost-mergeback", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("ok")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	s.attentionMu.Lock()
+	summary := schema.NewTurn(schema.TurnSummary, llm.User("summary"))
+	headSeq, err := s.writeTranscriptLocked(summary)
+	if err != nil {
+		s.attentionMu.Unlock()
+		t.Fatalf("write head marker: %v", err)
+	}
+	kept := schema.NewTurn(schema.TurnUserInput, llm.User("kept"))
+	kept.Seq = 4
+	lostMB := schema.NewTurn(schema.TurnUserInput, llm.User("recorded during fold, write failed"))
+	lostMB.Seq = schema.NoTranscriptEntrySeq // its recordTurn write failed
+	published := []schema.Turn{summary, kept, lostMB}
+	lost, err := s.writeFoldRecordLocked(published, 1, []schema.Turn{summary}, []int{headSeq}, nil, "fold-x")
+	s.attentionMu.Unlock()
+	if err != nil {
+		t.Fatalf("writeFoldRecordLocked: %v", err)
+	}
+	if lost != 1 {
+		t.Fatalf("lostMergeBack = %d, want 1 (the failed-write merge-back turn)", lost)
+	}
+	if rec := foldRecordFromTranscript(t, s); rec == nil || len(rec.RetainedSeqs) != 1 || rec.RetainedSeqs[0] != 4 {
+		t.Fatalf("RetainedSeqs = %v, want [4]: only the kept turn with a durable entry", rec)
 	}
 }
 

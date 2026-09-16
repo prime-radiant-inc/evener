@@ -602,6 +602,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	var compactionTurnWriteErrs []error
 	var steeringWriteErrs []error
 	var foldRecordWriteErr error
+	var foldLostMergeBack int
 	commitTranscriptsLocked := func(published []schema.Turn) {
 		if commit.receipt != nil {
 			for i := range pendingCompactionTurns {
@@ -628,7 +629,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		if commit.receipt != nil && commit.receipt.Operation.PublicationID != "" {
 			foldID = commit.receipt.Operation.PublicationID
 		}
-		foldRecordWriteErr = s.writeFoldRecordLocked(published, commit.mergeBackCount, pendingCompactionTurns, markerSeqs, steeringSeqs, foldID)
+		foldLostMergeBack, foldRecordWriteErr = s.writeFoldRecordLocked(published, commit.mergeBackCount, pendingCompactionTurns, markerSeqs, steeringSeqs, foldID)
 		// Resolve the live history copies of the turns this fold just wrote —
 		// its head marker and its injected steering — to the real Seqs they
 		// spent. Without this the next fold would see them still carrying their
@@ -675,6 +676,14 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 			// bug — so this must never be silent, even though the in-memory
 			// publish already stands.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("fold record write failed; retained tail will not survive restart: %v", foldRecordWriteErr)})
+		}
+		if foldLostMergeBack > 0 {
+			// A turn recorded during the fold never became durable (its own
+			// write failed, already warned by recordTurn) yet remains in the
+			// running model's history; the fold record cannot name a
+			// non-existent entry, so it is dropped on restart. Surface the loss
+			// rather than let live and durable silently diverge.
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("%d turn(s) recorded during compaction have no durable entry and will not survive restart", foldLostMergeBack)})
 		}
 		if artifactProduced && !superseded {
 			s.steerCompactionTranscriptReminderForFold(commit.publishedRevision)
@@ -978,10 +987,14 @@ func (s *Session) stampFoldWrittenSeqsLocked(published, markers []schema.Turn, m
 // did not, so a restart would silently fall back to the last-marker anchor and
 // drop the retained tail. A whole-line-unsynced record IS a record (queued on
 // the writer and surfaced separately), so it returns nil; so does a fold with
-// no durable marker to anchor.
-func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount int, markers []schema.Turn, markerSeqs, steeringSeqs []int, foldID string) error {
+// no durable marker to anchor. lostMergeBack counts merge-back turns whose own
+// write failed (no durable entry): they cannot be named and are dropped on
+// restart, so the transaction warns rather than lose them silently — the
+// pre-A2 pair log re-appended their persisted (evidence-redacted) form, which
+// no longer exists here.
+func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount int, markers []schema.Turn, markerSeqs, steeringSeqs []int, foldID string) (lostMergeBack int, err error) {
 	if len(published) == 0 || len(markers) == 0 {
-		return nil
+		return 0, nil
 	}
 	headSeq, found := headMarkerSeq(published, markers, markerSeqs)
 	if !found || headSeq < 0 {
@@ -992,7 +1005,7 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount 
 		// falls back to the pre-fold history rather than naming a phantom
 		// entry (which the unspent-seq reuse would resolve to this very record).
 		// The marker's own write failure is surfaced by handleCompactionTurnEffects.
-		return nil
+		return 0, nil
 	}
 	keptTail := published[1 : len(published)-mergeBackCount]
 	mergeBack := published[len(published)-mergeBackCount:]
@@ -1023,15 +1036,26 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount 
 	}
 	for _, turn := range mergeBack {
 		// Merge-back turns went through recordTurn, so a recorded one carries
-		// its real Seq and a failed one carries NoTranscriptEntrySeq (omitted).
+		// its real Seq and a failed one carries NoTranscriptEntrySeq. A failed
+		// one has no durable entry to name and so is dropped on restart while
+		// the running model still holds it. We surface it rather than recover
+		// it: the pre-A2 pair log re-appended its PERSISTED form (redacting a
+		// tool result's private evidence), and that form no longer exists here
+		// — re-appending the live turn could leak that evidence, so the safe
+		// action the transaction can take is to name the loss. (recordTurn
+		// already warned about the write failure itself when it happened.)
+		if turn.Seq == schema.NoTranscriptEntrySeq {
+			lostMergeBack++
+			continue
+		}
 		name(turn)
 	}
 	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
 	record.Fold = &schema.FoldRecord{FoldID: foldID, Layers: []int{headSeq}, RetainedSeqs: retained}
 	if _, err := s.writeTranscriptDurableLocked(record); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
-		return err
+		return lostMergeBack, err
 	}
-	return nil
+	return lostMergeBack, nil
 }
 
 // emitSteeringTurnRecords reports the records' transcript-write outcomes and

@@ -2165,6 +2165,17 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
+	// The held turns were appended to history carrying the seqHeldPreAttach
+	// marker, in this same flush order, so the i-th held turn is the i-th
+	// still-marked turn in history. Consume the markers with a forward cursor —
+	// held[i] to the i-th marker — rather than rescanning from the start each
+	// time: a rescan would let a FAILED write's turn (still marked) absorb a
+	// later successful write's Seq, naming the wrong entry and stranding the
+	// successful turn. The cursor is used, not held[i]==history[i]: a fork
+	// delegate's history leads with its inherited prefix, so the markers do not
+	// start at index 0. Every held turn's marker is consumed (a failed write's
+	// turn becomes NoTranscriptEntrySeq via recordedSeq) so none is left marked.
+	cursor := 0
 	for _, t := range held {
 		seq, err := w.Append(t)
 		if err != nil {
@@ -2173,18 +2184,13 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 			// has not fired yet — same reasoning as the NewSession transcript-
 			// create-failed warning above it in the buffer's doc comment.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			continue
 		}
-		// The held turns were appended to history carrying the seqHeldPreAttach
-		// marker; stamp them, in flush order, with the Seq each write spent so
-		// the fold can name them by Seq. Stamp by FINDING the next turn still
-		// carrying the marker rather than assuming held[i] is history[i]: a fork
-		// delegate's history leads with its inherited prefix (already stamped
-		// with its own entries), so the held boundary turn is not at index 0.
 		s.mu.Lock()
-		for j := range s.history {
+		for cursor < len(s.history) {
+			j := cursor
+			cursor++
 			if s.history[j].Seq == seqHeldPreAttach {
-				s.history[j].Seq = recordedSeq(seq, err)
+				s.history[j].Seq = recordedSeq(seq, err) // NoTranscriptEntrySeq on a failed write, so a later success cannot land on it
 				break
 			}
 		}
