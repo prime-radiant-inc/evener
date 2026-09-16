@@ -5934,3 +5934,58 @@ test("a completed active turn leaves the status to the frame that follows it (in
   );
   expect(completed.status.type).toBe("active");
 });
+
+// The status is authoritative and the transcript's id can be absent while the
+// session is active (a hydrate cut between turns, or the gap after
+// turn/completed at an inline boundary). A failed completion arriving then
+// must still settle the session idle: the projector emits nothing after it.
+test("a failed turn/completed with no active turn id still settles an active session idle", () => {
+  const initial = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "ref_t", 1000);
+  expect(initial.activeTurnId).toBeUndefined();
+  const failed = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_x", status: "failed", itemsView: "", error: { message: "boom" } },
+      },
+    },
+    2000,
+  );
+  expect(failed.status.type).toBe("idle");
+});
+
+// A failed completion for a turn that another turn has since superseded is
+// stale bookkeeping about the past, not the session's state.
+test("a failed turn/completed for a superseded turn leaves the active session alone", () => {
+  const initial = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { activeTurnId: "turn_2" },
+        turns: [
+          { id: "turn_1", status: "completed", itemsView: "full", items: [] },
+          { id: "turn_2", status: "inProgress", itemsView: "full", items: [] },
+        ],
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const folded = applyNotification(
+    initial,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_1", status: "failed", itemsView: "", error: { message: "late" } },
+      },
+    },
+    2000,
+  );
+  expect(folded.status.type).toBe("active");
+  expect(folded.activeTurnId).toBe("turn_2");
+});

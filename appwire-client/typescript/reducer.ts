@@ -1194,7 +1194,19 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const params = n.params;
       const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
-      if (model.activeTurnId !== turnId) return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
+      if (model.activeTurnId !== turnId) {
+        const folded = foldNonActiveTurnCompleted(model, turnId, params.turn, now);
+        // The status is authoritative and the transcript's id can be absent
+        // while the session is active (a hydrate cut between turns, or the gap
+        // after turn/completed at an inline boundary). A failed completion
+        // arriving then is still the session's own failure with no status
+        // frame behind it, so it settles the session idle; a failed completion
+        // for a turn another turn has since superseded (the id names a
+        // different turn) is bookkeeping about the past and leaves the status.
+        const failedWithoutId =
+          params.turn.status === "failed" && model.activeTurnId === undefined && model.status.type === "active";
+        return failedWithoutId ? { ...folded, status: { type: "idle" } } : folded;
+      }
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
       let settledTurn: TurnModel;
