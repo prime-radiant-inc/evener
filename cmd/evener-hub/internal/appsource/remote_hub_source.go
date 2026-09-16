@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -234,6 +235,32 @@ func containsWord(text, word string) bool {
 func isWordByte(b byte) bool {
 	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9' || b == '_'
 }
+
+// remoteThreadListBudget is the deadline one controller-side ListThreads call
+// runs under, in place of the local-daemon budget (app_threadlist.go).
+//
+// This source's list resolves its client through the SSH manager, which
+// attaches the host on first use: an ssh spawn, an AppWire initialize and a
+// preflight (call → RemoteHubClientFunc → sshconn.Manager.Ensure). The
+// transport's own connect bound alone is 10s and the attach as a whole can run
+// the restart/deploy ladder, so a three-second budget does not describe this
+// call: it cuts a working attach off, and the timeout that results is
+// indistinguishable from a broken host, because both are just "no threads".
+// An unfiltered list then drops the whole host and reports success.
+//
+// This is what one list is worth waiting for: it covers the transport's 10s
+// connect bound (sshconn's defaultConnectTimeout) plus the handshake with
+// margin, so a host that cannot be reached fails on its own transport rather
+// than on the list budget, and it stays far below the preflight and deploy
+// bounds (sshconn's attemptLimit, 70s by default, and deployLimit, 10m) that no
+// request may block on. An attach that outlives it is a sustained outage rather
+// than a cold start, and that is the fleet's attachment state to report
+// (component 06), not something a list may wait out.
+const remoteThreadListBudget = 15 * time.Second
+
+// ThreadListBudget reports the deadline ListThreads needs, over the fan-out's
+// local-daemon default. See remoteThreadListBudget.
+func (s *RemoteHubSource) ThreadListBudget() time.Duration { return remoteThreadListBudget }
 
 func (s *RemoteHubSource) ListThreads(ctx context.Context, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	// The controller selected only other sources. remapRemoteSourceIDs would

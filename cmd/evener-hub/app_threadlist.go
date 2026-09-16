@@ -13,7 +13,42 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
+// threadListSourceTimeout bounds one source's thread/list work. A local
+// daemon's list is a loopback call whose failure is that daemon's own problem,
+// so three seconds is enough to decide whether to wait for it.
 const threadListSourceTimeout = 3 * time.Second
+
+// threadListBudgetSource is a source whose ListThreads needs a deadline of its
+// own instead of the local-daemon budget. A remote hub source is the case: its
+// list resolves a client through the SSH manager, which attaches the host on
+// first use — a spawn, an initialize handshake and a preflight that routinely
+// outlive three seconds and can take the restart/deploy ladder.
+//
+// Budgeting only the local-daemon call is not merely impatient with such a
+// source: the timeout that cuts a cold attach off is indistinguishable from a
+// genuinely unavailable host, so an unfiltered list drops the whole host and
+// still reports success — an entire machine's threads disappear from the
+// sidebar with nothing to say anything failed. A source that reports a budget
+// is given it, so the attach completes and the host is listed.
+type threadListBudgetSource interface {
+	// ThreadListBudget reports the deadline one ListThreads call needs. A
+	// non-positive value means the source has no budget of its own and the
+	// caller's default applies.
+	ThreadListBudget() time.Duration
+}
+
+// threadListTimeoutFor returns the deadline one source's ListThreads runs
+// under: the budget the source reports, or fallback (the local-daemon budget)
+// for every source that reports none. Local daemons never attach, so their
+// three-second budget is unchanged.
+func threadListTimeoutFor(source appsource.Source, fallback time.Duration) time.Duration {
+	if budgeted, ok := source.(threadListBudgetSource); ok {
+		if budget := budgeted.ThreadListBudget(); budget > 0 {
+			return budget
+		}
+	}
+	return fallback
+}
 
 const threadListSourceWorkers = 4
 
@@ -21,6 +56,10 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	return hubThreadListWithSourceTimeout(ctx, cfg, sources, params, threadListSourceTimeout)
 }
 
+// hubThreadListWithSourceTimeout fans one list out across every allowed source.
+// sourceTimeout is the budget for a source that reports none of its own (the
+// local-daemon default in production); a threadListBudgetSource is given the
+// deadline it reports instead.
 func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams, sourceTimeout time.Duration) (appwire.ThreadListResponse, error) {
 	threads := make([]appwire.Thread, 0)
 	liveIDs := map[string]struct{}{}
@@ -51,7 +90,11 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 						return
 					}
 					source := allSources[index]
-					sourceCtx, cancel := context.WithTimeout(ctx, sourceTimeout)
+					// One source's list may have to attach a transport first (a
+					// remote host's cold SSH attach); such a source reports the
+					// budget that call needs, and every other source keeps the
+					// local-daemon deadline the caller passed.
+					sourceCtx, cancel := context.WithTimeout(ctx, threadListTimeoutFor(source, sourceTimeout))
 					resp, err := source.ListThreads(sourceCtx, params)
 					cancel()
 					results <- sourceResult{index: index, resp: resp, err: err}
