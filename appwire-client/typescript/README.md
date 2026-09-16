@@ -25,7 +25,11 @@ share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
-tasks panel and native tasks sheet render from, the display formatters
+tasks panel and native tasks sheet render from, and the tasks-panel store
+both render out of (`createTasksPanelStore(listTasks)`: the triple plus a
+coalescing `refresh` and a notification-following `watch`, over a
+`TasksListRead` port so the web's reconnect-waiting read and native's direct
+one both fit), the display formatters
 both apps render counts, durations and clock times with, the text and
 argument helpers a tool call's rendering is built from, the marketplace
 source label both apps show beside a registered marketplace,
@@ -38,7 +42,10 @@ options, provider grouping, per-row metadata and the flat picker row list),
 the launch-config engine's pure half both apps' launch settings are built on
 (option grouping, layer filtering, the form state populate/collect pair, the
 inherited entries a collection control ghosts in, and the add-a-path decision
-every path list gates on), the new-session form's pure trio both apps' spawn
+every path list gates on) with its wire gateway - `createLaunchConfigStore(client)`,
+a framework-free store over the schema/layer/resolve/trust/path-validate
+methods with a per-instance schema cache - and the per-layer draft editor
+(`LaunchSettings`) the native settings screen drives over it, the new-session form's pure trio both apps' spawn
 surfaces share (the per-launch option filter and override collection with the
 schema-wins model/effort precedence, the plugin selection state and its
 launchOverrides merge, and the harness rules: which harnesses take evener
@@ -53,12 +60,19 @@ its registry is a framework-free store factory, `createKeybindingsRegistry(parse
 returning a `getState`/`setState`/`subscribe` triple each app wraps for its
 own view layer, and its chord parsing goes through a `KeybindingParser` port
 the host supplies (tinykeys' `parseKeybinding` in both apps), so the package
-names neither a store library nor a parser - and the doc-pane URL builders, which hang
+names neither a store library nor a parser; that triple is
+`createFrameworkFreeStore`, the base every shared store here is built on; the
+disclosure store both transcripts keep a row's open/closed choice in across a
+remount (`createDisclosureStore()`, the triple plus store-bound actions, read
+reactively through the `isDisclosureOpenIn` selector) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy.
+origin nor a credentials policy. The hub overview store,
+`createHubOverviewStore(client)`, is the same framework-free triple over a
+`request`-only client port; it holds the fetch-once settings-overview read
+both apps' hub settings render from.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

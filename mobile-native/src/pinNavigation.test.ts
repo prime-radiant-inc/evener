@@ -7,7 +7,12 @@ import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationPages } from "./navigationPages";
-import { readPinLocation, refreshPinNavigation } from "./pinNavigation";
+import {
+	followPinCatalog,
+	pinSectionAsShown,
+	readPinLocation,
+	refreshPinNavigation,
+} from "./pinNavigation";
 
 function boundary({
 	locationGeneration = "g",
@@ -291,5 +296,134 @@ describe("native pin navigation readback", () => {
 			}),
 		).rejects.toThrow();
 		expect(calls).toEqual([]);
+	});
+});
+
+describe("following the pin catalog", () => {
+	function harness({
+		canRead = () => true,
+	}: { canRead?: () => boolean } = {}) {
+		let onInvalidated: (() => void) | null = null;
+		let stale = false;
+		const reads: { resolve(): void; reject(): void }[] = [];
+		const pages = {
+			watch: (handler?: () => void) => {
+				onInvalidated = handler ?? null;
+				return () => {
+					onInvalidated = null;
+				};
+			},
+			getSnapshot: () => ({ stale }),
+		} as unknown as NavigationPages<{ id: string; name: string; count: number }>;
+		const follower = followPinCatalog(
+			pages,
+			() =>
+				new Promise<void>((resolve, reject) => {
+					reads.push({ resolve, reject: () => reject(Error("raced")) });
+				}),
+			canRead,
+		);
+		return {
+			follower,
+			reads,
+			// The store marks its rows stale before handing the re-read over.
+			invalidate: () => {
+				stale = true;
+				onInvalidated?.();
+			},
+			watching: () => onInvalidated !== null,
+			// A read's own catalog refresh clears the flag when it succeeds.
+			setStale: (value: boolean) => {
+				stale = value;
+			},
+		};
+	}
+	const tick = () => new Promise((resolve) => setTimeout(resolve));
+	it("reads once per invalidation; a change the read's refresh absorbed costs nothing", async () => {
+		const { reads, invalidate, setStale } = harness();
+		invalidate();
+		invalidate();
+		expect(reads).toHaveLength(1);
+		setStale(false);
+		reads[0].resolve();
+		await tick();
+		expect(reads).toHaveLength(1);
+		invalidate();
+		expect(reads).toHaveLength(2);
+	});
+	it("queues one trailing read for a change that landed after the read's refresh", async () => {
+		const { reads, invalidate, setStale } = harness();
+		invalidate();
+		setStale(false);
+		invalidate();
+		reads[0].resolve();
+		await tick();
+		expect(reads).toHaveLength(2);
+		setStale(false);
+		reads[1].resolve();
+		await tick();
+		expect(reads).toHaveLength(2);
+	});
+	it("waits while a mutation is pending and reads when drained", () => {
+		let pending = true;
+		const { reads, invalidate, follower } = harness({
+			canRead: () => !pending,
+		});
+		invalidate();
+		expect(reads).toHaveLength(0);
+		pending = false;
+		follower.drain();
+		expect(reads).toHaveLength(1);
+		follower.drain();
+		expect(reads).toHaveLength(1);
+	});
+	it("skips the read when the mutation's own confirmation already caught up", () => {
+		let pending = true;
+		const { reads, invalidate, follower, setStale } = harness({
+			canRead: () => !pending,
+		});
+		invalidate();
+		pending = false;
+		setStale(false);
+		follower.drain();
+		expect(reads).toHaveLength(0);
+	});
+	it("retries a read that ends stale once, then stops", async () => {
+		const { reads, invalidate } = harness();
+		invalidate();
+		reads[0].reject();
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(reads).toHaveLength(2);
+		reads[1].reject();
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(reads).toHaveLength(2);
+	});
+	it("does not retry a read that failed with the pages settled", async () => {
+		const { reads, invalidate, setStale } = harness();
+		invalidate();
+		setStale(false);
+		reads[0].reject();
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(reads).toHaveLength(1);
+	});
+	it("stops watching when told", () => {
+		const { follower, watching } = harness();
+		expect(watching()).toBe(true);
+		follower.stop();
+		expect(watching()).toBe(false);
+	});
+});
+
+describe("the section as shown", () => {
+	const shown = { id: "focus", name: "Focus", count: 2 };
+	it("holds while the catalog still lists it unchanged", () => {
+		expect(pinSectionAsShown([{ id: "other", name: "Other", count: 1 }, shown], shown)).toBe(true);
+	});
+	it.each([
+		["renamed", [{ id: "focus", name: "Renamed", count: 2 }]],
+		["recounted", [{ id: "focus", name: "Focus", count: 3 }]],
+		["missing", [{ id: "other", name: "Other", count: 1 }]],
+	])("is gone once the section is %s", (_case, rows) => {
+		expect(pinSectionAsShown(rows, shown)).toBe(false);
 	});
 });
