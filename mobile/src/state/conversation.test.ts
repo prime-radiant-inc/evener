@@ -3,7 +3,14 @@
 // conflict restore, and no auto-retry.
 
 import { describe, expect, it } from "vitest";
-import { QUEUE_UNAVAILABLE, SEND_UNAVAILABLE, sessionControls, TURN_RUNNING, WireError } from "@evener/appwire-client";
+import {
+  hydrateThread,
+  QUEUE_UNAVAILABLE,
+  SEND_UNAVAILABLE,
+  sessionControls,
+  TURN_RUNNING,
+  WireError,
+} from "@evener/appwire-client";
 import type {
   AnyNotification,
   InputItem,
@@ -18,7 +25,7 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/project";
-import { projectThread } from "../conversation/project";
+import { projectConversation } from "../conversation/project";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -118,25 +125,32 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
 function makeConversation(
   over: Partial<MobileConversation> = {},
 ): MobileConversation {
-  return {
-    threadId: "thread-1",
-    name: "",
+  // Hydrated through the package from a minimal wire Thread, so the fixture
+  // tracks hydrateThread's defaults instead of restating every model field.
+  const thread: Thread = {
+    id: "thread-1",
+    sessionId: "session-1",
+    preview: "hello",
+    ephemeral: false,
     modelProvider: "anthropic",
-    visionModel: "",
+    createdAt: 0,
+    updatedAt: 0,
     // The wire's vocabulary. Idle is the shape the hub publishes when it
     // advertises Send (Send folds !active at the source); the steering
     // submissions name a running turn themselves.
     status: { type: "idle" },
-    items: [],
-    capabilities: ALL_TRUE_CAPS,
-    queue: { revision: 0, depth: 0, preview: [] },
-    usage: null,
-    reasoningEffortLevels: [],
-    supportsReasoning: false,
-    goal: null,
-    tasks: null,
-    askPending: false,
-    pendingEscalations: [],
+    cwd: "",
+    cliVersion: "",
+    source: "",
+    turns: [],
+    evener: {
+      ref: "ref-1",
+      capabilities: ALL_TRUE_CAPS,
+      queue: { revision: 0, depth: 0, preview: [] },
+    },
+  };
+  return {
+    ...projectConversation(hydrateThread({ thread }, "ref-1", 0)),
     ...over,
   };
 }
@@ -5893,7 +5907,7 @@ describe("ConversationStore", () => {
   // --- Fix round 1: I1/I2/I3/I4 — rehydrate/loadOlder ownership, mutation
   // error clear, raw Thread question lifecycle ---
 
-  // Raw Thread fixture helpers for I4 (projectThread-based question tests).
+  // Raw Thread fixture helpers for I4 (projectConversation-based question tests).
   function makeThread(over: Partial<Thread> = {}): Thread {
     return {
       id: "thread-1",
@@ -5977,7 +5991,9 @@ describe("ConversationStore", () => {
     olderCursor: string | null;
   } {
     return {
-      conversation: projectThread(thread),
+      conversation: projectConversation(
+        hydrateThread({ thread }, thread.evener.ref, 0),
+      ),
       activity: {
         tasks: [],
         work: [],
@@ -6400,8 +6416,8 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("I4: raw Thread fixtures through projectThread — question lifecycle", () => {
-    it("completed parseable ask_user drives reread → question rows + askPending via projectThread", async () => {
+  describe("I4: raw Thread fixtures through projectConversation — question lifecycle", () => {
+    it("completed parseable ask_user drives reread → question rows + askPending via projectConversation", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       // Initial: no turns, no pending ask.
@@ -6409,8 +6425,14 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.askPending).toBe(false);
       // After the ask_user notification, the reread returns a Thread with a
-      // completed ask_user turn — projectThread produces question rows.
+      // completed ask_user turn — projectConversation produces question rows.
       const askThread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: { ...ALL_TRUE_CAPS },
+          queue: { revision: 0 },
+          askPending: true,
+        },
         turns: [
           makeTurn({
             id: "t1",
@@ -6439,7 +6461,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       // Wait for the rehydrate effect to finish committing.
       await yieldMicrotask();
-      // The reread must have produced actual question rows via projectThread.
+      // The reread must have produced actual question rows via projectConversation.
       const conv = store.getState().conversation;
       expect(conv?.askPending).toBe(true);
       const questionItem = conv?.items.find((i) => i.kind === "question");
@@ -6453,11 +6475,17 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
-    it("later user-message answer triggers reread → settled/removal via projectThread", async () => {
+    it("later user-message answer triggers reread → settled/removal via projectConversation", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       // Initial: has a pending ask_user.
       const askThread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: { ...ALL_TRUE_CAPS },
+          queue: { revision: 0 },
+          askPending: true,
+        },
         turns: [
           makeTurn({
             id: "t1",
@@ -6471,7 +6499,7 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.askPending).toBe(true);
       const initialReads = service.readProjectionCalls.length;
       // After the user-message, the reread returns a Thread where the ask is
-      // followed by a userMessage — projectThread settles (no question rows,
+      // followed by a userMessage — projectConversation settles (no question rows,
       // askPending false).
       const settledThread = makeThread({
         turns: [
@@ -6819,6 +6847,12 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-1" });
       // Set up R's projection to contain a question.
       const askThread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: { ...ALL_TRUE_CAPS },
+          queue: { revision: 0 },
+          askPending: true,
+        },
         turns: [
           makeTurn({
             id: "t1",
@@ -7126,9 +7160,9 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Residual: R3 — real malformed/incomplete Thread fixtures through projectThread ---
+  // --- Residual: R3 — real malformed/incomplete Thread fixtures through projectConversation ---
 
-  describe("R3: real malformed/incomplete Thread fixtures through projectThread", () => {
+  describe("R3: real malformed/incomplete Thread fixtures through projectConversation", () => {
     it("malformed completed ask_user in raw Thread: conservative activity rows, no question rows, askPending false", async () => {
       // A real raw Thread with a completed ask_user whose argumentsJson is
       // malformed must produce conservative activity rows (not question
@@ -7176,7 +7210,7 @@ describe("ConversationStore", () => {
       // askPending is false — malformed ask does not set pending.
       expect(conv?.askPending).toBe(false);
       // The ask_user is projected as a completed activity row (not a
-      // question), since projectThread's parseAskUserQuestions returns
+      // question), since projectConversation's parseAskUserQuestions returns
       // undefined for malformed argumentsJson.
       const activityItem = conv?.items.find(
         (i) => i.kind === "activity" && i.id === "ask-malformed",
@@ -10521,7 +10555,7 @@ describe("ConversationStore", () => {
   // No vacuous `if` assertions — direct expects on the resolved item.
   describe("Task 2A-Truncation residual: exact reconciliation", () => {
     // Helper: open a conversation via openProjected with the given raw ThreadItem
-    // array (uses projectThread so families are set from the canonical projector).
+    // array (uses projectConversation so families are set from the canonical projector).
     async function openProjectedWithItems(items: ThreadItem[]): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;

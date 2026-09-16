@@ -1,8 +1,10 @@
-// Fixture-driven tests for the AppWire-to-mobile thread projection.
-// Every fixture is a literal Thread wire object; no network, no provider
-// credentials, no ambient state. These exercise projectThread's item
-// classification, clustering, capability/queue/usage projection, and the
-// forward-compatibility rule (unknown item types must NOT disappear).
+// Fixture-driven tests for the native display-row projection over the
+// package's hydrated ThreadModel. Every fixture is a literal Thread wire
+// object; no network, no provider credentials, no ambient state. These
+// exercise projectConversation's item classification and clustering, the
+// forward-compatibility rule (unknown item types must NOT disappear), and
+// native's contract on the thread-level fields hydrateThread supplies
+// (capabilities, queue, usage/cost, reasoning profile, identity).
 
 import { describe, expect, it } from "vitest";
 import type {
@@ -20,7 +22,14 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "./project";
-import { projectThread } from "./project";
+import { hydrateThread } from "@evener/appwire-client";
+import { projectConversation } from "./project";
+
+// The oracle drives the shim exactly as the service does: hydrate the wire
+// Thread through the package, then project the display rows.
+function projectThread(thread: Thread): MobileConversation {
+  return projectConversation(hydrateThread({ thread }, thread.evener.ref, 0));
+}
 
 // --- fixture helpers ---------------------------------------------------------
 
@@ -305,11 +314,11 @@ describe("projectThread", () => {
       });
     });
 
-    it("projects an agentMessage with a delta as streaming while incomplete", () => {
+    it("projects an agentMessage as streaming while its turn is incomplete", () => {
       const t = thread([
         turn(
           "t1",
-          [item({ id: "a1", type: "agentMessage", delta: "partial" })],
+          [item({ id: "a1", type: "agentMessage", text: "partial" })],
           { status: "inProgress" },
         ),
       ]);
@@ -322,23 +331,28 @@ describe("projectThread", () => {
       });
     });
 
-    it("joins text and delta into markdown when both present", () => {
-      const t = thread([
-        turn(
-          "t1",
-          [
-            item({
-              id: "a1",
-              type: "agentMessage",
-              text: "final text",
-              delta: "streaming tail",
-            }),
-          ],
-          { status: "inProgress" },
-        ),
-      ]);
-      const c = projectThread(t);
-      const a = c.items[0];
+    // A snapshot never carries in-flight text (the wire's delta field is set
+    // only by the subagent preview, and hydrateThread ignores it); a live
+    // reducer accumulates it as pendingText chunks, which the row joins onto
+    // the settled text.
+    it("joins settled text and pending delta chunks into markdown", () => {
+      const model = hydrateThread(
+        {
+          thread: thread([
+            turn(
+              "t1",
+              [item({ id: "a1", type: "agentMessage", text: "final text" })],
+              { status: "inProgress" },
+            ),
+          ]),
+        },
+        "ref-1",
+        0,
+      );
+      const streamingItem = model.turns[0]?.items[0];
+      if (!streamingItem) throw new Error("fixture lost its item");
+      streamingItem.pendingText = ["streaming ", "tail"];
+      const a = projectConversation(model).items[0];
       expect(a?.kind).toBe("assistant");
       if (a?.kind === "assistant") {
         expect(a.markdown).toBe("final textstreaming tail");

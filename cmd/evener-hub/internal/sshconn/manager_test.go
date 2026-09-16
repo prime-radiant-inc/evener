@@ -878,11 +878,6 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 			}
 			waitForEvent(t, events, EventAttached) // drain the initial attach
 
-			mu.Lock()
-			failNext = true
-			mu.Unlock()
-			ch1.markLost()
-
 			// Park the chosen contender at the host gate, then let the other one
 			// run to completion, so which goroutine consumes the failure is exact.
 			gate := supGate
@@ -891,6 +886,14 @@ func TestFailedEnsureDuringLinkDropStillRecovers(t *testing.T) {
 			}
 			gate.arm()
 			defer gate.open()
+
+			// Armed before the drop: the supervisor reaches beforeSuperviseGate the
+			// moment it wakes on markLost, and an unarmed hook would let it through.
+			mu.Lock()
+			failNext = true
+			mu.Unlock()
+			ch1.markLost()
+
 			done := make(chan error, 1)
 			go func() {
 				_, err := m.Ensure(context.Background(), "alpha")
