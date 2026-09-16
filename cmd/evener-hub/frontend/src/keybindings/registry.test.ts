@@ -1,7 +1,7 @@
 import { parseKeybinding } from "tinykeys";
 import { describe, expect, test, vi } from "vitest";
 import type { KeybindingParser } from "./chord";
-import { createKeybindingsRegistry, GLOBAL_SCOPE } from "./registry";
+import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsState } from "./registry";
 
 describe("the parser port", () => {
   test("string chords parse through the parser the registry was created with", () => {
@@ -10,6 +10,57 @@ describe("the parser port", () => {
     const binding = registry.getState().registerBinding({ id: "b1", actionId: "a1", chord: "ignored" });
     expect(binding.chord).toEqual([{ modifiers: ["Meta"], optionalModifiers: [], key: "z" }]);
     expect(registry.parseKeybinding).toBe(parse);
+  });
+});
+
+describe("store shape", () => {
+  test("two registries share nothing: actions, bindings and scopes registered in one never appear in the other", () => {
+    const first = createKeybindingsRegistry(parseKeybinding);
+    const second = createKeybindingsRegistry(parseKeybinding);
+    first.getState().registerAction("a", vi.fn());
+    first.getState().registerBinding({ id: "b1", actionId: "a", chord: "$mod+K" });
+    first.getState().pushScope("settings");
+    expect(second.getState().actions.size).toBe(0);
+    expect(second.getState().bindings).toEqual([]);
+    expect(second.getState().scopeStack).toEqual([]);
+    // The same chord in the same scope is free in the other registry.
+    expect(() => second.getState().registerBinding({ id: "b1", actionId: "a", chord: "$mod+K" })).not.toThrow();
+  });
+
+  test("subscribe delivers the new and previous state on every change; the disposer stops delivery", () => {
+    const registry = createKeybindingsRegistry(parseKeybinding);
+    const before = registry.getState();
+    const listener = vi.fn();
+    const unsubscribe = registry.subscribe(listener);
+    registry.getState().pushScope("a");
+    expect(listener).toHaveBeenCalledTimes(1);
+    const [state, previous] = listener.mock.calls[0] as [KeybindingsState, KeybindingsState];
+    expect(state).toBe(registry.getState());
+    expect(state.scopeStack).toEqual(["a"]);
+    expect(previous).toBe(before);
+    expect(previous.scopeStack).toEqual([]);
+    unsubscribe();
+    registry.getState().pushScope("b");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  test("getInitialState is the creation state, for snapshot-based view bindings", () => {
+    const registry = createKeybindingsRegistry(parseKeybinding);
+    const initial = registry.getState();
+    registry.getState().pushScope("a");
+    expect(registry.getInitialState()).toBe(initial);
+    expect(registry.getState()).not.toBe(initial);
+  });
+
+  test("setState merges a partial or an updater and notifies", () => {
+    const registry = createKeybindingsRegistry(parseKeybinding);
+    const listener = vi.fn();
+    registry.subscribe(listener);
+    registry.setState({ scopeStack: ["x"] });
+    registry.setState((s) => ({ scopeStack: [...s.scopeStack, "y"] }));
+    expect(registry.getState().scopeStack).toEqual(["x", "y"]);
+    expect(typeof registry.getState().pushScope).toBe("function");
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 });
 
