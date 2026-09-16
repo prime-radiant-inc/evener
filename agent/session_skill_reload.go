@@ -551,34 +551,43 @@ func (s *Session) admitCompactedSkillReloads(ctx context.Context, profile *provi
 	// like every other activation route; the reverse window (an obligation whose
 	// carrier never landed) re-delivers from the recorded source at the next
 	// dispatch seam and is the safe one.
-	s.mu.Lock()
-	// Snapshot the transaction's inputs so a failed save can restore them: the
-	// receipts must stay pending and the obligations must not half-admit, or a
-	// retry would re-drive neither and a restart would deliver the reload twice.
-	priorHandoffs := append([]schema.SkillCompactionReceipt(nil), s.skillLifecycle.PendingHandoffs...)
-	priorRevision := s.skillLifecycle.Revision
-	publications := s.consumedReloadPublicationsLocked(outcomes)
-	removed := len(s.removeSkillCompactionHandoffsLocked(publications)) > 0
-	if len(obligations) > 0 {
-		s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligations...)
-	}
-	if removed || len(obligations) > 0 {
-		s.skillLifecycle.Revision++
-	}
-	admittedRevision := s.skillLifecycle.Revision
-	s.mu.Unlock()
-	if removed || len(obligations) > 0 {
-		if err := s.saveMeta(); err != nil {
-			s.mu.Lock()
-			if s.skillLifecycle.Revision == admittedRevision {
-				s.skillLifecycle.PendingHandoffs = priorHandoffs
-				s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, obligations)
-				s.skillLifecycle.Revision = priorRevision
-			}
-			s.mu.Unlock()
-			s.emit(events.EventWarning, warningDataFromError("persisting the compacted skill reload admission failed", err))
-			return err
+	// The receipts are consumed and the obligations admitted only once the
+	// metadata recording both is durable, so mutation, save and rollback are
+	// one critical section under metaSaveMu: a concurrent autosave must not
+	// persist the transient state between a failed save and its restore. The
+	// rollback takes back exactly what this admission changed. s.mu is not
+	// held while the save runs, so a fold publishing in that window can record
+	// a handoff of its own, and both a wholesale pre-admission snapshot and a
+	// rollback skipped because the lifecycle moved would lose a receipt.
+	if err := func() error {
+		s.metaSaveMu.Lock()
+		defer s.metaSaveMu.Unlock()
+		s.mu.Lock()
+		publications := s.consumedReloadPublicationsLocked(outcomes)
+		removed := s.removeSkillCompactionHandoffsLocked(publications)
+		if len(obligations) > 0 {
+			s.skillLifecycle.Obligations = append(s.skillLifecycle.Obligations, obligations...)
 		}
+		changed := len(removed) > 0 || len(obligations) > 0
+		if changed {
+			s.skillLifecycle.Revision++
+		}
+		s.mu.Unlock()
+		if !changed {
+			return nil
+		}
+		err := s.autoSaveMetaLocked()
+		if err != nil {
+			s.mu.Lock()
+			s.restoreSkillCompactionHandoffsLocked(removed)
+			s.skillLifecycle.Obligations = withoutObligationsByInvocationID(s.skillLifecycle.Obligations, obligations)
+			s.skillLifecycle.Revision++
+			s.mu.Unlock()
+		}
+		return err
+	}(); err != nil {
+		s.emit(events.EventWarning, warningDataFromError("persisting the compacted skill reload admission failed", err))
+		return err
 	}
 	for _, carrier := range carriers {
 		// A failed write returns: the obligations are durable, so the body is

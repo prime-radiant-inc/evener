@@ -2126,3 +2126,53 @@ func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn
 		t.Fatalf("handoffs after the retry = %+v, want the receipt consumed", handoffs)
 	}
 }
+
+// TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff: the admission
+// save runs without s.mu, so a fold publishing in that window records a handoff
+// of its own. A rollback that restores a pre-admission snapshot discards it,
+// and one that skips the restore because the lifecycle moved loses the receipt
+// the failed save was supposed to keep. Only what this admission changed comes
+// back, and everything else stays.
+func TestSkillReload_FailedAdmissionSaveKeepsAConcurrentHandoff(t *testing.T) {
+	t.Parallel()
+	const consumed = "pub-consumed-reload"
+	const arrived = "pub-arrived-mid-save"
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	drainSessionEvents(s)
+	// A selection naming only a preload-only skill is consumed with no outcome
+	// at all, so an empty batch is a complete admission for it.
+	plantPreloadRecord(t, s, "opaque", "fixture description")
+	plantReloadReceipt(s, consumed, opaqueReloadSelection)
+	metaFS.before = func() {
+		s.mu.Lock()
+		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
+			Phase: skillCompactionReceiptDelivered,
+			Operation: schema.SkillCompactionOperation{
+				Generation:    2,
+				Selection:     opaqueReloadSelection,
+				PublicationID: arrived,
+			},
+		})
+		s.skillLifecycle.Revision++
+		s.mu.Unlock()
+	}
+
+	budget := &llm.TokenBudget{}
+	if err := s.admitCompactedSkillReloads(context.Background(), nil, budget, 0, &skillActivationBatch{}, nil); err == nil {
+		t.Fatal("a failed admission save must surface an error")
+	}
+	pending := map[string]bool{}
+	for _, handoff := range pendingHandoffsSnapshot(s) {
+		pending[handoff.Operation.PublicationID] = true
+	}
+	if !pending[arrived] {
+		t.Fatalf("handoffs after the failed save = %v, want the handoff recorded while the save ran kept", pending)
+	}
+	if !pending[consumed] {
+		t.Fatalf("handoffs after the failed save = %v, want the unconsumed reload receipt back", pending)
+	}
+}
