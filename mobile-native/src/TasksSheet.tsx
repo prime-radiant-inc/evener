@@ -68,7 +68,10 @@ export function TasksSheet({
       ),
     [],
   );
-  const refresh = () => void store.refresh(sessionRef, hasAggregate);
+  // A thrown port rejects after the store has already settled the entry as
+  // a failure, which the header below shows with Try again; nothing to add.
+  const refresh = () =>
+    void store.refresh(sessionRef, hasAggregate).catch(() => undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: hasAggregate reads a ref, so its identity does not matter
   useEffect(
     () => store.watch(client, sessionRef, threadId, hasAggregate),

@@ -81,6 +81,10 @@ export interface TasksPanelStore extends FrameworkFreeStore<TasksPanelState> {
    * read when a "thread not found" rejection arrives: true means the trigger
    * beside the panel already claims tasks exist, so the rejection is the
    * daemon having gone rather than an empty list.
+   * Rejects (the latest caller only; earlier callers still resolve null)
+   * when a port throws - `hasAggregate` is the host's - after the entry has
+   * already been settled as a failure carrying that error, so a caller with
+   * nothing to add to what the entry shows may ignore the rejection.
    */
   refresh(ref: string, hasAggregate: () => boolean): Promise<TasksFetchResult | null>;
   /** Loads the list now and again on every evener/task/updated or
@@ -169,19 +173,16 @@ interface RefreshRun {
   waiters: RefreshWaiter[];
 }
 
-/** Hands the run's outcome to its callers: the owner (latest caller) gets
- * the published result, every earlier caller null; a thrown port (a host's
- * hasAggregate) rejects all of them. */
+/** Hands the run's outcome to its callers: every earlier caller resolves
+ * null either way, and the owner (latest caller) gets the published result -
+ * or the rejection when a port (a host's hasAggregate) threw, so exactly one
+ * caller sees each outcome. */
 function settleRun(run: RefreshRun, outcome: { published: TasksFetchResult | null } | { error: unknown }): void {
   const waiters = run.waiters.splice(0);
   const owner = waiters.pop();
-  if ("error" in outcome) {
-    for (const waiter of waiters) waiter.reject(outcome.error);
-    owner?.reject(outcome.error);
-    return;
-  }
   for (const waiter of waiters) waiter.resolve(null);
-  owner?.resolve(outcome.published);
+  if ("error" in outcome) owner?.reject(outcome.error);
+  else owner?.resolve(outcome.published);
 }
 
 /** Builds an empty store that reads task lists through `listTasks`. */
@@ -304,16 +305,19 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
     ...store,
     refresh,
     watch(notifications, ref, threadId, hasAggregate) {
+      // A push has no caller to hand a rejection to; the entry already
+      // carries the failure a thrown port produced (see refresh).
+      const refreshFromPush = () => refresh(ref, hasAggregate).catch(() => undefined);
       const stop = notifications.onNotification((n) => {
         if (
           (n.method === "evener/task/updated" || n.method === "evener/thread/resync") &&
           n.params.ref === ref &&
           n.params.threadId === threadId
         ) {
-          void refresh(ref, hasAggregate);
+          void refreshFromPush();
         }
       });
-      void refresh(ref, hasAggregate);
+      void refreshFromPush();
       return stop;
     },
   };

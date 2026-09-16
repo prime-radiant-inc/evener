@@ -263,3 +263,38 @@ test("a thrown hasAggregate settles the entry as a failure, not a spinner", asyn
   expect(entry?.loading).toBe(false);
   expect(entry?.failure?.sentence).toContain("model gone");
 });
+
+test("a thrown hasAggregate rejects only the run's owner; earlier callers still resolve null", async () => {
+  let complete!: (value: unknown) => void;
+  const store = createTasksPanelStore(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const throwing = () => {
+    throw new Error("model gone");
+  };
+  const first = store.refresh("local:test", throwing);
+  const owner = store.refresh("local:test", throwing);
+  // Only a rejection classifies through hasAggregate; make the read reject.
+  const failing = new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  complete(Promise.reject(failing));
+  await expect(owner).rejects.toThrow("model gone");
+  expect(await first).toBeNull();
+});
+
+test("a push-driven refresh whose port throws leaves no unhandled rejection behind", async () => {
+  const { store, io, notifications, notify, entry } = boundary();
+  io.read = async () => {
+    throw new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  };
+  const stop = store.watch(notifications, "local:test", "thread", () => {
+    throw new Error("model gone");
+  });
+  await vi.waitFor(() => expect(entry()?.loading).toBe(false));
+  notify();
+  await vi.waitFor(() => expect(entry()?.failure?.sentence).toContain("model gone"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  stop();
+});

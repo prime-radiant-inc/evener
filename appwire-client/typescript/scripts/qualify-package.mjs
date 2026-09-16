@@ -143,6 +143,11 @@ assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest:
 assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
 assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
 assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
+const commandCatalog = client.createCommandCatalog({ request: async () => ({ commands: [{ name: "plan", source: "user" }] }), onNotification: () => () => {} });
+const catalogRead = commandCatalog.getState().refresh();
+assert.equal(commandCatalog.getState().loading, true);
+catalogRead.then(() => assert.deepEqual(commandCatalog.getState().commands.map((c) => c.name), ["plan"])).catch((error) => { console.error(error); process.exit(1); });
+assert.deepEqual(client.sessionPluginNames({ plugins: [{ name: "acme" }] }), new Set(["acme"]));
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 assert.equal(client.clip("hello", 3), "hel\u2026");
