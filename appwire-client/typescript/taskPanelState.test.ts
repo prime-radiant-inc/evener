@@ -249,3 +249,17 @@ test("resetForTests settles the waiters of a run in flight and stops it looping 
   expect(await store.refresh("local:test", () => true)).toMatchObject({ kind: "rows" });
   expect(entry()?.rows?.map((item) => item.id)).toEqual([2]);
 });
+
+test("a thrown hasAggregate settles the entry as a failure, not a spinner", async () => {
+  const store = createTasksPanelStore(async () => {
+    throw new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  });
+  await expect(
+    store.refresh("local:test", () => {
+      throw new Error("model gone");
+    }),
+  ).rejects.toThrow("model gone");
+  const entry = store.getState().entries.get("local:test");
+  expect(entry?.loading).toBe(false);
+  expect(entry?.failure?.sentence).toContain("model gone");
+});

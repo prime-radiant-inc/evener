@@ -252,10 +252,11 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
 
   const runLoop = async (ref: string, run: RefreshRun): Promise<void> => {
     let published: TasksFetchResult | null = null;
+    let fetchID = 0;
     try {
       do {
         run.dirty = false;
-        const fetchID = get().beginFetch(ref);
+        fetchID = get().beginFetch(ref);
         let result: TasksFetchResult;
         try {
           result = classifyTasksResponse(await listTasks(ref));
@@ -269,7 +270,13 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
         if (!run.dirty) published = get().publishFetch(ref, fetchID, result) ? result : null;
       } while (run.dirty);
     } catch (error) {
-      if (runs.get(ref) === run) runs.delete(ref);
+      // A host port threw (hasAggregate, most likely): the callers reject,
+      // and the entry beginFetch marked loading settles as a failure so the
+      // panel shows the error with its retry instead of spinning.
+      if (runs.get(ref) === run) {
+        runs.delete(ref);
+        get().publishFetch(ref, fetchID, { kind: "failure", failure: panelLoadFailure(LOAD_FAILURE, error) });
+      }
       settleRun(run, { error });
       return;
     }
