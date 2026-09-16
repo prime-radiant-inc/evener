@@ -22,6 +22,21 @@ import (
 
 type projectDeleteSkip = appwire.ProjectDeleteSkip
 
+// projectRemoteSources returns the hosts a tree project reports as owning it.
+// The tree spells the controller's own sessions with the empty string — the
+// decision store's key — so every other entry is a host that shares the
+// project's canonical ID and path. Sorted by the tree, so the refusal reads
+// deterministically.
+func projectRemoteSources(sources []string) []string {
+	var hosts []string
+	for _, source := range sources {
+		if source != "" {
+			hosts = append(hosts, source)
+		}
+	}
+	return hosts
+}
+
 func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, skipped []projectDeleteSkip, changed bool, project string) (appwire.ProjectDeleteResponse, error) {
 	navigation := s.emptyNavigationMutation()
 	if changed {
@@ -98,6 +113,19 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if params.Key == "" || params.WorkingDir == "" {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key and workingDir are required")
 	}
+	// Deletion is local-only: v1 has no remote deletion, and this handler only
+	// ever removes the controller's own sessions. A request that names a host is
+	// refused before any resolution or removal — a remote row must never be
+	// answered with a controller-local delete, and a remote project that merely
+	// shares an ID or path with a local one must not take the local project's
+	// sessions with it. "local" (and an absent field) is the controller's own
+	// source, the same normalization archive and favorite use.
+	if source := hubcore.NormalizeDecisionSource(params.Source); source != "" {
+		if err := validateDecisionSource(s.cfg, source); err != nil {
+			return appwire.ProjectDeleteResponse{}, err
+		}
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("project delete is local-only; " + source + " is not this hub")
+	}
 	if params.Key == "no-project" {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("no-project is not a local project")
 	}
@@ -152,6 +180,18 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	}
 	if matched == nil || matched.WorkingDir != project.CanonicalPath {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key does not match workingDir")
+	}
+	// A merged project — the controller's own rows plus a host's under the same
+	// canonical ID and path — is not deletable here either. The rail refuses it
+	// before the confirmation dialog opens, and the wire must refuse it too: a
+	// request that named no source would otherwise remove the controller's
+	// sessions of a project a host also owns, leaving one project half-deleted
+	// and the UI and the API disagreeing about the same row. The tree's sources
+	// are the authority ("" is the controller), so the gate matches the
+	// ownership the client just rendered.
+	if hosts := projectRemoteSources(matched.Sources); len(hosts) > 0 {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams(
+			"project delete is local-only; this project also belongs to " + strings.Join(hosts, ", "))
 	}
 
 	// Resolve every distinct candidate path before deleting anything. This uses
@@ -394,14 +434,14 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 	aliases := hubcore.LocalSessionDecisionAliases(threadID, authority)
 	if s.cfg.Archive != nil {
 		for _, id := range aliases {
-			if err := s.cfg.Archive.Delete("session", id); err != nil {
+			if err := s.cfg.Archive.Delete("", "session", id); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
 			}
 		}
 	}
 	if s.cfg.Favorite != nil {
 		for _, id := range aliases {
-			if err := s.cfg.Favorite.Delete("session", id); err != nil {
+			if err := s.cfg.Favorite.Delete("", "session", id); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
 			}
 		}
@@ -440,12 +480,12 @@ func (s *WebServer) cleanupProjectDeletion(
 	}
 	if len(result.Skipped) == 0 && record.WholeProject {
 		if s.cfg.Archive != nil {
-			if err := s.cfg.Archive.Delete("project", record.ProjectID); err != nil {
+			if err := s.cfg.Archive.Delete("", "project", record.ProjectID); err != nil {
 				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("archive store error: %v", err))
 			}
 		}
 		if s.cfg.Favorite != nil {
-			if err := s.cfg.Favorite.Delete("project", record.ProjectID); err != nil {
+			if err := s.cfg.Favorite.Delete("", "project", record.ProjectID); err != nil {
 				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("favorite store error: %v", err))
 			}
 		}

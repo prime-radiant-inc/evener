@@ -137,7 +137,14 @@ function projectResource(
   );
 }
 function catalogResource(
-  projects: Array<{ key: string; name: string; session_count: number; default_expanded?: boolean }>,
+  projects: Array<{
+    key: string;
+    name: string;
+    session_count: number;
+    default_expanded?: boolean;
+    sources?: string[];
+    working_dir?: string;
+  }>,
 ) {
   return resource(
     { kind: "catalog", catalog: "projects", offset: 0, limit: 100 },
@@ -1596,7 +1603,10 @@ describe("resource-backed Rail", () => {
     navigationStore.setState({ applyNavigationMutation });
     const client = new FakeClient();
     client.on("evener/archive/set", (params) => {
-      expect(params).toEqual({ kind: "session", id: "a", archived: true });
+      // The canonical ref, not the bare session ID: a remote row's archive
+      // decision is read back under its host-qualified ref, and "local:a"
+      // normalizes server-side to the bare ID local decisions already use.
+      expect(params).toEqual({ kind: "session", id: "local:a", archived: true });
       return {
         ok: true,
         navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
@@ -1804,6 +1814,132 @@ describe("resource-backed Rail", () => {
       { method: "evener/favorite/set", params: { kind: "project", id: "p", favorited: true } },
     ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+  });
+  test("routes a remote project row's favorite and archive through its owning source", async () => {
+    installState([catalogResource([{ key: "p", name: "Remote", session_count: 1, sources: ["host-a"] }])]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/favorite/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for remote/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: /actions for remote/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive project" }));
+    await act(async () => undefined);
+
+    expect(client.calls).toEqual([
+      {
+        method: "evener/favorite/set",
+        params: { kind: "project", id: "p", favorited: true, source: "host-a" },
+      },
+      { method: "evener/archive/set", params: { kind: "project", id: "p", archived: true, source: "host-a" } },
+    ]);
+  });
+  test("addresses every owner of a merged project row and omits the controller's own source", async () => {
+    installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/archive/set", () => ({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for merged/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive project" }));
+    await act(async () => undefined);
+
+    // The tree archives a row only once every owning source archived it, so a
+    // single-source request would leave the merged row exactly where it was.
+    expect(client.calls.map((call) => call.params)).toEqual([
+      { kind: "project", id: "p", archived: true },
+      { kind: "project", id: "p", archived: true, source: "host-a" },
+    ]);
+  });
+  test("asks every owner of a merged project favorite and warns about the one that failed", async () => {
+    installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/favorite/set", (params) => {
+      if (params.source === "host-a") throw new Error("host-a favorite store unreachable");
+      return { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    });
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for merged/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await act(async () => undefined);
+
+    // A partial fan-out is a commit for the owners that answered: the row's
+    // decision is presented from the settled set and the failed owner is
+    // named, instead of the whole update being reported as a clean failure.
+    expect(client.calls.map((call) => call.params)).toEqual([
+      { kind: "project", id: "p", favorited: true },
+      { kind: "project", id: "p", favorited: true, source: "host-a" },
+    ]);
+    expect(getToasts().some((toast) => /Favorite not updated everywhere: host-a did not answer/.test(toast.text))).toBe(
+      true,
+    );
+    expect(getToasts().some((toast) => /Couldn't update favorite/.test(toast.text))).toBe(false);
+  });
+  test("warns about the owner a merged project archive could not reach", async () => {
+    installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      if (params.source === "host-a") throw new Error("host-a archive store unreachable");
+      return { ok: true, navigation: { generation_id: "g1", targets: [] } };
+    });
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for merged/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive project" }));
+    await act(async () => undefined);
+
+    expect(
+      getToasts().some((toast) => /Archive state not updated everywhere: host-a did not answer/.test(toast.text)),
+    ).toBe(true);
+  });
+  test("refuses to delete a project row that a remote host also owns", async () => {
+    installState([catalogResource([{ key: "p", name: "Merged", session_count: 2, sources: ["local", "host-a"] }])]);
+    const client = new FakeClient();
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for merged/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+    await act(async () => undefined);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(client.calls.filter((call) => call.method === "evener/project/delete")).toEqual([]);
+    expect(getToasts().some((toast) => /deletion is local-only/.test(toast.text))).toBe(true);
+  });
+  test("deletes a controller-only project through the dialog with no source field", async () => {
+    installState([
+      catalogResource([{ key: "p", name: "Local", session_count: 1, sources: ["local"], working_dir: "/local/proj" }]),
+    ]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+    const client = new FakeClient();
+    client.on("evener/project/delete", () => ({
+      deleted: ["a"],
+      skipped: [],
+      navigation: { generation_id: "g1", targets: [] },
+    }));
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
+
+    fireEvent.click(screen.getByRole("button", { name: /actions for local/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete project…" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Delete" }));
+    await act(async () => undefined);
+
+    expect(client.calls).toContainEqual({
+      method: "evener/project/delete",
+      params: { key: "p", workingDir: "/local/proj" },
+    });
   });
   test("routes unpin and delete through rendered session dialogs and receipt convergence", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);

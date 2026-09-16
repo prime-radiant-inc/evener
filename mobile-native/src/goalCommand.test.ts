@@ -590,7 +590,7 @@ it.each([
 				// (sessionControls): a running turn on a harness that advertises
 				// the action; the argless drain also needs a queue to drain.
 				turn: () => ({
-					status: "active",
+					status: { type: "active" },
 					capabilities: { steer: true, queue: true, interrupt: true },
 					queue: { revision: 7, depth: method === "turn/drainAsSteer" ? 1 : 0 },
 				}),
@@ -931,7 +931,7 @@ it("installs a clear replacement without allowing an older read to restore its t
 		releaseRead();
 		await oldRead;
 		expect(store.getState().conversation).toMatchObject({
-			id: "replacement-thread",
+			threadId: "replacement-thread",
 			instanceId: "replacement-instance",
 			items: [],
 			goal: null,

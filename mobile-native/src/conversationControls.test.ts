@@ -16,13 +16,14 @@ const STEERING = {
   shutdown: true,
   changeModel: true,
   changeVisionModel: true,
+  sharedNotes: false,
   queue: false,
   goal: true,
   rename: true,
 };
 
 function conversation(status: string, depth = 0, capabilities = STEERING) {
-  return { status, capabilities, queue: { revision: 0, depth } };
+  return { status: { type: status }, capabilities, queue: { revision: 0, depth } };
 }
 
 // The hub advertises steer as harness support, so an idle steering harness

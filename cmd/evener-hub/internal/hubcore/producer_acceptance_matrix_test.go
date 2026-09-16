@@ -136,10 +136,10 @@ func TestProducerAcceptanceArchiveHintsAfterSuccessfulWrites(t *testing.T) {
 	})
 	now := time.Unix(100, 0)
 	operations := []func() error{
-		func() error { return store.Set("session", "archive-a", true, now) },
-		func() error { return store.Set("session", "archive-a", true, now.Add(time.Second)) },
-		func() error { return store.Delete("session", "missing") },
-		func() error { return store.Delete("session", "archive-a") },
+		func() error { return store.Set("", "session", "archive-a", true, now) },
+		func() error { return store.Set("", "session", "archive-a", true, now.Add(time.Second)) },
+		func() error { return store.Delete("", "session", "missing") },
+		func() error { return store.Delete("", "session", "archive-a") },
 	}
 	for i, operation := range operations {
 		if err := operation(); err != nil {
@@ -160,10 +160,10 @@ func TestProducerAcceptanceFavoriteHintsAfterSuccessfulWrites(t *testing.T) {
 	})
 	now := time.Unix(100, 0)
 	operations := []func() error{
-		func() error { return store.Set("session", "favorite-a", true, now) },
-		func() error { return store.Set("session", "favorite-a", true, now.Add(time.Second)) },
-		func() error { return store.Delete("session", "missing") },
-		func() error { return store.Delete("session", "favorite-a") },
+		func() error { return store.Set("", "session", "favorite-a", true, now) },
+		func() error { return store.Set("", "session", "favorite-a", true, now.Add(time.Second)) },
+		func() error { return store.Delete("", "session", "missing") },
+		func() error { return store.Delete("", "session", "favorite-a") },
 	}
 	for i, operation := range operations {
 		if err := operation(); err != nil {

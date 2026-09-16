@@ -302,8 +302,8 @@ describe("ConversationService", () => {
     it("projects thread to MobileConversation", async () => {
       const { service } = setup();
       const conv = await service.open("ref-1");
-      expect(conv.id).toBe("thread-1");
-      expect(conv.status).toBe("ready");
+      expect(conv.threadId).toBe("thread-1");
+      expect(conv.status).toEqual({ type: "ready" });
       expect(conv.capabilities.send).toBe(true);
     });
 
@@ -340,7 +340,7 @@ describe("ConversationService", () => {
         idFactory: fakeIdFactory,
       });
       const conv = await service2.open("ref-2");
-      expect(conv.id).toBe("thread-2");
+      expect(conv.threadId).toBe("thread-2");
     });
   });
 
@@ -1348,7 +1348,7 @@ describe("ConversationService", () => {
       const result = await service.readProjection("ref-1");
       expect(result).toBeDefined();
       expect(result?.conversation).toBeDefined();
-      expect(result?.conversation.id).toBe("thread-1");
+      expect(result?.conversation.threadId).toBe("thread-1");
       expect(result?.activity).toBeDefined();
       expect(result?.activity.tasks).toEqual([]);
       expect(result?.activity.work).toEqual([]);
@@ -2537,7 +2537,7 @@ describe("ConversationService", () => {
       resolveARead(makeReadResponse(threadA));
       const convA = await openAPromise;
       // A's result is returned (stale successful result returns).
-      expect(convA.id).toBe("thread-A");
+      expect(convA.threadId).toBe("thread-A");
       // B's pair is committed: send reaches wire with ref-B (capsB.send=true).
       client.on(
         "turn/start",
@@ -2592,7 +2592,7 @@ describe("ConversationService", () => {
       resolveARead(makeReadResponse(threadA));
       const resultA = await rpAPromise;
       // A's result is returned (stale successful result returns).
-      expect(resultA.conversation.id).toBe("thread-A");
+      expect(resultA.conversation.threadId).toBe("thread-A");
       // B's pair is committed: send reaches wire with ref-B.
       client.on(
         "turn/start",
@@ -2626,7 +2626,7 @@ describe("ConversationService", () => {
         // Now a successful open — restores the pair.
         client.on("thread/read", () => makeReadResponse(makeThread()));
         const conv = await service.open("ref-3");
-        expect(conv.id).toBe("thread-1");
+        expect(conv.threadId).toBe("thread-1");
         // Operations reach the wire now.
         client.on(
           "turn/start",
@@ -3000,7 +3000,7 @@ describe("ConversationService", () => {
       // Now a successful open with valid caps.
       client.on("thread/read", () => makeReadResponse(makeThread()));
       const conv = await service.open("ref-2");
-      expect(conv.id).toBe("thread-1");
+      expect(conv.threadId).toBe("thread-1");
       // Operations reach the wire.
       client.on(
         "turn/start",

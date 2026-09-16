@@ -7,8 +7,8 @@ import {
   mergeSlashCommands,
 } from "@evener/appwire-client";
 import type { ThreadClearResponse } from "@evener/appwire-client";
-import { sessionControls } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
+import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
   ConversationClearActions,
   ConversationForkActions,
@@ -54,19 +54,7 @@ const commands = [
 ] as const;
 
 /** What the completion registry and submission both read off the session. */
-export interface ComposerCommandSession {
-  status: string;
-  capabilities: Partial<MobileConversation["capabilities"]>;
-  queue: { revision: number; depth: number };
-}
-
-function controlsFor(session: ComposerCommandSession) {
-  return sessionControls(
-    session.status,
-    session.capabilities,
-    session.queue.depth,
-  );
-}
+export type ComposerCommandSession = ControlsSource;
 
 export type ComposerCommandSpec = (typeof commands)[number];
 
@@ -75,7 +63,7 @@ export function composerCommandAvailable(
   command: ComposerCommandSpec,
   session: ComposerCommandSession,
 ): boolean {
-  if ("control" in command) return controlsFor(session)[command.control];
+  if ("control" in command) return conversationControls(session)[command.control];
   return (
     command.capability === null || !!session.capabilities[command.capability]
   );
@@ -153,7 +141,7 @@ export async function submitComposerCommand(
   const requireControl = (): void => {
     if (!("control" in match.command)) return;
     const turn = context.turn();
-    const controls = turn ? controlsFor(turn) : null;
+    const controls = turn ? conversationControls(turn) : null;
     const control = match.command.control;
     if (!controls || !controls[control])
       throw new CommandArgumentError(
@@ -191,7 +179,7 @@ export async function submitComposerCommand(
     // uses its own command and the observed queue revision, as on web.
     operation =
       id === "drain-as-steer"
-        ? () => service.steer([], turn.queue.revision)
+        ? () => service.steer([], turn.queue?.revision)
         : () => service[id](input);
   } else if (id === "model") {
     const catalog = await service.models();
