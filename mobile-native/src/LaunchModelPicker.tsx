@@ -13,7 +13,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { buildPickerRows } from "../../cmd/evener-hub/frontend/src/widgets/modelCatalog/pickerRows";
+import { buildPickerRows } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubModels } from "./hubModels";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";

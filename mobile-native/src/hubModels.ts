@@ -1,4 +1,4 @@
-import type { ModelCatalog } from "../../cmd/evener-hub/frontend/src/widgets/modelCatalog/types";
+import type { ModelCatalog } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface State {
