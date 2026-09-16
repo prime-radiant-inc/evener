@@ -134,6 +134,23 @@ describe("ports", () => {
     });
     expect(send).toHaveBeenCalledTimes(2);
   });
+  test("a compose failure never freezes the batch: it stays retryable once the answer is fixed", async () => {
+    const send = fakeSender();
+    const store = createAskDockStore({ send });
+    store.reconcile("ref_a", [first]);
+    const batch = store.getState().byRef.get("ref_a")?.batches[0];
+    if (!batch) throw new Error("Missing batch");
+    // A note the types forbid is the one way to make composeAskAnswers throw
+    // (note.trim()); nothing on the wire can produce it, so a throw here is a
+    // programming error that must not strand the batch mid-send.
+    store.getState().setNote("ref_a", first.key, null as unknown as string);
+    await expect(store.getState().sendBatch("ref_a", batch.id)).rejects.toThrow(TypeError);
+    expect(send).not.toHaveBeenCalled();
+    expect(store.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(false);
+    store.getState().setNote("ref_a", first.key, "");
+    await expect(store.getState().sendBatch("ref_a", batch.id)).resolves.toEqual({ outcome: "sent" });
+    expect(send).toHaveBeenCalledTimes(1);
+  });
 });
 
 // --- question-list reconciliation and the send primitives (the contract the

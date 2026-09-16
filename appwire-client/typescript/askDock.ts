@@ -390,14 +390,18 @@ export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
       }
       const refState = get().byRef.get(ref);
       const batch = refState?.batches.find((b) => b.id === batchId);
-      if (!refState || !batch || !beginSend(ref, batchId)) return { outcome: "stale" };
+      if (!refState || !batch || batch.sending) return { outcome: "stale" };
 
+      // Composed before the batch is frozen: a throw here (a programming
+      // error, never a wire outcome) leaves the batch unfrozen and retryable
+      // instead of stranding it as sending forever.
       const composedText = composeAskAnswers(
         batch.questions.map((q) => {
           const answer = answerFor(refState, q.key);
           return { header: q.header, resolution: answer.resolution, note: answer.note, ifUnanswered: q.ifUnanswered };
         }),
       );
+      if (!beginSend(ref, batchId)) return { outcome: "stale" };
       try {
         await send(ref, composedText);
         finishSend(ref, batchId, true);

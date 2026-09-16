@@ -2,6 +2,7 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -64,15 +65,20 @@ func TestRemoteHubFromRemoteThreadMasksUnforwardedCapabilities(t *testing.T) {
 }
 
 // Every capability a remote thread is allowed to advertise must have a working
-// method behind it. The staged methods below are the 05c/05d work: 05c forwards
-// the turn mutations and 05d intersects the result with a completed capability
-// probe, and each re-enables its capability in remoteForwardedThreadCapabilities.
+// method behind it. The methods below are the 05c/05d work: component 05c
+// implements the turn mutations and lifecycle verbs in remote_hub_mutations.go,
+// and each capability stays masked until 05d's host capability probe answers what
+// the host supports (remoteForwardedThreadCapabilities is still empty).
 // Enumerating the promise here means a field cannot be flipped on while its
 // method still fails closed, and a future capability field cannot be added
 // without deciding which method answers for it.
 func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 	ctx := context.Background()
-	source := NewRemoteHubSource("host", nil, nil)
+	// A connector that always fails: every method below must reach the forward
+	// path (never the staged not-implemented one) without a live remote hub.
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, errors.New("no remote client in this test")
+	})
 	cases := []struct {
 		field   string
 		methods map[string]func() error
@@ -148,11 +154,11 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 		enumerated[tc.field] = true
 		for name, call := range tc.methods {
 			err := call()
-			// A method that stops failing closed must have its capability re-enabled
-			// in remoteForwardedThreadCapabilities by whichever component implements
-			// it, otherwise the flag and the method disagree.
-			if err == nil || !strings.Contains(err.Error(), "not implemented yet") {
-				t.Errorf("%s = %v, want the staged notImplemented error until its capability is forwarded", name, err)
+			// An implemented method must never report the staged not-implemented
+			// error: the capability assertions below would then advertise an action
+			// nothing answers for.
+			if err == nil || strings.Contains(err.Error(), "not implemented yet") {
+				t.Errorf("%s = %v, want the implemented method's own error, not the staged not-implemented one", name, err)
 			}
 		}
 		advertised, ok := capabilityFieldValue(masked, tc.field)
@@ -161,7 +167,7 @@ func TestRemoteHubCapabilitiesMatchForwardedMethods(t *testing.T) {
 			continue
 		}
 		if advertised {
-			t.Errorf("capability %s is advertised while its methods still fail closed", tc.field)
+			t.Errorf("capability %s is advertised although remoteForwardedThreadCapabilities forwards nothing", tc.field)
 		}
 	}
 
@@ -388,7 +394,7 @@ func TestRemapRemoteSourceIDs(t *testing.T) {
 		in   []string
 		want []string
 	}{
-		{"empty stays nil", nil, nil},
+		{"empty restricts to local", nil, []string{"local"}},
 		{"host only", []string{"host"}, []string{"local"}},
 		{"host and other drops other", []string{"host", "other"}, []string{"local"}},
 		{"other only becomes empty", []string{"other"}, []string{}},
@@ -400,5 +406,116 @@ func TestRemapRemoteSourceIDs(t *testing.T) {
 				t.Fatalf("remapRemoteSourceIDs(%v) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestRemoteHubListThreadsDefaultRestrictsToLocalSource pins the default
+// (unfiltered) thread/list forward: this source must ask the remote hub for its
+// own "local" source only. A remote hub's reflected response can advertise
+// threads from ITS OWN nested remote sources, whose refs live in another host's
+// namespace and are not representable in the controller namespace;
+// fromRemoteThread rejects such a response outright, so an unfiltered forward
+// would lose every thread from this host, not merely the nested ones. The
+// scripted remote models that: it only answers when the forwarded filter names
+// "local", and otherwise returns the nested thread that the controller refuses.
+func TestRemoteHubListThreadsDefaultRestrictsToLocalSource(t *testing.T) {
+	localThread := appwire.Thread{ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"}}
+	nestedThread := appwire.Thread{ID: "N", Source: "nested", Evener: appwire.EvenerThread{Ref: "nested:N"}}
+
+	source, calls := newScriptedRemote(t, "host", func(method string, params json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadList {
+			t.Errorf("unexpected method %q", method)
+			return scriptedReply{result: map[string]any{}}
+		}
+		var forwarded struct {
+			SourceIDs []string `json:"sourceIds"`
+		}
+		if err := json.Unmarshal(params, &forwarded); err != nil {
+			t.Errorf("decode forwarded thread/list params %s: %v", params, err)
+		}
+		if !reflect.DeepEqual(forwarded.SourceIDs, []string{"local"}) {
+			// An unfiltered request reaches the remote's nested remote sources,
+			// and the nested ref then fails the controller's whole translation.
+			return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{localThread, nestedThread}}}
+		}
+		return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{localThread}}}
+	})
+
+	resp, err := source.ListThreads(t.Context(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "host:S" || resp.Data[0].Source != "host" {
+		t.Fatalf("threads = %+v, want the single translated local thread", resp.Data)
+	}
+	params := lastMethodCall(t, calls(), appwire.MethodThreadList)
+	var forwarded struct {
+		SourceIDs []string `json:"sourceIds"`
+	}
+	if err := json.Unmarshal(params, &forwarded); err != nil {
+		t.Fatalf("decode forwarded params %s: %v", params, err)
+	}
+	if !reflect.DeepEqual(forwarded.SourceIDs, []string{"local"}) {
+		t.Fatalf("forwarded sourceIds = %v, want [local]", forwarded.SourceIDs)
+	}
+}
+
+// TestRemoteHubListThreadsExcludingFilterReturnsEmpty pins that a non-empty
+// SourceIDs filter which does not name this source yields no threads and never
+// reaches the remote hub. remapRemoteSourceIDs alone would map such a filter to
+// an empty slice, and ThreadListParams.SourceIDs is `omitempty` on the wire, so
+// the empty slice would be omitted and ask the remote for ALL of its sources —
+// the opposite of what the caller requested. The hub's thread/list fan-out
+// (sourceAllowedForList) is the only thing that currently stops that, so the
+// source method must honor its own contract rather than rely on its caller.
+func TestRemoteHubListThreadsExcludingFilterReturnsEmpty(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method == appwire.MethodThreadList {
+			return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{{
+				ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"},
+			}}}}
+		}
+		return scriptedReply{result: map[string]any{}}
+	})
+
+	resp, err := source.ListThreads(t.Context(), appwire.ThreadListParams{SourceIDs: []string{"other"}})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("Data = %+v, want no threads for a filter that excludes this source", resp.Data)
+	}
+	for _, call := range calls() {
+		if call.method == appwire.MethodThreadList {
+			t.Fatalf("a filter excluding this source was forwarded to the remote hub: %+v", calls())
+		}
+	}
+}
+
+// TestRemoteHubListThreadsKeepsValidRowsWhenRowUnrepresentable pins that a
+// thread/list response carrying one row from a nested remote hub — a ref this
+// source cannot represent in the controller namespace — does not discard the
+// valid local rows translated alongside it. The nested row is skipped; every
+// representable row is still returned.
+func TestRemoteHubListThreadsKeepsValidRowsWhenRowUnrepresentable(t *testing.T) {
+	localThread := appwire.Thread{ID: "S", Source: "local", Evener: appwire.EvenerThread{Ref: "local:S"}}
+	nestedThread := appwire.Thread{ID: "N", Source: "nested", Evener: appwire.EvenerThread{Ref: "nested:N"}}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.ThreadListResponse{Data: []appwire.Thread{nestedThread, localThread}}}
+	})
+
+	resp, err := source.ListThreads(t.Context(), appwire.ThreadListParams{SourceIDs: []string{"host"}})
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("Data = %+v, want only the representable local row", resp.Data)
+	}
+	if resp.Data[0].ID != "S" || resp.Data[0].Source != "host" || resp.Data[0].Evener.Ref != "host:S" {
+		t.Fatalf("row = %+v, want the translated local thread", resp.Data[0])
 	}
 }
