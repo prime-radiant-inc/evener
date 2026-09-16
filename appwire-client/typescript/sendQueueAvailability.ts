@@ -35,21 +35,19 @@
 // The active tier checks `statusType === "active"` ALONE - verified directly
 // against the cited renderer.js:479-513 (updateThreadState's sendBtn
 // branches), which key only on the `state` string and `this.liveSendCap`/
-// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId. The
-// stronger `state === "active" && !!activeTurnId` formula lives in a
-// DIFFERENT, deliberately-shared predicate (thread-state.js:16-18,
-// `EvenerThreadState.isBusy`) that gates interrupt/steer/model-switch, not
-// send/queue - that file's own header comment lists exactly those three
-// call sites and none of them is the composer's send/queue capability
-// chain. Folding isBusy's activeTurnId check into THIS gate would also add
-// a real race this store must not have: thread/status/changed (which flips
+// `this.liveQueueCap`; nowhere in that chain does it read activeTurnId.
+// Folding an activeTurnId check into THIS gate would add a real race this
+// store must not have: thread/status/changed (which flips
 // ThreadModel.status.type to "active") and turn/started (which populates
 // ThreadModel.activeTurnId) are two separate notifications, so there is a
 // window where status already reads "active" but activeTurnId hasn't
-// arrived yet. The verbatim table queues in that window; requiring
-// activeTurnId would instead fall through to the plain-send default and
-// let a legitimate queue attempt bounce off the daemon as a ConflictError.
-// This helper therefore does not take activeTurnId as an input at all.
+// arrived yet, and the projector clears the id between the turn/completed
+// and turn/started of an inline turn boundary while the status stays active.
+// The verbatim table queues in both windows; requiring activeTurnId would
+// instead fall through to the plain-send default and let a legitimate queue
+// attempt bounce off the daemon as a ConflictError. This helper therefore
+// does not take activeTurnId as an input at all, and neither does the
+// interrupt/steer predicate beside it (submitRouting.ts's isTurnActive).
 
 import type { ThreadCapabilities } from "./types.gen";
 

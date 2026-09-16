@@ -1,9 +1,8 @@
 // @vitest-environment node
 
-import type { ThreadModel } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import { buildPaletteContext, hasActiveTurn } from "./paletteContext";
+import { buildPaletteContext } from "./paletteContext";
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
@@ -43,21 +42,4 @@ test("buildPaletteContext treats a transcript pane as non-session (no interactiv
 
 test("buildPaletteContext returns a null sessionRef when nothing is focused", () => {
   expect(buildPaletteContext()).toEqual({ sessionRef: null, onPage: "other" });
-});
-
-// --- the one model-derived predicate ---
-
-function model(overrides: Partial<ThreadModel>): ThreadModel {
-  return {
-    status: { type: "idle" },
-    activeTurnId: undefined,
-    ...overrides,
-  } as ThreadModel;
-}
-
-test("hasActiveTurn is the turn-id-only guard", () => {
-  expect(hasActiveTurn(model({ activeTurnId: "t1" }))).toBe(true);
-  expect(hasActiveTurn(model({ activeTurnId: undefined }))).toBe(false);
-  // awaiting-with-a-turn (mid-ask) still counts as having an active turn.
-  expect(hasActiveTurn(model({ status: { type: "awaiting" }, activeTurnId: "t1" }))).toBe(true);
 });

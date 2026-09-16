@@ -1,6 +1,5 @@
 // @vitest-environment node
 
-import type { LaunchConfigLayer, PluginLaunchCandidate, PluginPreviewResponse } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import {
   type PluginSelectionState,
@@ -9,7 +8,8 @@ import {
   selectNoPlugins,
   setPluginSelected,
   withPluginSelection,
-} from "./pluginSelectionState";
+} from "./spawnPluginSelectionState";
+import type { LaunchConfigLayer, PluginLaunchCandidate, PluginPreviewResponse } from "./types.gen";
 
 function candidate(name: string, selected = false): PluginLaunchCandidate {
   return {

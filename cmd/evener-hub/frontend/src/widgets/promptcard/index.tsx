@@ -12,6 +12,10 @@ export interface PromptCardProps {
   /** Trailing control-row slot, after the spacer - the primary verb and
    * whatever sits beside it. */
   actions?: ReactNode;
+  /** How many verbs `actions` holds. Declared by the caller so the card's
+   * phone-width layout (promptcard.module.css: three verbs take their own line
+   * below the leading slot) keys on a stated count, not on child counting. */
+  verbs?: number;
   /** Optional stable hook for a caller-owned control-row behavior test. */
   controlsTestId?: string;
   /** Forwarded to the card element so a test can address it by a stable hook
@@ -45,6 +49,7 @@ export function PromptCard({
   field,
   leading,
   actions,
+  verbs,
   hidden,
   controlsTestId,
   "data-testid": testId,
@@ -53,7 +58,7 @@ export function PromptCard({
     <div className={CLASS.card} data-testid={testId} hidden={hidden} inert={hidden}>
       {field}
       {(leading !== undefined || actions !== undefined) && (
-        <div className={CLASS.controls} data-testid={controlsTestId}>
+        <div className={CLASS.controls} data-testid={controlsTestId} data-verbs={verbs}>
           {leading}
           <div className={CLASS.actions}>{actions}</div>
         </div>

@@ -7,11 +7,10 @@
 // through the REAL dispatcher/defaults (installKeybindings) so these tests
 // also pin the Alt+Arrow chords themselves, the editable-target suppression,
 // and mobile inertness (rail.toggle's no-registration pattern).
+import { ACTIONS, DEFAULT_BINDINGS } from "@evener/appwire-client";
 import { cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { ACTIONS } from "../../../../keybindings/actions";
-import { DEFAULT_BINDINGS } from "../../../../keybindings/defaults";
-import { keybindingsRegistry } from "../../../../keybindings/registry";
+import { keybindingsRegistry } from "../../../../keybindings/appRegistry";
 import { installKeybindings } from "../../../../shell/installKeybindings";
 import { resetMobileViewportForTests } from "../../../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";

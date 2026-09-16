@@ -116,7 +116,19 @@ assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
-assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.isTurnActive("active"), true);
+assert.equal(client.isTurnActive("idle"), false);
+assert.equal(client.canSteer("active", { steer: true }), true);
+assert.equal(client.canSteer("idle", { steer: true }), false);
+assert.equal(client.canSteer("active", { steer: false }), false);
+assert.equal(client.canDrainQueue("active", { steer: true }, 0), true);
+assert.equal(client.canDrainQueue("idle", { steer: true }, 1), true);
+assert.equal(client.canDrainQueue("idle", { steer: true }, 0), false);
+assert.equal(client.canDrainQueue("idle", { steer: false }, 1), false);
+assert.deepEqual(
+  client.sessionControls("idle", { steer: true, interrupt: true, queue: false, send: true }, 1),
+  { stop: false, steer: false, drain: true, drainQueue: true, queue: false, send: true, reason: { stop: "no active turn", steer: "no active turn", queue: "Queue is not available for this session" } },
+);
 assert.equal(client.formatTokenCount(41200), "41k");
 assert.equal(client.formatDurationMs(1500), "1.5s");
 assert.equal(client.formatCharCount(2500), "2.5k chars");
@@ -238,6 +250,20 @@ assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
+assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
+assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
+assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
+// The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
+const keybindingParser = (keybinding) => keybinding.split(" ").map((press) => { const parts = press.split("+"); return [parts.slice(0, -1), [], parts[parts.length - 1]]; });
+assert.equal(client.ACTIONS.paletteOpen, "palette.open");
+assert.deepEqual(client.parseChord(keybindingParser, "Control+K"), [{ modifiers: ["Control"], optionalModifiers: [], key: "K" }]);
+const keybindingRegistry = client.createKeybindingsRegistry(keybindingParser);
+assert.equal(keybindingRegistry.getState().registerBinding({ id: "probe", actionId: client.ACTIONS.sessionNext, chord: "Alt+ArrowRight" }).scope, client.GLOBAL_SCOPE);
+assert.deepEqual(client.defaultBindingChordsForAction(keybindingParser, client.ACTIONS.sessionPrevious), [{ id: "session.previous", scope: "global", serialized: "Alt+ArrowLeft" }]);
+assert.equal(client.displayBindingFor(keybindingRegistry.getState().bindings, client.ACTIONS.sessionNext)?.id, "probe");
+client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp");
+assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
+assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off

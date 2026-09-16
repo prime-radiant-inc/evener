@@ -1,17 +1,18 @@
-// The keybinding registry: a vanilla zustand store (same pattern as
-// shell/palette/paletteController.ts) holding the action registry (action id
-// -> run function), the binding entries, and the scope stack the dispatcher
-// evaluates top-down. Pure logic - no DOM, no React.
+// The keybinding registry: a framework-free store holding the action registry
+// (action id -> run functions), the binding entries, and the scope stack the
+// dispatcher evaluates top-down. createKeybindingsRegistry is a factory - each
+// app builds the one instance it wires up, and tests build their own - and the
+// store is the getState/setState/subscribe triple plus getInitialState, the
+// shape React's useSyncExternalStore (and zustand's useStore over it) binds to
+// without the package depending on either. Pure logic - no DOM, no React.
 
-import { createStore, type StoreApi } from "zustand/vanilla";
-import { type KeySequence, parseChord, serializeChord } from "./chord";
+import { type KeybindingParser, type KeySequence, parseChord, serializeChord } from "./keybindingChord";
 
 /** The implicit bottom of every scope stack: bindings with no `scope` land here. */
 export const GLOBAL_SCOPE = "global";
 
-/** Structured when-clause, carried for Phase 2b. Task 1 stores it verbatim and
- * never evaluates it: scope-stack membership is the only gating the dispatcher
- * applies. */
+/** Structured when-clause, stored verbatim and never evaluated: scope-stack
+ * membership is the only gating the dispatcher applies. */
 export type WhenClause = Readonly<Record<string, string | boolean>>;
 
 /** An action handler. Returning false DECLINES the event - the dispatcher
@@ -79,10 +80,39 @@ export interface KeybindingsState {
   popScope(scope: string): boolean;
 }
 
-export type KeybindingsRegistry = StoreApi<KeybindingsState>;
+/** Runs after every state change with the new state and the one it replaced
+ * - the listener shape zustand's useStore subscribes with. */
+export type KeybindingsListener = (state: KeybindingsState, previous: KeybindingsState) => void;
 
-export function createKeybindingsRegistry(): KeybindingsRegistry {
-  return createStore<KeybindingsState>()((set, get) => ({
+export interface KeybindingsRegistry {
+  getState(): KeybindingsState;
+  /** The state the registry was created with: the snapshot a view binding
+   * (React's useSyncExternalStore, zustand's useStore) reads before its first
+   * subscription. */
+  getInitialState(): KeybindingsState;
+  /** Shallow-merges the partial (or the updater's result) into the state and
+   * notifies every subscriber, even when nothing changed. */
+  setState(partial: Partial<KeybindingsState> | ((state: KeybindingsState) => Partial<KeybindingsState>)): void;
+  /** Returns the unsubscribe function. */
+  subscribe(listener: KeybindingsListener): () => void;
+  /** The parser every string chord registered here goes through; the
+   * parse-taking helpers (defaults, display, validation) borrow it so one
+   * registry parses consistently everywhere. */
+  readonly parseKeybinding: KeybindingParser;
+}
+
+/** Builds an empty registry whose string chords parse through `parse`
+ * (tinykeys' parseKeybinding on both apps). */
+export function createKeybindingsRegistry(parse: KeybindingParser): KeybindingsRegistry {
+  const listeners = new Set<KeybindingsListener>();
+  let state: KeybindingsState;
+  const get = (): KeybindingsState => state;
+  const set: KeybindingsRegistry["setState"] = (partial) => {
+    const previous = state;
+    state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
+    for (const listener of listeners) listener(state, previous);
+  };
+  state = {
     actions: new Map(),
     bindings: [],
     scopeStack: [],
@@ -112,7 +142,7 @@ export function createKeybindingsRegistry(): KeybindingsRegistry {
     },
 
     registerBinding(input) {
-      const chord = typeof input.chord === "string" ? parseChord(input.chord) : input.chord;
+      const chord = typeof input.chord === "string" ? parseChord(parse, input.chord) : input.chord;
       const binding: Binding = {
         id: input.id,
         actionId: input.actionId,
@@ -161,9 +191,18 @@ export function createKeybindingsRegistry(): KeybindingsRegistry {
       set({ scopeStack: [...stack.slice(0, index), ...stack.slice(index + 1)] });
       return true;
     },
-  }));
+  };
+  const initialState = state;
+  return {
+    getState: get,
+    getInitialState: () => initialState,
+    setState: set,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    parseKeybinding: parse,
+  };
 }
-
-/** The app-wide registry. Task 2 wires it to AppShell; tests build their own
- * with createKeybindingsRegistry(). */
-export const keybindingsRegistry = createKeybindingsRegistry();

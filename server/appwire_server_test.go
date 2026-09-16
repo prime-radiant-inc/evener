@@ -125,7 +125,7 @@ func TestServerAppWireSetProcessingPublishesActiveTurnID(t *testing.T) {
 	// non-empty id rather than a specific one - the value is the projector's
 	// to choose, and pinning it here would just restate ReserveTurnID.
 	if data.Thread.Evener.ActiveTurnID == "" {
-		t.Fatal("activeTurnId is empty while status reads active: the composer's isTurnActive gate needs both, and offers idle controls for a working session when they disagree")
+		t.Fatal("activeTurnId is empty while status reads active: the composer gates on the status alone (isTurnActive) and names the transcript row by this id, so a working session must publish one")
 	}
 }
 
@@ -2810,8 +2810,8 @@ func TestServerAppWireUnincorporatedTurnReleasesActiveIdentity(t *testing.T) {
 // empty when RecordAppEvent reads it back and writes it over the server's
 // published identity. The published identity must survive that: a client
 // polling thread/read in the gap would otherwise see a session reading active
-// with no active turn, which is the pair the composer's isTurnActive gate needs
-// to agree on.
+// with no active turn: the composer gates on the status alone (isTurnActive)
+// and would name a transcript row the wire had not published.
 func TestServerAppWireEnvironmentEventKeepsTheProcessingReservation(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

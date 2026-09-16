@@ -178,6 +178,17 @@ export function isEndpointConflict(err: unknown): boolean {
 export const ENDPOINT_CHANGED_TEST_MESSAGE =
   "This connection changed to a different endpoint. Check its destination and test again.";
 
+// CONNECTION_REPLACED_ERROR is what any action says when the STORE refused it
+// (stores/credentials.ts's requireWritableClient): the rows on screen, and
+// whatever a form captured from them, name instances of a connection that is
+// gone, and this one's listing has not arrived yet. Nothing was sent, so this
+// is not a failure to retry blindly and not the store's internal words either -
+// the remedy is the listing that lands next, which every caller's recovery
+// waits on. Named once because the refusal reaches the user through several
+// surfaces (a dialog's inline error, the sheet's form error, a toast).
+export const CONNECTION_REPLACED_ERROR =
+  "The hub connection was replaced and its instances have not loaded yet, so nothing was sent. Check the current list and try again.";
+
 // FINGERPRINT_UNAVAILABLE_ERROR is what a credential write says when the row has
 // a destination but serves no fingerprint: the hub accepts an empty assertion
 // rather than validating it, so the save is refused locally with the same
