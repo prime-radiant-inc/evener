@@ -10,6 +10,7 @@ import type {
   ThreadReadResponse,
 } from "@evener/appwire-client";
 import { AppwireClient, WireError } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -34,7 +35,6 @@ import { connectionStore } from "../../stores/connection";
 import { MutationOutbox } from "../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";

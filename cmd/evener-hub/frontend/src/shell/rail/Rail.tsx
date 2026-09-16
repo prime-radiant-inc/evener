@@ -7,6 +7,15 @@ import type {
 } from "@evener/appwire-client";
 import { canReadSharedNotes, errorText } from "@evener/appwire-client";
 import {
+  isSettledGone,
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  nextNavigationOffset,
+  type ResourceKey,
+  type ResourceState,
+} from "@evener/appwire-client/state/navigation";
+import {
   type ChangeEvent,
   type CSSProperties,
   memo,
@@ -21,7 +30,6 @@ import {
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { useConnectionStore } from "../../stores/connection";
 import {
-  nextNavigationOffset,
   relativeAge,
   selectAttentionSummary,
   selectPinSectionSummaries,
@@ -30,14 +38,6 @@ import {
 } from "../../stores/navigation/selectors";
 import { buildShutdownConvergence } from "../../stores/navigation/shutdownConvergence";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
-import {
-  isSettledGone,
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  type ResourceKey,
-  type ResourceState,
-} from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import {

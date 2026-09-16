@@ -58,6 +58,11 @@
     "modelCatalogPickerRows.ts",
     "taskListData.ts",
     "taskListGroups.ts",
-    "taskListTime.ts"
+    "taskListTime.ts",
+    "state/navigation/index.ts",
+    "state/navigation/codec.ts",
+    "state/navigation/immutable.ts",
+    "state/navigation/merge.ts",
+    "state/navigation/types.ts"
   ]
 }

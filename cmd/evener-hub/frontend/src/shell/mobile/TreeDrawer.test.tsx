@@ -1,9 +1,9 @@
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";
