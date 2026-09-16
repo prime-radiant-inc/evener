@@ -12,6 +12,7 @@ import {
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   nextNavigationOffset,
+  projectNodeExpansionKey,
   type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
@@ -78,7 +79,7 @@ import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
-import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "./railExpansion";
+import { loadExpansion, saveExpansion } from "./railExpansion";
 import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
 import {
   archivedCount,

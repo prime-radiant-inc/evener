@@ -362,9 +362,13 @@ function projectItem(
     };
   }
 
-  // Assistant message — streaming while the turn is still in progress.
+  // Assistant message — streaming while the item itself is in flight. The
+  // item's own status is the per-item liveness signal (the web reads the same
+  // field: TurnBlock.tsx's isItemLive), so a message that settles inside a
+  // turn that keeps running stops saying "Writing…" at once. An item that
+  // carries no status of its own is live exactly while its turn is.
   if (isAgentMessage(item)) {
-    const streaming = isInProgressStatus(turn.status);
+    const streaming = isActiveItem(item, turn.status);
     return {
       kind: "final",
       item: {

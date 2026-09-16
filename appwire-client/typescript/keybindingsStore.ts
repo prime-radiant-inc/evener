@@ -245,10 +245,21 @@ const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved shortcut draft
 const DRAFT_CLEANUP_FAILED_MESSAGE =
   "The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
 
-/** Names nothing: the hub reads an id the same way, trimming before it checks
- * (appwire/keybindings.go ValidateKeybindingsConfig). */
+/** The hub's whitespace, enumerated: `strings.TrimSpace` tests each rune with
+ * Go's `unicode.IsSpace`, which is U+0009-U+000D, U+0020, U+0085 and U+00A0
+ * below Latin-1, and U+1680, U+2000-U+200A, U+2028, U+2029, U+202F, U+205F and
+ * U+3000 above it (go/src/unicode/graphic.go `IsSpace` and the `White_Space`
+ * table in go/src/unicode/tables.go). Enumerated rather than trimmed because
+ * JS `trim()` is a DIFFERENT set in both directions: it does not treat U+0085
+ * as whitespace, so a rule of only U+0085 would pass here and then be trimmed
+ * to nothing by the hub, which rejects every later whole-payload PATCH for it;
+ * and it does strip U+FEFF, which the hub keeps as an ordinary character. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the hub's whitespace set contains control characters (U+0009-U+000D, U+0085); enumerating them is the point of this class
+const HUB_WHITESPACE_ONLY = /^[\u0009-\u000D\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/;
+
+/** Names nothing, by the hub's own reading: empty, or whitespace only. */
 function blank(value: string): boolean {
-  return value.trim().length === 0;
+  return HUB_WHITESPACE_ONLY.test(value);
 }
 
 /** Structural check for a wire payload (get result, changed params, patch
