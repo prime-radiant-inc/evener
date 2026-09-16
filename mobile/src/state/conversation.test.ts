@@ -19,6 +19,7 @@ import type {
   Thread,
   ThreadCapabilities,
   ThreadItem,
+  ThreadTurnsListResponse,
   Turn,
 } from "@evener/appwire-client";
 import type {
@@ -165,14 +166,9 @@ class FakeConversationService implements LiveConversationService {
   ref: string | null = null;
   openConv: MobileConversation = makeConversation();
   olderCursor: string | null = null;
-  olderItems: {
-    items: MobileConversation["items"];
-    nextCursor?: string;
-    hasEarlierItems?: boolean;
-    hasLaterItems?: boolean;
-  } = {
-    items: [],
-  };
+  // The wire page thread/turns/list serves; the store merges it into its own
+  // model (reducer.mergeOlderItemPage) and re-projects the rows.
+  olderPage: ThreadTurnsListResponse = { data: [] };
   receipt: MutationReceipt = makeReceipt();
   sendShouldReject: Error | null = null;
   sendCallCount = 0;
@@ -230,18 +226,13 @@ class FakeConversationService implements LiveConversationService {
       olderCursor: this.olderCursor,
     };
   }
-  async loadOlder(_cursor: string): Promise<{
-    items: MobileConversation["items"];
-    nextCursor?: string;
-    hasEarlierItems?: boolean;
-    hasLaterItems?: boolean;
-  }> {
-    // Support hanging for stale-safety tests: if olderItems is a Promise,
+  async loadOlder(_cursor: string): Promise<ThreadTurnsListResponse> {
+    // Support hanging for stale-safety tests: if olderPage is a Promise,
     // await it so it resolves when the test wants.
-    if (this.olderItems instanceof Promise) {
-      return this.olderItems;
+    if (this.olderPage instanceof Promise) {
+      return this.olderPage;
     }
-    return this.olderItems;
+    return this.olderPage;
   }
   subscribeNotifications(handler: (n: AnyNotification) => void): () => void {
     this.notificationHandler = handler;
@@ -327,10 +318,9 @@ describe("ConversationStore", () => {
   describe("loadOlder", () => {
     it("sets loadingOlder and prepends items", async () => {
       const service = new FakeConversationService();
-      service.olderItems = {
-        items: [{ kind: "user", id: "older-result", text: "older" }],
+      service.olderPage = olderPage([userMessageItem("older-result", "older")], {
         nextCursor: "next",
-      };
+      });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
@@ -346,7 +336,7 @@ describe("ConversationStore", () => {
 
     it("F8: does not request when olderCursor is null", async () => {
       const service = new FakeConversationService();
-      service.olderItems = { items: [], nextCursor: "next" };
+      service.olderPage = { data: [], nextCursor: "next" };
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       // olderCursor is null after open — loadOlder should not request.
@@ -1332,11 +1322,17 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const sink = createFakeSink();
-      const latest = makeConversation({
-        threadId: "thread-1",
-        instanceId: "instance-1",
-        items: [{ kind: "user", id: "new", text: "new" }],
-      });
+      const latest = projectConversation(
+        hydrateThread(
+          {
+            thread: makeThread({
+              turns: [makeTurn({ id: "t-current", items: [userMessageItem("new", "new")] })],
+            }),
+          },
+          "ref-1",
+          0,
+        ),
+      );
       service.readProjectionResult = {
         conversation: latest,
         activity: {
@@ -1347,10 +1343,9 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-1",
       };
-      service.olderItems = {
-        items: [{ kind: "user", id: "old", text: "old" }],
+      service.olderPage = olderPage([userMessageItem("old", "old")], {
         nextCursor: "cursor-2",
-      };
+      });
       await store.getState().openProjected(service, sink, "ref-1");
       await store.getState().loadOlder(service);
       expect(
@@ -1441,12 +1436,10 @@ describe("ConversationStore", () => {
     it("enforces a 500-item retained cap at the store level", async () => {
       const service = new FakeConversationService();
       // Generate 600 items from loadOlder; only 500 should be retained.
-      const manyItems = Array.from({ length: 600 }, (_, i) => ({
-        kind: "user" as const,
-        id: `item-${i}`,
-        text: `msg ${i}`,
-      }));
-      service.olderItems = { items: manyItems, nextCursor: undefined };
+      const manyItems = Array.from({ length: 600 }, (_, i) =>
+        userMessageItem(`item-${i}`, `msg ${i}`),
+      );
+      service.olderPage = olderPage(manyItems);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       // Set a cursor so loadOlder has a page to request.
@@ -1463,20 +1456,18 @@ describe("ConversationStore", () => {
       // Create 600 existing items + 600 older items = 1200 total. Cap is 500.
       // Prepend ordering should keep the newest 500 (the live tail at the end
       // of the merged array), so the most recent items remain visible.
-      const existingItems = Array.from({ length: 600 }, (_, i) => ({
-        kind: "user" as const,
-        id: `existing-${i}`,
-        text: `existing ${i}`,
-      }));
-      const olderItems = Array.from({ length: 600 }, (_, i) => ({
-        kind: "user" as const,
-        id: `older-${i}`,
-        text: `older ${i}`,
-      }));
-      service.openConv = makeConversation({ items: existingItems });
-      service.olderItems = { items: olderItems, nextCursor: undefined };
+      const existingItems = Array.from({ length: 600 }, (_, i) =>
+        userMessageItem(`existing-${i}`, `existing ${i}`),
+      );
+      const olderItems = Array.from({ length: 600 }, (_, i) =>
+        userMessageItem(`older-${i}`, `older ${i}`),
+      );
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t-current", items: existingItems })] }),
+      );
+      service.olderPage = olderPage(olderItems);
       const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
       // open() caps existing items to 500 (newest)
@@ -1708,7 +1699,7 @@ describe("ConversationStore", () => {
     it.each([false, true])("commits the reread's own members, page history first, with page history %s", async (withPageHistory) => {
       const { store, service, release, rehydratePromise } = await beginHeldClusterRehydrate();
       if (withPageHistory) {
-        service.olderItems = { items: [{ kind: "user", id: "older", text: "older" }], nextCursor: undefined };
+        service.olderPage = olderPage([userMessageItem("older", "older")]);
         store.setState({ olderCursor: "older-cursor" });
         await store.getState().loadOlder(service);
       }
@@ -3161,13 +3152,10 @@ describe("ConversationStore", () => {
 
       // Start loadOlder that hangs.
       let resolveOlder: (() => void) | null = null as (() => void) | null;
-      const hangOlder = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((r) => {
-        resolveOlder = () => r({ items: [], nextCursor: undefined });
+      const hangOlder = new Promise<ThreadTurnsListResponse>((r) => {
+        resolveOlder = () => r({ data: [] });
       });
-      service.olderItems = hangOlder as never;
+      service.olderPage = hangOlder as never;
       const p = store.getState().loadOlder(service);
 
       // While loadOlder is in-flight, reset (bump generation).
@@ -3195,13 +3183,13 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-1" });
 
       // loadOlder returns items that include a duplicate of item-1.
-      service.olderItems = {
-        items: [
-          { kind: "user", id: "item-0", text: "older" },
-          { kind: "user", id: "item-1", text: "duplicate" }, // duplicate id
+      service.olderPage = olderPage(
+        [
+          userMessageItem("item-0", "older"),
+          userMessageItem("item-1", "duplicate"), // the item the model holds
         ],
-        nextCursor: "next-cursor",
-      };
+        { nextCursor: "next-cursor" },
+      );
       await store.getState().loadOlder(service);
 
       const conv = store.getState().conversation;
@@ -3213,97 +3201,87 @@ describe("ConversationStore", () => {
       expect(conv?.items[0]?.id).toBe("item-0");
     });
 
-    it("loadOlder dedupes an attachment for a clustered member by transcriptKey, not just top-level id", async () => {
-      // The current conversation has ONE clustered activity whose SECOND
-      // (non-first) member carries transcriptKey "key-A" and wire id
-      // "wire-A". Its own identity lives only inside .members[], invisible
-      // to a dedup set seeded from top-level timelineIdentity alone.
+    it("merges a page's replay of an item the model holds under a new wire id", async () => {
+      // The model holds a clustered activity whose second member carries
+      // transcriptKey "key-A" under wire id "wire-A", with an output image.
+      // An older page replays that member under a DIFFERENT wire id — same
+      // transcript key — plus a genuinely unrelated item of its own.
+      const toolItem = (
+        id: string,
+        transcriptKey: string,
+        output: string,
+        image: string,
+      ): ThreadItem =>
+        ({
+          type: "commandExecution",
+          id,
+          transcriptKey,
+          toolName: "shell",
+          status: "completed",
+          callId: `call-${transcriptKey}`,
+          output,
+          outputImages: [{ source: image, url: `https://example.com/${image}` }],
+        }) as ThreadItem;
+
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.openConv = makeConversation({
-        items: [
-          {
-            kind: "activity",
-            id: "wire-X",
-            label: "shell",
-            family: "tool",
-            state: "completed",
-            detail: { output: "first", callId: "call-x" },
-            members: [
-              {
-                id: "wire-X",
-                label: "shell",
-                family: "tool",
-                state: "completed",
-                detail: { output: "first", callId: "call-x" },
-                transcriptKey: "key-X",
-              },
-              {
-                id: "wire-A",
-                label: "shell",
-                family: "tool",
-                state: "completed",
-                detail: { output: "second", callId: "call-a" },
-                transcriptKey: "key-A",
-              },
-            ],
-          },
-        ],
-      });
-      await store.getState().open(service, "ref-1");
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t-current",
+              items: [
+                toolItem("wire-X", "key-X", "first", "x.png"),
+                toolItem("wire-A", "key-A", "second", "a.png"),
+              ],
+            }),
+          ],
+        }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
-      // An older page replays an attachment FOR the "key-A" member under a
-      // DIFFERENT wire id ("wire-B") — same source key, different reference.
-      // A control attachment for a genuinely unrelated source is included
-      // too, and must still be admitted.
-      service.olderItems = {
-        items: [
-          {
-            kind: "attachments",
-            id: "wire-B:attachments",
-            items: [{ id: "att-1", src: "https://example.com/dup.png" }],
-            sourceTranscriptKey: "key-A",
-          },
-          {
-            kind: "attachments",
-            id: "wire-C:attachments",
-            items: [{ id: "att-2", src: "https://example.com/new.png" }],
-            sourceTranscriptKey: "unrelated-key",
-          },
+      service.olderPage = olderPage(
+        [
+          toolItem("wire-C", "unrelated-key", "older", "new.png"),
+          toolItem("wire-B", "key-A", "second", "dup.png"),
         ],
-        nextCursor: "next-cursor",
-      };
+        { nextCursor: "next-cursor" },
+      );
       await store.getState().loadOlder(service);
 
-      const conv = store.getState().conversation;
-      const ids = conv?.items.map((i) => i.id);
-      // The duplicate (same source key as an existing cluster member) is
-      // dropped, not retained.
-      expect(ids).not.toContain("wire-B:attachments");
-      // A genuinely new attachment for an unrelated source is still admitted.
-      expect(ids).toContain("wire-C:attachments");
+      // The replayed member is one row, under the identity the model already
+      // had — not a second copy under the page's wire id.
+      const attachmentSources = rows(store)
+        .filter((row) => row.kind === "attachments")
+        .map((row) => row.sourceTranscriptKey);
+      expect([...attachmentSources].sort()).toEqual(["key-A", "key-X", "unrelated-key"]);
+      expect(rowById(store, "wire-B")).toBeUndefined();
+      const memberKeys = rows(store).flatMap((row) =>
+        row.kind === "activity" ? (row.members ?? [row]).map((m) => m.transcriptKey) : [],
+      );
+      expect([...memberKeys].sort()).toEqual(["key-A", "key-X", "unrelated-key"]);
+      // The page's own unrelated item is admitted.
+      expect(rowById(store, "wire-C")).toBeDefined();
     });
 
     it("loadOlder retains newest 500 and disables further paging at cap", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       // Start with 400 items.
-      const items: MobileConversation["items"] = [];
-      for (let i = 100; i < 500; i++) {
-        items.push({ kind: "user", id: `item-${i}`, text: "" });
-      }
-      service.openConv = makeConversation({ items });
-      await store.getState().open(service, "ref-1");
+      const items: ThreadItem[] = [];
+      for (let i = 100; i < 500; i++) items.push(userMessageItem(`item-${i}`, ""));
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t-current", items })] }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Set a cursor so loadOlder has a page to request.
       store.setState({ olderCursor: "cursor-1" });
 
       // loadOlder returns 200 more items — total would be 600, capped to 500.
-      const olderItems: MobileConversation["items"] = [];
-      for (let i = 0; i < 200; i++) {
-        olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
-      }
-      service.olderItems = { items: olderItems, nextCursor: "more" };
+      const olderItems: ThreadItem[] = [];
+      for (let i = 0; i < 200; i++) olderItems.push(userMessageItem(`item-old-${i}`, ""));
+      service.olderPage = olderPage(olderItems, { nextCursor: "more" });
       await store.getState().loadOlder(service);
 
       const conv = store.getState().conversation;
@@ -3316,25 +3294,22 @@ describe("ConversationStore", () => {
     it("stops offering earlier items once the cap nulls the cursor", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      const items: MobileConversation["items"] = [];
-      for (let i = 100; i < 500; i++) {
-        items.push({ kind: "user", id: `item-${i}`, text: "" });
-      }
-      service.openConv = makeConversation({ items });
-      await store.getState().open(service, "ref-1");
+      const items: ThreadItem[] = [];
+      for (let i = 100; i < 500; i++) items.push(userMessageItem(`item-${i}`, ""));
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t-current", items })] }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
-      const olderItems: MobileConversation["items"] = [];
-      for (let i = 0; i < 200; i++) {
-        olderItems.push({ kind: "user", id: `item-old-${i}`, text: "" });
-      }
+      const olderItems: ThreadItem[] = [];
+      for (let i = 0; i < 200; i++) olderItems.push(userMessageItem(`item-old-${i}`, ""));
       // The server still reports earlier items — the cap, not the server, is
       // what ends paging here.
-      service.olderItems = {
-        items: olderItems,
+      service.olderPage = olderPage(olderItems, {
         nextCursor: "more",
         hasEarlierItems: true,
-      };
+      });
       await store.getState().loadOlder(service);
 
       expect(store.getState().olderCursor).toBeNull();
@@ -4616,6 +4591,25 @@ describe("ConversationStore", () => {
     return { store, service, sink, thread };
   }
 
+  // One older page as thread/turns/list serves it: a settled turn of wire
+  // items, with the pager's own next cursor. Older pages carry their own turn
+  // id — the package merges a page's turns before the model's by identity.
+  function olderPage(
+    items: ThreadItem[],
+    over: { turnId?: string; nextCursor?: string; hasEarlierItems?: boolean; hasLaterItems?: boolean } = {},
+  ): ThreadTurnsListResponse {
+    return {
+      data: [
+        {
+          ...makeTurn({ id: over.turnId ?? "t-older", items, status: "completed" }),
+          ...(over.hasEarlierItems === undefined ? {} : { hasEarlierItems: over.hasEarlierItems }),
+          ...(over.hasLaterItems === undefined ? {} : { hasLaterItems: over.hasLaterItems }),
+        },
+      ],
+      ...(over.nextCursor === undefined ? {} : { nextCursor: over.nextCursor }),
+    };
+  }
+
   // The display rows of the open conversation.
   function rows(store: ReturnType<typeof createConversationStore>): MobileTimelineItem[] {
     return store.getState().conversation?.items ?? [];
@@ -4721,7 +4715,7 @@ describe("ConversationStore", () => {
       await ctrl.started(1);
       await yieldMicrotask();
       // While R is in-flight, L fails — sets a page error.
-      service.olderItems = Promise.reject(
+      service.olderPage = Promise.reject(
         new Error("page load failed"),
       ) as never;
       await store
@@ -4789,7 +4783,7 @@ describe("ConversationStore", () => {
       const readsBeforeLoad = serviceA.readProjectionCalls.length;
 
       let rejectA!: (error: Error) => void;
-      serviceA.olderItems = new Promise<never>((_resolve, reject) => {
+      serviceA.olderPage = new Promise<never>((_resolve, reject) => {
         rejectA = reject;
       }) as never;
       const loadA = store.getState().loadOlder(serviceA);
@@ -4815,17 +4809,11 @@ describe("ConversationStore", () => {
       store.setState({ olderCursor: "cursor-A" });
       // Start loadOlder A (hangs).
       let resolveA: (() => void) | null = null as (() => void) | null;
-      const hangA = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((r) => {
+      const hangA = new Promise<ThreadTurnsListResponse>((r) => {
         resolveA = () =>
-          r({
-            items: [{ kind: "user", id: "stale-A-item", text: "stale" }],
-            nextCursor: "stale-cursor-A",
-          });
+          r(olderPage([userMessageItem("stale-A-item", "stale")], { nextCursor: "stale-cursor-A" }));
       });
-      service.olderItems = hangA as never;
+      service.olderPage = hangA as never;
       // Track all set() calls via subscriber.
       const setCalls: string[] = [];
       let snapshotConversation = store.getState().conversation;
@@ -4885,13 +4873,10 @@ describe("ConversationStore", () => {
       let rejectA: ((e: Error) => void) | null = null as
         | ((e: Error) => void)
         | null;
-      const hangA = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((_r, reject) => {
+      const hangA = new Promise<ThreadTurnsListResponse>((_r, reject) => {
         rejectA = reject;
       });
-      service.olderItems = hangA as never;
+      service.olderPage = hangA as never;
       const aP = store.getState().loadOlder(service);
       store.getState().reset();
       // Track set calls AFTER reset — only A's stale resolution should be tracked.
@@ -5620,7 +5605,7 @@ describe("ConversationStore", () => {
       await ctrl.started(1);
       await yieldMicrotask();
       // While R is in-flight, L fails — sets a page error.
-      service.olderItems = Promise.reject(
+      service.olderPage = Promise.reject(
         new Error("page load failed"),
       ) as never;
       await store
@@ -6378,10 +6363,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await ctrl.started(1);
       await yieldMicrotask();
-      service.olderItems = {
-        items: [{ kind: "user", id: "P", text: "page old" }],
-        nextCursor: "cursor-2",
-      };
+      service.olderPage = olderPage([userMessageItem("P", "page old")], { nextCursor: "cursor-2" });
       await store.getState().loadOlder(service);
       expect(rows(store).map((item) => item.id)).toEqual(["P", "A", "B"]);
 
@@ -6437,7 +6419,7 @@ describe("ConversationStore", () => {
       // front of the snapshot's rows.
       const pageItems: MobileConversation["items"] = [];
       for (let i = 0; i < 100; i++) pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
-      service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
+      service.olderPage = olderPage(pageItems, { nextCursor: "cursor-2" });
       await store.getState().loadOlder(service);
       store.getState().applyNotification({
         method: "item/completed",
@@ -6553,7 +6535,7 @@ describe("ConversationStore", () => {
       await ctrl.started(1);
       await yieldMicrotask();
       if (options.pageItems !== undefined) {
-        service.olderItems = { items: options.pageItems, nextCursor: "cursor-2" };
+        service.olderPage = olderPage(options.pageItems, { nextCursor: "cursor-2" });
         await store.getState().loadOlder(service);
         const pageIds = new Set((options.pageItems ?? []).map((item) => item.id));
         expect(rows(store).some((item) => pageIds.has(item.id))).toBe(true);
@@ -6944,48 +6926,14 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Items: within-page paging dedupe", () => {
-    it("dedupes duplicate IDs within the incoming page, preserving order", async () => {
-      const service = new FakeConversationService();
-      service.readProjectionResult = makeReadProjectionResult(
-        makeThread({
-          turns: [
-            makeTurn({
-              id: "t0",
-              items: [userMessageItem("base", "base")],
-            }),
-          ],
-        }),
-      );
-      const store = createConversationStore();
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-
-      // Page with a duplicate ID within itself: page-A, page-B, page-A (repeat).
-      service.olderItems = {
-        items: [
-          { kind: "user", id: "page-A", text: "A" },
-          { kind: "user", id: "page-B", text: "B" },
-          { kind: "user", id: "page-A", text: "A-repeat" },
-        ],
-        nextCursor: "cursor-2",
-      };
-      await store.getState().loadOlder(service);
-
-      const items = store.getState().conversation?.items ?? [];
-      const ids = items.map((i) => i.id);
-      // page-A appears exactly once.
-      expect(ids.filter((id) => id === "page-A").length).toBe(1);
-      // The first occurrence's content is kept (order preserved).
-      const pageA = items.find((i) => i.id === "page-A");
-      if (pageA?.kind === "user") {
-        expect(pageA.text).toBe("A");
-      }
-      // page-B appears exactly once.
-      expect(ids.filter((id) => id === "page-B").length).toBe(1);
-    });
-
-    it("dedupes duplicate IDs within page AND against retained items", async () => {
+  // A page merges into the model by item identity (reducer.mergeOlderItemPage),
+  // so an item the model already holds arrives once, in the position the
+  // transcript gives it, whether the page names it by the same wire id or by
+  // the transcript key under a new one. The hub never repeats a transcript key
+  // within one page (internal/appitempaging/page.go's validateCandidates), so
+  // there is no within-page dedupe left for the client to do.
+  describe("Task 2A-Items: a page merges into the model by identity", () => {
+    it("brings an item the model already holds as one row, with the model's version", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
@@ -7001,30 +6949,23 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
 
-      // Page: "existing" (dup of retained), "page-A", "page-A" (dup within page).
-      service.olderItems = {
-        items: [
-          { kind: "user", id: "existing", text: "dup" },
-          { kind: "user", id: "page-A", text: "A" },
-          { kind: "user", id: "page-A", text: "A-repeat" },
-        ],
-        nextCursor: "cursor-2",
-      };
+      service.olderPage = olderPage(
+        [userMessageItem("page-A", "A"), userMessageItem("existing", "dup")],
+        { nextCursor: "cursor-2" },
+      );
       await store.getState().loadOlder(service);
 
-      const items = store.getState().conversation?.items ?? [];
-      const ids = items.map((i) => i.id);
-      // "existing" appears exactly once (retained version kept).
-      expect(ids.filter((id) => id === "existing").length).toBe(1);
-      const existing = items.find((i) => i.id === "existing");
-      if (existing?.kind === "user") {
-        expect(existing.text).toBe("existing");
-      }
-      // "page-A" appears exactly once.
-      expect(ids.filter((id) => id === "page-A").length).toBe(1);
+      const ids = rows(store).map((row) => row.id);
+      expect(ids.filter((id) => id === "existing")).toHaveLength(1);
+      expect(ids.filter((id) => id === "page-A")).toHaveLength(1);
+      // The model's own version of that item is the one on screen.
+      expect(rowById(store, "existing")).toMatchObject({
+        kind: "user",
+        text: "existing",
+      });
     });
 
-    it("dedupes overlapping fragments by transcriptKey when wire IDs differ", async () => {
+    it("merges an overlapping fragment by transcript key when the wire ids differ", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
@@ -7047,23 +6988,23 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "opaque-cursor" });
-      service.olderItems = {
-        items: [
+      service.olderPage = olderPage(
+        [
+          userMessageItem("older", "older"),
           {
-            kind: "user",
+            type: "userMessage",
             id: "wire-overlap",
             transcriptKey: "stable-item",
             position: { entry: 2, item: 0 },
             text: "stale overlap",
-          },
-          { kind: "user", id: "older", text: "older" },
+          } as ThreadItem,
         ],
-        nextCursor: "next",
-      };
+        { nextCursor: "next" },
+      );
 
       await store.getState().loadOlder(service);
 
-      const items = store.getState().conversation?.items ?? [];
+      const items = rows(store);
       expect(
         items.filter((item) => item.transcriptKey === "stable-item"),
       ).toHaveLength(1);
@@ -7085,7 +7026,7 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "stale" });
-      service.olderItems = Promise.reject(
+      service.olderPage = Promise.reject(
         new WireError("stale transcript cursor", -32020, {
           evenerErrorInfo: "transcriptItemCursorStale",
         }),
@@ -8891,9 +8832,7 @@ describe("ConversationStore", () => {
       expect(boundedOutput?.endsWith(TRUNCATION_MARKER)).toBe(true);
 
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = {
-        items: [{ kind: "user", id: "older", text: "older" }],
-      };
+      service.olderPage = olderPage([userMessageItem("older", "older")]);
       await store.getState().loadOlder(service);
 
       expect(clusterMembers(store, "wire-a")[1]?.detail.output).toBe(
@@ -9075,7 +9014,7 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ items: current });
       await store.getState().open(service, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = { items: older, nextCursor: "next" };
+      service.olderPage = olderPage(older, { nextCursor: "next" });
       await store.getState().loadOlder(service);
       return store;
     }
@@ -9129,7 +9068,7 @@ describe("ConversationStore", () => {
       await store.getState().open(serviceA, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
       const serviceB = new FakeConversationService();
-      serviceB.olderItems = { items: [{ kind: "user", id: "old", text: "x" }] };
+      serviceB.olderPage = olderPage([userMessageItem("old", "x")]);
       const convBefore = store.getState().conversation;
       const cursorBefore = store.getState().olderCursor;
       await store.getState().loadOlder(serviceB);
@@ -9141,7 +9080,7 @@ describe("ConversationStore", () => {
 
     it("correct-service loadOlder still works after binding", async () => {
       const service = new FakeConversationService();
-      service.olderItems = { items: [{ kind: "user", id: "old", text: "x" }] };
+      service.olderPage = olderPage([userMessageItem("old", "x")]);
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.setState({ olderCursor: "cursor-1" });
@@ -9270,13 +9209,10 @@ describe("ConversationStore", () => {
 
       // Start loadOlder that will fail (hangs first). It captures entryErrorRev.
       const rejectOlderHolder: { fn?: (e: Error) => void } = {};
-      const hangOlder = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((_, reject) => {
+      const hangOlder = new Promise<ThreadTurnsListResponse>((_, reject) => {
         rejectOlderHolder.fn = reject;
       });
-      service.olderItems = hangOlder as never;
+      service.olderPage = hangOlder as never;
       const olderP = store.getState().loadOlder(service);
       expect(store.getState().loadingOlder).toBe(true);
 
@@ -9366,13 +9302,10 @@ describe("ConversationStore", () => {
       // error is "initial error" (old rev).
       store.setState({ olderCursor: "cursor-1" });
       const rejectPageHolder: { fn?: (e: Error) => void } = {};
-      const hangPageFail = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((_, reject) => {
+      const hangPageFail = new Promise<ThreadTurnsListResponse>((_, reject) => {
         rejectPageHolder.fn = reject;
       });
-      service.olderItems = hangPageFail as never;
+      service.olderPage = hangPageFail as never;
       const pageP = store.getState().loadOlder(service);
       expect(store.getState().loadingOlder).toBe(true);
 
@@ -9439,7 +9372,7 @@ describe("ConversationStore", () => {
       // While send is in-flight, set error via a page failure, then rehydrate
       // clears it to null — this is a real ABA-null (error was non-null).
       store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = Promise.reject(new Error("page boom")) as never;
+      service.olderPage = Promise.reject(new Error("page boom")) as never;
       await store
         .getState()
         .loadOlder(service)
@@ -9467,13 +9400,10 @@ describe("ConversationStore", () => {
 
       // Start loadOlder that will fail (hangs first).
       const rejectOlderHolder: { fn?: (e: Error) => void } = {};
-      const hangOlder = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((_, reject) => {
+      const hangOlder = new Promise<ThreadTurnsListResponse>((_, reject) => {
         rejectOlderHolder.fn = reject;
       });
-      service.olderItems = hangOlder as never;
+      service.olderPage = hangOlder as never;
       const olderP = store.getState().loadOlder(service);
 
       // While L is in-flight, a send fails with a non-null error.
@@ -9504,7 +9434,7 @@ describe("ConversationStore", () => {
       const sendP = store.getState().send(service, textInput("x"));
 
       // While send is in-flight, loadOlder fails with a non-null error.
-      service.olderItems = Promise.reject(new Error("page boom")) as never;
+      service.olderPage = Promise.reject(new Error("page boom")) as never;
       await store
         .getState()
         .loadOlder(service)
@@ -9560,14 +9490,11 @@ describe("ConversationStore", () => {
 
       // Start loadOlder on A that hangs (success).
       const resolveOlderHolder: { fn?: () => void } = {};
-      const hangOlder = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((r) => {
+      const hangOlder = new Promise<ThreadTurnsListResponse>((r) => {
         resolveOlderHolder.fn = () =>
           r({ items: [{ kind: "user", id: "old-A", text: "old" }] });
       });
-      serviceA.olderItems = hangOlder as never;
+      serviceA.olderPage = hangOlder as never;
       const olderP = store.getState().loadOlder(serviceA);
 
       // Rebind to B via rehydrate.
@@ -9620,13 +9547,10 @@ describe("ConversationStore", () => {
 
       // Start loadOlder on A that hangs (will fail).
       const rejectOlderHolder: { fn?: (e: Error) => void } = {};
-      const hangOlder = new Promise<{
-        items: MobileConversation["items"];
-        nextCursor?: string;
-      }>((_, reject) => {
+      const hangOlder = new Promise<ThreadTurnsListResponse>((_, reject) => {
         rejectOlderHolder.fn = reject;
       });
-      serviceA.olderItems = hangOlder as never;
+      serviceA.olderPage = hangOlder as never;
       const olderP = store.getState().loadOlder(serviceA);
 
       // Rebind to B.

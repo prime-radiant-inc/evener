@@ -23,6 +23,7 @@ import { create } from "zustand";
 import {
   applyNotification,
   isStaleCursorError,
+  mergeOlderItemPage,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -569,13 +570,6 @@ export function createConversationStore() {
   ): MobileConversation {
     return applyNotification(conversation, n, Date.now()) as MobileConversation;
   }
-  // I3: Page-owned item IDs — the item identities loadOlder pulled in as
-  // older history. A rehydrate's snapshot is authoritative for everything it
-  // carries; the page history it does not carry is prepended from here, so an
-  // older page loaded during the read is not lost. Cleared on every
-  // conversation transition (open/close/reset/openProjected). D23d moves the
-  // older pages into the model and deletes this.
-  const pageOwnedIds = new Set<string>();
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
   // mutation owner changed during its await, it stores a deferred trailing
   // request with the EXACT binding snapshot captured at schedule time (not
@@ -785,36 +779,6 @@ export function createConversationStore() {
   // a stale rehydrate (from an older operation) cannot overwrite a newer
   // rehydrate's state within the same generation.
   let rehydrateToken = 0;
-  // The older pages live outside the model until D23d moves them into it, so
-  // every publish carries them: page-owned rows the projection does not
-  // contain are prepended, in front of the rows the model produced.
-  function withPageHistory(
-    previous: MobileConversation | null,
-    projected: MobileConversation,
-  ): MobileConversation {
-    if (previous === null || pageOwnedIds.size === 0) return projected;
-    const identities = new Set(
-      projected.items.flatMap((item) => [...timelineIdentities(item)]),
-    );
-    const pageRows = previous.items.filter(
-      (item) =>
-        pageOwnedIds.has(timelineIdentity(item)) &&
-        ![...timelineIdentities(item)].some((id) => identities.has(id)),
-    );
-    if (pageRows.length === 0) return projected;
-    return { ...projected, items: [...pageRows, ...projected.items] };
-  }
-
-  // Prune page ownership for identities the displayed rows no longer carry:
-  // once the cap has trimmed a row, its page entry is stale and a later
-  // re-introduction must be judged on its own.
-  function pruneEvictedIds(items: MobileTimelineItem[]): void {
-    const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
-    for (const id of [...pageOwnedIds]) {
-      if (!retainedIds.has(id)) pageOwnedIds.delete(id);
-    }
-  }
-
   return create<LiveConversationState>((rawSet, get) => {
     // R1: Wrap set so any write to pendingMutation or error increments the
     // corresponding monotonic revision counter — even ABA (same value). This
@@ -860,7 +824,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        pageOwnedIds.clear();
         set({
           status: "opening",
           ref,
@@ -916,7 +879,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        pageOwnedIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1212,26 +1174,15 @@ export function createConversationStore() {
             set({ draft: currentSnapshot.draft });
             return;
           }
-          // The snapshot is authoritative for every row it carries (the
+          // The snapshot is authoritative for the whole conversation (the
           // response-cut note by applyThreadNotification): a frame this store
-          // folded while the read was in flight is already in it. The one
-          // thing the snapshot cannot know about is older history this client
-          // paged in, so page-owned rows the snapshot omits are prepended and
-          // the page's own cursor is kept. D23d moves the pages into the model
-          // and this merge goes with them.
-          const currentConvForMerge = currentSnapshot.conversation;
-          const preservePageHistory =
-            currentConvForMerge?.instanceId === conversation.instanceId &&
-            (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
-          const merged = preservePageHistory
-            ? withPageHistory(currentConvForMerge, conversation)
-            : conversation;
-          // The page's cursor is the newer one when its history is kept: the
-          // reread's reflects the full readProjection, which does not include
-          // the paged rows.
-          const mergedCursor = preservePageHistory
-            ? currentSnapshot.olderCursor
-            : olderCursor;
+          // folded while the read was in flight is already in it, and so is
+          // every turn the read covers. Older pages this client merged in lie
+          // outside that window and go with the model the snapshot replaces;
+          // hasEarlierItems and the snapshot's own cursor say the history is
+          // there to page back in. This is the web's snapshot recovery
+          // (stores/threads.ts refreshTrackedThread replaces its model
+          // wholesale from a fresh read for the same reason).
           const identity: ActivityIdentity = {
             threadId: conversation.threadId,
             ref,
@@ -1250,14 +1201,10 @@ export function createConversationStore() {
           const errorUnchanged = entryErrorRev === errorOwnerRev;
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
-          // The snapshot's thread-level fields are authoritative (see the
-          // response-cut note by applyThreadNotification); the rows are its
-          // own, plus the page history prepended above.
-          const committedConversation = capAndTruncate(merged);
-          pruneEvictedIds(committedConversation.items);
+          const committedConversation = capAndTruncate(conversation);
           const commitBase = {
             conversation: committedConversation,
-            olderCursor: mergedCursor,
+            olderCursor,
             hasEarlierItems: hasEarlierItems ?? currentSnapshot.hasEarlierItems,
             hasLaterItems: hasLaterItems ?? currentSnapshot.hasLaterItems,
             draft: currentState.draft,
@@ -1321,7 +1268,7 @@ export function createConversationStore() {
         const entryErrorRev = errorOwnerRev;
         set({ loadingOlder: true });
         try {
-          const result = await service.loadOlder(cursor);
+          const page = await service.loadOlder(cursor);
           // C1: Recheck the exact operation binding after the await. If the
           // binding changed (rebind to B), A's completion makes ZERO state
           // changes — no items/cursor/loading.
@@ -1336,77 +1283,48 @@ export function createConversationStore() {
           if (olderToken !== loadOlderToken) return { status: "ignored" };
           const currentConv = get().conversation;
           if (currentConv !== null) {
-            // F10: Dedupe by source item identity — items from older pages
-            // that already exist in the current conversation (same id) are
-            // dropped, keeping the newer (live tail) version.
-            // Task 2A-Items: also dedupe within the incoming page by updating
-            // the seen set during traversal, preserving order and first
-            // occurrence semantics.
-            const existingIds = new Set(
-              currentConv.items.flatMap((item) => [...timelineIdentities(item)]),
+            // The page merges into the model this store already holds
+            // (reducer.mergeOlderItemPage: older turns before current ones,
+            // shared turns and tool call/result pairs folded, the page's own
+            // nextCursor carried onto the model), and the rows are
+            // re-projected from it. Nothing about a page is row-level any
+            // more: the hub never repeats a transcript key within a page
+            // (internal/appitempaging/page.go's validateCandidates), and an
+            // item the model already holds merges by identity instead of
+            // arriving twice. A settled older ask brings no question row with
+            // it either — liveAskQuestions reads the whole model, where a
+            // later user message answers it (deriveAskQuestions.ts).
+            const beforeKeys = new Set(currentConv.items.map(timelineIdentity));
+            const pageConversation = capAndTruncate(
+              projectConversation(mergeOlderItemPage(currentConv, page)),
             );
-            const currentIds = new Set(existingIds);
-            const deduped: MobileTimelineItem[] = [];
-            for (const item of result.items) {
-              // A row is a duplicate when ANY identity it carries is already
-              // present — an incoming cluster can reintroduce a member under
-              // a brand-new top-level id.
-              const duplicate = [...ownTimelineIdentities(item)].some((id) =>
-                existingIds.has(id),
-              );
-              if (duplicate) continue;
-              const sourceId = attachmentSourceIdentity(item);
-              if (sourceId !== null && currentIds.has(sourceId)) continue;
-              // I3: Defense-in-depth — filter question rows at the state merge
-              // boundary too, not only in the service's projectOlderTurns. A
-              // pending ask cannot legitimately be older than newer continuation
-              // turns; page-local projection otherwise resurrects settled calls.
-              if (item.kind === "question") continue;
-              for (const id of timelineIdentities(item)) existingIds.add(id);
-              deduped.push(item);
-            }
-            // I3: Record page-owned item IDs — these are items loaded from
-            // older pages. They are tracked so the rehydrate page-race merge
-            // can distinguish page-owned history from live notifications.
-            for (const item of deduped) {
-              pageOwnedIds.add(timelineIdentity(item));
-            }
-            // Prepend older (deduped) items, then trim from the oldest (front)
-            // so the newest live tail is retained (finding 8); the same cap and
-            // byte bound every other publish applies.
-            const pageConversation = capAndTruncate({
-              ...currentConv,
-              items: [...deduped, ...currentConv.items],
-            });
             const merged = pageConversation.items;
-            // Prune page ownership for IDs the cap dropped, so a later page
-            // load or re-introduction is judged on its own.
-            pruneEvictedIds(merged);
-            // F8: If we're at the cap and the merge trimmed older items,
-            // disable further paging honestly — set cursor to null so
-            // we don't repeatedly load rows that will be discarded.
-            // capItems keeps the newest RETAINED_ITEM_CAP rows, so the older
-            // page this call prepended is exactly what the cap discards: once
-            // at cap, no further page can retain a row. The cap therefore ends
-            // paging, and hasEarlierItems must say so — a cursor of null with
-            // the flag still true offers a load that early-returns "ignored".
+            // F8: at the cap, the rows a further page would add are exactly
+            // what the cap discards, so paging on would fetch what it cannot
+            // show. End paging honestly — a cursor of null with
+            // hasEarlierItems still true offers a load that early-returns
+            // "ignored".
             const atCap = merged.length >= RETAINED_ITEM_CAP;
-            const nextCursor = atCap ? null : (result.nextCursor ?? null);
+            const nextCursor = atCap
+              ? null
+              : (pageConversation.olderCursor ?? null);
             set({
               conversation: pageConversation,
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false
-                : (result.hasEarlierItems ?? get().hasEarlierItems),
-              hasLaterItems: result.hasLaterItems ?? get().hasLaterItems,
+                : page.data.some((turn) => turn.hasEarlierItems === true) ||
+                  get().hasEarlierItems,
+              hasLaterItems:
+                page.data.some((turn) => turn.hasLaterItems === true) ||
+                get().hasLaterItems,
               loadingOlder: false,
             });
-            const retainedIds = new Set(merged.map(timelineIdentity));
             return {
               status: "loaded",
-              itemKeys: deduped
+              itemKeys: merged
                 .map(timelineIdentity)
-                .filter((id) => retainedIds.has(id)),
+                .filter((key) => !beforeKeys.has(key)),
             };
           }
           return { status: "ignored" };
@@ -1796,7 +1714,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        pageOwnedIds.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -1834,13 +1751,7 @@ export function createConversationStore() {
         // projection.
         const applied = applyThreadNotification(state.conversation, n);
         if (applied !== state.conversation) {
-          const projected = withPageHistory(
-            state.conversation,
-            projectConversation(applied),
-          );
-          const conversation = capAndTruncate(projected);
-          pruneEvictedIds(conversation.items);
-          set({ conversation });
+          set({ conversation: capAndTruncate(projectConversation(applied)) });
         }
         if (state.ref === null) return;
         // evener/thread/resync is the authoritative refresh path (the store
@@ -1866,7 +1777,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        pageOwnedIds.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
