@@ -399,10 +399,11 @@ describe("marketplace mutation ordering", () => {
     await fetching;
     expect(extensionsStore.getState().marketplaces).toEqual([]);
     // The outrun response writes none of its three fields, the loading flag
-    // included: the mutation that outran it is followed by the hub's
-    // evener/marketplace/updated broadcast, whose refetch is what clears the
-    // flag this fetch set on its way out.
-    expect(extensionsStore.getState().marketplacesLoading).toBe(true);
+    // included - and the mutation that outran it answers all three, so the
+    // flag this fetch raised on its way out comes down with the mutation's
+    // list rather than waiting on the hub's broadcast, which a client that
+    // was away never receives.
+    expect(extensionsStore.getState().marketplacesLoading).toBe(false);
   });
 
   test("an outrun response still retires its own browse cache entry", async () => {

@@ -137,8 +137,9 @@ describe("list ordering", () => {
     release({ plugins: [LINTER] });
     await fetching;
     expect(store.getState().plugins).toEqual([]);
-    // The outrun fetch's loading flag belongs to it as much as its list does.
-    expect(store.getState().pluginsLoading).toBe(true);
+    // The outrun fetch writes none of its three fields, the flag it raised
+    // included; the mutation that outran it answers all three.
+    expect(store.getState().pluginsLoading).toBe(false);
   });
 
   test("an older list that resolves after a newer one does not overwrite it, and a later failure keeps the newer list", async () => {
@@ -155,6 +156,60 @@ describe("list ordering", () => {
     fake.on(LIST, failing("offline"));
     await store.getState().fetchPlugins();
     expect(store.getState()).toMatchObject({ plugins: [FORMATTER], pluginsError: "offline", pluginsLoading: false });
+  });
+});
+
+describe("reconnect", () => {
+  // pluginRevision is what a host re-keys data it derives from the plugin set
+  // on. A connection that was away may have missed any number of
+  // evener/plugin/updated, so a ready connection moves it exactly as one of
+  // those would - the set is no more known to be unchanged than it is after a
+  // notification that names nothing.
+  test("a ready connection moves the revision the same way a notification does", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "ready");
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    expect(store.getState().pluginRevision).toBe(0);
+
+    store.connectionChanged(fake, "reconnecting");
+    store.connectionChanged(fake, "ready");
+    expect(store.getState().pluginRevision).toBe(1);
+  });
+});
+
+describe("a write that outruns a read", () => {
+  test("the mutation's list clears the loading flag the outrun read raised", async () => {
+    const { fake, store } = storeWithFake();
+    const releaseRead = deferRequest<ListResult>(fake, LIST);
+    const reading = store.getState().fetchPlugins();
+    await Promise.resolve();
+    expect(store.getState().pluginsLoading).toBe(true);
+
+    fake.on("evener/plugin/remove", () => ({ plugins: [FORMATTER] }));
+    await store.getState().removePlugin("linter", "acme");
+
+    // The read is fenced by the write, so it writes none of its three fields
+    // when it lands - including the flag it raised on its way out. The write
+    // answers the same question with a newer list, so it owns all three.
+    releaseRead({ plugins: [LINTER] });
+    await reading;
+    expect(store.getState()).toMatchObject({
+      plugins: [FORMATTER],
+      pluginsLoading: false,
+      pluginsError: null,
+    });
+  });
+
+  test("the mutation's list clears an error a failed read left", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(LIST, failing("offline"));
+    await store.getState().fetchPlugins();
+    expect(store.getState().pluginsError).toBe("offline");
+
+    fake.on("evener/plugin/install", () => ({ plugins: [LINTER] }));
+    await store.getState().installPlugin("linter", "acme");
+    expect(store.getState()).toMatchObject({ plugins: [LINTER], pluginsError: null, pluginsLoading: false });
   });
 });
 

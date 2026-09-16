@@ -105,6 +105,27 @@ describe("fetches never throw, mutations reject", () => {
   });
 });
 
+describe("a write that outruns a read", () => {
+  test("the mutation's list clears the loading flag the outrun read raised", async () => {
+    const { fake, store } = storeWithFake();
+    const releaseRead = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const reading = store.getState().fetchMarketplaces();
+    await Promise.resolve();
+    expect(store.getState().marketplacesLoading).toBe(true);
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [LOCAL] }));
+    await store.getState().removeMarketplace("acme");
+
+    releaseRead({ marketplaces: [ACME] });
+    await reading;
+    expect(store.getState()).toMatchObject({
+      marketplaces: [LOCAL],
+      marketplacesLoading: false,
+      marketplacesError: null,
+    });
+  });
+});
+
 describe("browse cache", () => {
   test("a second browse of a settled catalog sends nothing", async () => {
     const { fake, store } = storeWithFake();
@@ -173,6 +194,37 @@ describe("browse cache", () => {
   });
 });
 
+describe("reconnect", () => {
+  // A store belongs to one hub - the web builds one for the app's single
+  // connection, native one per client under a screen keyed by hub - so a
+  // cached catalog is never another hub's. What it can be is a catalog
+  // browsed before the connection went away, whose evener/marketplace/updated
+  // never arrived because this client was not there to receive it. A ready
+  // connection therefore retires the catalogs exactly as that notification
+  // does, so the next browse asks the hub again instead of showing what the
+  // catalog held before.
+  test("a catalog browsed before a disconnect is read again, not shown again", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "ready");
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "linter" }] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
+
+    store.connectionChanged(fake, "reconnecting");
+    store.connectionChanged(fake, "ready");
+    expect(store.getState().browseCatalogs.size).toBe(0);
+
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "formatter" }] }));
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({
+      status: "loaded",
+      plugins: [{ name: "formatter" }],
+    });
+  });
+});
+
 describe("list ordering", () => {
   test("a list that resolves after a newer mutation committed does not roll the list back", async () => {
     const { fake, store } = storeWithFake();
@@ -186,8 +238,9 @@ describe("list ordering", () => {
     release({ marketplaces: [ACME] });
     await fetching;
     expect(store.getState().marketplaces).toEqual([]);
-    // The outrun fetch's loading flag belongs to it as much as its list does.
-    expect(store.getState().marketplacesLoading).toBe(true);
+    // The outrun fetch writes none of its three fields, the flag it raised
+    // included; the mutation that outran it answers all three.
+    expect(store.getState().marketplacesLoading).toBe(false);
   });
 });
 
