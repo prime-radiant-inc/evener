@@ -369,10 +369,10 @@ through D21–D24 and the directory is deleted at the end of D24.
 every row above, so the headline and the phases cannot drift apart again. The
 tables carry 74 rows, six of them withdrawn phase-B rows that contribute
 nothing — so **68 rows of work**, and **67 real PRs**, because B1b landed inside
-B1 rather than on its own. **Twenty have landed** (A1, A2, **A3**, A3b, A3c, A3d,
-A5, B1 carrying B1b, B3b, C5, C6, C9, C10, C11a, C11b, C12, C13, C15, C24, C26),
-so **47 remain**, one of them in flight: A4, open as #1272 and not yet merged. Heads are cited in
-the status table as of that commit only.
+B1 rather than on its own. **Thirty-seven have landed**: all eight of phase A (A1,
+A2, A3, A3b, A3c, A3d, A4, A5), both phase-B PRs (B1 carrying B1b, B3b) and all 27
+phase-C rows, so **30 remain, all of them phase D**. Merge SHAs are in the status
+table; heads cited there were current as of that commit only.
 
 Phase A 8 PRs / 2,860 lines. Phase B 210, the sum of its three live rows of 9
 (all three landed). Phase C 27 / 8,530. Phase D 30 / 19,130. Each subtotal is its own rows added up, not an estimate.
@@ -424,7 +424,7 @@ before acting on it.
 | C11a | #1225 | **merged** as `c867646c4` — `tools/helpers.ts` → `protocol/toolCallText.ts` |
 | C11b | #1232 | **merged** as `314281cd5` — `askShared.ts` and `deriveAskQuestions.ts` |
 | C9 | #1234 | **merged** as `d7ff88653` — `composer/slashCompletion.ts` → `protocol/slashCompletion.ts` |
-| A3 | #1241 | **merged** as `57509ffd5`, after 8 review rounds. The package lives at `appwire-client/typescript/`; **32 re-export stubs remain at the old path, pending A4** — 28 directly under `src/protocol/` and 4 under `testing/`; the package's tests are self-contained at **27 files**; `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, which **closes #1224**. **Only #1244 is outstanding**, and it is A4's dependency. Two guards survive the PR, covering different halves of the coverage problem: `coverage.allowExternal` keeps the package's *loaded* files in the web denominator, and `package-coverage.mjs` catches the modules no test loads at all — which `coverage.include` stopped enumerating once the package left `src/`, the gap #1243 named |
+| A3 | #1241 | **merged** as `57509ffd5`, after 8 review rounds. The package lives at `appwire-client/typescript/`; **32 re-export stubs remained at the old path until A4 (`e2baa5f72`) deleted them** — 28 directly under `src/protocol/` and 4 under `testing/`; the package's tests are self-contained at **27 files**; `shippedModules` is now derived from `tsconfig.build.json` rather than hand-maintained, which **closes #1224**. Two guards survive the PR, covering different halves of the coverage problem: `coverage.allowExternal` keeps the package's *loaded* files in the web denominator, and `package-coverage.mjs` catches the modules no test loads at all — which `coverage.include` stopped enumerating once the package left `src/`, the gap #1243 named |
 | — | #1245 | **merged** as `ec9f1a5a6` — the Metro bundling gate for #1244: `scripts/native/test-native-bundle.sh` drives `npx expo export --platform ios` over the real entry point under a private HOME/TMPDIR/XDG, bounded by a plain `timeout 900` and the CI step's `timeout-minutes`, and `make test-native` gains it as a prerequisite. The `evener-dev bounded-list` port it was once going to wait on did not happen: #1265 was closed as overbuilding and #1263 stays an open issue |
 | A4 | #1272 | **merged** as `e2baa5f72` — dispatched off `57509ffd5`. It carries `testing/reducerHooks.ts`, which an earlier draft assigned to A3 |
 | C12 | #1233 | **merged** as `a0e594122` — `askDock/reconcileBatches.ts` → `protocol/reconcileBatches.ts` |
@@ -454,14 +454,14 @@ before acting on it.
 | C4 | #1428 | **merged** as `3649f2dcd` — `transcriptDisplay/config.ts` → `appwire-client/typescript/transcriptDisplayConfig.ts` (renamed: `config` was directory-bound), test with it; 36 web and 8 native importers take the package name, no stub at the old path; the encoding is untouched (module diff is header + import line). `TranscriptDisplayConfig`/`TranscriptDisplayAdvanced` stay off the root because the wire types of those names are already published there — follow-ups #1430 (V1 rename) and #1431 (zero-consumer aliases) |
 | C3 | #1448 | **merged** as `df38beced` — `keybindings/{actions,chord,defaults,display,overrides,registry,validation}.ts` → `appwire-client/typescript/keybinding{Actions,Chord,Defaults,Display,Overrides,Registry,Validation}.ts` under decision 1: `parseChord(parse, input)` takes a `KeybindingParser` port (tinykeys' `parseKeybinding` shape) and `createKeybindingsRegistry(parse)` is a framework-free store factory (`getState`/`setState`/`subscribe` plus `getInitialState`, so zustand's `useStore` accepts it unchanged) exposing `registry.parseKeybinding`; the web's one instance lives in `src/keybindings/appRegistry.ts`, `dispatcher.ts` stays in the web, the dispatcher half of `defaults.test.ts` stays beside it; 20 web importers and `mobile-native/src/keybindingRules.ts` import by package name |
 
-**What A3 and A4 actually block — corrected, because three relocations have now
-landed without them.** A3 moves the package directory and A4 rewrites imports to
-the package name; together they block the *package-name import rewrite* and the
-*directory move*, nothing else. A relocation into `protocol/` lands today with
-its consumers still on deep relative paths, which is exactly how C10 (#1222),
-C13 (#1223) and C24 (#1221) landed. **Read every phase-C `A4` in the Deps column
-as "consumers get the package-name import when A4 lands", not "cannot start".**
-A3b, A3c and A3d landed ahead of A3 for the same reason.
+**What A3 and A4 actually blocked — a historical sequencing note; both have
+landed.** A3 moved the package directory and A4 rewrote imports to the package
+name; together they blocked the *package-name import rewrite* and the *directory
+move*, nothing else. A relocation into `protocol/` could land with its consumers
+still on deep relative paths, which is exactly how C10 (#1222), C13 (#1223) and
+C24 (#1221) landed ahead of A3. The phase-C `A4` in the Deps column meant
+"consumers get the package-name import when A4 lands", not "cannot start". A3b,
+A3c and A3d landed ahead of A3 for the same reason.
 
 B7 was executed and stopped as NEEDS_CONTEXT; that triggered a grep re-audit of
 every DUPLICATED row and every 2-consumer claim at `f2599d1ed`. Six phase-B rows
