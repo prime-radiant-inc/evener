@@ -1,9 +1,8 @@
 // launchConfig.ts is the launch-config wire gateway both apps' launch settings
 // surfaces call through: evener/launch/{schema,getLayer,setLayer,resolve,
 // trustRepo} and evener/path/validate, each named once here as a typed method.
-// createLaunchConfigStore wraps them in a framework-free store (the
-// getState/setState/subscribe triple plus getInitialState, as in
-// keybindingRegistry.ts) and adds the one cache; LaunchSettings is the
+// createLaunchConfigStore wraps them in frameworkFreeStore's triple and adds
+// the one cache; LaunchSettings is the
 // per-layer draft editor the native settings screen drives over the same
 // methods, uncached.
 //
@@ -17,6 +16,7 @@
 // value to memoize the way schema's is.
 
 import type { AppwireClient } from "./client";
+import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { LaunchConfigLayerName } from "./launchSchema";
 import { equalJSON } from "./state/navigation/immutable";
 import type {
@@ -55,35 +55,19 @@ function launchConfigRequests(client: LaunchConfigClient): LaunchConfigRequests 
   };
 }
 
-/** Runs after every state change with the new state and the one it replaced
- * - the listener shape zustand's useStore subscribes with. */
-export type LaunchConfigListener = (state: LaunchConfigStoreState, previous: LaunchConfigStoreState) => void;
+export type LaunchConfigListener = StoreListener<LaunchConfigStoreState>;
 
-export interface LaunchConfigStore {
-  getState(): LaunchConfigStoreState;
-  /** The state the store was created with: the snapshot a view binding
-   * (React's useSyncExternalStore, zustand's useStore) reads before its first
-   * subscription. */
-  getInitialState(): LaunchConfigStoreState;
-  /** Shallow-merges the partial (or the updater's result) into the state and
-   * notifies every subscriber, even when nothing changed. */
-  setState(
-    partial: Partial<LaunchConfigStoreState> | ((state: LaunchConfigStoreState) => Partial<LaunchConfigStoreState>),
-  ): void;
-  /** Returns the unsubscribe function. */
-  subscribe(listener: LaunchConfigListener): () => void;
-}
+export type LaunchConfigStore = FrameworkFreeStore<LaunchConfigStoreState>;
 
 /** Builds a gateway over `client`, with its own schema cache. */
 export function createLaunchConfigStore(client: LaunchConfigClient): LaunchConfigStore {
-  const listeners = new Set<LaunchConfigListener>();
   const requests = launchConfigRequests(client);
   // The schema cache and its in-flight tracking are closure-private, not part
   // of the store's reactive state: nothing renders off "is the schema cached
   // yet", so a fetch completing must not notify subscribers.
   let schemaCache: LaunchOptionSchemaResponse | null = null;
   let schemaInflight: Promise<LaunchOptionSchemaResponse> | null = null;
-  let state: LaunchConfigStoreState = {
+  return createFrameworkFreeStore<LaunchConfigStoreState>(() => ({
     ...requests,
     async schema() {
       if (schemaCache) return schemaCache;
@@ -107,23 +91,7 @@ export function createLaunchConfigStore(client: LaunchConfigClient): LaunchConfi
       schemaCache = null;
       schemaInflight = null;
     },
-  };
-  const initialState = state;
-  return {
-    getState: () => state,
-    getInitialState: () => initialState,
-    setState(partial) {
-      const previous = state;
-      state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
-      for (const listener of listeners) listener(state, previous);
-    },
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-  };
+  }));
 }
 
 export interface LaunchSettingsState {
