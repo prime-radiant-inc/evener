@@ -154,10 +154,10 @@ export function describeTestingImportsOutsideTests(files, read, dir) {
 // Read through the AST so every form counts -- a from-import, a side-effect
 // import, a require, a dynamic import -- and a comment naming a path does not,
 // being no specifier at all. A relative specifier is the offender when it
-// resolves into one of the consumer trees (the web src and the two mobile
-// trees); an import into shared repo tooling (scripts/sdk) is what the
-// package's own scripts legitimately do, and a bare specifier names a
-// dependency the alias check covers.
+// resolves into the whole web app (cmd/evener-hub/frontend) or either mobile
+// tree; an import into shared repo tooling (scripts/sdk) is what the package's
+// own scripts legitimately do, and a bare specifier names a dependency the
+// alias check covers.
 export function describeAppImports(files, read, dir) {
   const repoRoot = path.resolve(dir, "..", "..");
   // The trees the package must not reach into: the WHOLE web app (its scripts
