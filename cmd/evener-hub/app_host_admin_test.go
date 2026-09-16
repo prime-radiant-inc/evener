@@ -244,6 +244,31 @@ func TestHostAdminRequestReturnsRemoteWireErrorVerbatim(t *testing.T) {
 	}
 }
 
+// TestHostAdminRequestNormalizesHostWhitespace pins that a padded host id gets
+// the same treatment as the canonical one. The host registry trims, the source
+// registry does not, so without one normalization a caller-side spelling like
+// " m4 " would pass the registry lookup and then be refused as "not attached"
+// instead of being forwarded.
+func TestHostAdminRequestNormalizesHostWhitespace(t *testing.T) {
+	controller, _, calls := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+
+	out, err := controller.Request(context.Background(), appwire.HostRequestParams{
+		Host:   " m4 ",
+		Method: appwire.MethodEvenerInstanceList,
+	})
+	if err != nil {
+		t.Fatalf("Request with a padded host: %v", err)
+	}
+	if string(out) != `{"ok":true}` {
+		t.Fatalf("result = %s, want the remote's own result", out)
+	}
+	if got := calls(); len(got) != 2 {
+		t.Fatalf("remote calls = %+v, want initialize + the forwarded request", got)
+	}
+}
+
 func TestHostAdminRequestUnknownHostRefusedWithoutForwarding(t *testing.T) {
 	controller, recorder, calls := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
 		return okReply()

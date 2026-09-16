@@ -1437,7 +1437,19 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
-		return s.mapCallError(err)
+		// Acquiring the client dials/attaches the remote host, so a failure here
+		// means no request crossed the wire: it must stay a SessionUnavailable
+		// the auto-resume gate can act on. This is the connect mapper, matching
+		// call and mutationCall — the attach handshake is bounded by its own
+		// initTimeout child context, so a timed-out attach arrives as an
+		// ErrSSHStart chain that also satisfies errors.Is(err,
+		// context.DeadlineExceeded), which mapCallError would hand back raw
+		// while mapConnectError still classifies it (and keeps a genuine caller
+		// cancellation raw).
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		return s.mapConnectError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
 		return s.mapCallError(err)
@@ -1496,21 +1508,29 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 // host at once — comes back as appwire.RequestNotSentError, which proves nothing
 // was transmitted, and since round nine it does so as soon as the context ends
 // rather than waiting for the writer ahead of it. That case maps exactly as the
-// pre-call check above does: a raw cancellation, or SessionUnavailable for an
-// expired deadline, and never outcome-unknown, because a mutation that never
-// reached the host cannot have been applied and blocking its retry is simply
-// wrong. Only from dispatch onward does the ambiguous in-flight reading apply.
+// pre-call check above does: a raw caller context error (cancellation or
+// expired deadline — both stay raw, as they do on every other path), and never
+// outcome-unknown, because a mutation that never reached the host cannot have
+// been applied and blocking its retry is simply wrong. Only from dispatch onward
+// does the ambiguous in-flight reading apply.
 func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		// Provably not sent: this runs before the request is handed to the
 		// client, so the caller's context ending maps exactly as AdminCall maps
-		// it (a raw cancellation, or SessionUnavailable for an expired
-		// deadline), which is a safe retry.
+		// it (a raw cancellation or expired deadline), which is a safe retry.
 		return s.mapCallError(err)
 	}
 	client, err := s.client(ctx, s.id)
 	if err != nil {
-		return s.mapCallError(err)
+		// Acquiring the client dials/attaches the host; a failure here never
+		// reached the wire, so it keeps the same safe-retry mapping as the
+		// pre-call check (a raw caller cancellation or deadline), and an attach
+		// failure classifies through the connect mapper as SessionUnavailable,
+		// exactly as call and mutationCall do.
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		return s.mapConnectError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
 		return s.remoteHubAdminMutationCallError(err)
@@ -1524,8 +1544,8 @@ func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, 
 // Four shapes reach it. A pre-send failure the client proved never reached the
 // transport (appwire.RequestNotSentError — the caller's context ended while the
 // request was queued on the client's write slot) is not a lost response at all,
-// so it maps exactly as the pre-call context check does: a raw cancellation, or
-// SessionUnavailable for an expired deadline, both safe retries. A context end
+// so it maps exactly as the pre-call context check does: a raw cancellation or
+// expired deadline, both safe retries. A context end
 // the in-flight call observed (the caller's cancellation or deadline) is the
 // ambiguous case described on AdminMutationCall: it becomes
 // outcome-unknown/blocked directly, so the classification no longer depends on

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -282,8 +283,12 @@ func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cf
 
 // Request forwards one allow-listed admin RPC to the named host's hub.
 func (c *hubHostAdminController) Request(ctx context.Context, params appwire.HostRequestParams) (json.RawMessage, error) {
-	if _, ok := c.hosts.Get(params.Host); !ok {
-		return nil, appwire.InvalidParams(fmt.Sprintf("unknown host %q", params.Host))
+	// Normalize once: the host registry trims what it is given, the source
+	// registry looks the id up verbatim, so a padded id would pass the first
+	// lookup and fail the second with a misleading "not attached".
+	host := strings.TrimSpace(params.Host)
+	if _, ok := c.hosts.Get(host); !ok {
+		return nil, appwire.InvalidParams(fmt.Sprintf("unknown host %q", host))
 	}
 	// Validate the allow-list before resolving the source: a method the proxy may
 	// never forward is refused identically whether the host is online or not, and
@@ -291,7 +296,7 @@ func (c *hubHostAdminController) Request(ctx context.Context, params appwire.Hos
 	if _, ok := remoteHostAdminMethods[params.Method]; !ok {
 		return nil, appwire.InvalidParams(fmt.Sprintf("method %q is not a permitted remote admin method", params.Method))
 	}
-	remote, err := c.remoteSourceFor(params.Host)
+	remote, err := c.remoteSourceFor(host)
 	if err != nil {
 		return nil, err
 	}
