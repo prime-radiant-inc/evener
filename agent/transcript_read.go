@@ -140,11 +140,14 @@ func wrapTranscriptCorrupt(sentinel error, operation string, err error) error {
 	return fmt.Errorf("%s: %w", operation, err)
 }
 
-// retainedFrom is the index of the first entry ResumeHistory keeps: the last
-// compaction turn, or 0 when the transcript never compacted. Callers that need to
-// map a position in the full transcript onto the resumed history read it here, so
-// the window rule lives in one place.
-func retainedFrom(entries []transcript.Entry) int {
+// lastMarkerAnchor is the index of the first entry a pre-#1200 (fold-record
+// absent) resume keeps: the last compaction turn, or 0 when the transcript
+// never compacted. It is the legacy anchor, kept only for transcripts written
+// before the fold record existed — those carry a marker with no record, and
+// resuming them exactly as the shipped daemon did (marker + everything after)
+// avoids suddenly replaying their long-discarded prefix on the first restart
+// after the upgrade. A2 transcripts carry a fold record and never reach it.
+func lastMarkerAnchor(entries []transcript.Entry) int {
 	for i := range slices.Backward(entries) {
 		kind := entries[i].Turn.Kind
 		if kind == schema.TurnCheckpoint || kind == schema.TurnSummary {
@@ -154,39 +157,97 @@ func retainedFrom(entries []transcript.Entry) int {
 	return 0
 }
 
+// lastFoldRecordIndex is the index of the last TurnFoldRecord entry, or -1 when
+// the transcript has none (never compacted, or compacted only by a pre-#1200
+// build). The last record is the one whose published history is live.
+func lastFoldRecordIndex(entries []transcript.Entry) int {
+	for i := range slices.Backward(entries) {
+		if entries[i].Turn.Kind == schema.TurnFoldRecord && entries[i].Turn.Fold != nil {
+			return i
+		}
+	}
+	return -1
+}
+
+// resumeTurns reconstructs the pre-repair resumed history and, for each turn,
+// the index in entries it came from (its origin), so a caller can map a
+// full-transcript position onto the resumed history. A fold record drives the
+// reconstruction when present: the head marker(s) it names (Layers), then the
+// pre-existing turns it kept (RetainedSeqs), each looked up by Seq, then every
+// entry recorded after the record. Absent a record, the legacy last-marker
+// anchor (or the whole transcript) does, contiguously from lastMarkerAnchor.
+func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int) {
+	if recordIdx := lastFoldRecordIndex(entries); recordIdx >= 0 {
+		rec := entries[recordIdx].Turn.Fold
+		bySeq := make(map[int]int, len(entries))
+		for i := range entries {
+			bySeq[entries[i].Seq] = i
+		}
+		add := func(seq int) {
+			if i, ok := bySeq[seq]; ok {
+				t := entries[i].Turn
+				t.Seq = entries[i].Seq
+				turns = append(turns, t)
+				origins = append(origins, i)
+			}
+		}
+		for _, seq := range rec.Layers {
+			add(seq)
+		}
+		for _, seq := range rec.RetainedSeqs {
+			add(seq)
+		}
+		for i := recordIdx + 1; i < len(entries); i++ {
+			// Everything after the last record is live post-fold history; a
+			// stray fold record there (there should be none) is bookkeeping,
+			// never a live turn.
+			if entries[i].Turn.Kind == schema.TurnFoldRecord {
+				continue
+			}
+			t := entries[i].Turn
+			t.Seq = entries[i].Seq
+			turns = append(turns, t)
+			origins = append(origins, i)
+		}
+		return turns, origins
+	}
+
+	from := lastMarkerAnchor(entries)
+	turns = make([]schema.Turn, 0, len(entries)-from)
+	for i := from; i < len(entries); i++ {
+		t := entries[i].Turn
+		t.Seq = entries[i].Seq // seed the durable per-line id the fold names retained turns by
+		turns = append(turns, t)
+		origins = append(origins, i)
+	}
+	return turns, origins
+}
+
 // resumeHistoryIndexed is ResumeHistory, also reporting each synthetic repair
 // turn's insertion index in the returned turns (ascending, post-repair
 // coordinates), so a caller mapping a transcript position onto the resumed
 // history can shift it per insertion at or before that position, exactly as
 // history_repair.go shifts the in-flight boundary.
 func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
-	compactionIdx := retainedFrom(entries)
-
-	var turns []schema.Turn
-	if compactionIdx == 0 {
-		// No compaction: the whole transcript.
-		turns = make([]schema.Turn, len(entries))
-		for i, e := range entries {
-			turns[i] = e.Turn
-			turns[i].Seq = e.Seq // seed the durable per-line id the fold names retained turns by
-		}
-	} else {
-		// The compaction turn + everything after it.
-		turns = make([]schema.Turn, 0, len(entries)-compactionIdx)
-		for i := compactionIdx; i < len(entries); i++ {
-			t := entries[i].Turn
-			t.Seq = entries[i].Seq // seed the durable per-line id
-			turns = append(turns, t)
-		}
-	}
-
-	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
+	repaired, insertedAt, _ := resumeHistoryReconstruct(entries)
 	return repaired, insertedAt
 }
 
-// ResumeHistory extracts the history needed for session resume from transcript entries.
-// If a compaction turn (CHECKPOINT or SUMMARY) exists, returns [last compaction turn, ...subsequent turns].
-// Otherwise returns all turns.
+// resumeHistoryReconstruct also returns the pre-repair origins (the entry index
+// each pre-repair turn came from), which the fork-provenance boundary maps a
+// persisted DivergenceTurn through — see RestoreSessionFromMetaWithConfig.
+func resumeHistoryReconstruct(entries []transcript.Entry) (repaired []schema.Turn, insertedAt []int, origins []int) {
+	turns, origins := resumeTurns(entries)
+	repaired, _, insertedAt = repairOrphanedToolResultsIndexed(turns)
+	return repaired, insertedAt, origins
+}
+
+// ResumeHistory extracts the history needed for session resume from transcript
+// entries. When a compaction fold record exists, it rebuilds the exact history
+// that fold left live: the marker(s) it names, the pre-existing turns it kept
+// (by Seq), then everything recorded after the record. Absent a record, a
+// legacy marker anchor returns [last compaction turn, ...subsequent], and an
+// uncompacted transcript returns all turns.
 func ResumeHistory(entries []transcript.Entry) []schema.Turn {
 	turns, _ := resumeHistoryIndexed(entries)
 	return turns

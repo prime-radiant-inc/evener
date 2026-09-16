@@ -1153,7 +1153,6 @@ func (s *Session) appendToolResultsDurably(live, persisted llm.Message, skillSta
 	persistedTurn := schema.NewTurn(schema.TurnToolResults, persisted)
 	persistedTurn.SkillState = skillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
-		persistedTurn,
 		func() (int, error) { return s.writeTranscriptDurableLocked(persistedTurn) },
 		func(seq int) { liveTurn.Seq = seq; s.history = append(s.history, liveTurn) },
 	)
@@ -1181,7 +1180,6 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 	}
 	if err := s.appendTurnAfterTranscriptWrite(
-		persistedTurn,
 		func() (int, error) { return s.writeTranscriptSyncedLocked(persistedTurn) },
 		func(seq int) { liveTurn.Seq = seq; s.history = append(s.history, liveTurn) },
 	); err != nil {

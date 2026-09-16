@@ -874,10 +874,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Recover history from transcript JSONL. No snapshot fallback.
 	var resumeHistory []schema.Turn
 	var repairInsertions []int
+	var resumeOrigins []int
 	if restoreCfg.resumeHistory != nil {
 		resumeHistory = append([]schema.Turn(nil), restoreCfg.resumeHistory...)
 	} else if len(transcriptEntries) > 0 {
-		resumeHistory, repairInsertions = resumeHistoryIndexed(transcriptEntries)
+		resumeHistory, repairInsertions, resumeOrigins = resumeHistoryReconstruct(transcriptEntries)
 	}
 	if resumeHistory == nil {
 		resumeHistory = []schema.Turn{}
@@ -890,11 +891,26 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// A fork's inherited prefix belongs to the parent's session, so only the
 	// session's own turns consult its journal (see
 	// escapeHistoryWithSessionProvenance). DivergenceTurn indexes the full
-	// transcript, and a compacted transcript resumes partway through it, so the
-	// bound shifts by where the retained history begins.
+	// transcript; a resumed history is a re-ordered subset of it (a fold puts
+	// its own markers at the head, ahead of the older turns it retained), so
+	// the boundary is the count of leading resumed turns that still come from
+	// entries inside the inherited prefix. resumeOrigins gives each pre-repair
+	// resumed turn its source entry index; escapeHistoryWithSessionProvenance
+	// treats history[:divergenceTurn-1] as inherited, so an entry is inside the
+	// prefix when its origin < DivergenceTurn-1. The scan stops at the first
+	// own turn: a fold's head markers (own, newest entries) end the prefix
+	// immediately, which correctly makes a compacted fork all-own.
 	divergenceTurn := meta.DivergenceTurn
-	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 {
-		divergenceTurn -= retainedFrom(transcriptEntries)
+	if restoreCfg.resumeHistory == nil && len(transcriptEntries) > 0 && meta.DivergenceTurn > 0 {
+		inheritedPrefix := 0
+		for _, origin := range resumeOrigins {
+			if origin < meta.DivergenceTurn-1 {
+				inheritedPrefix++
+				continue
+			}
+			break
+		}
+		divergenceTurn = inheritedPrefix + 1
 		// Repair splices a synthetic result wherever an orphaned tool call was,
 		// so every insertion at or before the boundary shifts it right by one:
 		// the synthetic completes the call it repairs, which sits inside the

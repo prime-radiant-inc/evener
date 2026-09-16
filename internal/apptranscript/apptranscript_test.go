@@ -1308,3 +1308,18 @@ func TestProjectTurnStampsToolItemTimestamps(t *testing.T) {
 		t.Fatalf("zero-timestamp tool call item StartedAt=%v, want nil", items[0].StartedAt)
 	}
 }
+
+// A compaction fold record is durable bookkeeping the resume path reads to
+// rebuild history; it is never part of live history and carries no displayable
+// content, so the reload projector must emit no item for it — exactly as the
+// live path never sees one. Its presence between two ordinary turns must not
+// disturb their projection either.
+func TestProjectTurn_FoldRecordProjectsNothing(t *testing.T) {
+	items := ProjectTurn("turn_fold", 2, schema.Turn{
+		Kind: schema.TurnFoldRecord,
+		Fold: &schema.FoldRecord{FoldID: "fold-3", Layers: []int{4}, RetainedSeqs: []int{1, 2, 3}},
+	}, map[string]string{}, nil, nil)
+	if len(items) != 0 {
+		t.Fatalf("fold record projected %d items, want 0: %+v", len(items), items)
+	}
+}

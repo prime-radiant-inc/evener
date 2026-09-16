@@ -387,8 +387,6 @@ type Session struct {
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
-	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
-	persistedAppendLogBase        int           // count of pair appends already pruned from persistedAppendLog by fold publications; base+len(log) is the total pair-append count a fold snapshot captures as snapAppends. Guarded by mu.
 	newestPublishedFoldRevision   int           // publication sequence (historyRevision at publish) of the newest fold publication, set inside publishFoldTransaction's s.mu window. Last-write-wins deferred effects (compaction naming, task/artifact steering) are suppressed — at flush time and again at async naming completion — for any fold with an older publication revision: suppression binds to PUBLICATION order, never flush order, so an older fold flushing while the newest is published-but-unflushed stays silent, and the newest fold's own flush can never be suppressed. Guarded by mu.
 	responsesContinuationDisabled map[responsesContinuationDisabledKey]bool
 
@@ -1758,7 +1756,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// write goes through AppendSynced (records AND syncs, else reports) via the
 	// pair helper, which resolves to one of three things (see
 	// appendTurnAfterTranscriptWriteLocked):
-	//   - nil (durable): the pair committed history + pair log, and the tracker
+	//   - nil (durable): the pair committed the history append, and the tracker
 	//     advance below stands;
 	//   - a retained record (ErrRetainedUnsynced): the whole line is in the
 	//     file, so the pair ADOPTS it and returns nil — the tracker still
@@ -1771,7 +1769,6 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// diff; attentionMu holds the pair whole against a fold publication exactly
 	// as the clean path's is held.
 	err := s.appendTurnAfterTranscriptWriteLocked(
-		turn,
 		func() (int, error) { return s.writeTranscriptSyncedLocked(turn) },
 		func(seq int) { turn.Seq = seq; s.history = append(s.history, turn) },
 	)
@@ -1865,28 +1862,21 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // appendTurnAfterTranscriptWrite runs one durability-first history-append/
 // transcript-write pair atomically under attentionMu: write commits the
 // turn's transcript entry (attentionMu already held — use the Locked write
-// variants), and appendLocked appends it to s.history, plus any flags that
-// must travel with the append, under s.mu. Holding attentionMu across the
-// pair keeps it whole relative to a fold's publication transaction: the pair
-// lands either entirely before the publish — the turn is in the fold's
-// snapshot or merged tail, and its pre-marker entry
-// gets a post-marker copy — or entirely after it, where its entry follows
-// the markers on its own. A half-done pair could otherwise leave a
-// pre-marker entry for a turn the publish never saw (lost on restart) or a
-// post-marker entry racing the transaction's own tail rewrite (duplicated on
-// restart). On write error nothing is appended; the error returns for the
-// caller to report outside the locks.
-//
-// persisted is the exact transcript form write commits. It is recorded in
-// the session's pair log so a fold publication can re-append that same form
-// after its compaction markers — never the live turn, whose tool results
-// deliberately retain the private evidence the persisted projection replaces
-// with a placeholder.
-func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() (int, error), appendLocked func(seq int)) error {
+// variants) and returns its durable Seq, and appendLocked appends it to
+// s.history under s.mu, stamping that Seq onto the live turn (plus any flags
+// that must travel with the append). Holding attentionMu across the pair keeps
+// it whole relative to a fold's publication transaction: the pair lands either
+// entirely before the publish — the turn is in the fold's snapshot or merged
+// tail, and the fold names its durable entry by that Seq — or entirely after
+// it, where its entry follows the markers and the record on its own. A
+// half-done pair could otherwise leave an entry for a turn the publish never
+// saw. On write error nothing is appended; the error returns for the caller to
+// report outside the locks.
+func (s *Session) appendTurnAfterTranscriptWrite(write func() (int, error), appendLocked func(seq int)) error {
 	err := func() error {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
-		return s.appendTurnAfterTranscriptWriteLocked(persisted, write, appendLocked)
+		return s.appendTurnAfterTranscriptWriteLocked(write, appendLocked)
 	}()
 	// A durable write whose whole line landed but did not sync returns nil —
 	// the entry is a record, appended above — and leaves its sync failure on
@@ -1897,7 +1887,7 @@ func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write fu
 	return err
 }
 
-func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() (int, error), appendLocked func(seq int)) error {
+func (s *Session) appendTurnAfterTranscriptWriteLocked(write func() (int, error), appendLocked func(seq int)) error {
 	// A write reports one of three things (see transcript.AppendSynced, and the
 	// ordinary doors' recorded-or-nil): nil is recorded; ErrRetainedUnsynced is
 	// ALSO recorded — the whole line is in the file — but not yet durable, so
@@ -1913,17 +1903,8 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	}
 	s.mu.Lock()
 	appendLocked(seq)
-	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
 	return nil
-}
-
-// logPairPersistedLocked records the persisted transcript form of one
-// append/write pair for publishFoldTransaction's post-marker rewrite.
-// Callers hold s.mu inside their pair's attentionMu hold; the transaction
-// prunes the log at every successful publication.
-func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
-	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
 }
 
 func (s *Session) appendTurnWithDurableTranscriptMessage(kind schema.TurnKind, live, persisted llm.Message) error {
@@ -1947,7 +1928,6 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 	persistedTurn := t
 	persistedTurn.Message = persisted
 	err := s.appendTurnAfterTranscriptWrite(
-		persistedTurn,
 		func() (int, error) { return write(persistedTurn) },
 		func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 	)
@@ -1971,7 +1951,6 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.mu.Lock()
 	live.Seq = seq
 	s.history = append(s.history, live)
-	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	if err != nil {
@@ -2220,7 +2199,6 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		ResponseContextMarker:           finalAttempt.ContextMarker,
 	}
 	err := s.appendTurnAfterTranscriptWrite(
-		t,
 		func() (int, error) { return s.writeTranscriptDurableLocked(t) },
 		func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 	)

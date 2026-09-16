@@ -1272,9 +1272,10 @@ func (s *Session) compactionEmitFunc(ctx context.Context, history *[]schema.Turn
 		s.mu.Lock()
 		commit.claimNoteLocked()
 		commit.publishedRevision = s.historyRevision
+		published := append([]schema.Turn(nil), s.history...)
 		s.mu.Unlock()
 		s.attentionMu.Lock()
-		commit.commitTranscriptsLocked()
+		commit.commitTranscriptsLocked(published)
 		s.attentionMu.Unlock()
 		commit.flush()
 	}

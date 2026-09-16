@@ -1361,7 +1361,6 @@ func (s *Session) recordClientMutationFailure(
 			turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(queued)}
 		}
 		if err := s.appendTurnAfterTranscriptWrite(
-			turn,
 			func() (int, error) { return s.writeTranscriptSyncedLocked(turn) },
 			func(seq int) {
 				s.clientMutationAppendedTurn = true
@@ -1385,7 +1384,6 @@ func (s *Session) recordClientMutationFailure(
 		turn.StableTurnID = pending.TurnID
 		turn.Error = info
 		if err := s.appendTurnAfterTranscriptWrite(
-			turn,
 			func() (int, error) { return s.writeTranscriptSyncedLocked(turn) },
 			func(seq int) {
 				s.clientMutationAppendedTurn = true

@@ -937,6 +937,130 @@ func TestResumeHistoryFromTranscript_WithSummary(t *testing.T) {
 	}
 }
 
+// A fold names, by Seq, the entries its published history is made of. The
+// retained tail sits BEFORE the fold's markers in the transcript, so the old
+// last-marker anchor dropped it (#1200). With a fold record, resume rebuilds
+// the head marker followed by the retained tail followed by everything after
+// the record, and never resurrects the discarded prefix or the record itself.
+func TestResumeHistoryFoldRecord_KeepsRetainedTailBeforeMarker(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		// seq 0-2: discarded prefix the fold summarized away.
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("old input"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("old reply"))},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnToolResults, llm.ToolResult("call-old", "ok", false))},
+		// seq 3-4: the retained tail — recorded BEFORE the markers.
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("kept input"))},
+		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("kept reply"))},
+		// seq 5-6: the fold's own markers, written at commit.
+		{Kind: "entry", Seq: 5, Turn: schema.NewTurn(schema.TurnCheckpoint, llm.User("checkpoint prose"))},
+		{Kind: "entry", Seq: 6, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary prose"))},
+		// seq 7: the fold record — the summary heads the resumed history, the
+		// retained tail (3,4) follows it. The checkpoint (5) is written for its
+		// receipt but is not part of the live folded history.
+		{Kind: "entry", Seq: 7, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+			FoldID: "1", Layers: []int{6}, RetainedSeqs: []int{3, 4},
+		}}},
+		// seq 8-9: live turns recorded after the fold.
+		{Kind: "entry", Seq: 8, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("after fold"))},
+		{Kind: "entry", Seq: 9, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("after reply"))},
+	}
+
+	history := ResumeHistory(entries)
+
+	wantKinds := []schema.TurnKind{
+		schema.TurnSummary,      // the head marker (Layers)
+		schema.TurnUserInput,    // seq 3 (RetainedSeqs)
+		schema.TurnAssistant,    // seq 4 (RetainedSeqs)
+		schema.TurnUserInput,    // seq 8 (post-record)
+		schema.TurnAssistant,    // seq 9 (post-record)
+	}
+	if len(history) != len(wantKinds) {
+		t.Fatalf("resumed %d turns, want %d: %+v", len(history), len(wantKinds), history)
+	}
+	for i, want := range wantKinds {
+		if history[i].Kind != want {
+			t.Errorf("turn %d kind = %q, want %q", i, history[i].Kind, want)
+		}
+	}
+	if history[0].Message.Text() != "summary prose" {
+		t.Errorf("head marker text = %q, want the summary", history[0].Message.Text())
+	}
+	if history[1].Message.Text() != "kept input" || history[2].Message.Text() != "kept reply" {
+		t.Errorf("retained tail not preserved: got %q, %q", history[1].Message.Text(), history[2].Message.Text())
+	}
+	// The discarded prefix, the checkpoint the summary replaced, and the fold
+	// record itself must never reappear in resumed history.
+	for _, turn := range history {
+		if turn.Kind == schema.TurnFoldRecord {
+			t.Error("resumed history contains the fold record")
+		}
+		if turn.Kind == schema.TurnCheckpoint {
+			t.Error("resumed history contains the checkpoint the summary replaced")
+		}
+		if turn.Message.Text() == "old input" || turn.Message.Text() == "old reply" {
+			t.Error("resumed history resurrected the discarded prefix")
+		}
+	}
+	// Seq seeds survive.
+	if history[1].Seq != 3 || history[2].Seq != 4 {
+		t.Errorf("retained tail seqs = %d,%d, want 3,4", history[1].Seq, history[2].Seq)
+	}
+}
+
+// A checkpoint-only fold (summarizer unavailable) heads the resumed history
+// with the checkpoint, which is then the sole marker the fold record names.
+func TestResumeHistoryFoldRecord_CheckpointOnlyHead(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("discarded"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("kept"))},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnCheckpoint, llm.User("checkpoint prose"))},
+		{Kind: "entry", Seq: 3, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+			FoldID: "1", Layers: []int{2}, RetainedSeqs: []int{1},
+		}}},
+	}
+	history := ResumeHistory(entries)
+	if len(history) != 2 {
+		t.Fatalf("resumed %d turns, want 2: %+v", len(history), history)
+	}
+	if history[0].Kind != schema.TurnCheckpoint || history[0].Message.Text() != "checkpoint prose" {
+		t.Errorf("head = %q/%q, want checkpoint prose", history[0].Kind, history[0].Message.Text())
+	}
+	if history[1].Message.Text() != "kept" {
+		t.Errorf("retained = %q, want kept", history[1].Message.Text())
+	}
+}
+
+// The last fold record wins: a second fold's record supersedes the first, and
+// its retained seqs may name entries recorded before the first fold's marker.
+func TestResumeHistoryFoldRecord_LastRecordWins(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("a"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary 1"))},
+		{Kind: "entry", Seq: 2, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+			FoldID: "1", Layers: []int{1}, RetainedSeqs: nil,
+		}}},
+		{Kind: "entry", Seq: 3, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("b"))},
+		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary 2"))},
+		{Kind: "entry", Seq: 5, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+			FoldID: "2", Layers: []int{4}, RetainedSeqs: []int{3},
+		}}},
+		{Kind: "entry", Seq: 6, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("c"))},
+	}
+	history := ResumeHistory(entries)
+	wantText := []string{"summary 2", "b", "c"}
+	if len(history) != len(wantText) {
+		t.Fatalf("resumed %d turns, want %d: %+v", len(history), len(wantText), history)
+	}
+	for i, want := range wantText {
+		if history[i].Message.Text() != want {
+			t.Errorf("turn %d text = %q, want %q", i, history[i].Message.Text(), want)
+		}
+	}
+}
+
 // --- Session-integration tests ---
 
 func TestSession_TranscriptCreatedOnNewSession(t *testing.T) {

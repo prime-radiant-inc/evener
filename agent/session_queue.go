@@ -1036,7 +1036,6 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 	}
 	if msg.ClientMutationID != "" {
 		if err := s.appendTurnAfterTranscriptWrite(
-			t,
 			func() (int, error) { return s.appendClientMutationTranscriptLocked(t) },
 			func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 		); err != nil {
@@ -1086,7 +1085,6 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 	turn.Error = &schema.TurnFailureInfo{Message: cause.Error()}
 	turn.SkillState = &schema.SkillTurnState{Input: skillInputRecordFromQueued(input)}
 	if err := s.appendTurnAfterTranscriptWrite(
-		turn,
 		func() (int, error) { return s.appendClientMutationTranscriptLocked(turn) },
 		func(seq int) { turn.Seq = seq; s.history = append(s.history, turn) },
 	); err != nil {
@@ -1176,7 +1174,6 @@ func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID str
 	t.SteeringKind = kind
 	t.OwningTurnID = owningTurnID
 	err := s.appendTurnAfterTranscriptWrite(
-		t,
 		func() (int, error) { return s.writeTranscriptSyncedLocked(t) },
 		func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 	)

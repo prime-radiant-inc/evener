@@ -2150,7 +2150,6 @@ func (s *Session) appendUserInputTurnRefusingPoison(turn schema.Turn) error {
 	turn.Seq = seq
 	s.mu.Lock()
 	s.history = append(s.history, turn)
-	s.logPairPersistedLocked(turn)
 	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	if writeErr != nil {
@@ -2283,7 +2282,6 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 			}
 		}
 		if err := s.appendTurnAfterTranscriptWrite(
-			turn,
 			func() (int, error) { return s.appendClientMutationTranscriptLocked(turn) },
 			func(seq int) { turn.Seq = seq; s.history = append(s.history, turn) },
 		); err != nil {

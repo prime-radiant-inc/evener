@@ -68,7 +68,42 @@ const (
 	// attention item. Provider projection excludes it; generic presentation may
 	// retain the marker while hiding its private metadata.
 	TurnAttentionResolution TurnKind = "ATTENTION_RESOLUTION"
+	// TurnFoldRecord is a compaction fold's durable manifest: it names, by
+	// transcript Seq, the entries the newly published folded history is made
+	// of, so a restart reconstructs exactly the history the fold left live
+	// instead of anchoring on the last marker and dropping the retained tail
+	// (issue #1200). The record itself is never part of live history — it
+	// carries Turn.Fold, is written after the fold's markers, and is used only
+	// by ResumeHistory. Projections skip it (no item), and expandHistory never
+	// sees it because it is not added to Session.history.
+	TurnFoldRecord TurnKind = "FOLD_RECORD"
 )
+
+// FoldRecord is the durable manifest a compaction fold writes so a restart can
+// rebuild the history it left live. The folded history is reconstructed as the
+// Layers entries (this fold's own marker turns, at the head) followed by the
+// Retained entries (the pre-existing turns the fold kept, in history order),
+// each looked up by transcript Seq, followed by every entry recorded after the
+// record. It replaces the pre-#1200 scheme of re-appending persisted pair
+// forms after the markers, which the last-marker resume anchor silently
+// dropped along with the retained tail.
+type FoldRecord struct {
+	// FoldID is this publication's identity (the winning fold's history
+	// revision), unique per recorded fold — a debugging/idempotency handle,
+	// never reused by a later fold.
+	FoldID string `json:"fold_id"`
+	// Layers holds the transcript Seqs of this fold's own marker turns that
+	// head the resumed history: the summary's Seq (or the checkpoint's, when
+	// summarization did not run). The checkpoint entry that a summary replaced
+	// is written for its receipt but is not listed here — it is not part of
+	// the live folded history.
+	Layers []int `json:"layers"`
+	// RetainedSeqs holds the transcript Seqs of the pre-existing turns the fold
+	// kept — the preserved recent tail, the turns recorded during the fold that
+	// it merged back, and any steering it injected — in resumed-history order
+	// after the markers. These are exactly the entries #1200's anchor dropped.
+	RetainedSeqs []int `json:"retained_seqs"`
+}
 
 // AttentionResolutionInfo identifies one durable attention item and its
 // terminal disposition. The resolution is append-only so cold reconciliation
@@ -235,6 +270,14 @@ type Turn struct {
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseContextMarker           string `json:"response_context_marker,omitempty"`
+	// Fold is set only on TurnFoldRecord turns: the compaction fold's durable
+	// manifest of the entries its published history is made of. Nil everywhere
+	// else. A new wire field, so a transcript that carries a fold record is
+	// unreadable to a pre-#1200 daemon (its strict decoder rejects the unknown
+	// field and, decoding whole-transcript in one pass, the whole file) until
+	// that daemon restarts on a build that declares it — the same one-way door
+	// every prior schema.Turn field addition opened (kata wf7e).
+	Fold *FoldRecord `json:"fold_record,omitempty"`
 }
 
 // NewTurn creates a Turn with the current UTC time.
