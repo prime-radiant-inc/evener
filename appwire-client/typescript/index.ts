@@ -196,6 +196,13 @@ export type { StableDelegateState } from "./stableDelegate";
 export { stableDelegateDisplayStatus } from "./stableDelegate";
 export type { SteerRoute, SubmitRoute } from "./submitRouting";
 export { decideSteerRoute, decideSubmitRoute, isTurnActive } from "./submitRouting";
+export type { TaskCounts, TaskRow, TaskStatus } from "./taskListData";
+export { parseTaskListData, taskAggregateLabel } from "./taskListData";
+export type { TaskGroups } from "./taskListGroups";
+export { groupTasks } from "./taskListGroups";
+export { absoluteTime, relativeTime } from "./taskListTime";
+export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
+export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 export {
   clip,
   clipJobID,

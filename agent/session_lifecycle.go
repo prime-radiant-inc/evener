@@ -1872,7 +1872,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		tPhaseStart := s.sclock().Now()
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
-		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
+		modelResp, req, attempt, usedProfile, err := s.callModelWithFallback(ctx, profile, req, fullHistory, reqEffort, round)
 		for _, callID := range modelResp.CommunicatePreviewCallIDs {
 			communicatePreviewCalls[callID] = struct{}{}
 		}
@@ -1929,11 +1929,14 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		// Accumulate usage and record exact input token count for pressure calculation.
-		s.recordResponseUsage(resp, req)
+		s.recordResponseUsage(resp, req, usedProfile)
 
-		// Context window awareness: emit a warning when we exceed ~80% of the profile's context window.
+		// Context window awareness: emit a warning when we exceed ~80% of the
+		// context window. A fallback that answered owns the round's window: the
+		// context accounting already switched to it, and the warning must not
+		// report the primary's window for a request the fallback served.
 		if !ctxWarned {
-			if sessionLifecycleFault(ctx, "warn") != nil || s.maybeWarnContextUsage(profile, req) {
+			if sessionLifecycleFault(ctx, "warn") != nil || s.maybeWarnContextUsage(usedProfile, req) {
 				ctxWarned = true
 			}
 		}

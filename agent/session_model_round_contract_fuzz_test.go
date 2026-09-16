@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // FuzzModelRoundContracts covers the deterministic bookkeeping and recovery
@@ -82,7 +83,7 @@ func FuzzModelRoundContracts(f *testing.F) {
 			StorageScopeFingerprint: modelRoundChoice(r, "scope", "", text),
 			StoragePolicyLabel:      modelRoundChoice(r, "store", "none", ""),
 		}
-		full := responsesContinuationFullHistoryRequestForPlan(normalized, plan)
+		full := responsesContinuationFullHistoryRequestForPlan(registry.Resolved{Instance: "fuzz", ModelID: "fuzz"}, normalized, plan)
 		if full.HistoryMode != llm.HistoryModeFullHistory || full.Continuation == nil {
 			t.Fatalf("full-history plan was not materialized: %+v", full)
 		}

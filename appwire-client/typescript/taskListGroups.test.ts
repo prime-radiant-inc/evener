@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { TaskRow } from "./taskData";
-import { groupTasks } from "./taskGroups";
+import type { TaskRow } from "./taskListData";
+import { groupTasks } from "./taskListGroups";
 
 function row(id: number, status: TaskRow["status"]): TaskRow {
   return { id, type: "implement", description: `task ${id}`, prompt: "", status };
