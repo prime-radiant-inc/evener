@@ -1,6 +1,6 @@
+import type { ThreadModel } from "@evener/appwire-client";
+import { canReadSharedNotes } from "@evener/appwire-client";
 import { useEffect, useId, useRef } from "react";
-import type { ThreadModel } from "../../../protocol/model";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
 import { canWriteHumanNote, syncHumanNote, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Chevron, ToolIcon } from "../../../widgets";

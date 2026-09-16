@@ -1,7 +1,7 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
 import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNoteDrafts";
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
