@@ -40,7 +40,7 @@ import {
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, useToasts } from "../../../../widgets";
+import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceSheet.module.css";
 import {
@@ -215,6 +215,18 @@ export interface InstanceSheetProps {
   onRemove: () => void;
   onSetDefault: () => void;
   onTestCredentials: () => void;
+  /** Flips one model row's disabled flag; owned by the section like every
+   * other non-edit action. */
+  onToggleModel: (model: string, disabled: boolean) => void;
+  /** Re-fetches this instance's live listing; owned by the section like
+   * every other non-edit action. */
+  onRefreshModels: () => void;
+  /** A live-model refresh is in flight for this sheet: the Models section
+   * says so while the catalog rows stay interactive. */
+  modelsRefreshing?: boolean;
+  /** Pending toggle keys (`instance/model`, see the section owner):
+   * the matching switch is disabled until its write settles. */
+  pendingToggles?: ReadonlySet<string>;
   testCredentialsPending?: boolean;
   testCredentialsResult?: AuthTestResponse;
   /** Disables Save/Remove/make default while providers.toml cannot be
@@ -236,6 +248,10 @@ export function InstanceSheet({
   onRemove,
   onSetDefault,
   onTestCredentials,
+  onToggleModel,
+  onRefreshModels,
+  modelsRefreshing = false,
+  pendingToggles,
   testCredentialsPending = false,
   testCredentialsResult,
   writesRefused = false,
@@ -445,6 +461,11 @@ export function InstanceSheet({
   const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !instance.implicit);
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
+  // The sheet's per-model toggles read the registry's own inventory. The
+  // Models section always renders - with its Refresh button - so an
+  // instance whose live listing has not arrived yet still offers a manual
+  // re-fetch; only the toggles need rows.
+  const models = instance?.models ?? [];
   const safeTestResult = testCredentialsResult
     ? safeCredentialTestResult(name ?? "", testCredentialsResult)
     : undefined;
@@ -597,6 +618,31 @@ export function InstanceSheet({
               fired in that window goes out against the name the write is
               moving away from - and the credential ones would recreate under
               it the orphan the rename just moved. */}
+          {instance !== undefined && (
+            <>
+              <h3>Models</h3>
+              <div className={CLASS.fullRow}>
+                {/* Refresh is a read: the RPC deliberately skips
+                    refuseWhenBroken, so it stays available while
+                    providers.toml cannot be written. */}
+                <Button variant="quiet" onClick={onRefreshModels} disabled={busy || modelsRefreshing}>
+                  {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
+                </Button>
+              </div>
+              <div className={CLASS.actionRows}>
+                {models.map((row) => (
+                  <div key={row.id} className={CLASS.fullRow}>
+                    <Switch
+                      label={row.id}
+                      checked={!row.disabled}
+                      disabled={busy || writesRefused || (pendingToggles?.has(`${name}/${row.id}`) ?? false)}
+                      onChange={(checked) => onToggleModel(row.id, !checked)}
+                    />
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
           <div className={CLASS.actionRows}>
             <div className={CLASS.fullRow}>
               <Button variant="quiet" onClick={onTestCredentials} disabled={busy || testCredentialsPending}>

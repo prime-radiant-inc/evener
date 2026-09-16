@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
@@ -110,6 +111,11 @@ func StripDatedSuffix(id string) string {
 
 const provAlias = "alias"
 
+// ErrModelDisabled marks a Resolve naming a model the config layer disabled:
+// the reference names a real row, but nothing may use it. Callers match it
+// with errors.Is to tell "disabled by the user" from "unknown" and "hidden".
+var ErrModelDisabled = errors.New("model is disabled in providers.toml")
+
 // ParseRef splits "instance/model" on the first slash (spec §7.1); a bare
 // model id yields an empty Instance.
 func ParseRef(ref string) Ref {
@@ -151,6 +157,24 @@ func (r *Registry) ApplyLive(instance string, rows []Model) {
 		r.live = map[string]liveListing{}
 	}
 	r.live[instance] = listing
+}
+
+// SnapshotLive returns the cached live listings by instance, for carriers
+// like a registry reload that must preserve them across a fresh object.
+// ApplyLive restores each entry; the round trip keeps exactly the chat ids
+// with their advertised facts.
+func (r *Registry) SnapshotLive() map[string][]Model {
+	r.liveMu.RLock()
+	defer r.liveMu.RUnlock()
+	out := make(map[string][]Model, len(r.live))
+	for instance, listing := range r.live {
+		rows := make([]Model, 0, len(listing.rows))
+		for _, id := range sortedKeys(listing.rows) {
+			rows = append(rows, listing.rows[id])
+		}
+		out[instance] = rows
+	}
+	return out
 }
 
 // LiveModels returns the cached live listing of an instance, sorted by id.
@@ -421,12 +445,25 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 	// find nothing and fall back to a row-less, and wrong, baseline).
 	canonicalRowID := hit.rowID
 	// Layer 0: alias seeding (spec §4.2).
+	aliasLockstep := false
+	var aliasDisabled *bool
 	if row.AliasOf != "" {
 		target, same, err := r.resolveAliasTarget(rec, row.AliasOf)
 		if err != nil {
+			// A target the user disabled fails resolveOn with
+			// ErrModelDisabled; the alias inherits the block. Other
+			// resolution failures stay warnings (a dangling alias).
+			if errors.Is(err, ErrModelDisabled) {
+				return Resolved{}, fmt.Errorf("%s/%s: %w (alias of %s)", rec.name, ref.Model, ErrModelDisabled, row.AliasOf)
+			}
 			warnings = append(warnings, "dangling alias: "+err.Error())
 		} else {
 			seedFromAlias(&caps, &row, target, prov)
+			// Lockstep: the alias follows its target's Disabled verdict,
+			// so its own exact-row and glob flags never apply. Remember
+			// the verdict now; the replay below is reverted to it.
+			aliasLockstep = true
+			aliasDisabled = clonePointer(target.Model.Disabled)
 			if same && rec.head.Models[hit.rowID].Protocol == "" && rec.head.Models[hit.rowID].Transport == nil {
 				canonicalRowID = target.Model.ID
 				row.Protocol = target.Model.Protocol
@@ -451,7 +488,37 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 
 	seenTag := map[string]bool{}
 	liveApplied := false
+	// Missing top-level tags replay at their true layer positions,
+	// interleaved with the present layers: snapshot extras before the
+	// first layer, overlay extras before live and before config, config
+	// extras after live. An overlay extra never lands after config
+	// rows, so curated values cannot overwrite user config; a config
+	// extra still lands after live, so user config wins over live
+	// facts on implicit records too.
+	layerOrder := map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
+	applyExtrasBefore := func(tag string) {
+		if seenTag[tag] || len(r.topGlobs[tag]) == 0 {
+			return
+		}
+		if tag == LayerConfig {
+			return
+		}
+		r.applyGlobs(&caps, &row, r.topGlobs[tag], tag, ref.Model, altID, rowProto, crossProto, prov)
+	}
+	applyConfigExtras := func() {
+		if seenTag[LayerConfig] || len(r.topGlobs[LayerConfig]) == 0 {
+			return
+		}
+		r.applyGlobs(&caps, &row, r.topGlobs[LayerConfig], LayerConfig, ref.Model, altID, rowProto, crossProto, prov)
+	}
 	for _, layer := range rec.layers {
+		// Missing tags that sort before this layer replay first.
+		for _, tag := range []string{LayerSnapshot, LayerOverlay} {
+			if !seenTag[tag] && layerOrder[tag] < layerOrder[layer.tag] {
+				applyExtrasBefore(tag)
+				seenTag[tag] = true
+			}
+		}
 		if layer.tag == LayerConfig && !liveApplied {
 			r.applyLive(&caps, rec, ref.Model, hit, prov)
 			liveApplied = true
@@ -476,10 +543,30 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 			}
 		}
 	}
+	// Missing snapshot/overlay tags that sort after every present
+	// layer replay before live; missing config replays after live.
+	for _, tag := range []string{LayerSnapshot, LayerOverlay} {
+		if !seenTag[tag] {
+			applyExtrasBefore(tag)
+			seenTag[tag] = true
+		}
+	}
 	if !liveApplied {
 		r.applyLive(&caps, rec, ref.Model, hit, prov)
 	}
+	applyConfigExtras()
 	seedFields(&caps, rowProto)
+	if aliasLockstep {
+		row.Disabled = aliasDisabled
+		if aliasDisabled == nil {
+			delete(prov, "Disabled")
+		} else {
+			prov["Disabled"] = provAlias
+		}
+	}
+	if BoolValue(row.Disabled) {
+		return Resolved{}, fmt.Errorf("%s/%s: %w (set by %s)", rec.name, ref.Model, ErrModelDisabled, prov["Disabled"])
+	}
 
 	transport, hostDerived, tw := r.buildTransport(rec, row, rowProto)
 	warnings = append(warnings, tw...)
@@ -530,21 +617,46 @@ func (r *Registry) resolveOn(rec *record, ref Ref, warnings []string) (Resolved,
 }
 
 // resolveAliasTarget resolves an alias target through the same machinery:
-// a same-provider row on rec, else "provider-id/id" on the curated record.
-func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bool, error) {
+// a same-provider row on rec, else "provider-id/id" on the target's
+// instance record when one exists (so user-layer flags like Disabled
+// apply), else the curated record. aliasTargetRow applies the
+// alias-target acceptance rules both resolve paths share: an exact
+// non-alias row on the record, else a provider-id/id reference. A glob
+// pattern never names a target, on either side of the slash.
+func (r *Registry) aliasTargetRow(rec *record, aliasOf string) (*record, string, bool) {
 	if m, ok := rec.head.Models[aliasOf]; ok && !isGlob(aliasOf) && m.AliasOf == "" {
-		res, err := r.resolveOn(rec, Ref{Instance: rec.name, Model: aliasOf}, nil)
-		return res, true, err
+		return rec, aliasOf, true
 	}
 	if i := strings.Index(aliasOf, "/"); i > 0 {
+		id := aliasOf[i+1:]
+		if isGlob(aliasOf[:i]) || isGlob(id) {
+			return nil, "", false
+		}
+		if target, ok := r.recordFor(aliasOf[:i]); ok {
+			if m, ok := target.head.Models[id]; ok && m.AliasOf == "" {
+				return target, id, true
+			}
+		}
+		// No explicit or implicit instance by that name: fall back to
+		// the curated record, the way load-time aliasTarget validates.
+		// recordFor already covers implicit curated ids, so this is
+		// only the non-implicit curated remainder.
 		if prov, ok := r.curated[aliasOf[:i]]; ok {
-			if m, ok := prov.head.Models[aliasOf[i+1:]]; ok && !isGlob(aliasOf[i+1:]) && m.AliasOf == "" {
-				res, err := r.resolveOn(prov, Ref{Instance: prov.name, Model: aliasOf[i+1:]}, nil)
-				return res, false, err
+			if m, ok := prov.head.Models[id]; ok && m.AliasOf == "" {
+				return prov, id, true
 			}
 		}
 	}
-	return Resolved{}, false, fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
+	return nil, "", false
+}
+
+func (r *Registry) resolveAliasTarget(rec *record, aliasOf string) (Resolved, bool, error) {
+	target, id, ok := r.aliasTargetRow(rec, aliasOf)
+	if !ok {
+		return Resolved{}, false, fmt.Errorf("alias_of %q does not name an existing non-alias row", aliasOf)
+	}
+	res, err := r.resolveOn(target, Ref{Instance: target.name, Model: id}, nil)
+	return res, target == rec, err
 }
 
 // seedFromAlias copies the target's facts, surface, and family in as the
@@ -568,24 +680,42 @@ func seedFromAlias(c *Caps, row *Model, target Resolved, prov map[string]string)
 	}
 }
 
-// applyGlobs applies matching glob rows in spec §4.1 order: shorter
-// patterns first, target-matching globs before reference-matching ones, each
-// glob at most once. Cross-protocol rows take only Fields keys their own
-// protocol knows.
-func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
+// orderedGlobKeys returns matching glob keys (target first) in spec §4.1 order:
+// shorter patterns first, each pattern at most once. applyGlobs and modelDisabled
+// share it so the two replays cannot disagree about matching order.
+func orderedGlobKeys(rows map[string]Model, ref, altID string) []string {
 	var globs []string
 	for k := range rows {
 		if isGlob(k) {
 			globs = append(globs, k)
 		}
 	}
-	if len(globs) == 0 {
+	globs = sortGlobs(globs)
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range []string{altID, ref} {
+		if id == "" {
+			continue
+		}
+		for _, g := range globs {
+			if !seen[g] && matchGlob(g, id) {
+				seen[g] = true
+				out = append(out, g)
+			}
+		}
+	}
+	return out
+}
+
+// applyGlobs applies matching glob rows in spec §4.1 order: shorter
+// patterns first, target-matching globs before reference-matching ones, each
+// glob at most once. Cross-protocol rows take only Fields keys their own
+// protocol knows.
+func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, ref, altID, rowProto string, crossProto bool, prov map[string]string) {
+	if len(rows) == 0 {
 		return
 	}
-	globs = sortGlobs(globs)
-	applied := map[string]bool{}
 	apply := func(g string) {
-		applied[g] = true
 		gr := rows[g]
 		gc := gr.Caps
 		if crossProto && len(gc.Fields) > 0 {
@@ -601,17 +731,8 @@ func (r *Registry) applyGlobs(c *Caps, row *Model, rows map[string]Model, tag, r
 		mergeCaps(c, gc, tag+"/glob:"+g, prov)
 		applyRowScalars(row, gr, tag+"/glob:"+g, prov)
 	}
-	if altID != "" {
-		for _, g := range globs {
-			if matchGlob(g, altID) {
-				apply(g)
-			}
-		}
-	}
-	for _, g := range globs {
-		if !applied[g] && matchGlob(g, ref) {
-			apply(g)
-		}
+	for _, g := range orderedGlobKeys(rows, ref, altID) {
+		apply(g)
 	}
 }
 
@@ -633,6 +754,10 @@ func applyRowScalars(row *Model, src Model, tag string, prov map[string]string) 
 	}
 	if len(src.Headers) > 0 {
 		row.Headers = mergeStringMap(row.Headers, src.Headers)
+	}
+	if src.Disabled != nil {
+		row.Disabled = clonePointer(src.Disabled)
+		prov["Disabled"] = tag
 	}
 	if src.Transport != nil {
 		if row.Transport == nil {
@@ -783,20 +908,250 @@ func (r *Registry) FindModel(id string) []Ref {
 	var out []Ref
 	for _, inst := range r.rankedInstances() {
 		if hit := r.lookupRow(inst.rec, id); !hit.synthesized {
+			if r.recordMayDisable(inst.rec) && r.modelDisabled(inst.rec, Ref{Instance: inst.name, Model: id}, hit) {
+				continue
+			}
 			out = append(out, Ref{Instance: inst.name, Model: id})
 		}
 	}
 	return out
 }
 
+// modelDisabled replays just the Disabled flag for a reference: every
+// matching glob in spec §4.1 order (via orderedGlobKeys, the same order
+// applyGlobs replays) then the exact row per layer, later layers after
+// earlier ones, so the last writer wins — the same outcome resolveOn's full
+// replay reaches. A disabled alias target disables the alias too. Cheap
+// enough for browse paths like FindModel that must not pay for a full
+// resolve per candidate.
+func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
+	if hit.rowID != "" {
+		if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
+			if v, ok := r.aliasEffectiveDisabled(rec, aliasOf); ok {
+				return v
+			}
+		}
+	}
+	altID := ""
+	if hit.rowID != "" && hit.rowID != ref.Model {
+		altID = hit.rowID
+	}
+	var disabled bool
+	// Mirror resolveOn's interleave: missing tags replay at their true
+	// layer positions (snapshot → overlay → config), never bunched
+	// after the loop — so a curated overlay Disabled value cannot
+	// overwrite user config here either, and FindModel agrees with
+	// Resolve.
+	seenTag := map[string]bool{}
+	applyTop := func(tag string) {
+		for _, g := range orderedGlobKeys(r.topGlobs[tag], ref.Model, altID) {
+			if d := r.topGlobs[tag][g].Disabled; d != nil {
+				disabled = *d
+			}
+		}
+	}
+	layerOrder := map[string]int{LayerSnapshot: 0, LayerOverlay: 1, LayerConfig: 2}
+	for _, layer := range rec.layers {
+		// Missing tags that sort before this layer replay first, at
+		// their true positions — never bunched after config rows.
+		for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+			if !seenTag[tag] && layerOrder[tag] < layerOrder[layer.tag] && len(r.topGlobs[tag]) > 0 {
+				seenTag[tag] = true
+				applyTop(tag)
+			}
+		}
+		if !seenTag[layer.tag] {
+			seenTag[layer.tag] = true
+			applyTop(layer.tag)
+		}
+		for _, g := range orderedGlobKeys(layer.rows, ref.Model, altID) {
+			if d := layer.rows[g].Disabled; d != nil {
+				disabled = *d
+			}
+		}
+		if hit.rowID != "" {
+			if lr, ok := layer.rows[hit.rowID]; ok && lr.Disabled != nil {
+				disabled = *lr.Disabled
+			}
+		}
+	}
+	for _, tag := range []string{LayerSnapshot, LayerOverlay, LayerConfig} {
+		if !seenTag[tag] && len(r.topGlobs[tag]) > 0 {
+			seenTag[tag] = true
+			applyTop(tag)
+		}
+	}
+	return disabled
+}
+
+// aliasEffectiveDisabled reports the Disabled verdict an alias follows:
+// the target row's own effective Disabled replay. It answers ok=false for
+// a dangling alias, whose own replay then applies as before. Acceptance
+// matches resolveAliasTarget (an exact non-alias row, same provider or
+// provider-id/id) but without paying for a full resolve.
+func (r *Registry) aliasEffectiveDisabled(rec *record, aliasOf string) (disabled, ok bool) {
+	target, id, ok := r.aliasTargetRow(rec, aliasOf)
+	if !ok {
+		return false, false
+	}
+	return r.modelDisabled(target, Ref{Instance: target.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"}), true
+}
+
+// AliasTarget resolves a model id to the row a toggle writes: the id
+// itself, unless it names an alias (then the alias's target — lockstep
+// means the flag lives on the target, never the alias) or a
+// region-prefixed / dated-suffix variant (then the canonical row the
+// variant resolves to — one logical model, one toggleable row). A glob id,
+// a dangling alias, a cross-provider target (the config layer cannot author
+// another provider's rows), an unknown model, and an unknown instance are
+// errors.
+func (r *Registry) AliasTarget(instance, model string) (Ref, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return Ref{}, r.unknownInstance(instance)
+	}
+	if isGlob(model) {
+		return Ref{}, fmt.Errorf("model %q is a glob: the sheet toggles exact rows only", model)
+	}
+	if m, ok := rec.head.Models[model]; ok && m.AliasOf != "" {
+		return r.aliasTargetRef(rec, model, m)
+	}
+	hit := r.lookupRow(rec, model)
+	if hit.synthesized {
+		return Ref{}, fmt.Errorf("model %q is not a known model of instance %q", model, instance)
+	}
+	// A region-prefixed or dated-suffix variant resolves to its canonical
+	// row: the toggle writes that row, so one logical model keeps one
+	// toggleable row instead of authoring a new exact row per variant.
+	// When that canonical row is itself an alias, the write follows the
+	// alias to its target the same way the exact-alias branch above does:
+	// an alias's own flag is replayed for nothing, so writing the alias
+	// row would report success and change nothing. Live-only ids carry
+	// no rowID; they fall through to the verbatim reference the steps
+	// above already validated.
+	if hit.rowID != "" {
+		if m, ok := rec.head.Models[hit.rowID]; ok && m.AliasOf != "" {
+			return r.aliasTargetRef(rec, model, m)
+		}
+		return Ref{Instance: rec.name, Model: hit.rowID}, nil
+	}
+	return Ref{Instance: rec.name, Model: model}, nil
+}
+
+// aliasTargetRef resolves one alias row to the Ref a toggle writes: the
+// alias's target row, or the refusal a toggle of an alias it cannot write
+// through has always given. requested names the id the caller asked for,
+// which is the id a refusal reports — a region-prefixed or dated-suffix
+// spelling reaches an alias row whose own id it may not match.
+func (r *Registry) aliasTargetRef(rec *record, requested string, alias Model) (Ref, error) {
+	target, id, ok := r.aliasTargetRow(rec, alias.AliasOf)
+	if !ok {
+		return Ref{}, fmt.Errorf("alias_of %q does not name an existing non-alias row", alias.AliasOf)
+	}
+	if target != rec {
+		return Ref{}, fmt.Errorf("model %q is an alias of %q on another provider, which this instance cannot toggle", requested, alias.AliasOf)
+	}
+	return Ref{Instance: rec.name, Model: id}, nil
+}
+
+// recordMayDisable reports whether any layer of rec or the top-level glob
+// rows set Disabled at all — or any alias row names a cross-provider
+// target that may itself be disabled. Browse paths check this once before
+// replaying per row: with no flag anywhere every answer is false. The
+// cross-provider walk follows aliasTargetRow's acceptance (an exact
+// non-alias row) with a visited set, so a mutual alias cycle terminates
+// instead of overflowing the stack.
+func (r *Registry) recordMayDisable(rec *record) bool {
+	return r.recordMayDisableSeen(rec, map[*record]bool{})
+}
+
+func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool {
+	if seen[rec] {
+		return false
+	}
+	seen[rec] = true
+	for _, layer := range rec.layers {
+		for _, m := range layer.rows {
+			if m.Disabled != nil {
+				return true
+			}
+		}
+	}
+	for _, rows := range r.topGlobs {
+		for _, m := range rows {
+			if m.Disabled != nil {
+				return true
+			}
+		}
+	}
+	for _, m := range rec.head.Models {
+		if m.AliasOf == "" {
+			continue
+		}
+		if i := strings.Index(m.AliasOf, "/"); i > 0 {
+			id := m.AliasOf[i+1:]
+			if isGlob(m.AliasOf[:i]) || isGlob(id) {
+				continue
+			}
+			target, ok := r.recordFor(m.AliasOf[:i])
+			if !ok || target == rec || seen[target] {
+				continue
+			}
+			row, ok := target.head.Models[id]
+			if !ok || row.AliasOf != "" {
+				continue
+			}
+			if r.recordMayDisableSeen(target, seen) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// InstanceModels lists an instance's known models with their effective
+// disabled state, sorted by id, for the Providers pane's per-model toggles:
+// exact catalog rows plus cached live ids (the same set ModelIDs lists).
+// Alias rows are skipped: the flag lives on the target, so every listed
+// row is directly writable. A toggle on a live-only id authors an exact
+// config row, which precedes live lookup, so the exception takes effect.
+func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
+	rec, ids, err := r.instanceRecordIDs(instance)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]InstanceModel, 0, len(ids))
+	mayDisable := r.recordMayDisable(rec)
+	for _, id := range ids {
+		hit := r.lookupRow(rec, id)
+		if hit.rowID != "" && rec.head.Models[hit.rowID].AliasOf != "" {
+			continue
+		}
+		disabled := false
+		if mayDisable {
+			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, hit)
+		}
+		out = append(out, InstanceModel{ID: id, Disabled: disabled})
+	}
+	return out, nil
+}
+
+// instanceRecordIDs resolves an instance to its record plus its known
+// model ids (exact catalog rows plus cached live ids, sorted) — the
+// prologue InstanceModels and ModelIDs share.
+func (r *Registry) instanceRecordIDs(instance string) (*record, []string, error) {
+	rec, ok := r.recordFor(instance)
+	if !ok {
+		return nil, nil, fmt.Errorf("unknown instance %q", instance)
+	}
+	return rec, modelIDs(rec, r.LiveModels(instance)), nil
+}
+
 // ModelIDs lists an instance's exact catalog rows plus its cached live ids,
 // sorted (for `evener models list`).
 func (r *Registry) ModelIDs(instance string) ([]string, error) {
-	rec, ok := r.recordFor(instance)
-	if !ok {
-		return nil, fmt.Errorf("unknown instance %q", instance)
-	}
-	return modelIDs(rec, r.LiveModels(instance)), nil
+	_, ids, err := r.instanceRecordIDs(instance)
+	return ids, err
 }
 
 // CatalogModelIDs lists a curated provider's exact catalog rows plus its
