@@ -17,9 +17,9 @@ export interface RejectableFile {
 
 // rejectionReason returns undefined when `file` is acceptable, or a
 // user-facing message naming the file and the specific limit it broke.
-// Branch order matches the legacy helper exactly: non-image type first
-// (a bare filename - no limit to name), then the count cap, then size -
-// so a file that breaks both count and size reports the count rejection.
+// Branch order: non-image type first (a bare filename - no limit to name),
+// then the count cap, then size - so a file that breaks both count and
+// size reports the count rejection.
 export function rejectionReason(file: RejectableFile, reservedCount: number): string | undefined {
   const name = file.name || "unknown";
   if (!file.type.startsWith("image/")) return name;

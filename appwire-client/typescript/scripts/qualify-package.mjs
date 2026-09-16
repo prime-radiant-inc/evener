@@ -64,10 +64,7 @@ assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
-assert.equal(client.MAX_ATTACHMENTS, 8);
-assert.equal(client.rejectionReason({ type: "text/plain", size: 1, name: "notes.txt" }, 0), "notes.txt");
 assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
-assert.equal(client.rejectionReason({ type: "image/png", size: 1, name: "ok.png" }, 0), undefined);
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
 assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [

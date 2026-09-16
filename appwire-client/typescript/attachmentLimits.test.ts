@@ -40,9 +40,9 @@ test("accepts a file exactly at the 8 MB boundary", () => {
   expect(rejectionReason({ type: "image/png", size: MAX_ATTACHMENT_BYTES, name: "exact.png" }, 0)).toBeUndefined();
 });
 
-test("count cap is checked before the size cap (matches composer-attachments.js's own branch order)", () => {
+test("count cap is checked before the size cap", () => {
   // A file that is BOTH over the count cap AND oversized reports the count
-  // rejection, not the size one - same precedence as the legacy helper.
+  // rejection, not the size one.
   expect(rejectionReason({ type: "image/png", size: MAX_ATTACHMENT_BYTES + 1, name: "x.png" }, MAX_ATTACHMENTS)).toBe(
     "x.png (maximum 8 images)",
   );
