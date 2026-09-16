@@ -134,6 +134,124 @@ func TestBuildTreeDoesNotUseCrossSourceWorkspaceRef(t *testing.T) {
 	}
 }
 
+// A remote project's archive decision is stored under (source, project ID). The
+// tree must consult the owning source when it decides whether the project is
+// archived, or the decision is written but never read back and the archived
+// project keeps rendering in the active list.
+func TestBuildTreeReadsBackSourceQualifiedProjectArchive(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	const path = "/srv/remote/alpha"
+	projects := map[string]identifier.Project{path: {ID: "proj-alpha", CanonicalPath: path}}
+	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true}
+
+	remoteMeta := schema.SessionMeta{
+		ID:        "host-a:t1",
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: path},
+	}
+	tree := BuildTreeAtWithProjects([]schema.SessionMeta{remoteMeta}, nil, decisions, now, projects)
+	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 1 {
+		t.Fatalf("remote archived project: active=%d archived=%d, want the row moved to ArchivedProjects",
+			len(tree.Projects), len(tree.ArchivedProjects))
+	}
+	if archived := tree.ArchivedProjects[0]; !archived.IsArchived || archived.Key != "proj-alpha" {
+		t.Fatalf("archived project = %+v, want proj-alpha IsArchived", archived)
+	}
+	if sources := tree.ArchivedProjects[0].Sources; len(sources) != 1 || sources[0] != "host-a" {
+		t.Fatalf("archived project sources = %q, want [host-a]", sources)
+	}
+
+	// The controller's own project sharing the remote project's ID must not be
+	// archived by the remote host's decision: the source dimension keeps them
+	// distinct even though the project ID (and path) match.
+	localMeta := schema.SessionMeta{
+		ID:        "local-alpha",
+		CreatedAt: now,
+		UpdatedAt: now,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: path},
+	}
+	tree = BuildTreeAtWithProjects([]schema.SessionMeta{localMeta}, nil, decisions, now, projects)
+	if len(tree.Projects) != 1 || tree.Projects[0].IsArchived {
+		t.Fatalf("local project with the same ID: %+v, want it active and unaffected by host-a's decision", tree.Projects)
+	}
+}
+
+// A project whose sessions come from two hosts merges into one row carrying both
+// sources, but an archive decision stays source-qualified. Host-a's decision must
+// clear only host-a's live session; consulting the merged source set would drop
+// host-b's still-live session from the rail.
+func TestBuildTreeLiveFilterUsesEntrySourceForMergedProject(t *testing.T) {
+	now := time.Date(2026, 9, 15, 12, 0, 0, 0, time.UTC)
+	const path = "/srv/shared/alpha"
+	projects := map[string]identifier.Project{path: {ID: "proj-alpha", CanonicalPath: path}}
+	decisions := map[ArchiveKey]bool{{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true}
+
+	metas := []schema.SessionMeta{
+		{ID: "host-a:t1", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: path}},
+		{ID: "host-b:t1", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: path}},
+	}
+	live := []LiveEntry{
+		{SourceID: "host-a", SessionID: "host-a:t1", Status: appwire.ThreadStatusIdle, Project: projects[path]},
+		{SourceID: "host-b", SessionID: "host-b:t1", Status: appwire.ThreadStatusIdle, Project: projects[path]},
+	}
+	tree := BuildTreeAtWithProjects(metas, live, decisions, now, projects)
+
+	if len(tree.Live) != 1 || tree.Live[0].ID != "host-b:t1" {
+		t.Fatalf("live = %#v, want only host-b's session: host-a archived its own project and must not hide host-b's", tree.Live)
+	}
+	// Placement must agree with that filter. host-b still owns a current
+	// session here, so host-a's own decision cannot move the shared row (and
+	// host-b's session under it) into the archived catalog: the reviewer's
+	// "any owning source" union left the same session live in one section and
+	// archived in the other.
+	if len(tree.Projects) != 1 || tree.Projects[0].Key != "proj-alpha" {
+		t.Fatalf("projects = %#v, want the merged row in the active catalog: one source's decision must not archive a row another source still owns", tree.Projects)
+	}
+	if len(tree.ArchivedProjects) != 0 {
+		t.Fatalf("archived projects = %#v, want none: host-b never archived the shared project", tree.ArchivedProjects)
+	}
+
+	// With every owning source archived, the shared row does move — and its
+	// sessions leave the Live tier with it.
+	both := map[ArchiveKey]bool{
+		{Kind: "project", ID: "proj-alpha", Source: "host-a"}: true,
+		{Kind: "project", ID: "proj-alpha", Source: "host-b"}: true,
+	}
+	tree = BuildTreeAtWithProjects(metas, live, both, now, projects)
+	if len(tree.Live) != 0 {
+		t.Fatalf("live = %#v, want none once every owning source archived the project", tree.Live)
+	}
+	if len(tree.Projects) != 0 || len(tree.ArchivedProjects) != 1 || tree.ArchivedProjects[0].Key != "proj-alpha" {
+		t.Fatalf("projects = %#v, archived = %#v, want the merged row archived once every owning source archived it", tree.Projects, tree.ArchivedProjects)
+	}
+}
+
+// Snapshot promises a deep immutable copy, so the private Sources slice must be
+// cloned too: mutating the snapshot must not reach the retained tree, a nil
+// source list stays nil, and an empty one stays non-nil.
+func TestTreeSnapshotClonesProjectSources(t *testing.T) {
+	tree := Tree{
+		Projects: []TreeProject{
+			{Key: "p", Sources: []string{"host-a", "host-b"}},
+			{Key: "q"},
+		},
+		ArchivedProjects: []TreeProject{{Key: "r", Sources: []string{}}},
+	}
+	snapshot := tree.Snapshot()
+
+	snapshot.Projects[0].Sources[0] = "mutated"
+	if tree.Projects[0].Sources[0] != "host-a" {
+		t.Fatalf("mutating the snapshot changed the retained tree: %q", tree.Projects[0].Sources[0])
+	}
+	if snapshot.Projects[1].Sources != nil {
+		t.Fatalf("nil Sources became non-nil: %#v", snapshot.Projects[1].Sources)
+	}
+	if snapshot.ArchivedProjects[0].Sources == nil {
+		t.Fatalf("empty Sources became nil: %#v", snapshot.ArchivedProjects[0].Sources)
+	}
+}
+
 func initHubTestRepo(t *testing.T, dir string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {

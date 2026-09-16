@@ -10,9 +10,57 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// A project favorite is stored under (source, project ID). The navigation
+// projection must keep that source dimension: registering every favorite under
+// its bare ID would let one host's favorite decorate another host's project.
+func TestProjectFavoritePresentationIsSourceQualified(t *testing.T) {
+	presentation := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: "shared", Source: "host-a"}: true,
+		{Kind: "project", ID: "mine", Source: ""}:         true,
+	}
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, nil, hubapi.AttentionSummary{}, nil, nil, projectFavoritePresentation(presentation), nil, nil)
+
+	if !inputs.ProjectFavorite[projectFavoriteKey("host-a", "shared")] {
+		t.Fatalf("remote favorite not registered under its source: %v", inputs.ProjectFavorite)
+	}
+	if inputs.ProjectFavorite["shared"] {
+		t.Fatalf("remote favorite leaked onto the bare project key: %v", inputs.ProjectFavorite)
+	}
+	if !inputs.ProjectFavorite["mine"] {
+		t.Fatalf("controller favorite not registered under the bare key: %v", inputs.ProjectFavorite)
+	}
+	if !projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: "shared", Sources: []string{"host-a"}}) {
+		t.Fatal("project owned by host-a did not resolve its favorite")
+	}
+	if projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: "shared", Sources: []string{"host-b"}}) {
+		t.Fatal("project owned by host-b inherited host-a's favorite")
+	}
+}
+
+// The rail sends no source on a project favorite, so the decision is stored
+// under the controller key. When the project is owned by one remote host the
+// classifier resolves that bare decision to the host's authority; the
+// presentation must then register under the host-qualified key the project row
+// reads, or the favorite returns OK:true but no star ever appears.
+func TestProjectFavoriteBareDecisionResolvesRemoteProject(t *testing.T) {
+	const projectID = "remote-project"
+	bare := hubcore.ArchiveKey{Kind: "project", ID: projectID}
+	authority := hubcore.FavoriteAuthority{Projects: []hubcore.FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: hubcore.FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+	}}
+	classified := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{bare: true}, authority)
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, nil, hubapi.AttentionSummary{}, nil, nil,
+		projectFavoritePresentation(classified.Presentation), nil, nil)
+
+	if !projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: projectID, Sources: []string{"host-a"}}) {
+		t.Fatalf("bare remote favorite did not present on the project: %v", inputs.ProjectFavorite)
+	}
+}
 
 func testProjectID(t *testing.T, path string) string {
 	t.Helper()
@@ -40,7 +88,7 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
 	// Manually archive the canonical project even though it has a fresh session.
-	if err := store.Set("project", project.ID, true, now); err != nil {
+	if err := store.Set("", "project", project.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
 	decisions, err := store.Decisions()
@@ -143,7 +191,7 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	if err := store.Set("project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := store.Set("", "project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
 	s := &WebServer{cfg: hubcore.WebConfig{Archive: store}}

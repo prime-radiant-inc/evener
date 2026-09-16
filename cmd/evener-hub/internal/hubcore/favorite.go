@@ -40,11 +40,12 @@ func (s *FavoriteStore) fireChange() {
 
 const createFavoriteTable = `
 CREATE TABLE IF NOT EXISTS favorite (
+  source     TEXT    NOT NULL DEFAULT '',
   kind       TEXT    NOT NULL,
   id         TEXT    NOT NULL,
   favorited  INTEGER NOT NULL,
   decided_at INTEGER NOT NULL,
-  PRIMARY KEY (kind, id)
+  PRIMARY KEY (source, kind, id)
 )`
 
 func (s *FavoriteStore) open() (*sql.DB, error) {
@@ -59,13 +60,18 @@ func (s *FavoriteStore) open() (*sql.DB, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := ensureDecisionSourceColumn(db, "favorite", createFavoriteTable, "favorited"); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
-func (s *FavoriteStore) Set(kind, id string, favorited bool, now time.Time) error {
+func (s *FavoriteStore) Set(source, kind, id string, favorited bool, now time.Time) error {
 	if s.dbPath == "" {
 		return nil
 	}
+	source = NormalizeDecisionSource(source)
 	db, err := s.open()
 	if err != nil {
 		return err
@@ -76,9 +82,9 @@ func (s *FavoriteStore) Set(kind, id string, favorited bool, now time.Time) erro
 		flag = 1
 	}
 	_, err = db.Exec( //nolint:noctx // local file DB
-		`INSERT INTO favorite (kind, id, favorited, decided_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(kind, id) DO UPDATE SET favorited=excluded.favorited, decided_at=excluded.decided_at`,
-		kind, id, flag, now.Unix())
+		`INSERT INTO favorite (source, kind, id, favorited, decided_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT(source, kind, id) DO UPDATE SET favorited=excluded.favorited, decided_at=excluded.decided_at`,
+		source, kind, id, flag, now.Unix())
 	if err != nil {
 		return err
 	}
@@ -86,16 +92,17 @@ func (s *FavoriteStore) Set(kind, id string, favorited bool, now time.Time) erro
 	return nil
 }
 
-func (s *FavoriteStore) Delete(kind, id string) error {
+func (s *FavoriteStore) Delete(source, kind, id string) error {
 	if s.dbPath == "" {
 		return nil
 	}
+	source = NormalizeDecisionSource(source)
 	db, err := s.open()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = db.Close() }()
-	_, err = db.Exec(`DELETE FROM favorite WHERE kind = ? AND id = ?`, kind, id) //nolint:noctx // local file DB
+	_, err = db.Exec(`DELETE FROM favorite WHERE source = ? AND kind = ? AND id = ?`, source, kind, id) //nolint:noctx // local file DB
 	if err != nil {
 		return err
 	}
@@ -117,19 +124,19 @@ func (s *FavoriteStore) Favorites() (map[ArchiveKey]bool, error) {
 		return out, err
 	}
 	defer func() { _ = db.Close() }()
-	rows, err := db.Query(`SELECT kind, id, favorited FROM favorite`) //nolint:noctx // local file DB
+	rows, err := db.Query(`SELECT source, kind, id, favorited FROM favorite`) //nolint:noctx // local file DB
 	if err != nil {
 		return out, err
 	}
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
-		var k, id string
+		var source, k, id string
 		var flag int
-		if err := rows.Scan(&k, &id, &flag); err != nil {
+		if err := rows.Scan(&source, &k, &id, &flag); err != nil {
 			return out, err
 		}
 		if flag == 1 {
-			out[ArchiveKey{Kind: k, ID: id}] = true
+			out[ArchiveKey{Kind: k, ID: id, Source: source}] = true
 		}
 	}
 	return out, rows.Err()

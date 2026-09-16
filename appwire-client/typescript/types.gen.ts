@@ -30,6 +30,7 @@ export interface ArchiveParams {
   id: string;
   workingDir?: string;
   archived: boolean;
+  source?: string;
 }
 
 export interface ArchiveResponse {
@@ -479,6 +480,7 @@ export interface FavoriteSetParams {
   kind: string;
   id: string;
   favorited: boolean;
+  source?: string;
 }
 
 export interface FavoriteSetResponse {
@@ -1200,6 +1202,7 @@ export interface NavigationProjectSummary {
   worktrees?: number;
   is_archived?: boolean;
   favorite?: boolean;
+  sources?: string[];
   session_count: number;
 }
 
@@ -1488,6 +1491,7 @@ export interface PluginSetAutoUpgradeParams {
 export interface ProjectDeleteParams {
   key: string;
   workingDir: string;
+  source?: string;
 }
 
 export interface ProjectDeleteResponse {
@@ -1973,6 +1977,7 @@ export interface ThreadShutdownParams {
 
 export interface ThreadStartParams {
   harness?: string;
+  source?: string;
   cwd: string;
   input?: InputItem[];
   modelProvider?: string;

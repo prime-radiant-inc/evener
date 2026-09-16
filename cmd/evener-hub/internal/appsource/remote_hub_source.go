@@ -74,6 +74,11 @@ type RemoteHubSource struct {
 	// cannot report on an already-initialized connection (see HostFacts).
 	facts HostFactsFunc
 
+	// online is the optional availability signal: it reports whether the
+	// remote host currently has a live channel. nil means online (the pre-06
+	// default); the setter is called once at registration.
+	online func() bool
+
 	// probeMu guards probe (the last successful probe, cached against the
 	// client it ran on) and facts (the preflight seam HostCapabilities reads
 	// while probing). It is never held across a wire call.
@@ -126,6 +131,20 @@ func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 	s.facts = fn
+}
+
+// SetHostOnline installs the availability signal: it reports whether the
+// source's remote host currently has a live channel. It is optional and
+// expected to be called once at registration before the source serves. With
+// no signal installed the source reports online (the pre-06 default).
+func (s *RemoteHubSource) SetHostOnline(fn func() bool) { s.online = fn }
+
+// Online reports whether this source can currently serve requests.
+func (s *RemoteHubSource) Online() bool {
+	if s.online == nil {
+		return true
+	}
+	return s.online()
 }
 
 // call forwards one request over the current remote client and translates any
