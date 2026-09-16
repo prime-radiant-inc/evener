@@ -134,7 +134,8 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 
 // fromRemoteThread rewrites every ref-bearing field of a thread the remote hub
 // returned. Thread.Source becomes this source's ID; Evener.Ref and
-// Evener.ParentRef (sub-thread aliases) move from "local:" to "<host>:".
+// Evener.ParentRef (sub-thread aliases) and each
+// Evener.PendingEscalations[].Ref move from "local:" to "<host>:".
 // Evener.InstanceID is deliberately left byte-for-byte untouched: it is an
 // opaque precondition token round-tripped into turn/start.expectedInstanceId.
 // Evener.Capabilities is masked to the actions this source can forward: the
@@ -153,6 +154,16 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 			return appwire.Thread{}, err
 		}
 		thread.Evener.ParentRef = parent
+	}
+	// The remote daemon stamps each pending escalation card with the owning
+	// session's ref in its own namespace (server/thread_envelope.go), and a client
+	// answers a card by that ref (evener/sandbox/escalation/resolve routes through
+	// sourceForThread). An untranslated "local:<id>" would target the controller's
+	// own local source — wrong session on an id collision, source-not-found
+	// otherwise — so the cards are rewritten exactly like the nested diagnostic
+	// refs. ThreadID is already unnamespaced and stays untouched.
+	for index := range thread.Evener.PendingEscalations {
+		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
 	s.fromRemoteDiagnosticRefs(thread.Evener.Diagnostics)
 	return thread, nil

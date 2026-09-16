@@ -328,6 +328,60 @@ func TestRemoteHubFromRemoteThreadTranslatesNestedDiagnosticRefs(t *testing.T) {
 	}
 }
 
+// A remote thread's pending escalation cards name the owning session with the
+// remote hub's own "local:<session>" ref: server/thread_envelope.go stamps each
+// card's Ref from the thread envelope and server/appwire_escalation_test.go pins
+// "local:th_1". An untranslated card leaves the browser/TUI resolving the answer
+// through the controller's own local source (evener/sandbox/escalation/resolve
+// routes by params.Ref through sourceForThread): on a session-id collision that
+// answers the wrong machine's escalation, and otherwise fails as source-not-
+// found. Translate each card's Ref through the nested-ref helper like the
+// diagnostic transcript refs, leaving ThreadID (already unnamespaced) untouched.
+// The helper must stay lenient: an empty ref, an already-qualified ref, a bare id
+// that is not valid ref syntax, and a foreign namespace all survive byte-for-byte
+// rather than failing the whole response.
+func TestRemoteHubFromRemoteThreadTranslatesPendingEscalationRefs(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, nil)
+	thread, err := source.fromRemoteThread(appwire.Thread{
+		ID: "t1",
+		Evener: appwire.EvenerThread{
+			Ref: "local:t1",
+			PendingEscalations: []appwire.SandboxEscalationRequested{
+				{ThreadID: "th_1", Ref: "local:th_1", EscalationID: "esc_1"},
+				{ThreadID: "th_2", Ref: "", EscalationID: "esc_2"},
+				{ThreadID: "th_3", Ref: "host:th_3", EscalationID: "esc_3"},
+				{ThreadID: "th_4", Ref: "th_4", EscalationID: "esc_4"},
+				{ThreadID: "th_5", Ref: "other:th_5", EscalationID: "esc_5"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("fromRemoteThread: %v", err)
+	}
+	pending := thread.Evener.PendingEscalations
+	if len(pending) != 5 {
+		t.Fatalf("PendingEscalations length = %d, want 5", len(pending))
+	}
+	if got := pending[0].Ref; got != "host:th_1" {
+		t.Fatalf("pending escalation ref = %q, want host:th_1", got)
+	}
+	if got := pending[0].ThreadID; got != "th_1" {
+		t.Fatalf("pending escalation thread id = %q, want th_1 preserved", got)
+	}
+	if got := pending[1].Ref; got != "" {
+		t.Fatalf("empty pending escalation ref = %q, want empty", got)
+	}
+	if got := pending[2].Ref; got != "host:th_3" {
+		t.Fatalf("already-qualified pending escalation ref = %q, want host:th_3 unchanged", got)
+	}
+	if got := pending[3].Ref; got != "th_4" {
+		t.Fatalf("bare pending escalation id = %q, want it left untouched", got)
+	}
+	if got := pending[4].Ref; got != "other:th_5" {
+		t.Fatalf("foreign pending escalation ref = %q, want it left untouched", got)
+	}
+}
+
 func TestRemapRemoteSourceIDs(t *testing.T) {
 	cases := []struct {
 		name string
