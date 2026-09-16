@@ -90,6 +90,8 @@ export {
 } from "./credentialLabels";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
+export type { DisclosureState, DisclosureStore } from "./disclosure";
+export { createDisclosureStore, isDisclosureOpenIn, scopedDisclosureId } from "./disclosure";
 export {
   firstLine,
   formatCharCount,
@@ -127,6 +129,8 @@ export {
   sessionActionHeadline,
   WireError,
 } from "./errors";
+export type { FrameworkFreeStore, StoreListener } from "./frameworkFreeStore";
+export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
