@@ -78,6 +78,45 @@ const PROSE = {
 
 const VIEWPORT = { width: 1440, height: 1000 };
 
+// The queue strip's heading. The strip's root is a plain <section> with no
+// testid, so both the presence check and the row dump locate it by this
+// header; one constant keeps the two from drifting.
+const QUEUED_MESSAGES_HEADER = "Queued messages";
+
+// The steered turn's input is rendered only once the daemon's own turn/start
+// push has crossed the hub and React has committed it into the virtualized
+// transcript -- a full round trip that is independent of (and later than) the
+// submit ACK that cleared the composer and showed Steer. That is the slowest
+// hop in the scenario, so it gets a budget with real headroom (and an env
+// override for triage) instead of waitPage's bare 15s default. It is still a
+// hard bound: an input that never lands as a turn still fails.
+const STEERED_TURN_INPUT_TIMEOUT_MS = envMillis("SKILLGUARD_STEERED_TURN_TIMEOUT_MS", 60_000);
+
+// A hold captures the NEXT provider request, so it may only be armed once the
+// previous turn is GENUINELY over. The session's busy predicate
+// (appwire-client's isTurnActive) is `status.type === "active" &&
+// activeTurnId`, and the daemon can report not-busy in the gap between a
+// turn's last leg completing and the next leg -- a drained queue's steering
+// message -- being dispatched. A single not-busy poll would arm the hold into
+// that gap, the hold would steal the pending leg, that turn would never end,
+// and the next submit would silently route to the client queue. Every turn-end
+// barrier therefore requires the idle reading to SETTLE for this long before
+// it releases. Overridable for triage.
+const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
+
+// envMillis reads a millisecond budget from the environment, defaulting when
+// unset or empty and refusing a non-numeric value rather than silently
+// treating it as NaN (which would disable a timeout entirely).
+function envMillis(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative number of milliseconds, got ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
 function usage() {
   return [
     "Usage: node scripts/skillguard/run.mjs --url URL --artifact-dir DIR --control-path FILE --milestone-path FILE --session-a REF --session-b REF",
@@ -519,18 +558,35 @@ class Driver {
     return `document.querySelector("[data-pane-scaffold='session:${ref}']")?.parentElement`;
   }
 
-  async waitPage(exprSource, { timeoutMs = 15000, label }) {
+  // waitPage resolves on the FIRST observation of a non-null/false value. That
+  // is right for a condition that only ever moves one way, but wrong for one
+  // the app can flip back -- a status that can briefly read idle between a
+  // turn's legs. `settleMs` requires the condition to hold CONTINUOUSLY for
+  // that long (sampled once per poll) before the wait resolves, so a transient
+  // reading cannot release it. Every caller that gates an IRREVERSIBLE action
+  // (arming a hold, a submit that routes differently while busy) passes it.
+  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
     const deadline = Date.now() + timeoutMs;
+    let heldSince = null;
     for (;;) {
       const value = await evaluate(this.send, exprSource).catch(() => null);
-      if (value !== null && value !== undefined && value !== false) return value;
-      if (Date.now() > deadline) {
+      const held = value !== null && value !== undefined && value !== false;
+      const now = Date.now();
+      if (held) {
+        if (settleMs <= 0) return value;
+        if (heldSince === null) heldSince = now;
+        if (now - heldSince >= settleMs) return value;
+      } else {
+        heldSince = null;
+      }
+      if (now > deadline) {
         // Toasts auto-dismiss; capture whatever the app is complaining about
         // at the moment of the timeout, and keep the LAST toast a composer
         // action produced around for the waits that outlive it.
         const toast = await evaluate(this.send, this.toastExpr()).catch(() => "");
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
-        throw new Error(`timed out after ${timeoutMs}ms waiting for ${label ?? exprSource}${seen}`);
+        const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
+        throw new Error(`timed out after ${timeoutMs}ms waiting for ${label ?? exprSource}${settle}${seen}`);
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
     }
@@ -574,7 +630,7 @@ class Driver {
 
   queueStripExpr() {
     return `(() => {
-      const header = [...document.querySelectorAll("h3")].find((h) => h.textContent.startsWith("Queued messages"));
+      const header = [...document.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
       if (!header) return null;
       const strip = header.closest("section");
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
@@ -598,6 +654,13 @@ class Driver {
 
   transcriptTextExpr() {
     return `(() => document.body.innerText.length + "|" + document.body.innerText.slice(-4000))()`;
+  }
+
+  // Every rendered turn-block's text, truncated per block. Used by failure
+  // reporting: a wait on a turn-block says only that nothing matched, while
+  // this says what the transcript actually contained.
+  transcriptBlocksExpr() {
+    return `(() => [...document.querySelectorAll("[data-testid='turn-block']")].map((el) => (el.textContent ?? "").slice(0, 240)))()`;
   }
 
   durableRecordsExpr() {
@@ -905,22 +968,150 @@ class Driver {
     );
   }
 
-  // A POSITIVE turn-end barrier. steerVisible reads the daemon's own status:
-  // it is false only once the session reports idle, so once this passes, no
-  // leg of the previous turn can still be in flight daemon-side. Every hold
-  // in the choreography is armed only after this barrier, because a hold
-  // captures the NEXT provider request — arming it while the previous
-  // scenario's turn still has an undispatched leg (a drain's steering leg,
-  // which the daemon only sends after the held first leg returns) would
-  // steal that leg: the captured request never completes, the turn never
-  // ends, and the next submit silently routes to the client-side queue.
-  // Reply waits cannot substitute: a drain produces a reply per leg, and
-  // the first leg's reply arrives while the drain leg is still pending.
+  // A POSITIVE turn-end barrier. Every hold in the choreography is armed only
+  // after this barrier, because a hold captures the NEXT provider request —
+  // arming it while the previous scenario's turn still has an undispatched leg
+  // (a drain's steering leg, which the daemon only sends after the held first
+  // leg returns) would steal that leg: the captured request never completes,
+  // the turn never ends, and the next submit silently routes to the
+  // client-side queue (observed on a loaded box as exactly that: the steered
+  // input sitting in the queue strip and the input-visibility wait timing
+  // out).
+  //
+  // `steerVisible === false` alone is NOT an authoritative idle condition: it
+  // is the DERIVED busy predicate (Composer.tsx's busy = isTurnActive(
+  // status.type, activeTurnId) = status.type === "active" && activeTurnId), so
+  // it is ALSO false when the wire reports an ACTIVE session with no
+  // activeTurnId — which is exactly what a session holding queued/steering
+  // work reports, and precisely where the drain's undispatched leg lives. The
+  // barrier therefore gates on the session's own published state instead of
+  // that derived flag:
+  //   1. the session's RAW wire status, which Cadence renders straight onto its
+  //      aria-label ("Working" ⟺ status.type === "active"); the barrier only
+  //      releases when the session is demonstrably not working; and
+  //   2. queue depth — the status row's queue indicator renders only while
+  //      queueDepth > 0, so its absence is an empty WIRE queue; and
+  //   3. the client-side pending-work surfaces, because (2) covers only what
+  //      the wire already knows: an optimistic/pending queue row that has not
+  //      been acknowledged yet, an accepted-but-unreflected send/steer/drain,
+  //      or a durable outbox record still in flight are all invisible to
+  //      queueDepth while they exist. Those are exactly the states PendingChips
+  //      (send/steer/drain entries) and the "Queued messages" strip (queue
+  //      rows, plus recovery/blocked records) render, from the same durable
+  //      outbox and authoritative pending-mutation projections the durable
+  //      reads use, so either one being on screen blocks the release.
+  // A session still working, or still holding any pending work, cannot release
+  // the barrier even though its busy flag reads false.
+  //
+  // The idle reading must still SETTLE (waitPage's settleMs) before it
+  // releases: a single not-idle-looking poll can land in the gap between the
+  // previous turn's last leg completing and the next leg being dispatched,
+  // which widens under load. The settle is a BACKSTOP, not the guarantee: every
+  // turn whose last leg is a daemon-dispatched continuation (a drained queue
+  // row, an interrupt steer) is additionally held to that leg's own reply by
+  // waitForContinuationReply before this barrier runs, so no load-induced gap
+  // can outlive the release of that wait. Reply waits cannot substitute on
+  // their own: such a turn produces a reply PER leg, and the first leg's reply
+  // arrives while the continuation leg is still pending.
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
     await this.waitPage(
-      `(() => { const state = ${this.composerStateExpr(ref)}; return state && state.steerVisible === false ? true : null; })()`,
-      { timeoutMs, label: `previous turn ended (session idle) for ${ref}` },
+      `(() => {
+        const pane = ${this.paneScopeExpr(ref)};
+        if (!pane) return null;
+        const state = ${this.composerStateExpr(ref)};
+        if (!state || state.steerVisible !== false) return null;
+        const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
+        if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
+        if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
+        if (pane.querySelector("[data-testid='pending-chips']") !== null) return null;
+        if ([...pane.querySelectorAll("h3")].some((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}))) return null;
+        return true;
+      })()`,
+      {
+        timeoutMs,
+        settleMs: TURN_IDLE_SETTLE_MS,
+        label: `previous turn ended and stayed idle for ${ref}`,
+      },
     );
+  }
+
+  // The turn-block ids currently on the page. Captured before the release that
+  // will dispatch a continuation leg, this is the baseline that tells
+  // waitForContinuationReply which turns existed while that leg was still
+  // undispatched -- see it for why that baseline is the wait's proof.
+  turnIdsExpr() {
+    return `(() => [...document.querySelectorAll("[data-testid='turn-block']")].map((el) => el.getAttribute("data-turn-id")))()`;
+  }
+
+  async turnIds() {
+    const ids = await evaluate(this.send, this.turnIdsExpr()).catch(() => []);
+    return Array.isArray(ids) ? ids : [];
+  }
+
+  // waitForContinuationReply is the POSITIVE end-of-turn proof for a turn whose
+  // last leg is a daemon-dispatched continuation: a drained queue row folded
+  // into the running turn, or an interrupt steer. The daemon dispatches that
+  // leg only AFTER the leg before it returns, and no wire event names the
+  // dispatch, so an idle-looking status alone can be read in the gap before it
+  // (a gap that widens with load). What the wire does publish, in order, is the
+  // continuation's OWN turn boundary and then the continuation input itself: a
+  // steering item opens no turn (`EventSteeringInjected` projects to a bare
+  // notification), so the daemon announces `EventTurnStarted` for the turn that
+  // will carry it BEFORE the injection, precisely so that content is not
+  // attributed to the turn before it (agent/session_lifecycle.go's
+  // acceptNotificationInput and acceptSteeringCarrierInput both say so at the
+  // emit site; injectDrainedSteering consumes the message only after). Two
+  // orderings follow, and this wait holds the continuation to both:
+  //
+  //   1. The continuation text lands in a turn block that did NOT exist when
+  //      the release was issued, because the turn it belongs to is opened at
+  //      that boundary. `turnsBefore` is `turnIds()` captured before the
+  //      release; a turn block whose id is in it is a turn that was already
+  //      running, so nothing in it can be proof that the continuation leg ran.
+  //      The held leg's own reply lives in exactly such a block -- verified
+  //      frame by frame on a live run: the block that first receives the
+  //      continuation text appears with ZERO replies in it, while the held
+  //      leg's reply is already rendered in the block before it.
+  //   2. Inside that new turn, the continuation's own input is followed by a
+  //      reply. TurnBlock renders one turn's items in wire order, and the reply
+  //      to the continuation can only be recorded after the daemon dispatched
+  //      that leg, so a sentinel reply AFTER this text is a reply to it.
+  //
+  // What this wait must NOT be is "some turn block holds the text and the
+  // sentinel reply" -- the shape it used to have. Every scripted leg answers
+  // with the SAME sentinel, so that check is satisfied by any earlier reply
+  // sharing a block with the continuation text, and it reads as a completion
+  // proof only because this app currently renders the continuation in a block
+  // of its own. That is a layout fact, not a published ordering: had the
+  // continuation been folded into the running turn's block -- the failure the
+  // review named, where the held leg's reply is already there when the steering
+  // item is injected -- the old check would have released on the HELD leg's
+  // reply, before the continuation leg's request had even been dispatched. With
+  // the turn identity and the item order both required, that same page state
+  // fails the wait loudly instead of passing it.
+  //
+  // `text` is the continuation input the scenario submitted.
+  async waitForContinuationReply(text, turnsBefore, { timeoutMs = 30000, ref = this.sessionA } = {}) {
+    if (!Array.isArray(turnsBefore)) {
+      throw new Error("waitForContinuationReply needs the turnIds() captured before the release that dispatches the continuation");
+    }
+    const expr = `(() => { const before = new Set(${JSON.stringify(turnsBefore)});
+      return [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => {
+        const id = el.getAttribute("data-turn-id");
+        if (!id || before.has(id)) return false;
+        const block = el.textContent ?? "";
+        const at = block.indexOf(${JSON.stringify(text)});
+        if (at < 0) return false;
+        return block.slice(at + 1).includes(${JSON.stringify(REPLY_TEXT)});
+      }) ? true : null; })()`;
+    try {
+      await this.waitPage(expr, {
+        timeoutMs,
+        label: `the continuation leg carrying ${JSON.stringify(text)} to complete in its own turn`,
+      });
+    } catch (error) {
+      await this.dumpPageState(ref, error);
+    }
   }
 
   // clickQueueStripControl applies the composer-action lesson (see
@@ -986,6 +1177,49 @@ class Driver {
           .some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}) && !baseline.has(el.getAttribute("data-turn-id"))) ? true : null; })()`,
       { timeoutMs, label: `a further reply "${text}" (${baselineIds.length} earlier reply turns)` },
     );
+  }
+
+  // dumpPageState is the failure report both transcript waits owe on a timeout:
+  // this condition is fed by a daemon push, so the useful question when it fails
+  // is not "how long did we wait" but "which of a late render, a queue-routed
+  // submit, or a wrong-session pane happened" -- and that is only answerable
+  // from the page, not the label. It rethrows the caller's error with what the
+  // transcript, the queue strip and the composer actually showed appended.
+  // `ref` names the session whose composer the dump reads: two composers are
+  // mounted, so a dump that assumed one of them would answer about the wrong
+  // session the moment a wait ran for the other.
+  async dumpPageState(ref, error) {
+    const [blocks, queue, composer] = await Promise.all([
+      evaluate(this.send, this.transcriptBlocksExpr()).catch((e) => `turn-block read failed: ${e}`),
+      evaluate(this.send, this.queueStripExpr()).catch((e) => `queue read failed: ${e}`),
+      this.composerState(ref).catch((e) => `composer read failed: ${e}`),
+    ]);
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}\n` +
+        `  transcript turn-blocks: ${JSON.stringify(blocks)}\n` +
+        `  queue strip: ${JSON.stringify(queue)}\n` +
+        `  composer: ${JSON.stringify(composer)}`,
+    );
+  }
+
+  // waitForTranscriptInput waits for `text` to appear in a rendered
+  // turn-block. On timeout it dumps what the transcript, the queue strip and
+  // the composer actually showed: this condition is fed by a daemon push, so
+  // the useful question when it fails is not "how long did we wait" but
+  // "which of a late render, a queue-routed submit, or a wrong-session pane
+  // happened" — and that is only answerable from the page, not the label.
+  // `ref` names the session whose composer the timeout dump reads; it
+  // defaults to sessionA (this helper's current call site) so a reuse for
+  // sessionB reports B's composer, not A's.
+  async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
+    try {
+      await this.waitPage(
+        `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)})) ? true : null)()`,
+        { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
+      );
+    } catch (error) {
+      await this.dumpPageState(ref, error);
+    }
   }
 }
 
@@ -1160,21 +1394,33 @@ async function runScenarios(driver) {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
   const drainBaseline = await driver.replyBaseline();
+  // The turns already rendered while the drain's continuation leg is still
+  // undispatched: waitForContinuationReply requires the continuation to land in
+  // a turn that is NOT one of these.
+  const drainTurns = await driver.turnIds();
   driver.control("release");
+  // The reply wait below returns on the HELD leg's reply, which arrives while
+  // the drain's steering leg is still pending: the release unblocks the held
+  // provider call, the daemon folds the queue in at that turn boundary, and
+  // only then dispatches the continuation leg. Wait for that leg's own reply
+  // (the drained text's turn carrying the scripted answer) so the turn is
+  // provably over before the next hold is armed — no fixed settling gap.
   await driver.waitForReply(REPLY_TEXT, drainBaseline);
+  await driver.waitForContinuationReply(PROSE.queue2, drainTurns);
   driver.milestone("drain-released", {});
 }
 
 async function runScenariosPart2(driver) {
   // ---- scenario: selected steering ----
-  // Turn-end barrier: the drain from the previous scenario folds its queued
+  // Turn-end barrier: the drain from the previous scenario folded its queued
   // input into the running turn as a steering leg the daemon dispatches only
-  // AFTER the held first leg returns — the first leg's reply arriving does
-  // NOT mean the turn is over. Arming this hold before the drain leg ran
-  // would capture THAT leg (verified failure mode: the captured leg never
-  // completes, the turn never ends, the steering submit silently routes to
-  // the client-side queue). Only the daemon's idle status clears the
-  // barrier.
+  // AFTER the held first leg returned — the first leg's reply arriving did NOT
+  // mean the turn was over, which is why the scenario above holds the turn to
+  // that leg's own reply before this barrier. Arming this hold with that leg
+  // undispatched would capture it (verified failure mode: the captured leg
+  // never completes, the turn never ends, the steering submit silently routes
+  // to the client-side queue). The barrier itself still re-checks the daemon's
+  // published status and the session's pending work.
   await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
@@ -1188,10 +1434,13 @@ async function runScenariosPart2(driver) {
   // transcript: steering before the daemon records the input folds the two
   // texts into ONE user message (interrupt semantics), which is a different
   // shape than the one this scenario's provider assertions describe.
-  await driver.waitPage(
-    `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(PROSE.steerTurn)})) ? true : null)()`,
-    { label: "steered turn's input visible in the transcript" },
-  );
+  // The input is rendered by the daemon's own turn/start push, not by the
+  // submit ACK, so it can lag the composer clear by a full round trip; and if
+  // the previous turn was not genuinely over when this submit landed, the send
+  // routes to the client queue and becomes a queued row that never turns into a
+  // transcript turn at all. The wait is therefore generous and bounded, and its
+  // failure names what the page actually showed instead of only the label.
+  await driver.waitForTranscriptInput(PROSE.steerTurn);
   driver.milestone("steer-turn-started", { prose: PROSE.steerTurn });
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.steer);
@@ -1200,13 +1449,23 @@ async function runScenariosPart2(driver) {
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("steered", { prose: PROSE.steer });
   const steerBaseline = await driver.replyBaseline();
+  // Same baseline as the drain: the held turn is on screen while the interrupt
+  // leg is still undispatched (see waitForContinuationReply).
+  const steerTurns = await driver.turnIds();
   driver.control("release");
+  // Same two-leg shape as the drain above: the release answers the HELD leg
+  // first, and the interrupt leg the daemon dispatches after it is the one the
+  // next hold could steal. Its own reply in the transcript is the end-of-turn
+  // proof, independent of how long the dispatch takes.
   await driver.waitForReply(REPLY_TEXT, steerBaseline);
+  await driver.waitForContinuationReply(PROSE.steer, steerTurns);
   driver.milestone("steer-released", {});
 
   // ---- scenario: attachment preservation ----
   // Turn-end barrier: this submit must route to turn/start, so the steering
-  // scenario's turn (interrupt leg included) must be fully over.
+  // scenario's turn (interrupt leg included) must be fully over — which the
+  // continuation-reply wait above already proved, and the barrier re-checks
+  // against the daemon's published status and the session's pending work.
   await driver.waitForTurnIdle(driver.sessionA);
   const imagePath = await writeFixtureImage(driver.artifactDir);
   await driver.setFocusFileInput(driver.sessionA, imagePath);
