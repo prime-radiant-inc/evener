@@ -109,10 +109,12 @@ export interface CredentialInstancesState {
   // disabled under the keyboard's own focus drops focus to <body> (the
   // credential dialog's rows are that dialog's focus targets).
   listingFromPreviousConnection: boolean;
-  // True once a full listing has landed for this connection - an empty one
-  // counts - and false again for a new client until its own lands. It
-  // distinguishes "nothing read yet" from "read, and there are no rows", and
-  // tells a refreshModels answer whether a name it does not find was removed.
+  // True once a full listing has landed - an empty one counts - and from then
+  // on, across any client change, until the store is reset: it says a listing
+  // has been applied, while listingFromPreviousConnection says whose rows they
+  // are. It distinguishes "nothing read yet" from "read, and there are no
+  // rows", and, together with listingFromPreviousConnection, tells a
+  // refreshModels answer whether a name it does not find was removed.
   listingEstablished: boolean;
   // A marker that changes ONLY when a state transition came from the store's
   // own self-marked refresh (fetchSelf, or scheduleRefetch(true)).
