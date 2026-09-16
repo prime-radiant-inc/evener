@@ -21,7 +21,7 @@ import { friendlyErrorMessage } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { HubUpgradeSection } from "./HubUpgradeSection";
-import { HubOverview } from "./hubOverview";
+import { createNativeHubOverview } from "./hubOverview";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
 import type { Routes } from "./screens";
@@ -117,8 +117,8 @@ function HubSettings({
 	openLaunchSettings(): void;
 }) {
 	const colors = useColors();
-	const model = useMemo(() => new HubOverview(client), [client]);
-	const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+	const model = useMemo(() => createNativeHubOverview(client), [client]);
+	const state = useSyncExternalStore(model.subscribe, model.getState);
 	const upgrade = useMemo(
 		() =>
 			createHubUpgradeController(
@@ -137,7 +137,7 @@ function HubSettings({
 	useEffect(() => () => model.dispose(), [model]);
 	useFocusEffect(
 		useCallback(() => {
-			void model.refresh();
+			void model.getState().refresh();
 			void upgrade.reconcileAfterReconnect();
 		}, [model, upgrade]),
 	);
@@ -154,7 +154,7 @@ function HubSettings({
 					<RefreshControl
 						refreshing={state.loading && !!data}
 						onRefresh={() => {
-							void model.refresh();
+							void state.refresh();
 						}}
 					/>
 				}
@@ -204,7 +204,7 @@ function HubSettings({
 					<Action
 						disabled={state.loading}
 						onPress={() => {
-							void model.refresh();
+							void state.refresh();
 						}}
 					>
 						Retry hub information
