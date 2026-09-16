@@ -228,6 +228,9 @@ describe("ActivityRowDetail", () => {
     const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
     const trigger = within(line).getByTestId("entity-trigger");
     expect(trigger.textContent).toBe(DELEGATE_ID);
+    // The provider is the only path that can mint the trigger (the strip takes
+    // no `entities` prop), and it mints exactly one for the whole document.
+    expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
     expect(trigger.getAttribute("tabindex")).toBeNull();
     expect(within(line).queryByRole("button")).toBeNull();
   });
@@ -250,15 +253,6 @@ describe("ActivityRowDetail", () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  // The strip no longer takes an `entities` prop at all: the only way this id
-  // can become a trigger is the entity-map context, so a trigger here is proof
-  // the provider is the path that resolves.
-  test("the delegate id resolves through the entity provider with no entities prop", () => {
-    renderDelegateStrip();
-
-    expect(screen.getByTestId("entity-trigger").textContent).toBe(DELEGATE_ID);
   });
 
   // No provider owns the map in a bare render (a direct strip, or the chrome
