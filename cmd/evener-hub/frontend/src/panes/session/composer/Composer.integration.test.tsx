@@ -1159,6 +1159,52 @@ test("queue edit restores inline selections that a nonempty composer drain sends
   expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
 });
 
+test("queue edit restores inline selections when the composer already holds a draft", async () => {
+  const text = "Run /skill-1 and then /skill-2";
+  const merged = "already typing\n\nRun /skill-1 and then /skill-2";
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: {
+        revision: 0,
+        depth: 1,
+        ids: ["q1"],
+        texts: [text],
+        preview: [text],
+        skillNames: [["skill-1", "skill-2"]],
+      },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: text,
+  }));
+  const user = userEvent.setup();
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  // A draft the user already typed makes this a partial append rather than a
+  // whole-value replacement, which is the branch that must still produce chips.
+  replaceEditorText(editor, "already typing");
+
+  const edit = screen.getAllByRole("button", { name: /edit message/i })[0];
+  if (!edit) throw new Error("missing queued message edit control");
+  await user.click(edit);
+
+  expect(editor.textContent).toBe(merged);
+  expect(
+    within(editor)
+      .getAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(["/skill-1", "/skill-2"]);
+  expect(readComposerDraft("ref_a")).toEqual({ text: merged, skillNames: ["skill-1", "skill-2"] });
+});
+
 test("clicking Edit on a queued entry whose daemon skillNames slot is null restores the text and still cancels it", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", {

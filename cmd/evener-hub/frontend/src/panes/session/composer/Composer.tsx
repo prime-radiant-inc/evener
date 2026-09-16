@@ -1039,6 +1039,11 @@ export function Composer({ ref, focused }: ComposerProps) {
   ): void {
     const merged = mergeDraftText(textRef.current, restoredText);
     if (restoredSkillNames?.length) editSkillNames([...skillNamesRef.current, ...restoredSkillNames]);
+    // A queued entry's selections are named, not spelled out, so the value that
+    // carries them is authoritative here exactly as a recovery activation's is:
+    // without this the merge is a partial append, the references land as plain
+    // text, and the request would carry activations the user cannot see.
+    markRestore();
     textEditor.write(merged, merged.length);
     editorRef.current?.focus();
   }
