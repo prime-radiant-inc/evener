@@ -168,6 +168,20 @@ assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://e
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
 assert.equal(client.humanizeState("awaiting", false), "your move");
 assert.equal(client.humanizeState("notLoaded", false), "idle");
+const catalogEntry = { provider: "openai", model: "gpt-5", displayName: "GPT-5", supportsTools: true, contextWindow: 200000 };
+const catalogOptions = client.toCatalogOptions([catalogEntry]);
+assert.equal(catalogOptions[0].qualified, "openai/gpt-5");
+assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
+assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
+assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
+assert.equal(client.formatCost(catalogEntry), null);
+assert.equal(client.contextWindowLabel(catalogEntry), "200k");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
+const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
+assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
+assert.equal(client.pickableModelRows(pickerRows).length, 1);
+assert.deepEqual(client.buildPickerRows(null, ""), []);
 assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
 assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
 assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
@@ -186,6 +200,16 @@ assert.equal(client.safeCredentialTestMessage("success"), "Credentials verified.
 assert.equal(client.isEndpointConflict(new Error("conflict")), false);
 assert.equal(client.fingerprintUnavailable({ ...envInstance, baseUrl: "https://api.example" }), true);
 assert.equal(typeof client.ENDPOINT_CHANGED_TEST_MESSAGE, "string");
+assert.equal(client.basename("/home/me/proj/"), "proj");
+assert.equal(client.parentOf("/home/me"), "/home");
+assert.equal(client.childrenPrefix("/home/me"), "/home/me/");
+assert.equal(client.isDirEntry("/home/me/src/"), true);
+const pathRows = client.buildPathRows({
+  kind: "file", currentDir: "/home/me", entries: ["/home/me/src/", "/home/me/notes.md"],
+  value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
+});
+assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
+assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

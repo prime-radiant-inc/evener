@@ -2,7 +2,15 @@
 // File/output-file fields use a completion popover and retain literal-path entry.
 // Callers inject filesystem operations; widgets never reach into stores or RPC.
 
-import { friendlyErrorMessage } from "@evener/appwire-client";
+import {
+  basename,
+  buildPathRows,
+  childrenPrefix,
+  friendlyErrorMessage,
+  type PathPickableRow,
+  parentOf,
+  pickableRows,
+} from "@evener/appwire-client";
 import { type JSX, type KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Chevron } from "../chevron";
 // Import siblings directly, never through the widgets barrel: this module is
@@ -12,7 +20,6 @@ import { DirectoryPicker, type DirectoryPickerProps } from "../directorypicker";
 import { requireClass } from "../internal/requireClass";
 import { Popover } from "../popover";
 import styles from "./pathfield.module.css";
-import { basename, buildPathRows, childrenPrefix, type PathPickableRow, parentOf, pickableRows } from "./pathRows";
 
 const CLASS = {
   trigger: requireClass(styles.trigger, "pathfield.module.css", "trigger"),
