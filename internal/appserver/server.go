@@ -147,9 +147,15 @@ type Server struct {
 	// package tests use it to pin the response-visible activation boundary.
 	beforeHydrationCommit          func()
 	afterBroadcastConnectionLookup func(*Connection)
+	// lifetime is canceled by Shutdown so a background consumer a server owns
+	// can end with it; lifetimeCancel is never nil after NewServer. Both are
+	// inert unless something reads Lifetime — see there.
+	lifetime       context.Context
+	lifetimeCancel context.CancelFunc
 }
 
 func NewServer(cfg ServerConfig) *Server {
+	lifetime, lifetimeCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:                    cfg,
 		router:                 NewRouter(),
@@ -160,14 +166,35 @@ func NewServer(cfg ServerConfig) *Server {
 		requestQueueCapacity:   requestQueueCap,
 		slowReadStallThreshold: slowReadCapStallAdvisory,
 		sendWriteTimeout:       webSocketWriteTimeout,
+		lifetime:               lifetime,
+		lifetimeCancel:         lifetimeCancel,
 	}
 	HandleTyped(s.router, appwire.MethodInitialize, s.initialize)
 	return s
 }
 
+// Lifetime reports a context that is canceled when Shutdown begins. It is the
+// server's one lifecycle signal for a consumer that outlives individual
+// connections — a notification fan-out registered on the server, say — so the
+// consumer can be bound to the server it serves instead of to
+// context.Background(), which nothing ever cancels and which therefore outlives
+// an in-process server recreation as a leaked goroutine still holding the old
+// server's sources.
+//
+// It is strictly additive: the returned context is never nil and is canceled
+// only by Shutdown, so a server nobody shuts down leaves it open — the same
+// observable behavior a context.Background() consumer had before this existed.
+// Shutdown cancels it before it waits for handlers, so an expired Shutdown
+// context does not keep the signal from firing.
+func (s *Server) Lifetime() context.Context { return s.lifetime }
+
 // Shutdown stops accepting AppWire WebSockets, cancels every active
 // connection, and waits for their handlers to finish.
 func (s *Server) Shutdown(ctx context.Context) error {
+	// Cancel the lifetime first: a background consumer must stop when shutdown
+	// begins, not after the connection handlers drain, and must still stop when
+	// this call gives up early on an already-expired context.
+	s.lifetimeCancel()
 	s.mu.Lock()
 	if !s.webSocketShuttingDown {
 		s.webSocketShuttingDown = true

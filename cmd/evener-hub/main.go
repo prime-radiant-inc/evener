@@ -486,15 +486,25 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		},
 		RemoteHostOnline: sshManager.Attached,
 	}, appwireTrace)
-	if appwireTrace != nil {
-		defer func() {
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
-				_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire trace connections: %v\n", shutdownErr)
-			}
-		}()
-	}
+	// Drain the AppWire RPC server on every exit path, tracing or not (round
+	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
+	// and Shutdown is what cancels it, so a hub that only stopped its HTTP
+	// server left one fan-out goroutine per remote host subscribed to the
+	// previous server's sources — a leak, and duplicate host notifications once
+	// a replacement server subscribed too. This drain used to be registered
+	// only with --appwire-trace, where it existed to close the trace's
+	// connections.
+	//
+	// It is registered after the SSH manager's teardown, so it runs first: the
+	// fan-outs stop while the transports they read from are still open, rather
+	// than discovering a closed channel and re-dialling on their next retry.
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if shutdownErr := web.appRPC.Shutdown(shutdownCtx); shutdownErr != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] drain AppWire connections: %v\n", shutdownErr)
+		}
+	}()
 
 	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
 	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild

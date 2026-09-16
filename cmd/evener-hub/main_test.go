@@ -654,3 +654,42 @@ func TestHubSSHStateInvalidation(t *testing.T) {
 	// A connection event before the WebServer exists must not panic.
 	hubSSHStateInvalidation(nil)(sshconn.Event{Kind: sshconn.EventAttached})
 }
+
+// TestRunMainShutsDownAppRPCWithoutTracing pins round eight's fan-out lifecycle
+// finding at the top level. The remote-admin fan-out is bound to the AppWire
+// server's own lifetime handle, but the hub's ordinary run used to shut down
+// only the HTTP server: appRPC.Shutdown was called on the tracing path alone,
+// so a hub started without --appwire-trace never canceled that lifetime and
+// left one fan-out goroutine per remote host subscribed to the sources of a
+// server that was already gone (a leak, and duplicate host notifications for
+// every in-process server replacement).
+//
+// Shutdown is now unconditional, so the hub's own exit — the deferred drain
+// every return path runs, registered after the SSH manager's teardown so the
+// fan-outs stop before their transports close — ends the lifetime. The second
+// call covers idempotency: the tracing path and any embedder that already
+// drained the server call Shutdown again, and it must stay safe and cheap.
+func TestRunMainShutsDownAppRPCWithoutTracing(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	var web *WebServer
+	deps.afterWeb = func(created *WebServer) { web = created }
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if web == nil {
+		t.Fatal("afterWeb never ran")
+	}
+	select {
+	case <-web.appRPC.Lifetime().Done():
+	default:
+		t.Fatal("the AppWire server outlived the hub: its lifetime was never canceled, so every fan-out bound to it stays subscribed")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := web.appRPC.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+}
