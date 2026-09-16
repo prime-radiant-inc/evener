@@ -15,7 +15,8 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WireError } from "@evener/appwire-client";
+import { mergeOlderItemPage, WireError } from "@evener/appwire-client";
+import { projectConversation } from "../conversation/project";
 import type {
   AnyNotification,
   EmptyResponse,
@@ -325,7 +326,7 @@ describe("ConversationService", () => {
       const { service } = setup({ olderCursor: "cursor-abc" });
       await service.open("ref-1");
       const result = await service.loadOlder("cursor-abc");
-      expect(result.items).toEqual([]);
+      expect(result.data).toEqual([]);
     });
 
     it("one connection serves sequential sessions on profile A", async () => {
@@ -392,7 +393,7 @@ describe("ConversationService", () => {
       ).toHaveLength(0);
       releaseRead(makeReadResponse(thread, "fresh-cursor"));
       await refresh;
-      await expect(page).resolves.toMatchObject({ items: [] });
+      await expect(page).resolves.toMatchObject({ data: [] });
       const listCall = client.calls.find(
         (call) => call.method === "thread/turns/list",
       );
@@ -453,7 +454,7 @@ describe("ConversationService", () => {
       ).toHaveLength(0);
       releaseLatest(makeReadResponse(thread, "latest-cursor"));
       await refresh2;
-      await expect(page).resolves.toMatchObject({ items: [] });
+      await expect(page).resolves.toMatchObject({ data: [] });
       expect(
         client.calls.find((call) => call.method === "thread/turns/list")
           ?.params,
@@ -570,9 +571,11 @@ describe("ConversationService", () => {
           }) as ThreadTurnsListResponse,
       );
 
-      const result = await service.loadOlder("opaque-cursor");
-      expect(result.items).toHaveLength(1);
-      expect(result.items[0]).toMatchObject({
+      const conversation = await service.open("ref-1");
+      const page = await service.loadOlder("opaque-cursor");
+      const merged = projectConversation(mergeOlderItemPage(conversation, page));
+      expect(merged.items).toHaveLength(1);
+      expect(merged.items[0]).toMatchObject({
         kind: "activity",
         id: "item_tool_1",
         state: "completed",
@@ -610,11 +613,16 @@ describe("ConversationService", () => {
           }) as ThreadTurnsListResponse,
       );
 
-      const result = await service.loadOlder("opaque-cursor");
-      expect(result.items[1]).toMatchObject({
+      const conversation = await service.open("ref-1");
+      const page = await service.loadOlder("opaque-cursor");
+      const merged = projectConversation(mergeOlderItemPage(conversation, page));
+      expect(merged.items[1]).toMatchObject({
         kind: "attachments",
         id: "u-older:attachments",
-        items: [{ id: "u-older:0", src: `/s/thread-1/images/${sha}`, name: "shot.png" }],
+        // The route names the session that served the bytes (the model's
+        // imageSessionId, hydrated from Thread.sessionId), the same preference
+        // the hub's own stamp applies.
+        items: [{ id: "u-older:0", src: `/s/session-1/images/${sha}`, name: "shot.png" }],
       });
     });
 
@@ -639,9 +647,10 @@ describe("ConversationService", () => {
           }) as ThreadTurnsListResponse,
       );
 
+      // The fragment flags ride on the page's own turns; the store reads them
+      // from there when it merges the page into the model.
       await expect(service.loadOlder("opaque-cursor")).resolves.toMatchObject({
-        hasEarlierItems: true,
-        hasLaterItems: true,
+        data: [{ hasEarlierItems: true, hasLaterItems: true }],
       });
     });
 
@@ -685,7 +694,7 @@ describe("ConversationService", () => {
         "stale transcript cursor",
       );
       const result = await service.loadOlder("caller-cursor-is-ignored");
-      expect(result.items).toEqual([]);
+      expect(result.data).toEqual([]);
       expect(listCalls).toBe(2);
       const reads = client.calls.filter(
         (call) => call.method === "thread/read",
@@ -2550,14 +2559,27 @@ describe("ConversationService", () => {
 
   });
 
-  // I3: projectOlderTurns must never emit actionable kind:'question' rows
-  // from historical pages. A pending ask cannot legitimately be older than
-  // newer continuation turns, and page-local projection otherwise resurrects
-  // settled calls. All other projected page items/order/dedupe/cursor are
-  // preserved — only question rows are omitted.
-  describe("I3: projectOlderTurns omits question rows from historical pages", () => {
+  // I3: an ask_user in an older page is answerable only if the model says so.
+  // Merged into the conversation it belongs to, the package's own rule decides
+  // it (deriveAskQuestions: only calls acked after the LAST user message are
+  // live), so a settled older ask brings no question row and there is no
+  // page-local filter to keep in step with that rule.
+  describe("I3: an older page's ask_user answers to the whole model", () => {
     it("completed ask_user + agentMessage => question omitted, other content retained", async () => {
-      const { client, service } = setup();
+      // The conversation continues past the page: a later user message is
+      // what settles the ask.
+      const { client, service } = setup({
+        thread: makeThread({
+          turns: [
+            {
+              id: "t-current",
+              itemsView: "default",
+              status: "completed",
+              items: [{ type: "userMessage", id: "u-answer", text: "A" } as ThreadItem],
+            },
+          ],
+        }),
+      });
       // Build turns with a completed ask_user + agentMessage.
       const askUserTurn: Turn = {
         id: "t-old-1",
@@ -2589,11 +2611,14 @@ describe("ConversationService", () => {
           }) as ThreadTurnsListResponse,
       );
 
-      await service.open("ref-1");
-      const result = await service.loadOlder("cursor-1");
-      const items = result.items;
+      const conversation = await service.open("ref-1");
+      const page = await service.loadOlder("cursor-1");
+      const items = projectConversation(mergeOlderItemPage(conversation, page)).items;
 
-      // No question items — the completed ask_user must not be resurrected.
+      // No question items — a settled ask_user is not resurrected: merged into
+      // the model, the package's own rule (deriveAskQuestions: only calls acked
+      // after the LAST user message are live) answers that, with no page-local
+      // filter of its own.
       expect(items.some((i) => i.kind === "question")).toBe(false);
       // Other content retained — agentMessage projected as assistant.
       expect(items.some((i) => i.kind === "assistant")).toBe(true);
