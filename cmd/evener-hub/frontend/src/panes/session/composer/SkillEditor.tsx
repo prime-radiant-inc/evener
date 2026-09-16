@@ -102,7 +102,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const view = viewRef.current;
         if (!view) return;
         const from = textOffsetToDocumentPosition(view.state.doc, start);
-        const to = textOffsetToDocumentPosition(view.state.doc, end, start === end ? -1 : 1);
+        const to = start === end ? from : textOffsetToDocumentPosition(view.state.doc, end, 1);
         view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, from, to)));
       },
       insertSkill: (start, end, name) => {

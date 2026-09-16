@@ -7,6 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
@@ -2448,6 +2449,118 @@ test("sending recovered text uses current Composer routing and consumes the reco
   });
 });
 
+test.each(["automatic", "Edit message"] as const)(
+  "restored selections: recovery via %s preserves only visible selections with prose and attachments",
+  async (activation) => {
+    // fake-indexeddb uses native structuredClone, which cannot preserve jsdom
+    // Blob bytes. Use the real native Blob for this durable-byte assertion.
+    const { Blob: NodeBlob } = await vi.importActual<{ Blob: typeof Blob }>("node:buffer");
+    vi.stubGlobal("Blob", NodeBlob);
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      if (activation === "Edit message") writeComposerDraft("ref_a", { text: "Current work", skillNames: [] });
+      const input = [
+        { type: "text", text: "Use /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)" },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+        { type: "skill", name: "simplify" },
+        { type: "skill", name: "plugin:visible" },
+      ];
+      const outbox = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thread_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input },
+        attachments: [
+          {
+            presentationId: "presentation-1",
+            marker: 1,
+            name: "proof.png",
+            mediaType: "image/png",
+            blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+          },
+        ],
+        optimisticDisplay: { method: "turn/start", input },
+        composerText: "Use /plugin:visible, then /plugin:visible; /unselected [image 1]",
+      });
+      const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+      if (!recovered) throw new Error("failed to seed selected recovery");
+      const user = userEvent.setup();
+      const fake = await mountComposer("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+          mutationStateAuthoritative: true,
+          queue: { revision: 0 },
+        },
+      });
+      fake.on("turn/start", (params) => ({
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thread_a",
+          projectionState: "reflected",
+        },
+        turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+      }));
+      await flushPendingTurnsProjectionForTests();
+      if (activation === "Edit message") {
+        expect(textarea().textContent).toBe("Current work");
+        await user.click(screen.getByRole("button", { name: "Edit message" }));
+        await flushPendingTurnsProjectionForTests();
+      }
+      const expectedComposerText =
+        activation === "automatic"
+          ? "Use /plugin:visible, then /plugin:visible; /unselected [image 1]"
+          : "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected [image 1]";
+      expect(textarea().textContent).toBe(expectedComposerText);
+      expect(
+        within(textarea())
+          .getAllByTestId("composer-skill-chip")
+          .map((chip) => chip.textContent),
+      ).toEqual(["/plugin:visible", "/plugin:visible"]);
+      expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+      const persisted = await storage.getRecovery(recovered.clientMutationId);
+      expect(persisted?.composerText).toBe(expectedComposerText);
+      const expectedPersistedInput = [
+        { type: "text", text: expectedComposerText },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+        { type: "skill", name: "plugin:visible" },
+      ];
+      const expectedSubmittedInput = [
+        {
+          type: "text",
+          text:
+            activation === "automatic"
+              ? "Use /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)"
+              : "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)",
+        },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+        { type: "skill", name: "plugin:visible" },
+      ];
+      // Recovery edits keep marker anchors; only composerMutationIntent translates
+      // them to attachment prose at submission (threads.ts's boundary contract).
+      expect(persisted?.payload.input).toEqual(expectedPersistedInput);
+      expect(persisted?.optimisticDisplay).toEqual({ method: "turn/start", input: expectedPersistedInput });
+      expect(persisted?.attachments).toHaveLength(1);
+      expect(persisted?.attachments[0]).toMatchObject({ marker: 1, name: "proof.png", mediaType: "image/png" });
+      expect(await persisted?.attachments[0]?.blob.arrayBuffer()).toEqual(new Uint8Array([1, 2, 3]).buffer);
+
+      await user.click(submitButton());
+      await flushPendingTurnsProjectionForTests();
+      await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+      expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+        input: expectedSubmittedInput,
+      });
+      expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+      expect(textarea().textContent).toBe("");
+      expect(screen.queryByRole("button", { name: "Remove proof.png" })).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
 test("a losing cross-tab recovered send does not issue a second request", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -3840,6 +3953,92 @@ test("repeated inline skills survive remount and undo while deletion reconciles 
   expect(textarea().textContent).toBe(original);
   expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
 });
+
+test.each([
+  { text: "Use ", skillNames: ["simplify"], chips: [], input: [{ type: "text", text: "Use " }] },
+  {
+    text: "Use /plugin:visible, then /plugin:visible; /plugin:hidden/extra and /unselected",
+    skillNames: ["plugin:hidden", "plugin:visible", "simplify"],
+    chips: ["/plugin:visible", "/plugin:visible"],
+    input: [
+      { type: "text", text: "Use /plugin:visible, then /plugin:visible; /plugin:hidden/extra and /unselected" },
+      { type: "skill", name: "plugin:visible" },
+    ],
+  },
+])("restored selections: persisted $text submits only complete visible selected references", async (fixture) => {
+  const ref = "ref_restored_selections";
+  writeComposerDraft(ref, { text: fixture.text, skillNames: fixture.skillNames });
+  const user = userEvent.setup();
+  const fake = await mountComposer(ref, {
+    evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+  }));
+  expect(textarea().textContent).toBe(fixture.text);
+  expect(
+    within(textarea())
+      .queryAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(fixture.chips);
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ input: fixture.input });
+});
+
+test.each(["before render", "before subscription"] as const)(
+  "restored selections: a selection-only draft arriving %s is never sendable",
+  async (arrival) => {
+    const ref = "ref_selection_only";
+    const draft = { text: "", skillNames: ["simplify"] };
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse(ref, {
+        evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
+      }),
+    );
+    await threadsStore.getState().ensureThread(ref);
+    if (arrival === "before render") writeComposerDraft(ref, draft);
+    let initialSendDisabled: boolean | undefined;
+    function SeedBeforeSubscription() {
+      useLayoutEffect(() => {
+        if (arrival === "before subscription") writeComposerDraft(ref, draft);
+      }, []);
+      return null;
+    }
+    function ObserveFirstCommit() {
+      useLayoutEffect(() => {
+        initialSendDisabled = submitButton().disabled;
+      }, []);
+      return null;
+    }
+    render(
+      <>
+        <SeedBeforeSubscription />
+        <Composer ref={ref} focused={false} />
+        <ObserveFirstCommit />
+      </>,
+    );
+    await act(async () => {
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(textarea().textContent).toBe("");
+    expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+    // First-commit state covers the lazy initializer independently of the
+    // subscription-time reread, which can synchronously schedule another render.
+    expect(initialSendDisabled).toBe(true);
+    expect(submitButton().disabled).toBe(true);
+    await userEvent.setup().click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  },
+);
 
 test("a leading skill that shares a builtin name remains message input", async () => {
   const user = userEvent.setup();

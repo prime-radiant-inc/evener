@@ -165,6 +165,12 @@ function sameSkillSelections(left: readonly string[], right: readonly string[]):
   return left.length === right.length && left.every((name, index) => name === right[index]);
 }
 
+// Stored selections can outlive their visible references. Restore only names
+// represented by complete chips in the document; never reconstruct missing text.
+function restoredSkillNames(value: SkillEditorValue): string[] {
+  return serializeSkillDocument(parseSkillDocument(value)).skillNames;
+}
+
 function settledInputAttachments(items: PendingAttachment[]): InputAttachment[] {
   return items.flatMap((item) =>
     item.data === undefined
@@ -246,7 +252,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // The canonical skill selections staged for this request (chips). Same
   // sticky-draft contract as `text`: restored per-ref on mount, persisted in
   // the one structured v2 draft record, and snapshotted before every submit.
-  const [skillNames, setSkillNames] = useState<string[]>(() => readComposerDraft(ref).skillNames);
+  const [skillNames, setSkillNames] = useState<string[]>(() => restoredSkillNames(readComposerDraft(ref)));
   const [activeRecoveryId, setActiveRecoveryIdState] = useState<string | null>(null);
   const [freshRecoveryRef, setFreshRecoveryRef] = useState<string | null>(null);
   const activeRecoveryIdRef = useRef<string | null>(null);
@@ -389,8 +395,9 @@ export function Composer({ ref, focused }: ComposerProps) {
     mountedRef.current = true;
     // Re-read at subscription time so a commit between render and mount
     // cannot leave an already-cleared sticky draft in a fresh composer.
-    updateText(readDraft(ref));
-    updateSkillNames(readComposerDraft(ref).skillNames);
+    const draft = readComposerDraft(ref);
+    updateText(draft.text);
+    updateSkillNames(restoredSkillNames(draft));
     ownedDraftRevisionRef.current = readDraftRevision(ref);
     const unsubscribe = subscribeComposerSubmissionCommitted(
       (targetRef, submittedText, submittedSkillNames, recovery) => {
@@ -459,8 +466,8 @@ export function Composer({ ref, focused }: ComposerProps) {
       // Submission cleanup retires this mount's markers without claiming a
       // shared draft that another composer has edited in the meantime.
       const mayPersist = source !== "submission" || ownedDraftRevisionRef.current === readDraftRevision(ref);
-      const next = serializeSkillDocument(parseSkillDocument({ text: nextText, skillNames: skillNamesRef.current }));
-      updateSkillNames(next.skillNames);
+      const next = restoredSkillNames({ text: nextText, skillNames: skillNamesRef.current });
+      updateSkillNames(next);
       if (source === "submission") updateText(nextText);
       else editText(nextText);
       if (mayPersist && activeRecoveryIdRef.current === null) persistDraft(nextText);
@@ -642,7 +649,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
     updateText(recovered.text);
-    updateSkillNames(recovered.skillNames);
+    updateSkillNames(restoredSkillNames(recovered));
     attachments.replaceWithSettled(recovered.attachments);
     clearPersistedDraft(ref);
     scheduleCursorRestore(recovered.text.length);
@@ -1035,8 +1042,9 @@ export function Composer({ ref, focused }: ComposerProps) {
       recoveryOwnsLocalDraftRef.current = true;
       setActiveRecoveryId(record.clientMutationId);
     }
+    const nextSkillNames = restoredSkillNames(merged);
     editText(merged.text);
-    editSkillNames(merged.skillNames);
+    editSkillNames(nextSkillNames);
     attachments.replaceWithSettled(merged.attachments);
     scheduleCursorRestore(merged.text.length);
     editorRef.current?.focus();
@@ -1047,7 +1055,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       ownerId,
       merged.text,
       settledInputAttachments(merged.attachments),
-      merged.skillNames,
+      nextSkillNames,
     );
     if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
       void persistence
