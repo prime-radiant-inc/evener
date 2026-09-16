@@ -112,8 +112,9 @@ var remoteHostAdminMethods = map[string]struct{}{
 // remoteHostAdminMutationMethods is the non-idempotent subset of
 // remoteHostAdminMethods: the forwarded methods that change the remote host's
 // durable state — provider instances, launch layers and repo trust,
-// marketplaces and plugins, credentials and login state, the personal
-// AGENTS.md, and the spawn form's directory creation.
+// marketplaces and plugins (including the on-demand auto-upgrade pass behind
+// plugin/checkNow), credentials and login state, the personal AGENTS.md, and
+// the spawn form's directory creation.
 //
 // The proxy forwards these on the outcome-unknown error mapping instead of the
 // read methods' SessionUnavailable mapping. A transport failure mid-call cannot
@@ -133,8 +134,8 @@ var remoteHostAdminMethods = map[string]struct{}{
 //
 // The read-only remainder — the families whose effect is a lookup or a
 // refetch, so an identical retry is harmless: instance/list, launch/{resolve,
-// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,preview,
-// checkNow}, auth/{status,test,list}, settings/agentsDoc/get, the discovery
+// schema,getLayer}, marketplace/{list,browse,refresh}, plugin/{list,preview},
+// auth/{status,test,list}, settings/agentsDoc/get, the discovery
 // helpers (paths/complete, path/validate, projects/recent, harnesses/list,
 // spawn/slashCatalog, git/head), and model/list — stays on AdminCall.
 var remoteHostAdminMutationMethods = map[string]struct{}{
@@ -150,7 +151,7 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	appwire.MethodEvenerLaunchTrustRepo: {},
 
 	// Marketplaces and plugins: the add/remove/edit/install/upgrade/toggle
-	// surface. (browse/list/refresh/preview/checkNow are reads.)
+	// surface, plus checkNow. (browse/list/refresh/preview are reads.)
 	appwire.MethodEvenerMarketplaceAdd:       {},
 	appwire.MethodEvenerMarketplaceRemove:    {},
 	appwire.MethodEvenerMarketplaceEdit:      {},
@@ -160,6 +161,16 @@ var remoteHostAdminMutationMethods = map[string]struct{}{
 	appwire.MethodEvenerPluginEnable:         {},
 	appwire.MethodEvenerPluginDisable:        {},
 	appwire.MethodEvenerPluginSetAutoUpgrade: {},
+	// checkNow is a mutation despite its name: it runs one auto-upgrade daemon
+	// pass on demand (app_plugin_autoupgrade.go's runPluginAutoUpgradeTick),
+	// which refreshes every marketplace clone and installs the new content of
+	// every opted-in git-backed plugin whose upstream moved. Its own catalog
+	// description says as much — "per plugin actually upgraded" (protocol.go) —
+	// and a lost response cannot be told apart from one where the pass upgraded
+	// plugins and only the answer was lost. Reporting that as SessionUnavailable
+	// would invite a retry of a call that already changed the host's installed
+	// plugin versions, so the outcome is reported as unknown instead.
+	appwire.MethodEvenerPluginCheckNow: {},
 
 	// Auth and credentials: a login flow, a logout, or a credential write
 	// changes what the host can authenticate as. device/poll can complete the

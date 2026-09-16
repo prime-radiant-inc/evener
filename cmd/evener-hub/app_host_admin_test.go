@@ -986,6 +986,46 @@ func TestHostAdminRequestMapsLostResponseByMutationSafety(t *testing.T) {
 			t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionBlocked)
 		}
 	})
+
+	t.Run("checkNow reports unknown outcome", func(t *testing.T) {
+		// Round nine: evener/plugin/checkNow is a mutation, not the read its
+		// name suggests. It runs one auto-upgrade daemon pass
+		// (app_plugin_autoupgrade.go), which can install a new version of an
+		// opted-in git-backed plugin on the remote host — the catalog
+		// description says "per plugin actually upgraded" (protocol.go) and
+		// TestRegisterPluginAutoUpgradeHandlers_CheckNowRunsOneTick shows the
+		// upgraded ref coming back. A lost response to that pass cannot be told
+		// apart from one where plugins were upgraded and only the answer was
+		// lost, so it must report the outcome as unknown rather than a retryable
+		// SessionUnavailable.
+		controller, _, _ := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+			return hostAdminReply{closeConn: true}
+		})
+		_, err := controller.Request(context.Background(), appwire.HostRequestParams{
+			Host:   "m4",
+			Method: appwire.MethodEvenerPluginCheckNow,
+		})
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code == appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want an explicit outcome-unknown error, not a retryable SessionUnavailable", wire.Code)
+		}
+		data, ok := wire.Data.(appwire.ErrorData)
+		if !ok {
+			t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown {
+			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMutationOutcomeUnknown)
+		}
+		if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+			t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, appwire.MutationOutcomeUnknown)
+		}
+		if data.RetryDisposition != appwire.RetryDispositionBlocked {
+			t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionBlocked)
+		}
+	})
 }
 
 // TestHostAdminMutationClassificationMatchesAllowList forces a retry-safety
@@ -1009,7 +1049,6 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		appwire.MethodEvenerMarketplaceRefresh:   true,
 		appwire.MethodEvenerPluginList:           true,
 		appwire.MethodEvenerPluginPreview:        true,
-		appwire.MethodEvenerPluginCheckNow:       true,
 		appwire.MethodEvenerAuthStatus:           true,
 		appwire.MethodEvenerAuthTest:             true,
 		appwire.MethodEvenerAuthList:             true,

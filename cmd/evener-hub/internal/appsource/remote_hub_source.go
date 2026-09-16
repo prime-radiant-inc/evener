@@ -1496,14 +1496,15 @@ func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params j
 //
 // The client does distinguish one earlier window (round eight): a context that
 // has already ended when the request reaches the point where its frame would be
-// written — typically queued behind another writer on the client's sendMu, since
-// a controller browser can have two admin RPCs in flight on one host at once —
-// comes back as appwire.RequestNotSentError, which proves nothing was
-// transmitted. That case maps exactly as the pre-call check above does: a raw
-// cancellation, or SessionUnavailable for an expired deadline, and never
-// outcome-unknown, because a mutation that never reached the host cannot have
-// been applied and blocking its retry is simply wrong. Only from dispatch
-// onward does the ambiguous in-flight reading apply.
+// written — typically queued behind another writer on the client's single write
+// slot, since a controller browser can have two admin RPCs in flight on one
+// host at once — comes back as appwire.RequestNotSentError, which proves nothing
+// was transmitted, and since round nine it does so as soon as the context ends
+// rather than waiting for the writer ahead of it. That case maps exactly as the
+// pre-call check above does: a raw cancellation, or SessionUnavailable for an
+// expired deadline, and never outcome-unknown, because a mutation that never
+// reached the host cannot have been applied and blocking its retry is simply
+// wrong. Only from dispatch onward does the ambiguous in-flight reading apply.
 func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
 	if err := ctx.Err(); err != nil {
 		// Provably not sent: this runs before the request is handed to the

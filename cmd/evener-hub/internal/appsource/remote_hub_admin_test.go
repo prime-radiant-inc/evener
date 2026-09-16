@@ -934,8 +934,8 @@ func TestRemoteHubSourceSubscribeHostNotificationsDeliversAndUnregisters(t *test
 
 // gatedSendTransport holds a client's single frame-write slot open: the first
 // Send parks inside the transport until the test releases it, so a second
-// request on the same client is provably still queued on Client.sendMu when the
-// test ends its context. Later Sends refuse a canceled context the way
+// request on the same client is provably still queued on Client's write slot
+// when the test ends its context. Later Sends refuse a canceled context the way
 // appwire.StreamTransport.Send does — before any byte of the frame is written —
 // and every Send is counted, so a test can prove which frames reached a
 // transport at all.
@@ -980,7 +980,7 @@ func (t *gatedSendTransport) sendCount() int {
 
 // TestRemoteHubSourceAdminMutationCallPreSendCancellationStaysRetryable pins
 // round eight's medium finding on the mutating path. appwire.Client serializes
-// frame writes on sendMu, so a forwarded mutation can be queued behind another
+// frame writes on one write slot, so a forwarded mutation can be queued behind another
 // call on the same client when the caller's context ends; that request never
 // reaches the transport, so the mutation provably did not happen and the caller
 // must NOT be told the outcome is unknown (which is what blocks a retry that is
