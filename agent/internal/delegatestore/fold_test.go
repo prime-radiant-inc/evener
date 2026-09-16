@@ -901,3 +901,24 @@ func TestApplyRestoresStateWhenEventIsRejected(t *testing.T) {
 		t.Fatalf("rejected created event changed state:\n got %s\nwant %s", got, before)
 	}
 }
+
+// TestApplyRejectsNilAggregateWalkedBySubtreeEvents pins that the event kinds
+// whose apply functions walk every aggregate reject a state holding a nil
+// entry instead of dereferencing it, even when the nil entry is outside the
+// event's subtree.
+func TestApplyRejectsNilAggregateWalkedBySubtreeEvents(t *testing.T) {
+	for _, event := range []Event{
+		{Kind: EventDelegateSubtreeStopRequested, DelegateID: "dlg_parent", Seq: 3, SubtreeStopRequested: &SubtreeStopRequested{TargetDelegateID: "dlg_parent"}},
+		{Kind: EventDelegateResumabilityClosed, DelegateID: "dlg_parent", ResumabilityClosed: &ResumabilityClosed{Reason: "isolation_disposed"}},
+		{Kind: EventDelegateSubtreeStopCompleted, DelegateID: "dlg_parent", SubtreeStopCompleted: &SubtreeStopCompleted{RequestSeq: 3}},
+	} {
+		t.Run(string(event.Kind), func(t *testing.T) {
+			state := applyEvents(t, createdEvent("dlg_parent", ""), createdEvent("dlg_other", ""))
+			state["dlg_nil"] = nil
+			err := Apply(state, event)
+			if err == nil || !strings.Contains(err.Error(), `delegate "dlg_nil" aggregate is nil`) {
+				t.Fatalf("Apply error = %v, want nil aggregate rejection", err)
+			}
+		})
+	}
+}

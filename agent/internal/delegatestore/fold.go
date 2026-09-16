@@ -81,13 +81,15 @@ func Apply(state State, event Event) error {
 // touchedDelegates lists every aggregate applyEvent may write for event. Most
 // events reach only their own delegate; resumability closure and a subtree
 // stop request reach the target and its descendants; a subtree stop
-// completion rewrites every aggregate's pending deliveries.
+// completion rewrites every aggregate's pending deliveries. The kinds that
+// walk the whole state also list its nil entries, so Apply rejects them
+// before an apply function dereferences one.
 func touchedDelegates(state State, event Event) []string {
 	switch event.Kind {
 	case EventDelegateResumabilityClosed, EventDelegateSubtreeStopRequested:
 		var ids []string
-		for id := range state {
-			if isDelegateOrDescendant(state, id, event.DelegateID) {
+		for id, aggregate := range state {
+			if aggregate == nil || isDelegateOrDescendant(state, id, event.DelegateID) {
 				ids = append(ids, id)
 			}
 		}
