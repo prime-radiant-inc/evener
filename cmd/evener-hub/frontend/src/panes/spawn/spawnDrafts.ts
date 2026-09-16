@@ -16,6 +16,14 @@ interface DraftFields {
   promptRevision: number;
   harness: string;
   model: string;
+  /** The model value the uncredentialed-default fallback installed into `model`
+   * for THIS draft, or null when `model` did not come from it. Provenance is a
+   * property of the draft, not of the mounted form: SpawnForm is a singleton
+   * reused across drafts (no key) and is unmounted/remounted with the pane, so
+   * a form-local marker leaked one draft's provenance onto an identical model
+   * string in another draft and vanished on remount (Component 06b review,
+   * round eight). */
+  defaultModelFallback: string | null;
   staleModelNotice: string | null;
   reasoningEffort: string;
   accessMode: string;
@@ -45,6 +53,7 @@ function createDraft(cwd: string) {
       promptRevision: 0,
       harness: defaults.harness ?? "",
       model: defaults.model ?? "",
+      defaultModelFallback: null,
       staleModelNotice: null,
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
