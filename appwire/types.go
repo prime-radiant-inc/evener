@@ -29,101 +29,104 @@ const ProtocolVersion = "evener-appwire-v5"
 const ThreadStatusRestartRequired = "restartRequired"
 
 const (
-	MethodInitialize                  = "initialize"
-	MethodInitialized                 = "initialized"
-	MethodPing                        = "ping"
-	MethodThreadList                  = "thread/list"
-	MethodThreadRead                  = "thread/read"
-	MethodThreadUnsubscribe           = "thread/unsubscribe"
-	MethodThreadTurnsList             = "thread/turns/list"
-	MethodThreadTurnItemsList         = "thread/turns/items/list"
-	MethodThreadStart                 = "thread/start"
-	MethodThreadResume                = "thread/resume"
-	MethodThreadFork                  = "thread/fork"
-	MethodThreadClear                 = "thread/clear"
-	MethodThreadModelSet              = "thread/model/set"
-	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
-	MethodThreadVisionModelSet        = "thread/vision-model/set"
-	MethodThreadCompactStart          = "thread/compact/start"
-	MethodThreadShutdown              = "thread/shutdown"
-	MethodEvenerThreadForceStop       = "evener/thread/forceStop"
-	MethodTurnStart                   = "turn/start"
-	MethodTurnSteer                   = "turn/steer"
-	MethodTurnInterrupt               = "turn/interrupt"
-	MethodTurnQueue                   = "turn/queue"
-	MethodTurnDrainAsSteer            = "turn/drainAsSteer"
-	MethodTurnPromoteQueuedAsSteer    = "turn/promoteQueuedAsSteer"
-	MethodTurnCancelQueued            = "turn/cancelQueued"
-	MethodGoalSet                     = "goal/set"
-	MethodNotesHumanSet               = "notes/human/set"
-	MethodNotesAgentSet               = "notes/agent/set"
-	MethodUrlsAdd                     = "urls/add"
-	MethodUrlsRemove                  = "urls/remove"
-	MethodEvenerTasksList             = "evener/tasks/list"
-	MethodEvenerJobsList              = "evener/jobs/list"
-	MethodEvenerJobsOutput            = "evener/jobs/output"
-	MethodEvenerThreadNameSet         = "evener/thread/name/set"
-	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
-	MethodEvenerSubagentPreview       = "evener/subagentPreview"
-	MethodEvenerPathsComplete         = "evener/paths/complete"
-	MethodEvenerDirsCreate            = "evener/dirs/create"
-	MethodEvenerProjectsRecent        = "evener/projects/recent"
-	MethodEvenerPathValidate          = "evener/path/validate"
-	MethodEvenerGitHead               = "evener/git/head"
-	MethodEvenerMobilePairing         = "evener/mobile/pairing"
-	MethodEvenerNavigationRead        = "evener/navigation/read"
-	MethodEvenerFavoriteSet           = "evener/favorite/set"
-	MethodEvenerArchiveSet            = "evener/archive/set"
-	MethodEvenerProjectDelete         = "evener/project/delete"
-	MethodEvenerSessionDelete         = "evener/session/delete"
-	MethodEvenerPinSectionRename      = "evener/pin-section/rename"
-	MethodEvenerPinSectionDelete      = "evener/pin-section/delete"
-	MethodEvenerSessionPinAssign      = "evener/session-pin/assign"
-	MethodEvenerSessionPinUnpin       = "evener/session-pin/unpin"
-	MethodEvenerSearch                = "evener/search"
-	MethodEvenerHarnessesList         = "evener/harnesses/list"
-	MethodEvenerUpgrade               = "evener/upgrade"
-	MethodEvenerUpdateCheck           = "evener/update/check"
-	MethodEvenerUpdateApply           = "evener/update/apply"
-	MethodEvenerAuthStatus            = "evener/auth/status"
-	MethodEvenerAuthTest              = "evener/auth/test"
-	MethodEvenerAuthLoginStart        = "evener/auth/login/start"
-	MethodEvenerAuthLoginComplete     = "evener/auth/login/complete"
-	MethodEvenerAuthLogout            = "evener/auth/logout"
-	MethodEvenerAuthList              = "evener/auth/list"
-	MethodEvenerAuthApiKeySet         = "evener/auth/apiKey/set"
-	MethodEvenerAuthApiKeyClear       = "evener/auth/apiKey/clear"
-	MethodEvenerAuthCredentialJsonSet = "evener/auth/credentialJson/set"
-	MethodEvenerAuthDeviceStart       = "evener/auth/device/start"
-	MethodEvenerAuthDevicePoll        = "evener/auth/device/poll"
-	MethodEvenerLaunchResolve         = "evener/launch/resolve"
-	MethodEvenerLaunchSchema          = "evener/launch/schema"
-	MethodEvenerLaunchGetLayer        = "evener/launch/getLayer"
-	MethodEvenerLaunchSetLayer        = "evener/launch/setLayer"
-	MethodEvenerLaunchTrustRepo       = "evener/launch/trustRepo"
-	MethodModelList                   = "model/list"
-	MethodEvenerInstanceList          = "evener/instance/list"
-	MethodEvenerInstanceCreate        = "evener/instance/create"
-	MethodEvenerInstanceEdit          = "evener/instance/edit"
-	MethodEvenerInstanceRemove        = "evener/instance/remove"
-	MethodEvenerInstanceSetDefault    = "evener/instance/setDefault"
-	MethodEvenerPluginCheckNow        = "evener/plugin/checkNow"
-	MethodEvenerPluginPreview         = "evener/plugin/preview"
-	MethodEvenerMarketplaceList       = "evener/marketplace/list"
-	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
-	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
-	MethodEvenerMarketplaceRefresh    = "evener/marketplace/refresh"
-	MethodEvenerMarketplaceEdit       = "evener/marketplace/edit"
-	MethodEvenerMarketplaceBrowse     = "evener/marketplace/browse"
-	MethodEvenerPluginList            = "evener/plugin/list"
-	MethodEvenerPluginInstall         = "evener/plugin/install"
-	MethodEvenerPluginUpgrade         = "evener/plugin/upgrade"
-	MethodEvenerPluginRemove          = "evener/plugin/remove"
-	MethodEvenerPluginEnable          = "evener/plugin/enable"
-	MethodEvenerPluginDisable         = "evener/plugin/disable"
-	MethodEvenerPluginSetAutoUpgrade  = "evener/plugin/setAutoUpgrade"
-	MethodEvenerCommandList           = "evener/command/list"
-	MethodEvenerSpawnSlashCatalog     = "evener/spawn/slashCatalog"
+	MethodInitialize                     = "initialize"
+	MethodInitialized                    = "initialized"
+	MethodPing                           = "ping"
+	MethodThreadList                     = "thread/list"
+	MethodThreadRead                     = "thread/read"
+	MethodThreadUnsubscribe              = "thread/unsubscribe"
+	MethodThreadTurnsList                = "thread/turns/list"
+	MethodThreadTurnItemsList            = "thread/turns/items/list"
+	MethodThreadStart                    = "thread/start"
+	MethodThreadResume                   = "thread/resume"
+	MethodThreadFork                     = "thread/fork"
+	MethodThreadClear                    = "thread/clear"
+	MethodThreadModelSet                 = "thread/model/set"
+	MethodThreadReasoningEffortSet       = "thread/reasoning-effort/set"
+	MethodThreadVisionModelSet           = "thread/vision-model/set"
+	MethodThreadCompactStart             = "thread/compact/start"
+	MethodThreadShutdown                 = "thread/shutdown"
+	MethodEvenerThreadForceStop          = "evener/thread/forceStop"
+	MethodTurnStart                      = "turn/start"
+	MethodTurnSteer                      = "turn/steer"
+	MethodTurnInterrupt                  = "turn/interrupt"
+	MethodTurnQueue                      = "turn/queue"
+	MethodTurnDrainAsSteer               = "turn/drainAsSteer"
+	MethodTurnPromoteQueuedAsSteer       = "turn/promoteQueuedAsSteer"
+	MethodTurnCancelQueued               = "turn/cancelQueued"
+	MethodGoalSet                        = "goal/set"
+	MethodNotesHumanSet                  = "notes/human/set"
+	MethodNotesAgentSet                  = "notes/agent/set"
+	MethodUrlsAdd                        = "urls/add"
+	MethodUrlsRemove                     = "urls/remove"
+	MethodEvenerTasksList                = "evener/tasks/list"
+	MethodEvenerJobsList                 = "evener/jobs/list"
+	MethodEvenerJobsOutput               = "evener/jobs/output"
+	MethodEvenerThreadNameSet            = "evener/thread/name/set"
+	MethodEvenerThreadTranscriptsList    = "evener/thread/transcripts/list"
+	MethodEvenerSubagentPreview          = "evener/subagentPreview"
+	MethodEvenerPathsComplete            = "evener/paths/complete"
+	MethodEvenerDirsCreate               = "evener/dirs/create"
+	MethodEvenerProjectsRecent           = "evener/projects/recent"
+	MethodEvenerPathValidate             = "evener/path/validate"
+	MethodEvenerGitHead                  = "evener/git/head"
+	MethodEvenerMobilePairing            = "evener/mobile/pairing"
+	MethodEvenerNavigationRead           = "evener/navigation/read"
+	MethodEvenerFavoriteSet              = "evener/favorite/set"
+	MethodEvenerArchiveSet               = "evener/archive/set"
+	MethodEvenerProjectDelete            = "evener/project/delete"
+	MethodEvenerSessionDelete            = "evener/session/delete"
+	MethodEvenerPinSectionRename         = "evener/pin-section/rename"
+	MethodEvenerPinSectionDelete         = "evener/pin-section/delete"
+	MethodEvenerSessionPinAssign         = "evener/session-pin/assign"
+	MethodEvenerSessionPinUnpin          = "evener/session-pin/unpin"
+	MethodEvenerSearch                   = "evener/search"
+	MethodEvenerHarnessesList            = "evener/harnesses/list"
+	MethodEvenerUpgrade                  = "evener/upgrade"
+	MethodEvenerUpdateCheck              = "evener/update/check"
+	MethodEvenerUpdateApply              = "evener/update/apply"
+	MethodEvenerAuthStatus               = "evener/auth/status"
+	MethodEvenerAuthTest                 = "evener/auth/test"
+	MethodEvenerAuthLoginStart           = "evener/auth/login/start"
+	MethodEvenerAuthLoginComplete        = "evener/auth/login/complete"
+	MethodEvenerAuthLogout               = "evener/auth/logout"
+	MethodEvenerAuthList                 = "evener/auth/list"
+	MethodEvenerAuthApiKeySet            = "evener/auth/apiKey/set"
+	MethodEvenerAuthApiKeyClear          = "evener/auth/apiKey/clear"
+	MethodEvenerAuthCredentialJsonSet    = "evener/auth/credentialJson/set"
+	MethodEvenerAuthDeviceStart          = "evener/auth/device/start"
+	MethodEvenerAuthDevicePoll           = "evener/auth/device/poll"
+	MethodEvenerLaunchResolve            = "evener/launch/resolve"
+	MethodEvenerLaunchSchema             = "evener/launch/schema"
+	MethodEvenerLaunchGetLayer           = "evener/launch/getLayer"
+	MethodEvenerLaunchSetLayer           = "evener/launch/setLayer"
+	MethodEvenerLaunchTrustRepo          = "evener/launch/trustRepo"
+	MethodModelList                      = "model/list"
+	MethodEvenerInstanceList             = "evener/instance/list"
+	MethodEvenerInstanceCreate           = "evener/instance/create"
+	MethodEvenerInstanceEdit             = "evener/instance/edit"
+	MethodEvenerInstanceRemove           = "evener/instance/remove"
+	MethodEvenerInstanceSetDefault       = "evener/instance/setDefault"
+	MethodEvenerInstanceSetModelDisabled = "evener/instance/setModelDisabled"
+	MethodEvenerInstanceRefreshModels    = "evener/instance/refreshModels"
+	MethodEvenerPluginCheckNow           = "evener/plugin/checkNow"
+	MethodEvenerPluginPreview            = "evener/plugin/preview"
+	MethodEvenerMarketplaceList          = "evener/marketplace/list"
+	MethodEvenerMarketplaceAdd           = "evener/marketplace/add"
+	MethodEvenerMarketplaceRemove        = "evener/marketplace/remove"
+	MethodEvenerMarketplaceRefresh       = "evener/marketplace/refresh"
+	MethodEvenerMarketplaceEdit          = "evener/marketplace/edit"
+	MethodEvenerMarketplaceBrowse        = "evener/marketplace/browse"
+	MethodEvenerPluginList               = "evener/plugin/list"
+	MethodEvenerPluginInstall            = "evener/plugin/install"
+	MethodEvenerPluginUpgrade            = "evener/plugin/upgrade"
+	MethodEvenerPluginRemove             = "evener/plugin/remove"
+	MethodEvenerPluginEnable             = "evener/plugin/enable"
+	MethodEvenerPluginDisable            = "evener/plugin/disable"
+	MethodEvenerPluginSetAutoUpgrade     = "evener/plugin/setAutoUpgrade"
+	MethodEvenerCommandList              = "evener/command/list"
+	MethodEvenerSpawnSlashCatalog        = "evener/spawn/slashCatalog"
+
 	// MethodEvenerSettingsOverview returns the field bag behind five settings
 	// sections whose only data path today is Go-template variables:
 	// hub/runtime, storage, agent roster, and probed MCP servers. See
@@ -3048,6 +3051,18 @@ type InstanceEntry struct {
 	// Warnings are the registry's own notes about this instance, chiefly
 	// what is missing and how to supply it.
 	Warnings []string `json:"warnings,omitempty"`
+	// Models is the instance's known models with their effective
+	// disabled state, for the sheet's per-model toggles: exact catalog
+	// rows plus cached live ids. Empty for an instance with no rows.
+	Models []InstanceModelEntry `json:"models,omitempty"`
+}
+
+// InstanceModelEntry is one row of an instance's model inventory: the
+// catalog id and whether the config layer disabled it. The Providers pane's
+// instance sheet renders one toggle per row.
+type InstanceModelEntry struct {
+	ID       string `json:"id"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // ProviderDescriptor is a registry provider the add form can build on: its
@@ -3164,6 +3179,23 @@ type InstanceRemoveParams struct {
 // InstanceSetDefaultParams is the params for evener/instance/setDefault.
 type InstanceSetDefaultParams struct {
 	Name string `json:"name"`
+}
+
+// InstanceRefreshModelsParams is the params for
+// evener/instance/refreshModels: fetch the instance's live listing, then
+// answer with the updated list (exact catalog rows plus cached live ids).
+type InstanceRefreshModelsParams struct {
+	Name string `json:"name"`
+}
+
+// InstanceSetModelDisabledParams is the params for
+// evener/instance/setModelDisabled. It writes an explicit disabled bool on
+// the named row (never deletes it), so the choice survives catalog
+// refreshes. A glob id is refused: the sheet toggles exact rows only.
+type InstanceSetModelDisabledParams struct {
+	Name     string `json:"name"`
+	Model    string `json:"model"`
+	Disabled bool   `json:"disabled"`
 }
 
 // CommandDescriptor describes one slash command — plugin-provided or
