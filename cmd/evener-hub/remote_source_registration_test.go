@@ -20,6 +20,7 @@ func unusedRemoteHostClient(context.Context, string) (*appwire.Client, error) {
 
 func TestNewHubSourceRegistryRegistersRemoteHosts(t *testing.T) {
 	registry := newHubSourceRegistry(hubcore.WebConfig{
+		Roster: hubcore.NewRosterWithEntries(),
 		RemoteHosts: []hostreg.Host{
 			{Name: "h1", SSH: "h1.example"},
 			{Name: "h2", SSH: "h2.example"},
@@ -34,7 +35,7 @@ func TestNewHubSourceRegistryRegistersRemoteHosts(t *testing.T) {
 }
 
 func TestNewHubSourceRegistryWithoutHostsOnlyLocal(t *testing.T) {
-	registry := newHubSourceRegistry(hubcore.WebConfig{})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries()})
 	if _, ok := registry.Source("local"); !ok {
 		t.Fatal("local source not registered")
 	}
@@ -43,8 +44,26 @@ func TestNewHubSourceRegistryWithoutHostsOnlyLocal(t *testing.T) {
 	}
 }
 
+// A registry built without a roster has no local source at all: the hub always
+// wires one (main.go), and a lookup of a local ref must fail as "source not
+// found" rather than find a source that lists nothing. Remote hosts do not
+// depend on the local roster, so a configured one is still registered.
+func TestNewHubSourceRegistryWithoutARosterRegistersOnlyRemoteHosts(t *testing.T) {
+	registry := newHubSourceRegistry(hubcore.WebConfig{
+		RemoteHosts:      []hostreg.Host{{Name: "h1", SSH: "h1.example"}},
+		RemoteHostClient: unusedRemoteHostClient,
+	})
+	if _, ok := registry.Source("local"); ok {
+		t.Fatal("local source registered without a roster")
+	}
+	if _, ok := registry.Source("h1"); !ok {
+		t.Fatal("h1 not registered although it is configured")
+	}
+}
+
 func TestNewHubSourceRegistryEmptyRefDefaultsLocal(t *testing.T) {
 	registry := newHubSourceRegistry(hubcore.WebConfig{
+		Roster:           hubcore.NewRosterWithEntries(),
 		RemoteHosts:      []hostreg.Host{{Name: "h1", SSH: "h1.example"}},
 		RemoteHostClient: unusedRemoteHostClient,
 	})
