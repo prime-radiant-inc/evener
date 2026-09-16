@@ -357,11 +357,11 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// push and pull paths disagreeing about one turn (kata b19h).
 		p.clearSkillCandidate()
 		data := eventData[events.TurnStartedData](event.Data)
-		_, out := p.openTurn(data.TurnID, event.Timestamp)
+		_, out := p.openTurn(data.TurnID, event.Timestamp, false)
 		return append(out, p.threadStatus(appwire.ThreadStatusActive))
 	case events.EventUserInput:
 		data := eventData[events.UserInputData](event.Data)
-		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp)
+		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp, false)
 		item := appwire.ThreadItem{
 			Type:                 "userMessage",
 			ID:                   p.nextItemID("user"),
@@ -389,7 +389,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) (out []AppNotific
 		// a systemMessage rather than a userMessage so continuations don't
 		// look like the user spoke.
 		data := eventData[events.GoalContinuationData](event.Data)
-		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp)
+		turnID, out := p.openTurn(data.StableTurnID, event.Timestamp, false)
 		item := appwire.ThreadItem{
 			Type:        "systemMessage",
 			ID:          p.nextItemID("goal_continuation"),
@@ -2002,13 +2002,29 @@ func (p *AppEventProjector) closeActiveTurn(status string) []AppNotification {
 // an event kind that adopts the daemon's id while its neighbour mints a
 // turn_<n> instead publishes a turn no mid-turn control can address, and the
 // two are indistinguishable from the call site.
-func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []AppNotification) {
+//
+// bookkeeping opens the turn for a persisted record that is not runnable work
+// (an environment block). Such a record occupies an entry index on reload, so
+// it spends a number here too, but it never touches the runnable reservation
+// already advertised for the following input, nor anyTurnStarted, which
+// tracks real work only.
+func (p *AppEventProjector) openTurn(stableID string, at time.Time, bookkeeping bool) (string, []AppNotification) {
 	out := p.closeActiveTurn(appwire.TurnStatusCompleted)
-	if stableID != "" {
-		p.reservedTurnID = stableID
-		p.reservedTurnIDIsStable = true
+	var turnID string
+	if bookkeeping {
+		p.nextTurn++
+		p.activeTurnID = stableID
+		if stableID == "" {
+			p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
+		}
+		turnID = p.beginTurnState()
+	} else {
+		if stableID != "" {
+			p.reservedTurnID = stableID
+			p.reservedTurnIDIsStable = true
+		}
+		turnID = p.startTurn()
 	}
-	turnID := p.startTurn()
 	return turnID, append(out, p.notification(appwire.NotifyTurnStarted, appwire.TurnStartedParams{
 		ThreadID: p.threadID,
 		Ref:      p.ref,
@@ -2017,29 +2033,12 @@ func (p *AppEventProjector) openTurn(stableID string, at time.Time) (string, []A
 }
 
 // bookkeepingTurn opens and closes a standalone turn for a persisted record
-// that is not runnable work -- an environment block today -- around the items
-// announce emits into it. The record has its own durable identity (stableID,
-// empty when the daemon could not name it), so it must not consume the
-// runnable identity already advertised for the following input: the pending
-// reservation is set aside while the turn runs and handed back afterwards,
-// with its provenance. openTurn clears reservedTurnIDIsStable on the way
-// through, and a stable reservation restored without that flag is one the
-// counter then treats as minted, skipping the number a stable id owes, so
-// every turn named after it lands one short of where a reload numbers the
-// same conversation. The prelude test (anyTurnStarted) likewise tracks real
-// work only.
+// that is not runnable work, around the items announce emits into it; see
+// openTurn's bookkeeping flag for what it leaves alone and why.
 func (p *AppEventProjector) bookkeepingTurn(stableID string, at time.Time, announce func() []AppNotification) []AppNotification {
-	reserved := p.reservedTurnID
-	reservedIsStable := p.reservedTurnIDIsStable
-	wasRealTurnStarted := p.anyTurnStarted
-	p.reservedTurnID = ""
-	_, out := p.openTurn(stableID, at)
-	p.anyTurnStarted = wasRealTurnStarted
+	_, out := p.openTurn(stableID, at, true)
 	out = append(out, announce()...)
-	out = append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
-	p.reservedTurnID = reserved
-	p.reservedTurnIDIsStable = reservedIsStable
-	return out
+	return append(out, p.closeActiveTurn(appwire.TurnStatusCompleted)...)
 }
 
 // completeReasoningItem closes the reasoning item opened by a summary delta
@@ -2122,7 +2121,13 @@ func (p *AppEventProjector) startTurn() string {
 		p.activeTurnID = fmt.Sprintf("turn_%d", p.nextTurn)
 	}
 	p.anyTurnStarted = true
-	// A real turn just started, ending whatever mid-session announcement gap
+	return p.beginTurnState()
+}
+
+// beginTurnState resets what belongs to the turn that just ended, once
+// activeTurnID names the new one, and returns that id.
+func (p *AppEventProjector) beginTurnState() string {
+	// A turn just started, ending whatever mid-session announcement gap
 	// preceded it — the next no-active-turn announcement belongs to a new
 	// gap and must mint its own fresh id (kata 9ekv).
 	p.midSessionAnnouncementTurnID = ""
@@ -2134,9 +2139,9 @@ func (p *AppEventProjector) startTurn() string {
 	p.activeTurnUsage = llm.Usage{}
 	p.activeTurnModel = ""
 	p.activeTurnProvider = ""
-	// startTurn always yields a usable turn id (a promoted reservation or a
-	// freshly minted turn_N); the item-emitting paths rely on activeTurnID being
-	// non-empty after this returns.
+	// Every opener yields a usable turn id (a promoted reservation, a record's
+	// own id or a freshly minted turn_N); the item-emitting paths rely on
+	// activeTurnID being non-empty after this returns.
 	invariant.Hold(p.activeTurnID != "", "appprojector: startTurn left activeTurnID empty")
 	return p.activeTurnID
 }

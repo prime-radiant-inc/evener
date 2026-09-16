@@ -69,8 +69,7 @@ func TestAppEventProjectorAnnouncementsKeepAPendingStableReservationStable(t *te
 	projector.ReserveStableTurnID("turn_stable_input")
 	var live []string
 	project := func(event events.SessionEvent) {
-		out := projector.Project(event)
-		live = append(live, notificationThreadItem(t, out, appwire.NotifyItemCompleted).TurnID)
+		live = append(live, notificationItemTurnID(t, projector.Project(event), appwire.NotifyItemCompleted))
 	}
 	project(events.SessionEvent{Kind: events.EventEnvironment, SessionID: "th_1", Data: events.EnvironmentData{Text: "env block", TurnID: "turn_env_stable"}})
 	// No id on the event: the reservation is what names this turn, which is
