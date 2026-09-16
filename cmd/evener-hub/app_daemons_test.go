@@ -68,7 +68,7 @@ func TestListDaemonsRetireRequiresStrongOwnership(t *testing.T) {
 	})
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
-	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster}
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster}
 
 	restore := setRetireOwnershipCapability(nil)
 	t.Cleanup(restore)
@@ -112,6 +112,73 @@ func TestListDaemonsRetireRequiresStrongOwnership(t *testing.T) {
 	})
 }
 
+// TestListDaemonsRetireRequiresConfiguredPrerequisites pins the Low finding:
+// listDaemons must advertise Retire only when the action it names can succeed.
+// retireDaemon refuses outright when RunDir is empty or ResumeLocks is nil, so
+// a resident inventory built without them must report CanRetire:false — even on
+// a platform whose strong ownership contract is available. A fully configured
+// inventory must still report CanRetire:true, so this is not a blanket disable.
+func TestListDaemonsRetireRequiresConfiguredPrerequisites(t *testing.T) {
+	runDir := t.TempDir()
+	entry := residentEntryForTest(t, 6201)
+	writeRendezvous(t, runDir, entry)
+	prober := forceStopProberFunc(func(e rendezvous.Entry) hubcore.ProbeResult {
+		return hubcore.ProbeResult{
+			OK: true, SessionID: e.SessionID, Status: "idle",
+			Lifecycle: residentLifecycleForTest(), LifecycleFresh: true,
+		}
+	})
+	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
+	roster.Refresh()
+
+	restore := setRetireOwnershipCapability(func() bool { return true })
+	t.Cleanup(restore)
+
+	for _, tc := range []struct {
+		name string
+		cfg  hubcore.WebConfig
+		want bool
+	}{
+		{
+			name: "configured reports retire",
+			cfg:  hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster},
+			want: true,
+		},
+		{
+			name: "missing run dir reports no retire",
+			cfg:  hubcore.WebConfig{ResumeLocks: hubcore.NewResumeLocks(), Roster: roster},
+			want: false,
+		},
+		{
+			name: "missing resume locks reports no retire",
+			cfg:  hubcore.WebConfig{RunDir: runDir, Roster: roster},
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			list, err := listDaemons(t.Context(), tc.cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Daemons) != 1 {
+				t.Fatalf("rows=%d, want 1", len(list.Daemons))
+			}
+			if got := list.Daemons[0].CanRetire; got != tc.want {
+				t.Fatalf("CanRetire=%v, want %v", got, tc.want)
+			}
+			if !tc.want {
+				// The inventory must agree with what the action itself answers:
+				// retireDaemon refuses before touching any state here.
+				if _, retireErr := retireDaemon(t.Context(), tc.cfg, nil, appwire.DaemonRetireParams{
+					Identity: appwire.DaemonIdentity{Ref: localAppRef(entry.SessionID)},
+				}); retireErr == nil {
+					t.Fatal("retire answered success on a configuration the inventory disabled")
+				}
+			}
+		})
+	}
+}
+
 func TestDaemonIdentityChangesWithReplacement(t *testing.T) {
 	first := residentEntryForTest(t, 101)
 	second := first
@@ -149,7 +216,7 @@ func TestListDaemonsStaleProbeOffersNoRetireAfterFailure(t *testing.T) {
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
 
-	cfg := hubcore.WebConfig{RunDir: runDir, Roster: roster}
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: hubcore.NewResumeLocks(), Roster: roster}
 	list, err := listDaemons(t.Context(), cfg)
 	if err != nil {
 		t.Fatal(err)

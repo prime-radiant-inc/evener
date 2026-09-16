@@ -119,11 +119,14 @@ func listDaemons(_ context.Context, cfg hubcore.WebConfig) (appwire.DaemonListRe
 	// recovery locks exist. Protocol compatibility does not gate it: force
 	// stop verifies the process locally and supports older-protocol daemons.
 	canForceStop := cfg.RunDir != "" && cfg.ResumeLocks != nil
-	// Safe retire additionally needs the daemon's kernel-serialized ownership
+	// Safe retire runs through the same configured ownership path as force
+	// stop (retireDaemon refuses outright when RunDir is empty or ResumeLocks
+	// is nil), and additionally needs the daemon's kernel-serialized ownership
 	// contract: where it is unavailable the daemon refuses retirement outright
-	// (cmd/evener/serve.go), so the inventory must not offer an action the
-	// server always rejects.
-	canRetire := strongOwnershipAvailable()
+	// (cmd/evener/serve.go). The inventory must not offer an action the server
+	// always rejects, so derive retire from exactly those prerequisites rather
+	// than repeating them.
+	canRetire := canForceStop && strongOwnershipAvailable()
 	response := appwire.DaemonListResponse{
 		DefaultTimeoutMillis: appwire.DurationMillis(cfg.DaemonIdleTimeout),
 		Daemons:              []appwire.DaemonResident{},
