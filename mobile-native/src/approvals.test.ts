@@ -332,6 +332,9 @@ describe("approval decisions", () => {
   });
 });
 
+// A resolution delivered while a reread is in flight precedes that reread's
+// response, and AppWire cuts the snapshot after it: the response arrives
+// without the card, and the store commits that snapshot as authoritative.
 it("does not resurrect an approval resolved while an older snapshot is in flight", async () => {
   const base = boundary();
   let reads = 0;
@@ -347,13 +350,16 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
         ref: "local:s",
         includeTurns: true,
       });
-      if (++reads === 2) {
-        started();
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-      return response;
+      if (++reads !== 2) return response;
+      started();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const thread = response.thread;
+      return {
+        ...response,
+        thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
+      };
     },
   } as unknown as ConversationClientLike;
   const service = createConversationService(client),
