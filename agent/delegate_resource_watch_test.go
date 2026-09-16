@@ -1305,6 +1305,7 @@ func newStableWatchRuntimeBase(t *testing.T, rootFS afero.Fs) *stableWatchRuntim
 		controllerStorePath: controllerStorePath,
 	}
 	t.Cleanup(func() {
+		requireNoRunningStopDriver(t, controller)
 		if fixture.sourceJM != nil {
 			_ = fixture.sourceJM.closeStoreOnly()
 		}
@@ -1312,6 +1313,25 @@ func newStableWatchRuntimeBase(t *testing.T, rootFS afero.Fs) *stableWatchRuntim
 		_ = fixture.root.closeAttachedTranscript()
 	})
 	return fixture
+}
+
+// requireNoRunningStopDriver fails the test when a subtree stop is still
+// pending at test end. Its reconcile driver (started by StopSubtreeAndDrive)
+// drains on context.Background and only exits once the stop completes, so a
+// pending stop leaks a goroutine into every later test of the binary (#1394).
+// A completed stop's driver is joined so it cannot outlive the test either.
+func requireNoRunningStopDriver(t *testing.T, controller *delegateTreeController) {
+	t.Helper()
+	controller.mu.Lock()
+	pending := controller.stop
+	controller.mu.Unlock()
+	if pending != nil {
+		t.Errorf("subtree stop of %q still pending at test end; settle it before returning", pending.targetID)
+		return
+	}
+	if _, err := controller.joinStopReconcileDriver(context.Background()); err != nil {
+		t.Errorf("stop reconcile driver: %v", err)
+	}
 }
 
 func seedBootstrapControllerJournal(t *testing.T, fixture *stableWatchRuntimeFixture) {
