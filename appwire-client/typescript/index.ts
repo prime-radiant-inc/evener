@@ -134,7 +134,7 @@ export type {
   HubOverviewState,
   HubOverviewStore,
 } from "./hubOverview";
-export { createHubOverviewStore, normalizeSettingsOverview } from "./hubOverview";
+export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
 export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";

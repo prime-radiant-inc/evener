@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { createHubOverviewStore, type HubOverviewClient, normalizeSettingsOverview } from "./hubOverview";
+import { createHubOverviewStore, type HubOverviewClient } from "./hubOverview";
+import { FakeClient } from "./testing/fakeClient";
 import type { SettingsOverviewResponse } from "./types.gen";
 
 const SAMPLE: SettingsOverviewResponse = {
@@ -8,23 +9,11 @@ const SAMPLE: SettingsOverviewResponse = {
   agents: [{ name: "default" }],
 };
 
-// A scripted client through the store's port: one handler, swapped between
-// calls, with every call recorded.
-function fakeClient(initial: () => Promise<SettingsOverviewResponse>) {
-  const calls: string[] = [];
-  let handler = initial;
-  const client: HubOverviewClient = {
-    request: ((method: string) => {
-      calls.push(method);
-      return handler();
-    }) as HubOverviewClient["request"],
-  };
-  return {
-    client,
-    calls,
-    respondWith(next: () => Promise<SettingsOverviewResponse>) {
-      handler = next;
-    },
+const OVERVIEW = "evener/settings/overview";
+
+function failing(message: string): () => never {
+  return () => {
+    throw new Error(message);
   };
 }
 
@@ -36,30 +25,33 @@ function pending() {
   return { promise, resolve };
 }
 
+function storeWithFake() {
+  const fake = new FakeClient("ready");
+  return { fake, store: createHubOverviewStore(fake) };
+}
+
 describe("store shape", () => {
   test("two stores share nothing: a load into one leaves the other at its initial state", async () => {
-    const first = createHubOverviewStore(fakeClient(async () => SAMPLE).client);
-    const second = createHubOverviewStore(
-      fakeClient(async () => {
-        throw new Error("boom");
-      }).client,
-    );
+    const first = storeWithFake();
+    first.fake.on(OVERVIEW, () => SAMPLE);
+    const second = storeWithFake();
+    second.fake.on(OVERVIEW, failing("boom"));
 
-    await first.getState().fetch();
-    expect(first.getState().data).toEqual(SAMPLE);
-    expect(second.getState()).toMatchObject({ data: null, loading: false, error: null });
+    await first.store.getState().fetch();
+    expect(first.store.getState().data).toEqual(SAMPLE);
+    expect(second.store.getState()).toMatchObject({ data: null, loading: false, error: null });
 
-    await second.getState().refresh();
-    expect(second.getState().error).toBe("boom");
-    expect(first.getState().error).toBeNull();
+    await second.store.getState().refresh();
+    expect(second.store.getState().error).toBe("boom");
+    expect(first.store.getState().error).toBeNull();
 
-    first.reset();
-    expect(first.getState().data).toBeNull();
-    expect(second.getState().error).toBe("boom");
+    first.store.reset();
+    expect(first.store.getState().data).toBeNull();
+    expect(second.store.getState().error).toBe("boom");
   });
 
   test("getInitialState is the state the store was created with, and setState notifies with new and previous", () => {
-    const store = createHubOverviewStore(fakeClient(async () => SAMPLE).client);
+    const { store } = storeWithFake();
     const initial = store.getInitialState();
     const seen: Array<[boolean, boolean]> = [];
     store.subscribe((state, previous) => seen.push([state.loading, previous.loading]));
@@ -73,13 +65,13 @@ describe("store shape", () => {
 });
 
 describe("fetch and refresh", () => {
-  test("fetch requests evener/settings/overview once and caches; refresh always re-requests", async () => {
-    const fake = fakeClient(async () => SAMPLE);
-    const store = createHubOverviewStore(fake.client);
+  test("fetch requests evener/settings/overview once with empty params and caches; refresh always re-requests", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => SAMPLE);
 
     await store.getState().fetch();
     await store.getState().fetch();
-    expect(fake.calls).toEqual(["evener/settings/overview"]);
+    expect(fake.calls).toEqual([{ method: OVERVIEW, params: {} }]);
     expect(store.getState()).toMatchObject({ data: SAMPLE, loading: false, error: null });
 
     await store.getState().refresh();
@@ -87,8 +79,8 @@ describe("fetch and refresh", () => {
   });
 
   test("concurrent callers share one in-flight request", async () => {
-    const fake = fakeClient(async () => SAMPLE);
-    const store = createHubOverviewStore(fake.client);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => SAMPLE);
 
     await Promise.all([store.getState().fetch(), store.getState().refresh(), store.getState().fetch()]);
 
@@ -97,7 +89,8 @@ describe("fetch and refresh", () => {
 
   test("loading is true while the request is in flight", async () => {
     const slow = pending();
-    const store = createHubOverviewStore(fakeClient(() => slow.promise).client);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => slow.promise);
 
     const read = store.getState().fetch();
     expect(store.getState().loading).toBe(true);
@@ -108,55 +101,47 @@ describe("fetch and refresh", () => {
   });
 
   test("a failed request keeps the last good data, surfaces the error text, and is retried by the next fetch", async () => {
-    const fake = fakeClient(async () => SAMPLE);
-    const store = createHubOverviewStore(fake.client);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => SAMPLE);
     await store.getState().fetch();
 
-    fake.respondWith(async () => {
-      throw new Error("network down");
-    });
+    fake.on(OVERVIEW, failing("network down"));
     await store.getState().refresh();
     expect(store.getState()).toMatchObject({ data: SAMPLE, loading: false, error: "network down" });
 
-    fake.respondWith(async () => ({ agents: [] }));
+    fake.on(OVERVIEW, () => ({ agents: [] }));
     await store.getState().refresh();
     expect(store.getState()).toMatchObject({ data: { agents: [] }, error: null });
   });
 
   test("a failure before any load leaves data null and is not cached", async () => {
-    const fake = fakeClient(async () => {
-      throw new Error("boom");
-    });
-    const store = createHubOverviewStore(fake.client);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, failing("boom"));
 
     await store.getState().fetch();
     expect(store.getState()).toMatchObject({ data: null, error: "boom" });
 
-    fake.respondWith(async () => SAMPLE);
+    fake.on(OVERVIEW, () => SAMPLE);
     await store.getState().fetch();
     expect(fake.calls).toHaveLength(2);
     expect(store.getState().data).toEqual(SAMPLE);
   });
 
   test("describeError decides the error text the store publishes", async () => {
-    const store = createHubOverviewStore(
-      fakeClient(async () => {
-        throw new Error("private internal detail");
-      }).client,
-      { describeError: () => "Could not refresh." },
-    );
+    const fake = new FakeClient("ready");
+    fake.on(OVERVIEW, failing("private internal detail"));
+    const store = createHubOverviewStore(fake, { describeError: () => "Could not refresh." });
 
     await store.getState().refresh();
 
     expect(store.getState().error).toBe("Could not refresh.");
   });
 
+  // The web hands in a port that resolves its connection store's current
+  // client and throws synchronously when there is none; FakeClient turns a
+  // synchronous throw into a rejection, so this one needs a raw port.
   test("a client that throws synchronously is reported like any other failure", async () => {
-    const client: HubOverviewClient = {
-      request: (() => {
-        throw new Error("no client connected");
-      }) as HubOverviewClient["request"],
-    };
+    const client: HubOverviewClient = { request: failing("no client connected") };
     const store = createHubOverviewStore(client);
 
     await store.getState().fetch();
@@ -167,9 +152,8 @@ describe("fetch and refresh", () => {
 
 describe("wire decoding", () => {
   test("omitted empty collections and zero counters decode to [] and 0; absent sections stay absent", async () => {
-    const store = createHubOverviewStore(
-      fakeClient(async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} })).client,
-    );
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }));
 
     await store.getState().refresh();
 
@@ -181,21 +165,26 @@ describe("wire decoding", () => {
     expect(store.getState().data?.storage).toBeUndefined();
   });
 
-  test("normalizeSettingsOverview leaves populated fields alone", () => {
+  test("populated collections and counters are left alone", async () => {
     const populated: SettingsOverviewResponse = {
       hub: { pastIndex: { path: "/index", count: 3, perPage: 20 } },
       mcpDiscovered: { servers: [{ name: "one" }] },
       agents: [{ name: "a" }],
     };
-    expect(normalizeSettingsOverview(populated)).toEqual(populated);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => populated);
+
+    await store.getState().refresh();
+
+    expect(store.getState().data).toEqual(populated);
   });
 });
 
 describe("reset and dispose", () => {
   test("reset returns to the initial state, drops the in-flight result and lets the next fetch request again", async () => {
     const slow = pending();
-    const fake = fakeClient(() => slow.promise);
-    const store = createHubOverviewStore(fake.client);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => slow.promise);
 
     const read = store.getState().fetch();
     store.reset();
@@ -205,7 +194,7 @@ describe("reset and dispose", () => {
     await read;
     expect(store.getState().data).toBeNull();
 
-    fake.respondWith(async () => SAMPLE);
+    fake.on(OVERVIEW, () => SAMPLE);
     await store.getState().fetch();
     expect(fake.calls).toHaveLength(2);
     expect(store.getState().data).toEqual(SAMPLE);
@@ -213,8 +202,8 @@ describe("reset and dispose", () => {
 
   test("dispose ignores the pending response, silences subscribers and refuses further reads", async () => {
     const slow = pending();
-    const fake = fakeClient(() => slow.promise);
-    const store = createHubOverviewStore(fake.client);
+    const { fake, store } = storeWithFake();
+    fake.on(OVERVIEW, () => slow.promise);
     let updates = 0;
     store.subscribe(() => {
       updates += 1;

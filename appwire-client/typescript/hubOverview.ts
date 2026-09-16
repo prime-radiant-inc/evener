@@ -66,7 +66,7 @@ export interface HubOverviewOptions {
 /** Go's omitempty encodes empty slices and zero counters as absent fields;
  * this puts the [] and 0 back so readers need no per-field fallback. Sections
  * the hub did not send (storage, mcpDiscovered, pastIndex) stay absent. */
-export function normalizeSettingsOverview(data: SettingsOverviewResponse): SettingsOverviewResponse {
+function normalizeSettingsOverview(data: SettingsOverviewResponse): SettingsOverviewResponse {
   const normalized: SettingsOverviewResponse = { ...data, agents: data.agents ?? [] };
   if (data.mcpDiscovered) {
     normalized.mcpDiscovered = { ...data.mcpDiscovered, servers: data.mcpDiscovered.servers ?? [] };
