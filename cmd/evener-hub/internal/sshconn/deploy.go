@@ -267,6 +267,17 @@ func declaresEvenerModule(dir string) bool {
 	return false
 }
 
+// errControllerDirty marks a deploy refused because this controller was built
+// from a dirty tree. Such a build has no reproducible identity: the push path
+// refuses to compile a tree it cannot prove matches this process
+// (verifyBuildRevision), the installer fallback has no published artifact to pin
+// (installerRefFor), and version auto-match cannot prove a host reporting the
+// same "<sha>-dirty" names the same code. The refusal is terminal rather than
+// ErrDeploy: the same install can never succeed by being retried, and a
+// supervisor that retried it cross-compiled forever while the host was never
+// attached (round thirteen).
+var errControllerDirty = errors.New("sshconn: controller build is a dirty tree")
+
 // deploy installs a matching build on the host. The cross-compile + push path is
 // primary when a build source is configured; otherwise the installer fallback
 // runs on the host. It returns the resolved run target the manager must record as
@@ -275,6 +286,18 @@ func declaresEvenerModule(dir string) bool {
 // attach paths address the binary that was actually installed instead of a bare
 // `evener` a fresh host's non-interactive PATH may not carry.
 func (m *Manager) deploy(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
+	// A dirty controller can neither install its own build nor verify a host's.
+	// deployRequired forces this deploy for an unverifiable version (a dirty
+	// "<sha>-dirty" is not an identity: another dirty checkout at the same commit
+	// reports it too), and attaching instead of deploying would silently serve a
+	// build version auto-match cannot verify. Refuse terminally, naming the
+	// cause: retrying is what turned this refusal into an endless cross-compile,
+	// because every attempt failed as a retryable ErrDeploy and markDevDeployed
+	// was never reached.
+	if version := m.opts.controllerVersion(); isDirtyVersion(version) {
+		return "", fmt.Errorf("%w: host %q: this controller was built from a dirty tree (version %q), so it cannot install its own build (a dirty tree cannot be reproduced from a checkout, and the installer fallback has no published artifact to pin) or prove that a host's build matches it; rebuild the controller from a clean checkout",
+			errControllerDirty, host.Name, version)
+	}
 	if m.canBuild() {
 		return m.deployPush(ctx, host, facts)
 	}
@@ -330,9 +353,17 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 
 // deployTarget resolves the absolute remote path the binary is installed to:
 // the registry's evener_path when set (whose directory must already exist),
-// otherwise whatever `evener` resolves to on the remote PATH, else the
-// installer's default ~/.local/bin/evener. A not-yet-installed file is a
-// creatable target, so a push deploy can provision a fresh host.
+// otherwise the executable the running hub was launched from (when the installer
+// ships that basename), else whatever `evener` resolves to on the remote PATH,
+// else the installer's default ~/.local/bin/evener. A not-yet-installed file is
+// a creatable target, so a push deploy can provision a fresh host.
+//
+// The running hub's own executable comes first because a push to any other file
+// leaves the upgrade inert: the restart path proves the recovered hub executable
+// is the target it is about to relaunch (hubExecutableMatches), refuses to
+// restart a hub running a different binary, and the on-disk target already
+// matches — so the deploy/restart pair loops forever. deployInstaller preserves
+// the same location (existingInstallableEvener); this is the push path's half.
 func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		dir := path.Dir(p)
@@ -348,14 +379,19 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Pre
 		return m.resolveDeployOrCreateTarget(ctx, host, p)
 	}
 
+	if p := m.currentHubExecutableName(ctx, host); installableEvenerBasename(p) {
+		return m.resolveDeployOrCreateTarget(ctx, host, p)
+	}
+
 	p, err := m.evenerOnPath(ctx, host)
 	if err != nil {
 		return "", err
 	}
 	if p == "" {
-		// No evener on the non-interactive PATH either. Fall back to the
-		// installer's own default location and create its directory, so a push
-		// deploy can still bring up a host that has no evener installed at all.
+		// No running hub and no evener on the non-interactive PATH either. Fall
+		// back to the installer's own default location and create its directory,
+		// so a push deploy can still bring up a host that has no evener installed
+		// at all.
 		home := strings.TrimSpace(facts.Home)
 		if home == "" {
 			return "", fmt.Errorf("%w: host %q has no evener_path, no evener on PATH, and preflight found no HOME to resolve the installer default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)

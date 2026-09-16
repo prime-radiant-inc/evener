@@ -393,6 +393,12 @@ func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
 type pendingRestartState struct {
 	command  string
 	replaced hubIdentity
+	// start records that this command STARTS a hub where none was serving (the
+	// bootstrap path, which refuses to run while a listener holds the address)
+	// rather than replacing a process. A recovered start has no predecessor to
+	// exclude, so its health verification accepts the expected version alone; a
+	// recovered replacement must still prove it replaced the process it recorded.
+	start bool
 }
 
 // New builds a Manager over reg's validated hosts. opts.Runner defaults to the
@@ -1056,12 +1062,12 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		if remote, ok := sup.startRemote(facts.UID); ok {
 			// kickstart -k / start both bring the unit up; the recorded pending
 			// restart keeps the start recoverable if this attempt is interrupted.
-			m.setPendingRestart(host.Name, remote, hubIdentity{})
+			m.setPendingStart(host.Name, remote)
 			out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
 			if runErr != nil && !sup.restartStatusIsAdvisory() {
 				return fmt.Errorf("%w: host %q %s: %w: %s", ErrRestart, host.Name, remote, runErr, tail(out))
 			}
-			if err := m.waitHealthy(ctx, host, expected, hubIdentity{}); err != nil {
+			if err := m.waitStartedHealthy(ctx, host, expected); err != nil {
 				return err
 			}
 			m.clearPendingRestart(host.Name)
@@ -1076,12 +1082,12 @@ func (m *Manager) bootstrapHub(ctx context.Context, host hostreg.Host, facts Pre
 		return err
 	}
 	relaunch := relaunchCommand(hubBootstrapArgv(m.opts, host, target), "")
-	m.setPendingRestart(host.Name, relaunch, hubIdentity{})
+	m.setPendingStart(host.Name, relaunch)
 	out, runErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, relaunch), nil)
 	if runErr != nil {
 		return fmt.Errorf("%w: host %q bootstrap launch: %w: %s", ErrRestart, host.Name, runErr, tail(out))
 	}
-	if err := m.waitHealthy(ctx, host, expected, hubIdentity{}); err != nil {
+	if err := m.waitStartedHealthy(ctx, host, expected); err != nil {
 		return err
 	}
 	m.clearPendingRestart(host.Name)
@@ -1108,6 +1114,11 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
+	// A DIRTY controller with a deploy configured cannot install anything (deploy
+	// refuses it terminally: see errControllerDirty), so the force below is what
+	// keeps it from attaching to a host whose code equality cannot prove; the
+	// refusal is terminal rather than a retryable ErrDeploy, so the same forced
+	// deploy cannot become an endless cross-compile.
 	deployPossible := m.canDeploy()
 	devUnverified := isUnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
@@ -1601,6 +1612,7 @@ func isTerminal(err error) bool {
 		errors.Is(err, ErrHostAddr),
 		errors.Is(err, ErrPreflightDecode),
 		errors.Is(err, errExecutableMissing),
+		errors.Is(err, errControllerDirty),
 		errors.Is(err, ErrManagerClosed):
 		return true
 	default:
@@ -1749,6 +1761,12 @@ func (m *Manager) canBuild() bool {
 // can pin a published artifact for this controller's build channel. A dev/dirty
 // controller with no build source has neither, so it cannot resolve a version
 // difference and ensureOnce refuses it terminally.
+//
+// This answers "is a deploy path configured", not "will the configured path
+// accept this build": a dirty controller with a build source reaches deploy,
+// which refuses it terminally (errControllerDirty) instead of returning false
+// here — returning false would let the decision ladder attach to a host whose
+// code equality the dirty version cannot prove.
 func (m *Manager) canDeploy() bool {
 	if m.canBuild() {
 		return true
@@ -1825,6 +1843,15 @@ func (m *Manager) setPendingRestart(name, remote string, replaced hubIdentity) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.pendingRestarts[name] = pendingRestartState{command: remote, replaced: replaced}
+}
+
+// setPendingStart records a command that starts a hub where nothing was
+// serving. It is the bootstrap path's recording: there is no predecessor
+// identity to settle, and a later recovery must not require one.
+func (m *Manager) setPendingStart(name, remote string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.pendingRestarts[name] = pendingRestartState{command: remote, start: true}
 }
 
 func (m *Manager) clearPendingRestart(name string) {

@@ -352,8 +352,13 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 			func(int) ([]byte, error) {
 				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
 			},
-			func(int) ([]byte, error) {
-				return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			func(call int) ([]byte, error) {
+				// A real hub always reports started_at (cmd/evener-hub/web_api.go
+				// handleAPIHealth). The pre-restart probe (call 0) and the answers
+				// after the restart carry different start times, which is what lets
+				// a "dev" restart be verified as a replacement (round thirteen).
+				return []byte(fmt.Sprintf(`{"version":"dev","started_at":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
+					time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -385,8 +390,11 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 				}
 				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
 			},
-			func(int) ([]byte, error) {
-				return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			func(call int) ([]byte, error) {
+				// As above: the hub reports a start time, and the restarted process
+				// reports a different one.
+				return []byte(fmt.Sprintf(`{"version":"dev","started_at":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
+					time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{

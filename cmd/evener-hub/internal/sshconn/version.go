@@ -489,16 +489,23 @@ func systemdUserBusAbsent(out []byte) bool {
 // proves no user unit can be running and falls through as well
 // (systemdUserBusAbsent). An ambiguous listing is fatal, not a fallback.
 //
-// The user listing is consulted only when the system listing named no evener hub
-// unit at all. A headless host reached over non-interactive ssh exports no
+// The user listing is consulted whenever the system listing named no LIVE evener
+// hub unit — no unit at all, or only a loaded-but-inactive one. A headless host
+// reached over non-interactive ssh exports no
 // XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS, so `systemctl --user list-units`
 // exits nonzero with "Failed to connect to bus: ...", which matches none of
 // supervisorListingAbsent's markers; running it unconditionally aborted the
 // restart with ErrRestart even though the system listing had already found the
-// hub's unit, so version auto-match could never repair such a host. When the
-// system listing named no unit either, the same failure is the user bus being
-// absent, and refusing there would strand every headless host that has no
-// system unit — including one this controller is trying to provision.
+// hub's unit, so version auto-match could never repair such a host. A LIVE
+// system unit therefore settles the host and the query is skipped for it. An
+// inactive system unit does not: a RUNNING user unit is the hub serving the
+// host, and skipping the query whenever any system unit existed misidentified
+// it as the inactive system unit and restarted the wrong one.
+// detectSupervisorsFrom gives the live user unit precedence over the dormant
+// system one, so precedence stays live-before-dormant either way. An absent user
+// bus proves no user unit can be running and falls through to the system answer
+// (systemdUserBusAbsent), which is what keeps a headless host with no live
+// system unit repairable instead of refusing it forever.
 func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts Preflight) (supervisorSet, error) {
 	switch facts.OS {
 	case "darwin":
@@ -516,7 +523,7 @@ func (m *Manager) detectSupervisor(ctx context.Context, host hostreg.Host, facts
 			sysOut = nil
 		}
 		var userOut []byte
-		if live, dormant := parseSystemdHubs(sysOut); len(live) == 0 && len(dormant) == 0 {
+		if live, _ := parseSystemdHubs(sysOut); len(live) == 0 {
 			out, userErr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, systemctlListUnitsUser), nil)
 			if userErr != nil {
 				if !supervisorListingAbsent(out) && !systemdUserBusAbsent(out) {
@@ -627,8 +634,20 @@ func (m *Manager) recoverRestart(ctx context.Context, host hostreg.Host, pending
 	if err != nil {
 		return fmt.Errorf("%w: host %q restart recovery: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
-	if err := m.waitHealthy(ctx, host, m.opts.controllerVersion(), pending.replaced); err != nil {
-		return err
+	expected := m.opts.controllerVersion()
+	// A recorded START has no predecessor to exclude (bootstrapHub only starts a
+	// hub where nothing was serving), so the expected version alone decides. A
+	// recorded REPLACEMENT must still prove the process that answers is different
+	// from the one it recorded: for an unverifiable version an unknown start time
+	// on either side proves nothing, and the restart stays pending.
+	var waitErr error
+	if pending.start {
+		waitErr = m.waitStartedHealthy(ctx, host, expected)
+	} else {
+		waitErr = m.waitHealthy(ctx, host, expected, pending.replaced)
+	}
+	if waitErr != nil {
+		return waitErr
 	}
 	m.clearPendingRestart(host.Name)
 	return nil
@@ -906,24 +925,49 @@ func (m *Manager) hubListenerAddrs(ctx context.Context, host hostreg.Host, pid, 
 }
 
 // listenerOwnsAddr reports whether a local listening address owns the configured
-// endpoint: the same normalized host:port, or a wildcard bind (which serves every
-// local address) on the same port. Comparing the full address, not the port
-// alone, is what stops a hub on 127.0.0.1:9180 being killed for a host
-// configured for 127.0.0.2:9180.
+// endpoint: the same normalized host:port, or a wildcard bind on the same port.
+// Comparing the full address, not the port alone, is what stops a hub on
+// 127.0.0.1:9180 being killed for a host configured for 127.0.0.2:9180. The
+// wildcard's ADDRESS FAMILY is part of that comparison: an IPv4 wildcard
+// (0.0.0.0) serves no IPv6 address, and an IPv6 wildcard (::) serves IPv6
+// addresses only — whether it also accepts IPv4-mapped traffic depends on the
+// socket's IPV6_V6ONLY setting, which neither lsof nor ss reports, so a listener
+// that may be IPv6-only is never read as owning an IPv4 endpoint. lsof spells
+// every wildcard bind "*" without naming its family, so that spelling keeps its
+// existing meaning (owns the endpoint on the port, whichever family it is).
 func listenerOwnsAddr(local, configured string) bool {
 	lh, lp, err := net.SplitHostPort(local)
 	if err != nil {
 		return false
 	}
-	_, cp, err := net.SplitHostPort(configured)
+	ch, cp, err := net.SplitHostPort(configured)
 	if err != nil || lp != cp {
 		return false
 	}
 	switch lh {
-	case "", "*", "0.0.0.0", "::":
+	case "", "*":
 		return true
+	case "0.0.0.0":
+		return hostIsIPv4(ch)
+	case "::":
+		return hostIsIPv6(ch)
 	}
 	return loopbackAddr(local) == loopbackAddr(configured)
+}
+
+// hostIsIPv4 reports whether host is an IPv4 address, including the
+// IPv4-mapped IPv6 spelling the kernel's tables can produce.
+func hostIsIPv4(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() != nil
+}
+
+// hostIsIPv6 reports whether host is an IPv6 address that is not an IPv4
+// address: an IPv4-mapped spelling names an IPv4 endpoint and belongs to the
+// other family.
+func hostIsIPv6(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
 }
 
 // findHubPID returns the single pid listening on the hub's port. There is no
@@ -1075,11 +1119,39 @@ func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubId
 // but only the expected version proves the *deployed* build is the one running.
 // Accepting a bare healthy response would mask a failed restart (the old hub
 // still answering) and could attach to the dying old process during its
-// shutdown drain, tearing down the fresh channel. replaced is the pre-restart
-// hub identity: an answer that is provably that same process is never accepted,
-// because a non-unique version ("dev") would otherwise let a restart that never
-// took look like success.
+// shutdown drain, tearing down the fresh channel.
+//
+// replaced is the identity of the hub process the restart expects to have
+// replaced. A stamped version is a content identity, so an answer reporting it
+// proves the deployed build is serving and only a provably unchanged process
+// (sameProcessAs) is refused. "dev" and a dirty "<sha>-dirty" are NOT identities:
+// two builds report them, so equality proves nothing about the code and the
+// answer must PROVE it is a different process than the one replaced — both start
+// times known and different (differentProcessFrom, the strict rule the
+// pending-restart settle path in ensureOnce already uses). A start time missing
+// on either side proves nothing, so such an answer is never accepted: the
+// restart is left unresolved and retried instead of being read as a replacement.
+// waitStartedHealthy is the same wait for a hub this Manager STARTS.
 func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string, replaced hubIdentity) error {
+	return m.waitForHealthyHub(ctx, host, expectedVersion, replaced, true)
+}
+
+// waitStartedHealthy verifies a hub this Manager started where nothing was
+// serving: the bootstrap start, and a pending command bootstrapHub recorded. It
+// deliberately has no predecessor: bootstrapHub refuses to start anything while
+// a listener holds the address, so there is no process whose survival could
+// satisfy the wait, and the expected version alone is the proof a start can
+// offer. The exception belongs to the start paths only — a restart whose
+// predecessor identity is unknown must fail closed (see waitHealthy), or an old
+// process whose health body carries no started_at would satisfy it.
+func (m *Manager) waitStartedHealthy(ctx context.Context, host hostreg.Host, expectedVersion string) error {
+	return m.waitForHealthyHub(ctx, host, expectedVersion, hubIdentity{}, false)
+}
+
+// waitForHealthyHub is the shared poll behind waitHealthy and
+// waitStartedHealthy. replacing says whether the wait verifies a REPLACEMENT (a
+// restart) rather than a start where nothing was serving.
+func (m *Manager) waitForHealthyHub(ctx context.Context, host hostreg.Host, expectedVersion string, replaced hubIdentity, replacing bool) error {
 	port := hubPort(m.hostAddr(host))
 	addr := m.hostAddr(host)
 	remote := hubHealthRemote(addr)
@@ -1087,10 +1159,10 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
 			if got, ok := parseHubHealth(out, addr); ok {
-				if got.version == expectedVersion && !got.sameProcessAs(replaced) {
+				last = got
+				if got.version == expectedVersion && hubAnswerProvesReplacement(got, replaced, expectedVersion, replacing) {
 					return nil
 				}
-				last = got
 			}
 		}
 		if err := m.opts.waitSleep(ctx, restartHealthInterval); err != nil {
@@ -1102,9 +1174,42 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 			return fmt.Errorf("%w: host %q hub on :%s is still the pre-restart process (started %s, version %q); the restart did not take",
 				ErrRestart, host.Name, port, last.startedAt.Format(time.RFC3339Nano), last.version)
 		}
+		if replacing && last.version == expectedVersion && isUnverifiableVersion(expectedVersion) {
+			// The version matched, but the identity did not prove a replacement:
+			// a "dev"/dirty version names no code, and either the pre-restart
+			// identity or this answer carries no start time, which proves nothing
+			// either way.
+			return fmt.Errorf("%w: host %q hub on :%s reports the expected version %q but not a provably different process (pre-restart: %s; answer: %s); the restart is unverified",
+				ErrRestart, host.Name, port, expectedVersion, describeHubIdentity(replaced), describeHubIdentity(last))
+		}
 		return fmt.Errorf("%w: host %q hub on :%s reports version %q, want %q after restart", ErrRestart, host.Name, port, last.version, expectedVersion)
 	}
 	return fmt.Errorf("%w: host %q hub not healthy on :%s after restart", ErrRestart, host.Name, port)
+}
+
+// hubAnswerProvesReplacement reports whether an answer carrying expectedVersion
+// proves the hub serving it is the outcome a wait needs. For a stamped version,
+// equality is a content identity and only a provably unchanged process is
+// refused. For an unverifiable version ("dev", a dirty "<sha>-dirty") the answer
+// must be provably a different process than the one replaced — both start times
+// known and different — except for a start, which has no predecessor to exclude.
+func hubAnswerProvesReplacement(got, replaced hubIdentity, expectedVersion string, replacing bool) bool {
+	if !isUnverifiableVersion(expectedVersion) {
+		return !got.sameProcessAs(replaced)
+	}
+	if !replacing {
+		return true
+	}
+	return got.differentProcessFrom(replaced)
+}
+
+// describeHubIdentity renders an identity for a diagnostic. A health body
+// without started_at is named as such rather than printed as a zero timestamp.
+func describeHubIdentity(h hubIdentity) string {
+	if h.startedAt.IsZero() {
+		return fmt.Sprintf("version %q, start time unknown", h.version)
+	}
+	return fmt.Sprintf("version %q, started %s", h.version, h.startedAt.Format(time.RFC3339Nano))
 }
 
 // parseHubHealth reads the running hub's identity from a /api/health body. A

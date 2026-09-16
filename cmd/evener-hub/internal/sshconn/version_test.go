@@ -2161,8 +2161,14 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 		func(int) ([]byte, error) {
 			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
 		},
-		func(int) ([]byte, error) {
-			return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		func(call int) ([]byte, error) {
+			// A real hub always reports started_at (cmd/evener-hub/web_api.go
+			// handleAPIHealth); the pre-restart probe (call 0) and the post-restart
+			// answers carry different start times, so the "dev" restart below is
+			// verified as a replacement rather than read as the old process
+			// (round thirteen).
+			return []byte(fmt.Sprintf(`{"version":"dev","started_at":%q,"mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`,
+				time.Date(2026, 1, 1, 0, call, 0, 0, time.UTC).Format(time.RFC3339))), nil
 		},
 	)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
@@ -2922,17 +2928,24 @@ func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 // none of supervisorListingAbsent's markers — even though the system listing had
 // already named the hub's unit. ErrRestart is non-terminal, so the supervisor
 // retried forever and the host stayed on the old build, silently defeating
-// version auto-match. Before the fix both cases failed with ErrRestart; now the
-// system listing settles the host and the user listing is never consulted.
+// version auto-match.
+//
+// Round thirteen narrowed "the system listing settled the host" to a LIVE system
+// unit: an inactive system unit is only a candidate, because a running USER unit
+// is the hub actually serving the host (detectSupervisor now consults the user
+// listing in that case). An unavailable user bus still falls through to the
+// system answer — the property this test has always pinned — so a headless host
+// whose hub unit is merely stopped stays repairable.
 func TestDetectSupervisorResolvesFromTheSystemListingWithoutAUserBus(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	busErr := errors.New("exit status 1")
 	busOut := []byte("Failed to connect to bus: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined (consider using --machine=@.host --user to connect to the system bus of the host)\n")
 
 	cases := []struct {
-		name string
-		sys  []byte
-		want supervisorSet
+		name      string
+		sys       []byte
+		want      supervisorSet
+		wantUserQ bool
 	}{
 		{
 			name: "running system unit",
@@ -2940,9 +2953,10 @@ func TestDetectSupervisorResolvesFromTheSystemListingWithoutAUserBus(t *testing.
 			want: supervisorSet{live: supervisor{supervisorSystemd, "evener-hub.service"}},
 		},
 		{
-			name: "inactive system unit",
-			sys:  []byte("evener-hub.service loaded inactive dead Evener Hub\n"),
-			want: supervisorSet{dormant: supervisor{supervisorSystemd, "evener-hub.service"}},
+			name:      "inactive system unit",
+			sys:       []byte("evener-hub.service loaded inactive dead Evener Hub\n"),
+			want:      supervisorSet{dormant: supervisor{supervisorSystemd, "evener-hub.service"}},
+			wantUserQ: true,
 		},
 	}
 	for _, tc := range cases {
@@ -2973,8 +2987,11 @@ func TestDetectSupervisorResolvesFromTheSystemListingWithoutAUserBus(t *testing.
 			if got != tc.want {
 				t.Fatalf("detectSupervisor = %+v, want %+v", got, tc.want)
 			}
-			if userListed {
-				t.Fatal("the user listing was consulted although the system listing named an evener hub unit")
+			if userListed != tc.wantUserQ {
+				if tc.wantUserQ {
+					t.Fatal("an INACTIVE system unit settled the host: a running user unit would have been missed (round thirteen)")
+				}
+				t.Fatal("the user listing was consulted although the system listing named a LIVE evener hub unit")
 			}
 		})
 	}
