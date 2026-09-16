@@ -56,7 +56,15 @@ function renderSheet(
 ) {
   const handlers = noopHandlers();
   const onClose = vi.fn();
-  credentialsStore.setState({ instances: inst === null ? [] : [inst], availableProviders: providers });
+  // The section has these rows on screen because it read them on the
+  // connection the store would write to now: seeding them with the stale mark
+  // still set would describe a replaced connection, which is not the state
+  // these tests are about - and the store refuses writes issued from one.
+  credentialsStore.setState({
+    instances: inst === null ? [] : [inst],
+    availableProviders: providers,
+    listingFromPreviousConnection: false,
+  });
   const tree = (name: string | null) => (
     <>
       <Toast />

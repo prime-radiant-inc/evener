@@ -48,6 +48,28 @@ function requireClient(): AppwireClientLike {
   return client;
 }
 
+// Writes go through this: while the store still holds the previous
+// connection's listing (see listingFromPreviousConnection above), the rows on
+// screen name instances and endpoints of a connection that is gone, and a
+// write issued from them would be submitted to a connection that never read
+// them - an editor's captured endpoint fingerprint, an instance name, a
+// default flag all describe the old listing. Refused until this connection's
+// own read lands; reads stay available, and a read is what clears the mark.
+//
+// What is refused is a write from a listing that is HELD: a connection that
+// has not read one yet (a fresh client, or a view that never asked for one)
+// has nothing stale on screen to act on, and its writes run as they always
+// have.
+function requireWritableClient(): AppwireClientLike {
+  const client = requireClient();
+  const state = credentialsStore.getState();
+  const holdsListing = state.instances.length > 0 || state.availableProviders.length > 0;
+  if (state.listingFromPreviousConnection && holdsListing) {
+    throw new Error("credentials store: the connection was replaced and its listing has not arrived yet");
+  }
+  return client;
+}
+
 export interface CredentialsStoreState {
   instances: InstanceEntry[];
   availableProviders: ProviderDescriptor[];
@@ -60,6 +82,18 @@ export interface CredentialsStoreState {
   writesRefused: boolean;
   loading: boolean;
   error: string | null;
+  // True while `instances` holds a listing that was NOT read on the
+  // connection the store would write to now: a replaced or reconnected
+  // client leaves the previous connection's rows on screen until its own
+  // read lands (readListing discards a response read through a client that
+  // is no longer wired), and those rows name instances and endpoints of a
+  // connection that is gone. Consumers gate the actions that would act on
+  // such a listing on this flag, not on `loading`: every listing read sets
+  // `loading`, including a same-connection refresh whose rows still belong
+  // to the user, and a control that goes disabled under the keyboard's own
+  // focus drops focus to <body> (the credential dialog's rows are that
+  // dialog's focus targets).
+  listingFromPreviousConnection: boolean;
   // A marker that changes ONLY when a state transition came from the store's
   // own post-mutation refresh (see the auth wrappers below). Subscriptions
   // that watch for unrelated changes compare it across a transition to tell
@@ -154,7 +188,16 @@ async function applyMutation(request: () => Promise<InstanceListResponse>): Prom
   try {
     const response = await request();
     if (version !== requestVersion) return false;
-    credentialsStore.setState({ ...listState(response), loading: false, error: null });
+    // The mutation ran on the connection the store is wired to now (a request
+    // left over from a replaced one is discarded by the version guard above),
+    // so the listing it answered with is this connection's - the same claim a
+    // read through the current client makes, and it clears the same mark.
+    credentialsStore.setState({
+      ...listState(response),
+      loading: false,
+      error: null,
+      listingFromPreviousConnection: false,
+    });
     return true;
   } finally {
     if (version === requestVersion) credentialsStore.setState({ loading: false });
@@ -180,7 +223,12 @@ async function readListing(self: boolean): Promise<boolean> {
   try {
     const resp = await client.request("evener/instance/list", {});
     if (version !== requestVersion || connectionStore.getState().client !== client) return false;
-    credentialsStore.setState({ ...listState(resp), loading: false, ...mark() });
+    credentialsStore.setState({
+      ...listState(resp),
+      loading: false,
+      listingFromPreviousConnection: false,
+      ...mark(),
+    });
     return true;
   } catch (err) {
     if (version !== requestVersion || connectionStore.getState().client !== client) return false;
@@ -194,6 +242,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   loading: false,
   error: null,
   selfRefresh: 0,
+  listingFromPreviousConnection: false,
 
   async fetch() {
     return readListing(false);
@@ -204,17 +253,17 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async create(params) {
-    const client = requireClient();
+    const client = requireWritableClient();
     return applyMutation(() => client.request("evener/instance/create", params));
   },
 
   async edit(params) {
-    const client = requireClient();
+    const client = requireWritableClient();
     return applyMutation(() => client.request("evener/instance/edit", params));
   },
 
   async remove(name, expectedEndpointFingerprint) {
-    const client = requireClient();
+    const client = requireWritableClient();
     return applyMutation(() =>
       client.request("evener/instance/remove", {
         name,
@@ -224,7 +273,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async setDefault(name) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const applied = await applyMutation(() => client.request("evener/instance/setDefault", { name }));
     // A superseded response lost the store's ordering race: the read that won it
     // may have started before the hub applied the new default, so the listing
@@ -236,7 +285,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async setApiKey(provider, value, expectedEndpointFingerprint) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
@@ -264,7 +313,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async setCredentialJson(provider, value, expectedEndpointFingerprint) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
@@ -285,7 +334,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async clearStoredKey(provider, expectedEndpointFingerprint) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
@@ -305,7 +354,7 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async logout(provider, expectedEndpointFingerprint) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
@@ -325,12 +374,12 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async loginStart(provider) {
-    const client = requireClient();
+    const client = requireWritableClient();
     return client.request("evener/auth/login/start", { provider });
   },
 
   async loginComplete(provider, flowId, redirectUrl) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
@@ -350,12 +399,12 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   },
 
   async deviceStart(provider) {
-    const client = requireClient();
+    const client = requireWritableClient();
     return client.request("evener/auth/device/start", { provider });
   },
 
   async devicePoll(provider, flowId) {
-    const client = requireClient();
+    const client = requireWritableClient();
     const generation = connectionGeneration;
     noteLocalAuthMutation(provider);
     try {
@@ -642,6 +691,11 @@ connectionStore.subscribe((state, previous) => {
     // connection that is gone (see connectionGeneration).
     localAuthMutations.clear();
     connectionGeneration += 1;
+    // Whatever listing state holds was read through the connection that just
+    // went away (or through the client being replaced); the rows stay on
+    // screen until this connection's own read lands, but nothing may act on
+    // them in the meantime.
+    credentialsStore.setState({ listingFromPreviousConnection: true });
   }
   attachNotifications(state.client);
   // Once a view has requested credentials, reconnects must restore its list
@@ -676,5 +730,11 @@ export function resetCredentialsStoreForTests(): void {
   clearTimeout(refetchTimer);
   refetchTimer = undefined;
   pendingRefetchSelf = undefined;
-  credentialsStore.setState({ ...emptyListState(), loading: false, error: null, selfRefresh: 0 });
+  credentialsStore.setState({
+    ...emptyListState(),
+    loading: false,
+    error: null,
+    selfRefresh: 0,
+    listingFromPreviousConnection: false,
+  });
 }

@@ -70,7 +70,9 @@ test("secondary declares visible button chrome (fill + border), unlike quiet", (
   const rule = /\.secondary\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("border-color: var(--edge-strong)");
   expect(rule).toContain("background: var(--surface-1)");
-  expect(css).toMatch(/\.secondary:hover:not\(:disabled\)\s*\{[^}]*background: var\(--hover-1\)/);
+  expect(css).toMatch(
+    /\.secondary:hover:not\(:disabled\):not\(\[aria-disabled="true"\]\)\s*\{[^}]*background: var\(--hover-1\)/,
+  );
 });
 
 // dangerQuiet exists for a destructive action that is not the primary one on
@@ -81,8 +83,27 @@ test("dangerQuiet colors the label rather than filling a background", () => {
   const rule = /\.dangerQuiet\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("color: var(--danger)");
   expect(rule).toContain("background: transparent");
-  expect(css).toMatch(/\.dangerQuiet:hover:not\(:disabled\)\s*\{[^}]*background: var\(--danger-bg\)/);
+  expect(css).toMatch(
+    /\.dangerQuiet:hover:not\(:disabled\):not\(\[aria-disabled="true"\]\)\s*\{[^}]*background: var\(--danger-bg\)/,
+  );
   expect(css).toMatch(/\.dangerQuiet:focus-visible\s*\{[^}]*outline: var\(--focus-ring-danger\)/);
+});
+
+// A refusal has to look refused. aria-disabled is Button's refusal that keeps
+// the keyboard where it is, unlike the native attribute (a native disabled
+// control that holds focus drops it to <body>; the connect dialog's rows are
+// that dialog's focus targets and pin the difference), so it carries the
+// disabled state's look: the two selectors share one declaration block, which
+// is what this pins. jsdom applies no stylesheet, so the declaration is the
+// checkable truth - comments stripped first so a doc comment quoting a
+// declaration cannot satisfy the match (docs/developing-evener/testing.md).
+test("an aria-disabled refusal is styled as the disabled state it stands in for", () => {
+  const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "button.module.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  expect(css).toMatch(/\.button:disabled,\s*\.button\[aria-disabled="true"\]\s*\{[^}]*cursor: not-allowed/);
+  expect(css).toMatch(/\.button:disabled,\s*\.button\[aria-disabled="true"\]\s*\{[^}]*opacity: 0\.5/);
 });
 
 test("each size renders a distinct class", () => {
