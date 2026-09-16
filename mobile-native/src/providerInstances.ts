@@ -32,10 +32,11 @@ interface ProviderState {
 
 /** Provider data and operations for one hub's provider list: the credential
  * store it is handed, projected into the snapshot the list renders. The
- * core owns the listing, its ordering, the evener/auth/updated refetch and the
- * post-write refresh; the list's own rules stay here - one write at a time
- * (`busy`), a reconciling read after a write whose reply was lost, and a
- * credential test that never echoes the wire. */
+ * core owns the listing, its ordering, the evener/auth/updated refetch, the
+ * post-write refresh, and the rule that a refused write reads nothing of its
+ * own (the hub's echo of a write it applied is what re-reads); the list's own
+ * rules stay here - one write at a time (`busy`) and a credential test that
+ * never echoes the wire. */
 export class ProviderInstances {
   private state: ProviderState = {
     credentialTest: null,
