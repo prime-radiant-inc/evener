@@ -19,13 +19,13 @@ function resourceFor(
 		case "manifest":
 			return base;
 		case "section":
-			return { ...base, section: target.section, limit: 50 };
+			return { ...base, section: target.section };
 		case "pin_catalog":
-			return { ...base, limit: 50 };
+			return base;
 		case "pin_section":
-			return { ...base, sectionId: target.sectionId, limit: 50 };
+			return { ...base, sectionId: target.sectionId };
 		case "catalog":
-			return { ...base, catalog: target.catalog, limit: 50 };
+			return { ...base, catalog: target.catalog };
 		case "project":
 			return { ...base, projectKey: target.projectKey };
 		// This invalidates loaded project pages without an individual version.
