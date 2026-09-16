@@ -888,6 +888,18 @@ export function createConversationStore() {
   ): MobileConversation {
     return applyNotification(conversation, n, Date.now()) as MobileConversation;
   }
+  // The write a frame replays onto a rehydrate snapshot. A turn/started whose
+  // turn the snapshot already carries is not replayed: the read happened after
+  // the turn began, so the snapshot is the newer truth, and re-applying the
+  // sparse start frame would take the reducer's duplicate-turn path — a false
+  // invariant report, and the snapshot's items for that turn replaced.
+  function replayedWrite(n: AnyNotification): LiveWrite {
+    return (conversation) =>
+      n.method === "turn/started" &&
+      conversation.turns.some((turn) => turn.id === n.params.turn.id)
+        ? conversation
+        : applyThreadNotification(conversation, n);
+  }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
   // prepended as older history; current-only non-page items (live notifications
@@ -3016,11 +3028,7 @@ export function createConversationStore() {
             // write is also queued to replay onto that read's snapshot.
             const applied = applyThreadNotification(conv, n);
             if (applied === conv) break;
-            if (rehydrateReplay !== null) {
-              rehydrateReplay.push((conversation) =>
-                applyThreadNotification(conversation, n),
-              );
-            }
+            if (rehydrateReplay !== null) rehydrateReplay.push(replayedWrite(n));
             set({ conversation: applied });
             break;
           }

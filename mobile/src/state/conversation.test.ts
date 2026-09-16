@@ -2,7 +2,7 @@
 // Covers generation safety, notification routing, draft preservation,
 // conflict restore, and no auto-retry.
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   hydrateThread,
   QUEUE_UNAVAILABLE,
@@ -7676,6 +7676,38 @@ describe("ConversationStore", () => {
       );
       if (!conv) throw new Error("conversation gone");
       expect(read(conv)).toEqual(expected);
+    });
+
+    // The common race: the turn that started during the read is already in
+    // the snapshot the read returns. Replaying its start must not re-enter
+    // the reducer's duplicate-turn path, which reports an invariant violation
+    // and replaces the snapshot's turn (items and all) with the sparse frame.
+    it("does not replay a started turn the snapshot already carries", async () => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const conv = await rereadRacing(
+          (store) =>
+            store.getState().applyNotification({
+              method: "turn/started",
+              params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
+            } as AnyNotification),
+          makeThread({
+            turns: [
+              makeTurn({
+                id: "t-live",
+                status: "inProgress",
+                items: [userMessageItem("u-live", "started during the read")],
+              }),
+            ],
+            evener: evenerWith({ activeTurnId: "t-live" }),
+          }),
+        );
+        expect(conv?.activeTurnId).toBe("t-live");
+        expect(conv?.turns.map((turn) => [turn.id, turn.items.length])).toEqual([["t-live", 1]]);
+        expect(consoleError).not.toHaveBeenCalled();
+      } finally {
+        consoleError.mockRestore();
+      }
     });
 
     // The buffer belongs to the conversation the reread was for: closing it
