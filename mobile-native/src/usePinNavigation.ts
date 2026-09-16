@@ -12,7 +12,7 @@ import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import { NavigationActions } from "./navigationActions";
 import { NavigationPages } from "./navigationPages";
-import { refreshPinNavigation } from "./pinNavigation";
+import { followPinCatalog, refreshPinNavigation } from "./pinNavigation";
 
 const noSnapshot = () => null;
 const noSubscription = () => () => {};
@@ -54,9 +54,9 @@ export function usePinNavigation(
 		owner: typeof binding;
 		value: Awaited<ReturnType<typeof refreshPinNavigation>>;
 	} | null>(null);
-	const actions = useMemo(() => {
+	const read = useMemo(() => {
 		if (!client || !pages) return null;
-		const read = async (
+		return async (
 			checkpoint?: Parameters<typeof refreshPinNavigation>[2]["checkpoint"],
 			confirmReceipt = false,
 		) => {
@@ -69,6 +69,9 @@ export function usePinNavigation(
 			});
 			if (isCurrent()) setReadback({ owner: binding, value });
 		};
+	}, [client, pages, binding, isCurrent, sessionRef, sectionId]);
+	const actions = useMemo(() => {
+		if (!client || !read) return null;
 		return new NavigationActions(
 			client,
 			async (_receipt, checkpoint) => {
@@ -79,7 +82,7 @@ export function usePinNavigation(
 			(checkpoint) => read(checkpoint),
 			journal,
 		);
-	}, [client, pages, binding, journal, isCurrent, sessionRef, sectionId]);
+	}, [client, read, journal, isCurrent]);
 	const page = useSyncExternalStore(
 		pages?.subscribe ?? noSubscription,
 		pages?.getSnapshot ?? noSnapshot,
@@ -88,7 +91,21 @@ export function usePinNavigation(
 		actions?.subscribe ?? noSubscription,
 		actions?.getSnapshot ?? noSnapshot,
 	);
-	useEffect(() => pages?.watch(), [pages]);
+	// A mutation's own confirmation re-reads everything, so catalog changes
+	// wait for it; the follower drains on each action state change.
+	useEffect(() => {
+		if (!pages || !read || !actions) return;
+		const follower = followPinCatalog(
+			pages,
+			() => read(),
+			() => isCurrent() && !actions.getSnapshot().pending,
+		);
+		const unsubscribe = actions.subscribe(follower.drain);
+		return () => {
+			unsubscribe();
+			follower.stop();
+		};
+	}, [pages, read, actions, isCurrent]);
 	useEffect(() => {
 		if (ready && focused) void actions?.reconcile();
 		return () => {

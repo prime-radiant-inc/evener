@@ -14,7 +14,6 @@ export interface PinAssignmentEditorProps {
 	connected: boolean;
 	canEdit: boolean;
 	loading: boolean;
-	stale: boolean;
 	remaining: number;
 	pending: boolean;
 	uncertain: boolean;
@@ -39,7 +38,6 @@ export function PinAssignmentEditor({
 	connected,
 	canEdit,
 	loading,
-	stale,
 	remaining,
 	pending,
 	uncertain,
@@ -51,8 +49,9 @@ export function PinAssignmentEditor({
 	close,
 }: PinAssignmentEditorProps) {
 	const colors = useColors();
-	const blocked =
-		pending || uncertain || !canEdit || !connected || stale || loading;
+	// Loading and stale sections do not block: the list re-reads itself and
+	// a send's own confirmation read supersedes any read in flight.
+	const blocked = pending || uncertain || !canEdit || !connected;
 	const valid =
 		(selection?.kind === "existing" &&
 			sections.some((section) => section.id === selection.sectionId)) ||
@@ -63,9 +62,7 @@ export function PinAssignmentEditor({
 			? "Checking the pin assignment…"
 			: !connected
 				? "Reconnect to change pin assignments."
-				: stale
-					? "Refresh the sections before changing a pin assignment."
-					: null;
+				: null;
 	return (
 		<View style={[styles.fill, { backgroundColor: colors.background }]}>
 			<ScrollView
@@ -156,7 +153,7 @@ export function PinAssignmentEditor({
 						{`Load more sections (${remaining} remaining)`}
 					</Action>
 				) : null}
-				{stale || uncertain ? (
+				{uncertain ? (
 					<Action
 						tone="quiet"
 						disabled={!connected || loading || pending}

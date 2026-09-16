@@ -286,7 +286,11 @@ export function PageList<T>({
 									: "Could not locate this session.",
 							);
 					});
-			} else if (ready && !pages.getSnapshot().loaded) void pages.refresh();
+			} else if (ready) {
+				// A re-read cancelled when this list lost focus leaves it stale.
+				const snapshot = pages.getSnapshot();
+				if (!snapshot.loaded || snapshot.stale) void pages.refresh();
+			}
 			return () => {
 				active = false;
 				if (scrollTimer.current) clearTimeout(scrollTimer.current);
@@ -317,22 +321,15 @@ export function PageList<T>({
 			) : null}
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
-					<ErrorMessage message={state.stale ? null : state.error} />
-					{state.stale ? (
-						<Copy muted>
-							Updates are available. Refresh to see the latest list.
-						</Copy>
-					) : null}
-					{state.error ? (
-						<Action
-							disabled={!ready || state.loading}
-							onPress={() => {
-								refreshList();
-							}}
-						>
-							Refresh list
-						</Action>
-					) : null}
+					<ErrorMessage message={state.error} />
+					<Action
+						disabled={!ready || state.loading}
+						onPress={() => {
+							refreshList();
+						}}
+					>
+						Refresh list
+					</Action>
 				</View>
 			) : null}
 			<FlatList
@@ -402,7 +399,7 @@ export function PageList<T>({
 							</View>
 						) : state.remaining > 0 ? (
 							<Action
-								disabled={!ready || !focused || state.loading || state.stale}
+								disabled={!ready || !focused || state.loading}
 								onPress={state.error ? retryMore : loadMore}
 							>
 								{state.error
@@ -441,7 +438,6 @@ export function PageList<T>({
 									disabled={
 										!ready ||
 										state.loading ||
-										state.stale ||
 										!!actionState?.pending ||
 										!!actionState?.uncertain ||
 										!!actionState?.storageUnavailable
@@ -456,15 +452,10 @@ export function PageList<T>({
 											actionState.storageUnavailable
 										)
 											return;
-										const snapshot = pages.getSnapshot();
+										// The list may re-read itself while the sheet is open; the
+										// row's state the user chose against is what they asked for.
 										const invoke = (operation: () => void) => {
-											if (
-												current.current === binding &&
-												snapshot === pages.getSnapshot() &&
-												!snapshot.stale &&
-												!snapshot.loading
-											)
-												operation();
+											if (current.current === binding) operation();
 										};
 										Alert.alert(
 											title(item),

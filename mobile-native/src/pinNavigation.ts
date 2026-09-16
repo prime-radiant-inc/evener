@@ -169,3 +169,45 @@ export async function refreshPinNavigation(
 			) ?? null,
 	};
 }
+
+/** Re-read the pin navigation whenever the hub says the pin catalog changed,
+ * one read at a time. Invalidations landing during a read are absorbed by
+ * that read's own catalog refresh; a read that still ends stale is retried
+ * once so a change that landed between its steps is not lost, and no more,
+ * so a hub that notifies on every read cannot keep this reading. */
+export function followPinCatalog(
+	pages: Pick<
+		NavigationPages<NavigationPinSectionDescriptor>,
+		"watch" | "getSnapshot"
+	>,
+	read: () => Promise<unknown>,
+	canRead: () => boolean,
+) {
+	let dirty = false,
+		reading = false;
+	const drain = () => {
+		if (!dirty || reading || !canRead()) return;
+		dirty = false;
+		reading = true;
+		void (async () => {
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					await read();
+					return;
+				} catch {
+					if (!pages.getSnapshot().stale || !canRead()) return;
+				}
+			}
+		})().finally(() => {
+			reading = false;
+		});
+	};
+	return {
+		drain,
+		stop: pages.watch(() => {
+			if (reading) return;
+			dirty = true;
+			drain();
+		}),
+	};
+}

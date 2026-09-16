@@ -261,11 +261,15 @@ export function createProjectBrowserController(
 				const group = groups.get(projectKey);
 				if (!group?.expanded) return;
 				const pages = tier ? [group[tier]] : [group.current, group.recent];
+				// A stale page's rows predate a change the hub announced: read it
+				// again from the top rather than paging past them.
 				await Promise.all(
 					pages.map((page) => {
 						const state = page.getSnapshot();
-						if (state.loading || state.stale) return Promise.resolve();
-						return state.loaded ? page.more() : page.refresh();
+						if (state.loading) return Promise.resolve();
+						return state.loaded && !state.stale
+							? page.more()
+							: page.refresh();
 					}),
 				);
 				publish();
@@ -273,8 +277,9 @@ export function createProjectBrowserController(
 			}
 			if (catalog.getSnapshot().error) {
 				const state = catalog.getSnapshot();
-				if (state.loading || state.stale) return;
-				if (state.loaded && state.rows.length > 0) await catalog.more();
+				if (state.loading) return;
+				if (state.loaded && !state.stale && state.rows.length > 0)
+					await catalog.more();
 				else await catalog.refresh();
 				publish();
 				return;

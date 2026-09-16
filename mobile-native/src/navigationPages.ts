@@ -96,6 +96,8 @@ export class NavigationPages<T> {
 	private normalized: NormalizedResource | null = null;
 	private firstPageRowCount = 0;
 	private firstPageRemaining = 0;
+	private rerun = false;
+	private rereading = false;
 	constructor(
 		private client: ConversationClientLike,
 		private params: NativeNavigationParams,
@@ -103,10 +105,13 @@ export class NavigationPages<T> {
 		private key: (row: T) => string,
 		private limit = 50,
 	) {}
-	watch() {
+	/** Follow hub invalidations. Newer data is re-read here without user
+	 * action unless an owner takes the invalidation to run a wider read of
+	 * its own (the pin screens also re-read a session's location). */
+	watch(onInvalidated?: () => void) {
 		return this.client.onNotification((event) => {
 			if (event.method === "evener/navigation/invalidated")
-				this.invalidate(event.params);
+				this.invalidate(event.params, onInvalidated);
 		});
 	}
 	getSnapshot = () => this.state;
@@ -120,12 +125,34 @@ export class NavigationPages<T> {
 		for (const listener of this.listeners) listener();
 	}
 	private markStale() {
-		this.publish({
-			stale: true,
-			error: "This list changed while you were browsing. Refresh to continue.",
+		this.publish({ stale: true });
+	}
+	/** Newer rows exist: re-read them once the store is idle. */
+	private reread() {
+		this.rerun = true;
+		this.drain();
+	}
+	private drain() {
+		if (!this.rerun || this.rereading || this.state.loading) return;
+		this.rerun = false;
+		this.rereading = true;
+		void this.rereadLoadedDepth().finally(() => {
+			this.rereading = false;
+			this.drain();
 		});
 	}
-	private invalidate(p: NavigationInvalidatedPayload) {
+	/** Re-read from the first page down to the depth the user had scrolled
+	 * to, so the list keeps its length and their place in it. */
+	private async rereadLoadedDepth() {
+		const depth = this.offset;
+		if ((await this.load(true)) !== true) return;
+		while (this.offset < depth && this.state.remaining > 0)
+			if ((await this.load(false)) !== true) return;
+	}
+	private invalidate(
+		p: NavigationInvalidatedPayload,
+		onInvalidated?: () => void,
+	) {
 		if (this.notifiedGeneration !== p.generationId) {
 			this.notifiedGeneration = p.generationId;
 			this.sequence = 0;
@@ -139,7 +166,13 @@ export class NavigationPages<T> {
 		if (gap || targets.some((t) => t.revision === undefined)) this.uncertain++;
 		for (const t of targets)
 			this.requiredRevision = Math.max(this.requiredRevision, t.revision ?? 0);
-		if (targets.length > 0 || gap) this.markStale();
+		if (targets.length === 0 && !gap) return;
+		this.markStale();
+		// A read in flight sees this notification through its revision checks
+		// and retries itself once, so only an idle store starts a re-read. That
+		// bounds a hub that notifies on every read to one retry per read.
+		if (onInvalidated) onInvalidated();
+		else if (!this.state.loading) this.reread();
 	}
 	private matchesTarget(t: NavigationInvalidationTarget) {
 		const p = this.params;
@@ -186,11 +219,7 @@ export class NavigationPages<T> {
 			this.mutationFloor,
 			this.receiptRevision(receipt),
 		);
-		const epoch = this.notificationEpoch;
-		let ok = await this.load(true, receipt);
-		if (ok === false && epoch !== this.notificationEpoch)
-			ok = await this.load(true, receipt);
-		if (!ok)
+		if (!(await this.load(true, receipt)))
 			throw new Error(
 				"The change was accepted, but the updated list could not be loaded. Refresh the list.",
 			);
@@ -199,6 +228,7 @@ export class NavigationPages<T> {
 		reset: boolean,
 		receipt?: NavigationMutation,
 		recovered = false,
+		retried = false,
 	): Promise<boolean | undefined> {
 		if (
 			!reset &&
@@ -236,7 +266,7 @@ export class NavigationPages<T> {
 					cause instanceof Error &&
 					cause.message.includes("installed base")
 				)
-					return this.load(true, receipt, true);
+					return this.load(true, receipt, true, retried);
 				throw new Error(
 					"Could not read this navigation page. Refresh to try again.",
 				);
@@ -268,6 +298,12 @@ export class NavigationPages<T> {
 			) {
 				this.publish({ loading: false });
 				this.markStale();
+				// A notification that arrived during this read explains the
+				// mismatch: read once more. Without one the hub is serving an
+				// older revision than it announced; stay stale rather than spin.
+				if (!reset) this.reread();
+				else if (epoch !== this.notificationEpoch && !retried)
+					return this.load(reset, receipt, recovered, true);
 				return false;
 			}
 			if (decoded.version.generationId !== this.mutationGeneration) {
@@ -347,6 +383,7 @@ export class NavigationPages<T> {
 			if (!reset && this.version !== stringVersion) {
 				this.publish({ loading: false });
 				this.markStale();
+				this.reread();
 				return;
 			}
 			const unique = new Map(
@@ -387,6 +424,8 @@ export class NavigationPages<T> {
 						? cause.message
 						: "Could not load this page. Try again.",
 			});
+		} finally {
+			this.drain();
 		}
 	}
 }

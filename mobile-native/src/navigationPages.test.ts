@@ -101,6 +101,23 @@ function boundary(resource: "catalog" | "section" = "catalog") {
 		),
 	};
 }
+function until<T>(
+	pages: NavigationPages<T>,
+	ready: (state: ReturnType<NavigationPages<T>["getSnapshot"]>) => boolean,
+) {
+	return new Promise<void>((resolve) => {
+		let stop = () => {};
+		const check = () => {
+			if (!ready(pages.getSnapshot())) return;
+			stop();
+			resolve();
+		};
+		stop = pages.subscribe(check);
+		check();
+	});
+}
+const settled = <T>(pages: NavigationPages<T>) =>
+	until(pages, (state) => !state.loading && !state.stale);
 function response(
 	keys: string[],
 	remaining = 0,
@@ -141,7 +158,7 @@ describe("navigation pages", () => {
 		]);
 		expect(pages.getSnapshot().remaining).toBe(0);
 	});
-	it("refuses to combine revisions and requires refresh", async () => {
+	it("refuses to combine revisions and re-reads from the first page", async () => {
 		const { requests, pages } = boundary();
 		const first = pages.refresh();
 		requests[0].resolve(response(["a"], 1));
@@ -152,12 +169,11 @@ describe("navigation pages", () => {
 		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["a"]);
 		expect(pages.getSnapshot().stale).toBe(true);
 		await pages.more();
-		expect(requests).toHaveLength(2);
-		const refresh = pages.refresh();
+		expect(requests).toHaveLength(3);
+		expect(requests[2].params.offset).toBe(0);
 		requests[2].resolve(response(["b"], 0, 2));
-		await refresh;
+		await settled(pages);
 		expect(pages.getSnapshot().rows.map((row) => row.key)).toEqual(["b"]);
-		expect(pages.getSnapshot().stale).toBe(false);
 	});
 	it("ignores an in-flight completion after leaving the binding", async () => {
 		const { requests, pages } = boundary();
@@ -178,7 +194,7 @@ describe("navigation pages", () => {
 	});
 });
 
-it("marks relevant updates stale without replacing visible rows", async () => {
+it("re-reads a relevant update without user action, keeping the visible rows until it lands", async () => {
 	const { requests, pages, invalidate } = boundary();
 	const stop = pages.watch();
 	const first = pages.refresh();
@@ -190,25 +206,80 @@ it("marks relevant updates stale without replacing visible rows", async () => {
 		targets: [{ kind: "catalog", catalog: "archived_projects", revision: 2 }],
 	});
 	expect(pages.getSnapshot().stale).toBe(false);
+	expect(requests).toHaveLength(1);
 	invalidate({
 		generationId: "hub-generation",
 		sequence: 2,
 		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
 	});
-	expect(pages.getSnapshot().stale).toBe(true);
-	expect(pages.getSnapshot().rows).toMatchObject([{ key: "a" }]);
+	expect(pages.getSnapshot()).toMatchObject({
+		stale: true,
+		loading: true,
+		error: null,
+		rows: [{ key: "a" }],
+	});
+	expect(requests).toHaveLength(2);
+	expect(requests[1].params.offset).toBe(0);
 	await pages.more();
-	expect(requests).toHaveLength(1);
-	const refresh = pages.refresh();
+	expect(requests).toHaveLength(2);
 	requests[1].resolve(response(["b"], 0, 2));
-	await refresh;
-	expect(pages.getSnapshot().stale).toBe(false);
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
 	stop();
 	invalidate({ generationId: "other", sequence: 1, targets: [] });
 	expect(pages.getSnapshot().stale).toBe(false);
+	expect(requests).toHaveLength(2);
 });
-it("does not let an old in-flight read clear a newer invalidation", async () => {
+it("re-reads every loaded page so the list keeps its length", async () => {
+	const { requests, pages, invalidate, requested } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a", "b"], 4));
+	await first;
+	const more = pages.more();
+	requests[1].resolve(response(["c", "d"], 2, 1, 2));
+	await more;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[2].resolve(response(["a", "b2"], 4, 2));
+	await requested(4);
+	expect(requests[3].params.offset).toBe(2);
+	requests[3].resolve(response(["c2", "d"], 2, 2, 2));
+	await settled(pages);
+	expect(requests.map((r) => r.params.offset)).toEqual([0, 2, 0, 2]);
+	expect(pages.getSnapshot()).toMatchObject({
+		rows: [{ key: "a" }, { key: "b2" }, { key: "c2" }, { key: "d" }],
+		remaining: 2,
+		error: null,
+	});
+});
+it("re-reads after a page read that lost a race with an invalidation", async () => {
 	const { requests, pages, invalidate } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a", "b"], 2));
+	await first;
+	const more = pages.more();
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	requests[1].resolve(response(["c", "d"], 0, 1, 2));
+	await more;
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "a" }, { key: "b" }]);
+	expect(requests).toHaveLength(3);
+	expect(requests[2].params.offset).toBe(0);
+	requests[2].resolve(response(["a2", "b"], 2, 2));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "a2" }, { key: "b" }]);
+	expect(requests).toHaveLength(3);
+});
+it("retries an in-flight read that a newer invalidation overtook", async () => {
+	const { requests, pages, invalidate, requested } = boundary();
 	pages.watch();
 	const first = pages.refresh();
 	invalidate({
@@ -217,13 +288,38 @@ it("does not let an old in-flight read clear a newer invalidation", async () => 
 		targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
 	});
 	requests[0].resolve(response(["old"], 0, 2));
-	await first;
+	await requested(2);
 	expect(pages.getSnapshot().stale).toBe(true);
 	expect(pages.getSnapshot().rows).toEqual([]);
-	const refresh = pages.refresh();
 	requests[1].resolve(response(["fresh"], 0, 3));
-	await refresh;
+	await first;
 	expect(pages.getSnapshot().stale).toBe(false);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "fresh" }]);
+	expect(requests).toHaveLength(2);
+});
+it("a burst of invalidations during a re-read costs one trailing read", async () => {
+	const { requests, pages, invalidate, requested } = boundary();
+	pages.watch();
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"], 0, 1));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 2,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 3 }],
+	});
+	expect(requests).toHaveLength(2);
+	requests[1].resolve(response(["b"], 0, 2));
+	await requested(3);
+	requests[2].resolve(response(["c"], 0, 3));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "c" }]);
+	expect(requests).toHaveLength(3);
 });
 it("accepts a read that already incorporates the notified revision", async () => {
 	const { requests, pages, invalidate } = boundary();
@@ -238,19 +334,45 @@ it("accepts a read that already incorporates the notified revision", async () =>
 	await first;
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "fresh" }]);
 	expect(pages.getSnapshot().stale).toBe(false);
+	expect(requests).toHaveLength(1);
 });
-it("requires refresh after a sequence gap even with unrelated targets", async () => {
+it("re-reads after a sequence gap even with unrelated targets", async () => {
 	const { requests, pages, invalidate } = boundary();
 	pages.watch();
 	const first = pages.refresh();
 	requests[0].resolve(response(["a"]));
 	await first;
 	invalidate({ generationId: "hub-generation", sequence: 1, targets: [] });
+	expect(requests).toHaveLength(1);
 	invalidate({ generationId: "hub-generation", sequence: 3, targets: [] });
 	expect(pages.getSnapshot().stale).toBe(true);
+	expect(requests).toHaveLength(2);
+	requests[1].resolve(response(["a"], 0, 1));
+	await settled(pages);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "a" }]);
+});
+it("hands the invalidation to an owner instead of reading when one is watching", async () => {
+	const { requests, pages, invalidate } = boundary();
+	let handed = 0;
+	pages.watch(() => handed++);
+	const first = pages.refresh();
+	requests[0].resolve(response(["a"]));
+	await first;
+	invalidate({
+		generationId: "hub-generation",
+		sequence: 1,
+		targets: [{ kind: "catalog", catalog: "projects", revision: 2 }],
+	});
+	expect(handed).toBe(1);
+	expect(pages.getSnapshot().stale).toBe(true);
+	expect(requests).toHaveLength(1);
+	const refresh = pages.refresh();
+	requests[1].resolve(response(["b"], 0, 2));
+	await refresh;
+	expect(pages.getSnapshot().stale).toBe(false);
 });
 
-it("establishes a restarted hub generation from an explicit refresh", async () => {
+it("establishes a restarted hub generation from the re-read", async () => {
 	const { requests, pages, invalidate } = boundary();
 	pages.watch();
 	const first = pages.refresh();
@@ -261,23 +383,25 @@ it("establishes a restarted hub generation from an explicit refresh", async () =
 		sequence: 1,
 		targets: [{ kind: "catalog", catalog: "projects", revision: 10 }],
 	});
-	const refresh = pages.refresh();
 	requests[1].resolve({
 		...response(["new"], 0, 1, 0, "restarted"),
 	});
-	await refresh;
+	await settled(pages);
 	expect(pages.getSnapshot().rows).toMatchObject([{ key: "new" }]);
-	expect(pages.getSnapshot().stale).toBe(false);
 });
-it("rejects a response from before a generation change during the request", async () => {
-	const { requests, pages, invalidate } = boundary();
+it("retries a read that predates a generation change during the request", async () => {
+	const { requests, pages, invalidate, requested } = boundary();
 	pages.watch();
 	const first = pages.refresh();
 	invalidate({ generationId: "restarted", sequence: 1, targets: [] });
 	requests[0].resolve(response(["old"]));
-	await first;
+	await requested(2);
 	expect(pages.getSnapshot().rows).toEqual([]);
 	expect(pages.getSnapshot().stale).toBe(true);
+	requests[1].resolve(response(["new"], 0, 1, 0, "restarted"));
+	await first;
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "new" }]);
+	expect(pages.getSnapshot().stale).toBe(false);
 });
 
 it("retains session truncation across pages and clears it on refresh", async () => {
@@ -547,7 +671,7 @@ it("does not satisfy a newer mutation receipt with a cached not-modified respons
 });
 
 it("does not let a conditional response clear a newer notification", async () => {
-	const { pages, requests, invalidate } = boundary();
+	const { pages, requests, invalidate, requested } = boundary();
 	pages.watch();
 	const first = pages.refresh();
 	requests[0].resolve(response(["a"], 0, 1));
@@ -564,8 +688,13 @@ it("does not let a conditional response clear a newer notification", async () =>
 		revision: 1,
 		etag: "etag-0-1",
 	});
-	await next;
+	await requested(3);
 	expect(pages.getSnapshot().stale).toBe(true);
+	requests[2].resolve(response(["b"], 0, 2));
+	await next;
+	expect(pages.getSnapshot().stale).toBe(false);
+	expect(pages.getSnapshot().rows).toMatchObject([{ key: "b" }]);
+	expect(requests).toHaveLength(3);
 });
 
 it("resets paging offset when a conditional refresh retains the first page", async () => {
@@ -590,7 +719,7 @@ it("resets paging offset when a conditional refresh retains the first page", asy
 	await again;
 });
 
-it("pages the pin catalog and invalidates it when a section changes", async () => {
+it("re-reads the pin catalog when a section changes and does not spin on an older hub revision", async () => {
 	const requests: NavigationReadParams[] = [];
 	let notify: (event: AnyNotification) => void = () => {};
 	const client: ConversationClientLike = {
@@ -639,6 +768,11 @@ it("pages the pin catalog and invalidates it when a section changes", async () =
 		},
 	});
 	expect(pages.getSnapshot().stale).toBe(true);
+	expect(requests.map((p) => p.offset)).toEqual([0, 1, 0]);
+	// The hub keeps serving revision 1 below the notified 2: stay stale
+	// without spinning on further reads.
+	await until(pages, (state) => !state.loading);
+	expect(pages.getSnapshot().stale).toBe(true);
 	await pages.more();
-	expect(requests).toHaveLength(2);
+	expect(requests).toHaveLength(3);
 });

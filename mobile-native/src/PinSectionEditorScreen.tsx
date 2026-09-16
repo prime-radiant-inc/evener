@@ -51,15 +51,13 @@ export function PinSectionEditorScreen({
 		}
 	}, [repository, proposal.owner]);
 	const section = pin.observed?.section;
-	const fresh =
+	const settled =
 		pin.confirmed &&
 		pin.ready &&
-		!pin.page?.loading &&
-		!pin.page?.stale &&
 		!pin.action?.pending &&
 		!pin.action?.uncertain;
 	const blocked =
-		!fresh ||
+		!settled ||
 		!section ||
 		!selected ||
 		!!selected.error ||
@@ -117,7 +115,6 @@ export function PinSectionEditorScreen({
 	}
 	function confirmDelete() {
 		if (blocked || !section) return;
-		const version = pin.pages?.getResourceVersion();
 		Alert.alert(
 			`Delete ${section.name}?`,
 			`This removes the pinned section and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
@@ -127,18 +124,7 @@ export function PinSectionEditorScreen({
 					text: "Delete section",
 					style: "destructive",
 					onPress: () => {
-						const current = pin.pages?.getResourceVersion(),
-							state = pin.pages?.getSnapshot();
-						if (
-							!pin.isCurrent() ||
-							state?.stale ||
-							state?.loading ||
-							!version ||
-							current?.generationId !== version.generationId ||
-							current.revision !== version.revision
-						)
-							return;
-						void execute(true);
+						if (pin.isCurrent()) void execute(true);
 					},
 				},
 			],
@@ -171,7 +157,10 @@ export function PinSectionEditorScreen({
 								selected?.error ?? pin.action?.error ?? pin.page?.error ?? null
 							}
 						/>
-						{!pin.ready || !fresh || selected?.error ? (
+						{!pin.ready ||
+						pin.action?.uncertain ||
+						pin.page?.error ||
+						selected?.error ? (
 							<Action
 								disabled={!!pin.action?.pending || !!pin.page?.loading}
 								onPress={refresh}
@@ -186,7 +175,7 @@ export function PinSectionEditorScreen({
 							<Copy>This section no longer exists. Its sessions are kept.</Copy>
 						) : section ? (
 							<Copy muted>
-								{fresh ? "Currently" : "Last seen"}: {section.count}{" "}
+								{settled ? "Currently" : "Last seen"}: {section.count}{" "}
 								{section.count === 1 ? "session" : "sessions"}
 							</Copy>
 						) : null}
@@ -219,7 +208,7 @@ export function PinSectionEditorScreen({
 							{selected?.draft ? (
 								<Action
 									tone="quiet"
-									disabled={!fresh}
+									disabled={!settled}
 									onPress={() => {
 										if (selected.draft) clear(selected.draft);
 									}}

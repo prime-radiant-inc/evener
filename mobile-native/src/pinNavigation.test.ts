@@ -7,7 +7,11 @@ import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/test
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationPages } from "./navigationPages";
-import { readPinLocation, refreshPinNavigation } from "./pinNavigation";
+import {
+	followPinCatalog,
+	readPinLocation,
+	refreshPinNavigation,
+} from "./pinNavigation";
 
 function boundary({
 	locationGeneration = "g",
@@ -291,5 +295,88 @@ describe("native pin navigation readback", () => {
 			}),
 		).rejects.toThrow();
 		expect(calls).toEqual([]);
+	});
+});
+
+describe("following the pin catalog", () => {
+	function harness({
+		canRead = () => true,
+	}: { canRead?: () => boolean } = {}) {
+		let onInvalidated: (() => void) | null = null;
+		let stale = false;
+		const reads: { resolve(): void; reject(): void }[] = [];
+		const pages = {
+			watch: (handler?: () => void) => {
+				onInvalidated = handler ?? null;
+				return () => {
+					onInvalidated = null;
+				};
+			},
+			getSnapshot: () => ({ stale }),
+		} as unknown as NavigationPages<{ id: string; name: string; count: number }>;
+		const follower = followPinCatalog(
+			pages,
+			() =>
+				new Promise<void>((resolve, reject) => {
+					reads.push({ resolve, reject: () => reject(Error("raced")) });
+				}),
+			canRead,
+		);
+		return {
+			follower,
+			reads,
+			invalidate: () => onInvalidated?.(),
+			watching: () => onInvalidated !== null,
+			setStale: (value: boolean) => {
+				stale = value;
+			},
+		};
+	}
+	it("reads once per invalidation and lets a read in flight absorb later ones", async () => {
+		const { reads, invalidate } = harness();
+		invalidate();
+		invalidate();
+		expect(reads).toHaveLength(1);
+		reads[0].resolve();
+		await new Promise((resolve) => setTimeout(resolve));
+		invalidate();
+		expect(reads).toHaveLength(2);
+	});
+	it("waits while a mutation is pending and reads when drained", () => {
+		let pending = true;
+		const { reads, invalidate, follower } = harness({
+			canRead: () => !pending,
+		});
+		invalidate();
+		expect(reads).toHaveLength(0);
+		pending = false;
+		follower.drain();
+		expect(reads).toHaveLength(1);
+		follower.drain();
+		expect(reads).toHaveLength(1);
+	});
+	it("retries a read that ends stale once, then stops", async () => {
+		const { reads, invalidate, setStale } = harness();
+		invalidate();
+		setStale(true);
+		reads[0].reject();
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(reads).toHaveLength(2);
+		reads[1].reject();
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(reads).toHaveLength(2);
+	});
+	it("does not retry a read that failed with the pages settled", async () => {
+		const { reads, invalidate } = harness();
+		invalidate();
+		reads[0].reject();
+		await new Promise((resolve) => setTimeout(resolve));
+		expect(reads).toHaveLength(1);
+	});
+	it("stops watching when told", () => {
+		const { follower, watching } = harness();
+		expect(watching()).toBe(true);
+		follower.stop();
+		expect(watching()).toBe(false);
 	});
 });

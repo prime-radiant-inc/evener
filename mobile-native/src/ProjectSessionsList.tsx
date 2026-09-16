@@ -47,7 +47,6 @@ type BrowserRow =
 			tier: ProjectSessionTier;
 			loading: boolean;
 			error: string | null;
-			stale: boolean;
 	  }
 	| { kind: "empty"; key: string }
 	| { kind: "limited"; key: string };
@@ -116,7 +115,6 @@ export function ProjectSessionsList({
 			});
 			if (!group?.expanded) continue;
 			const seen = new Set<string>();
-			let staleNoticeAdded = false;
 			for (const tier of ["current", "recent"] as const) {
 				const page = group[tier];
 				for (const { item, depth } of navigationTree(
@@ -135,11 +133,7 @@ export function ProjectSessionsList({
 						depth,
 					});
 				}
-				if (
-					page.loading ||
-					(page.error && !page.stale) ||
-					(page.remaining > 0 && !page.stale)
-				) {
+				if (page.loading || page.error || page.remaining > 0) {
 					result.push({
 						kind: "page",
 						key: `page:${project.key}:${tier}`,
@@ -147,19 +141,6 @@ export function ProjectSessionsList({
 						tier,
 						loading: page.loading,
 						error: page.error,
-						stale: false,
-					});
-				}
-				if (page.stale && !staleNoticeAdded) {
-					staleNoticeAdded = true;
-					result.push({
-						kind: "page",
-						key: `page:${project.key}:stale`,
-						projectKey: project.key,
-						tier,
-						loading: false,
-						error: null,
-						stale: true,
 					});
 				}
 			}
@@ -295,19 +276,7 @@ export function ProjectSessionsList({
 						{state.projects.loading && !refreshing ? (
 							<ActivityIndicator accessibilityLabel="Loading more projects" />
 						) : null}
-						{state.projects.stale ? (
-							<>
-								<Copy muted>Projects have changed.</Copy>
-								<Action
-									disabled={!ready || state.projects.loading}
-									onPress={() => {
-										void refresh();
-									}}
-								>
-									Refresh projects
-								</Action>
-							</>
-						) : state.projects.error ? (
+						{state.projects.error ? (
 							<>
 								<Copy muted>Could not load more projects.</Copy>
 								<Action
@@ -453,18 +422,6 @@ export function ProjectSessionsList({
 						<View style={{ paddingHorizontal: 40, paddingVertical: 8 }}>
 							{item.loading ? (
 								<ActivityIndicator accessibilityLabel="Loading sessions" />
-							) : item.stale ? (
-								<>
-									<Copy muted>This project has updates.</Copy>
-									<Action
-										disabled={!ready}
-										onPress={() => {
-											void refresh();
-										}}
-									>
-										Refresh
-									</Action>
-								</>
 							) : item.error ? (
 								<>
 									<Copy muted>Could not load more sessions.</Copy>
