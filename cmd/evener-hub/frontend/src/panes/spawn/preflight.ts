@@ -6,6 +6,7 @@
 // discrimination (the offer-create outcome + the in-form Create&start dialog,
 // spawn.js:527-566).
 import type { AppwireClientLike } from "@evener/appwire-client";
+import { hostRequest } from "../../stores/hostRouting";
 
 export type PreflightOutcome =
   | { kind: "ok" }
@@ -20,9 +21,16 @@ export type PreflightOutcome =
 // by creating it. Compared verbatim, matching the daemon's fspaths strings.
 const NON_FIXABLE_REASONS = new Set(["path is not a directory", "absolute path required", "path is required"]);
 
-export async function preflightDir(client: AppwireClientLike, path: string): Promise<PreflightOutcome> {
+export async function preflightDir(
+  client: AppwireClientLike,
+  path: string,
+  host: string = "local",
+): Promise<PreflightOutcome> {
   try {
-    const result = await client.request("evener/path/validate", { path, kind: "dir" });
+    // Host scoping (component 07b): a remote host's directory is validated on
+    // the host's own filesystem through evener/host/request; the local host
+    // keeps the plain call.
+    const result = await hostRequest(client, host, "evener/path/validate", { path, kind: "dir" });
     if (result.valid) return { kind: "ok" };
     if (result.error && NON_FIXABLE_REASONS.has(result.error)) {
       return { kind: "abort", message: result.error };
@@ -37,6 +45,6 @@ export async function preflightDir(client: AppwireClientLike, path: string): Pro
   }
 }
 
-export async function createDir(client: AppwireClientLike, path: string): Promise<void> {
-  await client.request("evener/dirs/create", { path });
+export async function createDir(client: AppwireClientLike, path: string, host: string = "local"): Promise<void> {
+  await hostRequest(client, host, "evener/dirs/create", { path });
 }

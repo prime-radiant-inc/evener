@@ -1225,7 +1225,8 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	// for parallel execution (non-read-only tools are serialized).
 	_ = sess.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{
-			Name: "slow",
+			Name:        "slow",
+			Description: "Wait for release to exercise concurrent read-only tool calls.",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
@@ -1310,8 +1311,9 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	makeTool := func(name string, readOnly bool) tool.RegisteredTool {
 		return tool.RegisteredTool{
 			Definition: llm.ToolDefinition{
-				Name:       name,
-				Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
+				Name:        name,
+				Description: "Record completion order to exercise read/write tool scheduling.",
+				Parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 			},
 			ReadOnly: readOnly,
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {

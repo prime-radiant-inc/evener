@@ -145,6 +145,50 @@ func TestSwapEnvAndRefresh_TestConfigSkipsGitDiscovery(t *testing.T) {
 	}
 }
 
+// TestSwapEnvAndRefreshReportsSuccessWhenPostCommitRetentionPublicationFails
+// pins the "error ⇒ no swap" contract: a scratch-retention publication failure
+// that lands AFTER the environment swap is committed must not be returned as a
+// swap error, because every caller treats that error as "the swap did not
+// happen" and rolls back a session that is already rooted in the new
+// environment. The failure is injected at the post-adopt window (after the
+// pre-commit binding stage, before the install) by replacing the retention
+// manifest with a directory.
+func TestSwapEnvAndRefreshReportsSuccessWhenPostCommitRetentionPublicationFails(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	defer sess.Close()
+	base, ok := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("session env is not *execenv.LocalExecutionEnvironment: %T", sess.currentEnv())
+	}
+	manifestPath := filepath.Join(dir, "scratch-retention", sess.ID()+".json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Fatalf("fixture has no retention manifest at %q: %v", manifestPath, err)
+	}
+	// The hook runs after the pre-commit binding stage and before the install, so
+	// the swap still commits; only the later publication sees the broken manifest.
+	origHook := sess.cfg.testOnly.swapEnvAfterAdopt
+	sess.cfg.testOnly.swapEnvAfterAdopt = func(context.Context) {
+		if err := os.Remove(manifestPath); err != nil {
+			t.Errorf("remove manifest: %v", err)
+			return
+		}
+		if err := os.Mkdir(manifestPath, 0o700); err != nil {
+			t.Errorf("replace manifest with a directory: %v", err)
+		}
+	}
+	defer func() { sess.cfg.testOnly.swapEnvAfterAdopt = origHook }()
+
+	nextDir := t.TempDir()
+	next := base.WithWorkingDirectory(nextDir)
+	if err := sess.swapEnvAndRefresh(next, nil); err != nil {
+		t.Fatalf("swap reported failure after committing the environment: %v", err)
+	}
+	if got := sess.currentEnv().WorkingDirectory(); got != nextDir {
+		t.Fatalf("current env working dir = %q, want the swapped-in %q", got, nextDir)
+	}
+}
+
 // gitShimScript is a PATH-shim `git` that, for every invocation, touches a
 // marker file and then blocks until the test harness creates a companion
 // ack file (bounded so a harness bug can't hang the test forever), before

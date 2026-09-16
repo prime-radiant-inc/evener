@@ -98,9 +98,12 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 - `@evener/appwire-client/state/navigation` - the navigation state layer both
   apps' navigation stores are built on: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
-  merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
-  subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
-  the four modules whole.
+  merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
+  matching a hub invalidation target to a loaded resource and the revision it
+  obliges it to reach (`invalidation`), and the revalidator that re-reads
+  loaded resources on the hub's invalidations through injected request
+  callbacks (`revalidator`). The subpath resolves to
+  `state/navigation/index.ts`, a barrel that re-exports the six modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a

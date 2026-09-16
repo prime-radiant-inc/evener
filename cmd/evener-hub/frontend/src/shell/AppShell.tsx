@@ -55,6 +55,7 @@ import "../panes/spawn"; // registers the "spawn" pane type
 import "../panes/doc"; // registers the "doc" pane type
 import "../panes/transcript"; // registers the "transcript" pane type
 import "../panes/sessionPanels"; // registers the session panel pane types
+import { initActivitySummary } from "../stores/activitySummary";
 import { initPrefs } from "../stores/prefs";
 
 // Apply persisted display preferences (theme/density/font-size) during
@@ -63,6 +64,10 @@ import { initPrefs } from "../stores/prefs";
 // documented wiring line, pre-proven against the full suite by its review.)
 initPrefs();
 initTranscriptDisplay();
+
+// Wires the activity summary store to the activity panel store: the panel
+// requires it before it fetches a continuation page.
+initActivitySummary();
 
 // Start the notifications engine once, at module evaluation, beside initPrefs.
 // Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS

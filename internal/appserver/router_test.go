@@ -33,3 +33,33 @@ func TestRouterDispatchesTypedHandler(t *testing.T) {
 		t.Fatalf("list=%+v", list)
 	}
 }
+
+// TestRouterAdmissionNilReleaseStillDispatches proves Dispatch tolerates an
+// admission that holds no resource: a nil release with a nil error means
+// "admitted, nothing to release", not "admission never ran". Dispatch must run
+// the handler and return its result rather than dereferencing the nil release
+// when the handler returns.
+func TestRouterAdmissionNilReleaseStillDispatches(t *testing.T) {
+	router := NewRouter()
+	router.SetAdmission(func(context.Context, string) (func(), error) { return nil, nil })
+	var called bool
+	router.Handle(appwire.MethodThreadList, func(context.Context, json.RawMessage) (any, error) {
+		called = true
+		return appwire.ThreadListResponse{}, nil
+	})
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("Dispatch panicked on a nil admission release: %v", recovered)
+		}
+	}()
+	out, err := router.Dispatch(context.Background(), appwire.Request{Method: appwire.MethodThreadList})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if !called {
+		t.Fatal("handler was not invoked")
+	}
+	if _, ok := out.(appwire.ThreadListResponse); !ok {
+		t.Fatalf("response type=%T", out)
+	}
+}

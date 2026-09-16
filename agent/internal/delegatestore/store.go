@@ -49,6 +49,13 @@ func Open(path string) (*Store, error) {
 func (s *Store) Load() ([]Event, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadLocked()
+}
+
+// loadLocked is the shared, mutex-held primary-log validation body. Store.Load
+// and Store.CheckRetirementReady both call it, so readiness never recursively
+// acquires the mutex and never observes a different view than a strict load.
+func (s *Store) loadLocked() ([]Event, error) {
 	if err := s.ensureUsableLocked(); err != nil {
 		return nil, err
 	}
@@ -64,6 +71,22 @@ func (s *Store) Load() ([]Event, error) {
 		return nil, fmt.Errorf("delegatestore: fold: %w", err)
 	}
 	return cloneEvents(events), nil
+}
+
+// CheckRetirementReady validates that the primary log is strictly readable and
+// reconstructible and that the store has not latched a sticky write/rollback
+// failure. It reads the original file bytes with the same strict decoder as
+// Store.Load, under the same critical section, without closing the store or
+// appending an event. A corrupt primary is reported as an error; it is never
+// repaired from an in-memory snapshot.
+func (s *Store) CheckRetirementReady() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureUsableLocked(); err != nil {
+		return err
+	}
+	_, err := s.loadLocked()
+	return err
 }
 
 func (s *Store) Append(state State, event Event) (Event, State, error) {

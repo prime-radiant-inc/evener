@@ -23,12 +23,17 @@ import {
   canonicalResourceKey,
   type DecodedNavigationResponse,
   decodeNavigationResponse,
+  isGenerationMismatch,
   isNavigationUnavailable,
+  isRevalidatorDisposed,
+  isSequenceGap,
   isSettledGone,
   keyID,
   materializeNavigationResource,
   NavigationBaseInvalidError,
+  type NavigationInvalidationWaiter,
   type NavigationRequest,
+  NavigationRevalidator,
   type NormalizedResource,
   nextNavigationOffset,
   normalizedGraphFromSnapshot,
@@ -38,14 +43,8 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
-import {
-  isGenerationMismatch,
-  isNavigationNotInitialized,
-  isRevalidatorDisposed,
-  type NavigationInvalidationWaiter,
-  NavigationRevalidator,
-} from "./revalidator";
+import { projectNodeExpansionKey } from "../../shell/rail/railExpansion";
+import { type NavigationPersistence, railExpansionPersistence } from "./persistence";
 
 type ResourceMap = ReadonlyMap<string, ResourceState>;
 
@@ -55,6 +54,15 @@ type ResourceMap = ReadonlyMap<string, ResourceState>;
  * emits nothing (e.g. shutting down an already-exited session is a success
  * no-op), so the action still converges instead of hanging forever. */
 export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
+
+/** True when error is this store's not-initialized rejection (a waiter armed
+ * while no revalidator existed — e.g. a shutdown action racing client
+ * replacement, with navigation becoming v2 before convergence begins). There
+ * is nothing to converge against yet the caller's mutation already committed,
+ * so callers treat it as a successful no-op. */
+function isNavigationNotInitialized(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("navigation is not initialized");
+}
 
 /** Await a matching invalidation, but fall back to converging `targets`
  * directly when none arrives within the timeout. A receipt only ends the
@@ -175,35 +183,21 @@ export interface NavigationStoreState {
 }
 
 const initialAttention = { changed: [], summary: null };
-const initial = (): Omit<
-  NavigationStoreState,
-  | "loadManifest"
-  | "loadSection"
-  | "loadCatalog"
-  | "loadPinCatalog"
-  | "loadPinCatalogPages"
-  | "loadPinSection"
-  | "trackPinSection"
-  | "loadProject"
-  | "loadProjectPage"
-  | "lookupLocation"
-  | "setExpanded"
-  | "toggleExpanded"
-  | "awaitNavigationTargets"
-  | "awaitNavigationInvalidation"
-  | "applyNavigationMutation"
-> => ({
+/** The store's whole state: what the host persisted, plus the actions bound
+ * to the port that persisted it. */
+const navigationState = (persistence: NavigationPersistence): NavigationStoreState => ({
   capability: null,
   mode: "unknown",
   clientGenerationID: "",
   lastSequence: 0,
   manifest: null,
   resources: new Map(),
-  expanded: loadExpansion(),
+  expanded: persistence.readExpansion(),
   attention: initialAttention,
   protocolError: null,
+  ...actions(persistence),
 });
-export const navigationStore = createStore<NavigationStoreState>(() => ({ ...initial(), ...actions() }));
+export const navigationStore = createStore<NavigationStoreState>(() => navigationState(railExpansionPersistence));
 export function useNavigationStore<T>(selector: (s: NavigationStoreState) => T): T;
 export function useNavigationStore(): NavigationStoreState;
 export function useNavigationStore<T>(selector?: (s: NavigationStoreState) => T): T | NavigationStoreState {
@@ -489,7 +483,18 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
   if (gone) revalidator?.force([projectResourceKey]);
   return load<NavigationProjectResource>(projectResourceKey);
 }
-function actions() {
+/** The one ordered sequence behind both expansion actions: publish, then
+ * persist, then hydrate what the row just revealed. Persistence is
+ * best-effort and must never cost the caller the in-memory change, so the
+ * store publishes before it hands the map to the host. */
+function commitExpansion(persistence: NavigationPersistence, projectKey: string, expanded: boolean): void {
+  const next = new Map(navigationStore.getState().expanded);
+  next.set(projectKey, expanded);
+  navigationStore.setState({ expanded: next });
+  persistence.writeExpansion(next);
+  if (expanded && navigationStore.getState().mode === "v2") void hydrateProject(projectKey, bootEpoch);
+}
+function actions(persistence: NavigationPersistence) {
   return {
     loadManifest: () => load<NavigationManifest>({ kind: "manifest" }),
     loadSection: (section: "live" | "needs_you", offset = 0, limit = PAGE_LIMIT) =>
@@ -555,21 +560,9 @@ function actions() {
       revalidator.forceLocations();
       return revalidator.waitForTargets(mutation.targets, mutation.generation_id);
     },
-    setExpanded: (projectKey: string, expanded: boolean) => {
-      const expandedMap = new Map(navigationStore.getState().expanded);
-      expandedMap.set(projectKey, expanded);
-      navigationStore.setState({ expanded: expandedMap });
-      saveExpansion(expandedMap);
-      const mode = navigationStore.getState().mode;
-      if (expanded && mode === "v2") void hydrateProject(projectKey, bootEpoch);
-    },
-    toggleExpanded: (projectKey: string) => {
-      const m = new Map(navigationStore.getState().expanded);
-      m.set(projectKey, !(m.get(projectKey) ?? false));
-      saveExpansion(m);
-      navigationStore.setState({ expanded: m });
-      if (m.get(projectKey) && navigationStore.getState().mode === "v2") void hydrateProject(projectKey, bootEpoch);
-    },
+    setExpanded: (projectKey: string, expanded: boolean) => commitExpansion(persistence, projectKey, expanded),
+    toggleExpanded: (projectKey: string) =>
+      commitExpansion(persistence, projectKey, !(navigationStore.getState().expanded.get(projectKey) ?? false)),
   };
 }
 function nonemptyCatalogs(manifest: NavigationManifest): Array<(typeof NAVIGATION_CATALOGS)[number]> {
@@ -766,7 +759,7 @@ export function initNavigation(
         navigationStore.setState({ protocolError: new Error("navigation sequence or generation mismatch") });
         return;
       }
-      const gap = p.sequence > s.lastSequence + 1;
+      const gap = isSequenceGap(s.lastSequence, p.sequence);
       navigationStore.setState({ lastSequence: p.sequence });
       if (revalidator) {
         if (gap) revalidator.force(revalidator.loadedKeys());
@@ -851,7 +844,9 @@ export function initNavigation(
     }
   };
 }
-export function resetNavigationStoreForTests(): void {
+/** Rebuilds the store over a host port; the browser's own when a caller
+ * names none. */
+export function resetNavigationStoreForTests(persistence: NavigationPersistence = railExpansionPersistence): void {
   bootEpoch++;
   unsubs.forEach((u) => {
     u();
@@ -862,5 +857,5 @@ export function resetNavigationStoreForTests(): void {
   activeClient = null;
   bootStartedEpoch = -1;
   manifestFanout = null;
-  navigationStore.setState({ ...initial(), ...actions() });
+  navigationStore.setState(navigationState(persistence));
 }

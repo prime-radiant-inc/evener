@@ -428,6 +428,11 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if c == nil || receiver == nil {
 		return nil, errDelegateDeliveryReceiverUnavailable
 	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	aggregate, live, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
@@ -479,6 +484,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 }
 
 func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAttentionClaim, committed bool) error {
+	defer c.retirementChanged()
 	if c == nil || claim == nil {
 		return errDelegateStaleLease
 	}
@@ -688,6 +694,11 @@ func (s *Session) restoreColdDelegateAttentionRuntime(delegateID string, gates .
 	if s == nil || s.delegateController == nil || delegateID == "" {
 		return nil, nil, errors.New("cold delegate attention restore identity is incomplete")
 	}
+	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
+	if retirementErr != nil {
+		return nil, nil, retirementErr
+	}
+	defer retirementRelease()
 	started, parentID, err := s.delegateController.idleDelegateRestoreCommit(delegateID)
 	if err != nil {
 		return nil, nil, err
@@ -766,10 +777,22 @@ func (s *Session) reconstructDelegateAttentionRuntime(owner *Session, started de
 		finishRestore(nil, err)
 		return nil, err
 	}
+	var installation *delegateIdleRuntimeInstallation
+	if mode == delegateRuntimeAttachIdle {
+		installation, err = s.delegateController.beginIdleRuntimeInstallation(started.lease.delegateID)
+		if err != nil {
+			if restored {
+				sub.sess.discardRestoredCandidate()
+			}
+			finishRestore(nil, err)
+			return nil, err
+		}
+		defer installation.release()
+	}
 	attach := func(selected *subagent) error {
 		switch mode {
 		case delegateRuntimeAttachIdle:
-			return s.delegateController.AttachIdleRuntime(started.lease.delegateID, selected.sess)
+			return installation.attach(selected.sess)
 		case delegateRuntimeAttachStarted:
 			return s.delegateController.AttachRuntime(started.lease, selected.sess)
 		default:
@@ -1074,6 +1097,11 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if s == nil || s.delegateController == nil {
 		return failed(errors.New("delegate controller is unavailable"))
 	}
+	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
+	if retirementErr != nil {
+		return failed(retirementErr)
+	}
+	defer retirementRelease()
 	if delegateID == "" || message == "" {
 		return failed(errors.New("invalid_request: delegate_id and message are required"))
 	}
@@ -1521,6 +1549,11 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if s == nil || s.delegateController == nil {
 		return delegateStartFailed(errors.New("delegate controller is unavailable"))
 	}
+	retirementRelease, retirementErr := s.beginRetirementMutation("delegate")
+	if retirementErr != nil {
+		return delegateStartFailed(retirementErr)
+	}
+	defer retirementRelease()
 	task := strings.TrimSpace(args.Task)
 	if task == "" {
 		return delegateStartFailed(errors.New("invalid_request: prompt is required"))
@@ -1991,7 +2024,22 @@ func (isolation delegateIsolation) cleanup(s *Session, delegateID string) {
 		// belongs to this isolation step), so this is the only rollback for the
 		// scratch the construction's git snapshot minted on an unsandboxed lane,
 		// as well as for a sandboxed lane's owned one.
-		disposeUnadoptedScratch(isolation.env)
+		//
+		// A construction that failed AFTER it pinned this allocation into the
+		// root's durable retention manifest leaves a reference that names the
+		// directory. Removing the directory would leave that reference (and its
+		// binding slot) dangling, since references are append-only and there is
+		// no unpin API, and the root's retirement preparation would then refuse
+		// forever. Such an allocation is retained — its lease released, its
+		// directory kept — exactly as the restore-path teardowns do; only a
+		// fresh mint the manifest does not reference is disposed.
+		if s.ownsReferencedRetainedScratch(isolation.env) {
+			if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
+				local.RetainSessionScratch()
+			}
+		} else {
+			disposeUnadoptedScratch(isolation.env)
+		}
 	}
 	if isolation.worktreePath != "" {
 		s.rollbackFreshDelegateWorktree(delegateID, isolation.worktreePath, isolation.worktreeProject)
@@ -2011,6 +2059,14 @@ func (runtime delegateRuntime) construct(_ context.Context, args delegateArgs, s
 		ctx = context.WithValue(ctx, ctxToolItemID, started.descriptor.OriginItemID)
 	}
 	ctx = context.WithValue(ctx, ctxParentDelegateID, started.lease.delegateID)
+	// Register the delegate child's own binding under the parent root's
+	// retention manifest before the child environment can expose or mint
+	// scratch, so its allocation is pinned rather than inert.
+	if local, ok := isolation.env.(*execenv.LocalExecutionEnvironment); ok {
+		if err := s.installChildScratchRetention(local, started.descriptor.ChildSessionID); err != nil {
+			return nil, err
+		}
+	}
 	ctx = context.WithValue(ctx, ctxDelegationAllowance, started.descriptor.DelegationAllowance)
 	ctx = context.WithValue(ctx, delegateChildSessionIDContextKey{}, started.descriptor.ChildSessionID)
 	ctx = context.WithValue(ctx, delegatePreparedEnvironmentContextKey{}, delegatePreparedEnvironment{
@@ -2065,6 +2121,11 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if s == nil || started.lease.delegateID == "" {
 		return nil, false, errors.New("delegate restore reservation is unavailable")
 	}
+	release, err := s.beginRetirementMutation("delegate_restore")
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
 	descriptor := cloneDelegateStartDescriptor(started.descriptor)
 	if retained := s.subagents.get(descriptor.ChildSessionID); retained != nil && retained.sess != nil {
 		return retained, false, nil
@@ -2097,21 +2158,92 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			profile = provider.WithCommunicateOutputSchema(profile, resultSchema)
 		}
 	}
-	childEnv, ownsFresh, err := s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
-	if err != nil {
-		return nil, false, err
+	// A shared child (no worktree isolation, no per-delegate sandbox) ran on its
+	// parent's own environment object; reconstruct it on that SAME parent object
+	// rather than a fresh clone. Plan 654: "shared consumers of one binding reuse
+	// one environment, not fresh scratch" — a clone would be a second owned
+	// environment carrying the parent's binding, and (for a parked root) would
+	// not be the root's restored worktreeRestoreEnv object.
+	var childEnv execenv.ExecutionEnvironment
+	var ownsFresh bool
+	if shared := s.sharedRestoreEnvironment(descriptor); shared != nil {
+		childEnv = shared
+	} else {
+		childEnv, ownsFresh, err = s.prepareSubagentEnvironment(descriptor.WorkingDir, policy)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	discardEnv := true
+	// mintedScratch is the failure-path teardown condition, decoupled from
+	// ownsFresh: a fresh environment's scratch is always this restore's to drop,
+	// while a shared one is only dropped when the shared-branch check below
+	// proves the environment held no scratch this restore could have mistaken
+	// for its own mint.
+	mintedScratch := ownsFresh
+	// adoptedScratch records that adoption below transferred a durable retained
+	// allocation onto an environment this restore created. ownsFresh says only
+	// that the environment is this restore's; after adoption it exposes a
+	// retained handle the manifest still references, never a mint to dispose.
+	adoptedScratch := false
 	defer func() {
 		// The construction below runs the child's git snapshot, which is what
 		// mints an unsandboxed environment's scratch, so a failure after that
 		// point has one to drop as surely as a sandboxed restore has its owned one.
-		if discardEnv && ownsFresh {
-			disposeUnadoptedScratch(childEnv)
+		if !discardEnv {
+			return
+		}
+		switch {
+		case adoptedScratch:
+			// Release the lease the adoption took but keep the directory and its
+			// manifest reference, the handoff a retirement makes: the retained
+			// allocation is durable state a later restore reacquires.
+			if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
+				local.RetainSessionScratch()
+			}
+		case mintedScratch:
+			// Adoption can transfer one slot of the child's binding and then
+			// fail on another, and its recovery can pin a fresh mint; either
+			// way a blanket dispose would remove a directory the manifest still
+			// references. Settle it by what the manifest names.
+			s.settleFailedRestoreScratch(childEnv, descriptor.ChildSessionID)
 		}
 	}()
 	if childEnv == nil || childEnv.WorkingDirectory() != descriptor.WorkingDir || localEnvPolicyName(childEnv) != descriptor.LocalEnvPolicy || !frozenStableDelegateSandboxMatches(childEnv, descriptor.Sandbox) {
 		return nil, false, errors.New("committed delegate environment is unavailable")
+	}
+	// Install the committed child's retained scratch before construction runs the
+	// child's git snapshot, which is what mints a fresh unsandboxed scratch.
+	// Binding the exact consumer here is what restores the child's allocation at
+	// its original absolute path instead of minting a replacement.
+	if local, ok := childEnv.(*execenv.LocalExecutionEnvironment); ok {
+		// Adoption reports whether a retained allocation actually transferred,
+		// which is what the failure path keys its retain-vs-dispose decision on.
+		// Re-deriving that from SessionScratchDir() before/after is wrong for a
+		// sandboxed env, whose accessor reflects only the wrapper tmp and so
+		// hides a transferred unsandboxed slot.
+		adopted, err := s.adoptRestoredConsumerScratch(local, descriptor.ChildSessionID, ownsFresh)
+		if err != nil {
+			return nil, false, fmt.Errorf("restore delegate scratch: %w", err)
+		}
+		// Ownership and failure-path disposal are separate concerns. A shared
+		// child must not own its parent's environment (ownsFresh stays false),
+		// but its construction still mints a scratch on that environment when
+		// none is there — and on base, where the same child got a fresh clone,
+		// that minted scratch was dropped on failure. Drop it here too, but
+		// only when the environment held none once the child's retained binding
+		// was installed: a scratch present before construction — the parent's
+		// own, or the child's adopted retained one — is never this restore's to
+		// dispose.
+		if !ownsFresh && local.SessionScratchDir() == "" {
+			mintedScratch = true
+		}
+		// Adoption filled an environment this restore created with a durable
+		// retained handle. That allocation is durable state, so the failure path
+		// must retain it, not dispose it.
+		if ownsFresh && adopted {
+			adoptedScratch = true
+		}
 	}
 	activatedSkillBodies, err := restoreFrozenSkillBodies(descriptor.FrozenSkillNames, descriptor.FrozenSkillBodies)
 	if err != nil {
@@ -2144,6 +2276,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		sandboxProvisioned:      true,
 		spawn: spawnConfig{
 			delegateController:            s.delegateController,
+			retirementController:          s.retirementController.Load(),
 			delegateRootSessionID:         s.delegateRootSessionID,
 			owningDelegateID:              started.lease.delegateID,
 			subscriberCount:               s.subscriberCountFn,
@@ -2221,12 +2354,122 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	return sub, true, nil
 }
 
+// adoptRestoredConsumerScratch adopts sessionID's retained consumer allocation
+// onto env on a cold restore and reports whether it transferred a durable
+// allocation. Resume provisions a sandbox before adoption, and EnableSandbox
+// always mints a fresh session scratch; adoptRetainedScratchFor's same-kind
+// guard would then skip the persisted sandbox slot, leaving the restored
+// delegate in the empty fresh directory while its retained handle stays
+// orphaned in the pool and the kernel wrapper keeps pointing at the mint. This
+// mirrors adoptResumedRootScratch for the consumer/delegate path: when the
+// consumer's binding owns a sandbox allocation at a different directory, rebuild
+// env's kernel wrapper around it BEFORE disposing the mint (so a host that
+// cannot wrap refuses while the mint is intact), dispose the mint, then adopt;
+// a failure after the disposal re-provisions the environment's own scratch. A
+// shared environment (ownsFresh false) belongs to the live parent, so its
+// already-owned kinds are left alone and its scratch is never disposed here.
+func (s *Session) adoptRestoredConsumerScratch(env *execenv.LocalExecutionEnvironment, sessionID string, ownsFresh bool) (bool, error) {
+	if env == nil {
+		return false, nil
+	}
+	before := scratchRefDirs(env)
+	dir, ok := s.retainedConsumerScratchDir(sessionID, sandbox.ScratchKindSandbox)
+	if ownsFresh && ok && filepath.Clean(dir) != filepath.Clean(env.SessionScratchDir()) {
+		if err := s.rebuildSandboxWrapper(env, dir); err != nil {
+			return false, err
+		}
+		env.DisposeSandboxScratch()
+		if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+			return false, reprovisionDiscardedSandboxScratch(env, err)
+		}
+	} else if _, err := s.adoptConsumerScratch(env, sessionID); err != nil {
+		return false, err
+	}
+	return scratchRefsGained(before, env), nil
+}
+
+// scratchRefDirs returns the set of canonical directories env currently owns,
+// one per scratch kind, for a before/after adoption comparison that sees every
+// kind rather than the single directory SessionScratchDir reports.
+func scratchRefDirs(env *execenv.LocalExecutionEnvironment) map[string]struct{} {
+	refs, err := env.ScratchRetentionReferences()
+	if err != nil || len(refs) == 0 {
+		return nil
+	}
+	dirs := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if dir, err := filepath.Abs(ref.Dir); err == nil {
+			dirs[filepath.Clean(dir)] = struct{}{}
+		}
+	}
+	return dirs
+}
+
+// scratchRefsGained reports whether env owns a scratch directory it did not own
+// before adoption: the mark of a transferred retained handle. A no-op adoption
+// (a consumer binding with no slot to transfer) gains nothing and must not be
+// mistaken for one, or the failure path would retain a freshly minted scratch
+// it should dispose.
+func scratchRefsGained(before map[string]struct{}, env *execenv.LocalExecutionEnvironment) bool {
+	for dir := range scratchRefDirs(env) {
+		if _, ok := before[dir]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// sharedRestoreEnvironment resolves the parent environment a shared child
+// occupied before a restart. A delegate created without worktree isolation and
+// without a per-delegate sandbox runs on its parent's own environment object
+// (prepareSubagentEnvironment returns s.currentEnv() for an empty working-dir
+// override), so its cold restore must hand it that SAME reconstructed object
+// rather than a fresh clone — plan 654's "shared consumers of one binding reuse
+// one environment, not fresh scratch", and the reason a parked root's restored
+// worktreeRestoreEnv can be the child's environment. A clone would be a second
+// owned environment carrying the parent's binding identity and would fail the
+// plan's "same reconstructed E0 object" checkpoint. It returns nil for a
+// non-shared child, or when no held environment matches the committed working
+// directory (the caller then constructs one).
+func (s *Session) sharedRestoreEnvironment(descriptor delegatestore.Descriptor) *execenv.LocalExecutionEnvironment {
+	if descriptor.Isolation != "" || descriptor.Sandbox != nil {
+		return nil
+	}
+	want := filepath.Clean(descriptor.WorkingDir)
+	if want == "" || want == "." {
+		return nil
+	}
+	s.mu.Lock()
+	candidates := make([]*execenv.LocalExecutionEnvironment, 0, 3+len(s.abandonedEnvs))
+	if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+		candidates = append(candidates, local)
+	}
+	candidates = append(candidates, s.worktreeRestoreEnv)
+	if local, ok := s.parentSharedEnv.(*execenv.LocalExecutionEnvironment); ok {
+		candidates = append(candidates, local)
+	}
+	candidates = append(candidates, s.abandonedEnvs...)
+	s.mu.Unlock()
+	for _, candidate := range candidates {
+		if candidate != nil && filepath.Clean(candidate.WorkingDirectory()) == want {
+			return candidate
+		}
+	}
+	return nil
+}
+
 func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (*subagent, bool, func(*subagent, error), error) {
 	s := runtime.owner
 	finish := func(*subagent, error) {}
 	if s == nil {
 		return nil, false, finish, errors.New("delegate restore reservation is unavailable")
 	}
+	release, err := s.beginRetirementMutation("delegate_restore")
+	if err != nil {
+		return nil, false, finish, err
+	}
+	// Every caller finishes after installation and deferred effects or rollback.
+	finish = func(*subagent, error) { release() }
 	childID := strings.TrimSpace(started.descriptor.ChildSessionID)
 	if childID == "" {
 		return nil, false, finish, errors.New("delegate restore child identity is unavailable")
@@ -2243,6 +2486,7 @@ func (runtime delegateRuntime) restoreIdleForSend(started delegateStartCommit) (
 		return reconstructed, false, finish, waitErr
 	}
 	finish = func(sub *subagent, restoreErr error) {
+		defer release()
 		s.subagents.finishReconstruction(childID, pending, sub, restoreErr)
 	}
 	sub, restored, restoreErr := runtime.restoreIdle(started)
@@ -2603,12 +2847,25 @@ func (c *delegateTreeController) runtimeForDelegateOwner(row delegateSnapshot) *
 
 func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) ([]delegateDeliveryPlan, error) {
 	var deliveries []delegateDeliveryPlan
+	// Each Reconcile hands back a retirement-mutation lease, and bootstrap
+	// deliberately holds every one until this function returns. Collect them
+	// and release all on return — LIFO, as the per-iteration defers did —
+	// rather than deferring inside the loop.
+	var retirementReleases []func()
+	defer func() {
+		for _, retirementRelease := range slices.Backward(retirementReleases) {
+			retirementRelease()
+		}
+	}()
 	for {
 		evidence, err := collectDelegateReconcileEvidence(controller.stateDir, controller.ReconcileRequirements())
 		if err != nil {
 			return nil, fmt.Errorf("collect evidence: %w", err)
 		}
 		plans, err := controller.Reconcile(evidence)
+		if plans.retirementRelease != nil {
+			retirementReleases = append(retirementReleases, plans.retirementRelease)
+		}
 		if err != nil {
 			return nil, err
 		}

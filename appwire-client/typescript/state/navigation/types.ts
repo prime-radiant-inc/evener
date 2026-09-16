@@ -3,7 +3,7 @@
 // and response shapes, and the classifiers for a hub that has no navigation
 // to offer or a base the hub no longer recognizes.
 import { WireError } from "../../errors";
-import type { NavigationInvalidationTarget, NavigationReadBase } from "../../types.gen";
+import type { NavigationReadBase } from "../../types.gen";
 import type { DecodedNavigationResponse, NormalizedResource } from "./codec";
 
 const NAVIGATION_UNAVAILABLE_CODE = -32014;
@@ -155,26 +155,4 @@ export function settledPresence(resource: ResourceState | null | undefined): str
 /** True only when the resource is a settled (non-stale) `gone` tombstone. */
 export function isSettledGone(resource: ResourceState | null | undefined): boolean {
   return settledPresence(resource) === "gone";
-}
-export function targetBase(target: NavigationInvalidationTarget): Partial<ResourceKey> | undefined {
-  switch (target.kind) {
-    case "manifest":
-      return { kind: "manifest" };
-    case "section":
-      return target.section === "live" || target.section === "needs_you"
-        ? { kind: "section", section: target.section }
-        : undefined;
-    case "pin_catalog":
-      return { kind: "pin_catalog" };
-    case "pin_section":
-      return target.sectionId ? { kind: "pin_section", sectionId: target.sectionId } : undefined;
-    case "catalog":
-      return target.catalog === "projects" || target.catalog === "archived_projects" || target.catalog === "test_runs"
-        ? { kind: "catalog", catalog: target.catalog }
-        : undefined;
-    case "project":
-      return target.projectKey ? { kind: "project", projectKey: target.projectKey } : undefined;
-    default:
-      return undefined;
-  }
 }

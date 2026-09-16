@@ -1347,11 +1347,11 @@ func TestProjectDeleteDeletionStateResumesEveryCleanupArtifact(t *testing.T) {
 				}
 				return oldRemoveDir(path)
 			}
-			removeProjectSessionRendezvousEntry = func(dir string, pid int) error {
+			removeProjectSessionRendezvousEntry = func(dir string, entry rendezvous.Entry) error {
 				if failStep && step == "rendezvous" {
 					return injected
 				}
-				return oldRemoveRendezvous(dir, pid)
+				return oldRemoveRendezvous(dir, entry)
 			}
 			rebuildProjectDeletionPast = func(past *hubcore.PastIndex) (bool, error) {
 				if failStep && step == "past-index" {

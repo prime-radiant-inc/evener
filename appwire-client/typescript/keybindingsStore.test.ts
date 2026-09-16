@@ -14,7 +14,7 @@ import { deferred } from "./testing/deferred";
 import { FakeClient } from "./testing/fakeClient";
 import { memoryKeybindingDraftStorage } from "./testing/keybindingDraftStorage";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
-import type { KeybindingsOverrides } from "./types.gen";
+import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 const getMethod = "evener/settings/keybindings/get";
 const patchMethod = "evener/settings/keybindings/patch";
@@ -102,6 +102,23 @@ describe("two stores share nothing", () => {
     expect(draftsB.stored()).toBeNull();
     expect(storeA.getState().draft).toEqual({ version: 1, revision: 3, rules });
     expect(storeB.getState().draft).toBeNull();
+  });
+});
+
+describe("an undecodable changed broadcast", () => {
+  test("schedules the store's own read so the state converges, without dropping the change", async () => {
+    const client = clientServing(1);
+    const store = await readyStore(client, { registry: registryWithDefaults() });
+    const rules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    client.on(getMethod, () => payload(2, rules));
+
+    client.emitNotification({ method: changedMethod, params: { version: 1, revision: "two", rules } as never });
+
+    await vi.waitFor(() => expect(store.getState().revision).toBe(2));
+    expect(store.getState().rawOverrides).toEqual(rules);
+    // The initial load plus exactly one follow-up read.
+    expect(client.calls.filter((c) => c.method === getMethod)).toHaveLength(2);
+    expect(store.getState().hubError).toBeNull();
   });
 });
 
@@ -355,6 +372,15 @@ describe("the checkpointed draft editor", () => {
     const store = createKeybindingsStore({ client: new FakeClient("ready"), drafts: drafts.storage });
     expect(store.getState()).toMatchObject({ draft: { revision: 3, rules }, writeUncertain: true });
   });
+
+  test.each<[string, unknown]>([
+    ["a whitespace-only action id", [{ action: " ", chord: "Control+P" }]],
+    ["a whitespace-only chord", [{ action: ACTIONS.paletteOpen, chord: "\t\n" }]],
+  ])("editDraft refuses %s, as the hub would", async (_name, proposed) => {
+    const store = await readyStore(clientServing(3), { drafts: memoryKeybindingDraftStorage().storage });
+    expect(() => store.getState().editDraft(proposed as KeybindingsRule[])).toThrow("Invalid keybinding draft.");
+    expect(store.getState().draft).toBeNull();
+  });
 });
 
 describe("a retired payload fences every reply still in flight", () => {
@@ -587,6 +613,23 @@ describe("payload rules shared by both apps", () => {
     ["the wrong version", { version: 2, revision: 2, rules: [] }, undefined],
     ["a negative revision", { version: 1, revision: -1, rules: [] }, undefined],
     ["a non-string action", { version: 1, revision: 1, rules: [{ action: 1, chord: null }] }, undefined],
+    ["an empty action id", { version: 1, revision: 1, rules: [{ action: "", chord: "Control+P" }] }, undefined],
+    ["an empty chord", { version: 1, revision: 1, rules: [{ action: "palette.open", chord: "" }] }, undefined],
+    ["an empty action and chord", { version: 1, revision: 1, rules: [{ action: "", chord: "" }] }, undefined],
+    // The hub trims before it checks (appwire/keybindings.go ValidateKeybindingsConfig),
+    // so a whitespace-only id names no action and no chord there either: accepting
+    // one here would put a rule in rawOverrides that every later whole-payload
+    // PATCH is rejected for.
+    [
+      "a whitespace-only action id",
+      { version: 1, revision: 1, rules: [{ action: " ", chord: "Control+P" }] },
+      undefined,
+    ],
+    [
+      "a whitespace-only chord",
+      { version: 1, revision: 1, rules: [{ action: "palette.open", chord: "\t\n" }] },
+      undefined,
+    ],
     ["a non-string loadError", { version: 1, revision: 1, rules: [], loadError: 4 }, undefined],
     ["a non-object", "nope", undefined],
   ])("fromWireOverrides: %s", (_name, value, expected) => {

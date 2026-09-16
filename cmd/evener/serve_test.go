@@ -1844,3 +1844,106 @@ func TestRunServeClearSessionInheritsTheShutdownLifetime(t *testing.T) {
 		t.Fatal("the cleared session's lifetime context was already over when the clear ran")
 	}
 }
+
+// adoptRetainedScratchOntoLaunchEnv reproduces the state a resume leaves when it
+// adopts a durable retained allocation from the root's scratch-retention
+// manifest onto the launch environment: a pinned directory the manifest
+// references, a current-consumer binding for rootSessionID, and the lease-owning
+// handle installed on env. It returns the reference so a caller can assert the
+// directory survived a later failure.
+func adoptRetainedScratchOntoLaunchEnv(t *testing.T, stateDir, rootSessionID string, env execenv.ExecutionEnvironment) sandbox.ScratchReference {
+	t.Helper()
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: rootSessionID}
+	scratch, err := sandbox.NewSessionScratch(t.TempDir(), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(scratch.Dir) })
+	ref := sandbox.ScratchReference{Dir: scratch.Dir, Kind: sandbox.ScratchKindUnsandboxed}
+	if err := scratch.Pin(owner, ref); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := sandbox.ScratchBinding{
+		BindingID:      "E-launch",
+		OwnerSessionID: rootSessionID,
+		WorkingDir:     stateDir,
+		Slots:          map[string]sandbox.ScratchSlot{sandbox.ScratchKindUnsandboxed: {Dir: scratch.Dir, OwnsLease: true}},
+	}
+	if err := sandbox.UpdateScratchBindings(owner, manifest.Revision,
+		[]sandbox.ScratchBinding{binding},
+		[]sandbox.ScratchConsumerBinding{{SessionID: rootSessionID, CurrentBindingID: binding.BindingID}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := scratch.Retain(); err != nil {
+		t.Fatal(err)
+	}
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("launch env = %T, want a local environment", env)
+	}
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := local.SetScratchRetentionBinding(owner, binding); err != nil {
+		t.Fatal(err)
+	}
+	if err := local.RestoreSessionScratch(binding.BindingID, ref, handle); err != nil {
+		t.Fatal(err)
+	}
+	return ref
+}
+
+// TestServePreservesAdoptedRetainedScratchWhenRestoreFails is roborev round-8
+// High 1 on the caller path: a resume adopts a durable retained allocation onto
+// the launch environment, then a later restore failure must retain it (release
+// the lease) rather than run os.RemoveAll over a directory the manifest still
+// references.
+func TestServePreservesAdoptedRetainedScratchWhenRestoreFails(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func(context.Context) error { return nil }
+	var adopted sandbox.ScratchReference
+	deps.restoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		adopted = adoptRetainedScratchOntoLaunchEnv(t, stateDir, sessionID, env)
+		return nil, errors.New("restore failed after the retained scratch was adopted")
+	}
+	deps.listen = func(context.Context, string, string) (net.Listener, error) {
+		t.Error("bound a listener for a resume that never restored")
+		return nil, errors.New("a listener was bound without a session")
+	}
+
+	err := runServeWithDeps([]string{
+		"--resume", sessionID, "--dir", stateDir, "--state-dir", stateDir, "--run-dir", t.TempDir(),
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("serve error = %v, want the restore failure", err)
+	}
+	if adopted.Dir == "" {
+		t.Fatal("restore stub never ran, so no retained scratch was adopted")
+	}
+	if _, err := os.Stat(adopted.Dir); err != nil {
+		t.Fatalf("failed resume removed the adopted retained scratch %s: %v", adopted.Dir, err)
+	}
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID}
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, adopted)
+	if err != nil {
+		t.Fatalf("failed resume did not release the adopted scratch lease: %v", err)
+	}
+	if err := handle.Retain(); err != nil {
+		t.Fatal(err)
+	}
+}
