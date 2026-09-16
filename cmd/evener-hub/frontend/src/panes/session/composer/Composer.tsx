@@ -22,11 +22,13 @@
 // ever touching the surrounding structure - see each slot's own comment.
 
 import {
+  type BuiltinMatch,
   decideSteerRoute,
   decideSubmitRoute,
   deriveSendQueueAvailability,
   filterSlashMenuItems,
   isTurnActive,
+  matchBuiltinInvocation,
   mergeSlashCommands,
   parseSlashToken,
   type SlashMenuItem,
@@ -74,7 +76,6 @@ import { AttachIcon } from "./attachments/AttachIcon";
 import { imageFilesFromClipboard } from "./attachments/clipboard";
 import { type PendingAttachment, type TextEditor, useAttachments } from "./attachments/useAttachments";
 import { runBuiltinCommand } from "./builtinCommand";
-import { type BuiltinMatch, matchBuiltinInvocation } from "./builtinInvocation";
 import { CurrentWork } from "./CurrentWork";
 import styles from "./composer.module.css";
 import { consumeComposerFocus, requestComposerFocus, useComposerFocusRequest } from "./composerFocus";
