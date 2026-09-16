@@ -10,6 +10,7 @@
 
 import type { AppwireClient } from "./client";
 import { errorText, sessionActionError, sessionActionHeadline } from "./errors";
+import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import { isActionUnavailable, isThreadNotFound } from "./sessionErrors";
 import { parseTaskListData, type TaskRow } from "./taskListData";
 
@@ -64,21 +65,9 @@ export interface TasksPanelState {
   resetForTests(): void;
 }
 
-/** Runs after every state change with the new state and the one it replaced
- * - the listener shape zustand's useStore subscribes with. */
-export type TasksPanelListener = (state: TasksPanelState, previous: TasksPanelState) => void;
+export type TasksPanelListener = StoreListener<TasksPanelState>;
 
-export interface TasksPanelStore {
-  getState(): TasksPanelState;
-  /** The state the store was created with: the snapshot a view binding
-   * (React's useSyncExternalStore, zustand's useStore) reads before its first
-   * subscription. */
-  getInitialState(): TasksPanelState;
-  /** Shallow-merges the partial (or the updater's result) into the state and
-   * notifies every subscriber, even when nothing changed. */
-  setState(partial: Partial<TasksPanelState> | ((state: TasksPanelState) => Partial<TasksPanelState>)): void;
-  /** Returns the unsubscribe function. */
-  subscribe(listener: TasksPanelListener): () => void;
+export interface TasksPanelStore extends FrameworkFreeStore<TasksPanelState> {
   /**
    * Loads the session's task list through the read port and publishes the
    * outcome. Overlapping calls for one ref coalesce: a call that arrives
@@ -177,71 +166,64 @@ interface RefreshRun {
 
 /** Builds an empty store that reads task lists through `listTasks`. */
 export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore {
-  const listeners = new Set<TasksPanelListener>();
-  let state: TasksPanelState;
-  const get = (): TasksPanelState => state;
-  const set: TasksPanelStore["setState"] = (partial) => {
-    const previous = state;
-    state = { ...state, ...(typeof partial === "function" ? partial(state) : partial) };
-    for (const listener of listeners) listener(state, previous);
-  };
-
   // Monotonic across every entry and NOT stored per-entry: an entry recreated
   // after eviction must never hand out an id that a request begun in its
   // previous life could still complete with (publishFetch matches on fetchID).
   let nextFetchID = 0;
   const runs = new Map<string, RefreshRun>();
 
-  const updateEntry = (ref: string, update: (entry: TasksPanelEntry) => TasksPanelEntry): void => {
-    set((s) => {
-      const next = new Map(s.entries);
-      next.set(ref, update(s.entries.get(ref) ?? EMPTY_TASKS_PANEL_ENTRY));
-      return { entries: next };
-    });
-  };
-
-  state = {
-    entries: new Map(),
-
-    beginFetch(ref) {
-      const fetchID = ++nextFetchID;
-      updateEntry(ref, (entry) => ({
-        ...entry,
-        loading: true,
-        unsupported: false,
-        daemonGone: false,
-        failure: null,
-        fetchID,
-      }));
-      return fetchID;
-    },
-
-    publishFetch(ref, fetchID, result) {
-      const current = get().entries.get(ref);
-      if (!current || current.fetchID !== fetchID) return false;
-      updateEntry(ref, (entry) => applyTasksFetchResult(entry, result));
-      return true;
-    },
-
-    setRows(ref, rows) {
-      updateEntry(ref, (entry) => applyTasksFetchResult(entry, { kind: "rows", rows }));
-    },
-
-    evict(ref) {
-      if (!get().entries.has(ref)) return;
+  const store = createFrameworkFreeStore<TasksPanelState>((set, get) => {
+    const updateEntry = (ref: string, update: (entry: TasksPanelEntry) => TasksPanelEntry): void => {
       set((s) => {
-        const entries = new Map(s.entries);
-        entries.delete(ref);
-        return { entries };
+        const next = new Map(s.entries);
+        next.set(ref, update(s.entries.get(ref) ?? EMPTY_TASKS_PANEL_ENTRY));
+        return { entries: next };
       });
-    },
+    };
 
-    resetForTests() {
-      nextFetchID = 0;
-      set({ entries: new Map() });
-    },
-  };
-  const initialState = state;
+    return {
+      entries: new Map(),
+
+      beginFetch(ref) {
+        const fetchID = ++nextFetchID;
+        updateEntry(ref, (entry) => ({
+          ...entry,
+          loading: true,
+          unsupported: false,
+          daemonGone: false,
+          failure: null,
+          fetchID,
+        }));
+        return fetchID;
+      },
+
+      publishFetch(ref, fetchID, result) {
+        const current = get().entries.get(ref);
+        if (!current || current.fetchID !== fetchID) return false;
+        updateEntry(ref, (entry) => applyTasksFetchResult(entry, result));
+        return true;
+      },
+
+      setRows(ref, rows) {
+        updateEntry(ref, (entry) => applyTasksFetchResult(entry, { kind: "rows", rows }));
+      },
+
+      evict(ref) {
+        if (!get().entries.has(ref)) return;
+        set((s) => {
+          const entries = new Map(s.entries);
+          entries.delete(ref);
+          return { entries };
+        });
+      },
+
+      resetForTests() {
+        nextFetchID = 0;
+        set({ entries: new Map() });
+      },
+    };
+  });
+  const { getState: get } = store;
 
   const runLoop = async (ref: string, run: RefreshRun): Promise<void> => {
     let published: TasksFetchResult | null = null;
@@ -278,15 +260,7 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
   };
 
   return {
-    getState: get,
-    getInitialState: () => initialState,
-    setState: set,
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
+    ...store,
     refresh,
     watch(notifications, ref, threadId, hasAggregate) {
       const stop = notifications.onNotification((n) => {
