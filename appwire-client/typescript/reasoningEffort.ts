@@ -1,5 +1,6 @@
 // Shared vocabulary for reasoning-effort chips and pickers, so every surface
-// (session status row, command palette, spawn form) speaks one language:
+// (the web's session status row, command palette and spawn form; native's
+// composer settings and its slash command) speaks one language:
 // "" is "(default)" (the session default applies), and "none" is an explicit
 // off the user chose — labelled by whether the model can actually express it.
 
