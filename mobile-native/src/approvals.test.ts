@@ -376,6 +376,9 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
   await refresh;
   expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
+// A resolution delivered before the initial read's response precedes the
+// snapshot cut: the response arrives without the card, and that snapshot is
+// what the open commits — no buffer, no replay.
 it("keeps resolutions delivered between the initial snapshot and its response", async () => {
   const base = boundary();
   let release!: () => void;
@@ -395,7 +398,11 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
       await new Promise<void>((resolve) => {
         release = resolve;
       });
-      return response;
+      const thread = response.thread;
+      return {
+        ...response,
+        thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
+      };
     },
     onNotification: (listener: typeof notification) => {
       notification = listener;
