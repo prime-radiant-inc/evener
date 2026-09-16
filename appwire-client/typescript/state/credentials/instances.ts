@@ -261,7 +261,7 @@ function changedCounts(before: Map<string, number>, now: Map<string, number>): S
 
 const REFETCH_DEBOUNCE_MS = 250;
 // Age budget from an own-echo marker's latest stamp - the issue, or the RPC
-// response that re-stamped it (completeLocalAuthMutation).
+// response that re-stamped it (authMutation's landed branch).
 const SELF_ECHO_WINDOW_MS = 2000;
 interface LocalAuthMutationMarker {
   // Outstanding same-provider mutations issued but not yet consumed (by an
@@ -626,7 +626,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // the read that follows. It is correlated narrowly:
   //
   // - Marked per provider when the mutation is ISSUED, then re-stamped when its
-  //   RPC response lands (completeLocalAuthMutation): the broadcast can reach
+  //   RPC response lands (authMutation's landed branch): the broadcast can reach
   //   this client before the RPC response does, so a resolve-time marker alone
   //   would miss an early echo, and a hub whose mutation + broadcast outlasts
   //   the window would otherwise have its own LATE echo read as foreign. The

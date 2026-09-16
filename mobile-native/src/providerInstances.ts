@@ -80,7 +80,14 @@ export class ProviderInstances {
   }
   private project(state: CredentialInstancesState, previous: CredentialInstancesState) {
     const change: Partial<ProviderState> = {};
-    if (listingChanged(state, previous)) change.data = listingOf(state);
+    if (listingChanged(state, previous)) {
+      change.data = listingOf(state);
+      // The rows a credential test was checked against are gone with the
+      // listing, whoever changed it - this screen, another client, the TUI -
+      // so a shown result comes down and a probe still in flight is discarded.
+      this.testRevision += 1;
+      change.credentialTest = null;
+    }
     if (state.loading !== previous.loading) change.loading = state.loading;
     if (state.error !== previous.error)
       change.error = state.error === null ? null : sessionActionError("Could not load providers", state.error);

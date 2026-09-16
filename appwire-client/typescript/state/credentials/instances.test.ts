@@ -215,9 +215,10 @@ describe("resetForTests", () => {
 });
 
 // Sentinel secret material: distinctive enough that a substring search over
-// state, error text and console output is a real assertion.
-const API_KEY = "sk-fixture-SECRET-KEY-9f3a7c";
-const CREDENTIAL_JSON = '{"type":"authorized_user","refresh_token":"fixture-REFRESH-SECRET-51d"}';
+// state, error text and console output is a real assertion, and shaped like
+// no real credential so the repo's secret scanner does not read it as one.
+const API_KEY = "never-echo-sentinel-api-key-value";
+const CREDENTIAL_JSON = '{"type":"authorized_user","refresh_token":"never-echo-sentinel-refresh-token-value"}';
 const SIGNED_IN: AuthStatusResponse = {
   provider: "work",
   supported: true,
@@ -227,7 +228,7 @@ const SIGNED_IN: AuthStatusResponse = {
   hasStoredFile: true,
 };
 
-const SENTINELS = [API_KEY, CREDENTIAL_JSON, "REFRESH-SECRET", "SECRET-KEY"];
+const SENTINELS = [API_KEY, CREDENTIAL_JSON, "never-echo-sentinel"];
 
 function nowhere(haystack: string) {
   for (const secret of SENTINELS) expect(haystack).not.toContain(secret);

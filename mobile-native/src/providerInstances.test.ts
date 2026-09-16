@@ -184,6 +184,38 @@ it("discards credential results invalidated by a provider refresh", async () => 
   await check;
   expect(model.getSnapshot().credentialTest).toBeNull();
 });
+it("a foreign auth change clears a shown credential test result", async () => {
+  const { model, io, handlers } = boundary();
+  await model.refresh();
+  io.request = async (method) =>
+    method === "evener/auth/test"
+      ? { provider: "test", status: "success", message: "" }
+      : listing("changed elsewhere");
+  await model.testCredentials("test");
+  expect(model.getSnapshot().credentialTest?.result?.status).toBe("success");
+  // Another client (or the TUI) changed this provider's credentials: the
+  // listing the result was checked against is gone with it.
+  for (const notify of handlers)
+    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
+  await vi.waitFor(() => expect(model.getSnapshot().data).toEqual(listing("changed elsewhere")));
+  expect(model.getSnapshot().credentialTest).toBeNull();
+  model.dispose();
+});
+it("a foreign auth change discards a credential test still in flight", async () => {
+  const { model, io, handlers } = boundary();
+  await model.refresh();
+  const pending = deferred<unknown>();
+  io.request = (method) =>
+    method === "evener/auth/test" ? pending.promise : Promise.resolve(listing("changed elsewhere"));
+  const check = model.testCredentials("test");
+  for (const notify of handlers)
+    notify({ method: "evener/auth/updated", params: { provider: "test", activeSource: "oauth" } });
+  await vi.waitFor(() => expect(model.getSnapshot().data).toEqual(listing("changed elsewhere")));
+  pending.resolve({ provider: "test", status: "success", message: "" });
+  await check;
+  expect(model.getSnapshot().credentialTest).toBeNull();
+  model.dispose();
+});
 it("does not echo credential test transport errors or retry the test", async () => {
   const { model, io, requests } = boundary();
   await model.refresh();
