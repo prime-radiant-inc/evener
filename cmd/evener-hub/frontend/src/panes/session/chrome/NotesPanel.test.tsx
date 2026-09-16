@@ -13,7 +13,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { useStore } from "zustand";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { connectionStore } from "../../../stores/connection";
-import { editHumanNote, syncHumanNote } from "../../../stores/humanNoteDrafts";
+import { editHumanNote, resetHumanNoteDrafts, syncHumanNote } from "../../../stores/humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetPendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import {
@@ -325,6 +325,13 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
+  // Draft records persist across renders by design, and most tests here
+  // share one default session ref: a leftover record from the previous
+  // test would be the one the eviction sweep (scheduled by the workspace
+  // reset above) races against the fresh mount to reclaim, and whichever
+  // lands last decides whether this test's edits find a record at all.
+  // Each test starts with none (TopNotesPanel.test.tsx does the same).
+  resetHumanNoteDrafts();
   resetPendingUrlRemovals();
   resetToastStoreForTests();
 });
