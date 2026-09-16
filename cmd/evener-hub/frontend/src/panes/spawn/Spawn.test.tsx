@@ -1342,22 +1342,33 @@ test("missing credentials surface setup in the composer without opening a dialog
 test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
   const user = userEvent.setup();
   let available = false;
+  const teamLocal = {
+    name: "team-local",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    auth: "none",
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+    baseUrl: "http://localhost:11434/v1",
+    endpointFingerprint: "fp-team-local",
+  };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
-      instances: [
+      instances: [teamLocal],
+      availableProviders: [
         {
-          name: "team-local",
-          providerId: "ollama",
+          id: "ollama",
+          name: "Local endpoint",
           protocol: "openai-chat",
           auth: "none",
           implicit: false,
-          isDefault: false,
-          activeSource: "none",
-          hasStoredOAuth: false,
-          credentialRequired: false,
+          authModes: [],
+          setup: teamLocal,
         },
       ],
-      availableProviders: [],
     }));
     fake.on("model/list", () => ({
       data: available
@@ -1380,10 +1391,11 @@ test("connection handoff shows the actual instance models and preserves draft un
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(screen.getByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
   available = true;
-  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  await user.click(await screen.findByRole("button", { name: "Check connection" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
   const option = await screen.findByRole("option", { name: /Served model/ });
   expect(screen.queryByRole("option", { name: /Unrelated model/ })).toBeNull();
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -1612,22 +1624,33 @@ test("retrying missing provider setup discovers a local server started afterward
 test("successful keyless testing refreshes availability without an auth notification", async () => {
   const user = userEvent.setup();
   let available = false;
+  const keyless = {
+    name: "ollama",
+    providerId: "ollama",
+    protocol: "openai-chat",
+    auth: "none",
+    implicit: true,
+    isDefault: true,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: false,
+    baseUrl: "http://localhost:11434/v1",
+    endpointFingerprint: "fp-ollama",
+  };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
-      instances: [
+      instances: [keyless],
+      availableProviders: [
         {
-          name: "ollama",
-          providerId: "ollama",
+          id: "ollama",
+          name: "Local endpoint",
           protocol: "openai-chat",
           auth: "none",
           implicit: true,
-          isDefault: true,
-          activeSource: "none",
-          hasStoredOAuth: false,
-          credentialRequired: false,
+          authModes: [],
+          setup: keyless,
         },
       ],
-      availableProviders: [],
     }));
     fake.on("model/list", () => ({ data: available ? [{ provider: "ollama", model: "local-model" }] : [] }));
     fake.on("evener/auth/test", () => ({ provider: "ollama", status: "success", message: "" }));
@@ -1646,13 +1669,14 @@ test("successful keyless testing refreshes availability without an auth notifica
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(screen.getByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  const testConnection = await screen.findByRole("button", { name: "Test connection" });
+  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(screen.getByRole("button", { name: "Local endpoint" }));
+  const testConnection = await screen.findByRole("button", { name: "Check connection" });
   available = true;
   await user.click(testConnection);
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
   expect(client.calls.filter((call) => call.method === "evener/auth/test")).toEqual([
-    { method: "evener/auth/test", params: { provider: "ollama" } },
+    { method: "evener/auth/test", params: { provider: "ollama", expectedEndpointFingerprint: "fp-ollama" } },
   ]);
   await waitFor(() => expect(screen.queryByRole("button", { name: "Connect provider" })).toBeNull());
   expect(await screen.findByRole("option", { name: /local-model/ })).toBeTruthy();

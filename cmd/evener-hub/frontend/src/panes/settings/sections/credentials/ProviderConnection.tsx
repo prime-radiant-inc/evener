@@ -8,7 +8,7 @@ import {
   isEndpointConflict,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
-import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import {
   credentialsStore,
@@ -30,27 +30,14 @@ import { useEditorLifetime } from "./useEditorLifetime";
 const ENDPOINT_MOVED_ERROR =
   "This connection changed to a different endpoint. Check its destination and enter the key again.";
 
-/** Instance-identity reports a hosting dialog forwards from a sibling
- * full-settings view into the connection's mailbox (see reportsRef). */
-export interface InstanceReports {
-  renamed(from: string, to: string): void;
-  removed(name: string): void;
-}
-
 export interface ProviderConnectionProps {
-  visible?: boolean;
   onClose(): void;
   onConnected(name?: string): void;
-  onManage(): void;
-  /** The hosting dialog fills this ref with this component's report receivers
-   * for instance-identity changes made in a sibling full-settings view.
-   * Reports live here, next to the selection they address: the guided owner
-   * mounted when a report arrives applies it (its effects run even while it
-   * stays hidden behind the settings view) and consumes it, and any pending
-   * report is dropped when the selection changes, because its addressee is
-   * gone - a later same-name owner is a different editing session and must
-   * not inherit it. */
-  reportsRef?: RefObject<InstanceReports | null>;
+  /** Hands the user to the settings pane's credentials section, where the
+   * instances this flow connects are listed, edited, tested and removed. The
+   * hosting dialog owns the handoff - it closes itself and navigates there
+   * (ConnectProviderDialog), so this flow never renders that editor itself. */
+  onOpenSettings(): void;
 }
 
 // Presentation only. Authentication capabilities always come from the catalogue.
@@ -125,59 +112,17 @@ function needsConfiguration(row: InstanceEntry | undefined): boolean {
 export function ProviderConnection(props: ProviderConnectionProps) {
   const store = useCredentialsStore();
   const [selected, setSelected] = useState<ProviderDescriptor | null>(null);
-  // Instance-identity reports (rename/removal from the sibling full-settings
-  // view) are scoped to the guided owner mounted when they arrive: that owner
-  // applies and consumes them immediately (its effects run even while it stays
-  // hidden behind the settings view). A report pending against no matching
-  // owner is dropped at the next selection change - its addressee is gone, and
-  // a later same-name owner is a different editing session that must not be
-  // silently re-pointed or re-cleared by it.
-  const [renamed, setRenamed] = useState<{ from: string; to: string } | null>(null);
-  const [removed, setRemoved] = useState<{ name: string } | null>(null);
-  const consumeRenamed = useCallback(() => setRenamed(null), []);
-  const consumeRemoved = useCallback(() => setRemoved(null), []);
-  const selectProvider = useCallback((row: ProviderDescriptor) => {
-    setRenamed(null);
-    setRemoved(null);
-    setSelected(row);
-  }, []);
-  const clearSelection = useCallback(() => {
-    setRenamed(null);
-    setRemoved(null);
-    setSelected(null);
-  }, []);
-  const reportsRef = props.reportsRef;
-  useEffect(() => {
-    if (!reportsRef) return;
-    reportsRef.current = {
-      renamed: (from, to) => setRenamed({ from, to }),
-      removed: (name) => setRemoved({ name }),
-    };
-    return () => {
-      reportsRef.current = null;
-    };
-  }, [reportsRef]);
+  const selectProvider = useCallback((row: ProviderDescriptor) => setSelected(row), []);
+  const clearSelection = useCallback(() => setSelected(null), []);
   const [all, setAll] = useState(false);
   const [search, setSearch] = useState("");
   const errorRef = useRef<HTMLDivElement>(null);
   useConnectedEffect(store.fetch, [store.fetch]);
   useEffect(() => {
-    if (props.visible !== false && store.error) errorRef.current?.focus();
-  }, [store.error, props.visible]);
+    if (store.error) errorRef.current?.focus();
+  }, [store.error]);
   if (selected)
-    return (
-      <SelectedConnection
-        key={selected.id}
-        provider={selected}
-        {...props}
-        onChange={clearSelection}
-        renamedInstance={renamed}
-        removedInstance={removed}
-        onRenamedConsumed={consumeRenamed}
-        onRemovedConsumed={consumeRemoved}
-      />
-    );
-  if (props.visible === false) return null;
+    return <SelectedConnection key={selected.id} provider={selected} {...props} onChange={clearSelection} />;
   return (
     <Dialog open onClose={props.onClose} title="Connect a provider">
       <div className={styles.body}>
@@ -228,7 +173,7 @@ export function ProviderConnection(props: ProviderConnectionProps) {
         </div>
         <details>
           <summary>Already configured access on this host?</summary>
-          <Button variant="quiet" onClick={props.onManage}>
+          <Button variant="quiet" onClick={props.onOpenSettings}>
             Manage existing connections
           </Button>
         </details>
@@ -243,24 +188,13 @@ export function ProviderConnection(props: ProviderConnectionProps) {
 type Phase = "idle" | "saving" | "refreshing" | "checking" | "review" | "result";
 function SelectedConnection({
   provider,
-  visible = true,
   onClose,
   onConnected,
-  onManage,
+  onOpenSettings,
   onChange,
-  renamedInstance,
-  removedInstance,
-  onRenamedConsumed,
-  onRemovedConsumed,
 }: ProviderConnectionProps & {
   provider: ProviderDescriptor;
   onChange(): void;
-  /** The connection's mailbox for instance-identity reports, delivered only
-   * to the owner mounted when the report arrived (see ProviderConnection). */
-  renamedInstance: { from: string; to: string } | null;
-  removedInstance: { name: string } | null;
-  onRenamedConsumed(): void;
-  onRemovedConsumed(): void;
 }) {
   const store = useCredentialsStore();
   const connection = useConnectionStore((state) => state.state);
@@ -279,18 +213,6 @@ function SelectedConnection({
       current.providerId === resolvedProviderId ? current : { providerId: resolvedProviderId, value: "" },
     );
   }, [resolvedProviderId]);
-  // The full settings view can rename this very instance while this owner stays
-  // mounted behind it. Adopting the new name keeps findSetup/reloadCreated/repair
-  // pointed at the live row; re-baselining is required with it, because the
-  // destination key includes the name and a stale baseline would demand a review
-  // for a change that is only the rename. Applied reports are consumed so they
-  // can never be delivered twice.
-  useEffect(() => {
-    if (!renamedInstance || renamedInstance.from !== name) return;
-    setName(renamedInstance.to);
-    setBaseline(findSetup(renamedInstance.to));
-    onRenamedConsumed();
-  }, [renamedInstance, name, onRenamedConsumed]);
   const [missingCredential, setMissingCredential] = useState(false);
   const [host, setHost] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -305,8 +227,6 @@ function SelectedConnection({
   const errorRef = useRef<HTMLDivElement>(null);
   const operation = useRef(0);
   const active = useEditorLifetime();
-  const visibleRef = useRef(visible);
-  visibleRef.current = visible;
   const modes = row?.authModes ?? effectiveProvider.authModes ?? [];
   const json = modes.includes("credentialJson");
   const storedMode = json || modes.includes("apiKey");
@@ -323,25 +243,20 @@ function SelectedConnection({
     setPhaseState(next);
   }, []);
   const invalidate = useCallback(
-    // message === null invalidates without reporting anything: leaving the
-    // guided view for management or full settings is not a configuration
-    // change, and an alert already on screen is still this draft's own truth.
-    (message: string | null = "Connection or configuration changed. Review access and check again.") => {
+    // The change invalidates this draft's verdict - phase, result, review and
+    // any open OAuth flow - and is said out loud: it is never this draft's own
+    // save or check, so the user has to check again rather than trust a result
+    // that was taken against the connection that is gone.
+    (message = "Connection or configuration changed. Review access and check again.") => {
       operation.current += 1;
       setPhase("idle");
       setResult(null);
       setReview(null);
       setOAuth(null);
-      if (message !== null) setError(message);
+      setError(message);
     },
     [setPhase],
   );
-  useEffect(() => {
-    if (!visible) {
-      invalidate(null);
-      setConfigure(false);
-    }
-  }, [visible, invalidate]);
   useEffect(() => {
     const unsubscribeConnection = connectionStore.subscribe((current, previous) => {
       if (current.client !== previous.client || current.state !== previous.state) {
@@ -372,46 +287,16 @@ function SelectedConnection({
       unsubscribeStore();
     };
   }, [invalidate, oauth, name, baseline]);
-  // A removal in the full settings view must reach this owner the same way a
-  // rename does. The instance this flow is editing is gone: its retained
-  // draft, saved state, and baseline describe a dead entity, and an instance
-  // later recreated under the same name is a new one, not the thing the draft
-  // was typed against. Clear the editing state and re-anchor to whatever the
-  // name resolves to now, so nothing typed against the removed instance can
-  // be submitted to its replacement. (An in-flight save/check at removal time
-  // is already cancelled by the subscription above, which sees the listing
-  // change; this owns the idle-with-draft case that nothing else observes.)
   useEffect(() => {
-    if (!removedInstance || removedInstance.name !== name) return;
-    operation.current += 1;
-    setDraft({ providerId: provider.id, value: "" });
-    setSaved(false);
-    setConfigured(false);
-    setHost(false);
-    setMissingCredential(false);
-    setOAuth(null);
-    setResult(null);
-    setReview(null);
-    setError("");
-    setPhase("idle");
-    setBaseline(findSetup(name));
-    onRemovedConsumed();
-  }, [removedInstance, name, provider.id, setPhase, onRemovedConsumed]);
-  useEffect(() => {
-    if (visible && error) errorRef.current?.focus();
-  }, [error, visible]);
+    if (error) errorRef.current?.focus();
+  }, [error]);
 
   function leave(callback: () => void) {
     operation.current += 1;
     callback();
   }
   function current(token: number) {
-    return (
-      active.current &&
-      visibleRef.current &&
-      operation.current === token &&
-      connectionStore.getState().state === "ready"
-    );
+    return active.current && operation.current === token && connectionStore.getState().state === "ready";
   }
   function changeValue(next: string) {
     operation.current += 1;
@@ -739,9 +624,9 @@ function SelectedConnection({
     } else setBaseline(created);
   }
 
-  // Retain only volatile connection state during repair, never a hidden
-  // Dialog, focus trap, credential input or OAuth polling component.
-  if (!visible) return null;
+  // A step of the flow replaces this dialog with the editor it opens - the
+  // configuration form, or the OAuth flow's own dialog - so the flow never puts
+  // two dialogs, two focus traps or a hidden poller on screen at once.
   if (configure)
     return (
       <AddInstanceDialog
@@ -817,7 +702,7 @@ function SelectedConnection({
             <Button disabled={unavailable || busy} onClick={() => void reloadCreated()}>
               Reload connection
             </Button>
-            <Button variant="secondary" onClick={() => leave(onManage)}>
+            <Button variant="secondary" onClick={() => leave(onOpenSettings)}>
               Open full connection editor
             </Button>
           </>
@@ -945,7 +830,7 @@ function SelectedConnection({
             <Button variant="secondary" disabled={busy || store.writesRefused} onClick={() => setConfigure(true)}>
               Configure another instance
             </Button>
-            <Button variant="quiet" onClick={() => leave(onManage)}>
+            <Button variant="quiet" onClick={() => leave(onOpenSettings)}>
               Open full connection editor
             </Button>
           </div>

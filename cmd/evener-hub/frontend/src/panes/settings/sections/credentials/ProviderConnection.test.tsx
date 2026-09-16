@@ -71,9 +71,9 @@ function setup(list: InstanceListResponse = { instances: [], availableProviders:
   connectionStore.getState().connect(client);
   const connected = vi.fn();
   const close = vi.fn();
-  const manage = vi.fn();
-  const view = render(<ProviderConnection onClose={close} onConnected={connected} onManage={manage} />);
-  return { client, connected, close, manage, ...view, user: userEvent.setup() };
+  const openSettings = vi.fn();
+  const view = render(<ProviderConnection onClose={close} onConnected={connected} onOpenSettings={openSettings} />);
+  return { client, connected, close, openSettings, ...view, user: userEvent.setup() };
 }
 beforeEach(() => {
   connectionStore.setState({ state: "idle", client: null, serverInfo: undefined });
@@ -187,13 +187,41 @@ test("discovery load failure focuses recovery and retries the real listing", asy
     throw new Error("private-wire-body");
   });
   connectionStore.getState().connect(client);
-  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onManage={() => {}} />);
+  render(<ProviderConnection onClose={() => {}} onConnected={() => {}} onOpenSettings={() => {}} />);
   const alert = await screen.findByRole("alert");
   expect(document.activeElement).toBe(alert);
   expect(screen.queryByText(/private-wire-body/)).toBeNull();
   client.on("evener/instance/list", () => ({ instances: [], availableProviders: structuredClone(catalogue) }));
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+});
+
+// The dialog this flow is mounted in used to grow a second, narrower copy of
+// the settings pane's instance list ("Manage existing connections"). That
+// surface is gone: this affordance hands the user to the real provider
+// settings, and the hosting dialog closes itself on the way out - both halves
+// of that handoff are the dialog's (see ConnectProviderDialog, which pins the
+// route it lands on).
+test("the existing-connections affordance hands off to the full settings, not a second editor", async () => {
+  const { user, openSettings, close } = setup();
+  await screen.findByRole("button", { name: "Anthropic" });
+  await user.click(screen.getByText("Already configured access on this host?"));
+  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
+
+  expect(openSettings).toHaveBeenCalledTimes(1);
+  expect(close).not.toHaveBeenCalled();
+  expect(screen.queryByRole("button", { name: "Test connection" })).toBeNull();
+});
+
+// Same handoff from inside the guided flow: an affordance labelled "Open full
+// connection editor" must open exactly that, not a menu of its own.
+test("open full connection editor hands off to the full settings", async () => {
+  const { user, openSettings } = setup();
+  await choose(user, "Anthropic");
+  await user.click(screen.getByText("Advanced settings"));
+  await user.click(screen.getByRole("button", { name: "Open full connection editor" }));
+
+  expect(openSettings).toHaveBeenCalledTimes(1);
 });
 
 test("resolved setup auth modes override public defaults rather than forcing a vendor key", async () => {
@@ -865,7 +893,7 @@ test("reconnect restores initial loading and invalidates late check callbacks", 
   client.on("evener/instance/list", () => initial.promise);
   connectionStore.getState().connect(client);
   const connected = vi.fn();
-  render(<ProviderConnection onClose={() => {}} onConnected={connected} onManage={() => {}} />);
+  render(<ProviderConnection onClose={() => {}} onConnected={connected} onOpenSettings={() => {}} />);
   const user = userEvent.setup();
   await act(async () => {
     client.emitStateChange("reconnecting");
