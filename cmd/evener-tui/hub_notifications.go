@@ -417,10 +417,12 @@ func (m *hubModel) setActiveTurnID(turnID string) {
 }
 
 // applyQueueState replaces the local preview with the authoritative
-// wire-sourced snapshot (kata r80p). Called from ReadThread responses and
-// from thread/queueChanged notifications. Scoped to the current session
-// ref so a notification routed to a different session can't leak into
-// this view.
+// wire-sourced snapshot (kata r80p). Called from thread/queueChanged
+// notifications and from the ReadThread responses that arrive in stream
+// order (a session entry, a transcript-replacing read whose capture folded
+// the frames delivered ahead of it), so the state is at least as new as the
+// one held. Scoped to the current session ref so a notification routed to a
+// different session can't leak into this view.
 func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -431,6 +433,7 @@ func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 	// against the revision the client last saw, and a queue another client
 	// edited since hydrate would otherwise be refused as a conflict.
 	m.detail.Queue = queue
+	m.sessionQueueLatest = queue
 	// The stale gate set by a partial drain lifts only for a revision newer
 	// than the one that drain was sent against: a thread/read snapshot cut
 	// before the daemon moved the revision would otherwise re-enable Ctrl+S
@@ -468,12 +471,28 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 	}
 }
 
+// applyQueueRefresh folds a status-refresh read's queue state. That read takes
+// no hold on the feed, so its snapshot can be a cut older than a queueChanged
+// the model already folded; the queue revision is a high-water mark within a
+// daemon generation, and an older snapshot is ignored (the held state is put
+// back over the detail the read replaced). A Ctrl+S that carried the regressed
+// revision would be refused as a conflict every time until the next
+// queueChanged.
+func (m *hubModel) applyQueueRefresh(ref string, queue appwire.QueueState) {
+	if strings.TrimSpace(ref) == m.sessionQueueRef && queue.Revision < m.sessionQueueLatest.Revision {
+		m.detail.Queue = m.sessionQueueLatest
+		return
+	}
+	m.applyQueueState(ref, queue)
+}
+
 // clearSessionQueue empties the local queue preview. Called when
 // navigating away from a session so a stale preview never bleeds across
 // views; new state arrives via the next ReadThread / queueChanged.
 func (m *hubModel) clearSessionQueue() {
 	m.sessionQueue = nil
 	m.sessionQueueRef = ""
+	m.sessionQueueLatest = appwire.QueueState{}
 	// The stale gate a partial drain set belongs to the session it happened
 	// in; a session entered afterwards starts with its own queue state.
 	m.queueRevisionStale = false

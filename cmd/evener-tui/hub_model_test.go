@@ -2428,6 +2428,52 @@ func TestHubModelStaleQueueGateDoesNotSurviveSessionSwitch(t *testing.T) {
 	}
 }
 
+// A status-refresh read takes no hold on the feed, so its snapshot can be a cut
+// older than a queueChanged the model already folded. The queue revision is a
+// high-water mark: the older snapshot must not regress it, or the next Ctrl+S
+// carries the revision the daemon already moved past and is refused as a
+// conflict every time.
+func TestHubModelStatusRefreshDoesNotRegressTheQueueRevision(t *testing.T) {
+	m := newSessionHubModel(nil)
+	m.detail.State = appwire.ThreadStatusActive
+	m.detail.Capabilities.Steer = true
+	m.detail.Capabilities.Queue = true
+	m.detail.Queue = appwire.QueueState{Depth: 0, Revision: 8}
+	partial := appwire.WireError{Code: appwire.CodeConflict, Message: "steer rejected after queueing", Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorQueuedDrainPartial}}
+	updated, _ := m.Update(hubDrainAsSteerMsg{ref: m.detail.Ref, text: "later", draft: "later", preQueueDepth: 0, err: partial})
+	got := updated.(hubModel)
+
+	queueChanged := appwire.NotificationMessage(appwire.NotifyThreadQueueChanged, appwire.ThreadQueueChangedParams{
+		ThreadID: "01SEND",
+		Ref:      got.detail.Ref,
+		Queue:    appwire.QueueState{Depth: 1, Revision: 9, Preview: []string{"later"}},
+	})
+	got.applyHubNotification(*queueChanged.Notification)
+	if !got.sessionCanDrainQueue() || got.detail.Queue.Revision != 9 {
+		t.Fatalf("precondition: queueChanged should have reconciled the queue at revision 9 (drainable=%v revision=%d)", got.sessionCanDrainQueue(), got.detail.Queue.Revision)
+	}
+
+	// The status refresh the transition triggered was cut before the daemon
+	// moved the revision and lands after the queueChanged that reported it.
+	updated, _ = got.Update(hubSessionMsg{
+		ref:           got.detail.Ref,
+		expectedState: appwire.ThreadStatusActive,
+		detail: hubSessionDetail{
+			Ref:          got.detail.Ref,
+			State:        appwire.ThreadStatusActive,
+			Capabilities: got.detail.Capabilities,
+			Queue:        appwire.QueueState{Depth: 0, Revision: 8},
+		},
+	})
+	got = updated.(hubModel)
+	if got.detail.Queue.Revision != 9 || got.detail.Queue.Depth != 1 {
+		t.Fatalf("queue after an older status-refresh snapshot = %+v, want the newer revision 9 with depth 1 kept", got.detail.Queue)
+	}
+	if !got.sessionCanDrainQueue() {
+		t.Fatal("ctrl+s is gated after the older snapshot; the reconciled queue should still be drainable")
+	}
+}
+
 // The status is authoritative and the transcript's turn id can be empty while
 // the session is active (a thread/read cut between turns, or the gap after
 // turn/completed at an inline boundary). A failed completion arriving then

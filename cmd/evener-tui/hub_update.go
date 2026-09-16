@@ -308,10 +308,14 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// sandbox-approval prompt); re-surface it so a still-pending escalation
 				// stays visible and answerable after a reload.
 				m.surfaceEscalationsOnEntry()
+				// Refresh queue preview from the authoritative read response
+				// (kata r80p) so reloads resync state.
+				m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
+			} else {
+				// A status refresh's snapshot may predate a queueChanged already
+				// folded; the queue revision never moves backwards from it.
+				m.applyQueueRefresh(msg.detail.Ref, msg.detail.Queue)
 			}
-			// Refresh queue preview from the authoritative read response
-			// (kata r80p) so reloads / status refreshes resync state.
-			m.applyQueueState(msg.detail.Ref, msg.detail.Queue)
 			if m.sessionDetailsRequested {
 				panel := hubSessionPanel{Body: m.renderSessionDetails()}
 				m.sessionPanel = &panel
