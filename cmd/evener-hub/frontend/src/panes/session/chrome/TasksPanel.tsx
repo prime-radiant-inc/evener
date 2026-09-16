@@ -80,7 +80,7 @@ import {
   type TaskStatus,
   taskAggregateLabel,
 } from "@evener/appwire-client";
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
@@ -421,16 +421,6 @@ export interface TasksPanelBodyProps {
 export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
   const toasts = useToasts();
   const entry = useTasksPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_TASKS_PANEL_ENTRY;
-  const mountedRef = useRef(true);
-  const currentSessionRef = useRef(sessionRef);
-  currentSessionRef.current = sessionRef;
-
-  useEffect(
-    () => () => {
-      mountedRef.current = false;
-    },
-    [],
-  );
   // Bumped by Try again. The only fetch trigger a reader controls: the other
   // two are opening the panel and a push arriving, and neither is available
   // to someone looking at a failed fetch in an open panel on a quiet session.
@@ -448,16 +438,19 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
     // The store classifies the outcome (unsupported / empty / daemon gone /
     // failure - see this file's header and taskPanelState.ts) and keeps the
     // retained rows under a failure or a gone daemon. It resolves the result
-    // only to the caller whose fetch published it: a superseded or coalesced
-    // fetch gets null, so an obsolete failure never toasts over rows a newer
-    // fetch has since put on screen.
+    // only to its latest caller, so an obsolete failure never toasts over
+    // rows a newer fetch has since put on screen; `live` covers the one case
+    // left, this effect being cleaned up (unmount or a new session) while
+    // its fetch is the latest.
+    let live = true;
     void tasksPanelStore
       .refresh(sessionRef, () => model.tasks !== null)
       .then((result) => {
-        if (result?.kind === "failure" && mountedRef.current && currentSessionRef.current === sessionRef) {
-          toasts.push("error", result.failure.sentence);
-        }
+        if (live && result?.kind === "failure") toasts.push("error", result.failure.sentence);
       });
+    return () => {
+      live = false;
+    };
   }, [model.tasks, sessionRef, reloads]);
 
   function reload() {

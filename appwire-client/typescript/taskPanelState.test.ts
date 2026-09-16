@@ -6,6 +6,7 @@ import {
   classifyTasksResponse,
   createTasksPanelStore,
   EMPTY_TASKS_PANEL_ENTRY,
+  panelLoadFailure,
   type TasksPanelNotifications,
 } from "./taskPanelState";
 import type { AnyNotification } from "./types.gen";
@@ -37,9 +38,16 @@ function boundary() {
     requests.push(ref);
     return io.read();
   });
-  const notify = (ref = "local:test", threadId = "thread") => {
-    for (const handler of handlers)
-      handler({ method: "evener/task/updated", params: { ref, threadId, total: 1, done: 0 } });
+  const notify = (
+    ref = "local:test",
+    threadId = "thread",
+    method: "evener/task/updated" | "evener/thread/resync" = "evener/task/updated",
+  ) => {
+    const notification: AnyNotification =
+      method === "evener/thread/resync"
+        ? { method, params: { ref, threadId } }
+        : { method, params: { ref, threadId, total: 1, done: 0 } };
+    for (const handler of handlers) handler(notification);
   };
   const entry = () => store.getState().entries.get("local:test");
   return { store, requests, io, notify, notifications, handlers, entry };
@@ -97,8 +105,8 @@ test("watch loads once, coalesces matching invalidations into one follow-up read
   io.read = async () => [row(2, "in_progress")];
   complete([row(1)]);
   // A refresh folded into the in-flight run resolves once that run has
-  // settled, with null: the run's own caller is the one that gets the result.
-  expect(await store.refresh("local:test", () => true)).toBeNull();
+  // settled; as the run's latest caller it is the one that gets the result.
+  expect(await store.refresh("local:test", () => true)).toMatchObject({ kind: "rows" });
   expect(requests).toHaveLength(2);
   expect(entry()?.rows?.map((item) => item.id)).toEqual([2]);
   expect(entry()?.loading).toBe(false);
@@ -111,17 +119,16 @@ test("watch loads once, coalesces matching invalidations into one follow-up read
 });
 
 test("a thread/resync for the watched session refreshes too", async () => {
-  const { store, requests, notifications, handlers, entry } = boundary();
+  const { store, requests, notifications, notify, entry } = boundary();
   const stop = store.watch(notifications, "local:test", "thread", () => true);
   await vi.waitFor(() => expect(entry()?.loading).toBe(false));
-  for (const handler of handlers)
-    handler({ method: "evener/thread/resync", params: { ref: "local:test", threadId: "thread" } });
+  notify("local:test", "thread", "evener/thread/resync");
   expect(requests).toHaveLength(2);
   await vi.waitFor(() => expect(entry()?.loading).toBe(false));
   stop();
 });
 
-test("the run's caller receives the result and a superseded caller receives null", async () => {
+test("the run's latest caller receives the result and every earlier caller receives null", async () => {
   const { store, io } = boundary();
   let complete!: (value: unknown) => void;
   io.read = () =>
@@ -134,8 +141,8 @@ test("the run's caller receives the result and a superseded caller receives null
     throw new Error("later");
   };
   complete([row(1)]);
-  expect(await joined).toBeNull();
-  expect(await first).toMatchObject({ kind: "failure" });
+  expect(await first).toBeNull();
+  expect(await joined).toMatchObject({ kind: "failure" });
 });
 
 test("null data is unsupported, an empty array is an empty list", async () => {
@@ -186,6 +193,10 @@ test("the pure classifiers and the entry transition are exposed for a caller tha
   expect(classifyTasksRejection(new Error("boom"), true)).toMatchObject({
     kind: "failure",
     failure: { headline: "Couldn't load tasks", detail: "boom", sentence: "Couldn't load tasks: boom" },
+  });
+  expect(panelLoadFailure("Couldn't load activity", new Error(""))).toEqual({
+    headline: "Couldn't load activity",
+    sentence: "Couldn't load activity",
   });
   const loaded = applyTasksFetchResult(EMPTY_TASKS_PANEL_ENTRY, { kind: "rows", rows: [] });
   expect(applyTasksFetchResult(loaded, { kind: "daemon-gone" })).toMatchObject({ rows: [], daemonGone: true });

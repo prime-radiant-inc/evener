@@ -57,8 +57,7 @@ export interface TasksPanelState {
   /** Marks the entry loading and returns the id its completion must carry. */
   beginFetch(ref: string): number;
   /** Returns whether the result was accepted - false when a newer fetch has
-   * superseded this one or the entry was evicted, so the caller must not
-   * surface it either. */
+   * superseded this one or the entry was evicted. */
   publishFetch(ref: string, fetchID: number, result: TasksFetchResult): boolean;
   setRows(ref: string, rows: TaskRow[]): void;
   evict(ref: string): void;
@@ -86,12 +85,13 @@ export interface TasksPanelStore {
    * while a run is in flight marks it dirty, and the run drops the answer
    * to the now-stale read and reads once more after it settles instead of
    * issuing a concurrent request.
-   * Resolves to the published result for the caller that started the run,
-   * and to null for a caller folded into an in-flight run or whose result
-   * was superseded - so exactly one caller can react (toast) to a failure.
-   * `hasAggregate` is read when a "thread not found" rejection arrives: true
-   * means the trigger beside the panel already claims tasks exist, so the
-   * rejection is the daemon having gone rather than an empty list.
+   * Resolves to the published result for the run's latest caller - the one
+   * whose `hasAggregate` the run classified with - and to null for every
+   * earlier caller once the run settles, so exactly one caller reacts
+   * (toasts) to a failure and it is the one still current. `hasAggregate` is
+   * read when a "thread not found" rejection arrives: true means the trigger
+   * beside the panel already claims tasks exist, so the rejection is the
+   * daemon having gone rather than an empty list.
    */
   refresh(ref: string, hasAggregate: () => boolean): Promise<TasksFetchResult | null>;
   /** Loads the list now and again on every evener/task/updated or
@@ -115,12 +115,13 @@ export const EMPTY_TASKS_PANEL_ENTRY: TasksPanelEntry = {
 // neither; a panel can never say two different things about one failure.
 const LOAD_FAILURE = "Couldn't load tasks";
 
-/** The three renderings of one rejection. A rejection carrying no text of its
+/** The three renderings of one rejection under the panel's one failure name
+ * (`failure`, e.g. "Couldn't load tasks"). A rejection carrying no text of its
  * own leaves the detail out entirely, the same way sessionActionError drops
  * the separator. */
-export function tasksLoadFailure(err: unknown): PanelLoadFailure {
-  const headline = sessionActionHeadline(LOAD_FAILURE, err);
-  const sentence = sessionActionError(LOAD_FAILURE, err);
+export function panelLoadFailure(failure: string, err: unknown): PanelLoadFailure {
+  const headline = sessionActionHeadline(failure, err);
+  const sentence = sessionActionError(failure, err);
   const detail = errorText(err).trim();
   return detail ? { headline, detail, sentence } : { headline, sentence };
 }
@@ -145,7 +146,7 @@ export function classifyTasksResponse(data: unknown): TasksFetchResult {
 export function classifyTasksRejection(err: unknown, hasAggregate: boolean): TasksFetchResult {
   if (isActionUnavailable(err)) return { kind: "unsupported" };
   if (isThreadNotFound(err)) return hasAggregate ? { kind: "daemon-gone" } : { kind: "empty" };
-  return { kind: "failure", failure: tasksLoadFailure(err) };
+  return { kind: "failure", failure: panelLoadFailure(LOAD_FAILURE, err) };
 }
 
 /** The entry after a completed fetch. Rows survive a failure and a gone
@@ -170,7 +171,8 @@ export function applyTasksFetchResult(entry: TasksPanelEntry, result: TasksFetch
 interface RefreshRun {
   dirty: boolean;
   hasAggregate: () => boolean;
-  settled: Promise<TasksFetchResult | null>;
+  /** One per caller, in call order; the last is the run's owner. */
+  waiters: Array<(result: TasksFetchResult | null) => void>;
 }
 
 /** Builds an empty store that reads task lists through `listTasks`. */
@@ -193,7 +195,7 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
   const updateEntry = (ref: string, update: (entry: TasksPanelEntry) => TasksPanelEntry): void => {
     set((s) => {
       const next = new Map(s.entries);
-      next.set(ref, update(s.entries.get(ref) ?? { ...EMPTY_TASKS_PANEL_ENTRY }));
+      next.set(ref, update(s.entries.get(ref) ?? EMPTY_TASKS_PANEL_ENTRY));
       return { entries: next };
     });
   };
@@ -226,8 +228,8 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
     },
 
     evict(ref) {
+      if (!get().entries.has(ref)) return;
       set((s) => {
-        if (!s.entries.has(ref)) return s;
         const entries = new Map(s.entries);
         entries.delete(ref);
         return { entries };
@@ -241,34 +243,38 @@ export function createTasksPanelStore(listTasks: TasksListRead): TasksPanelStore
   };
   const initialState = state;
 
+  const runLoop = async (ref: string, run: RefreshRun): Promise<void> => {
+    let published: TasksFetchResult | null = null;
+    do {
+      run.dirty = false;
+      const fetchID = get().beginFetch(ref);
+      let result: TasksFetchResult;
+      try {
+        result = classifyTasksResponse(await listTasks(ref));
+      } catch (err) {
+        result = classifyTasksRejection(err, run.hasAggregate());
+      }
+      // A read a newer trigger has already made stale is not shown even
+      // briefly; the loop reads again and publishes that answer instead.
+      if (!run.dirty) published = get().publishFetch(ref, fetchID, result) ? result : null;
+    } while (run.dirty);
+    runs.delete(ref);
+    const owner = run.waiters.pop();
+    for (const superseded of run.waiters) superseded(null);
+    owner?.(published);
+  };
+
   const refresh: TasksPanelStore["refresh"] = (ref, hasAggregate) => {
-    const inFlight = runs.get(ref);
-    if (inFlight) {
-      inFlight.dirty = true;
-      inFlight.hasAggregate = hasAggregate;
-      return inFlight.settled.then(() => null);
+    let run = runs.get(ref);
+    if (run) {
+      run.dirty = true;
+      run.hasAggregate = hasAggregate;
+    } else {
+      run = { dirty: false, hasAggregate, waiters: [] };
+      runs.set(ref, run);
+      void runLoop(ref, run);
     }
-    const run: RefreshRun = { dirty: false, hasAggregate, settled: Promise.resolve(null) };
-    runs.set(ref, run);
-    run.settled = (async () => {
-      let published: TasksFetchResult | null = null;
-      do {
-        run.dirty = false;
-        const fetchID = get().beginFetch(ref);
-        let result: TasksFetchResult;
-        try {
-          result = classifyTasksResponse(await listTasks(ref));
-        } catch (err) {
-          result = classifyTasksRejection(err, run.hasAggregate());
-        }
-        // A read a newer trigger has already made stale is not shown even
-        // briefly; the loop reads again and publishes that answer instead.
-        if (!run.dirty) published = get().publishFetch(ref, fetchID, result) ? result : null;
-      } while (run.dirty);
-      runs.delete(ref);
-      return published;
-    })();
-    return run.settled;
+    return new Promise((resolve) => run.waiters.push(resolve));
   };
 
   return {

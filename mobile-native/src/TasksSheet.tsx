@@ -54,6 +54,7 @@ export function TasksSheet({
   const wasConnected = useRef(connected);
   const aggregate = useRef(hasTasks);
   aggregate.current = hasTasks;
+  const hasAggregate = () => aggregate.current;
   // One store for the sheet's lifetime, reading through whichever client is
   // current: a replacement connection after a reconnect refreshes the same
   // entry, so the last loaded list stays on screen when that refresh fails.
@@ -68,8 +69,10 @@ export function TasksSheet({
       ),
     [],
   );
+  const refresh = () => void store.refresh(sessionRef, hasAggregate);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: hasAggregate reads a ref, so its identity does not matter
   useEffect(
-    () => store.watch(client, sessionRef, threadId, () => aggregate.current),
+    () => store.watch(client, sessionRef, threadId, hasAggregate),
     [store, client, sessionRef, threadId],
   );
   const state =
@@ -77,8 +80,7 @@ export function TasksSheet({
       store.getState().entries.get(sessionRef),
     ) ?? EMPTY_TASKS_PANEL_ENTRY;
   useEffect(() => {
-    if (connected && !wasConnected.current)
-      void store.refresh(sessionRef, () => aggregate.current);
+    if (connected && !wasConnected.current) refresh();
     wasConnected.current = connected;
   }, [connected, store, sessionRef]);
   const error = state.failure?.sentence ?? null;
@@ -254,9 +256,7 @@ export function TasksSheet({
                 {error ? (
                   <Action
                     disabled={state.loading || !connected}
-                    onPress={() =>
-                      void store.refresh(sessionRef, () => aggregate.current)
-                    }
+                    onPress={refresh}
                   >
                     Try again
                   </Action>

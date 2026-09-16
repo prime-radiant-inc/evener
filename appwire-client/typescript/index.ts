@@ -319,7 +319,7 @@ export {
   classifyTasksResponse,
   createTasksPanelStore,
   EMPTY_TASKS_PANEL_ENTRY,
-  tasksLoadFailure,
+  panelLoadFailure,
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
