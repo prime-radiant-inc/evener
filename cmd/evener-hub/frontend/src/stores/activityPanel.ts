@@ -201,9 +201,9 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       let next = current;
 
       if (pending.kind === "continuation") {
-        settlement = { summaryRequestID: pending.summaryRequestID };
-        if (result.kind !== "ready") settlement.debt = { kind: "failure" };
+        let debt: ContinuationSettlement["debt"];
         if (result.kind === "continuation-failed") {
+          debt = { kind: "failure" };
           next = {
             ...current,
             continuationLoadingID: undefined,
@@ -214,7 +214,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
           const previousTree = retainedTree(current.load);
           if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
-            settlement.debt = { kind: "counts", counts: tree.root.counts };
+            debt = { kind: "counts", counts: tree.root.counts };
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
             const continuationFailures = { ...current.continuationFailures };
             delete continuationFailures[pending.nodeID];
@@ -227,9 +227,11 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
               pending: undefined,
             };
           } else {
+            // The page landed as a fresh root: no tree to merge into, so no debt.
             next = readyRoot(current, result.tree);
           }
         } else if (result.kind === "failed") {
+          debt = { kind: "failure" };
           next = {
             ...current,
             continuationLoadingID: undefined,
@@ -240,6 +242,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
             pending: undefined,
           };
         } else {
+          debt = { kind: "failure" };
           next = {
             ...current,
             continuationLoadingID: undefined,
@@ -250,6 +253,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
             pending: undefined,
           };
         }
+        settlement = { summaryRequestID: pending.summaryRequestID, debt };
       } else {
         switch (result.kind) {
           case "ready":
