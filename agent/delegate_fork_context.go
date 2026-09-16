@@ -22,7 +22,8 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 	for _, entry := range entries {
 		t := entry.Turn
 		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch, schema.TurnFailure:
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnFoldRecord, schema.TurnModelSwitch, schema.TurnFailure:
+			// Fold records are private resume bookkeeping; never inherit them.
 			continue
 		}
 		// Copy conversation and content provenance, without adopting the
@@ -64,7 +65,7 @@ func completedDelegateContext(entries []transcript.Entry) []transcript.Entry {
 					delete(pending, part.ToolResult.ToolCallID)
 				}
 			}
-		case schema.TurnSteering, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch:
+		case schema.TurnSteering, schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnFoldRecord, schema.TurnModelSwitch:
 			// Settings and telemetry can change while tools are executing.
 		default:
 			clear(pending)

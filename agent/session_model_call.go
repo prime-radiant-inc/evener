@@ -1713,9 +1713,10 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			// Compaction turns carry user-role messages; include as-is.
 			endToolRound()
 			history = append(history, t.Message)
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution:
-			// Presentational telemetry and attention resolution can appear inside
-			// a tool round without interrupting it.
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnFoldRecord:
+			// Presentational telemetry, attention resolution, and a fold record
+			// (durable-only bookkeeping, defended here at the model boundary) can
+			// appear without interrupting a tool round; none is sent to the model.
 		case schema.TurnModelSwitch, schema.TurnFailure:
 			// Persisted switch/failure markers are presentational only and are
 			// never sent to the model.

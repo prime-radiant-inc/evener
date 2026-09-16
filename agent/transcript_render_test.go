@@ -2183,3 +2183,73 @@ func lastChars(s string, n int) string {
 	}
 	return s[len(s)-n:]
 }
+
+// TestPrivateRecordsOmittedFromEveryProjection is the class fence: a transcript
+// carrying both private, model-invisible records (an attention resolution and a
+// compaction fold record) must have neither leak through ANY public projection
+// the agent package exposes over transcript entries. Both kinds are handled by
+// the same sites; this pins that they stay in lockstep. (ATIF and apptranscript
+// have their own package-local equivalents.)
+func TestPrivateRecordsOmittedFromEveryProjection(t *testing.T) {
+	t.Parallel()
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
+	resolution.AttentionID = "private-attn-id"
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "private-attn-id", Disposition: "consumed"}
+	foldRecord := schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{FoldID: "fold-secret", Layers: []int{1}, RetainedSeqs: []int{0}}}
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnUserInput, llm.User("hello"))},
+		{Kind: "entry", Seq: 1, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary"))},
+		{Kind: "entry", Seq: 2, Turn: resolution},
+		{Kind: "entry", Seq: 3, Turn: foldRecord},
+		{Kind: "entry", Seq: 4, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))},
+	}
+	// Tokens that must never appear in any public projection.
+	leaks := []string{"FOLD_RECORD", "fold_secret", "fold-secret", "fold_id", "fold_record", "retained_seqs", "ATTENTION_RESOLUTION", "private-attn-id", "attention_resolution"}
+
+	projections := map[string]string{
+		"markdown": renderMarkdown(transcript.Header{}, entries, 0, renderOpts{}),
+	}
+	outline, _, _ := renderOutline(entries, 0, len(entries)-1)
+	projections["outline"] = outline
+	var publicKinds strings.Builder
+	for _, e := range publicTranscriptEntries(entries) {
+		fmt.Fprintf(&publicKinds, "%s\n", e.Turn.Kind)
+	}
+	projections["publicTranscriptEntries"] = publicKinds.String()
+
+	for name, out := range projections {
+		lower := strings.ToLower(out)
+		for _, leak := range leaks {
+			if strings.Contains(lower, strings.ToLower(leak)) {
+				t.Errorf("projection %q leaked private token %q:\n%s", name, leak, out)
+			}
+		}
+	}
+
+	// publicTranscriptEntries must drop both private kinds entirely.
+	for _, e := range publicTranscriptEntries(entries) {
+		if e.Turn.Kind == schema.TurnFoldRecord || e.Turn.Kind == schema.TurnAttentionResolution {
+			t.Errorf("publicTranscriptEntries kept a private record: %s", e.Turn.Kind)
+		}
+	}
+
+	// expand_turn must refuse a pin at either private record.
+	lines := make([][]byte, len(entries))
+	for i, e := range entries {
+		b, err := json.Marshal(struct {
+			Kind string      `json:"kind"`
+			Seq  int         `json:"seq"`
+			Turn schema.Turn `json:"turn"`
+		}{"entry", e.Seq, e.Turn})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines[i] = b
+	}
+	data := transcriptData{Entries: entries, EntryLines: lines}
+	for _, pin := range []int{2, 3} {
+		if _, err := transcriptExpansionJSONL(data, pin); err == nil {
+			t.Errorf("transcriptExpansionJSONL accepted a pin at private record index %d", pin)
+		}
+	}
+}
