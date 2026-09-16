@@ -472,6 +472,10 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 // target arrives as params.Session; the session is re-derived from params the
 // same way the wrapper resolves it, without re-walking ownership aliases.
 func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	// The request's trace travels in the context, already carrying the resolved
+	// session identity the wrapper stamped. A caller that enters here without
+	// one records nothing: every stage below is nil-safe.
+	trace := threadLifecycleFromContext(ctx)
 	sessionID := strings.TrimSpace(params.Session)
 	if sessionID == "" && params.Ref != "" {
 		ref, err := appwire.ParseRef(params.Ref)
