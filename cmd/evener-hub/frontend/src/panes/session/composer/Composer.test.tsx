@@ -859,6 +859,9 @@ function stopButton(): HTMLButtonElement {
 test("renders a textarea with an accessible name", async () => {
   await mountComposer("ref_a");
   expect(textarea()).toBeTruthy();
+  // One editable, one textbox: a wrapper that is itself a textbox would nest
+  // the role and hand assistive tech an editable that owns no content.
+  expect(screen.getAllByRole("textbox", { name: /^message$/i })).toHaveLength(1);
 });
 
 // --- mount autofocus ---------------------------------------------------------
@@ -974,6 +977,36 @@ test("typing persists the draft under this ref's storage key", async () => {
 // file's own header comment), not a prop. These tests exercise that seam
 // from the Composer side only: they never render SelectionQuote, just call
 // requestQuoteInsert directly, the same way the real bar would.
+
+test("a controlled replacement over a leading chip replaces it rather than merging text", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_replace_with_chip";
+  writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref, { evener: currentWorkEvener({ goal: true }) });
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+  expect(readComposerDraft(ref)).toEqual({ text: "/goal Keep the session focused", skillNames: [] });
+});
+
+test("a quote inserted before a leading chip leaves the chip whole and adds only its own text", async () => {
+  const ref = "ref_inline_prefix_quote";
+  writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  act(() => {
+    requestQuoteInsert(ref, "/review ", "prefix");
+  });
+
+  await waitFor(() => expect(textarea().textContent).toBe("/review /cleanup"));
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "/review /cleanup", skillNames: ["cleanup"] });
+});
 
 test("a quote-insert request writes the quoted markdown into an empty composer and focuses it", async () => {
   await mountComposer("ref_a");

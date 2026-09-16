@@ -1,7 +1,7 @@
 import { baseKeymap, deleteSelection } from "prosemirror-commands";
 import { closeHistory, history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
-import type { Node as ProseMirrorNode } from "prosemirror-model";
+import { Fragment, type Node as ProseMirrorNode } from "prosemirror-model";
 import { type Command, EditorState, Plugin, TextSelection } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { forwardRef, type HTMLAttributes, useImperativeHandle, useLayoutEffect, useRef } from "react";
@@ -38,6 +38,13 @@ export interface SkillEditorProps {
   onBlur?: HTMLAttributes<HTMLDivElement>["onBlur"];
   placeholder?: string;
   minLines?: number;
+  /**
+   * Bumped by the caller whenever the incoming value is authoritative - a draft
+   * or recovery arriving from storage. Such a value rebuilds the document, so
+   * every complete reference it selects becomes a chip again. A programmatic
+   * edit is not authoritative: it patches, and what it inserts stays prose.
+   */
+  restoreEpoch?: number;
   "aria-label"?: string;
   "aria-controls"?: string;
   "aria-activedescendant"?: string;
@@ -106,6 +113,11 @@ const skillIntegrity = new Plugin({
   },
 });
 
+/** Whether a serialized offset falls strictly inside an atom's own label. */
+function atomInteriorAt(doc: ProseMirrorNode, offset: number): boolean {
+  return skillAtomOffsets(doc).some((atom) => offset > atom.offset && offset < atom.offset + atom.name.length + 1);
+}
+
 /** Marks a transaction that applies the controlled value rather than an edit. */
 const externalSync = "skillEditorExternalSync";
 
@@ -160,6 +172,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const latest = useRef(props);
+  const appliedRestoreRef = useRef(props.restoreEpoch ?? 0);
   useLayoutEffect(() => {
     latest.current = props;
   });
@@ -268,47 +281,39 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       current.text === props.value.text &&
       current.skillNames.length === props.value.skillNames.length &&
       current.skillNames.every((name, index) => props.value.skillNames[index] === name);
+    // Consumed on every pass, even when the value already matches: a restore
+    // whose value happens to equal what is on screen is still spent, and leaving
+    // it pending would make the next ordinary patch look authoritative.
+    const authoritative = (props.restoreEpoch ?? 0) !== appliedRestoreRef.current;
+    appliedRestoreRef.current = props.restoreEpoch ?? 0;
     if (!echo) {
-      // Applied as a text patch, never by rebuilding the document from the
-      // whole value: rebuilding re-reads every mention, so a programmatic edit
-      // (an attachment marker, a quote, a spliced command) would promote
-      // plainly typed prose into an activation. Only the span that actually
-      // changed follows the parse rule - which is exactly what a restore
-      // replaces. Through a transaction, the change is also an ordinary
-      // history event and the plugins that hold state keep it, so undo
-      // survives; a fresh EditorState would re-initialize them.
+      // Applied through a transaction, never by rebuilding the state: a fresh
+      // EditorState re-initializes every plugin, so one attachment marker would
+      // end the session's undo history. addToHistory: false, because the change
+      // came from the controlled value rather than the keyboard - undoing a
+      // cleared submission must not put the sent message back.
+      const apply = (transaction: typeof view.state.tr) =>
+        view.dispatch(transaction.setMeta("addToHistory", false).setMeta(externalSync, true));
       const current = serializeSkillDocument(view.state.doc).text;
       const prefix = sharedPrefixLength(current, props.value.text);
-      const suffix = sharedSuffixLength(current, props.value.text, prefix);
-      if (prefix + suffix < current.length || prefix + suffix < props.value.text.length) {
-        const from = textOffsetToDocumentPosition(view.state.doc, prefix, 1);
-        const to = textOffsetToDocumentPosition(view.state.doc, current.length - suffix, -1);
-        const inserted = parseSkillDocument({
-          text: props.value.text.slice(prefix, props.value.text.length - suffix),
-          skillNames: props.value.skillNames,
-        });
-        // addToHistory: false - the change came from the controlled value, not
-        // from the keyboard, so it must not be its own undo event: undoing a
-        // cleared submission would put the sent message back. Dispatching (as
-        // opposed to rebuilding the state) is what keeps the history the user
-        // already had, so undo still works after an attachment or a splice.
-        view.dispatch(
-          view.state.tr
-            .replaceWith(from, to, inserted.content)
-            .setMeta("addToHistory", false)
-            .setMeta(externalSync, true),
-        );
-      } else {
-        // Same text, different selections: a restore that selects a mention
-        // already spelled out, so the whole value follows the parse rule.
+      const end = current.length - sharedSuffixLength(current, props.value.text, prefix);
+      // A boundary strictly inside an atom cannot be mapped to a position that
+      // replaces that atom, and the value as a whole is authoritative whenever
+      // the caller marked it a restore or it replaces everything - a goal
+      // command, a cleared submission. Both cases rebuild from the value; only
+      // a partial, unmarked change is a patch, and what it inserts is plain
+      // text: a spliced command or quote that happens to spell a selected name
+      // must not become an activation the user never chose.
+      const splitsAtom = atomInteriorAt(view.state.doc, prefix) || atomInteriorAt(view.state.doc, end);
+      if (authoritative || splitsAtom || (prefix === 0 && end === current.length)) {
         const replacement = parseSkillDocument(props.value);
         if (!replacement.eq(view.state.doc))
-          view.dispatch(
-            view.state.tr
-              .replaceWith(0, view.state.doc.content.size, replacement.content)
-              .setMeta("addToHistory", false)
-              .setMeta(externalSync, true),
-          );
+          apply(view.state.tr.replaceWith(0, view.state.doc.content.size, replacement.content));
+      } else {
+        const from = textOffsetToDocumentPosition(view.state.doc, prefix, 1);
+        const to = textOffsetToDocumentPosition(view.state.doc, end, -1);
+        const inserted = props.value.text.slice(prefix, props.value.text.length - (current.length - end));
+        apply(view.state.tr.replaceWith(from, to, inserted ? skillSchema.text(inserted) : Fragment.empty));
       }
     }
     view.setProps({

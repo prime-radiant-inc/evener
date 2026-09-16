@@ -253,6 +253,16 @@ export function Composer({ ref, focused }: ComposerProps) {
   // sticky-draft contract as `text`: restored per-ref on mount, persisted in
   // the one structured v2 draft record, and snapshotted before every submit.
   const [skillNames, setSkillNames] = useState<string[]>(() => restoredSkillNames(readComposerDraft(ref)));
+
+  // Bumped whenever `text`/`skillNames` are replaced by a value that came from
+  // somewhere other than this composer's own editor - a stored draft, a
+  // recovery, a queued entry. SkillEditor rebuilds its document from such a
+  // value, so the selections it names become chips again; a programmatic edit
+  // (an attachment marker, a goal command) is not marked, and what it inserts
+  // stays prose. See SkillEditor's restoreEpoch contract.
+  const [restoreEpoch, setRestoreEpoch] = useState(0);
+  const markRestore = useCallback((): void => setRestoreEpoch((epoch) => epoch + 1), []);
+
   const [activeRecoveryId, setActiveRecoveryIdState] = useState<string | null>(null);
   const [freshRecoveryRef, setFreshRecoveryRef] = useState<string | null>(null);
   const activeRecoveryIdRef = useRef<string | null>(null);
@@ -396,6 +406,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // Re-read at subscription time so a commit between render and mount
     // cannot leave an already-cleared sticky draft in a fresh composer.
     const draft = readComposerDraft(ref);
+    markRestore();
     updateText(draft.text);
     updateSkillNames(restoredSkillNames(draft));
     ownedDraftRevisionRef.current = readDraftRevision(ref);
@@ -451,7 +462,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       mountedRef.current = false;
       unsubscribe();
     };
-  }, [ref, setActiveRecoveryId, updateText, updateSkillNames, persistDraft]);
+  }, [ref, setActiveRecoveryId, updateText, updateSkillNames, persistDraft, markRestore]);
 
   // Attachment marker edits update controlled text, selected references and
   // the persisted draft together. Prefer a pending cursor restoration over
@@ -652,6 +663,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // Restoration replaces this mount's local owner without editing the
     // shared recovery draft that an earlier mount may still be submitting.
     draftEditRevisionRef.current += 1;
+    markRestore();
     updateText(recovered.text);
     updateSkillNames(restoredSkillNames(recovered));
     attachments.replaceWithSettled(recovered.attachments);
@@ -661,6 +673,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     activeRecoveryId,
     attachments.replaceWithSettled,
     freshRecoveryRef,
+    markRestore,
     recoveryEntries,
     ref,
     scheduleCursorRestore,
@@ -1047,6 +1060,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       setActiveRecoveryId(record.clientMutationId);
     }
     const nextSkillNames = restoredSkillNames(merged);
+    markRestore();
     editText(merged.text);
     editSkillNames(nextSkillNames);
     attachments.replaceWithSettled(merged.attachments);
@@ -1536,6 +1550,7 @@ export function Composer({ ref, focused }: ComposerProps) {
                   <SkillEditor
                     ref={editorRef}
                     value={{ text, skillNames }}
+                    restoreEpoch={restoreEpoch}
                     skillDetails={skillChipDetails}
                     onChange={handleTextChange}
                     onKeyDown={handleKeyDown}
