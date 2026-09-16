@@ -24,6 +24,7 @@
     "deriveAskQuestions.ts",
     "disclosure.ts",
     "reconcileBatches.ts",
+    "askDock.ts",
     "attachmentLimits.ts",
     "attachmentMarkers.ts",
     "textareaMarkers.ts",
