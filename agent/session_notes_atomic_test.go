@@ -221,7 +221,7 @@ func TestHumanNoteAtomicNoOpHeldAndConsumedReceipt(t *testing.T) {
 	if len(drained) != 1 || drained[0].Kind != events.SteeringKindHumanNote || drained[0].ClientMutationID != "save" {
 		t.Fatalf("drained = %+v", drained)
 	}
-	if !s.consumeSteeringMessage(drained[0]) {
+	if s.consumeSteeringMessage(drained[0]) == steeringAppendFailed {
 		t.Fatal("steering consumption failed")
 	}
 	replay, err := s.SetHumanNote("save", " sentinel ")

@@ -1418,7 +1418,7 @@ func TestClientMutation_SteeringProducerReplayStaysReflectedAfterTranscriptIncor
 			if !ok || msg.ClientMutationID != mutationID {
 				t.Fatalf("claimed steering = %#v, ok=%v", msg, ok)
 			}
-			if !sess.consumeSteeringMessage(msg) {
+			if sess.consumeSteeringMessage(msg) == steeringAppendFailed {
 				t.Fatal("consumeSteeringMessage did not durably incorporate steering")
 			}
 

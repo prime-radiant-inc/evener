@@ -587,8 +587,8 @@ func recordSteerWithFailedIncorporation(t *testing.T, s *Session, clientMutation
 	}
 	recorded := s.consumeSteeringMessage(msg)
 	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
-	if !recorded {
-		t.Fatal("consumeSteeringMessage reported the append failed; this test wants it recorded")
+	if recorded != steeringDelivered {
+		t.Fatalf("consumeSteeringMessage = %v; this test wants the steer delivered", recorded)
 	}
 	if state := s.clientMutations.snapshot().PendingExecutions[clientMutationID].ExecutionState; state != "accepted" {
 		t.Fatalf("the steer reads %q, want accepted: the fault did not land on the incorporation write", state)
@@ -874,8 +874,8 @@ func TestFailedSteeringSelectionLandsTheSteer(t *testing.T) {
 	if !ok || msg.ClientMutationID != "steer-bad-skill" {
 		t.Fatalf("popSteeringHead took %q (ok=%v), want the steer", msg.ClientMutationID, ok)
 	}
-	if !s.consumeSteeringMessage(msg) {
-		t.Fatal("consumeSteeringMessage reported the drain must stop; the failure record landed and the steer is retired")
+	if got := s.consumeSteeringMessage(msg); got != steeringRetired {
+		t.Fatalf("consumeSteeringMessage = %v, want the steer retired: the failure record landed", got)
 	}
 	snapshot := s.clientMutations.snapshot()
 	if _, still := snapshot.PendingExecutions["steer-bad-skill"]; still || snapshot.Journal["steer-bad-skill"].ExecutionState != "failed" {
@@ -1195,8 +1195,8 @@ func recordFailedSelectionWithFailedRetirement(t *testing.T, s *Session, clientM
 	}
 	recorded := s.consumeSteeringMessage(msg)
 	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
-	if !recorded {
-		t.Fatal("consumeSteeringMessage reported the failure record did not land; this test wants it recorded")
+	if recorded != steeringRetired {
+		t.Fatalf("consumeSteeringMessage = %v; this test wants the failure recorded and the steer retired", recorded)
 	}
 	if state := s.clientMutations.snapshot().PendingExecutions[clientMutationID].ExecutionState; state != "accepted" {
 		t.Fatalf("the steer reads %q, want accepted: the fault did not land on the retirement write", state)
@@ -1265,5 +1265,102 @@ func TestRestoreMarksARecordedSelectionFailureFailed(t *testing.T) {
 	}
 	if got := snapshot.Journal["steer-bad-skill"].ExecutionState; got != "failed" {
 		t.Fatalf("the recorded selection failure's journal reads %q after restore, want failed", got)
+	}
+}
+
+// TestCarrierProceedsWhenALaterSteerWasDeliveredBehindAFailedSelection (round
+// 12): the head steer's skill selection fails and is retired; the drain goes
+// on and delivers the steer behind it. The carrier must make its model
+// request -- a steering turn is in the transcript that no request has read --
+// and stand down only when the drain delivered nothing.
+func TestCarrierProceedsWhenALaterSteerWasDeliveredBehindAFailedSelection(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	close(adapter.release) // every call answers at once
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	for _, steer := range []appwire.TurnSteerParams{
+		{ClientMutationID: "steer-bad-skill", Input: []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}}},
+		{ClientMutationID: "steer-behind", Input: []appwire.InputItem{{Type: "text", Text: "carry me"}}},
+	} {
+		if _, err := s.AcceptClientMutationSteer(steer); err != nil {
+			t.Fatalf("steer %s: %v", steer.ClientMutationID, err)
+		}
+	}
+	drainWakes(wakes)
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+		t.Fatalf("the carrier: ran=%v err=%v", ran, err)
+	}
+
+	requests := adapter.Requests()
+	if len(requests) != 1 || !requestContainsText(requests[0], "carry me") {
+		t.Fatalf("provider requests = %d, want 1 carrying the delivered steer: it is in the transcript and no request has read it", len(requests))
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-behind"]; still || snapshot.Journal["steer-behind"].ExecutionState != "incorporated" {
+		t.Fatalf("the delivered steer reads pending=%v journal=%q, want incorporated", still, snapshot.Journal["steer-behind"].ExecutionState)
+	}
+	if _, still := snapshot.PendingExecutions["steer-bad-skill"]; still || snapshot.Journal["steer-bad-skill"].ExecutionState != "failed" {
+		t.Fatalf("the failed selection reads pending=%v journal=%q, want retired as failed", still, snapshot.Journal["steer-bad-skill"].ExecutionState)
+	}
+	if s.hasPendingUserSteering() {
+		t.Fatal("steering is still queued after the carrier")
+	}
+}
+
+// TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake (round 12): the
+// claim's write of ActiveTurnID is refused by the store. The steer stays
+// accepted and queued, nothing arms a wake of its own (the same parking
+// contract as a failed append), and the next external wake -- here the
+// acceptance of an unrelated steer -- carries both.
+func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	close(adapter.release)
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-first",
+		Input:            []appwire.InputItem{{Type: "text", Text: "first"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	drainWakes(wakes)
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		return errors.New("injected: claim write refused")
+	}
+	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+		t.Fatalf("the wake with the claim refused: ran=%v err=%v, want a stand-down", ran, err)
+	}
+	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	snapshot := s.clientMutations.snapshot()
+	if state := snapshot.PendingExecutions["steer-first"].ExecutionState; state != "accepted" || snapshot.ActiveTurnID != "" || !s.hasPendingUserSteering() {
+		t.Fatalf("state=%q active=%q queued=%v after the refused claim, want accepted, no slot, queued", state, snapshot.ActiveTurnID, s.hasPendingUserSteering())
+	}
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 0 {
+		t.Fatalf("the refused claim armed %d wake(s); want none", runs)
+	}
+
+	// An unrelated accepted mutation is the next external wake.
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-second",
+		Input:            []appwire.InputItem{{Type: "text", Text: "second"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	if requests := adapter.Requests(); len(requests) != 1 || !requestContainsText(requests[0], "first") || !requestContainsText(requests[0], "second") {
+		t.Fatalf("provider requests = %d, want 1 carrying both steers", len(requests))
+	}
+	if s.hasPendingUserSteering() {
+		t.Fatal("steering is still queued after the external wake carried it")
 	}
 }

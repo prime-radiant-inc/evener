@@ -2559,7 +2559,7 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
-	s.injectDrainedSteering()
+	delivered := s.injectDrainedSteering()
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
@@ -2572,10 +2572,15 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		s.emitTurnFailure(errorDataFromError(err))
 		return err
 	case carrierSteerFailed:
-		// The drain recorded the selection failure and announced it on this
-		// turn (recordFailedSteeringSelection's error event); the steer is
-		// retired and a model request would carry nothing. Stand down; the
-		// input settles like any other.
+		// The drain recorded the selection failure of the steer this turn was
+		// claimed for and announced it on this turn (recordFailedSteeringSelection's
+		// error event); that steer is retired. The drain went on past it, so
+		// the turn stands down only when it delivered nothing at all: a
+		// steer queued behind the failed one is in the transcript now, and
+		// this is the request that reads it.
+		if delivered {
+			return nil
+		}
 		s.finishProcessingAtBoundary(ctx, SessionIdle)
 		return errSteeringCarrierStoodDown
 	}

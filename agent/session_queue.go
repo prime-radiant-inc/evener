@@ -1061,21 +1061,43 @@ func (s *Session) recordedSteeringAwaitingMark() (ids []string, recorded func(st
 // swept into this batch without its provenance. See
 // TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem for the pinned
 // behavior.
-func (s *Session) injectDrainedSteering() {
+//
+// It reports whether this pass delivered anything: at least one steering turn
+// is now in the transcript that no model request has read. A pass that only
+// retired failed selections, or drained nothing, delivered nothing.
+func (s *Session) injectDrainedSteering() (delivered bool) {
 	for range s.peekSteeringForTurn() {
 		msg, ok := s.popSteeringHead()
 		if !ok {
 			break
 		}
-		if !s.consumeSteeringMessage(msg) {
+		switch s.consumeSteeringMessage(msg) {
+		case steeringAppendFailed:
 			// The failed steer is back at the head of the queue; popping again
 			// would take the same steer and fail the same way inside this
 			// turn. The next external wake owns the next attempt, for this
 			// steer and for everything queued behind it.
-			break
+			return delivered
+		case steeringDelivered:
+			delivered = true
 		}
 	}
+	return delivered
 }
+
+// steeringConsumption is what consumeSteeringMessage did with one message.
+type steeringConsumption int
+
+const (
+	// steeringAppendFailed: the transcript refused the append; a client steer
+	// is back in the queue, accepted, and the drain must stop here.
+	steeringAppendFailed steeringConsumption = iota
+	// steeringDelivered: a steering turn is in the transcript.
+	steeringDelivered
+	// steeringRetired: the steer's skill selection could not be prepared; the
+	// failure is recorded and the steer retired. Nothing reached the model.
+	steeringRetired
+)
 
 // consumeSteeringMessage durably records one drained steering message as a
 // steering turn (history + transcript) and emits the steering-injected
@@ -1083,7 +1105,7 @@ func (s *Session) injectDrainedSteering() {
 // drive the exact per-message consumption step the production loop uses,
 // rather than reimplementing it, when pinning the crash-window behavior
 // documented above.
-func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
+func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumption {
 	// A skill-bearing steering message is prepared at actual consumption, as
 	// one atomic group tied to the steering's durable identity. A failed
 	// preparation delivers NONE of the steering input to the in-flight turn --
@@ -1096,7 +1118,10 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		selectionRecord = skillInputRecordFromQueued(queued)
 		batch, prepareErr := s.prepareSelectedInput(context.Background(), queued, "user_selection")
 		if prepareErr != nil {
-			return s.recordFailedSteeringSelection(msg, prepareErr)
+			if !s.recordFailedSteeringSelection(msg, prepareErr) {
+				return steeringAppendFailed
+			}
+			return steeringRetired
 		}
 		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
@@ -1133,7 +1158,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			// and a paced retry is not this design's answer.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			s.steeringLanded(msg.ClientMutationID)
-			return false
+			return steeringAppendFailed
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
 			// Recorded, so delivered: the transcript holds the steer and the
@@ -1149,12 +1174,12 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
-		return true
+		return steeringDelivered
 	}
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
-	return true
+	return steeringDelivered
 }
 
 // queuedInputFromSteering projects a steering message into the queuedInput

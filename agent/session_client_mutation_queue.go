@@ -305,9 +305,12 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 		}
 		return nil
 	}); err != nil {
-		// A refused write: the steer stays accepted, which keeps the session
-		// from resting (hasRunnableUserSteering) until the next wake claims
-		// it. A closed rail or an occupied slot returns nil above.
+		// A refused write parks the steer the way a failed append does: it
+		// stays accepted and queued, runnable (hasRunnableUserSteering keeps
+		// the session from resting), and nothing here arms a wake of its own
+		// -- the next external wake, attach or any accepted client mutation,
+		// claims it again. No paced retry. A closed rail or an occupied slot
+		// returns nil above.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
 		return queuedInput{}, false
 	}
