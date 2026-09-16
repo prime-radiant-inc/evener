@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/auth/openai/oaitest"
@@ -1510,5 +1511,57 @@ func TestRunStopsStartupOnAnInterrupt(t *testing.T) {
 				t.Error("processed input for a run an interrupt had already ended")
 			}
 		})
+	}
+}
+
+// TestRunPreservesAdoptedRetainedScratchWhenRestoreFails is roborev round-8 High
+// 1 on the one-shot run path: a resume adopts a durable retained allocation onto
+// the launch environment, then a later restore failure must retain it (release
+// the lease) rather than run os.RemoveAll over a directory the manifest still
+// references.
+func TestRunPreservesAdoptedRetainedScratchWhenRestoreFails(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldRestore := runRestoreSession
+	t.Cleanup(func() { runRestoreSession = oldRestore })
+
+	stateDir := t.TempDir()
+	const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(2, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	var adopted sandbox.ScratchReference
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, env execenv.ExecutionEnvironment, _ schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		adopted = adoptRetainedScratchOntoLaunchEnv(t, stateDir, sessionID, env)
+		return nil, errors.New("restore failed after the retained scratch was adopted")
+	}
+
+	err := run(context.Background(), runConfig{
+		resume:                sessionID,
+		workDir:               stateDir,
+		stateDir:              stateDir,
+		runTimeout:            time.Hour,
+		noDefaultMarketplaces: true,
+		stdout:                &bytes.Buffer{},
+		stderr:                &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "restore session") {
+		t.Fatalf("run error = %v, want the restore failure", err)
+	}
+	if adopted.Dir == "" {
+		t.Fatal("restore stub never ran, so no retained scratch was adopted")
+	}
+	if _, err := os.Stat(adopted.Dir); err != nil {
+		t.Fatalf("failed run removed the adopted retained scratch %s: %v", adopted.Dir, err)
+	}
+	owner := sandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID}
+	handle, err := sandbox.OpenRetainedSessionScratch(owner, adopted)
+	if err != nil {
+		t.Fatalf("failed run did not release the adopted scratch lease: %v", err)
+	}
+	if err := handle.Retain(); err != nil {
+		t.Fatal(err)
 	}
 }
