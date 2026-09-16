@@ -1,10 +1,7 @@
 import { useState } from "react";
 import { Pressable, View } from "react-native";
+import { basename, parentOf } from "@evener/appwire-client";
 import type { MCPServerSpec } from "@evener/appwire-client";
-import {
-  basename,
-  parentOf,
-} from "../../cmd/evener-hub/frontend/src/widgets/pathfield/pathRows";
 import { Action, Copy, useColors } from "./ui";
 
 export function LaunchResourceRow({
