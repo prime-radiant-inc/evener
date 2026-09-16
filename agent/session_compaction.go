@@ -616,7 +616,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
 		markerSeqs := make([]int, len(pendingCompactionTurns))
 		for i, turn := range pendingCompactionTurns {
-			markerSeqs[i], compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+			seq, err := s.writeTranscriptLocked(turn)
+			compactionTurnWriteErrs[i] = err
+			markerSeqs[i] = recordedSeq(seq, err) // NoTranscriptEntrySeq on a failed write, so the fold names no phantom entry
 		}
 		steeringSeqs, errs := s.writeSteeringTurnRecordsLocked(pendingSteering)
 		steeringWriteErrs = errs
@@ -857,9 +859,12 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) (
 	for i, record := range records {
 		if appendTurn := s.cfg.testOnly.appendCompactionTurn; appendTurn != nil {
 			errs[i] = appendTurn(record.turn)
+			seqs[i] = recordedSeq(0, errs[i])
 			continue
 		}
-		seqs[i], errs[i] = s.writeTranscriptLocked(record.turn)
+		seq, err := s.writeTranscriptLocked(record.turn)
+		seqs[i] = recordedSeq(seq, err) // NoTranscriptEntrySeq on a failed write
+		errs[i] = err
 	}
 	return seqs, errs
 }
@@ -876,15 +881,18 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) (
 // published is the folded history: [head marker, ...strategy-kept tail...,
 // ...merge-back...]. mergeBackCount is how many of its trailing turns
 // publishFoldedHistory merged back (recorded concurrently during the fold).
-// The head marker's Seq comes from markers/markerSeqs. The strategy-kept tail
-// carries the Seq recordTurn stamped for turns that have a durable entry; a
-// Seq-less turn there is a steering injection the fold just wrote (its Seq
-// comes from steeringSeqs, in order) or — in tests that seed history without a
-// transcript — a turn with no entry, which is not resumable and is skipped.
-// The merge-back turns always have durable entries, so they are named by their
-// Seq unconditionally (that entry may legitimately be Seq 0 when the seeded
-// prefix bypassed the transcript). A fold that produced no marker writes no
-// record — there is no pre-marker tail for the anchor to drop.
+// The head marker's Seq comes from markers/markerSeqs, and is used only when
+// the marker's own write recorded it (otherwise no record is written). In the
+// strategy-kept tail each turn is classified by its Seq: a positive Seq is a
+// pre-existing durable entry; NoTranscriptEntrySeq is a repair synthetic or
+// strategy injection with no entry (omitted); Seq 0 is a steering turn the fold
+// injected, whose durable entry is the next steering write's, taken from
+// steeringSeqs in order (a failed steering write recorded nothing and is
+// omitted). Merge-back turns went through recordTurn, so a recorded one is
+// named by its real Seq (possibly 0 when a seeded prefix bypassed the
+// transcript) and a failed one carries NoTranscriptEntrySeq and is omitted. A
+// fold that produced no marker writes no record — there is no pre-marker tail
+// for the anchor to drop.
 func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount int, markers []schema.Turn, markerSeqs, steeringSeqs []int, foldID string) {
 	if len(published) == 0 || len(markers) == 0 {
 		return
@@ -900,8 +908,12 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount 
 		}
 	}
 	if !found || headSeq < 0 {
-		// The marker was held before the transcript attached, or there is no
-		// writer: nothing durable exists to anchor a restart on.
+		// The head marker's own write recorded nothing (a failure, or a hold
+		// before the transcript attached): its seq is NoTranscriptEntrySeq (or
+		// the unspent next seq the fold record itself would take). There is no
+		// durable marker to anchor a restart on, so write no record — resume
+		// falls back to the pre-fold history rather than naming a phantom
+		// entry (which the unspent-seq reuse would resolve to this very record).
 		return
 	}
 	keptTail := published[1 : len(published)-mergeBackCount]
@@ -909,17 +921,34 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount 
 	retained := make([]int, 0, len(published)-1)
 	steerIdx := 0
 	for _, turn := range keptTail {
-		if turn.Seq != 0 {
+		switch {
+		case turn.Seq > 0:
+			// A pre-existing turn with a durable entry. (A kept turn's entry is
+			// never Seq 0: entry 0 is the session's first turn, always in the
+			// prefix a marker-producing fold discarded.)
 			retained = append(retained, turn.Seq)
-			continue
-		}
-		if steerIdx < len(steeringSeqs) {
-			retained = append(retained, steeringSeqs[steerIdx])
-			steerIdx++
+		case turn.Seq == schema.NoTranscriptEntrySeq:
+			// A repair synthetic or strategy injection: no durable entry, omit.
+		default: // turn.Seq == 0
+			// A steering turn the fold injected: its history copy is unstamped,
+			// so its durable entry's Seq is the next steering write's, consumed
+			// in order. A write that recorded nothing carries
+			// NoTranscriptEntrySeq and is omitted.
+			if steerIdx < len(steeringSeqs) {
+				if seq := steeringSeqs[steerIdx]; seq >= 0 {
+					retained = append(retained, seq)
+				}
+				steerIdx++
+			}
 		}
 	}
 	for _, turn := range mergeBack {
-		retained = append(retained, turn.Seq)
+		// Merge-back turns always went through recordTurn, so a recorded one
+		// carries its real Seq (possibly 0 when a seeded prefix bypassed the
+		// transcript) and a failed one carries NoTranscriptEntrySeq.
+		if turn.Seq >= 0 {
+			retained = append(retained, turn.Seq)
+		}
 	}
 	record := schema.NewTurn(schema.TurnFoldRecord, llm.Message{})
 	record.Fold = &schema.FoldRecord{FoldID: foldID, Layers: []int{headSeq}, RetainedSeqs: retained}

@@ -859,6 +859,12 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 		// Resolution markers are durable private correlation records. They are
 		// transparent to the public conversation and its tool-round structure.
 
+	case schema.TurnFoldRecord:
+		// A fold record is durable resume bookkeeping (it names the entries a
+		// fold's history is made of, by Seq) with no displayable content — like
+		// the resolution marker above, it is transparent to the rendered
+		// transcript. Skip silently rather than print an empty omitted-turn note.
+
 	case schema.TurnToolResults:
 		// TOOL_RESULTS do not get a standalone heading — they fold under the
 		// assistant turn that owns the tool call. Skip silently as a no-op.

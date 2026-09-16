@@ -297,6 +297,23 @@ func TestRenderMarkdown_UnknownAndSystemTurns(t *testing.T) {
 		}
 	})
 
+	t.Run("FOLD_RECORD turn renders nothing", func(t *testing.T) {
+		entries := []transcript.Entry{
+			makeEntry(schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+				FoldID: "fold-3", Layers: []int{4}, RetainedSeqs: []int{1, 2, 3},
+			}}),
+		}
+		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
+		// Durable resume bookkeeping with no displayable content: no heading,
+		// no "[FOLD_RECORD turn omitted]" note.
+		if strings.Contains(out, "FOLD_RECORD") {
+			t.Errorf("FOLD_RECORD turn should render nothing, got:\n%s", out)
+		}
+		if strings.Contains(out, "## Turn 0 — ") {
+			t.Errorf("FOLD_RECORD should get no heading, got:\n%s", out)
+		}
+	})
+
 	t.Run("TOOL_RESULTS turn is not a standalone heading", func(t *testing.T) {
 		toolResultPart := llm.ContentPart{
 			Kind: llm.ContentToolResult,

@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -237,6 +238,105 @@ func newScriptedSummaryCompactSession(t *testing.T, provider string, responder f
 	client.Register(&agenttest.ScriptedAdapter{Provider: provider, Responder: responder})
 	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), provider+"/model")
 	return newSession(t, append([]sessionOpt{withClient(client), withProfile(profile), withoutGitSnapshot()}, opts...)...)
+}
+
+// foldRecordFromTranscript returns the last fold record written to a session's
+// transcript, or nil when none was written.
+func foldRecordFromTranscript(t *testing.T, s *Session) *schema.FoldRecord {
+	t.Helper()
+	data, err := readTranscriptFull(transcriptPath(s.stateDir, s.id))
+	if err != nil {
+		t.Fatalf("readTranscriptFull: %v", err)
+	}
+	var rec *schema.FoldRecord
+	for _, e := range data.Entries {
+		if e.Turn.Kind == schema.TurnFoldRecord && e.Turn.Fold != nil {
+			rec = e.Turn.Fold
+		}
+	}
+	return rec
+}
+
+// A write that recorded nothing returns the UNSPENT next seq; capturing it as
+// the turn's durable Seq would make the fold name a number a later append
+// reuses. recordedSeq keeps a seq only when the write recorded (nil or the
+// whole-line-unsynced record), and hands back the no-entry sentinel otherwise.
+func TestRecordedSeq_OnlyKeepsRecordedWrites(t *testing.T) {
+	t.Parallel()
+	if got := recordedSeq(7, nil); got != 7 {
+		t.Errorf("recordedSeq(7, nil) = %d, want 7", got)
+	}
+	if got := recordedSeq(7, &transcript.RetainedUnsyncedError{Seq: 7}); got != 7 {
+		t.Errorf("recordedSeq on a retained (unsynced) record = %d, want 7 — the whole line is a record", got)
+	}
+	if got := recordedSeq(7, errors.New("no space left on device")); got != schema.NoTranscriptEntrySeq {
+		t.Errorf("recordedSeq on a hard failure = %d, want NoTranscriptEntrySeq (the returned 7 is the unspent next seq)", got)
+	}
+}
+
+// A repair synthetic is reconstructed on every resume and has no durable
+// transcript entry, so it must carry the no-entry sentinel — otherwise its
+// zero Seq reads as entry 0 and a later fold names entry 0's content for it.
+func TestSyntheticToolResultsTurn_HasNoDurableEntrySeq(t *testing.T) {
+	t.Parallel()
+	synthetic := syntheticToolResultsTurn([]llm.ToolCallData{{ID: "call-1", Name: "read_file"}})
+	if synthetic.Seq >= 0 {
+		t.Fatalf("synthetic tool-results turn Seq = %d, want a negative no-entry sentinel", synthetic.Seq)
+	}
+}
+
+// M2: a keptTail turn with no durable entry (a repair synthetic or strategy
+// injection, carrying the sentinel) must be OMITTED from the fold record, not
+// treated as an injected steering turn — otherwise it consumes a real steering
+// turn's Seq and the steering turn is dropped or duplicated on restart.
+func TestWriteFoldRecordLocked_NoEntryTurnDoesNotStealSteeringSeq(t *testing.T) {
+	s := newScriptedSummaryCompactSession(t, "fold-rec-m2", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("ok")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+
+	s.attentionMu.Lock()
+	summary := schema.NewTurn(schema.TurnSummary, llm.User("summary"))
+	headSeq, err := s.writeTranscriptLocked(summary)
+	if err != nil {
+		s.attentionMu.Unlock()
+		t.Fatalf("write head marker: %v", err)
+	}
+	noEntry := schema.NewTurn(schema.TurnUserInput, llm.User("repair synthetic"))
+	noEntry.Seq = schema.NoTranscriptEntrySeq
+	steer := schema.NewTurn(schema.TurnSteering, llm.User("injected steering")) // unstamped copy, Seq 0
+	published := []schema.Turn{summary, noEntry, steer}
+	// steeringSeqs holds the durable Seq the fold wrote the steering turn at.
+	s.writeFoldRecordLocked(published, 0, []schema.Turn{summary}, []int{headSeq}, []int{42}, "fold-x")
+	s.attentionMu.Unlock()
+
+	rec := foldRecordFromTranscript(t, s)
+	if rec == nil {
+		t.Fatal("no fold record written")
+	}
+	if len(rec.RetainedSeqs) != 1 || rec.RetainedSeqs[0] != 42 {
+		t.Fatalf("RetainedSeqs = %v, want [42]: the no-entry turn must be omitted and the steering turn keep its own Seq", rec.RetainedSeqs)
+	}
+}
+
+// M1 defense: a fold record must never resolve one of its named Seqs to another
+// fold record — a write bug (e.g. a failed head marker leaving the unspent seq
+// that the fold record itself then takes) could otherwise inject the record
+// into live history. resumeTurns must skip such a resolution.
+func TestResumeHistoryFoldRecord_NeverInjectsAFoldRecord(t *testing.T) {
+	t.Parallel()
+	entries := []transcript.Entry{
+		{Kind: "entry", Seq: 0, Turn: schema.NewTurn(schema.TurnSummary, llm.User("summary"))},
+		// The record names Seq 1 in both Layers and RetainedSeqs — its OWN seq.
+		{Kind: "entry", Seq: 1, Turn: schema.Turn{Kind: schema.TurnFoldRecord, Fold: &schema.FoldRecord{
+			FoldID: "bad", Layers: []int{1}, RetainedSeqs: []int{1},
+		}}},
+		{Kind: "entry", Seq: 2, Turn: schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))},
+	}
+	for _, turn := range ResumeHistory(entries) {
+		if turn.Kind == schema.TurnFoldRecord {
+			t.Fatal("resumed history contains a fold record: a self-referential seq was resolved into history")
+		}
+	}
 }
 
 // TestFoldPublication_RetainedTailSurvivesRestart is the #1200 regression in

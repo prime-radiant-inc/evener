@@ -11,6 +11,13 @@ import (
 // TurnKind identifies the category of a Turn in the Session history.
 type TurnKind string
 
+// NoTranscriptEntrySeq marks a Turn.Seq that names no durable transcript
+// entry: a repair synthetic, a strategy injection, or a turn whose write
+// failed. It is negative so it can never collide with a real 0-based Entry.Seq;
+// the compaction fold omits such turns from the fold record, and resume never
+// resolves the sentinel to an entry.
+const NoTranscriptEntrySeq = -1
+
 const (
 	// TurnUserInput is a turn carrying input from the user.
 	TurnUserInput TurnKind = "USER_INPUT"
@@ -210,10 +217,12 @@ type GoalContinuationInfo struct {
 type Turn struct {
 	Kind TurnKind `json:"kind"` // category of this history item
 	// Seq is the transcript Entry.Seq this turn was written as — its durable,
-	// monotonic per-line id. In-memory only (json:"-"): it is stamped when the
-	// turn is appended to the transcript (or seeded from the entry on restore),
-	// and the compaction fold names the entries it retains by these Seqs. Zero
-	// on a turn that has not been written to a transcript.
+	// monotonic per-line id (>= 0). In-memory only (json:"-"): it is stamped
+	// when the turn is appended to the transcript (or seeded from the entry on
+	// restore), and the compaction fold names the entries it retains by these
+	// Seqs. It is NoTranscriptEntrySeq (negative) on a turn that names no
+	// durable entry — a repair synthetic, a strategy injection, or a turn whose
+	// write failed — so the fold omits it and resume never resolves it.
 	Seq       int         `json:"-"`
 	Message   llm.Message `json:"message"`   // the underlying LLM message
 	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)

@@ -133,8 +133,12 @@ func syntheticToolResultsTurn(calls []llm.ToolCallData) schema.Turn {
 		})
 	}
 	return schema.Turn{
-		Kind:      schema.TurnToolResults,
-		Message:   llm.Message{Role: llm.RoleTool, Content: parts},
+		Kind:    schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, Content: parts},
+		// A repair synthetic is reconstructed on every resume; it has no durable
+		// transcript entry, so a later compaction fold must not name it by Seq
+		// (its zero value would otherwise read as entry 0).
+		Seq:       schema.NoTranscriptEntrySeq,
 		Timestamp: time.Now().UTC(),
 	}
 }

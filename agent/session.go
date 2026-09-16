@@ -1910,6 +1910,19 @@ func (s *Session) appendTurnAfterTranscriptWrite(write func() (int, error), appe
 	return err
 }
 
+// recordedSeq returns the durable Seq a transcript write spent, or
+// schema.NoTranscriptEntrySeq when the write recorded nothing. A whole line
+// that landed but did not sync (ErrRetainedUnsynced) IS a record, so its seq
+// stands; any other error recorded nothing, and appendBatchLocked returns the
+// UNSPENT next seq in that case — the number a later successful append reuses,
+// which must never be stamped onto a turn or named in a fold record.
+func recordedSeq(seq int, err error) int {
+	if err == nil || errors.Is(err, transcript.ErrRetainedUnsynced) {
+		return seq
+	}
+	return schema.NoTranscriptEntrySeq
+}
+
 func (s *Session) appendTurnAfterTranscriptWriteLocked(write func() (int, error), appendLocked func(seq int)) error {
 	// A write reports one of three things (see transcript.AppendSynced, and the
 	// ordinary doors' recorded-or-nil): nil is recorded; ErrRetainedUnsynced is
@@ -1972,7 +1985,11 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	s.attentionMu.Lock()
 	seq, err := s.writeTranscriptLocked(persisted)
 	s.mu.Lock()
-	live.Seq = seq
+	// The turn stays in model history even when the write failed, but it must
+	// carry no durable Seq then: a hard failure returns the UNSPENT next seq,
+	// which a later successful append reuses, so stamping it would make the
+	// fold name another turn's entry.
+	live.Seq = recordedSeq(seq, err)
 	s.history = append(s.history, live)
 	s.mu.Unlock()
 	s.attentionMu.Unlock()

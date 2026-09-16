@@ -190,7 +190,12 @@ func resumeTurns(entries []transcript.Entry) (turns []schema.Turn, origins []int
 			bySeq[entries[i].Seq] = i
 		}
 		add := func(seq int) {
-			if i, ok := bySeq[seq]; ok {
+			// A negative sentinel (NoTranscriptEntrySeq) misses bySeq, and a
+			// fold record must never name another fold record — skip both, so a
+			// seq that a write bug pointed at the FOLD_RECORD entry (e.g. an
+			// unspent seq reused after a failed marker write) can never inject
+			// the record itself into history.
+			if i, ok := bySeq[seq]; ok && entries[i].Turn.Kind != schema.TurnFoldRecord {
 				appendEntry(i)
 			}
 		}
