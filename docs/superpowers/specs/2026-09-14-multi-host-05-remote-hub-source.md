@@ -899,19 +899,30 @@ Ref translation detail (`remote_hub_refs.go`):
     recognition: `{}` and any unrelated JSON object decode into a zero-value
     `appwire.JobActivityTree` with no error, so a decode-only test would
     silently rewrite payloads the source does not understand. Recognition is
-    semantic and anchored on required fields: an activity-tree payload is a
-    JSON object carrying the required `root` key (the Go encoder emits both
-    `revision` and `root` unconditionally — neither `JobActivityTree.Root` nor
-    `.Revision` carries `omitempty` — and `root` in turn carries `sessionId`/
-    `ref`); a legacy flat array, an empty object, and an unknown object all
-    fail that test. Either semantic recognition plus pass-through, or making
-    the wire field itself typed (`Data appwire.JobActivityTree`) and
-    regenerating the bindings, is acceptable; what is not acceptable is a typed
-    walk that silently no-ops because the runtime value is a `map[string]any`,
-    or one that rewrites (and replaces) a payload it did not recognize. This
+    semantic and anchored on required fields **and their types**: an
+    activity-tree payload is a JSON object carrying `revision` as a
+    non-negative integer (a JSON number, never a string or object) and `root`
+    as a JSON object carrying `sessionId` and `ref` as strings (empty strings
+    allowed — the Go encoder emits all of them unconditionally; none of
+    `JobActivityTree.Root`, `.Revision`, `JobActivitySession.SessionID`, or
+    `.Ref` carries `omitempty`). A legacy flat array, an empty object, an
+    unknown object, an object that carries `root` but not its required fields
+    (`{"root":{}}`), and a payload whose required fields carry another type all
+    fail that test, and every payload that fails it — or that passes it but
+    still fails to decode as a tree — is preserved as the `any` value it
+    arrived as, never rewritten. Semantic recognition plus pass-through is
+    therefore the only acceptable shape, and it keeps the wire field generic:
+    making the wire field itself typed (`Data appwire.JobActivityTree`) breaks
+    pass-through, because the stream client decodes the result with
+    `json.Unmarshal` (`appwire.Client.Request`, `appwire/client.go`) and a
+    legacy flat array fails that decode instead of arriving untouched. What is
+    not acceptable is a typed walk that silently no-ops because the runtime
+    value is a `map[string]any`, or one that rewrites (and replaces) a payload
+    it did not recognize. This
     must be tested **through the actual stream client**
     (`appwire.Client.Request` decoding a real JSON response), not only against
-    a Go value that was already the typed struct, with an empty object, a
+    a Go value that was already the typed struct, with an empty object, an
+    object that carries `root` without its required fields (`{"root":{}}`), a
     legacy flat array, an unknown object, a minimal (zero-value) tree, and a
     forward-compatible tree carrying an extra field.
   - the `Thread.Evener.Diagnostics` block (`EvenerDiagnostics`,
@@ -1105,9 +1116,10 @@ CWD). The remote path must therefore:
     the sha branch is `400` exactly as `handleSessionImage` answers, and a
     missing `session`/`path` on the file-backed branch is `404` exactly as
     `handleDocImage` answers. A proxy outcome maps to HTTP as: host
-    `InvalidParams` → `400`, host `ResourceNotFound` → `404` (the host's own
-    containment refusal included — containment is resolved against the *owning*
-    session's working directory, never the controller's), and an
+    `InvalidParams` → `400` (the host's own containment/traversal refusal
+    included — containment is resolved against the *owning* session's working
+    directory, never the controller's; a refused path is a refusal, not a
+    missing resource), host `ResourceNotFound` → `404`, and an
     unattached/unknown host or a transport failure → `503` with a short text
     body; a refusal never falls back to a local read.
   - **Authentication and cache.** The same access model as the local image
@@ -1164,20 +1176,32 @@ CWD). The remote path must therefore:
     working directory (`fspaths.ResolveInRoot`, the same containment
     `handleDocImage`/`outputImagesForToolCall` use) — an absolute path, a
     non-regular file, or any escape is refused, so the method can never read an
-    arbitrary host file. The bytes are bounded by the existing
-    `outputImageMaxBytes` (8 MiB, `output_images.go`): an image over the bound is
-    refused, never streamed, and the response stays far inside the transport's
-    frame limit (`appWireWebSocketReadLimit`, 128 MiB) — the 8 MiB application
-    bound is what keeps the read bounded, not the frame. The media type is
+    arbitrary host file. The served bytes are bounded by `outputImageMaxBytes`
+    (8 MiB, `output_images.go`): an image over the bound is refused, never
+    streamed, and the response stays far inside the transport's frame limit
+    (`appWireWebSocketReadLimit`, 128 MiB). The bound does not come for free on
+    the sha-addressed branch, which must enforce it itself: the file-backed
+    branch's `readOutputImageFile` refuses an over-bound file at stat time, but
+    the sha branch re-scans `sessions/<id>.transcript.jsonl` with
+    `findImageInTranscript` (`image_serve.go`), which applies no size check to
+    the bytes it matches and reads and decodes a record up to
+    `transcriptJSONLMaxLineBytes` (128 MiB, `transcript_limits.go`, the same
+    number as the transport frame limit) before the image is even located. The
+    method must therefore enforce a hard decoded/encoded size limit **while
+    scanning**: an over-bound record or image is rejected before its bytes are
+    materialized, not after a full record decode, so the 8 MiB bound governs
+    the read, not only the response. The media type is
     re-derived from the bytes with the `supportedOutputImageMedia` allow-list
     (`image/png`, `image/jpeg`, `image/gif`, `image/webp`, plus the RIFF/WEBP
     signature fallback) and is never the stored value: the sha-addressed form
     must not trust the transcript's `Image.MediaType`, and an image outside the
     allow-list is not servable.
-  - **Errors.** Malformed request fields (both/neither selector, a non-hex
-    `SHA`, a non-relative or escaping `Path`) are `appwire.InvalidParams`; an
-    unknown session, a missing transcript, a sha or path that resolves to
-    nothing, empty bytes, an unsupported media type, and an over-bound image are
+  - **Errors.** Malformed or refused request fields — both/neither selector, a
+    non-hex `SHA`, and an absolute or escaping `Path` (the containment/traversal
+    refusal) — are `appwire.InvalidParams`, which the
+    controller's route answers as a 400; an unknown session, a missing
+    transcript, a sha or path that resolves to nothing, empty bytes, an
+    unsupported media type, and an over-bound image are
     `appwire.ResourceNotFound`, which the controller's route answers as a 404 to
     the browser exactly as `handleSessionImage`/`handleDocImage` do locally.
     Transport and authorization failures surface from the channel unchanged. No
@@ -1414,8 +1438,9 @@ network.
     (`appwire.Client.Request` over a `StreamTransport` answering with the real
     JSON `{"data":{…}}` envelope) so the `Data any` decode step is exercised;
     assert a recognized tree is walked and an unrecognized `Data` payload —
-    an empty object, an unrelated object, or a legacy flat array — passes
-    through untouched as the value it received.
+    an empty object, an object carrying `root` without its required fields, an
+    unrelated object, or a legacy flat array — passes through untouched as the
+    value it received.
 14. **Remote item paging round trip.** Over the scripted (or in-process) remote
     hub, a `thread/read` whose remote reply carries `OlderCursor` returns a
     packed first page whose `OlderCursor` is the controller cursor — **not** the
@@ -1491,13 +1516,17 @@ network.
   (`EvenerDiagnostics.Jobs[].TranscriptRef`/`Delegates[].TranscriptRef`), and
   through `Thread.Evener.PendingEscalations[].Ref`, so no nested remote
   `local:<id>` reaches the controller unrewritten. Because
-  `JobsListResponse.Data` is `any` today, the translation first **recognizes**
-  an activity-tree payload by its required `root` key (or the wire field is
-  made typed) and walks only a recognized tree; every payload that is not
-  recognized — an empty object, an unknown object, a legacy flat array —
-  passes through untouched as the value it received. "Decodes without error" is
-  not recognition: `{}` and unrelated objects decode into a zero-value
-  `appwire.JobActivityTree`. Verified through the actual stream client.
+  `JobsListResponse.Data` is `any` today — and stays generic, because typing it
+  as `appwire.JobActivityTree` fails the stream client's decode for a legacy
+  flat array — the translation first **recognizes** an activity-tree payload
+  by its required fields and their types (`revision` a non-negative integer,
+  `root` an object carrying `sessionId` and `ref` as strings) and walks only a
+  recognized tree; every payload that is not recognized — an empty object, an
+  unknown object, an object carrying `root` without its required fields, a
+  legacy flat array — passes through untouched as the value it received.
+  "Decodes without error" is not recognition: `{}` and unrelated objects decode
+  into a zero-value `appwire.JobActivityTree`. Verified through the actual
+  stream client.
 - A non-explicit fleet-wide `thread/list` never attaches an unattached host
   (no `Ensure` on it); only an explicit `SourceIDs` naming the host does.
 - The loop guard's origin signal comes from the explicit, cooperative bridge marker

@@ -334,17 +334,21 @@ exact scope. None is a present fact.
   `Ref` of the `evener/sandbox/escalation/{requested,resolved}` payloads, beside
   the `JobActivityTree`/`EvenerDiagnostics` walk; `ThreadID` stays bare.
 - **[05] `JobsListResponse.Data` decoding (round 14; recognition tightened in
-  round 24)** — `evener/jobs/list` defines `JobsListResponse.Data any`
-  (`appwire/types.go`), so ref rewriting must first **recognize** an
-  activity-tree payload — a JSON object carrying the required `root` key (the
-  Go encoder emits `revision` and `root` unconditionally), or the wire field is
-  made typed (`Data appwire.JobActivityTree`) — and walk only a recognized
-  tree. "Unmarshals without error" is not recognition: `{}` and unrelated
-  objects decode into a zero-value `appwire.JobActivityTree`, so a decode-only
-  test rewrites payloads the source does not understand instead of passing them
-  through untouched (and a typed recursive walk over a generic map silently
-  rewrites nothing). Tests: empty, unknown, legacy (flat array), minimal tree,
-  and forward-compatible tree. Verified through the actual stream client.
+  rounds 24–25)** — `evener/jobs/list` defines `JobsListResponse.Data any`
+  (`appwire/types.go`), and it stays generic: typing it as
+  `appwire.JobActivityTree` fails the stream client's `json.Unmarshal` for a
+  legacy flat array, so ref rewriting must first **recognize** an activity-tree
+  payload — a JSON object carrying `revision` as a non-negative integer and
+  `root` as an object carrying `sessionId` and `ref` as strings (the Go encoder
+  emits all of them unconditionally) — and walk only a recognized tree. Every
+  payload that fails the test — `{}`, an unknown object, `{"root":{}}`, a legacy
+  flat array — is preserved as the value it arrived as. "Unmarshals without
+  error" is not recognition: `{}` and unrelated objects decode into a zero-value
+  `appwire.JobActivityTree`, so a decode-only test rewrites payloads the source
+  does not understand instead of passing them through untouched (and a typed
+  recursive walk over a generic map silently rewrites nothing). Tests: empty,
+  unknown, `{"root":{}}`, legacy (flat array), minimal tree, and
+  forward-compatible tree. Verified through the actual stream client.
 - **[06] source-qualified session pins (round 14)** — `hubcore.PinSectionStore`
   (`cmd/evener-hub/internal/hubcore/pin_section.go`, `session_pin.session_id`),
   the `SessionPinAssign`/`SessionPinUnpin` handlers (`app_pin_section.go`), and
