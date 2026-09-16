@@ -62,6 +62,7 @@
     "taskListData.ts",
     "taskListGroups.ts",
     "taskListTime.ts",
+    "taskPanelState.ts",
     "launchSchema.ts",
     "launchInherited.ts",
     "launchPathListAdd.ts",

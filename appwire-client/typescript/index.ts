@@ -317,6 +317,24 @@ export { parseTaskListData, taskAggregateLabel } from "./taskListData";
 export type { TaskGroups } from "./taskListGroups";
 export { groupTasks } from "./taskListGroups";
 export { absoluteTime, relativeTime } from "./taskListTime";
+export type {
+  PanelLoadFailure,
+  TasksFetchResult,
+  TasksListRead,
+  TasksPanelEntry,
+  TasksPanelListener,
+  TasksPanelNotifications,
+  TasksPanelState,
+  TasksPanelStore,
+} from "./taskPanelState";
+export {
+  applyTasksFetchResult,
+  classifyTasksRejection,
+  classifyTasksResponse,
+  createTasksPanelStore,
+  EMPTY_TASKS_PANEL_ENTRY,
+  panelLoadFailure,
+} from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
 export {
