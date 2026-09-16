@@ -63,7 +63,10 @@ their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
 with a fetch: the package issues no request of its own and names neither an
-origin nor a credentials policy.
+origin nor a credentials policy. The hub overview store,
+`createHubOverviewStore(client)`, is the same framework-free triple over a
+`request`-only client port; it holds the fetch-once settings-overview read
+both apps' hub settings render from.
 
 The slash-completion module is ported from Beautiful UI's prompt-bar
 completion affordance and ships its MIT attribution at

@@ -38,6 +38,7 @@
     "activityMerge.ts",
     "itemFailure.ts",
     "jobOutput.ts",
+    "hubOverview.ts",
     "model.ts",
     "reducer.ts",
     "sendQueueAvailability.ts",
