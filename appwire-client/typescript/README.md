@@ -8,13 +8,15 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
-answer's questions frozen while late ones arrive, the translation that turns
-a composer's `[image N]` attachment markers into prose at send and the
-composer input assembly that applies that translation and stages the
-attached images beside the text, the thread view model and its notification
-reducer, the activity tree parser, merge and disclosure rules, the job log
-tail parser, the send/queue availability table, the send/steer/queue/drain
-routing decisions a composer makes off it, the stable delegate status rule,
+answer's questions frozen while late ones arrive, the attachment count, size
+and type limits every composer rejects a staged file against, the
+translation that turns a composer's `[image N]` attachment markers into
+prose at send and the composer input assembly that applies that translation
+and stages the attached images beside the text, the thread view model and
+its notification reducer, the activity tree parser, merge and disclosure
+rules, the job log tail parser, the send/queue availability table, the
+send/steer/queue/drain routing decisions a composer makes off it, the stable
+delegate status rule,
 the slash invocation and catalog visibility rules the palette and composer
 share, the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
