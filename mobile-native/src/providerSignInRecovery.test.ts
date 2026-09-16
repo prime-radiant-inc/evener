@@ -1,4 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { createCredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderSignIn } from "./providerSignIn";
 
@@ -32,14 +33,24 @@ function boundary() {
       calls.push({ method, params });
       return io.request(method, params);
     },
+    onNotification: () => () => {},
   } as ConversationClientLike;
-  return { calls, io, client, flow: new ProviderSignIn(client, "work") };
+  const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
+  const flow = new ProviderSignIn(store, "work");
+  // connect does what ProvidersScreen's connection effect does: the store's
+  // transport and the flow's connected gate move to one client together.
+  const connect = (next: ConversationClientLike | null) => {
+    store.connectionChanged(next, next ? "ready" : "closed");
+    flow.setConnection(next);
+  };
+  connect(client);
+  return { calls, io, client, flow, store, connect };
 }
 afterEach(() => vi.useRealTimers());
 
 it("retains uncertainty when a device exchange outlives its connection", async () => {
   vi.useFakeTimers();
-  const { flow, io } = boundary();
+  const { flow, io, connect } = boundary();
   await flow.start();
   let complete!: (value: unknown) => void;
   io.request = () =>
@@ -47,12 +58,12 @@ it("retains uncertainty when a device exchange outlives its connection", async (
       complete = resolve;
     });
   const poll = flow.retryPoll();
-  flow.setConnection(null);
+  connect(null);
   complete({ state: "authorized", status });
   await poll;
   const replacement = boundary();
   replacement.io.request = async () => ({ state: "expired" });
-  flow.setConnection(replacement.client);
+  connect(replacement.client);
   await vi.advanceTimersByTimeAsync(20_000);
   expect(replacement.calls).toEqual([]);
   expect(flow.getSnapshot().phase).toBe("device");
@@ -136,7 +147,7 @@ it("checks current credentials without attributing them to an uncertain browser 
 
 it("does not turn an interrupted credential read into an uncertain mutation", async () => {
   vi.useFakeTimers();
-  const { flow, io } = boundary();
+  const { flow, io, connect } = boundary();
   await flow.start();
   let complete!: (value: unknown) => void;
   io.request = () =>
@@ -144,17 +155,17 @@ it("does not turn an interrupted credential read into an uncertain mutation", as
       complete = resolve;
     });
   const read = flow.checkStatus();
-  flow.setConnection(null);
+  connect(null);
   const replacement = boundary();
   replacement.io.request = async () => ({ state: "pending" });
-  flow.setConnection(replacement.client);
+  connect(replacement.client);
   complete(status);
   await read;
   await vi.advanceTimersByTimeAsync(2000);
   expect(replacement.calls).toEqual([
     {
       method: "evener/auth/device/poll",
-      params: { provider: "work", flowId: device.flowId },
+      params: { provider: "work", flowId: device.flowId, originClientId: "native-test" },
     },
   ]);
   expect(flow.getSnapshot().error).toBeNull();

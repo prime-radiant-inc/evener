@@ -3,12 +3,14 @@ import type {
   AnyNotification,
   InstanceListResponse,
 } from "@evener/appwire-client";
-import type { CredentialListing } from "@evener/appwire-client/state/credentials";
+import {
+  type CredentialListing,
+  createCredentialInstancesStore,
+} from "@evener/appwire-client/state/credentials";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ProviderInstances } from "./providerInstances";
 
-vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -43,8 +45,11 @@ function boundary() {
       };
     },
   } as ConversationClientLike;
-  const model = new ProviderInstances(client);
-  return { model, io, requests, handlers };
+  // The screen owns the store and its connection; the model drives it.
+  const store = createCredentialInstancesStore({ ownClientId: () => "native-test" });
+  store.connectionChanged(client, "ready");
+  const model = new ProviderInstances(store);
+  return { model, io, requests, handlers, store };
 }
 // Another client (or the TUI) changed a provider's credentials: the hub's
 // broadcast reaches every listener on the connection.
@@ -75,6 +80,9 @@ it("drops a late response after leaving a hub and detaches its notifications", a
   a.io.request = () => pending.promise;
   a.model.start();
   a.model.dispose();
+  // Leaving the hub is the screen's to say: it tells the store the connection
+  // closed, which detaches the store's listener from that client.
+  a.store.connectionChanged(null, "closed");
   await b.model.refresh();
   pending.resolve(listing("hub A"));
   await pending.promise;

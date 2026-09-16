@@ -2,7 +2,6 @@ import {
   safeCredentialTestResult,
   sessionActionError,
 } from "@evener/appwire-client";
-import { randomUUID } from "expo-crypto";
 import type {
   AuthTestResponse,
   InstanceCreateParams,
@@ -10,12 +9,11 @@ import type {
 } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
+  type CredentialInstancesStore,
   type CredentialListing,
-  createCredentialInstancesStore,
   listingChanged,
   listingOf,
 } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface ProviderState {
   credentialTest: {
@@ -32,20 +30,15 @@ interface ProviderState {
   error: string | null;
 }
 
-// This app's identity on the auth mutations it issues: the hub echoes it in
-// evener/auth/updated so every client attributes the change to its origin.
-// One per process is enough - nothing durable compares it later.
-const nativeClientId = `native-${randomUUID()}`;
-
-/** Provider data and operations owned by one connected hub's screen lifetime:
- * the package's credential instances store core, driven for one client and
- * projected into the snapshot the Providers screen renders. The core owns
- * the listing, its ordering, the evener/auth/updated refetch and the
- * post-write refresh; the screen's own rules stay here - one write at a time
- * (`busy`), a reconciling read after a write whose reply was lost, and a
- * credential test that never echoes the wire. */
+/** Provider data and operations for one connected hub's provider list: the
+ * screen's credential store (createNativeCredentialStore, shared with any
+ * sign-in flow open on the screen; the screen drives its connection),
+ * projected into the snapshot the Providers list renders. The core owns the
+ * listing, its ordering, the evener/auth/updated refetch and the post-write
+ * refresh; the list's own rules stay here - one write at a time (`busy`), a
+ * reconciling read after a write whose reply was lost, and a credential test
+ * that never echoes the wire. */
 export class ProviderInstances {
-  private core = createCredentialInstancesStore({ ownClientId: () => nativeClientId });
   private state: ProviderState = {
     credentialTest: null,
     data: null,
@@ -58,13 +51,12 @@ export class ProviderInstances {
   private disposed = false;
   private started = false;
   private testRevision = 0;
-  constructor(private client: ConversationClientLike) {}
-  // The core is wired on first use, not in the constructor: an instance a
-  // render built and discarded without start() must not leave a store
-  // listening for evener/auth/updated on a client it will never read for.
+  constructor(private readonly core: CredentialInstancesStore) {}
+  // The projection subscribes on first use, not in the constructor: an
+  // instance a render built and discarded without start() must not keep
+  // projecting a store it will never publish for.
   private connect() {
     if (this.stopProjecting || this.disposed) return;
-    this.core.connectionChanged(this.client, "ready");
     this.stopProjecting = this.core.subscribe((state, previous) => this.project(state, previous));
   }
   getSnapshot = () => this.state;
@@ -176,10 +168,5 @@ export class ProviderInstances {
     this.disposed = true;
     this.stopProjecting?.();
     this.listeners.clear();
-    // Nothing more may go out on this client for a screen that is gone: this
-    // detaches the core's evener/auth/updated listener, cancels its pending
-    // refetch and restore-on-ready read, and drops whatever in-flight answer
-    // was still its to apply.
-    this.core.connectionChanged(null, "closed");
   }
 }

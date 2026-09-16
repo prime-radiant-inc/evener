@@ -3,6 +3,7 @@ import type {
   AuthLoginStartResponse,
   AuthStatusResponse,
 } from "@evener/appwire-client";
+import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface SignInState {
@@ -27,7 +28,11 @@ interface SignInState {
 // is longer than any interval a device flow has reason to ask for.
 const MAX_POLL_SECONDS = 60;
 
-/** One sign-in flow bound to one provider instance on one hub connection. */
+/** One sign-in flow bound to one provider instance on one hub connection. The
+ * RPCs go through the screen's credential store (shared with the provider
+ * list, its connection driven by the screen); `client` is the connected gate
+ * the screen sets alongside, and the token whose identity tells a replaced
+ * connection from a same-client transition. */
 export class ProviderSignIn {
   private state: SignInState = {
     phase: "idle",
@@ -43,8 +48,9 @@ export class ProviderSignIn {
   private uncertain = false;
   private pendingOperation: "devicePoll" | "completion" | "status" | null =
     null;
+  private client: ConversationClientLike | null = null;
   constructor(
-    private client: ConversationClientLike | null,
+    private readonly store: CredentialInstancesStore,
     private provider: string,
   ) {}
   getSnapshot = () => this.state;
@@ -133,9 +139,7 @@ export class ProviderSignIn {
       credentialState: "unknown",
     });
     try {
-      const device = await this.client.request("evener/auth/device/start", {
-        provider: this.provider,
-      });
+      const device = await this.store.getState().deviceStart(this.provider);
       if (!this.current(generation)) return;
       if (
         !device ||
@@ -146,9 +150,7 @@ export class ProviderSignIn {
       )
         throw new Error();
       if (device.fallback === true) {
-        const browser = await this.client.request("evener/auth/login/start", {
-          provider: this.provider,
-        });
+        const browser = await this.store.getState().loginStart(this.provider);
         if (!this.current(generation)) return;
         if (
           !browser ||
@@ -203,10 +205,7 @@ export class ProviderSignIn {
     this.pendingOperation = "devicePoll";
     this.publish({ busy: true, error: null });
     try {
-      const response = await this.client.request("evener/auth/device/poll", {
-        provider: this.provider,
-        flowId,
-      });
+      const response = await this.store.getState().devicePoll(this.provider, flowId);
       if (!this.current(generation)) return;
       this.pendingOperation = null;
       if (response.state === "authorized") {
@@ -280,11 +279,9 @@ export class ProviderSignIn {
     const flowId = this.state.browser.flowId;
     this.publish({ busy: true, error: null });
     try {
-      const response = await this.client.request("evener/auth/login/complete", {
-        provider: this.provider,
-        flowId,
-        redirectUrl,
-      });
+      const response = await this.store
+        .getState()
+        .loginComplete(this.provider, flowId, redirectUrl);
       if (this.current(generation)) {
         if (!this.validAuthorizedStatus(response.status)) throw new Error();
         this.pendingOperation = null;
@@ -318,9 +315,7 @@ export class ProviderSignIn {
     this.pendingOperation = "status";
     this.publish({ busy: true, error: null });
     try {
-      const status = await this.client.request("evener/auth/status", {
-        provider: this.provider,
-      });
+      const status = await this.store.getState().authStatus(this.provider);
       if (!this.current(generation) || !this.validStatus(status))
         throw new Error();
       this.pendingOperation = null;
