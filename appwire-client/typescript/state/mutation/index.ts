@@ -4,6 +4,7 @@
 // storage, the dispatcher's scheduling and every React binding stay in the
 // apps — this subpath is what a record IS, not where it lives.
 export type {
+  ClientIdentity,
   ClientIdentityStorage,
   MutationAttachmentRef,
   MutationIntent,
@@ -14,4 +15,6 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { isOwnMutationRecord, ownClientId, setMutationClientIdentityForTests } from "./records";
+export { createClientIdentity } from "./records";
+export type { SecureRandomSource } from "./secureUUID";
+export { createSecureUUID } from "./secureUUID";
