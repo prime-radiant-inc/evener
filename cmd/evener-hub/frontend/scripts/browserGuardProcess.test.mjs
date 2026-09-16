@@ -257,6 +257,33 @@ test("uses a mock keychain for a fresh macOS browser profile", async () => {
   }
 });
 
+// Omitting Linux's basic store can block the disposable profile's cookie-key
+// load on an ambient keyring. Pin the actual launch boundary, not only the
+// argument helper, and keep this plaintext-store choice off other platforms.
+for (const platform of ["linux", "darwin", "win32"]) {
+  test(`isolates the ${platform} guard's credential store in its disposable profile`, async (context) => {
+    const { guard, children } = await startFakeGuard({ platform });
+    reapOnTeardown(context, guard, children);
+    const chrome = children[1];
+
+    assert.equal(chrome.command, "/fake/chrome");
+    assert.deepEqual(
+      chrome.args.filter((arg) => arg.startsWith("--password-store=")),
+      platform === "linux" ? ["--password-store=basic"] : [],
+    );
+    assert.equal(chrome.args.includes("--use-mock-keychain"), platform === "darwin");
+    assert.ok(chrome.args.includes(`--user-data-dir=${guard.profileDir}`));
+    assert.deepEqual(readdirSync(guard.profileDir), [], "the profile must start empty");
+    assert.ok(chrome.args.includes("--disable-crash-reporter"));
+    assert.equal(chrome.options.env.BREAKPAD_DUMP_LOCATION, path.join(guard.profileDir, "Crashpad"));
+
+    const cleanup = guard.cleanup();
+    for (const child of children) child.exit();
+    await cleanup;
+    assert.equal(existsSync(guard.profileDir), false);
+  });
+}
+
 test("stores Chrome crash metadata inside the private browser profile", async () => {
   const { guard, children } = await startFakeGuard();
   try {
