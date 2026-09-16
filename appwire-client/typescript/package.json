@@ -34,6 +34,11 @@
       "types": "./dist/state/extensions/index.d.ts",
       "import": "./dist/state/extensions/index.js",
       "require": "./dist/state/extensions/index.js"
+    },
+    "./state/mutation": {
+      "types": "./dist/state/mutation/index.d.ts",
+      "import": "./dist/state/mutation/index.js",
+      "require": "./dist/state/mutation/index.js"
     }
   },
   "scripts": {

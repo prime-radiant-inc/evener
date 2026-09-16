@@ -51,8 +51,7 @@ export interface MutationIntent<A extends MutationAttachmentRef = MutationAttach
   composerText?: string;
 }
 
-export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef>
-  extends MutationIntent<A> {
+export interface MutationRecord<A extends MutationAttachmentRef = MutationAttachmentRef> extends MutationIntent<A> {
   version: 1;
   clientMutationId: string;
   // Which client (page, app instance) submitted this mutation. Storage is

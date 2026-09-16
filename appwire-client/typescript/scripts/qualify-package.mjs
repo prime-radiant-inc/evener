@@ -469,6 +469,39 @@ marketplacesStore
   });
 `,
     },
+    // The mutation state layer: the durable record shapes both apps' outboxes
+    // store and the provenance rule their projections ask (did THIS client
+    // submit it), published as its own subpath because a host's storage and
+    // scheduling stay out of the package - this is the shape and the rule
+    // alone. Every call here is synchronous, unlike the fetch-backed layers
+    // above: there is no client port to script.
+    "./state/mutation": {
+      esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
+const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
+const record: MutationRecord = { ...intent, version: 1, clientMutationId: "cmid", intentSequence: 0, createdAt: 0 };
+const outboxRecord: MutationOutboxRecord = { ...record, state: "submitting" };
+const optimisticRecord: MutationOptimisticRecord = { ...record, state: "accepted" };
+const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: "rejected" };
+const outboxState: MutationOutboxState = outboxRecord.state;
+const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
+const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;`,
+      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;`,
+      // ownClientId is memoized per process (one client, one identity), so
+      // setMutationClientIdentityForTests resets it before the probe: two
+      // reads against the same fake storage return the same identity, that
+      // identity is what makes a record isOwnMutationRecord, another client's
+      // is not, and an unattributed record stays claimable.
+      smoke: `client.setMutationClientIdentityForTests(undefined);
+const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
+const firstId = client.ownClientId(identityStorage);
+const secondId = client.ownClientId(identityStorage);
+assert.equal(firstId, secondId);
+assert.equal(client.isOwnMutationRecord({ originClientId: firstId }), true);
+assert.equal(client.isOwnMutationRecord({ originClientId: "someone-else" }), false);
+assert.equal(client.isOwnMutationRecord({}), true);
+`,
+    },
   };
   const publishedSpecifiers = Object.keys(packageManifest.exports);
   for (const specifier of publishedSpecifiers)

@@ -129,6 +129,17 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `foreignListingChange` predicate both hosts gate a credential probe on, and
   `listingEstablished` in the state. Resolves to
   `state/credentials/index.ts`, a barrel.
+- `@evener/appwire-client/state/mutation` - the mutation state layer: the
+  durable record shapes both apps' outboxes store (`MutationIntent`,
+  `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
+  `MutationRecoveryRecord`), generic over the attachment type so a host's own
+  attachment bytes (the web's `Blob`) never enter the package, and the client
+  provenance a shared outbox's readers need (`ownClientId`, backed by a
+  structural `ClientIdentityStorage` port defaulting to
+  `globalThis.sessionStorage`, and `isOwnMutationRecord`, which a durable
+  record written before the field existed satisfies too). No storage,
+  scheduling or DOM type lives here - just the shape and the rule. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure
