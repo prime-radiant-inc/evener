@@ -280,26 +280,27 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      (`config.go`) — a hub with no `hub.toml` starts with no remote hosts.
 
 2. **Name validation against the ref grammar** — reuse the real grammar,
-   don't re-declare it. `appwire/refs.go`:
+   don't re-declare it. `appwire/refs.go` exports the wrapper over that
+   grammar:
 
    ```go
    var refPartPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]+$`)
+
+   func ValidRefPart(s string) bool { return refPartPattern.MatchString(s) }
    ```
 
-   `refPartPattern` is unexported, so either export a helper in `appwire`
-   (e.g. `func ValidRefPart(s string) bool`) or validate via the public
-   `appwire.ParseRef` on a synthetic `name + ":x"` ref (`refs.go`).
-   **Important gap this component must close:** `ParseRef` only rejects `..` in
-   the *thread* part (`refs.go`); the source part is checked against the
-   pattern alone (`refs.go`), and both `"."` and `..` *match*
-   `[A-Za-z0-9._~-]+`. So `validateHostConfigs` must additionally reject any
-   `name` equal to `"."` or containing `..`, and any `name` that is empty or
-   `"local"`. Document that the stricter `.`/`..` rules are ours because names
-   also appear in URL paths and as filesystem segments.
-   **Settled: export `appwire.ValidRefPart`** (the raw grammar only — it keeps
-   one source of truth and keeps `hostreg` free of hub imports, which the type
-   boundary above requires). It deliberately does **not** apply the `..` rule;
-   `hostreg.ValidateName` layers the reserved-name, `.`, and `..` checks on top.
+   `appwire.ValidRefPart` ships (`appwire/refs.go`) and is the raw grammar
+   only — one source of truth, and it keeps `hostreg` free of hub imports,
+   which the type boundary above requires. `hostreg.ValidateName`
+   (`hostreg.go`) consumes it — `New`, `Add`, and `AddWithUpstreams` all
+   validate through it, and the config path reaches it through
+   `validateHostConfigs` → `hostreg.New` (`config.go`) — and layers the
+   reserved-name, `"."`, and `..` checks on top. Those stricter rules are ours
+   because names also appear in URL paths and as filesystem segments:
+   `ParseRef` rejects `..` only in the *thread* part (`refs.go`), the source
+   part is checked against the pattern alone, and both `"."` and `..` *match*
+   `[A-Za-z0-9._~-]+`. `ValidateName` therefore rejects any `name` equal to
+   `"."` or containing `..`, and any `name` that is empty or `"local"`.
 
 3. **Registry + cycle rejection** — new package
    `cmd/evener-hub/internal/hostreg`.
@@ -474,9 +475,9 @@ Unit tests, all without a hub or network:
    error and yields zero hosts.
 2. `[[hosts]]` decodes into `Config.Hosts` via the existing
    `LoadConfig`/`toml.Decode` path (`config.go`).
-3. An invalid `name` (fails `refPartPattern`, equals `"."`, contains `..`, or
-   equals `local`) makes `LoadConfig` fail with a wrapped sentinel naming the
-   entry.
+3. An invalid `name` (fails `appwire.ValidRefPart`, equals `"."`, contains
+   `..`, or equals `local`) makes `LoadConfig` fail with a wrapped sentinel
+   naming the entry.
 4. Duplicate names fail. A cycle is refused with `ErrHostCycle` only through an
    explicit upstream list — `hostreg.AddWithUpstreams` (or `SetUpstreams` for an
    already-registered host) — and does not mutate the registry.
@@ -504,7 +505,8 @@ Unit tests, all without a hub or network:
 ## PR size estimate (LOC)
 
 - `HostConfig` + `Config.Hosts` + `validateHostConfigs`: ~60–90 LOC.
-- `appwire.ValidRefPart` export (settled): ~10–20 LOC.
+- `appwire.ValidRefPart` export (shipped: `appwire/refs.go`, consumed by
+  `hostreg.ValidateName`): already landed, no work left in this budget.
 - `internal/hostreg`: ~120–180 LOC (types, mutex map, cycle DFS, sentinels).
 - Wiring in `web.go`/`main.go`/`WebConfig`: ~20–40 LOC.
 - Tests: ~200–300 LOC.

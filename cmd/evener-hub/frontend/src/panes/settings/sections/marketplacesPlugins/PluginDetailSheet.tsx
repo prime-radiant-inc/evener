@@ -140,7 +140,7 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
         footer={
           entry !== undefined && (
             <>
-              <Button variant="primary" onClick={() => void handleUpgrade()} disabled={upgradeBusy}>
+              <Button variant="primary" onClick={() => void handleUpgrade()} aria-disabled={upgradeBusy}>
                 Upgrade
               </Button>
               <Button variant="danger" onClick={() => setPendingRemove(true)}>
@@ -182,13 +182,13 @@ export function PluginDetailSheet({ target, onClose }: PluginDetailSheetProps) {
               <Switch
                 checked={entry.enabled}
                 onChange={() => void handleToggleEnable(entry.enabled)}
-                disabled={toggleBusy}
+                pending={toggleBusy}
                 label="Enabled by default"
               />
               <Switch
                 checked={entry.autoUpgrade}
                 onChange={() => void handleToggleAutoUpgrade(entry.autoUpgrade)}
-                disabled={autoUpgradeBusy}
+                pending={autoUpgradeBusy}
                 label="Auto-upgrade"
               />
             </div>
