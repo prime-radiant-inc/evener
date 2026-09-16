@@ -425,6 +425,15 @@ type Session struct {
 	// failed: recorded, and marked by reconcileRecordedSteering at the input's
 	// settle, the next wake, a Stop or restore. Guarded by mu.
 	steeringInFlight map[string]string
+	// steeringParked is set when an attempt to run pending user steering failed
+	// short of the model -- the append refused, the failure record refused,
+	// the carrier claim's write refused -- and cleared by the next wake sender
+	// (wakePendingUserInput: an accepted client mutation, attach, a store write
+	// that landed). While set, a wake the daemon had already buffered before
+	// the failure stands down instead of spending a second attempt on the same
+	// steer, and the drain ladder runs no autonomous turn behind the failed
+	// claim. Guarded by mu.
+	steeringParked   bool
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string
 

@@ -29,6 +29,8 @@ type clientMutationTranscriptItems struct {
 	StableTurnID string
 	User         bool
 	Failure      bool
+	// Steering: the transcript holds a steering turn for the mutation.
+	Steering bool
 }
 
 // ClientMutationProjection returns the reconstructible retry-safe queue and
@@ -224,6 +226,13 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		}
 	}
 	queued := s.popQueueHead()
+	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.steeringParkedNow() {
+		// A wake the daemon buffered before the last attempt failed -- the
+		// steer's own acceptance wake, held while the input that then ran the
+		// carrier inline was still running. That attempt spent it; the next
+		// wake sender unparks (Session.steeringParked).
+		return "", false, nil
+	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
 		var claimed bool
 		if queued, claimed = s.claimSteeringCarrierInput(); !claimed {
@@ -312,6 +321,7 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, ok bool) {
 		// claims it again. No paced retry. A closed rail or an occupied slot
 		// returns nil above.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim steering carrier turn failed: %v; the steering stays queued", err)})
+		s.parkSteering()
 		return queuedInput{}, false
 	}
 	return carrier, carrier.SteeringCarrier
@@ -1199,8 +1209,19 @@ func (s *Session) restoreDurableClientMutationQueues() {
 	maps.Copy(incorporated, s.restoredClientMutationTurns)
 	// steeringOutcome is the terminal state the transcript's entry for a steer
 	// stands for: a steering turn was incorporated, a failure turn is a skill
-	// selection that could not be prepared.
+	// selection that could not be prepared. It is read from the FULL
+	// transcript index (restoredClientMutationItems) and the resumed history
+	// both: the history starts at the last compaction, and a steer recorded
+	// before it is still recorded.
 	steeringOutcome := map[string]string{}
+	for id, items := range s.restoredClientMutationItems {
+		switch {
+		case items.Failure:
+			steeringOutcome[id] = "failed"
+		case items.Steering:
+			steeringOutcome[id] = "incorporated"
+		}
+	}
 	for _, turn := range s.history {
 		if turn.ClientMutationID != "" {
 			incorporated[turn.ClientMutationID] = turn.StableTurnID
@@ -1281,7 +1302,13 @@ func (s *Session) restoreDurableClientMutationQueues() {
 			if stableTurnID, ok := incorporated[id]; !ok || stableTurnID != snapshot.PendingExecutions[id].TurnID {
 				return ""
 			}
-			return steeringOutcome[id]
+			// A steer the transcript holds under its reserved turn is
+			// recorded whatever the entry's kind; a match never reads as
+			// unrecorded.
+			if state := steeringOutcome[id]; state != "" {
+				return state
+			}
+			return "incorporated"
 		}, false)
 		snapshot.QueueRevision++
 		return nil

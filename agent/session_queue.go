@@ -1002,6 +1002,29 @@ func (s *Session) reconcileRecordedSteering() {
 	s.steeringMarked(ids)
 }
 
+// parkSteering records a failed attempt at running pending user steering (see
+// Session.steeringParked); the next wake sender unparks.
+func (s *Session) parkSteering() {
+	s.mu.Lock()
+	s.steeringParked = true
+	s.mu.Unlock()
+}
+
+// unparkSteering clears Session.steeringParked: an attempt at running user
+// steering succeeded (whatever turn made it), so the park is over.
+func (s *Session) unparkSteering() {
+	s.mu.Lock()
+	s.steeringParked = false
+	s.mu.Unlock()
+}
+
+// steeringParkedNow reports Session.steeringParked.
+func (s *Session) steeringParkedNow() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steeringParked
+}
+
 // steeringInFlightSample copies the in-flight set under s.mu, for a caller
 // about to decide steering eligibility inside the store's serializer (which
 // must never wait on s.mu).
@@ -1158,6 +1181,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 			// and a paced retry is not this design's answer.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			s.steeringLanded(msg.ClientMutationID)
+			s.parkSteering()
 			return steeringAppendFailed
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
@@ -1174,6 +1198,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
+		s.unparkSteering()
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
@@ -1226,6 +1251,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
 		if msg.ClientMutationID != "" {
 			s.steeringLanded(msg.ClientMutationID)
+			s.parkSteering()
 		} else {
 			s.mu.Lock()
 			s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
@@ -1259,6 +1285,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		return true
 	}
 	s.steeringLanded(msg.ClientMutationID)
+	s.unparkSteering()
 	return true
 }
 

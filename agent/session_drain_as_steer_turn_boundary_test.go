@@ -31,6 +31,10 @@ type heldLegAdapter struct {
 
 	mu       sync.Mutex
 	requests []llm.Request
+	// later, when set, answers the calls after the first in order (the first
+	// always answers with a terminal response once released); calls past its
+	// end answer terminally too.
+	later []func(llm.Request) llm.Response
 }
 
 func newHeldLegAdapter() *heldLegAdapter {
@@ -48,7 +52,12 @@ func (a *heldLegAdapter) Complete(_ context.Context, req llm.Request) (llm.Respo
 		close(a.entered)
 		<-a.release
 	}
-	resp := finalResponse(fmt.Sprintf("leg %d done", n))
+	var resp llm.Response
+	if n >= 2 && n-2 < len(a.later) {
+		resp = a.later[n-2](req)
+	} else {
+		resp = finalResponse(fmt.Sprintf("leg %d done", n))
+	}
 	resp.Provider = a.Name()
 	resp.Model = req.Model
 	return resp, nil
@@ -1362,5 +1371,176 @@ func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
 	}
 	if s.hasPendingUserSteering() {
 		t.Fatal("steering is still queued after the external wake carried it")
+	}
+}
+
+// TestRestoreFinalizesARecordedSteerCompactedOutOfHistory (round 13, M1): the
+// carrier recorded its steer, the store's incorporation write failed, and a
+// compaction then summarized the transcript past the steering turn before the
+// process died. Restore's history starts at the summary (retainedFrom), but
+// the full transcript index still holds the steer, and the transcript decides:
+// the steer is finalized, not queued and delivered a second time. The
+// compaction marker is written directly -- Compact folds through the context
+// manager and keeps a history this short verbatim -- as the TurnSummary entry
+// resume anchors on.
+func TestRestoreFinalizesARecordedSteerCompactedOutOfHistory(t *testing.T) {
+	crashed := newTestSessionForEnvctx(t)
+	dir, id := crashed.cfg.StateDir, crashed.ID()
+	if err := crashed.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-compacted",
+		Input:            []appwire.InputItem{{Type: "text", Text: "recorded, then compacted past"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	recordSteerWithFailedIncorporation(t, crashed, "steer-compacted")
+	summary := schema.NewTurn(schema.TurnSummary, llm.Assistant("compacted context"))
+	crashed.recordTurn(summary, summary)
+	_, entries, _, err := readTranscript(crashed.TranscriptPath())
+	if err != nil {
+		t.Fatalf("readTranscript: %v", err)
+	}
+	if n := len(entries); n < 2 || entries[n-1].Turn.Kind != schema.TurnSummary || entries[n-2].Turn.ClientMutationID != "steer-compacted" {
+		t.Fatalf("transcript tail = %d entries, want the steering turn then the summary; this test is not in the state it means to be", n)
+	}
+	crashed.Close()
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	restored.mu.Lock()
+	inHistory := slices.ContainsFunc(restored.history, func(turn schema.Turn) bool { return turn.ClientMutationID == "steer-compacted" })
+	restored.mu.Unlock()
+	if inHistory {
+		t.Fatal("the resumed history still holds the steering turn; the compaction did not cut it, so this test measures nothing")
+	}
+	snapshot := restored.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-compacted"]; still || restored.hasPendingUserSteering() {
+		t.Fatalf("pending=%v queued=%v after restore, want the recorded steer finalized: queued, it is delivered a second time", still, restored.hasPendingUserSteering())
+	}
+	if got := snapshot.Journal["steer-compacted"].ExecutionState; got != "incorporated" {
+		t.Fatalf("the recorded steer's journal reads %q after restore, want incorporated", got)
+	}
+}
+
+// TestRefusedLadderClaimRunsNoAutonomousTurnBehindIt (round 13, M2): the drain
+// ladder's carrier claim is refused by the store while a job notification is
+// pending and the notification turn's model makes a tool call. Measured at
+// `b946b4ee8`: the notification turn ran and its tool round drained the steer
+// under a turn id that was not the receipt's. Parked steering runs no
+// autonomous turn behind it: the input settles with the steer queued, the
+// notification stays pending for the daemon's own wake, and the next external
+// wake carries the steer under its reserved id.
+func TestRefusedLadderClaimRunsNoAutonomousTurnBehindIt(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	adapter.later = []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return communicateResponse(false, "looking at the job") },
+		func(llm.Request) llm.Response { return finalResponse("done") },
+	}
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	claimed := false
+	s.cfg.testOnly.steeringCarrierClaimed = func(string) { claimed = true }
+
+	carrier, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})
+	// After the leg completes: popQueueHead writes (1), the carrier claim
+	// writes (2). Refuse the claim alone.
+	var writes atomic.Int32
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		if writes.Add(1) == 2 {
+			return errors.New("injected: claim write refused")
+		}
+		return nil
+	}
+	close(adapter.release)
+	err := awaitInput(t, done)
+	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	t.Logf("trace: ProcessInput err=%v store writes=%d carrier claimed=%v model calls=%d", err, writes.Load(), claimed, len(adapter.Requests()))
+	if claimed {
+		t.Fatal("the carrier claim landed; this measurement is not in the state it means to be")
+	}
+	s.mu.Lock()
+	var owner string
+	delivered := false
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && turn.ClientMutationID == "cm-drain-mid-leg" {
+			delivered, owner = true, turn.OwningTurnID
+		}
+	}
+	s.mu.Unlock()
+	if err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if delivered {
+		t.Fatalf("an autonomous turn delivered the steer under %q; its receipt names %q", owner, carrier)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model calls = %d, want 1: an autonomous turn ran behind the refused claim", got)
+	}
+	if state := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"].ExecutionState; state != "accepted" || !s.hasPendingUserSteering() {
+		t.Fatalf("state=%q queued=%v, want the steer parked accepted and queued", state, s.hasPendingUserSteering())
+	}
+	if s.peekNotifications() != 1 {
+		t.Fatalf("pending notifications = %d, want the notification left for the daemon's own wake", s.peekNotifications())
+	}
+
+	// The next external wake carries the steer under its reserved id.
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	s.mu.Lock()
+	for _, turn := range s.history {
+		if turn.Kind == schema.TurnSteering && turn.ClientMutationID == "cm-drain-mid-leg" {
+			owner = turn.OwningTurnID
+		}
+	}
+	s.mu.Unlock()
+	if owner != carrier {
+		t.Fatalf("the steer was delivered under %q, want its receipt's %q", owner, carrier)
+	}
+}
+
+// TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier (round 13, M3):
+// the steer's acceptance mid-turn arms the pending-input wake, which the daemon
+// holds until the input ends. The inline carrier then fails. The buffered wake
+// must not spend a second attempt on the failed steer: one attempt per external
+// wake, and that wake was consumed by the attempt the ladder already made.
+func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	s.cfg.testOnly.steeringCarrierClaimed = func(string) { refusal.refuse.Store(true) }
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err == nil || !strings.Contains(err.Error(), "stays queued") {
+		t.Fatalf("ProcessInput returned %v, want the carrier's failure", err)
+	}
+	// The daemon now answers the wake the acceptance buffered mid-turn.
+	runs := runPendingInputOnEachWake(t, s, wakes, 5)
+	t.Logf("trace: buffered wakes answered=%d append attempts=%d", runs, refusal.refusals.Load())
+	if refusal.refusals.Load() != 1 {
+		t.Fatalf("append attempts = %d after the buffered acceptance wake, want 1: that wake was spent by the inline attempt", refusal.refusals.Load())
+	}
+
+	// The disk has room again; a genuinely external wake carries the steer.
+	refusal.refuse.Store(false)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
+		t.Fatalf("provider requests = %d, want 2 with the steer carried", len(requests))
 	}
 }

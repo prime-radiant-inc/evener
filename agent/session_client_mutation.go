@@ -824,6 +824,11 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
 	// it at attach would restart the session and deliver the steer the user
 	// just stopped (issue #174, #146 Option C — park in place).
 	if wake != nil && (s.QueueDepth() > 0 || s.hasRunnableUserSteering()) {
+		// Attach is an external wake: it unparks steering a failed attempt
+		// left (Session.steeringParked).
+		s.mu.Lock()
+		s.steeringParked = false
+		s.mu.Unlock()
 		wake()
 	}
 }
@@ -831,6 +836,10 @@ func (s *Session) SetPendingUserInputWakeFunc(wake func()) {
 func (s *Session) wakePendingUserInput() {
 	s.mu.Lock()
 	wake := s.pendingUserInputWake
+	// Every sender of this wake is an event outside the failed attempt that
+	// parked steering -- an accepted client mutation, a store write that
+	// landed -- so the wake it sends is the one the parked steer waits for.
+	s.steeringParked = false
 	s.mu.Unlock()
 	if wake != nil {
 		wake()

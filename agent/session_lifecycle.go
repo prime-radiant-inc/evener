@@ -861,6 +861,13 @@ type drainInputs struct {
 	// turn's last model call was already in flight. It carries no content of
 	// its own and runs as queued input.
 	QueuedCarrier bool
+	// SteeringParked reports that pending user steering is parked after a
+	// failed attempt (Session.steeringParked): a carrier claim this ladder
+	// could not persist, most often. No autonomous turn runs behind it -- a
+	// notification or continuation would drain the steer under a turn id that
+	// is not the receipt's -- so the input settles and the next external wake
+	// carries the steer. User work (a follow-up, a queued message) still runs.
+	SteeringParked bool
 }
 
 // drainAction is the next action the drain loop takes after a completed turn.
@@ -915,7 +922,7 @@ const (
 // notification preempts, so the resulting turn depends on the (side-effectful)
 // fold result.
 func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate bool) {
-	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting
+	skipGoalGate = in.RanKind == EntryNotification || in.HaveDeferredCont || in.Awaiting || in.SteeringParked
 	queued := strings.TrimSpace(in.QueuedText) != "" || in.QueuedImages > 0 || in.QueuedSkills > 0 || in.QueuedCarrier
 	if in.Awaiting {
 		if queued {
@@ -928,6 +935,8 @@ func selectDrainNextAction(in drainInputs) (action drainAction, skipGoalGate boo
 		return runFollowUp, skipGoalGate
 	case queued:
 		return runQueued, skipGoalGate
+	case in.SteeringParked:
+		return goIdle, skipGoalGate
 	case in.RanKind != EntryNotification && in.NotificationsPending:
 		return runNotification, skipGoalGate
 	case !skipGoalGate:
@@ -1310,6 +1319,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			NotificationsPending: notificationsPending,
 			Awaiting:             awaiting,
 			QueuedCarrier:        queued.SteeringCarrier,
+			SteeringParked:       s.steeringParkedNow() && s.hasPendingUserSteering(),
 		})
 
 		switch action {
