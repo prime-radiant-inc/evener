@@ -1,13 +1,8 @@
 // @vitest-environment node
 import { describe, expect, test, vi } from "vitest";
-import {
-  type AskAnswerSender,
-  type AskDockThreads,
-  type AskDockThreadsSnapshot,
-  createAskDockStore,
-  nextUnansweredKey,
-} from "./askDock";
+import { type AskAnswerSender, type AskDockThreadsSnapshot, createAskDockStore, nextUnansweredKey } from "./askDock";
 import type { AskQuestionRef } from "./deriveAskQuestions";
+import { createFrameworkFreeStore } from "./frameworkFreeStore";
 import type { ItemModel, ThreadModel } from "./model";
 
 // --- fixtures -------------------------------------------------------------
@@ -32,29 +27,18 @@ function threadModel(items: ItemModel[]): ThreadModel {
 
 const DEPLOY = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
 
-/** A thread source with the shape the port asks for: publish replaces the map
- * and notifies with the new and previous snapshot, like a store would. */
-function fakeThreads(): AskDockThreads & { publish(ref: string, model: ThreadModel): void } {
-  let snapshot: AskDockThreadsSnapshot = { threads: new Map() };
-  const listeners = new Set<(state: AskDockThreadsSnapshot, previous: AskDockThreadsSnapshot) => void>();
+/** A thread source: a plain store whose state carries `threads`, which is all
+ * the port asks for; publish replaces the map. */
+function fakeThreads() {
+  const store = createFrameworkFreeStore<AskDockThreadsSnapshot>(() => ({ threads: new Map() }));
   return {
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
-    },
-    publish(ref, model) {
-      const previous = snapshot;
-      snapshot = { threads: new Map(previous.threads).set(ref, model) };
-      for (const listener of listeners) listener(snapshot, previous);
-    },
+    ...store,
+    publish: (ref: string, model: ThreadModel) =>
+      store.setState((s) => ({ threads: new Map(s.threads).set(ref, model) })),
   };
 }
 
-function fakeSender(): AskAnswerSender & ReturnType<typeof vi.fn> {
-  return vi.fn(async (_ref: string, _text: string) => {});
-}
+const fakeSender = () => vi.fn<AskAnswerSender>(async () => {});
 
 const first: AskQuestionRef = {
   key: "first:0",
@@ -66,18 +50,18 @@ const first: AskQuestionRef = {
 };
 const second: AskQuestionRef = { ...first, key: "second:0", callId: "second" };
 
-// --- two wired instances share nothing --------------------------------------
+// --- two instances share nothing ---------------------------------------------
 
-describe("two wired stores share nothing", () => {
+describe("two stores share nothing", () => {
   test("a batch, an answer, a send and its exclusion in one store are invisible to the other", async () => {
     const threadsA = fakeThreads();
     const threadsB = fakeThreads();
     const sendA = fakeSender();
     const sendB = fakeSender();
-    const a = createAskDockStore();
-    const b = createAskDockStore();
-    a.wire(threadsA, sendA);
-    b.wire(threadsB, sendB);
+    const a = createAskDockStore({ send: sendA });
+    const b = createAskDockStore({ send: sendB });
+    a.followThreads(threadsA);
+    b.followThreads(threadsB);
 
     const model = threadModel([askItem("i1", "call_1", DEPLOY)]);
     threadsA.publish("ref_a", model);
@@ -109,35 +93,34 @@ describe("two wired stores share nothing", () => {
 
 // --- wiring -----------------------------------------------------------------
 
-describe("wire", () => {
-  test("the disposer stops reconciliation and unwires the sender", async () => {
+describe("ports", () => {
+  test("followThreads' disposer stops reconciliation", () => {
     const threads = fakeThreads();
     const store = createAskDockStore();
-    const dispose = store.wire(threads, fakeSender());
+    const dispose = store.followThreads(threads);
     threads.publish("ref_a", threadModel([askItem("i1", "call_1", DEPLOY)]));
     const batch = store.getState().byRef.get("ref_a")?.batches[0];
     expect(batch).toBeDefined();
     dispose();
     threads.publish("ref_a", threadModel([askItem("i1", "call_1", DEPLOY), askItem("i2", "call_2", DEPLOY)]));
     expect(store.getState().byRef.get("ref_a")?.batches).toEqual([batch]);
-    await expect(store.getState().sendBatch("ref_a", batch?.id ?? "")).rejects.toThrow(/wire/);
   });
 
-  test("sendBatch before wire fails loudly rather than dropping the answers", async () => {
+  test("sendBatch on a store built without a sender fails loudly rather than dropping the answers", async () => {
     const store = createAskDockStore();
     store.reconcile("ref_a", [first]);
     const batch = store.getState().byRef.get("ref_a")?.batches[0];
-    await expect(store.getState().sendBatch("ref_a", batch?.id ?? "")).rejects.toThrow(/wire\(threads, send\)/);
+    await expect(store.getState().sendBatch("ref_a", batch?.id ?? "")).rejects.toThrow(/\{ send \}/);
     expect(store.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(false);
   });
 
   test("a rejected send leaves the batch intact and retryable, with the sentence the dock shows", async () => {
     const threads = fakeThreads();
-    const store = createAskDockStore();
-    const send = vi.fn(async () => {
+    const send = vi.fn<AskAnswerSender>(async () => {
       throw new Error("socket closed");
     });
-    store.wire(threads, send);
+    const store = createAskDockStore({ send });
+    store.followThreads(threads);
     threads.publish("ref_a", threadModel([askItem("i1", "call_1", DEPLOY)]));
     const batch = store.getState().byRef.get("ref_a")?.batches[0];
     const outcome = await store.getState().sendBatch("ref_a", batch?.id ?? "");

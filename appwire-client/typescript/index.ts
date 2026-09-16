@@ -60,6 +60,7 @@ export { composeAskAnswers } from "./askAnswers";
 export type {
   AskAnswerSender,
   AskAnswerState,
+  AskDockPorts,
   AskDockRefState,
   AskDockState,
   AskDockStore,

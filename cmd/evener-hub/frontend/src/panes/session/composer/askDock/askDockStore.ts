@@ -1,9 +1,9 @@
-// The app's one ask-dock store: the package's framework-free factory, wired
-// here at module scope to threadsStore and its plain send() path, and bound to
-// zustand's useStore for the reactive read. Wiring at module load rather than
-// in a component effect is what lets a session's FIRST hydrate (which can
-// complete before any AskDock ever mounts) populate batches immediately, and it
-// mirrors threads.ts's own connectionStore.subscribe wiring. A dock's
+// The app's one ask-dock store: the package's framework-free factory over
+// threadsStore's plain send() path, following threadsStore from module scope,
+// and bound to zustand's useStore for the reactive read. Following at module
+// load rather than in a component effect is what lets a session's FIRST hydrate
+// (which can complete before any AskDock ever mounts) populate batches
+// immediately, and it mirrors threads.ts's own connectionStore.subscribe wiring. A dock's
 // in-progress answers and in-flight-send state live here, not in component
 // state, so they survive a dockview pane remount. The store's rules - batch
 // reconciliation, answer drafts, the visible tab, the greeting, the send - are
@@ -15,8 +15,8 @@ import { threadsStore } from "../../../../stores/threads";
 export type { AskAnswerState, AskDockRefState, AskDockState, SendBatchOutcome } from "@evener/appwire-client";
 export { nextUnansweredKey } from "@evener/appwire-client";
 
-export const askDockStore = createAskDockStore();
-askDockStore.wire(threadsStore, (ref, text) => threadsStore.getState().send(ref, text));
+export const askDockStore = createAskDockStore({ send: (ref, text) => threadsStore.getState().send(ref, text) });
+askDockStore.followThreads(threadsStore);
 
 export function useAskDockStore(): AskDockState;
 export function useAskDockStore<T>(selector: (state: AskDockState) => T): T;

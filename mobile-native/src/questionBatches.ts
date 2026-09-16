@@ -29,13 +29,12 @@ export class QuestionBatches {
 		const current = this.getSnapshot().find(
 			(batch) => batch.id === expected.id,
 		);
-		if (
-			!current ||
-			JSON.stringify(current.questions) !==
-				JSON.stringify(expected.questions)
-		)
-			return false;
-		return this.store.beginSend(REF, expected.id);
+		return (
+			current !== undefined &&
+			JSON.stringify(current.questions) ===
+				JSON.stringify(expected.questions) &&
+			this.store.beginSend(REF, expected.id)
+		);
 	}
 	finish(id: string, accepted: boolean) {
 		this.store.finishSend(REF, id, accepted);

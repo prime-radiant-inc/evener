@@ -2,11 +2,10 @@
 // the ask_user questions a session is waiting on - the live batches, the
 // per-question answer drafts, the visible tab and the in-flight send - so it
 // survives a view remount (a dockview pane, a virtual-list row, a native
-// sheet). createAskDockStore is a factory: each app builds one instance and
-// wires it explicitly, wire(threads, send), to its thread source and its plain
-// send path. Wiring at the app's module scope is what lets a session's FIRST
-// hydrate, which can complete before any dock mounts, populate batches at
-// once; two instances share nothing. deriveAskQuestions.ts owns the positional
+// sheet). createAskDockStore is a factory: each app builds one instance, hands
+// it the plain send path its answers go out through, and points it at its
+// thread source with followThreads; two instances share nothing.
+// deriveAskQuestions.ts owns the positional
 // live-question scan, reconcileBatches.ts the prune/protect rules and
 // askAnswers.ts the reply format; this module owns what sits between them: the
 // answer drafts, the exclusion memory, the tab, the greeting and the send.
@@ -15,7 +14,7 @@
 import { type AskResolution, composeAskAnswers } from "./askAnswers";
 import { type AskQuestionRef, liveAskQuestions } from "./deriveAskQuestions";
 import { sessionActionError } from "./errors";
-import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
+import { createFrameworkFreeStore, type FrameworkFreeStore, type StoreListener } from "./frameworkFreeStore";
 import type { ThreadModel } from "./model";
 import { type AskBatch, reconcileBatches } from "./reconcileBatches";
 
@@ -86,12 +85,12 @@ export interface AskDockState {
   // greet.
   markPendingGreeted(ref: string): void;
   // sendBatch composes `batchId`'s current answers and submits them through
-  // the wired send path (no dedicated wire method for answers exists). It
+  // the host's send path (no dedicated wire method for answers exists). It
   // re-checks the batch still exists and isn't already sending before ever
   // calling send - a stale click (the ask already resolved elsewhere, or a
   // double-click on the same batch) is a silent no-op, never a duplicate/blind
-  // request. Throws if the store was never wired: that is a programming
-  // error, not an outcome the dock can show.
+  // request. Throws if the store was built without a sender: that is a
+  // programming error, not an outcome the dock can show.
   sendBatch(ref: string, batchId: string): Promise<SendBatchOutcome>;
 }
 
@@ -99,22 +98,27 @@ export interface AskDockThreadsSnapshot {
   readonly threads: ReadonlyMap<string, ThreadModel>;
 }
 
-/** The thread source a wired store follows: anything whose subscribers see
- * the ref -> ThreadModel map before and after each change. A store whose state
+/** The thread source a store follows: anything whose subscribers see the
+ * ref -> ThreadModel map before and after each change. A store whose state
  * carries `threads` satisfies it as-is. */
 export interface AskDockThreads {
-  subscribe(listener: (state: AskDockThreadsSnapshot, previous: AskDockThreadsSnapshot) => void): () => void;
+  subscribe(listener: StoreListener<AskDockThreadsSnapshot>): () => void;
 }
 
 /** Submits one composed [answers] reply for a ref through the host's plain
  * send path; a rejection is the local enqueue failure sendBatch reports. */
 export type AskAnswerSender = (ref: string, text: string) => Promise<void>;
 
+export interface AskDockPorts {
+  /** Absent for a host that drives beginSend/finishSend around its own send
+   * path; sendBatch then throws rather than dropping answers. */
+  send?: AskAnswerSender;
+}
+
 export interface AskDockStore extends FrameworkFreeStore<AskDockState> {
   /** Follow `threads`: every ref whose ThreadModel reference changes is
-   * reconciled against its live question scan, and sendBatch submits through
-   * `send`. Returns the disposer, which also unwires the sender. */
-  wire(threads: AskDockThreads, send: AskAnswerSender): () => void;
+   * reconciled against its live question scan. Returns the disposer. */
+  followThreads(threads: AskDockThreads): () => void;
   /** Fold one ref's current live question list (minus the keys this store has
    * settled itself) into its batches, drafts, tab and activation. The wired
    * path calls this with deriveAskQuestions' scan; a host without a
@@ -198,7 +202,8 @@ function withAnswer(
   resolution: AskResolution | null,
 ): AskDockRefState | undefined {
   if (isSendingQuestion(refState, key)) return undefined;
-  const answers = { ...refState.answers, [key]: { resolution, note: answerFor(refState, key).note } };
+  const prior = answerFor(refState, key);
+  const answers = { ...refState.answers, [key]: { ...prior, resolution } };
   // Auto-advance: a one-click resolution landing on the tab the reader is
   // currently on moves the dock to the next unanswered question. Only the
   // null -> answered transition does this (un-selecting, or editing an
@@ -208,7 +213,7 @@ function withAnswer(
   // the first question - which can only be the answered one here, since only
   // the visible tab's controls exist to set a resolution).
   let active = refState.active;
-  if (resolution !== null && answerFor(refState, key).resolution === null) {
+  if (resolution !== null && prior.resolution === null) {
     const batch = refState.batches.find((b) => b.questions.some((q) => q.key === key));
     const index = batch?.questions.findIndex((q) => q.key === key) ?? -1;
     const question = index >= 0 ? batch?.questions[index] : undefined;
@@ -227,10 +232,7 @@ function withAnswer(
 
 function withNote(refState: AskDockRefState, key: string, note: string): AskDockRefState | undefined {
   if (isSendingQuestion(refState, key)) return undefined;
-  return {
-    ...refState,
-    answers: { ...refState.answers, [key]: { resolution: answerFor(refState, key).resolution, note } },
-  };
+  return { ...refState, answers: { ...refState.answers, [key]: { ...answerFor(refState, key), note } } };
 }
 
 function withActive(refState: AskDockRefState, batchId: string, key: string): AskDockRefState | undefined {
@@ -245,10 +247,14 @@ function withGreeting(refState: AskDockRefState): AskDockRefState | undefined {
   return { ...refState, pendingGreeted: true };
 }
 
+function withBatchSending(refState: AskDockRefState, batch: AskBatch, sending: boolean): AskDockRefState {
+  return { ...refState, batches: refState.batches.map((b) => (b === batch ? { ...b, sending } : b)) };
+}
+
 function withSending(refState: AskDockRefState, batchId: string): AskDockRefState | undefined {
   const batch = refState.batches.find((b) => b.id === batchId);
   if (!batch || batch.sending) return undefined;
-  return { ...refState, batches: refState.batches.map((b) => (b === batch ? { ...b, sending: true } : b)) };
+  return withBatchSending(refState, batch, true);
 }
 
 // An accepted send drops the batch's live presence (no longer rendered or
@@ -259,9 +265,7 @@ function withSending(refState: AskDockRefState, batchId: string): AskDockRefStat
 function withSendFinished(refState: AskDockRefState, batchId: string, accepted: boolean): AskDockRefState | undefined {
   const batch = refState.batches.find((b) => b.id === batchId);
   if (!batch?.sending) return undefined;
-  if (!accepted) {
-    return { ...refState, batches: refState.batches.map((b) => (b === batch ? { ...b, sending: false } : b)) };
-  }
+  if (!accepted) return withBatchSending(refState, batch, false);
   const removedKeys = new Set(batch.questions.map((q) => q.key));
   const answers: Record<string, AskAnswerState> = {};
   for (const [key, value] of Object.entries(refState.answers)) {
@@ -358,10 +362,8 @@ function withLiveQuestions(
   };
 }
 
-/** Builds an unwired, empty ask-dock store. */
-export function createAskDockStore(): AskDockStore {
-  let send: AskAnswerSender | undefined;
-
+/** Builds an empty ask-dock store over the host's ports. */
+export function createAskDockStore({ send }: AskDockPorts = {}): AskDockStore {
   const store = createFrameworkFreeStore<AskDockState>((_set, get) => ({
     byRef: new Map(),
     mintedBatches: 0,
@@ -384,7 +386,7 @@ export function createAskDockStore(): AskDockStore {
 
     async sendBatch(ref, batchId) {
       if (send === undefined) {
-        throw new Error("ask-dock store is not wired: call wire(threads, send) before sendBatch");
+        throw new Error("ask-dock store has no sender: pass { send } to createAskDockStore before sendBatch");
       }
       const refState = get().byRef.get(ref);
       const batch = refState?.batches.find((b) => b.id === batchId);
@@ -441,22 +443,17 @@ export function createAskDockStore(): AskDockStore {
     reconcile,
     beginSend,
     finishSend,
-    wire(threads, sender) {
-      send = sender;
+    followThreads(threads) {
       // Fires on every change of the source, but only reconciles the refs
       // whose tracked ThreadModel reference changed (a same-reference no-op
       // elsewhere in the source, e.g. an update touching only an unrelated
       // field, correctly does nothing here).
-      const unsubscribe = threads.subscribe((state, previous) => {
+      return threads.subscribe((state, previous) => {
         if (state.threads === previous.threads) return;
         for (const [ref, model] of state.threads) {
           if (previous.threads.get(ref) !== model) reconcile(ref, liveAskQuestions(model));
         }
       });
-      return () => {
-        unsubscribe();
-        send = undefined;
-      };
     },
   };
 }
