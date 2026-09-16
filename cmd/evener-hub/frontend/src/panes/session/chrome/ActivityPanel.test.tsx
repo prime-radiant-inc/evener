@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { activityPanelStore } from "../../../stores/activityPanel";
-import { activitySummaryStore } from "../../../stores/activitySummary";
+import { activitySummaryStore, initActivitySummary } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
@@ -424,6 +424,8 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetToastStoreForTests();
+  // This suite mounts the panel without the app shell that wires the stores.
+  initActivitySummary();
   installMatchMediaStub(false);
 });
 

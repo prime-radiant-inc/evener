@@ -7570,6 +7570,51 @@ test("a remote host's catalog never sweeps the controller's saved model defaults
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
 });
 
+// The same rule in the state an unsettled manifest produces: the settled list
+// is withheld, so hostChoice is a provisional "local" while the draft still
+// names its host - and every catalog this pane reads, the sweep's included, is
+// issued against the DRAFT'S host (round nine's `submittedSource = source`).
+// The controller's stored defaults must survive it exactly as they survive a
+// settled remote target: the sweep's authority is the machine the form is
+// reading, never the withheld fallback.
+test("a revalidating manifest does not hand the controller's catalog the sweep", async () => {
+  const cwd = "/tmp/remote-sweep-revalidate";
+  window.history.pushState({}, "", `/new?dir=${cwd}`);
+  const savedBlob = JSON.stringify({ harness: "evener", model: "openai/gpt-5" });
+  localStorage.setItem(`evener-hub.spawn-defaults.${cwd}`, savedBlob);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  seedSources(REMOTE_SOURCES, { loading: true, stale: true });
+  // The host's catalog offers the openai provider but not the saved model, so a
+  // sweep running against it would delete both stored values.
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: { "model/list": { data: [{ provider: "openai", model: "gpt-4o", displayName: "openai/gpt-4o" }] } },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory(cwd);
+  setDraftField(draft, "source", "buildbox");
+  renderSpawn(fake);
+  await settled();
+
+  // The pane's catalog is the host's: the routed model/list answers for it, and
+  // the controller's own list is never asked at all.
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) =>
+          call.method === "evener/host/request" &&
+          (call.params as HostRequestParams).method === "model/list" &&
+          (call.params as HostRequestParams).host === "buildbox",
+      ).length,
+    ).toBeGreaterThan(0),
+  );
+  expect(modelListRequests(fake)).toHaveLength(0);
+  // So the stored layer is exactly as it was stored.
+  expect(localStorage.getItem(`evener-hub.spawn-defaults.${cwd}`)).toBe(savedBlob);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+});
+
 // A host change drops the previous host's harness/schema catalogs: they describe
 // the machine that answered, and a failed load for the new host must show an
 // empty catalog rather than the previous host's, which the user could otherwise
@@ -7681,6 +7726,127 @@ test("a selected remote host's wrapped config notification reloads the pane mode
   await waitFor(() => expect(paneLoads()).toBeGreaterThan(before));
 });
 
+// The same wrapper, in the same unsettled window the picker's revalidation test
+// above pins: a withholding manifest makes hostChoice a provisional "local"
+// while the pane's catalog is still scoped to the draft's host. Keying this
+// listener on hostChoice dropped the host's own wrapper for the length of every
+// revalidation, so a credential or model change made on the host during one
+// never invalidated the catalog this form validates against (component 07b
+// review, residual).
+test("the draft's host wrapped config notification reloads the catalog while the manifest revalidates", async () => {
+  seedSources(REMOTE_SOURCES, { loading: true, stale: true });
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: {
+        // Both host reads stay in flight: the instance partition therefore
+        // keeps one identity (nothing in the pane's catalog cache key moves
+        // with it) and every catalog request is a fresh, recorded one rather
+        // than a settled answer reused from it - the same isolation the
+        // settled version of this test uses.
+        "evener/instance/list": new Promise(() => {}),
+        "model/list": new Promise(() => {}),
+      },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const cwd = "/tmp/host-notify-revalidate";
+  const draft = selectSpawnDirectory(cwd);
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", `/new?dir=${cwd}`);
+  renderSpawn(fake);
+  await settled();
+  // Unsettled manifest: the settled list is withheld, so hostChoice is a
+  // provisional "local" while the launch target and every discovery call stay
+  // on the draft's host.
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  const catalogLoads = (params: unknown) =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === "buildbox" &&
+        (call.params as HostRequestParams).method === "model/list" &&
+        JSON.stringify((call.params as HostRequestParams).params) === JSON.stringify(params),
+    ).length;
+  // The pane passes through a harness value on its way to the settled draft
+  // scope, and issues one catalog request per scope. Wait for the SETTLED
+  // scope's own request: its promise stays in the pane's per-scope cache (the
+  // host's answer never lands), so from here only a cache invalidation - the
+  // credential generation this test is about - can issue another one.
+  await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(0));
+  const before = catalogLoads({ cwd });
+
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+
+  await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(before));
+});
+
+// The other half of the same question, in the state a SETTLED manifest produces
+// when the draft's host is not launchable (offline here; a host removed from
+// the list is the same). hostChoice falls back to "local" and the write-back
+// puts that in the draft, so the machine this pane reads - and the machine it
+// would launch on - is the controller. The wrapper from the host it no longer
+// reads must therefore not move its catalog: the filter is the host that was
+// actually asked, which is what lets the pane recover when the host it DOES
+// read changes (the revalidation test above).
+test("a wrapper from a draft host the offline fallback replaced does not reload the catalog", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-offline-notify");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-offline-notify");
+  renderSpawn(fake);
+  await settled();
+
+  // The offline fallback is written into the draft (round nine), so the pane's
+  // own reads are controller-scoped from here on.
+  await waitFor(() => expect(draft.fields.getState().source).toBe("local"));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  // Hydration: the controller's catalog has answered for the SETTLED scope (the
+  // scoped load the fallback's write-back triggers). Everything before it is
+  // the mount's own churn, and every consumer after it is a cache hit.
+  const scopedCatalogLoads = () =>
+    fake.calls.filter(
+      (call) => call.method === "model/list" && (call.params as { cwd?: string }).cwd === "/tmp/host-offline-notify",
+    ).length;
+  await waitFor(() => expect(scopedCatalogLoads()).toBeGreaterThan(0));
+
+  const hostLoadsFor = (host: string) =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === host &&
+        (call.params as HostRequestParams).method === "model/list",
+    ).length;
+  const before = { controller: modelListRequests(fake).length, replacedHost: hostLoadsFor("buildbox") };
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+  // Nothing to await: the claim is that nothing happens. The window is a
+  // tripwire past the pane's 250ms catalog debounce (a generation bump re-runs
+  // the catalog effect and issues a request), not the mechanism.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+
+  // Neither the replaced host's scope nor the controller's catalog moved: the
+  // wrapper describes a machine this pane is not reading.
+  expect(hostLoadsFor("buildbox")).toBe(before.replacedHost);
+  expect(modelListRequests(fake).length).toBe(before.controller);
+});
+
 // The provider editor (ConnectProviderDialog) is controller-scoped: it reads and
 // writes the credentialsStore's top-level fields on the plain connection. A
 // remote host's provider verdict now comes from that host's own partition, so
@@ -7738,6 +7904,36 @@ test("switching hosts with the same directory drops the previous host's branch r
   await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
 
   await waitFor(() => expect(screen.queryByTestId("spawn-branch")).toBeNull());
+});
+
+// ...and the readout must survive the manifest going UNSETTLED again. A
+// revalidating manifest withholds its sources, so hostChoice is a provisional
+// "local" while the draft's host is still the launch and discovery target
+// (round nine) - the same window the picker above pins. Keying the readout on
+// hostChoice instead blanked a readout the pane's own evener/git/head call had
+// already answered for the draft's host, for the length of every revalidation
+// (component 07b review, residual).
+test("the branch readout keeps the draft's host while the manifest revalidates", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => {
+    f.on("evener/git/head", () => ({ head: "local-branch" }));
+    answerRemoteHost(f, { overrides: { "evener/git/head": { head: "host-branch" } } });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/host-branch-revalidate");
+  renderSpawn(fake);
+  await settled();
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch"));
+
+  // The fresh manifest is in flight: the settled list is withheld, so the
+  // launch target stays the draft's host (round nine) and so does the host the
+  // readout describes.
+  await act(async () => seedSources(REMOTE_SOURCES, { loading: true, stale: true }));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch");
 });
 
 // The resolved default launch config is a property of the selected host, not

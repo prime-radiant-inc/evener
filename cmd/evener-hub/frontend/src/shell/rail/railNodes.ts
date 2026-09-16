@@ -6,7 +6,7 @@
 // project detail map) and wires the results into <Tree>.
 
 import type { NavigationJobSummary, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
-import { projectNodeExpansionKey } from "./railExpansion";
+import { projectNodeExpansionKey } from "@evener/appwire-client/state/navigation";
 
 export type TreeTier = "current" | "recent" | "archived";
 
