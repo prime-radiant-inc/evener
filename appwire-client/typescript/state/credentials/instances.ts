@@ -109,6 +109,11 @@ export interface CredentialInstancesState {
   // disabled under the keyboard's own focus drops focus to <body> (the
   // credential dialog's rows are that dialog's focus targets).
   listingFromPreviousConnection: boolean;
+  // True once a full listing has landed for this connection - an empty one
+  // counts - and false again for a new client until its own lands. It
+  // distinguishes "nothing read yet" from "read, and there are no rows", and
+  // tells a refreshModels answer whether a name it does not find was removed.
+  listingEstablished: boolean;
   // A marker that changes ONLY when a state transition came from the store's
   // own self-marked refresh (fetchSelf, or scheduleRefetch(true)).
   // Subscriptions that watch for unrelated changes compare it across a
@@ -237,6 +242,21 @@ export function listingChanged(state: CredentialListing, previous: CredentialLis
   return LISTING_FIELDS.some((field) => state[field] !== previous[field]);
 }
 
+/** The slice of the state foreignListingChange reads. */
+export type ListingTransition = CredentialListing & Pick<CredentialInstancesState, "selfRefresh" | "loading" | "error">;
+
+/** foreignListingChange reports whether a store transition is a change a
+ * credential probe or a guided flow must not be trusted against: the rows
+ * moved, or a read began or failed, and the transition is NOT the store's own
+ * self-marked refresh (selfRefresh moves only on those). A host that shows a
+ * probe result, or steers a flow on a listing, invalidates on exactly this. */
+export function foreignListingChange(state: ListingTransition, previous: ListingTransition): boolean {
+  return (
+    state.selfRefresh === previous.selfRefresh &&
+    (listingChanged(state, previous) || state.loading !== previous.loading || state.error !== previous.error)
+  );
+}
+
 // MutationReconcile tells applyMutation how to place its answer among newer
 // reads: supersededFor receives the answer a newer request outran, instance
 // names the row the landed-write count belongs to, and written names the
@@ -302,9 +322,6 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // sheets may refresh different instances concurrently, and starting B's
   // refresh must not cancel A's.
   const refreshVersions = new Map<string, number>();
-  // listEstablished turns true on the first applied full-list answer: it
-  // distinguishes "the store never held this name" from "a remove dropped it".
-  let listEstablished = false;
   // refreshedInstances counts, per instance, the refreshes that landed since the
   // last full-list apply: a read that started before one merges around those rows
   // instead of replacing them, and a COUNT rather than a name is what tells a
@@ -464,7 +481,6 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       }
       const refreshedDuringFlight = changedCounts(before, refreshedInstances);
       refreshedInstances.clear();
-      listEstablished = true;
       const applied = listState(response);
       if (refreshedDuringFlight.size > 0) {
         applied.instances = keepRefreshedModels(applied.instances, refreshedDuringFlight, reconcile.written);
@@ -473,8 +489,21 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       // left over from a replaced one is discarded by the version guard above),
       // so the listing it answered with is this connection's - the same claim a
       // read through the current client makes, and it clears the same mark.
-      store.setState({ ...applied, loading: false, error: null, listingFromPreviousConnection: false });
+      store.setState({
+        ...applied,
+        loading: false,
+        error: null,
+        listingFromPreviousConnection: false,
+        listingEstablished: true,
+      });
       return true;
+    } catch (err) {
+      // A failed reply may follow a write the hub applied, so the listing is
+      // uncertain until read again: the store's own read, foreign-marked,
+      // because a refused write is not the caller's own change. A reply from a
+      // connection since gone is covered by the reconnect's restore read.
+      if (connection.client === client) scheduleRefetch();
+      throw err;
     } finally {
       settleLoading(version);
     }
@@ -504,12 +533,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     try {
       const resp = await client.request("evener/instance/list", {});
       if (version !== requestVersion || !connectionStillCurrent(client)) return false;
-      listEstablished = true;
       const instances = mergeNewerRows(resp.instances, writes, refreshes);
       store.setState({
         ...listState({ ...resp, instances }),
         loading: false,
         listingFromPreviousConnection: false,
+        listingEstablished: true,
         ...mark(),
       });
       return true;
@@ -549,7 +578,9 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     refreshedInstances.clear();
     refreshVersions.clear();
     landedMutations.clear();
-    listEstablished = false;
+    // The listing bookkeeping goes with them: a refresh landing before this
+    // client's first read is a fresh row to stage, not a removal to preserve.
+    store.setState({ listingEstablished: false });
   }
 
   async function refreshModels(name: string): Promise<void> {
@@ -582,7 +613,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       const known = state.instances.some((existing) => existing.name === name);
       // A removal that landed while this refresh was out: merging nothing
       // preserves it instead of resurrecting a phantom stub row.
-      if (listEstablished && !known) return;
+      if (state.listingEstablished && !known) return;
       if (state.listingFromPreviousConnection) {
         // The rows on screen are a replaced connection's, and an answer naming
         // one of them describes the hub that is there now: merging its
@@ -803,6 +834,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     error: null,
     selfRefresh: 0,
     listingFromPreviousConnection: false,
+    listingEstablished: false,
 
     async fetch() {
       return readListing(false);

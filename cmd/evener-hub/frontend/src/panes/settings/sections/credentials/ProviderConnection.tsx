@@ -8,6 +8,7 @@ import {
   isEndpointConflict,
   safeCredentialTestResult,
 } from "@evener/appwire-client";
+import { foreignListingChange } from "@evener/appwire-client/state/credentials";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
@@ -340,18 +341,13 @@ function SelectedConnection({
       // The store schedules its own listing refresh the moment this client's
       // auth mutation succeeds; that refresh is this flow's own change, not an
       // unrelated one, and it lands while the flow sits in checking/result.
-      // The selfRefresh marker changes only on the store's own refresh, so a
-      // transition that moved it is excluded here - every foreign change
+      // foreignListingChange excludes it and names every other change
       // (another client's edit, a reconnect's restore, a failed read's error
-      // field) keeps the marker still and invalidates exactly as before.
-      if (current.selfRefresh !== previous.selfRefresh) return;
+      // field); which phases of this flow it invalidates stays the flow's rule.
+      if (!foreignListingChange(current, previous)) return;
       if (
-        (["saving", "checking", "result", "review"].includes(phaseRef.current) ||
-          (oauth && destination(findSetup(name)) !== destination(baseline))) &&
-        (current.instances !== previous.instances ||
-          current.availableProviders !== previous.availableProviders ||
-          current.loading !== previous.loading ||
-          current.error !== previous.error)
+        ["saving", "checking", "result", "review"].includes(phaseRef.current) ||
+        (oauth && destination(findSetup(name)) !== destination(baseline))
       )
         invalidate();
     });

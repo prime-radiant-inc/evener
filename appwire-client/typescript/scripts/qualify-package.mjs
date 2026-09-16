@@ -375,6 +375,12 @@ const listing: CredentialListing = listingOf(store.getState()); void held; void 
       smoke: `const credentialStore = client.createCredentialInstancesStore({ ownClientId: () => "qualification" });
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.equal(credentialStore.getState().listingEstablished, false);
+assert.equal(client.foreignListingChange(credentialStore.getState(), credentialStore.getState()), false);
+assert.equal(
+  client.foreignListingChange({ ...credentialStore.getState(), loading: true }, credentialStore.getState()),
+  true,
+);
 assert.equal(typeof credentialStore.getState().setApiKey, "function");
 assert.equal(typeof credentialStore.getState().devicePoll, "function");
 assert.deepEqual(client.listingOf(credentialStore.getState()), {

@@ -150,6 +150,7 @@ it("refuses configuration writes while allowing independent credential repair", 
   ]);
 });
 it("does not replay a failed mutation and reconciles with a read", async () => {
+  vi.useFakeTimers();
   const { model, io, requests } = boundary();
   await model.refresh();
   io.request = async (method) => {
@@ -160,6 +161,9 @@ it("does not replay a failed mutation and reconciles with a read", async () => {
   expect(
     requests.filter((r) => r.method === "evener/instance/remove"),
   ).toHaveLength(1);
+  // The store's own read after a refused write: a failed reply may follow a
+  // write the hub applied.
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(model.getSnapshot().busy).toBe(false);
 });
@@ -278,7 +282,8 @@ it("does not echo credential test transport errors or retry the test", async () 
 });
 
 it("stores credential JSON once, reconciles a lost reply and never publishes its contents", async () => {
-  const { model, io, requests } = boundary();
+  vi.useFakeTimers();
+  const { model, io, requests, handlers } = boundary();
   await model.refresh();
   const credential = '{"type":"authorized_user","refresh_token":"fixture-sensitive"}';
   io.request = async (method) => {
@@ -292,6 +297,11 @@ it("stores credential JSON once, reconciles a lost reply and never publishes its
       params: { provider: "vertex", value: credential, originClientId: expect.stringMatching(/^native-/) },
     },
   ]);
+  // The write may have landed despite the lost reply: the hub's echo, no
+  // longer this screen's own (the refused write retired its marker), refetches.
+  for (const notify of handlers)
+    notify({ method: "evener/auth/updated", params: { provider: "vertex", activeSource: "store" } });
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("reconciled"));
   expect(JSON.stringify(model.getSnapshot())).not.toContain("fixture-sensitive");
   expect(model.getSnapshot().busy).toBe(false);

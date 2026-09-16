@@ -4,7 +4,12 @@ import { errorText, friendlyErrorMessage, sessionActionError } from "../../error
 import { deferred } from "../../testing/deferred";
 import { FakeClient } from "../../testing/fakeClient";
 import type { AuthStatusResponse, InstanceEntry, InstanceListResponse } from "../../types.gen";
-import { createCredentialInstancesStore, isStaleListingRefusal, staleListingHeld } from "./instances";
+import {
+  createCredentialInstancesStore,
+  foreignListingChange,
+  isStaleListingRefusal,
+  staleListingHeld,
+} from "./instances";
 
 const WORK: InstanceEntry = {
   name: "work",
@@ -324,6 +329,124 @@ describe("never echo a secret", () => {
     nowhere(JSON.stringify(store.getState()));
     nowhere(consoleText(spies));
     for (const spy of spies) spy.mockRestore();
+  });
+});
+
+describe("foreignListingChange", () => {
+  function transitions(store: ReturnType<typeof createCredentialInstancesStore>) {
+    const seen: boolean[] = [];
+    store.subscribe((state, previous) => seen.push(foreignListingChange(state, previous)));
+    return seen;
+  }
+
+  test("the store's own self-marked refresh is not a foreign change; a foreign read and a write are", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
+    fake.on("evener/instance/setDefault", () => ({ ...LISTING, instances: [{ ...WORK, isDefault: false }] }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    const seen = transitions(store);
+    await store.getState().setApiKey("work", API_KEY);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
+    expect(seen.some(Boolean)).toBe(false);
+
+    seen.length = 0;
+    await store.getState().fetchSelf();
+    expect(seen.some(Boolean)).toBe(false);
+
+    seen.length = 0;
+    fake.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "work", activeSource: "oauth", originClientId: "tab-2" },
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(seen.some(Boolean)).toBe(true);
+
+    seen.length = 0;
+    await store.getState().setDefault("work");
+    expect(seen.some(Boolean)).toBe(true);
+  });
+
+  test("a loading or error flip that moved no rows is a foreign change", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    fake.on("evener/instance/list", () => {
+      throw new Error("offline");
+    });
+    const seen = transitions(store);
+    await store.getState().fetch();
+    expect(seen).toEqual([true, true]);
+    expect(store.getState().error).toBe("offline");
+  });
+});
+
+describe("listingEstablished", () => {
+  test("false until a listing lands, true across reads and writes, false again for a new client", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    expect(store.getState().listingEstablished).toBe(false);
+    const fake = readyClient({ instances: [], availableProviders: [] });
+    fake.on("evener/instance/setDefault", () => LISTING);
+    store.connectionChanged(fake, "ready");
+    expect(store.getState().listingEstablished).toBe(false);
+
+    // An empty listing is still a listing: established, with no rows.
+    expect(await store.getState().fetch()).toBe(true);
+    expect(store.getState().listingEstablished).toBe(true);
+    expect(store.getState().instances).toEqual([]);
+
+    await store.getState().setDefault("work");
+    expect(store.getState().listingEstablished).toBe(true);
+
+    store.connectionChanged(readyClient(), "ready");
+    expect(store.getState().listingEstablished).toBe(false);
+    await vi.waitFor(() => expect(store.getState().listingEstablished).toBe(true));
+    store.resetForTests();
+    expect(store.getState().listingEstablished).toBe(false);
+  });
+});
+
+describe("a refused instance write", () => {
+  test("schedules one foreign listing read, because a failed reply may follow a landed write", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/instance/remove", () => {
+      throw new Error("connection lost");
+    });
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const marked = store.getState().selfRefresh;
+
+    await expect(store.getState().remove("work")).rejects.toThrow("connection lost");
+    expect(listReads(fake)).toBe(1);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
+    expect(store.getState().selfRefresh).toBe(marked);
+    expect(fake.calls.filter((call) => call.method === "evener/instance/remove")).toHaveLength(1);
+  });
+
+  test("a refused credential write schedules no read of its own; the hub's echo, retired of its marker, refetches", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("refused");
+    });
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    await expect(store.getState().setApiKey("work", API_KEY)).rejects.toThrow("refused");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(1);
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "api_key" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
   });
 });
 
