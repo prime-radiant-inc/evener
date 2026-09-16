@@ -1,13 +1,112 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { resetPanelStoreEvictionForTests } from "./panelStoreEviction";
+import { resetThreadsStoreForTests, threadsStore } from "./threads";
 import { topNotesStore, usePendingTopNotesFocus, useTopNotesExpanded } from "./topNotes";
 
 beforeEach(() => {
   topNotesStore.getState().resetForTests();
   resetPanelStoreEvictionForTests();
   resetWorkspaceStoreForTests();
+  resetThreadsStoreForTests();
+});
+
+const FULL_CAPABILITIES = {
+  send: true,
+  steer: true,
+  interrupt: true,
+  compact: true,
+  clear: true,
+  forkFromTurn: true,
+  shutdown: true,
+  changeModel: true,
+  changeVisionModel: true,
+  queue: true,
+  goal: true,
+  sharedNotes: true,
+  rename: true,
+} as const;
+
+function makeModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
+  const { jobsTreeRevision = null, ...rest } = overrides;
+  return {
+    ref: "ref_1",
+    threadId: "sess_test",
+    name: "Test Session",
+    status: { type: "idle" },
+    modelProvider: "anthropic",
+    model: "claude-3-7-sonnet",
+    visionModel: "",
+    askPending: false,
+    pendingEscalations: [],
+    turns: [],
+    queue: null,
+    tasks: null,
+    jobsUpdatedAt: null,
+    lastFrameAt: 0,
+    capabilities: FULL_CAPABILITIES,
+    goal: null,
+    humanNote: "",
+    agentNote: "",
+    sessionUrls: [],
+    contextUsed: 0,
+    contextWindow: 0,
+    contextPressure: 0,
+    usage: null,
+    workMillis: 0,
+    reasoningEffortLevels: [],
+    supportsReasoning: false,
+    cwd: "/repo",
+    jobsTreeRevision,
+    ...rest,
+  };
+}
+
+// A writable-origin focus request must not outlive the write capability it
+// was issued under (roborev round-17): the session turning read-only - or
+// vanishing from the store - invalidates it, so a later resume cannot
+// redeem the stale click as if fresh and steal focus from wherever the
+// user has since moved.
+test("a writable-origin focus request is dropped when the session loses write capability", () => {
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
+    topNotesStore.getState().openAndFocus("ref_1");
+  });
+  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: false });
+
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
+  });
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(false);
+
+  // Writable again later: the request stays gone, not redeemed as stale.
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
+  });
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(false);
+});
+
+// Round-11 semantics for read-only-origin requests are untouched: they are
+// held for silent redemption, so they survive capability flips in both
+// directions.
+test("a read-only-origin focus request survives the capability flips", () => {
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
+    topNotesStore.getState().openAndFocus("ref_1");
+  });
+  expect(topNotesStore.getState().pendingFocus.get("ref_1")).toEqual({ originReadOnly: true });
+
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_1", makeModel()]]) });
+  });
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(true);
+
+  act(() => {
+    threadsStore.setState({ threads: new Map([["ref_1", makeModel({ status: { type: "ended" } })]]) });
+  });
+  expect(topNotesStore.getState().hasPendingFocus("ref_1")).toBe(true);
 });
 
 test("top notes is collapsed by default", () => {

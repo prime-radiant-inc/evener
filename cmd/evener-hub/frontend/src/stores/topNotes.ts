@@ -123,6 +123,27 @@ registerPanelStoreEvictor({
   },
 });
 
+// A request born writable is redeemed as if the user just asked for it -
+// true only while the write capability it was issued under still holds.
+// Once the session turns read-only (or drops out of the store) before a
+// mounted panel serves it, the click that asked for focus is stale, and a
+// later resume must not redeem it as if fresh or it would steal focus
+// from wherever the user has since moved. Drop such requests at the
+// capability flip itself, whether or not any panel is mounted; requests
+// born read-only keep their later silent-redemption semantics instead.
+threadsStore.subscribe(() => {
+  const pending = topNotesStore.getState().pendingFocus;
+  if (pending.size === 0) return;
+  const threads = threadsStore.getState().threads;
+  let next: Map<string, PendingTopNotesFocus> | null = null;
+  for (const [ref, request] of pending) {
+    if (request.originReadOnly || canWriteHumanNote(threads.get(ref))) continue;
+    next ??= new Map(pending);
+    next.delete(ref);
+  }
+  if (next) topNotesStore.setState({ pendingFocus: next });
+});
+
 export function useTopNotesExpanded(ref: string): boolean {
   return useStore(topNotesStore, (s) => s.expanded.get(ref) ?? false);
 }
