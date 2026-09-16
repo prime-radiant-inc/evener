@@ -388,50 +388,11 @@ function spawnInProject(project: RailProject): void {
   navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
 }
 
-// Whether this project row is owned by a remote host as well as (or instead
-// of) this controller. Deletion is LOCAL-ONLY: cmd/evener-hub/project_delete.go
-// refuses any non-local or unknown source, so a row a remote host owns must
-// not offer the item at all - a source-less request would address THIS hub's
-// own project of the same ID or path, which is a different project.
-// Component 06a's round-six finding left that half to the rail.
-//
-// Two readings, in order. When the summary carries `sources` it is the whole
-// answer: NavigationProjectSummary.Sources names every source that owns
-// sessions in the project and is omitted for a controller-only one, so a
-// present list with a non-local entry settles it either way regardless of what
-// has loaded. That field arrives with this component's base branch
-// (multi-host-pr06a-fleet-view-go, whose head 179dc5cad carries it on the wire
-// in hubapi/navigation.go, in the regenerated TypeScript as `sources?:
-// string[]`, and in the navigation codec's PROJECT_OPTIONAL - the codec rejects
-// a summary field it does not allow, so the field and its admission land
-// together). RailProject's own interface predates it here, hence the structural
-// read, and the value survives the trip to the row: both projectFromGraph and
-// projectFromSummary spread the wire summary into the RailProject.
-//
-// Until that base lands, the row's own sessions are the only live signal, and
-// they are a signal only once they have LOADED. A collapsed project loads its
-// sessions on expand (Rail.tsx's loadProject effect skips unexpanded rows), so
-// an unexpanded row reads sessions: [] and "no remote session is visible" says
-// nothing about ownership. Round eleven's low finding: reading that emptiness
-// as controller-only offered the item to remote-only and merged rows alike -
-// the wrong-host delete this guard exists to prevent - so an unloaded row whose
-// project has rows is now withheld rather than treated as this controller's.
-// The one exception is a project with no rows at all: session_count counts
-// every source's top-level rows (hubcore.TreeProject.TotalSessionCount), so
-// zero means no host owns a session here and there is nothing wrong-host to
-// address. Withholding is the conservative side of the call: a controller-only
-// row regains the item as soon as its sessions load (and immediately, once
-// `sources` arrives with the base), while offering it early would delete the
-// local twin of a merged row.
-function ownedByRemoteHost(project: RailProject): boolean {
-  const sources = (project as { sources?: unknown }).sources;
-  if (Array.isArray(sources))
-    return sources.some((source) => typeof source === "string" && source.trim() !== "" && source.trim() !== "local");
-  if (project.session_count === 0) return false;
-  if (project.loaded !== true) return true;
-  return project.sessions.some((session) => session.host_id !== "" && session.host_id !== "local");
-}
-
+// The project menu offers delete unconditionally: the request is local-only,
+// and the Rail owns that judgement - onDeleteProjectRequest refuses a project
+// a remote host also owns, with a toast that names the hosts (Rail.test.tsx
+// pins it), so the person gets an explanation instead of an item that is
+// silently missing. The row keeps no ownership verdict of its own.
 function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
@@ -450,17 +411,11 @@ function projectMenuItems(project: RailProject, actions: RailRowActions): MenuIt
       label: project.is_archived ? "Unarchive project" : "Archive project",
       onSelect: () => actions.onToggleArchiveProject(project),
     },
-    // Offered only where the request can actually address the row: a
-    // controller-only project keeps it, a merged or remote-only row does not.
-    ...(ownedByRemoteHost(project)
-      ? []
-      : [
-          {
-            id: "delete",
-            label: "Delete project…",
-            onSelect: () => actions.onDeleteProjectRequest(project),
-          },
-        ]),
+    {
+      id: "delete",
+      label: "Delete project…",
+      onSelect: () => actions.onDeleteProjectRequest(project),
+    },
   ];
 }
 
@@ -1012,8 +967,7 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
   // Keep this list in lockstep with ProjectRow, projectMenuItems, and
   // spawnInProject. Descendant/page fields are Tree recursion inputs, not row
   // presentation or action inputs, so they deliberately do not cross this memo
-  // boundary; the ownership verdict below is the one thing derived from them,
-  // compared as a verdict rather than as the lists it is read from.
+  // boundary.
   return (
     previous.node.id === next.node.id &&
     previous.node.displayName === next.node.displayName &&
@@ -1025,12 +979,7 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
     previousProject.rollup_state === nextProject.rollup_state &&
     previousProject.rollup_attn === nextProject.rollup_attn &&
     previousProject.favorite === nextProject.favorite &&
-    previousProject.is_archived === nextProject.is_archived &&
-    // The project menu reads remote ownership from the row (see
-    // ownedByRemoteHost): the item list changes only when that verdict does, so
-    // an unrelated descendant rebuild still leaves the row alone - and a
-    // rebuilt session list that turns the row remote does not.
-    ownedByRemoteHost(previousProject) === ownedByRemoteHost(nextProject)
+    previousProject.is_archived === nextProject.is_archived
   );
 }
 
