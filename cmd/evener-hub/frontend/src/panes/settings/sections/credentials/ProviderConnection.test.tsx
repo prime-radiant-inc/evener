@@ -93,7 +93,7 @@ test("popular Gemini uses the real google identity, independently of provider na
 // catalogue. Its connection is the OAuth flow - the provider reads no API key
 // - so selecting the popular card must reach the Codex sign-in rather than a
 // key field.
-test("popular grid offers OpenAI Codex and starts its sign-in", async () => {
+test("the popular list offers OpenAI Codex and starts its sign-in", async () => {
   const { user, client } = setup();
   await user.click(await screen.findByRole("button", { name: "OpenAI Codex" }));
   expect(await screen.findByRole("dialog", { name: "Connect OpenAI Codex" })).toBeTruthy();
@@ -111,20 +111,70 @@ test("popular grid offers OpenAI Codex and starts its sign-in", async () => {
   expect(starts[0]!.params).toMatchObject({ provider: "openai-codex" });
 });
 
+// The first screen is the popular set and nothing else. Everything the
+// catalogue holds beyond it - including the search that spans the catalogue -
+// is behind the reveal, so the choice is short until the user asks for more.
+test("the popular providers are what the picker shows first", async () => {
+  setup();
+  expect(await screen.findByRole("button", { name: "Anthropic" })).toBeTruthy();
+  for (const name of ["OpenAI", "Gemini", "OpenRouter", "OpenAI Codex"]) {
+    expect(screen.getByRole("button", { name })).toBeTruthy();
+  }
+  expect(screen.queryByRole("button", { name: "Azure" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Local endpoint" })).toBeNull();
+  expect(screen.queryByLabelText("Search providers")).toBeNull();
+});
+
+// The reveal swaps the popular set for the whole catalogue (the popular rows
+// are in it too), and closing it puts the short list back - one control, both
+// directions, no second label to keep in sync.
+test("show all providers reveals the rest of the catalogue and closes back to the popular set", async () => {
+  const { user } = setup();
+  const reveal = await screen.findByText("Show all providers");
+  await user.click(reveal);
+  expect(screen.getByLabelText("Search providers")).toBeTruthy();
+  for (const name of ["Azure", "Google Vertex", "Local endpoint", "Custom endpoint", "Anthropic"]) {
+    expect(screen.getByRole("button", { name })).toBeTruthy();
+  }
+  await user.click(reveal);
+  expect(screen.queryByLabelText("Search providers")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Azure" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Anthropic" })).toBeTruthy();
+});
+
+// The reveal is the dialog's own focusable control. jsdom implements the
+// focusability rule for a details' first <summary> (helpers/focusing.js) even
+// though user-event's own focusable selector does not list <summary>, so DOM
+// focus is asserted directly; jsdom then runs no native Enter-to-click for it
+// either, which is why the keyboard path's follow-up click is dispatched here
+// (the same limitation widgets/disclosure/disclosure.test.tsx documents).
+test("the show all providers control is keyboard reachable", async () => {
+  const { user } = setup();
+  const reveal = await screen.findByText("Show all providers");
+  expect(reveal.tagName).toBe("SUMMARY");
+  // No tabindex override: the control is in the browser's tab order.
+  expect(reveal.getAttribute("tabindex")).toBeNull();
+  reveal.focus();
+  expect(document.activeElement).toBe(reveal);
+  await user.keyboard("{Enter}");
+  fireEvent.click(reveal);
+  expect(screen.getByLabelText("Search providers")).toBeTruthy();
+});
+
 test("a provider named like an Object.prototype member is not popular and gets no help link", async () => {
   const custom = provider("constructor", "Custom endpoint");
   const { user } = setup({ instances: [], availableProviders: [custom] });
-  await screen.findByRole("button", { name: "All providers" });
+  await screen.findByText("Show all providers");
   await act(async () => {
     await credentialsStore.getState().fetch();
   });
   // Popular membership must be an own-key check: "constructor" in HELP is
   // true through the prototype chain, which would promote this custom
-  // provider to the popular grid and then render
+  // provider to the popular list and then render
   // Object.prototype.constructor as its help entry - a "Get an API key"
   // anchor with no destination for a provider that has no help metadata.
   expect(screen.queryByRole("button", { name: "Custom endpoint" })).toBeNull();
-  await user.click(screen.getByRole("button", { name: "All providers" }));
+  await user.click(screen.getByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Custom endpoint" }));
   expect(screen.queryByText("Get an API key")).toBeNull();
 });
@@ -317,9 +367,9 @@ test("discovers a public provider without launch-ready instances and asks only f
   expect(screen.queryByLabelText("Name")).toBeNull();
   expect(screen.queryByLabelText("Base URL (optional)")).toBeNull();
 });
-test("all providers searches the complete catalogue including separate Codex and configured variants", async () => {
+test("show all providers searches the complete catalogue including separate Codex and configured variants", async () => {
   const { user } = setup();
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   const search = screen.getByLabelText("Search providers");
   for (const row of catalogue) {
     await user.clear(search);
@@ -327,9 +377,28 @@ test("all providers searches the complete catalogue including separate Codex and
     expect(screen.getByRole("button", { name: row.name })).toBeTruthy();
   }
 });
+
+// The search matches the three fields it has always matched - the registry id,
+// its display name, and the help label the row prints - not just whatever the
+// row happens to say. "Google Generative AI" is the case that separates them:
+// it is neither the id nor the label on screen.
+test("the catalogue search matches id, display name and help label", async () => {
+  const { user } = setup({ instances: [], availableProviders: [provider("google", "Google Generative AI")] });
+  await user.click(await screen.findByText("Show all providers"));
+  const search = screen.getByLabelText("Search providers");
+  for (const query of ["google", "generative", "gemini"]) {
+    await user.clear(search);
+    await user.type(search, query);
+    expect(screen.getByRole("button", { name: "Gemini" })).toBeTruthy();
+  }
+  await user.clear(search);
+  await user.type(search, "vertex");
+  expect(screen.queryByRole("button", { name: "Gemini" })).toBeNull();
+});
+
 test("a cloud choice opens the complete preselected configuration editor", async () => {
   const { user } = setup();
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name: "Azure" }));
   await user.click(screen.getByRole("button", { name: "Configure provider" }));
   expect(screen.getByLabelText("Base provider")).toHaveProperty("value", "azure");
@@ -345,7 +414,10 @@ function savedList(id = "anthropic", extra: Partial<InstanceEntry> = {}): Instan
 }
 const saved = { provider: "anthropic", supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
 async function choose(user: ReturnType<typeof userEvent.setup>, name = "Anthropic") {
-  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  // Choosing from the revealed catalogue covers both kinds of provider this
+  // helper is used for (popular and not), and keeps one path through the
+  // picker for every caller.
+  await user.click(await screen.findByText("Show all providers"));
   await user.click(screen.getByRole("button", { name }));
 }
 function scriptSave(client: FakeClient, next = savedList()) {
