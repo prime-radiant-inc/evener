@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"time"
 
@@ -34,37 +33,74 @@ func Apply(state State, event Event) error {
 		return err
 	}
 
-	next, err := cloneState(state)
-	if err != nil {
-		return err
-	}
-	before := make(map[string]publicProjection, len(state))
-	for id, aggregate := range state {
+	// Only the aggregates the event can reach are cloned, diffed and, on a
+	// rejected event, restored; every other aggregate keeps its pointer.
+	// Callers may hand Apply a shallow copy of a state another reader still
+	// holds (extendHistoricalDelegateFold), so an aggregate is never written
+	// through the pointer the caller's state shares.
+	touched := touchedDelegates(state, event)
+	previous := make(map[string]*Aggregate, len(touched))
+	before := make(map[string]publicProjection, len(touched))
+	for _, id := range touched {
+		aggregate, existed := state[id]
+		if !existed {
+			continue
+		}
 		if aggregate == nil {
 			return fmt.Errorf("delegate %q aggregate is nil", id)
 		}
+		previous[id] = aggregate
 		before[id] = aggregate.publicProjection()
+		state[id] = cloneAggregate(aggregate)
 	}
-	if err := applyEvent(next, event); err != nil {
+	if err := applyEvent(state, event); err != nil {
+		for _, id := range touched {
+			if aggregate, existed := previous[id]; existed {
+				state[id] = aggregate
+			} else {
+				delete(state, id)
+			}
+		}
 		return err
 	}
-	for id, aggregate := range next {
-		previous, existed := state[id]
+	for _, id := range touched {
+		aggregate := state[id]
+		original, existed := previous[id]
 		if !existed {
 			aggregate.ProjectionRevision = 1
 			continue
 		}
-		aggregate.ProjectionRevision = previous.ProjectionRevision
+		aggregate.ProjectionRevision = original.ProjectionRevision
 		if !reflect.DeepEqual(before[id], aggregate.publicProjection()) {
 			aggregate.ProjectionRevision++
 		}
 	}
-
-	for id := range state {
-		delete(state, id)
-	}
-	maps.Copy(state, next)
 	return nil
+}
+
+// touchedDelegates lists every aggregate applyEvent may write for event. Most
+// events reach only their own delegate; resumability closure and a subtree
+// stop request reach the target and its descendants; a subtree stop
+// completion rewrites every aggregate's pending deliveries.
+func touchedDelegates(state State, event Event) []string {
+	switch event.Kind {
+	case EventDelegateResumabilityClosed, EventDelegateSubtreeStopRequested:
+		var ids []string
+		for id := range state {
+			if isDelegateOrDescendant(state, id, event.DelegateID) {
+				ids = append(ids, id)
+			}
+		}
+		return ids
+	case EventDelegateSubtreeStopCompleted:
+		ids := make([]string, 0, len(state))
+		for id := range state {
+			ids = append(ids, id)
+		}
+		return ids
+	default:
+		return []string{event.DelegateID}
+	}
 }
 
 func applyEvent(state State, event Event) error {
