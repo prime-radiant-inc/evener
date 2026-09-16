@@ -22,8 +22,17 @@ func (s *Session) snapshotDelegateContext() ([]transcript.Entry, error) {
 	for _, entry := range entries {
 		t := entry.Turn
 		switch t.Kind {
-		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnFoldRecord, schema.TurnModelSwitch, schema.TurnFailure:
-			// Fold records are private resume bookkeeping; never inherit them.
+		case schema.TurnHookCompleted, schema.TurnAttentionResolution, schema.TurnModelSwitch, schema.TurnFailure:
+			continue
+		case schema.TurnFoldRecord:
+			// A fold record is never inherited as a turn, and never re-written
+			// to the child (its Seqs name the PARENT's entries). It travels
+			// with the snapshot because it is the manifest saying which of
+			// these entries the parent's live history is made of: the retained
+			// ones sit BEFORE the fold's marker, so nothing else names them
+			// (issue #1200). splitInheritedContext reads it and drops it.
+			entry.Turn = schema.Turn{Kind: t.Kind, Fold: t.Fold}
+			out = append(out, entry)
 			continue
 		}
 		// Copy conversation and content provenance, without adopting the

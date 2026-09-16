@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -307,6 +308,12 @@ func (d turnIndexDisk) indexedGroups() []indexedGroup {
 	n := d.recordCount()
 	for i := range n {
 		record := d.recordAt(i)
+		if takesNoLogicalTurn(record.TurnKind) {
+			// Transparent to grouping: it takes no group and no ordinal, and
+			// leaves the open group open, exactly as the full projection's
+			// accumulator does (takesNoLogicalTurn).
+			continue
+		}
 		role := groupRoleFor(record.TurnKind, record.GoalContinuation)
 		join := !record.StartsGroup && role == groupContinuation && len(groups) > 0 && groups[len(groups)-1].open
 		if join {
@@ -909,11 +916,23 @@ func scanTurnIndexWithCommitContext(ctx context.Context, file *os.File, transcri
 					openTurnID, openCalls = openGroupState(*index)
 				}
 			}
+			// The kind of the last record that took a logical turn: a fold
+			// record is transparent to grouping (takesNoLogicalTurn), so the
+			// entry after one continues whatever group was open before it.
 			prevKind := schema.TurnKind("")
-			if len(appended) > 0 {
-				prevKind = appended[len(appended)-1].TurnKind
-			} else if n := index.recordCount(); n > 0 {
-				prevKind = index.recordAt(n - 1).TurnKind
+			for _, record := range slices.Backward(appended) {
+				if !takesNoLogicalTurn(record.TurnKind) {
+					prevKind = record.TurnKind
+					break
+				}
+			}
+			if prevKind == "" && len(appended) == 0 {
+				for i := index.recordCount() - 1; i >= 0; i-- {
+					if kind := index.recordAt(i).TurnKind; !takesNoLogicalTurn(kind) {
+						prevKind = kind
+						break
+					}
+				}
 			}
 			record.StartsGroup = recordStartsGroup(entry.Turn.Kind, prevKind, record.GoalContinuation, owner, openTurnID)
 			if record.StartsGroup {

@@ -354,6 +354,54 @@ func TestEmptyLogicalGroupReservesOrdinalInFullAndIndexedProjections(t *testing.
 	}
 }
 
+// A fold record is never in live history -- it is the resume manifest, written
+// after the fold's markers and read only by ResumeHistory -- so the live
+// snapshot allocates no entry ordinal for it. The file projection must allocate
+// none either, or every item after a fold lands one ordinal further on reload
+// than it did live, and the two projections of the same item disagree on its
+// key. The raw entry indexes stay as the file has them: only the ordinal is
+// withheld.
+func TestFoldRecordTakesNoLogicalTurnOrdinal(t *testing.T) {
+	path := writeEntries(t,
+		userEntry(1, "before the fold"),
+		transcript.Entry{Kind: "entry", Seq: 2, Turn: schema.Turn{
+			Kind: schema.TurnFoldRecord,
+			Fold: &schema.FoldRecord{FoldID: "fold-1", Layers: []int{1}, RetainedSeqs: []int{0}},
+		}},
+		userEntry(3, "after the fold"),
+	)
+
+	full := requireItemTurnsFromFile(t, path, testMaxLineBytes, sequentialTestProjector())
+	gotIDs := turnIDs(full)
+	wantIDs := []string{"turn_1", "turn_3"}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("file projection turn ids = %v, want the two live turns %v", gotIDs, wantIDs)
+	}
+	wantKeys := []string{"apptranscript-item-v1:turn_1:0:0", "apptranscript-item-v1:turn_3:1:0"}
+	var gotKeys []string
+	for _, turn := range full {
+		gotKeys = append(gotKeys, keysFor(turn)...)
+	}
+	if !reflect.DeepEqual(gotKeys, wantKeys) {
+		t.Fatalf("file projection keys = %v, want %v (the fold record takes no ordinal)", gotKeys, wantKeys)
+	}
+
+	window, _, err := NewTurnCache().LatestItemWindowFromFile(path, testMaxLineBytes, ItemWindowOptions{
+		ThreadRef: "local:th_fold_record",
+		Limit:     40,
+	}, boundedTestProjector)
+	if err != nil {
+		t.Fatalf("LatestItemWindowFromFile: %v", err)
+	}
+	var indexedKeys []string
+	for _, candidate := range window.Candidates {
+		indexedKeys = append(indexedKeys, candidate.Item.TranscriptKey)
+	}
+	if !reflect.DeepEqual(indexedKeys, wantKeys) {
+		t.Fatalf("indexed window keys = %v, want the full projection's %v", indexedKeys, wantKeys)
+	}
+}
+
 func keysFor(turn appwire.Turn) []string {
 	keys := make([]string, 0, len(turn.Items))
 	for _, item := range turn.Items {

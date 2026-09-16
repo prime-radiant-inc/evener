@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1430,15 +1431,26 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 		}
 	})
 
+	// The delegate's attention turn is durable before it is retained in
+	// history: the real path retains the turn DECODED from its own entry, so it
+	// carries that entry's Seq (TestFoldDelegateAttention_SeedsTurnSeq). A turn
+	// left at Seq 0 would name entry 0 instead, and no assertion about what the
+	// record names could fail.
+	const attnText = "unverified delegate attention r7"
+	unverified := schema.NewTurn(schema.TurnSteering, llm.User(attnText))
+	unverified.AttentionID = "att-r7"
+	attnSeq, err := s.writeTranscriptDurable(unverified)
+	if err != nil {
+		t.Fatalf("write attention entry: %v", err)
+	}
+	unverified.Seq = attnSeq
+
 	compactErr := make(chan error, 1)
 	go func() {
 		compactErr <- s.Compact(context.Background())
 	}()
 	<-entered // mid-fold, past the snapshot
 
-	const attnText = "unverified delegate attention r7"
-	unverified := schema.NewTurn(schema.TurnSteering, llm.User(attnText))
-	unverified.AttentionID = "att-r7"
 	s.mu.Lock()
 	s.history = append(s.history, unverified) // models retainDelegateAttentionTurn: history only, no session-transcript pair
 	s.mu.Unlock()
@@ -1456,11 +1468,17 @@ func TestFoldPublication_AttentionTurnRemovedMidTransactionNotResurrected(t *tes
 	if indexOfTurnText(currentHistory(t, s), attnText) >= 0 {
 		t.Fatal("test setup: the removed attention turn is still in live history")
 	}
-	entries := sessionTranscriptEntries(t, s)
-	for _, e := range entries {
-		if e.Turn.Message.Text() == attnText {
-			t.Fatal("the removed (durability-unverified) attention turn was named by the fold record -- it resurrects on resume")
-		}
+	// The entry stays on disk -- the transcript is append-only -- so what
+	// decides resurrection is whether the fold record NAMES it.
+	record := foldRecordFromTranscript(t, s)
+	if record == nil {
+		t.Fatal("test setup: the fold wrote no record to check")
+	}
+	if slices.Contains(record.RetainedSeqs, attnSeq) {
+		t.Fatalf("the fold record retained the removed attention turn's entry (Seq %d) -- it resurrects on resume: %+v", attnSeq, record)
+	}
+	if indexOfTurnText(ResumeHistory(sessionTranscriptEntries(t, s)), attnText) >= 0 {
+		t.Fatal("the removed (durability-unverified) attention turn came back through the resumed history")
 	}
 }
 
@@ -2497,5 +2515,67 @@ func TestFoldPublication_DurablyRecordedTurnSurvivesRestart(t *testing.T) {
 	}
 	if indexOfTurnText(ResumeHistory(data.Entries), durableText) < 0 {
 		t.Fatal("a turn appended durably during the fold is missing after a restart from the fsynced transcript: the fold record must name its durable entry")
+	}
+}
+
+// A fold id must be unique for the life of the transcript: it is the record's
+// identity, the handle that says which fold wrote which entries. A fold that
+// writes a record always claims a publication, and that claim mints the id from
+// the PERSISTED lifecycle revision (foldPublicationID), never from the
+// in-memory history revision a restart resets to zero -- so folds separated by
+// a restart keep distinct ids.
+func TestFold_IDsAreDistinctAcrossARestart(t *testing.T) {
+	t.Parallel()
+	const cheap = "fold-id-restart-cheap"
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	client.Register(&agenttest.ScriptedAdapter{Provider: cheap, Responder: func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}})
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), cheap+"/model")
+	stateDir := t.TempDir()
+
+	s := newSession(t, withClient(client), withProfile(profile), withoutGitSnapshot(),
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: stateDir}))
+	var before []string
+	for round := range 4 {
+		recordNumberedTurns(t, s, fmt.Sprintf("before-%d", round), 12)
+		if err := s.Compact(context.Background()); err != nil {
+			t.Fatalf("Compact %d: %v", round, err)
+		}
+		record := foldRecordFromTranscript(t, s)
+		if record == nil {
+			t.Fatalf("fold %d wrote no record", round)
+		}
+		before = append(before, record.FoldID)
+	}
+	meta := s.Meta()
+	s.Close()
+
+	restored, err := RestoreSessionFromMetaWithConfig(client, profile,
+		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+	recordNumberedTurns(t, restored, "after", 12)
+	if err := restored.Compact(context.Background()); err != nil {
+		t.Fatalf("second Compact: %v", err)
+	}
+	second := foldRecordFromTranscript(t, restored)
+	if second == nil {
+		t.Fatal("the fold after the restart wrote no record")
+	}
+	if slices.Contains(before, second.FoldID) {
+		t.Fatalf("the fold after the restart is named %q, already used by an earlier fold of this transcript (%v): the id resets with the session instead of naming the fold", second.FoldID, before)
+	}
+}
+
+// recordNumberedTurns records n durable user turns, each a transcript entry.
+func recordNumberedTurns(t *testing.T, s *Session, prefix string, n int) {
+	t.Helper()
+	for i := range n {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("%s-%d", prefix, i)))
+		s.recordTurn(turn, turn)
 	}
 }

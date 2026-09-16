@@ -1000,6 +1000,7 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount,
 	mergeBack := published[len(published)-mergeBackCount:]
 	retained := make([]int, 0, len(published)-1)
 	steerIdx := 0
+	withdrawn := s.withdrawnEntrySeqs()
 	name := func(turn schema.Turn) {
 		switch {
 		case turn.Seq == seqFoldInjectedSteering:
@@ -1017,6 +1018,17 @@ func (s *Session) writeFoldRecordLocked(published []schema.Turn, mergeBackCount,
 			// load-bearing here). Repair synthetics, strategy injections, held
 			// turns and failed writes all carry a negative marker and fall
 			// through to be omitted.
+			//
+			// A turn withdrawn from live history is not named, even though the
+			// published snapshot still holds it: a delegate attention turn
+			// whose durability the read-back could not confirm is removed in
+			// the window between this fold's publish and this write
+			// (removeUnverifiedDelegateAttentionTurn), and its entry stays on
+			// disk, so naming it would resurrect on resume a turn the session
+			// dropped.
+			if withdrawn[turn.Seq] {
+				return
+			}
 			retained = append(retained, turn.Seq)
 		}
 	}

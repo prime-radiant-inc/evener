@@ -1047,6 +1047,16 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 			// not be able to publish over it and silently resurrect the
 			// removed turn.
 			s.history = append(s.history[:index], s.history[index+1:]...)
+			// The entry itself stays on disk (the transcript is append-only),
+			// so a fold that snapshotted this turn before the deletion would
+			// name it and bring it back on resume. Remember the entry as
+			// withdrawn; writeFoldRecordLocked never names one.
+			if turn.Seq >= 0 {
+				if s.withdrawnSeqs == nil {
+					s.withdrawnSeqs = map[int]bool{}
+				}
+				s.withdrawnSeqs[turn.Seq] = true
+			}
 			// Deleting a turn strictly before the N4 boundary shifts every
 			// in-flight turn left by one, so the boundary moves with them —
 			// atomically with the mutation.
@@ -1330,4 +1340,13 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 		}
 	}
 	return 0, false
+}
+
+// withdrawnEntrySeqs is the set of durable entry Seqs whose turn was withdrawn
+// from live history. A fold record never names one: its entry is still in the
+// transcript, so naming it would restore a turn the session dropped.
+func (s *Session) withdrawnEntrySeqs() map[int]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.withdrawnSeqs)
 }

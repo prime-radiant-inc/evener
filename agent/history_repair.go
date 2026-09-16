@@ -20,6 +20,28 @@ func (s *Session) drainPendingWatchSendsAtBoundary(ctx context.Context) error {
 	return s.drainPendingWatchSends(ctx)
 }
 
+// repairedTurnSources maps each position of a repaired history to the
+// pre-repair turn it came from, or -1 for a synthetic the repair spliced in.
+// preRepairLen is the length repairOrphanedToolResultsIndexed was given and
+// insertedAt the insertion indexes it reported (ascending, post-repair
+// coordinates), so every caller that has to carry per-turn facts (a Seq, a
+// fork's provenance) across the repair reads one encoding of the shift.
+func repairedTurnSources(preRepairLen int, insertedAt []int) []int {
+	sources := make([]int, 0, preRepairLen+len(insertedAt))
+	next := 0
+	for _, at := range insertedAt {
+		for len(sources) < at && next < preRepairLen {
+			sources = append(sources, next)
+			next++
+		}
+		sources = append(sources, -1)
+	}
+	for ; next < preRepairLen; next++ {
+		sources = append(sources, next)
+	}
+	return sources
+}
+
 func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 	out, repairs, _ := repairOrphanedToolResultsIndexed(history)
 	return out, repairs

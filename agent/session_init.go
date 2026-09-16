@@ -121,45 +121,101 @@ func inheritedProvenanceTurns(length, divergenceTurn int, origins, repairInserti
 		return inherited
 	}
 	inherited := make([]bool, 0, length)
-	next := 0
-	carry := func() bool {
-		if len(inherited) == 0 {
-			return false
+	for _, source := range repairedTurnSources(len(origins), repairInsertions) {
+		if source < 0 {
+			// A synthetic completes the call before it and takes that turn's
+			// provenance (at the head of a history there is none to take).
+			inherited = append(inherited, len(inherited) > 0 && inherited[len(inherited)-1])
+			continue
 		}
-		return inherited[len(inherited)-1]
-	}
-	for _, at := range repairInsertions {
-		for len(inherited) < at && next < len(origins) {
-			inherited = append(inherited, origins[next] < prefix)
-			next++
-		}
-		inherited = append(inherited, carry())
-	}
-	for ; next < len(origins); next++ {
-		inherited = append(inherited, origins[next] < prefix)
+		inherited = append(inherited, origins[source] < prefix)
 	}
 	return inherited
 }
 
 // escapeInheritedHistory escapes a forked session's inherited prefix for the
-// model copy. No journal is in reach, and that is deliberate: the prefix belongs
-// to the parent's session, whose records the child's journal does not hold -- and
-// a child mutation may reuse a parent's client mutation id -- so a child record
-// must never decide what an inherited turn was. The prefix is decided by its own
-// kinds and the write-path text shape alone.
-func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
-	turns := escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
-	// These turns carry the PARENT transcript's Seqs (seeded from its entries),
-	// which do not name entries in the child's own transcript. Mark them as
-	// having no child entry so a child fold never names an inherited turn by
-	// Seq: the inherited prefix is background the child re-folds into its own
-	// summary, never a resumable tail it owns. (The child re-writes these turns
-	// into its transcript at its own Seqs, but s.history is not re-seeded from
-	// them.)
+// model copy, and reports for each returned turn the inherited entry it came
+// from (-1 for a synthetic the orphan repair spliced in), so the caller can
+// stamp each turn with the Seq of the child entry it is written as. The
+// entries arrive already resumed (snapshotDelegateContext reconstructs the
+// parent's live history through its fold record), so only the repair runs
+// here; a second resume anchor would re-scan them and could strand the head
+// on a marker the fold retained.
+//
+// No journal is in reach, and that is deliberate: the prefix belongs to the
+// parent's session, whose records the child's journal does not hold -- and a
+// child mutation may reuse a parent's client mutation id -- so a child record
+// must never decide what an inherited turn was. The prefix is decided by its
+// own kinds and the write-path text shape alone.
+func escapeInheritedHistory(inherited []transcript.Entry, order []int) ([]schema.Turn, []int) {
+	turns := make([]schema.Turn, 0, len(order))
+	for _, at := range order {
+		turns = append(turns, inherited[at].Turn)
+	}
+	// Until the child writes them, these turns name nothing: they arrive
+	// carrying the PARENT transcript's Seqs, which name unrelated entries here
+	// (stampInheritedHistorySeqs replaces them with the child's own).
 	for i := range turns {
 		turns[i].Seq = schema.NoTranscriptEntrySeq
 	}
-	return turns
+	repaired, _, insertedAt := repairOrphanedToolResultsIndexed(turns)
+	sources := make([]int, 0, len(repaired))
+	for _, source := range repairedTurnSources(len(turns), insertedAt) {
+		if source < 0 {
+			sources = append(sources, source)
+			continue
+		}
+		sources = append(sources, order[source])
+	}
+	return escapeNotesHistoryTurns(repaired, nil), sources
+}
+
+// splitInheritedContext separates a parent's context snapshot into the durable
+// copy the child re-writes as its own entries -- every entry but the fold
+// records, whose Seqs name the PARENT's entries and would misdirect the child's
+// own resume -- and the order the parent's live history is in: a fold's head
+// marker(s), the turns it retained, then everything recorded after it, as
+// indexes into that copy. The order comes from the same reconstruction a resume
+// performs, so a compacted parent hands its child the history it is actually
+// running rather than a bare marker.
+func splitInheritedContext(snapshot []transcript.Entry) (durable []transcript.Entry, order []int) {
+	_, origins, _, _ := resumeTurns(snapshot)
+	at := make([]int, len(snapshot))
+	durable = make([]transcript.Entry, 0, len(snapshot))
+	for i, entry := range snapshot {
+		if entry.Turn.Kind == schema.TurnFoldRecord {
+			at[i] = -1
+			continue
+		}
+		at[i] = len(durable)
+		durable = append(durable, entry)
+	}
+	order = make([]int, 0, len(origins))
+	for _, origin := range origins {
+		if i := at[origin]; i >= 0 {
+			order = append(order, i)
+		}
+	}
+	return durable, order
+}
+
+// stampInheritedHistorySeqs resolves each inherited history turn to the Seq of
+// the child transcript entry it was just written as, so a fold in this session
+// can name it and a restart can restore it. sources maps history positions to
+// inherited entries (see escapeInheritedHistory); a repair synthetic has no
+// entry of its own and keeps the no-entry marker. The turns arrive carrying the
+// PARENT transcript's Seqs, which name nothing here.
+func stampInheritedHistorySeqs(history []schema.Turn, sources, seqs []int) {
+	for i, source := range sources {
+		if i >= len(history) {
+			return
+		}
+		if source < 0 || source >= len(seqs) {
+			history[i].Seq = schema.NoTranscriptEntrySeq
+			continue
+		}
+		history[i].Seq = seqs[source]
+	}
 }
 
 // initEnvContext constructs the session's environment-context collector and
@@ -360,6 +416,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	inheritedContext := cfg.spawn.inheritedContext
 	cfg.spawn.inheritedContext = nil
+	// Set with the inherited history below; read again when that prefix is
+	// written to the child's own transcript, to stamp each turn's child Seq.
+	var inheritedSources []int
+	var inheritedOrder []int
+	if inheritedContext != nil {
+		inheritedContext, inheritedOrder = splitInheritedContext(inheritedContext)
+	}
 	s := &Session{
 		id:                            sessionID,
 		skillLifecycle:                schema.SkillLifecycleSnapshot{Inventory: make(map[string]schema.SkillInventoryEntry)},
@@ -408,7 +471,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		// escaped copy, exactly as the parent's own requests do. The child's own
 		// transcript is seeded from inheritedContext below, so it keeps the raw
 		// text for display.
-		s.history = escapeInheritedHistory(inheritedContext)
+		s.history, inheritedSources = escapeInheritedHistory(inheritedContext, inheritedOrder)
 		boundary := schema.NewTurn(schema.TurnSteering, llm.User("The conversation above is inherited context from your parent. You are a separate delegate. Use that history as background for the assignment that follows; your own role, tools, permissions, and working directory govern this session."))
 		// The boundary is written to the child transcript when attachTranscript
 		// flushes pendingTranscriptTurns; mark it held so that flush stamps it
@@ -563,12 +626,16 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		if tw == nil {
 			return nil, errors.New("fork delegate context requires a writable child transcript")
 		}
+		seqs := make([]int, 0, len(inheritedContext))
 		for _, entry := range inheritedContext {
-			if _, err := tw.Append(entry.Turn); err != nil {
+			seq, err := tw.Append(entry.Turn)
+			if err != nil {
 				_ = tw.Close()
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}
+			seqs = append(seqs, seq)
 		}
+		stampInheritedHistorySeqs(s.history, inheritedSources, seqs)
 	}
 	s.attachTranscript(tw)
 	if err := s.flushPendingDelegateDeliveries(); err != nil {

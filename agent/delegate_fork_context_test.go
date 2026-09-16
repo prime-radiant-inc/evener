@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -309,4 +310,134 @@ func forkContextToolCall(id, name string) llm.Message {
 		Kind:     llm.ContentToolCall,
 		ToolCall: &llm.ToolCallData{ID: id, Name: name, Arguments: []byte(`{}`), Type: "function"},
 	}}}
+}
+
+// A delegate that inherits a compacted parent's context must inherit the
+// history that fold left live: its head marker AND the tail the fold retained.
+// Those retained entries sit BEFORE the marker in the parent's transcript, so
+// only the fold record names them (issue #1200) -- a snapshot that drops the
+// record reinstates the bug on the fork path, and the child starts with a
+// summary and nothing else.
+func TestDelegateForkContext_InheritsTheRetainedTailOfACompactedParent(t *testing.T) {
+	t.Parallel()
+	s := newScriptedSummaryCompactSession(t, "fork-retained-tail", func(llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+	}, withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+
+	for i := range 12 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("kept-%d", i)))
+		s.recordTurn(turn, turn)
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+
+	inherited, err := s.snapshotDelegateContext()
+	if err != nil {
+		t.Fatalf("snapshotDelegateContext: %v", err)
+	}
+	durable, order := splitInheritedContext(inherited)
+	turns, _ := escapeInheritedHistory(durable, order)
+	for i := 6; i < 12; i++ {
+		want := fmt.Sprintf("kept-%d", i)
+		if indexOfTurnText(turns, want) < 0 {
+			t.Fatalf("the fold's retained turn %q is missing from the inherited context %+v", want, turns)
+		}
+	}
+	if indexOfTurnText(turns, "kept-0") >= 0 {
+		t.Fatal("the inherited context resurrected a turn the parent's fold summarized away")
+	}
+}
+
+// summaryResponder scripts a compaction summary for a cheap-model fold.
+func summaryResponder(llm.Request) llm.Response {
+	return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\nsummary\n[END SUMMARY]")}
+}
+
+// compactedForkParent returns a session whose fold retained the last six of
+// twelve recorded turns, so its live history is a summary followed by turns
+// whose entries sit BEFORE that summary in the transcript.
+func compactedForkParent(t *testing.T, name string) *Session {
+	t.Helper()
+	s := newScriptedSummaryCompactSession(t, name, summaryResponder,
+		withConfig(SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}))
+	for i := range 12 {
+		turn := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("kept-%d", i)))
+		s.recordTurn(turn, turn)
+	}
+	if err := s.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	return s
+}
+
+// The inherited prefix is re-written as the child's own transcript entries, so
+// each inherited history turn must name the entry it was written as: a turn
+// that names no entry cannot be retained by this session's own fold, and a
+// restart drops it -- the same loss the fold record exists to prevent.
+func TestDelegateForkContext_InheritedTurnsNameTheirChildEntries(t *testing.T) {
+	t.Parallel()
+	parent := compactedForkParent(t, "fork-inherited-seqs")
+	snapshot, err := parent.snapshotDelegateContext()
+	if err != nil {
+		t.Fatalf("snapshotDelegateContext: %v", err)
+	}
+
+	cfg := SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}
+	cfg.spawn.parentSessionID = parent.id
+	cfg.spawn.inheritedContext = snapshot
+	child := newScriptedSummaryCompactSession(t, "fork-inherited-seqs-child", summaryResponder, withConfig(cfg))
+
+	entries := sessionTranscriptEntries(t, child)
+	bySeq := make(map[int]string, len(entries))
+	for _, entry := range entries {
+		bySeq[entry.Seq] = entry.Turn.Message.Text()
+	}
+	child.mu.Lock()
+	history := append([]schema.Turn(nil), child.history...)
+	child.mu.Unlock()
+	for i := 6; i < 12; i++ {
+		want := fmt.Sprintf("kept-%d", i)
+		at := indexOfTurnText(history, want)
+		if at < 0 {
+			t.Fatalf("inherited turn %q missing from the child history %+v", want, history)
+		}
+		if history[at].Seq < 0 {
+			t.Fatalf("inherited turn %q names no child entry (Seq %d), so this session's own fold cannot retain it", want, history[at].Seq)
+		}
+		if got := bySeq[history[at].Seq]; got != want {
+			t.Fatalf("inherited turn %q names child entry %d, which holds %q", want, history[at].Seq, got)
+		}
+	}
+}
+
+// ... and because they are named, this session's own fold retains them: after
+// the child compacts, its fold record names the inherited turns it kept, so a
+// restart restores them instead of resuming a bare summary.
+func TestDelegateForkContext_ChildFoldRetainsInheritedTurns(t *testing.T) {
+	t.Parallel()
+	parent := compactedForkParent(t, "fork-child-fold")
+	snapshot, err := parent.snapshotDelegateContext()
+	if err != nil {
+		t.Fatalf("snapshotDelegateContext: %v", err)
+	}
+
+	cfg := SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true, StateDir: t.TempDir()}
+	cfg.spawn.parentSessionID = parent.id
+	cfg.spawn.inheritedContext = snapshot
+	child := newScriptedSummaryCompactSession(t, "fork-child-fold-child", summaryResponder, withConfig(cfg))
+	if err := child.Compact(context.Background()); err != nil {
+		t.Fatalf("child Compact: %v", err)
+	}
+
+	resumed := ResumeHistory(sessionTranscriptEntries(t, child))
+	kept := 0
+	for i := 6; i < 12; i++ {
+		if indexOfTurnText(resumed, fmt.Sprintf("kept-%d", i)) >= 0 {
+			kept++
+		}
+	}
+	if kept == 0 {
+		t.Fatalf("the child fold retained no inherited turn, so its restart resumes without them: %+v", resumed)
+	}
 }
