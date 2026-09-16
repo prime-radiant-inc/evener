@@ -61,6 +61,7 @@ function draft(text, { chips = SKILL_CHIPS, tiles = 0 } = {}) {
   return { text: chips === SKILL_CHIPS ? inlineText(text) : text, chips, tiles };
 }
 const REPLY_TEXT = "skillguard turn complete";
+const CHIP_REMOVE_PREFIX = "Remove skill pkg:probe";
 const PROSE = {
   canonical: "PROSE_ALPHA_14a run the fixture check on the gamma channel",
   draft: "PROSE_DRAFT_14b staged for the switch",
@@ -351,6 +352,27 @@ export class Driver {
         end: anchor === null || focus === null ? null : Math.max(anchor, focus),
         focused: document.activeElement === editor };
     })()`;
+  }
+
+  // settleComposer waits until one session's editor stops changing under it,
+  // and returns the state it settled on. Two reads 80ms apart that agree is
+  // the signal that the last render has landed; it is not a promise that no
+  // further one is coming, which is why every caller re-checks afterwards.
+  // Focus is part of that state: a focus change during the wait is a change.
+  async settleComposer(ref, { timeoutMs = 5000 } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    let previous = null;
+    for (;;) {
+      const now = await evaluate(this.send, this.composerEditStateExpr(ref));
+      if (!now) throw new Error(`settleComposer(${ref}): no composer editor`);
+      const key = JSON.stringify(now);
+      if (key === previous) return now;
+      previous = key;
+      if (Date.now() > deadline) {
+        throw new Error(`settleComposer(${ref}): composer still changing after ${timeoutMs}ms (${key})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
   }
 
   // Use Chrome's editing path, not value setters or synthetic input events.
