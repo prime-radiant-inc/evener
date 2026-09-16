@@ -1292,11 +1292,14 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// idle and a wake reopens it (issue #1308). Only when nothing is
 			// queued: a queued message drains the steering itself. The claim
 			// refuses a held rail (a Stop parked the steer) and an occupied
-			// slot, the same gate the wake's claim uses. A carrier whose
-			// append failed ends the input with an error
-			// (acceptSteeringCarrierInput) and never reaches this rung, so
-			// nothing here claims the same steer again.
-			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && s.hasPendingUserSteering() {
+			// slot, the same gate the wake's claim uses, and it is not made
+			// while steering is parked (steeringParkedNow): a steer this
+			// input already tried and failed to append -- at a carrier, which
+			// ends the input, or at a running turn's own boundary drain,
+			// which goes on and completes -- is one attempt per external
+			// wake, and this rung is not one. The selector sees the park too
+			// and takes goIdle ahead of the autonomous rungs.
+			if !inputHasContent(queued.Text, queued.Images, queued.SkillNames) && !s.steeringParkedNow() && s.hasPendingUserSteering() {
 				if carrier, ok := s.claimSteeringCarrierInput(); ok {
 					queued = carrier
 					if s.cfg.testOnly.steeringCarrierClaimed != nil {

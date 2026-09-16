@@ -1719,3 +1719,60 @@ func TestParkedSteeringRefusesADaemonNotificationTurn(t *testing.T) {
 		t.Fatalf("pending notifications = %d after the external wake, want the ladder to have delivered it", s.peekNotifications())
 	}
 }
+
+// TestUserTurnWhoseDrainFailedDoesNotReclaimTheSteerInline (round 15): a
+// user turn's own boundary drain fails the steer's append; the turn goes on
+// and completes normally, so the drain ladder reaches its carrier rung with
+// the steer parked, queued and the rail open. The ladder must not claim the
+// parked steer inline -- that is a second attempt within the input, the one
+// the park exists to prevent -- and the next external wake carries it under
+// its receipt's id.
+func TestUserTurnWhoseDrainFailedDoesNotReclaimTheSteerInline(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	close(adapter.release)
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	refusal := refuseSteerAppends(s, "steer-passenger")
+	refusal.refuse.Store(true)
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	claimed := false
+	s.cfg.testOnly.steeringCarrierClaimed = func(string) { claimed = true }
+	accepted, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-passenger",
+		Input:            []appwire.InputItem{{Type: "text", Text: "passenger"}},
+	})
+	if err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	drainWakes(wakes)
+
+	// The user's turn drains the steer at its acceptance; the append fails.
+	if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
+		t.Fatalf("ProcessInput: %v (the ladder claimed the parked steer inline and the carrier failed)", err)
+	}
+	if claimed {
+		t.Fatal("the drain ladder claimed the parked steer inline: a second attempt within the input")
+	}
+	if got := refusal.refusals.Load(); got != 1 {
+		t.Fatalf("append attempts = %d within the input, want 1", got)
+	}
+	if got := len(adapter.Requests()); got != 1 {
+		t.Fatalf("model calls = %d, want 1 (the user's turn alone)", got)
+	}
+	if state := s.clientMutations.snapshot().PendingExecutions["steer-passenger"].ExecutionState; state != "accepted" || !s.hasPendingUserSteering() {
+		t.Fatalf("state=%q queued=%v, want the steer parked accepted and queued", state, s.hasPendingUserSteering())
+	}
+
+	// The disk has room again; the next external wake carries the steer.
+	refusal.refuse.Store(false)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	if owner, delivered := steeringTurnOwner(s, "steer-passenger"); !delivered || owner != accepted.Receipt.TurnID {
+		t.Fatalf("delivered=%v owner=%q, want the steer delivered under its receipt's %q", delivered, owner, accepted.Receipt.TurnID)
+	}
+}
