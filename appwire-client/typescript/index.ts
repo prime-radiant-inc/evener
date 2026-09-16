@@ -57,6 +57,17 @@ export {
 } from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
+export type {
+  AskAnswerSender,
+  AskAnswerState,
+  AskDockRefState,
+  AskDockState,
+  AskDockStore,
+  AskDockThreads,
+  AskDockThreadsSnapshot,
+  SendBatchOutcome,
+} from "./askDock";
+export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 export type { RejectableFile } from "./attachmentLimits";

@@ -31,6 +31,7 @@ function threadModel(items: ItemModel[]): ThreadModel {
 }
 
 const DEPLOY = [{ header: "Deploy?", question: "Ship now?", options: [{ label: "Yes", detail: "" }] }];
+
 /** A thread source with the shape the port asks for: publish replaces the map
  * and notifies with the new and previous snapshot, like a store would. */
 function fakeThreads(): AskDockThreads & { publish(ref: string, model: ThreadModel): void } {
