@@ -28,20 +28,29 @@ if ! command -v gitleaks >/dev/null 2>&1; then
   exit 0
 fi
 
+# Every scan runs FROM the repo root over a path RELATIVE to it, because the
+# ruleset's path allowlist is matched against the path gitleaks builds from
+# --source. An absolute source makes every path start with the checkout's own
+# location, and one of those allowlist entries excludes `.claude/worktrees/`
+# (the linked worktrees a main checkout would otherwise walk into). Scanning a
+# worktree by its absolute path therefore matched that entry for every file in
+# it and scanned ~0 bytes — the gate passed by looking at nothing (#1513).
+# Relative paths carry no checkout location, so a worktree scans itself and a
+# main checkout still skips the worktrees underneath it.
 scan_dir() {
   # gitleaks exits non-zero on a finding; --redact keeps any match out of the log.
-  gitleaks detect --no-git --redact --config "${cfg}" --source "$1"
+  (cd "${root}" && gitleaks detect --no-git --redact --config "${cfg}" --source "$1")
 }
 
 case "${mode}" in
   repo)
-    scan_dir "${root}"
+    scan_dir "."
     ;;
   corpus)
     status=0
     while IFS= read -r dir; do
       scan_dir "${dir}" || status=1
-    done < <(find "${root}" -type d \
+    done < <(cd "${root}" && find . -type d \
       \( -path '*/testdata/fuzz' -o -path '*/fuzz/corpus' \) )
     exit "${status}"
     ;;

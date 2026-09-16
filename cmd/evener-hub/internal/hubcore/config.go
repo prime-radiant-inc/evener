@@ -114,8 +114,9 @@ type WebConfig struct {
 	// reads with another's handshake. nil leaves those fields zero-valued
 	// (tests).
 	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
-	// controller-to-host channel (component 06). Nil leaves every remote host
-	// online (tests).
+	// RemoteHostOnline reports whether the controller's channel to host is
+	// currently attached (component 06). Nil leaves every remote host online
+	// (tests).
 	RemoteHostOnline func(host string) bool
 
 	// PokeAttention nudges the hub's attention watcher to recompute

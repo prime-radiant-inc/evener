@@ -12,6 +12,13 @@
 // repo can be cloned anywhere. Without a recognized forge the branch alone is
 // shown, as plain text. The cwd is never a link.
 //
+// Both truncatable spans middle-truncate under pressure, not end-truncate: the
+// path's and the reference's ENDINGS - the project directory, the branch - are
+// the parts an end-truncation kept hiding, and the parts a person scanning the
+// line needs. The split is DOM the CSS acts on (the .head span yields and
+// ellipsis-clamps; the .tail span never shrinks), so an unpressured line renders
+// the same unbroken text it always did.
+//
 // Facts come from the hub's evener/git/head method keyed on the session's cwd,
 // resolved once per cwd and cached by state, failing soft to "no branch shown"
 // (see shell/gitLocation.ts). This is display metadata only: nothing here is
@@ -23,7 +30,7 @@
 // share the path; such a session still shows its working dir, just no branch.
 
 import type { AppwireClientLike } from "@evener/appwire-client";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { useClient } from "../../../shell/clientContext";
 import { resolveGitLocation } from "../../../shell/gitLocation";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -46,7 +53,63 @@ const CLASS = {
   branch: requireClass(styles.branch, "repoLocation.module.css", "branch"),
   ref: requireClass(styles.ref, "repoLocation.module.css", "ref"),
   link: requireClass(styles.link, "repoLocation.module.css", "link"),
+  head: requireClass(styles.head, "repoLocation.module.css", "head"),
+  tail: requireClass(styles.tail, "repoLocation.module.css", "tail"),
 };
+
+// --- Middle truncation ------------------------------------------------------
+//
+// A middle-truncating span is a head/tail pair, not one text node: the head
+// ellipsis-clamps under pressure while the tail never shrinks, so the cut lands
+// wherever the width puts it and the string's ending stays on screen (the same
+// grammar ToolRow.tsx's collapsed summary and toolcallitem.module.css's
+// .clampedHead/.clampedTail pair established).
+
+/** The head's share of the default cut, in code points - ToolRow.tsx's own
+ * middleTruncationCut uses the same 60%. */
+const HEAD_SHARE = 0.6;
+
+/** Splits `chars` (the text's code points, materialized once by
+ * MiddleTruncated) at `cut` into its head and tail halves, or returns null
+ * when the cut would empty either side - a one-sided split is not a middle
+ * truncation. The cut first walks left off boundary whitespace: head and tail
+ * render as separate spans, and CSS white-space processing drops a space at a
+ * span edge, so every space must stay interior to one half. */
+function splitChars(chars: string[], cut: number): [string, string] | null {
+  let position = cut;
+  while (position > 0 && position < chars.length) {
+    if (/\s/.test(chars[position - 1] ?? "") || /\s/.test(chars[position] ?? "")) position -= 1;
+    else break;
+  }
+  if (position <= 0 || position >= chars.length) return null;
+  return [chars.slice(0, position).join(""), chars.slice(position).join("")];
+}
+
+/** The default cut: ~60% of the code points to the head. */
+function proportionalCut(chars: string[]): number {
+  return Math.ceil(chars.length * HEAD_SHARE);
+}
+
+/** The repo reference's cut: at its `#`, so the branch marker and everything
+ * after it ride the never-shrinking tail and the branch cannot ellipsize away.
+ * The reference is always built with a literal `#`, so -1 cannot occur today;
+ * splitChars' one-sided guard keeps a stray -1 from splitting anything. */
+function branchMarkerCut(chars: string[]): number {
+  return chars.indexOf("#");
+}
+
+function MiddleTruncated({ text, cutOf }: { text: string; cutOf: (chars: string[]) => number }) {
+  const chars = Array.from(text);
+  const split = splitChars(chars, cutOf(chars));
+  if (split === null) return <span className={CLASS.head}>{text}</span>;
+  const [head, tail] = split;
+  return (
+    <>
+      <span className={CLASS.head}>{head}</span>
+      <span className={CLASS.tail}>{tail}</span>
+    </>
+  );
+}
 
 // The last resolved lookup, tagged with the cwd it belongs to AND the client
 // that answered: a response for a cwd the composer has since left, or one the
@@ -59,7 +122,11 @@ interface ResolvedLocation {
   originUrl: string;
 }
 
-export function RepoLocation({ cwd, local }: RepoLocationProps) {
+// Memoized: the composer re-renders on every keystroke (it owns the draft
+// state), while this line's inputs change only when the session's cwd or its
+// locality does (session resume, cwd switch) - the same per-row-props reason
+// ToolCallItem memoizes the transcript's rows.
+export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocationProps) {
   const client = useClient();
   const [resolved, setResolved] = useState<ResolvedLocation | null>(null);
 
@@ -79,11 +146,12 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
   const current = local && resolved !== null && resolved.client === client && resolved.cwd === cwd ? resolved : null;
   const branch = current?.branch ?? "";
   const remote = current !== null && current.originUrl !== "" ? parseRepoRemote(current.originUrl) : null;
+  const reference = remote !== null ? `${remote.owner}/${remote.repo}#${branch}` : "";
 
   return (
     <div className={CLASS.line} data-testid="composer-repo-location">
       <span className={CLASS.path} title={cwd} data-testid="composer-repo-path">
-        {cwd}
+        <MiddleTruncated text={cwd} cutOf={proportionalCut} />
       </span>
       {branch !== "" &&
         (remote !== null ? (
@@ -98,12 +166,12 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
             // then only restate what is already on screen. This way the hover
             // says both what the link does and the whole reference, which
             // matters when the line is narrow enough to ellipsize it.
-            title={`Open ${remote.owner}/${remote.repo}#${branch} on ${FORGE_LABELS[remote.forge]}`}
+            title={`Open ${reference} on ${FORGE_LABELS[remote.forge]}`}
             data-testid="composer-repo-link"
           >
             <ForgeMark forge={remote.forge} />
             <span className={CLASS.ref} data-testid="composer-repo-ref">
-              {`${remote.owner}/${remote.repo}#${branch}`}
+              <MiddleTruncated text={reference} cutOf={branchMarkerCut} />
             </span>
           </a>
         ) : (
@@ -113,4 +181,4 @@ export function RepoLocation({ cwd, local }: RepoLocationProps) {
         ))}
     </div>
   );
-}
+});

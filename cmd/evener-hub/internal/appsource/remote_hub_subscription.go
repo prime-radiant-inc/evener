@@ -1109,34 +1109,41 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 	}
 }
 
-// routeNotification delivers one remote notification to the subscription for
-// its (translated) thread. It observes the subscriber under the lock and sends
-// outside it; a stale reference is harmless because in is never closed.
+// routeNotification delivers one remote notification to the subscription
+// installed for its translated routing key, and does it without ever blocking
+// the shared drain.
 //
-// A notification is only ever delivered to a subscription bound to the client
-// it arrived on. A torn-down client can still have frames buffered in its
-// notification channel when it closes, and the drain reading them runs
-// concurrently with the relay re-subscribing against the replacement client:
-// without this check those stale-generation events would be interleaved into a
-// recovered feed, and a full buffer would even cancel the healthy replacement
-// subscription below.
+// A frame translateNotification cannot address in the controller namespace is
+// dropped, as is one whose key has no installed subscription: a notification
+// has no error channel to report either on.
 //
-// The hand-off never blocks. This is the single drain goroutine shared by every
-// thread on the host, and appwire tears the whole connection down once its own
-// notification buffer (NotificationBufferCap) fills — so no consumer may stop
-// this goroutine from reading client.Notifications(). A subscription whose in
-// buffer is full has a consumer at least 2*remoteHubSubBuffer notifications
-// behind, far past the scheduling jitter those buffers exist to absorb, so it
-// is retired instead of waited for: its pump exits, out closes, and the
+// Delivery is scoped to the client the notification arrived on. A torn-down
+// client can still have frames buffered in its notification channel when it
+// closes, and the drain reading them runs concurrently with the relay
+// re-subscribing against the replacement client: without this check those
+// stale-generation events would be interleaved into a recovered feed, and a
+// full buffer would even cancel the healthy replacement subscription below.
+//
+// The capture and the hand-off share one subMu critical section. sub.in is a
+// per-subscription bounded read-ahead buffer, and the send into it is taken
+// only when there is room — a full buffer is never waited on, because this is
+// the single drain goroutine shared by every thread on the host and appwire
+// tears the whole connection down once its own notification buffer
+// (NotificationBufferCap) fills, so no consumer may stop this goroutine from
+// reading client.Notifications(). Sharing the critical section with the
+// capture is the ordering guarantee: discardSubscriber forwards a failed
+// replacement's buffer and swaps the routing table back under that same lock,
+// so with the lock released in between, a delta captured here could be inserted
+// into the replaced subscription's buffer after its contents had already been
+// forwarded to the restored previous, where no pump would ever read it and no
+// resync would cover it.
+//
+// A subscription whose in buffer is full has a consumer at least
+// 2*remoteHubSubBuffer notifications behind, far past the scheduling jitter
+// those buffers exist to absorb, so it is retired instead of waited for: cancel
+// runs after the lock is released, its pump exits, out closes, and the
 // controller relay treats that as subscription end and re-reads the thread, so
 // the notification is resynced rather than silently lost.
-//
-// The capture and the send share one subMu critical section, so a failed
-// replacement's hand-off (discardSubscriber) cannot complete between them. That
-// ordering is the whole guarantee: with the lock released in between, a delta
-// captured here could be inserted into the replaced subscription's buffer after
-// its contents had already been forwarded to the restored previous, where no
-// pump would ever read it and no resync would cover it.
 func (s *RemoteHubSource) routeNotification(client *appwire.Client, notification appwire.Notification) {
 	translated, threadID, ok := s.translateNotification(notification)
 	if !ok || threadID == "" {

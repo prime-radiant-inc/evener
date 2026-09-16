@@ -1738,8 +1738,6 @@ func (m *Manager) liveChannel(name string) *Channel {
 	return ch
 }
 
-// Attached reports whether host currently has a live, not-closed channel.
-// A host that has never been Ensure'd is not attached; the hub's background
 // Attached reports whether host currently has a usable channel: one that has
 // been established, has not been closed, and has not lost its link. A host that
 // has never been Ensure'd is not attached; the hub's background refresh
