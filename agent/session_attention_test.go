@@ -233,7 +233,7 @@ func newDelegateAttentionAcceptanceHarness(t *testing.T, sessionID string, fs af
 	for _, attentionID := range attentionIDs {
 		attention := schema.NewTurn(schema.TurnSteering, llm.User("durable attention "+attentionID))
 		attention.AttentionID = attentionID
-		if err := writer.AppendDurable(attention); err != nil {
+		if _, err := writer.AppendDurable(attention); err != nil {
 			t.Fatalf("append attention %q: %v", attentionID, err)
 		}
 	}
@@ -280,7 +280,7 @@ func attachDelegateAttentionTranscriptForTest(t *testing.T, c *delegateTreeContr
 	runtime.attachTranscript(writer)
 	turn := schema.NewTurn(schema.TurnSteering, llm.User("attention "+attentionID))
 	turn.AttentionID = attentionID
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.AppendDurable(turn); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	c.noteDelegateAttention(delegateID, attentionID)
@@ -611,7 +611,7 @@ func TestDelegateAttention_StabilizationRetryPreservesFailedBarrier(t *testing.T
 	t.Cleanup(func() { _ = runtime.closeAttachedTranscript() })
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	fs.failNextAmbiguousDurability(3)
@@ -658,12 +658,12 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 	runtime.attachTranscript(writer)
 	t.Cleanup(func() { _ = runtime.closeAttachedTranscript() })
 	failed := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("failed-call-1", "probe", "failed", true))
-	if err := writer.AppendDurable(failed); err != nil {
+	if _, err := writer.AppendDurable(failed); err != nil {
 		t.Fatalf("append first failed result: %v", err)
 	}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	fs.failNextResolutionDurability()
@@ -681,7 +681,7 @@ func TestDelegateAttention_RecoveryRetainedRuntimePreservesFailedToolCount(t *te
 	}
 	syncsBeforeAppend := fs.successfulSyncsAfterFailure()
 	failed = schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("failed-call-2", "probe", "failed again", true))
-	if err := runtime.writeTranscript(failed); err != nil {
+	if _, err := runtime.writeTranscript(failed); err != nil {
 		t.Fatalf("append retained-runtime failed result: %v", err)
 	}
 	if got := fs.successfulSyncsAfterFailure(); got != syncsBeforeAppend {
@@ -705,7 +705,7 @@ func TestDelegateAttention_ColdResolutionValidatesBatchBeforeAppend(t *testing.T
 	}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -777,7 +777,7 @@ func TestDelegateAttention_ColdResolutionRetryReestablishesDurabilityBeforeStopA
 	}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -829,7 +829,7 @@ func TestDelegateAttention_ColdCallerCommitRequiresRenewedDurabilityBeforeSource
 	// stays usable). Durability is unestablished, and the cold replay below is
 	// what must not source-ack until a renewed barrier confirms it; Close's own
 	// flush fails too, surfacing the unsynced debt.
-	if err := writer.AppendDurable(commit); err != nil {
+	if _, err := writer.AppendDurable(commit); err != nil {
 		t.Fatalf("ambiguous caller commit append error = %v, want nil: the whole line is a record", err)
 	}
 	if writer.Poisoned() {
@@ -911,7 +911,7 @@ func TestDelegateAttention_LiveNotificationRetryReestablishesDurabilityBeforeSou
 	if remaining != 0 {
 		t.Fatalf("live notification remained pending after recovered barrier: %d", remaining)
 	}
-	if err := root.writeTranscriptDurable(schema.NewTurn(schema.TurnUserInput, llm.User("ordinary turn after recovery"))); err != nil {
+	if _, err := root.writeTranscriptDurable(schema.NewTurn(schema.TurnUserInput, llm.User("ordinary turn after recovery"))); err != nil {
 		t.Fatalf("append ordinary turn after recovery: %v", err)
 	}
 	entries := readAttentionTranscriptEntries(t, path)
@@ -942,7 +942,7 @@ func TestDelegateAttention_LiveResolutionRetryReestablishesDurabilityBeforeSettl
 	t.Cleanup(func() { _ = runtime.attachedTranscript().Close() })
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("pending attention"))
 	attention.AttentionID = attentionID
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
 	fs.failNextAmbiguousDurability(3)
@@ -1043,7 +1043,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 	results.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: callID, DeliveryID: deliveryID}}
 	turns = append(turns, results)
 	for _, turn := range turns {
-		if err := writer.AppendDurable(turn); err != nil {
+		if _, err := writer.AppendDurable(turn); err != nil {
 			_ = writer.Close()
 			t.Fatalf("append transcript turn: %v", err)
 		}
@@ -1175,7 +1175,7 @@ func TestDelegateAttention_PublicTranscriptReadsExcludePrivateResolutionMetadata
 		delegateAttentionResolutionTurn(findAttention.AttentionID, delegateAttentionConsumed),
 		schema.NewTurn(schema.TurnUserInput, llm.User("later public match")),
 	} {
-		if err := findWriter.AppendDurable(turn); err != nil {
+		if _, err := findWriter.AppendDurable(turn); err != nil {
 			_ = findWriter.Close()
 			t.Fatalf("append searchable transcript: %v", err)
 		}
@@ -1214,7 +1214,7 @@ func TestDelegateAttention_PublicJSONLPreservesExactToolResultNumbers(t *testing
 		schema.NewTurn(schema.TurnAssistant, delegateAttentionToolCall(callID)),
 		schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(callID, "probe", map[string]any{"id": largeID}, false)),
 	} {
-		if err := writer.AppendDurable(turn); err != nil {
+		if _, err := writer.AppendDurable(turn); err != nil {
 			_ = writer.Close()
 			t.Fatalf("append transcript turn: %v", err)
 		}
@@ -1290,15 +1290,15 @@ func TestDelegateAttention_RestartFoldIsProviderFreeAndReadOnly(t *testing.T) {
 	}
 	attention := schema.NewTurn(schema.TurnSteering, llm.User("cold attention"))
 	attention.AttentionID = "attention-cold"
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		t.Fatalf("append attention: %v", err)
 	}
-	if err := writer.AppendDurable(delegateAttentionResolutionTurn(attention.AttentionID, delegateAttentionConsumed)); err != nil {
+	if _, err := writer.AppendDurable(delegateAttentionResolutionTurn(attention.AttentionID, delegateAttentionConsumed)); err != nil {
 		t.Fatalf("append resolution: %v", err)
 	}
 	toolResults := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call-cold", "delegate_send", "done", false))
 	toolResults.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "call-cold", DeliveryID: "dlg/delivery/1"}}
-	if err := writer.AppendDurable(toolResults); err != nil {
+	if _, err := writer.AppendDurable(toolResults); err != nil {
 		t.Fatalf("append delivery commit: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -1627,7 +1627,7 @@ func TestDelegateAttention_RestoreReconcilesColdCommitBeforeProviderMetadata(t *
 		ToolCallID: callID,
 		DeliveryID: delegateDeliveryID("dlg_target", 1),
 	}}
-	if err := writer.AppendDurable(result); err != nil {
+	if _, err := writer.AppendDurable(result); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append caller delivery commit: %v", err)
 	}
@@ -1696,7 +1696,7 @@ func TestDelegateAttention_RestartReplayRequiresDeliveryIDFromExactPair(t *testi
 		ToolCallID: "delegate-call",
 		DeliveryID: "dlg_other/delivery/1",
 	}}
-	if err := writer.AppendDurable(turn); err != nil {
+	if _, err := writer.AppendDurable(turn); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append caller delivery commit: %v", err)
 	}
@@ -1740,7 +1740,7 @@ func TestDelegateAttention_ColdReplayRefoldsNextSameOwnerCommit(t *testing.T) {
 		{ToolCallID: "call-a", DeliveryID: delegateDeliveryID("dlg_child_a", 1)},
 		{ToolCallID: "call-b", DeliveryID: delegateDeliveryID("dlg_child_b", 1)},
 	}
-	if err := writer.AppendDurable(results); err != nil {
+	if _, err := writer.AppendDurable(results); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append nested caller commits: %v", err)
 	}
@@ -1797,7 +1797,7 @@ func TestDelegateAttention_ColdReplayRefoldsMixedSameOwnerCommits(t *testing.T) 
 		ToolCallID: "call-b",
 		DeliveryID: delegateDeliveryID("dlg_child_b", 1),
 	}}
-	if err := writer.AppendDurable(results); err != nil {
+	if _, err := writer.AppendDurable(results); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append second caller commit: %v", err)
 	}
@@ -1866,7 +1866,7 @@ func TestDelegateAttention_LiveReplayHonorsDurableCallerCommit(t *testing.T) {
 		ToolCallID: "delegate-call",
 		DeliveryID: deliveryID,
 	}}
-	if err := root.writeTranscriptDurable(results); err != nil {
+	if _, err := root.writeTranscriptDurable(results); err != nil {
 		t.Fatalf("append durable caller commit: %v", err)
 	}
 
@@ -2146,7 +2146,7 @@ func TestDelegateAttention_RestoreSessionStartCountsColdReplayAppend(t *testing.
 	}
 	results := schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("delegate-call", "delegate_send", "done", false))
 	results.DelegateDeliveryCommits = []schema.DelegateDeliveryCommit{{ToolCallID: "delegate-call", DeliveryID: firstDeliveryID}}
-	if err := writer.AppendDurable(results); err != nil {
+	if _, err := writer.AppendDurable(results); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append committed caller result: %v", err)
 	}
@@ -3553,7 +3553,7 @@ func TestRootDelegateAttention_RestoreRearmsPendingIDsWithoutProviderCall(t *tes
 	attention := schema.NewTurn(schema.TurnSteering, llm.User(`<delegate-notification delegate_id="dlg_restore">restore me</delegate-notification>`))
 	attention.AttentionID = attentionID
 	attention.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(attention); err != nil {
+	if _, err := writer.AppendDurable(attention); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append pending root attention: %v", err)
 	}
@@ -3620,11 +3620,11 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 	}
 	owedResolution := delegateAttentionResolutionTurn(owedID, delegateAttentionConsumed)
 	owedResolution.AttentionResolution.ResumeGeneration = 1
-	if err := writer.AppendDurable(owedResolution); err != nil {
+	if _, err := writer.AppendDurable(owedResolution); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append owed consumed marker: %v", err)
 	}
-	if err := writer.AppendDurable(delegateAttentionResolutionTurn(historicalID, delegateAttentionConsumed)); err != nil {
+	if _, err := writer.AppendDurable(delegateAttentionResolutionTurn(historicalID, delegateAttentionConsumed)); err != nil {
 		_ = writer.Close()
 		t.Fatalf("append historical consumed marker: %v", err)
 	}
@@ -3723,7 +3723,7 @@ func TestDelegateAttention_RestartRearmsColdChildAndDrainsExactAttention(t *test
 		}
 		resolution := delegateAttentionResolutionTurn(attentionID, delegateAttentionConsumed)
 		resolution.AttentionResolution.ResumeGeneration = 1
-		if err := writer.AppendDurable(resolution); err != nil {
+		if _, err := writer.AppendDurable(resolution); err != nil {
 			_ = writer.Close()
 			t.Fatalf("append conflicting consumed marker: %v", err)
 		}

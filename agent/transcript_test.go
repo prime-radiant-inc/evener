@@ -135,10 +135,10 @@ func TestTranscriptWriter_AppendWritesEntries(t *testing.T) {
 	turn1 := schema.NewTurn(schema.TurnUserInput, llm.User("Hello"))
 	turn2 := schema.NewTurn(schema.TurnAssistant, llm.Assistant("Hi there"))
 
-	if err := w.Append(turn1); err != nil {
+	if _, err := w.Append(turn1); err != nil {
 		t.Fatalf("Append turn1: %v", err)
 	}
-	if err := w.Append(turn2); err != nil {
+	if _, err := w.Append(turn2); err != nil {
 		t.Fatalf("Append turn2: %v", err)
 	}
 
@@ -202,7 +202,7 @@ func TestTranscriptWriter_SeqMonotonicallyIncreasing(t *testing.T) {
 
 	for i := range 10 {
 		turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg"))
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -239,7 +239,7 @@ func TestTranscriptWriter_CloseClosesFile(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("before close"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("before close"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -265,7 +265,7 @@ func TestTranscriptWriter_NilWriterSafe(t *testing.T) {
 	var w *transcript.Writer
 
 	// Append on nil should not panic and should return nil.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("test"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("test"))); err != nil {
 		t.Errorf("nil Append returned error: %v", err)
 	}
 
@@ -308,7 +308,7 @@ func TestTranscriptWriter_ConcurrentAppend(t *testing.T) {
 			defer wg.Done()
 			for j := range turnsPerGoroutine {
 				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("concurrent"))
-				if err := w.Append(turn); err != nil {
+				if _, err := w.Append(turn); err != nil {
 					t.Errorf("goroutine %d append %d: %v", id, j, err)
 				}
 			}
@@ -365,12 +365,12 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	defer w.Close()
 
 	// Text content
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("Hello world"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("Hello world"))); err != nil {
 		t.Fatalf("Append text: %v", err)
 	}
 
 	// Tool call content
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "Let me check that."},
@@ -385,7 +385,7 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	}
 
 	// Tool result content
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
+	if _, err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.Message{
 		Role: llm.RoleUser,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
@@ -399,7 +399,7 @@ func TestTranscriptWriter_ValidJSONL(t *testing.T) {
 	}
 
 	// Thinking content
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Message{
 		Role: llm.RoleAssistant,
 		Content: []llm.ContentPart{
 			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
@@ -473,7 +473,7 @@ func TestTranscriptWriter_LargeEntry(t *testing.T) {
 	}
 	turn := schema.NewTurn(schema.TurnToolResults, msg)
 
-	if err := tw.Append(turn); err != nil {
+	if _, err := tw.Append(turn); err != nil {
 		t.Fatal(err)
 	}
 	tw.Close()
@@ -524,7 +524,7 @@ func TestReadTranscript_ReturnsHeaderAndEntries(t *testing.T) {
 		schema.NewTurn(schema.TurnUserInput, llm.User("Thanks")),
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -577,7 +577,7 @@ func TestReadTranscript_PartialLastLine(t *testing.T) {
 	}
 
 	for i := range 3 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -678,7 +678,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for i := range 5 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -693,7 +693,7 @@ func TestOpenTranscriptWriter_AppendsToExisting(t *testing.T) {
 
 	// Append 3 more turns.
 	for i := range 3 {
-		if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("input %d", i)))); err != nil {
+		if _, err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("input %d", i)))); err != nil {
 			t.Fatalf("Append (resumed) %d: %v", i, err)
 		}
 	}
@@ -733,7 +733,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for i := range 3 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -755,7 +755,7 @@ func TestOpenTranscriptWriter_TruncatesPartialLine(t *testing.T) {
 	defer w2.Close()
 
 	// Append 1 more turn.
-	if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("after crash"))); err != nil {
+	if _, err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("after crash"))); err != nil {
 		t.Fatalf("Append (after crash): %v", err)
 	}
 
@@ -803,7 +803,7 @@ func TestOpenTranscriptWriter_HeaderOnlyFile(t *testing.T) {
 	defer w2.Close()
 
 	// Append one turn.
-	if err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first after header"))); err != nil {
+	if _, err := w2.Append(schema.NewTurn(schema.TurnUserInput, llm.User("first after header"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 
@@ -1604,7 +1604,7 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.OpenWriter: %v", err)
 	}
-	if err := w2.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 2"))); err != nil {
+	if _, err := w2.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("msg 2"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	w2.Close()
@@ -1689,7 +1689,7 @@ func TestTranscriptWriter_PeriodicSync_CloseFlushesDirtyWrites(t *testing.T) {
 
 	// Write entries without syncing.
 	for i := range 10 {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("msg %d", i)))); err != nil {
 			t.Fatalf("Append %d: %v", i, err)
 		}
 	}
@@ -1743,7 +1743,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 			defer wg.Done()
 			for j := range turnsPerGoroutine {
 				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("concurrent"))
-				if err := w.Append(turn); err != nil {
+				if _, err := w.Append(turn); err != nil {
 					t.Errorf("goroutine %d append %d: %v", id, j, err)
 				}
 			}
@@ -1756,7 +1756,7 @@ func TestTranscriptWriter_PeriodicSync_ConcurrentAppendWithInterval(t *testing.T
 	time.Sleep(150 * time.Millisecond)
 
 	// This Append must trigger a periodic sync (time.Since(lastSync) > 50ms).
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("trigger-sync"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("trigger-sync"))); err != nil {
 		t.Fatalf("trigger-sync append: %v", err)
 	}
 
@@ -1819,7 +1819,7 @@ func TestTranscriptReadersRejectCorruptNonFinalLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append turn: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -1881,7 +1881,7 @@ func TestStrictChildTranscriptCorruptBodyPrecedesSessionMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("append turn: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -3089,7 +3089,7 @@ func TestReadSessionTranscriptOversizedExpansionIsBytePaged(t *testing.T) {
 		Kind:     llm.ContentToolCall,
 		ToolCall: &llm.ToolCallData{ID: callID, Name: "shell", Arguments: json.RawMessage(`{"command":"large"}`)},
 	}}}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, assistant)); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, assistant)); err != nil {
 		t.Fatal(err)
 	}
 	var largeResult strings.Builder
@@ -3100,7 +3100,7 @@ func TestReadSessionTranscriptOversizedExpansionIsBytePaged(t *testing.T) {
 		Kind:       llm.ContentToolResult,
 		ToolResult: &llm.ToolResultData{ToolCallID: callID, Name: "shell", Content: largeResult.String()},
 	}}}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, toolResult)); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnToolResults, toolResult)); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -3189,7 +3189,7 @@ func TestReadSessionTranscriptOversizedAssistantSpansUseHeadTailWithinFinalOutpu
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := w.Append(schema.NewTurn(schema.TurnAssistant, tc.message(t, payload))); err != nil {
+			if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, tc.message(t, payload))); err != nil {
 				_ = w.Close()
 				t.Fatal(err)
 			}
@@ -3245,7 +3245,7 @@ func TestReadSessionTranscriptOversizedEscapeHeavyExpansionBudgetsFinalOutput(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(payload))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(payload))); err != nil {
 		_ = w.Close()
 		t.Fatal(err)
 	}
@@ -3298,7 +3298,7 @@ func TestReadSessionTranscriptEscapeHeavyMarkdownStaysValidWithinSerializedBacks
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(payload))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(payload))); err != nil {
 		_ = w.Close()
 		t.Fatal(err)
 	}
@@ -3362,7 +3362,7 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 		t.Fatal(err)
 	}
 	for _, semanticTurn := range turns {
-		if err := w.Append(semanticTurn); err != nil {
+		if _, err := w.Append(semanticTurn); err != nil {
 			_ = w.Close()
 			t.Fatal(err)
 		}
@@ -3465,7 +3465,7 @@ func TestReadSessionTranscriptExpansionPagesRawBytesNotEnvelopeEscapes(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("\x00", 512)))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User(strings.Repeat("\x00", 512)))); err != nil {
 		_ = w.Close()
 		t.Fatal(err)
 	}
@@ -3560,7 +3560,7 @@ func TestReadSessionTranscriptRejectsUnknownExpansionTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("only turn"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("only turn"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {
@@ -3624,7 +3624,7 @@ func TestReadSessionTranscriptJSONLIsSemanticOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("semantic-entry"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("semantic-entry"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

@@ -2584,7 +2584,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.Append(schema.Turn{
+	if _, err := writer.Append(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,
@@ -2598,7 +2598,7 @@ func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	toolPNG := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
-	if err := writer.Append(schema.Turn{
+	if _, err := writer.Append(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_plot", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -11262,7 +11262,7 @@ func buildRPCSessionWithWorkingDir(t *testing.T, stateDir, parentID, workingDir 
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
 	} {
-		if err := writer.Append(turn); err != nil {
+		if _, err := writer.Append(turn); err != nil {
 			t.Fatal(err)
 		}
 	}

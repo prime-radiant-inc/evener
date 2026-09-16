@@ -98,7 +98,7 @@ func writeFailureTranscript(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hi"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hi"))); err != nil {
 		t.Fatalf("append user input: %v", err)
 	}
 	failure := schema.NewTurn(schema.TurnFailure, llm.System("provider error: access denied"))
@@ -109,7 +109,7 @@ func writeFailureTranscript(t *testing.T) string {
 		Hint:    "check the API key",
 		Cause:   &schema.TurnFailureCause{Kind: "provider", Provider: "openai", Model: "gpt-5.2", Status: 403},
 	}
-	if err := w.Append(failure); err != nil {
+	if _, err := w.Append(failure); err != nil {
 		t.Fatalf("append failure: %v", err)
 	}
 	if err := w.Close(); err != nil {

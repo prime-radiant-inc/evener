@@ -52,7 +52,7 @@ func TestItemTurnsFromFileStampsStartedAtFromEntryTimestamp(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind:      schema.TurnUserInput,
 		Message:   llm.User("hello"),
 		Timestamp: ts,
@@ -119,7 +119,7 @@ func TestItemTurnsFromFilePreservesDistinctClientMutationIdentitiesForSameText(t
 			SteeringSource:   events.SteeringSourceUser,
 		},
 	} {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -170,7 +170,7 @@ func TestItemTurnsFromFileProjectorReceivesDecodedTurn(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind:         schema.TurnSteering,
 		Message:      llm.User("steering decoded once"),
 		Timestamp:    ts,
@@ -358,7 +358,7 @@ func TestItemTurnsFromFileFallsBackToPurposeForPreRenameToolCalls(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind: schema.TurnAssistant,
 		Message: llm.Message{Content: []llm.ContentPart{{
 			Kind: llm.ContentToolCall,

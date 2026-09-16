@@ -33,7 +33,7 @@ func writeDifferentialFixture(t *testing.T, sessionID string) string {
 	}
 	appendTurn := func(turn schema.Turn) {
 		t.Helper()
-		if err := tw.Append(turn); err != nil {
+		if _, err := tw.Append(turn); err != nil {
 			t.Fatalf("append %s: %v", turn.Kind, err)
 		}
 	}

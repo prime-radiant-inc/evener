@@ -59,10 +59,10 @@ func seedPastSessionWithUsage(t testing.TB, divergenceTurn int, usages []llm.Usa
 	for _, u := range usages {
 		// One logical turn per usage: a user input opens the turn and the
 		// assistant reply (carrying the usage) continues it.
-		if err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("in")}); err != nil {
+		if _, err := w.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("in")}); err != nil {
 			t.Fatal(err)
 		}
-		if err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("saved turn"), Usage: u}); err != nil {
+		if _, err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("saved turn"), Usage: u}); err != nil {
 			t.Fatal(err)
 		}
 	}

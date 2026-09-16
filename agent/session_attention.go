@@ -257,7 +257,7 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	// errors. A read-back would find a retained (recorded but unsynced) line
 	// and wrongly call it durable, so this side of delegate attention asks the
 	// writer, through AppendSynced, rather than the file.
-	if err := writer.AppendSynced(turn); err != nil {
+	if _, err := writer.AppendSynced(turn); err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	verified, err := readDelegateAttentionFold(path, expectedSessionID)
@@ -403,7 +403,7 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	turn.StableTurnID = newQueueEntryID()
 	// AppendSynced records AND syncs, or errors; a retained (recorded but
 	// unsynced) line the read-back would find is not durable.
-	if err := writer.AppendSynced(turn); err != nil {
+	if _, err := writer.AppendSynced(turn); err != nil {
 		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
@@ -1211,7 +1211,7 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		disposition = delegateAttentionDiscarded
 	}
 	if !resolved {
-		if err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+		if _, err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
 			return fmt.Errorf("attention %q was not durably stabilized: %w", attentionID, err)
 		}
 	} else if err := reopened.EstablishDurability(); err != nil {
@@ -1245,7 +1245,7 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
-		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
+		if _, err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
 			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
 		fold.resolutions[attentionID] = disposition

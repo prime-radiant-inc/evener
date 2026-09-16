@@ -220,7 +220,7 @@ func tdrpWriteSession(t *testing.T, bucket string, spec tdrpSessionSpec) {
 	}
 	for i, turn := range tdrpTurns(spec.content, spec.turns) {
 		turn.Timestamp = tdrpTime.Add(time.Duration(i) * time.Minute)
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatalf("append transcript %q turn %d: %v", spec.id, i, err)
 		}
 	}

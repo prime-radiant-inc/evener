@@ -432,7 +432,7 @@ func writeCoverageTranscript(t *testing.T, stateDir, sid string, turns []schema.
 		t.Fatal(err)
 	}
 	for _, turn := range turns {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatal(err)
 		}
 	}

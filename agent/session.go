@@ -464,7 +464,7 @@ type Session struct {
 	clientMutationsInitMu sync.Mutex
 	// clientMutationTranscriptAppend is a deterministic test seam for the
 	// durable append boundary. Nil in production.
-	clientMutationTranscriptAppend func(schema.Turn) error
+	clientMutationTranscriptAppend func(schema.Turn) (int, error)
 	// clientMutationPreAppendFailure injects a deterministic lifecycle failure
 	// after a start is claimed but before its user item can be incorporated.
 	clientMutationPreAppendFailure func(schema.Turn) error
@@ -1772,8 +1772,8 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// as the clean path's is held.
 	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
-		func() error { return s.writeTranscriptSyncedLocked(turn) },
-		func() { s.history = append(s.history, turn) },
+		func() (int, error) { return s.writeTranscriptSyncedLocked(turn) },
+		func(seq int) { turn.Seq = seq; s.history = append(s.history, turn) },
 	)
 	committed := err == nil
 	if !committed {
@@ -1882,7 +1882,7 @@ func (s *Session) appendTurnWithTranscriptMessage(kind schema.TurnKind, live, pe
 // after its compaction markers — never the live turn, whose tool results
 // deliberately retain the private evidence the persisted projection replaces
 // with a placeholder.
-func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() error, appendLocked func()) error {
+func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write func() (int, error), appendLocked func(seq int)) error {
 	err := func() error {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
@@ -1897,7 +1897,7 @@ func (s *Session) appendTurnAfterTranscriptWrite(persisted schema.Turn, write fu
 	return err
 }
 
-func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() error, appendLocked func()) error {
+func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, write func() (int, error), appendLocked func(seq int)) error {
 	// A write reports one of three things (see transcript.AppendSynced, and the
 	// ordinary doors' recorded-or-nil): nil is recorded; ErrRetainedUnsynced is
 	// ALSO recorded — the whole line is in the file — but not yet durable, so
@@ -1907,11 +1907,12 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	// what keeps an owner from discarding its state and re-appending; the
 	// retained diagnostic is on the writer's warning queue, surfaced outside the
 	// lock by the caller's surfaceTranscriptWarnings.
-	if err := write(); err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
+	seq, err := write()
+	if err != nil && !errors.Is(err, transcript.ErrRetainedUnsynced) {
 		return err
 	}
 	s.mu.Lock()
-	appendLocked()
+	appendLocked(seq)
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
 	return nil
@@ -1941,14 +1942,14 @@ func (s *Session) appendTurnWithSyncedTranscriptMessage(kind schema.TurnKind, li
 	return s.appendPairedTurnVia(kind, live, persisted, s.writeTranscriptSyncedLocked)
 }
 
-func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) error) error {
+func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.Message, write func(schema.Turn) (int, error)) error {
 	t := schema.NewTurn(kind, live)
 	persistedTurn := t
 	persistedTurn.Message = persisted
 	err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
-		func() error { return write(persistedTurn) },
-		func() { s.history = append(s.history, t) },
+		func() (int, error) { return write(persistedTurn) },
+		func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
@@ -1966,11 +1967,12 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
+	seq, err := s.writeTranscriptLocked(persisted)
 	s.mu.Lock()
+	live.Seq = seq
 	s.history = append(s.history, live)
 	s.logPairPersistedLocked(persisted)
 	s.mu.Unlock()
-	err := s.writeTranscriptLocked(persisted)
 	s.attentionMu.Unlock()
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
@@ -2007,7 +2009,13 @@ func (s *Session) recordTurn(live, persisted schema.Turn) {
 
 // writeTranscript records a turn in the durable transcript, holding it if the
 // session has not yet decided whether it has one.
-func (s *Session) writeTranscript(t schema.Turn) error {
+// seqHeldPreAttach is the sequence number reported for a turn written before
+// the transcript writer is attached: the turn is queued and gets its real Seq
+// when attachTranscript flushes it, so its in-memory Seq is stamped there, not
+// here. -1 can never collide with a real Entry.Seq (which starts at 0).
+const seqHeldPreAttach = -1
+
+func (s *Session) writeTranscript(t schema.Turn) (int, error) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	return s.writeTranscriptLocked(t)
@@ -2018,30 +2026,30 @@ func (s *Session) writeTranscript(t schema.Turn) error {
 // entries under the same attentionMu hold that decided the publish, so no
 // other writer's entry can interleave between the publish and the fold's
 // compaction markers.
-func (s *Session) writeTranscriptLocked(t schema.Turn) error {
+func (s *Session) writeTranscriptLocked(t schema.Turn) (seq int, err error) {
 	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+		return seqHeldPreAttach, nil
 	}
 	return s.attachedTranscript().Append(t)
 }
 
 // writeTranscriptDurable is writeTranscript with an fsync before returning.
-func (s *Session) writeTranscriptDurable(t schema.Turn) error {
-	err := func() error {
+func (s *Session) writeTranscriptDurable(t schema.Turn) (int, error) {
+	seq, err := func() (int, error) {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
 		return s.writeTranscriptDurableLocked(t)
 	}()
 	s.surfaceTranscriptWarnings()
-	return err
+	return seq, err
 }
 
 // writeTranscriptDurableLocked is writeTranscriptDurable for a caller
 // already holding attentionMu — an append/write pair
 // (appendTurnAfterTranscriptWrite) or the fold publication transaction.
-func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
+func (s *Session) writeTranscriptDurableLocked(t schema.Turn) (seq int, err error) {
 	if s.holdTurnUntilTranscriptReady(t) {
-		return nil
+		return seqHeldPreAttach, nil
 	}
 	return s.attachedTranscript().AppendDurable(t)
 }
@@ -2060,12 +2068,12 @@ func (s *Session) writeTranscriptDurableLocked(t schema.Turn) error {
 // the owner keeps its obligation pending on. (No production owner runs before
 // attach — the tracker guard and the delegate seed's read-back both preclude it
 // — so this is a fail-closed guard, not a live path.)
-func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) error {
+func (s *Session) writeTranscriptSyncedLocked(t schema.Turn) (seq int, err error) {
 	s.mu.Lock()
 	ready := s.transcriptReady
 	s.mu.Unlock()
 	if !ready {
-		return errors.New("transcript not ready: a synced write cannot be held before attach")
+		return 0, errors.New("transcript not ready: a synced write cannot be held before attach")
 	}
 	return s.attachedTranscript().AppendSynced(t)
 }
@@ -2128,14 +2136,26 @@ func (s *Session) attachTranscript(w *transcript.Writer) {
 	held := s.pendingTranscriptTurns
 	s.pendingTranscriptTurns = nil
 	s.mu.Unlock()
-	for _, t := range held {
-		if err := w.Append(t); err != nil {
+	for i, t := range held {
+		seq, err := w.Append(t)
+		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always
 			// runs before its caller's emitSessionStartEnvelope, so SESSION_START
 			// has not fired yet — same reasoning as the NewSession transcript-
 			// create-failed warning above it in the buffer's doc comment.
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+			continue
 		}
+		// The held turns were appended to history in this same order with a
+		// seqHeldPreAttach placeholder; stamp each with the Seq the flush spent
+		// so the fold can name it by Seq. attachTranscript is the single
+		// readiness transition and runs before any turn processes, so history's
+		// leading run is exactly these held turns in order.
+		s.mu.Lock()
+		if i < len(s.history) && s.history[i].Seq == seqHeldPreAttach {
+			s.history[i].Seq = seq
+		}
+		s.mu.Unlock()
 	}
 	// A replayed append whose whole line landed but did not sync returned nil
 	// and queued its diagnostic on the writer; buffer it the same way, since
@@ -2201,8 +2221,8 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 	}
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
-		func() { s.history = append(s.history, t) },
+		func() (int, error) { return s.writeTranscriptDurableLocked(t) },
+		func(seq int) { t.Seq = seq; s.history = append(s.history, t) },
 	)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})

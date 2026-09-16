@@ -45,7 +45,7 @@ func buildParentSession(t *testing.T) (stateDir, parentID string) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("second reply")),
 	}
 	for _, turn := range turns {
-		if err := tw.Append(turn); err != nil {
+		if _, err := tw.Append(turn); err != nil {
 			t.Fatalf("Append turn: %v", err)
 		}
 	}

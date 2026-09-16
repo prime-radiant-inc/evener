@@ -47,7 +47,7 @@ func TestSessionImageServesAStillRunningSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Append(schema.Turn{
+	if _, err := w.Append(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_shot", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,

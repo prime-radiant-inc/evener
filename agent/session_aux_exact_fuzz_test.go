@@ -262,7 +262,7 @@ func fuzzAuxParentFS(t *testing.T) (afero.Fs, string, string) {
 		t.Fatal(err)
 	}
 	for _, turn := range []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("u")), schema.NewTurn(schema.TurnAssistant, llm.Assistant("a")), schema.NewTurn(schema.TurnUserInput, llm.User("u2"))} {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -318,7 +318,7 @@ func fuzzAuxForkSuccess(t *testing.T, label bool) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("a1")),
 		schema.NewTurn(schema.TurnUserInput, llm.User("u2")),
 	} {
-		if err := w.Append(turn); err != nil {
+		if _, err := w.Append(turn); err != nil {
 			t.Fatal(err)
 		}
 	}

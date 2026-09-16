@@ -24,7 +24,7 @@ func w3sub_writeATIFTranscript(t *testing.T, dir string) string {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hi"), Timestamp: ts}); err != nil {
+	if _, err := tw.Append(schema.Turn{Kind: schema.TurnUserInput, Message: llm.User("hi"), Timestamp: ts}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := tw.Close(); err != nil {

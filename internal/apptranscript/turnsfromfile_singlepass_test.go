@@ -28,20 +28,20 @@ func writeSinglePassFixture(t *testing.T) string {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	ts := time.Unix(1_700_000_000, 0).UTC()
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 	call := llm.ToolCallData{ID: "call_read", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
-	if err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
+	if _, err := w.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
 		t.Fatalf("append call: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "out", false))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_read", "read_file", "out", false))); err != nil {
 		t.Fatalf("append result: %v", err)
 	}
 	usageTurn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))
 	usageTurn.Usage = llm.Usage{InputTokens: 3, OutputTokens: 4, TotalTokens: 7}
 	usageTurn.Timestamp = ts
-	if err := w.Append(usageTurn); err != nil {
+	if _, err := w.Append(usageTurn); err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
 	if err := w.Close(); err != nil {

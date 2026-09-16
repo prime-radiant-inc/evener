@@ -1147,7 +1147,7 @@ func fixtureWithSalvagedLoop(t *testing.T) (base, sid, turnText string) {
 		Role:    llm.RoleAssistant,
 		Content: []llm.ContentPart{{Kind: llm.ContentText, Text: turnText}},
 	})
-	if err := w.Append(turn); err != nil {
+	if _, err := w.Append(turn); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

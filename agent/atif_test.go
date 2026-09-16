@@ -145,7 +145,7 @@ func TestExportATIF_ExcludesCredentialBearingResponseEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{
+	if _, err := tw.Append(schema.Turn{
 		Kind:                   schema.TurnAssistant,
 		Message:                resp.Message,
 		ResponseEndpointFamily: meta.EndpointFamily,
@@ -206,7 +206,7 @@ func TestExportATIF_SanitizesTranscriptResponseEndpoints(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 	for _, endpoint := range []string{credentialEndpoint, "://not-a-valid-endpoint?credential=" + endpointQuery} {
-		if err := tw.Append(schema.Turn{
+		if _, err := tw.Append(schema.Turn{
 			Kind:             schema.TurnAssistant,
 			Message:          llm.Assistant("done"),
 			ResponseEndpoint: endpoint,
@@ -266,7 +266,7 @@ func TestExportATIF_WritesFile(t *testing.T) {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
 
-	err = tw.Append(schema.Turn{
+	_, err = tw.Append(schema.Turn{
 		Kind:      schema.TurnUserInput,
 		Message:   llm.User("Hello!"),
 		Timestamp: ts,
@@ -327,7 +327,7 @@ func TestExportATIF_ProviderHandleModes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.Turn{
+	if _, err := tw.Append(schema.Turn{
 		Kind:           schema.TurnAssistant,
 		Message:        llm.Assistant("done"),
 		ResponseID:     "resp_raw_phase11",

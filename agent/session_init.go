@@ -504,7 +504,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 			return nil, errors.New("fork delegate context requires a writable child transcript")
 		}
 		for _, entry := range inheritedContext {
-			if err := tw.Append(entry.Turn); err != nil {
+			if _, err := tw.Append(entry.Turn); err != nil {
 				_ = tw.Close()
 				return nil, fmt.Errorf("persist inherited delegate context: %w", err)
 			}

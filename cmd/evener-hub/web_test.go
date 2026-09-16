@@ -207,7 +207,7 @@ func TestWeb_SessionImage_ServesShaReferencedInputImage(t *testing.T) {
 		{Kind: llm.ContentText, Text: "what color?"},
 		{Kind: llm.ContentImage, Image: &llm.ImageData{Data: imgBytes, MediaType: "image/png"}},
 	}}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, userMsg)); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, userMsg)); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
@@ -261,7 +261,7 @@ func TestWeb_SessionImage_ServesShaReferencedToolResultImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(schema.Turn{
+	if _, err := tw.Append(schema.Turn{
 		Kind: schema.TurnToolResults,
 		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_img", Content: []llm.ContentPart{{
 			Kind: llm.ContentToolResult,
@@ -341,7 +341,7 @@ func TestWeb_SessionImage_UnknownSha(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("text only"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("text only"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {

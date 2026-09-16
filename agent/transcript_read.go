@@ -168,12 +168,15 @@ func resumeHistoryIndexed(entries []transcript.Entry) ([]schema.Turn, []int) {
 		turns = make([]schema.Turn, len(entries))
 		for i, e := range entries {
 			turns[i] = e.Turn
+			turns[i].Seq = e.Seq // seed the durable per-line id the fold names retained turns by
 		}
 	} else {
 		// The compaction turn + everything after it.
 		turns = make([]schema.Turn, 0, len(entries)-compactionIdx)
 		for i := compactionIdx; i < len(entries); i++ {
-			turns = append(turns, entries[i].Turn)
+			t := entries[i].Turn
+			t.Seq = entries[i].Seq // seed the durable per-line id
+			turns = append(turns, t)
 		}
 	}
 

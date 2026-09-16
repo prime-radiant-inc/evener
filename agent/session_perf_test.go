@@ -1103,10 +1103,10 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("transcript.NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("transcript-msg"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("transcript-msg"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("transcript-reply"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	tw.Close()

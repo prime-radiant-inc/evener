@@ -38,7 +38,7 @@ func seedResumableSession(t *testing.T, stateDir, sessionID string, headerSessio
 		t.Fatalf("NewWriter: %v", err)
 	}
 	for _, text := range []string{"first turn", "second turn"} {
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
+		if _, err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(text))); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}

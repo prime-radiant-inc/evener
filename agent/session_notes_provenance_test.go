@@ -490,7 +490,7 @@ func TestRestoredCompactedForkKeepsItsOwnTurnProvenance(t *testing.T) {
 		{Kind: schema.TurnCheckpoint, Message: llm.User("checkpoint the child wrote after inheriting")},
 		{Kind: schema.TurnSteering, ClientMutationID: ownID, Message: llm.User(ownText)},
 	} {
-		if err := tw.AppendDurable(turn); err != nil {
+		if _, err := tw.AppendDurable(turn); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -581,7 +581,7 @@ func TestRestoredForkBoundaryCountsRepairInsertions(t *testing.T) {
 		{Kind: schema.TurnSteering, ClientMutationID: collideID, Message: llm.User(inheritedText)},
 		{Kind: schema.TurnUserInput, Message: llm.User("child own turn")},
 	} {
-		if err := tw.AppendDurable(turn); err != nil {
+		if _, err := tw.AppendDurable(turn); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}

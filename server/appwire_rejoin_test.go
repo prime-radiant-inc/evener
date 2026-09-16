@@ -327,7 +327,7 @@ func TestAtomicRejoinDoesNotReadTranscriptAheadOfBlockedEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("question"))); err != nil {
+	if _, err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("question"))); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
 
@@ -367,7 +367,7 @@ func TestAtomicRejoinDoesNotReadTranscriptAheadOfBlockedEvent(t *testing.T) {
 	<-blocked
 
 	// The answer is durable on disk before its event reaches the commit.
-	if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))); err != nil {
+	if _, err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer"))); err != nil {
 		t.Fatalf("append assistant: %v", err)
 	}
 	if err := writer.Close(); err != nil {

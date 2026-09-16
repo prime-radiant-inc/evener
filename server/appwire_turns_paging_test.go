@@ -53,10 +53,10 @@ func writeTranscriptPairs(t testing.TB, path string, pairs int) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	for range pairs {
-		if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
+		if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("in"))); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
-		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out"))); err != nil {
+		if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("out"))); err != nil {
 			t.Fatalf("append assistant: %v", err)
 		}
 	}
@@ -71,7 +71,7 @@ func TestTranscriptItemKeysMatchLiveAndIndexedHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("representative"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("representative"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
@@ -123,7 +123,7 @@ func TestPersistedSteeringKeepsOpenTurnOwnershipInFullAndIndexedItemProjection(t
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")),
 		steering,
 	} {
-		if err := tw.Append(turn); err != nil {
+		if _, err := tw.Append(turn); err != nil {
 			t.Fatalf("Append: %v", err)
 		}
 	}
@@ -167,10 +167,10 @@ func TestPrepareAppIdentityHydratesPersistedCommunicate(t *testing.T) {
 		t.Fatal(err)
 	}
 	call := llm.ToolCallData{ID: "persisted-call", Name: "communicate", Arguments: json.RawMessage(`{"message":"hydrated"}`)}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
+	if _, err := tw.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
@@ -752,7 +752,7 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		// Close still flushes, so the file read back is byte-identical.
 		writer.SyncInterval = time.Hour
 		for range entries {
-			if err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
+			if _, err := writer.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("historical entry"))); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -1013,10 +1013,10 @@ func TestSeedingAReservedTurnIDFromTheTranscriptKeepsTurnIDsUnique(t *testing.T)
 			user.ClientMutationID = "reply-1"
 			user.StableTurnID = reserved
 		}
-		if err := tw.Append(user); err != nil {
+		if _, err := tw.Append(user); err != nil {
 			t.Fatalf("append user: %v", err)
 		}
-		if err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i)))); err != nil {
+		if _, err := tw.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(fmt.Sprintf("out-%d", i)))); err != nil {
 			t.Fatalf("append assistant: %v", err)
 		}
 	}

@@ -977,7 +977,7 @@ func TestPrepareAppIdentityUsesPersistedItemIndexIncarnation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -1010,7 +1010,7 @@ func TestPrepareAppIdentityFromEntriesForPathUsesPersistedItemIndexIncarnation(t
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -1063,7 +1063,7 @@ func TestPrepareAppIdentityWithPreludeReservesLiveEntryCoordinate(t *testing.T) 
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := tw.Close(); err != nil {
@@ -1125,7 +1125,7 @@ func TestPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *test
 				schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
 				schema.NewTurn(schema.TurnAssistant, llm.Assistant("answer")),
 			} {
-				if err := tw.Append(turn); err != nil {
+				if _, err := tw.Append(turn); err != nil {
 					t.Fatalf("Append history: %v", err)
 				}
 			}
@@ -1160,7 +1160,7 @@ func TestPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjection(t *test
 			if err != nil {
 				t.Fatalf("OpenWriterForSession: %v", err)
 			}
-			if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
+			if _, err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
 				_ = writer.Close()
 				t.Fatalf("Append live: %v", err)
 			}
@@ -1206,7 +1206,7 @@ func TestPreparedResumeAfterEmptyLogicalTurnPreservesAbsoluteItemIdentity(t *tes
 		schema.NewTurn(schema.TurnUserInput, llm.User("historical")),
 		{Kind: schema.TurnCheckpoint},
 	} {
-		if err := tw.Append(turn); err != nil {
+		if _, err := tw.Append(turn); err != nil {
 			t.Fatalf("Append history: %v", err)
 		}
 	}
@@ -1231,7 +1231,7 @@ func TestPreparedResumeAfterEmptyLogicalTurnPreservesAbsoluteItemIdentity(t *tes
 	if err != nil {
 		t.Fatalf("OpenWriterForSession: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
+	if _, err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
 		_ = writer.Close()
 		t.Fatalf("Append live: %v", err)
 	}
@@ -1317,7 +1317,7 @@ func TestDescendantPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjecti
 				history = append(history, schema.Turn{Kind: schema.TurnSummary})
 			}
 			for _, turn := range history {
-				if err := tw.Append(turn); err != nil {
+				if _, err := tw.Append(turn); err != nil {
 					t.Fatalf("Append history: %v", err)
 				}
 			}
@@ -1363,7 +1363,7 @@ func TestDescendantPreparedResumeLiveItemIdentityMatchesPersistedLogicalProjecti
 			if err != nil {
 				t.Fatalf("OpenWriterForSession: %v", err)
 			}
-			if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
+			if _, err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("live"))); err != nil {
 				_ = writer.Close()
 				t.Fatalf("Append live: %v", err)
 			}
@@ -1437,7 +1437,7 @@ func TestPreparedResumeFirstLiveLifecycleUsesAuthoritativeTurnIdentity(t *testin
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("historical"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("historical"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := tw.Close(); err != nil {

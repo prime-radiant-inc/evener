@@ -34,7 +34,7 @@ func TestAsideSession_LoadMetaError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {
@@ -75,7 +75,7 @@ func TestForkSessionAtUserTurn_LoadMetaError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
+	if _, err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("hello"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := tw.Close(); err != nil {

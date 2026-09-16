@@ -265,7 +265,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	commit.commitTranscriptsLocked()
 	var mergedTailWriteErrs []error
 	for _, turn := range rewriteTail {
-		if err := s.writeTranscriptDurableLocked(turn); err != nil {
+		if _, err := s.writeTranscriptDurableLocked(turn); err != nil {
 			mergedTailWriteErrs = append(mergedTailWriteErrs, err)
 		}
 	}
@@ -639,7 +639,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		}
 		compactionTurnWriteErrs = make([]error, len(pendingCompactionTurns))
 		for i, turn := range pendingCompactionTurns {
-			compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
+			_, compactionTurnWriteErrs[i] = s.writeTranscriptLocked(turn)
 		}
 		steeringWriteErrs = s.writeSteeringTurnRecordsLocked(pendingSteering)
 	}
@@ -872,7 +872,7 @@ func (s *Session) writeSteeringTurnRecordsLocked(records []steeringTurnRecord) [
 			errs[i] = appendTurn(record.turn)
 			continue
 		}
-		errs[i] = s.writeTranscriptLocked(record.turn)
+		_, errs[i] = s.writeTranscriptLocked(record.turn)
 	}
 	return errs
 }

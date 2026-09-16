@@ -1362,9 +1362,10 @@ func (s *Session) recordClientMutationFailure(
 		}
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
-			func() error { return s.writeTranscriptSyncedLocked(turn) },
-			func() {
+			func() (int, error) { return s.writeTranscriptSyncedLocked(turn) },
+			func(seq int) {
 				s.clientMutationAppendedTurn = true
+				turn.Seq = seq
 				s.history = append(s.history, turn)
 			},
 		); err != nil {
@@ -1385,9 +1386,10 @@ func (s *Session) recordClientMutationFailure(
 		turn.Error = info
 		if err := s.appendTurnAfterTranscriptWrite(
 			turn,
-			func() error { return s.writeTranscriptSyncedLocked(turn) },
-			func() {
+			func() (int, error) { return s.writeTranscriptSyncedLocked(turn) },
+			func(seq int) {
 				s.clientMutationAppendedTurn = true
+				turn.Seq = seq
 				s.history = append(s.history, turn)
 			},
 		); err != nil {
@@ -1622,7 +1624,7 @@ func removeClientMutationSteeringOrder(snapshot *clientMutationSnapshot, clientM
 // transcript entry; callers hold attentionMu (their append/write pair —
 // appendTurnAfterTranscriptWrite). The test seam runs under that hold; seam
 // closures only record turns or inject errors.
-func (s *Session) appendClientMutationTranscriptLocked(turn schema.Turn) error {
+func (s *Session) appendClientMutationTranscriptLocked(turn schema.Turn) (int, error) {
 	if s.clientMutationTranscriptAppend != nil {
 		return s.clientMutationTranscriptAppend(turn)
 	}

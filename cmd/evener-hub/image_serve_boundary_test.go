@@ -52,7 +52,7 @@ func newImageBoundaryFixture(t *testing.T) imageBoundaryFixture {
 		Kind:  llm.ContentImage,
 		Image: &llm.ImageData{Data: image, MediaType: "image/png"},
 	}}}
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, message)); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, message)); err != nil {
 		t.Fatal(err)
 	}
 	if err := w.Close(); err != nil {

@@ -737,8 +737,8 @@ func TestClientMutation_StartClaimedWithTranscriptRestoresRunnableWithoutDuplica
 	turn.StableTurnID = claimed.StableTurnID
 	if err := sess.appendTurnAfterTranscriptWrite(
 		turn,
-		func() error { return sess.appendClientMutationTranscriptLocked(turn) },
-		func() { sess.history = append(sess.history, turn) },
+		func() (int, error) { return sess.appendClientMutationTranscriptLocked(turn) },
+		func(seq int) { turn.Seq = seq; sess.history = append(sess.history, turn) },
 	); err != nil {
 		t.Fatalf("append claimed start: %v", err)
 	}
@@ -916,7 +916,7 @@ func TestClientMutation_StartTranscriptIOFailureRemainsRunnable(t *testing.T) {
 		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	injected := errors.New("transcript storage unavailable")
-	sess.clientMutationTranscriptAppend = func(schema.Turn) error { return injected }
+	sess.clientMutationTranscriptAppend = func(schema.Turn) (int, error) { return 0, injected }
 	err = sess.acceptUserInput(
 		withQueuedClientMutation(context.Background(), claimed),
 		claimed.Text,
@@ -972,7 +972,7 @@ func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *te
 		t.Fatalf("claimClientMutationStart: claimed=%#v ok=%v err=%v", claimed, ok, err)
 	}
 	injected := errors.New("transcript storage unavailable")
-	sess.clientMutationTranscriptAppend = func(schema.Turn) error { return injected }
+	sess.clientMutationTranscriptAppend = func(schema.Turn) (int, error) { return 0, injected }
 	_, err = sess.processInputKindWithProvenance(
 		withQueuedClientMutation(context.Background(), claimed),
 		claimed.Text,

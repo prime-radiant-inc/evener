@@ -112,7 +112,7 @@ func forkSessionFS(fs afero.Fs, stateDir, parentID string, divergenceTurn int, e
 }
 
 type forkTranscriptWriter interface {
-	Append(schema.Turn) error
+	Append(schema.Turn) (int, error)
 	Close() error
 }
 
@@ -293,7 +293,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	acceptedInputTurns := 0
 	// Replay prefix entries into the child transcript.
 	for _, entry := range prefixEntries {
-		if err := tw.Append(entry.Turn); err != nil {
+		if _, err := tw.Append(entry.Turn); err != nil {
 			return "", fmt.Errorf("append prefix turn to child transcript: %w", err)
 		}
 		if entry.Turn.Kind == schema.TurnAssistant {
@@ -308,7 +308,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 	// divergence fork (aside forks pass nil and copy the tip verbatim).
 	if editedMessage != nil {
 		editedTurn := schema.NewTurn(schema.TurnUserInput, llm.User(*editedMessage))
-		if err := tw.Append(editedTurn); err != nil {
+		if _, err := tw.Append(editedTurn); err != nil {
 			return "", fmt.Errorf("append edited turn to child transcript: %w", err)
 		}
 		acceptedInputTurns++

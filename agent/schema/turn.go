@@ -174,6 +174,12 @@ type GoalContinuationInfo struct {
 // but are converted to user-role messages when building the LLM request.
 type Turn struct {
 	Kind      TurnKind    `json:"kind"`      // category of this history item
+	// Seq is the transcript Entry.Seq this turn was written as — its durable,
+	// monotonic per-line id. In-memory only (json:"-"): it is stamped when the
+	// turn is appended to the transcript (or seeded from the entry on restore),
+	// and the compaction fold names the entries it retains by these Seqs. Zero
+	// on a turn that has not been written to a transcript.
+	Seq int `json:"-"`
 	Message   llm.Message `json:"message"`   // the underlying LLM message
 	Timestamp time.Time   `json:"timestamp"` // when the turn was recorded (UTC)
 	// Usage carries the token-usage stats reported by the provider; set only on

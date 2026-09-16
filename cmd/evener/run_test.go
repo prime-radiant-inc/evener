@@ -214,7 +214,7 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWriter: %v", err)
 	}
-	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
+	if _, err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := writer.Close(); err != nil {

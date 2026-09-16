@@ -755,7 +755,7 @@ func TestPoisonedWriterRefusesTheNextInput(t *testing.T) {
 	// write that stops partway with no rollback behind it.
 	fs := attachEnvironmentFailureFS(t, sess)
 	armEnvironmentPartialWrite(fs)
-	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
+	if _, err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
 		t.Fatal("partial transcript write reported success")
 	}
 
@@ -940,7 +940,7 @@ func poisonSessionTranscript(t *testing.T, sess *Session) {
 	t.Helper()
 	fs := attachEnvironmentFailureFS(t, sess)
 	armEnvironmentPartialWrite(fs)
-	if err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
+	if _, err := sess.writeTranscript(schema.NewTurn(schema.TurnAssistant, llm.Assistant("stops partway"))); err == nil {
 		t.Fatal("partial transcript write reported success")
 	}
 	if !sess.attachedTranscript().Poisoned() {
@@ -1519,7 +1519,7 @@ func TestBufferedRetainedWriteDiagnosticReachesTheSink(t *testing.T) {
 func TestSyncedWriteRefusesAHeldPreAttachTurn(t *testing.T) {
 	s := &Session{id: "sess-not-ready", stateDir: t.TempDir()}
 	// transcriptReady is false: attachTranscript has not run.
-	if err := s.writeTranscriptSyncedLocked(schema.NewTurn(schema.TurnUserInput, llm.User("held"))); err == nil {
+	if _, err := s.writeTranscriptSyncedLocked(schema.NewTurn(schema.TurnUserInput, llm.User("held"))); err == nil {
 		t.Fatal("writeTranscriptSyncedLocked returned nil for a held pre-attach turn; an owner would read that as durable")
 	}
 }
