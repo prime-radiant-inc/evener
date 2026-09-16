@@ -375,8 +375,13 @@ func (s *Session) settleGoalOnIdle() bool {
 	// its notification is already queued — cannot strand the goal.
 	held := s.goalDependentsHeld
 	s.goalDependentsHeld = false
+	// No kick while user steering is parked after a failed attempt
+	// (Session.steeringParked): the continuation would drain the parked steer
+	// under its own turn id. The goal stays active; the settle after the
+	// carrier the next external wake runs kicks it.
+	parked := s.steeringParked && s.hasPendingUserSteeringLocked()
 	var prompt string
-	if kick != nil && !pendingAsk && (!held || !wakePending) {
+	if kick != nil && !pendingAsk && !parked && (!held || !wakePending) {
 		if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok && snap.Status == goal.StatusActive {
 			prompt = goal.Render(snap.Objective)
 		}

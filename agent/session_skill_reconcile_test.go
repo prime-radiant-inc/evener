@@ -32,7 +32,7 @@ func TestSkillActivation_SteeringSelectionReconciledAfterAdmissionSaveFailure(t 
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
 	repair := breakSessionMetaPath(t, s)
-	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 		t.Fatal("steering message was not durably consumed")
 	}
 	// The admission's save failed: nothing half-admits into the live session.
@@ -133,7 +133,7 @@ func TestSkillActivation_AdmittedSelectionIsNotReReconciled(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
-	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 		t.Fatal("steering message was not durably consumed")
 	}
 	if got := lifecycleObligations(s); len(got) != 1 {
@@ -176,7 +176,7 @@ func TestSkillActivation_FailedPreparationIsNotReDeliveredAtRestore(t *testing.T
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
 	// No skill.md is written for this name, so preparation cannot resolve it.
-	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with an unresolvable skill", SkillNames: []string{"no-such-skill"}}) {
+	if s.consumeSteeringMessage(steeringMessage{Text: "steer with an unresolvable skill", SkillNames: []string{"no-such-skill"}}) == steeringAppendFailed {
 		t.Fatal("steering message was not durably consumed")
 	}
 	states := skillTurnStates(s)
@@ -243,7 +243,7 @@ func TestSkillActivation_PreparedSelectionPinsRecordedSource(t *testing.T) {
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
 	repair := breakSessionMetaPath(t, s)
-	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 		t.Fatal("steering message was not durably consumed")
 	}
 	if got := lifecycleObligations(s); len(got) != 0 {
@@ -309,7 +309,7 @@ func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
 		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
 		repair := breakSessionMetaPath(t, s)
-		if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+		if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 			t.Fatal("steering message was not durably consumed")
 		}
 		if got := lifecycleObligations(s); len(got) != 0 {
@@ -343,7 +343,7 @@ func TestSkillActivation_LostSteeringAdmissionGatesNextDispatch(t *testing.T) {
 		s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
 		repair := breakSessionMetaPath(t, s)
-		if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+		if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 			t.Fatal("steering message was not durably consumed")
 		}
 		// The selection is still unadmitted. Preparing the next request must
@@ -392,7 +392,7 @@ func TestSkillActivation_RestoredSelectionAdmissionGatesNextDispatch(t *testing.
 	s := newSession(t, withDir(root), withConfig(SessionConfig{StateDir: stateDir}), withoutGitSnapshot())
 
 	repair := breakSessionMetaPath(t, s)
-	if !s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) {
+	if s.consumeSteeringMessage(steeringMessage{Text: "steer with a skill", SkillNames: []string{"opaque"}}) == steeringAppendFailed {
 		t.Fatal("steering message was not durably consumed")
 	}
 	if got := lifecycleObligations(s); len(got) != 0 {
