@@ -1625,12 +1625,13 @@ async function runInlineEditing(driver) {
   await driver.press(ref, "Backspace");
   await driver.assertComposerDraft(ref, "composition cleanup", two);
 
-  const baseline = await driver.replyBaseline();
   await driver.waitForTurnIdle(ref);
   driver.milestone("submitted-two-skills", await driver.composerState(ref));
   await driver.clickSubmit(ref, two);
   await driver.waitForComposerCleared(ref);
-  await driver.waitForReply(REPLY_TEXT, baseline);
+  // Match on the submitted prose: every scripted turn replies with the same
+  // sentinel, so only the turn carrying this sentence is evidence of its reply.
+  await driver.waitForReply(ref, TWO_SKILLS);
   await driver.waitPage(`(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => el.textContent.includes(${JSON.stringify(TWO_SKILLS)})) ? true : null)()`,
     { label: "exact two-reference sentence in visible transcript" });
 }
