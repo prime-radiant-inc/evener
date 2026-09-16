@@ -77,6 +77,19 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		}
 		return entries
 	}, http.DefaultClient))
+	if len(cfg.RemoteHosts) > 0 {
+		if cfg.RemoteHostClient == nil {
+			names := make([]string, 0, len(cfg.RemoteHosts))
+			for _, host := range cfg.RemoteHosts {
+				names = append(names, host.Name)
+			}
+			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
+		} else {
+			for _, host := range cfg.RemoteHosts {
+				registry.Add(appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient))
+			}
+		}
+	}
 	return registry
 }
 
@@ -95,7 +108,94 @@ var (
 )
 
 type threadReadRelayPolicy interface {
+	// RelayOnThreadRead reports whether a plain (non-Subscribe) thread/read
+	// starts a relay. A Subscribe read still overrides it.
 	RelayOnThreadRead() bool
+}
+
+// threadRelayCapableSource reports whether a source can serve thread relays at
+// all. A source that cannot is never relayed, even for a Subscribe read:
+// startRelay calls SubscribeThread, so relaying it would fail the read instead
+// of returning the snapshot. Sources that implement only RelayOnThreadRead keep
+// the Subscribe-overrides-plain-read policy.
+type threadRelayCapableSource interface {
+	SupportsThreadRelay() bool
+}
+
+func sourceSupportsThreadRelay(source appsource.Source) bool {
+	if capable, ok := source.(threadRelayCapableSource); ok {
+		return capable.SupportsThreadRelay()
+	}
+	return true
+}
+
+// threadReadLocalImagePolicy reports whether a source's threads describe files
+// on this hub's own filesystem. A remote hub source serves its transcript but
+// not its filesystem, so its CWDs and tool-argument paths name another machine.
+type threadReadLocalImagePolicy interface {
+	EnrichThreadFileBackedImages() bool
+}
+
+// enrichSourcedThreadImages stamps fetchable image URLs and, for a source whose
+// files live on this hub, adds file-backed output-image descriptors by reading
+// the session's working directory.
+//
+// A source whose images are not local is neither stamped nor enriched: the
+// thread is returned with its remote-supplied image routes neutralized. Running
+// the local file pass on a remote CWD would probe unrelated controller-local
+// paths and could attach descriptors for files the thread never wrote, and
+// stampThreadImageURLs mints this hub's sha-addressed /s/<session>/images/<sha>
+// route, which handleSessionImage resolves against this hub's own Past index. A
+// remote session is never in it, so a remote-supplied route would 404 (or, on a
+// session-id collision, serve another session's bytes) once the browser
+// requested it from this hub. Neutralizing it leaves the descriptor's SHA for
+// the controller-side proxy that will resolve it, which is not yet part of this
+// read path.
+func enrichSourcedThreadImages(source appsource.Source, thread appwire.Thread) appwire.Thread {
+	if policy, ok := source.(threadReadLocalImagePolicy); ok && !policy.EnrichThreadFileBackedImages() {
+		return stripRemoteImageRoutes(thread)
+	}
+	thread = stampThreadImageURLs(thread)
+	return enrichThreadFileBackedOutputImages(thread)
+}
+
+// stripRemoteImageRoutes removes hub-relative image routes from a thread whose
+// images live on another hub. A relative route is meaningful only against the
+// origin that minted it: left on a remote thread, it would make the browser
+// request this hub's own route for a session this hub does not have. The remote
+// hub mints both /s/<session>/images/<sha> (stamped by stampThreadImageURLs) and
+// /doc/image?session=<session>&path=<rel> (attached to file-backed output images
+// by outputImagesForToolCall/resolveOutputImageFile), so any root-relative path
+// must be neutralized, not just the /s/... one. External URLs and data: URLs are
+// untouched, because the browser resolves them against their own origin.
+func stripRemoteImageRoutes(thread appwire.Thread) appwire.Thread {
+	for turnIndex := range thread.Turns {
+		items := thread.Turns[turnIndex].Items
+		for itemIndex := range items {
+			for imageIndex := range items[itemIndex].Images {
+				if isHubRelativeImageRoute(items[itemIndex].Images[imageIndex].URL) {
+					items[itemIndex].Images[imageIndex].URL = ""
+				}
+			}
+			for imageIndex := range items[itemIndex].OutputImages {
+				if isHubRelativeImageRoute(items[itemIndex].OutputImages[imageIndex].URL) {
+					items[itemIndex].OutputImages[imageIndex].URL = ""
+				}
+			}
+		}
+	}
+	return thread
+}
+
+// isHubRelativeImageRoute reports whether raw is an origin-relative image route
+// of the form a hub mints for itself, e.g. /s/<session>/images/<sha> or
+// /doc/image?session=<session>&path=<rel>. A leading slash makes a URL resolve
+// against the serving origin, so it is meaningful only on the hub that minted
+// it. A network-path reference (//host/...) and scheme URLs (http:, https:,
+// data:, ...) name their own origin and are left untouched.
+func isHubRelativeImageRoute(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	return strings.HasPrefix(trimmed, "/") && !strings.HasPrefix(trimmed, "//")
 }
 
 func relayOnThreadRead(source appsource.Source) bool {
@@ -151,7 +251,7 @@ func listItemTurns(
 				CWD:       meta.Thread.CWD,
 				Turns:     response.Data,
 			}
-			thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(thread))
+			thread = enrichSourcedThreadImages(source, thread)
 			response.Data = thread.Turns
 		}
 		return response, nil
@@ -500,7 +600,7 @@ func registerThreadHandlers(
 				if ok {
 					resp.Thread.Turns = past.Thread.Turns
 					resp.OlderCursor = past.OlderCursor
-					resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+					resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 					annotateThreadProjects([]appwire.Thread{resp.Thread})
 					usedPastItemPage = true
 				}
@@ -520,7 +620,7 @@ func registerThreadHandlers(
 					// A live daemon's turns carry sha-addressed tool-result descriptors
 					// with no route on them (the daemon does not serve the bytes; this
 					// hub does), so route stamping stays inside the final packer.
-					response.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(response.Thread))
+					response.Thread = enrichSourcedThreadImages(source, response.Thread)
 					annotateThreadProjects([]appwire.Thread{response.Thread})
 					return response, nil
 				}, itemLimit)
@@ -535,7 +635,7 @@ func registerThreadHandlers(
 			// no route on them (the daemon does not serve the bytes; this hub does),
 			// so the route is stamped here before the file-backed pass adds any
 			// /doc/image descriptors of its own.
-			resp.Thread = enrichThreadFileBackedOutputImages(stampThreadImageURLs(resp.Thread))
+			resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 			annotateThreadProjects([]appwire.Thread{resp.Thread})
 		}
 		// Local forks copy persisted history in the hub. A live daemon's
@@ -550,7 +650,10 @@ func registerThreadHandlers(
 			if !relays.captureThreadRead(ctx, params, read) {
 				return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread subscription is unavailable")
 			}
-		} else if params.Subscribe || relayOnThreadRead(source) {
+		} else if sourceSupportsThreadRelay(source) && (params.Subscribe || relayOnThreadRead(source)) {
+			// A source with no relay fan-out is never relayed, even for a
+			// Subscribe read: startRelay calls SubscribeThread, so relaying one
+			// would fail the read. Subscribing callers still get the snapshot.
 			if err := relays.startRelay(ctx, source, params, resp.Thread); err != nil {
 				return appwire.ThreadReadResponse{}, err
 			}
@@ -611,12 +714,12 @@ func registerThreadHandlers(
 					// File-backed output-image enrichment is intentionally page-local
 					// here: args can only be correlated from command-call items present
 					// in this returned page (or on the completed item itself).
-					thread := enrichThreadFileBackedOutputImages(stampThreadImageURLs(appwire.Thread{
+					thread := enrichSourcedThreadImages(source, appwire.Thread{
 						ID:        meta.Thread.ID,
 						SessionID: meta.Thread.SessionID,
 						CWD:       meta.Thread.CWD,
 						Turns:     live.Data,
-					}))
+					})
 					live.Data = thread.Turns
 				}
 				return live, nil
@@ -664,6 +767,10 @@ func registerThreadHandlers(
 			}
 			return appwire.EvenerSubagentPreviewResponse{}, err
 		}
+		// A remote source returns the remote hub's origin-relative image routes,
+		// which only resolve against the remote origin; neutralization must run
+		// here exactly as it does on the thread/read path.
+		resp.Thread = enrichSourcedThreadImages(source, resp.Thread)
 		return subagentPreviewFromThread(resp.Thread, ref, params.Limit), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadStart, func(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
