@@ -840,6 +840,31 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
   );
 }
 
+// archiveSessionIdentity is the identity a session's archive decision is
+// stored and read back under, and it is not the same string for every row
+// (round eleven's high finding). A REMOTE row's decision is consulted under its
+// host-qualified ref: web_api_tree.go's appThreadTreeEntries stamps a remote
+// thread's meta.ID and LiveEntry.SessionID with ref.String() ("buildbox:t1"),
+// and hubcore's decisionFor (tree.go) looks the stored key up verbatim - both
+// for the tree rows that call it and for tierEligible (attention.go), which is
+// handed the bare LiveEntry.SessionID. A LOCAL row's two ids are the bare
+// session ID instead (tree.go builds local nodes with ID: m.ID; the local
+// entries in web_api_tree.go carry SessionID: past.Meta.ID), so a "local:<id>"
+// key is one no reader ever consults: archive decisions reach the read model
+// through archiveDecisions() verbatim (web_api_tree.go's memoTreeWithAuthority
+// and navigation_service.go's Capture), with no alias expansion - unlike
+// favorites, which pass through ClassifyFavoriteDecisions.
+//
+// Round ten sent the wire ref for every row, which left a local archive stored
+// under "local:<id>" and therefore inert: the optimistic hideSession overlay
+// keyed by that same ref removed the row, so the archive looked applied until
+// the next read put the session back in its tier. The ref is also what the
+// overlay matches on (railPending.ts), which is why only the mutation identity
+// changes here.
+export function archiveSessionIdentity(session: NavigationSessionSummary): string {
+  return session.host_id === "local" ? session.session_id : session.ref;
+}
+
 function NavigationRail({
   onHide,
   width,
@@ -1320,11 +1345,13 @@ function NavigationRail({
       onToggleArchiveSession: (session) => {
         const archiving = session.tier !== "archived";
         return runAction(
-          // The canonical ref, not the bare session ID: a remote row's ref is
-          // host-qualified and is the identity its archive decision is read
-          // back under, while "local:<id>" refs normalize server-side to the
-          // bare ID local decisions already use.
-          () => setArchived("session", session.ref, archiving),
+          // The identity the decision is read back under, host for host - see
+          // archiveSessionIdentity. Component 06a's round six was right that a
+          // remote row's host-qualified ref is that identity, but the server
+          // stores whatever it is handed (app_archive.go's archiveSet) and no
+          // reader expands "local:<id>", so a local row must send its bare
+          // session_id rather than the wire ref (round eleven).
+          () => setArchived("session", archiveSessionIdentity(session), archiving),
           "Couldn't update archive state",
           archiving ? { kind: "hideSession", ref: session.ref } : undefined,
           true,
