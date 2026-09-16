@@ -2318,7 +2318,7 @@ func (runtime delegateRuntime) preseedInput(child *Session, input, transcriptPat
 	if observer := child.cfg.testOnly.delegateInitialInputAppend; observer != nil {
 		observer(child)
 	}
-	if err := child.appendTurnWithDurableTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
+	if err := child.appendTurnWithSyncedTranscriptMessage(schema.TurnUserInput, message, message); err != nil {
 		return err
 	}
 	data, err := readStrictChildTranscript(transcriptPath, child.ID(), child.strictTranscriptMaxLineBytes)
