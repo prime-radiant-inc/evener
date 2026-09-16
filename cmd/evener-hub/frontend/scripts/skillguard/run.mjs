@@ -78,6 +78,61 @@ const PROSE = {
 
 const VIEWPORT = { width: 1440, height: 1000 };
 
+// The queue strip's heading. The strip's root is a plain <section> with no
+// testid, so both the presence check and the row dump locate it by this
+// header; one constant keeps the two from drifting.
+const QUEUED_MESSAGES_HEADER = "Queued messages";
+
+// The steered turn's input is rendered only once the daemon's own turn/start
+// push has crossed the hub and React has committed it into the virtualized
+// transcript -- a full round trip that is independent of (and later than) the
+// submit ACK that cleared the composer and showed Steer. That is the slowest
+// hop in the scenario, so it gets a budget with real headroom (and an env
+// override for triage) instead of waitPage's bare 15s default. It is still a
+// hard bound: an input that never lands as a turn still fails.
+const STEERED_TURN_INPUT_TIMEOUT_MS = envMillis("SKILLGUARD_STEERED_TURN_TIMEOUT_MS", 60_000);
+
+// A hold captures the NEXT provider request, so it may only be armed once the
+// previous turn is GENUINELY over. The session's busy predicate
+// (appwire-client's isTurnActive) is `status.type === "active" &&
+// activeTurnId`, and the daemon can report not-busy in the gap between a
+// turn's last leg completing and the next leg -- a drained queue's steering
+// message -- being dispatched. A single not-busy poll would arm the hold into
+// that gap, the hold would steal the pending leg, that turn would never end,
+// and the next submit would silently route to the client queue. Every turn-end
+// barrier therefore requires the idle reading to SETTLE for this long before
+// it releases. Overridable for triage.
+const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
+
+// The retry budget for the turn-id baseline read (turnIds). A baseline is
+// captured immediately before the release that would dispatch the leg it
+// proves, so it is normally one round trip; under load a poll can reject while
+// the page is busy, and a rejected read must be retried rather than read as
+// "no turns yet". The budget is deliberately longer than the wire's own 30s
+// bound on a single Runtime.evaluate, so a stalled call is retried too instead
+// of failing the scenario; it is still a hard bound, and a read that never
+// comes back fails with the last reading that stood in for a baseline.
+const TURN_BASELINE_RETRY_MS = envMillis("SKILLGUARD_TURN_BASELINE_TIMEOUT_MS", 45_000);
+
+// envMillis reads a millisecond budget from the environment, defaulting when
+// unset or BLANK and refusing anything else non-numeric rather than silently
+// treating it as NaN (which would disable a timeout entirely). Blank is not
+// merely "": Number(" ") and Number("\t") are both 0 -- finite and
+// non-negative -- so a whitespace-only value used to sail through the checks
+// below and silently select 0. For SKILLGUARD_TURN_IDLE_SETTLE_MS that
+// disables the settle barrier outright, which is the load-dependent flakiness
+// this budget exists to remove. A blank value therefore takes the DEFAULT, the
+// same as an unset one.
+function envMillis(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(`${name} must be a non-negative number of milliseconds, got ${JSON.stringify(raw)}`);
+  }
+  return value;
+}
+
 function usage() {
   return [
     "Usage: node scripts/skillguard/run.mjs --url URL --artifact-dir DIR --control-path FILE --milestone-path FILE --session-a REF --session-b REF",
@@ -209,6 +264,14 @@ class Driver {
     this.page = await connectPage(this.endpoint);
     await this.page.send("Page.enable").catch(() => {});
     await this.page.send("Runtime.enable").catch(() => {});
+    // SKILLGUARD_CPU_THROTTLE=N slows the page's main thread N-fold through
+    // Chrome's own emulation, the way a loaded CI runner does, so a
+    // load-dependent guard failure can be reproduced on an idle host.
+    const throttle = Number(process.env.SKILLGUARD_CPU_THROTTLE ?? "");
+    if (throttle > 1) {
+      await this.page.send("Emulation.setCPUThrottlingRate", { rate: throttle });
+      this.milestone("cpu-throttled", { rate: throttle });
+    }
     await this.page.send("Network.enable").catch(() => {});
   }
 
@@ -519,18 +582,99 @@ class Driver {
     return `document.querySelector("[data-pane-scaffold='session:${ref}']")?.parentElement`;
   }
 
-  async waitPage(exprSource, { timeoutMs = 15000, label }) {
-    const deadline = Date.now() + timeoutMs;
+  // waitPage resolves on the FIRST observation of a non-null/false value. That
+  // is right for a condition that only ever moves one way, but wrong for one
+  // the app can flip back -- a status that can briefly read idle between a
+  // turn's legs. `settleMs` requires the condition to hold CONTINUOUSLY for
+  // that long (sampled once per poll) before the wait resolves, so a transient
+  // reading cannot release it. Every caller that gates an IRREVERSIBLE action
+  // (arming a hold, a submit that routes differently while busy) passes it.
+  //
+  // An evaluate that could not run -- a CDP hiccup, a navigation in flight --
+  // is NOT a reading, in either direction. It must not release the wait (the
+  // null check is what stops that) and it must not RESET the settle timer
+  // either: under load a single failed poll in the middle of a settle window
+  // used to throw the whole hold away and start it over, which is exactly the
+  // kind of load-dependent behaviour this barrier exists to remove. Only a
+  // reading that CAME BACK, including one that answers "not yet", ends a hold.
+  //
+  // Error time is not idle time either. A failed poll is unobserved wall
+  // clock, so it cannot stand as proof that the condition held across it: the
+  // settle window is SHIFTED FORWARD by that span -- the successful idle time
+  // already accumulated is kept (the window does not restart, which is what a
+  // hiccup used to cost), while the unobserved span itself is excluded from the
+  // proof. Each failure contributes only the span since the PREVIOUS POLL
+  // ATTEMPT, never since the last success: a run of failures must account every
+  // interval exactly once, or the deadline would outrun wall clock (a failed
+  // poll would push it further away than the clock advanced) and the window
+  // start would be shoved past the current poll -- a wait that can neither
+  // release nor fail.
+  //
+  // The deadline is refunded that span, because a proof cannot complete inside
+  // a budget the failure ate. The refund is bounded by the settle window it
+  // protects: once unobserved time has cost as much as the whole proof needs,
+  // the deadline stops moving forward, so an evaluate that never comes back
+  // fails the wait (at the caller's budget plus at most one settle window)
+  // instead of extending it forever.
+  //
+  // The settle window itself is part of the budget the caller asked for, so
+  // the deadline is extended once, to `settleMs` after the condition is first
+  // held. Without it a condition that first holds inside the last settleMs of
+  // the budget could never release -- a guaranteed timeout at exactly the
+  // loaded moment the wait was widened to survive. It is accounted for ONCE:
+  // re-extending on every hold would let a flapping condition postpone the
+  // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
+  async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
+    const startedAt = Date.now();
+    let deadline = startedAt + timeoutMs;
+    let heldSince = null;
+    let settleAccounted = false;
+    // When the previous poll ATTEMPT landed, success or failure: the span a
+    // failure excludes from the proof is measured from here.
+    let readAt = startedAt;
+    // How much unobserved time may still be refunded to the deadline.
+    let refundLeft = settleMs;
     for (;;) {
-      const value = await evaluate(this.send, exprSource).catch(() => null);
-      if (value !== null && value !== undefined && value !== false) return value;
-      if (Date.now() > deadline) {
+      let errored = false;
+      const value = await evaluate(this.send, exprSource).catch(() => {
+        errored = true;
+        return null;
+      });
+      const now = Date.now();
+      if (errored) {
+        const unobserved = now - readAt;
+        if (heldSince !== null) {
+          heldSince += unobserved;
+          const refund = Math.min(unobserved, refundLeft);
+          refundLeft -= refund;
+          deadline += refund;
+        }
+      }
+      readAt = now;
+      const held = !errored && value !== null && value !== undefined && value !== false;
+      if (held) {
+        if (settleMs <= 0) return value;
+        if (heldSince === null) {
+          heldSince = now;
+          if (!settleAccounted) {
+            settleAccounted = true;
+            deadline = Math.max(deadline, now + settleMs);
+          }
+        }
+        if (now - heldSince >= settleMs) return value;
+      } else if (!errored) {
+        heldSince = null;
+      }
+      if (now > deadline) {
         // Toasts auto-dismiss; capture whatever the app is complaining about
         // at the moment of the timeout, and keep the LAST toast a composer
         // action produced around for the waits that outlive it.
         const toast = await evaluate(this.send, this.toastExpr()).catch(() => "");
         const seen = toast || this.lastToast ? `; toast: ${toast || this.lastToast}` : "";
-        throw new Error(`timed out after ${timeoutMs}ms waiting for ${label ?? exprSource}${seen}`);
+        const settle = settleMs > 0 ? ` and hold for ${settleMs}ms (last held: ${held ? `yes, ${now - (heldSince ?? now)}ms` : "no"})` : "";
+        throw new Error(
+          `timed out after ${timeoutMs}ms (waited ${now - startedAt}ms) waiting for ${label ?? exprSource}${settle}${seen}`,
+        );
       }
       await new Promise((resolve) => setTimeout(resolve, 80));
     }
@@ -572,9 +716,22 @@ class Driver {
     })()`;
   }
 
-  queueStripExpr() {
+  // The root a reading belongs to: the whole document by default (the waits
+  // that ask "is the app's queue empty?" are about the app, and the rail is not
+  // inside any session's pane), or one session's own pane when a `ref` is
+  // passed. A FAILURE DIAGNOSIS passes one: with more than one pane mounted, a
+  // document-wide sweep answers with whichever session happened to render a
+  // match, which is exactly how a failure in this session gets diagnosed using
+  // another session's turns or queue.
+  paneOrDocumentExpr(ref = null) {
+    return ref === null || ref === undefined ? `document` : this.paneScopeExpr(ref);
+  }
+
+  queueStripExpr(ref = null) {
     return `(() => {
-      const header = [...document.querySelectorAll("h3")].find((h) => h.textContent.startsWith("Queued messages"));
+      const root = ${this.paneOrDocumentExpr(ref)};
+      if (!root) return null;
+      const header = [...root.querySelectorAll("h3")].find((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}));
       if (!header) return null;
       const strip = header.closest("section");
       const rows = [...strip.querySelectorAll("li")].map((li) => ({
@@ -598,6 +755,16 @@ class Driver {
 
   transcriptTextExpr() {
     return `(() => document.body.innerText.length + "|" + document.body.innerText.slice(-4000))()`;
+  }
+
+  // Every rendered turn-block's text, truncated per block. Used by failure
+  // reporting: a wait on a turn-block says only that nothing matched, while
+  // this says what the transcript actually contained -- in the session the
+  // report is about when it is given a ref (see paneOrDocumentExpr).
+  transcriptBlocksExpr(ref = null) {
+    return `(() => { const root = ${this.paneOrDocumentExpr(ref)};
+      if (!root) return null;
+      return [...root.querySelectorAll("[data-testid='turn-block']")].map((el) => (el.textContent ?? "").slice(0, 240)); })()`;
   }
 
   durableRecordsExpr() {
@@ -773,6 +940,26 @@ class Driver {
     return labels[0].label;
   }
 
+  // One staged attachment tile, removed through its own control. The tile's
+  // buttons carry no testid beyond the tile itself (AttachmentTile renders
+  // `View <name>` and `Remove <name>`), so the remove button is the one whose
+  // label starts with "Remove ". The tile count is re-read between removals:
+  // each click takes one tile, and the caller's loop ends when none are left.
+  async removeAttachmentTile(ref) {
+    const labels = await evaluate(
+      this.send,
+      `(() => { const pane = ${this.paneScopeExpr(ref)};
+        const tiles = pane ? [...pane.querySelectorAll("[data-testid='attachment-tile']")] : [];
+        const buttons = tiles
+          .map((tile) => [...tile.querySelectorAll("button")].find((b) => (b.getAttribute("aria-label") ?? "").startsWith("Remove ")))
+          .filter(Boolean);
+        return buttons.map((b) => { const r = b.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, label: b.getAttribute("aria-label") }; }); })()`,
+    );
+    if (!labels || labels.length === 0) throw new Error("no attachment remove button");
+    await this.clickAt(labels[0].x, labels[0].y);
+    return labels[0].label;
+  }
+
   // Every action that SENDS the composer's draft states the draft it means to
   // send, and the composer is held to it first. A draft that arrived
   // corrupted used to be discovered much later, as a wait timing out on a
@@ -905,22 +1092,360 @@ class Driver {
     );
   }
 
-  // A POSITIVE turn-end barrier. steerVisible reads the daemon's own status:
-  // it is false only once the session reports idle, so once this passes, no
-  // leg of the previous turn can still be in flight daemon-side. Every hold
-  // in the choreography is armed only after this barrier, because a hold
-  // captures the NEXT provider request — arming it while the previous
-  // scenario's turn still has an undispatched leg (a drain's steering leg,
-  // which the daemon only sends after the held first leg returns) would
-  // steal that leg: the captured request never completes, the turn never
-  // ends, and the next submit silently routes to the client-side queue.
-  // Reply waits cannot substitute: a drain produces a reply per leg, and
-  // the first leg's reply arrives while the drain leg is still pending.
+  // A POSITIVE turn-end barrier. Every hold in the choreography is armed only
+  // after this barrier, because a hold captures the NEXT provider request —
+  // arming it while the previous scenario's turn still has an undispatched leg
+  // (a drain's steering leg, which the daemon only sends after the held first
+  // leg returns) would steal that leg: the captured request never completes,
+  // the turn never ends, and the next submit silently routes to the
+  // client-side queue (observed on a loaded box as exactly that: the steered
+  // input sitting in the queue strip and the input-visibility wait timing
+  // out).
+  //
+  // `steerVisible === false` alone is NOT an authoritative idle condition: it
+  // is the DERIVED busy predicate (Composer.tsx's busy = isTurnActive(
+  // status.type, activeTurnId) = status.type === "active" && activeTurnId), so
+  // it is ALSO false when the wire reports an ACTIVE session with no
+  // activeTurnId — which is exactly what a session holding queued/steering
+  // work reports, and precisely where the drain's undispatched leg lives. The
+  // barrier therefore gates on the session's own published state instead of
+  // that derived flag:
+  //   1. the session's RAW wire status, which Cadence renders straight onto its
+  //      aria-label ("Working" ⟺ status.type === "active"); the barrier only
+  //      releases when the session is demonstrably not working; and
+  //   2. queue depth — the status row's queue indicator renders only while
+  //      queueDepth > 0, so its absence is an empty WIRE queue; and
+  //   3. the client-side pending-work surfaces, because (2) covers only what
+  //      the wire already knows: an optimistic/pending queue row that has not
+  //      been acknowledged yet, an accepted-but-unreflected send/steer/drain,
+  //      or a durable outbox record still in flight are all invisible to
+  //      queueDepth while they exist. Those are exactly the states PendingChips
+  //      (send/steer/drain entries) and the "Queued messages" strip (queue
+  //      rows, plus recovery/blocked records) render, from the same durable
+  //      outbox and authoritative pending-mutation projections the durable
+  //      reads use, so either one being on screen blocks the release -- and
+  //      the stores those surfaces are projected from are read directly too,
+  //      because a render lands a commit after the durable write and a poll
+  //      can land in that gap; and
+  //   4. the session's DURABLE recovery records, because (3)'s strip is not
+  //      authoritative for them: QueueStrip filters out the record its own
+  //      composer has taken ownership of (activeRecoveryId), so a failed
+  //      request the composer has restored as a draft renders NOTHING in the
+  //      strip -- and the barrier would release over a composer that is about
+  //      to resend it. The store is the record's own storage and is not
+  //      filtered by who owns it, so "no strip" plus "no record" is what the
+  //      release means. (A record that cannot be read is not a release: the
+  //      reading is retried and only times out.)
+  // A session still working, or still holding any pending work, cannot release
+  // the barrier even though its busy flag reads false.
+  //
+  // The idle reading must still SETTLE (waitPage's settleMs) before it
+  // releases: a single not-idle-looking poll can land in the gap between the
+  // previous turn's last leg completing and the next leg being dispatched,
+  // which widens under load. The settle is a BACKSTOP, not the guarantee: every
+  // turn whose last leg is a daemon-dispatched continuation (a drained queue
+  // row, an interrupt steer) is additionally held to that leg's own reply by
+  // waitForContinuationReply before this barrier runs, so no load-induced gap
+  // can outlive the release of that wait. Reply waits cannot substitute on
+  // their own: such a turn produces a reply PER leg, and the first leg's reply
+  // arrives while the continuation leg is still pending.
+  //
+  // The session's own recovery records are read from the DURABLE store that
+  // owns them, not from a render of them: QueueStrip hides the record its
+  // composer has taken ownership of (activeRecoveryId), so the strip is
+  // blind to a failed request that has already been restored into the
+  // composer. True is returned only when the store was read AND holds no such
+  // record for this session: an unreadable store (null) and a pending record
+  // (false) both keep the barrier from releasing.
+  noPendingRecoveryExpr(ref) {
+    return `(async () => {
+      const durable = await ${this.durableRecordsExpr()};
+      if (!durable || !Array.isArray(durable.recovery)) return null;
+      return durable.recovery.some(
+        (record) => record.targetRef === ${JSON.stringify(ref)} && record.method !== "notes/human/set",
+      )
+        ? false
+        : true;
+    })()`;
+  }
+
+  // The same reading for the OTHER two durable stores the pending surfaces are
+  // projected from. PendingChips and the queue strip render send/steer/drain
+  // and queue entries out of the outbox and the accepted-mutation store, but
+  // they render them a commit LATER than the durable write: the projection is
+  // another IndexedDB round trip plus a React commit, so a poll can see a
+  // quiet pane while the durable record for the session is already there. The
+  // barrier must not release into that gap -- the next hold would capture the
+  // request this record is about to dispatch. True only when both stores were
+  // read AND hold no record for this session; an unreadable store (null) and a
+  // pending record (false) both keep the barrier from releasing.
+  //
+  // `notes/human/set` is the one mutation kind this app never treats as
+  // pending turn work (QueueStrip and Composer's fresh-recovery effect both
+  // filter it out by that exact method), so it is excluded here for the same
+  // reason the recovery read excludes it.
+  noPendingTurnRecordExpr(ref) {
+    return `(async () => {
+      const durable = await ${this.durableRecordsExpr()};
+      if (!durable || !Array.isArray(durable.outbox) || !Array.isArray(durable.optimistic)) return null;
+      return [...durable.outbox, ...durable.optimistic].some(
+        (record) => record.targetRef === ${JSON.stringify(ref)} && record.method !== "notes/human/set",
+      )
+        ? false
+        : true;
+    })()`;
+  }
+
+  // One expression, so every reading of "this session is idle" is the same
+  // reading: the barrier below waits on it, and nothing else has a private
+  // copy that could drift from it.
+  turnIdleExpr(ref) {
+    return `(async () => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      const state = ${this.composerStateExpr(ref)};
+      if (!state || state.steerVisible !== false) return null;
+      const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
+      if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
+      if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
+      if (pane.querySelector("[data-testid='pending-chips']") !== null) return null;
+      if ([...pane.querySelectorAll("h3")].some((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}))) return null;
+      if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
+      if ((await ${this.noPendingTurnRecordExpr(ref)}) !== true) return null;
+      return true;
+    })()`;
+  }
+
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
     await this.waitPage(
-      `(() => { const state = ${this.composerStateExpr(ref)}; return state && state.steerVisible === false ? true : null; })()`,
-      { timeoutMs, label: `previous turn ended (session idle) for ${ref}` },
+      this.turnIdleExpr(ref),
+      {
+        timeoutMs,
+        settleMs: TURN_IDLE_SETTLE_MS,
+        label: `previous turn ended and stayed idle for ${ref}`,
+      },
     );
+  }
+
+  // clearComposerDraft takes one session's composer to the state a fresh
+  // re-composition starts from, and holds it there against the app's own
+  // persistence until the session's durable recovery store is EMPTY.
+  //
+  // Why it exists: a failed request can come back to the composer instead of
+  // resting in the strip. Composer's fresh-recovery effect restores a rejected
+  // record into an EMPTY composer and takes ownership of it, and QueueStrip
+  // then hides the record (activeRecoveryId) -- so the strip is empty AND the
+  // composer holds the failed draft, and a retry that types without looking
+  // appends to it instead of composing it. Clearing is not a workaround for
+  // that shape: it is the app's own reading of it.
+  // queueRecoveryPersistence discards the record once the composer's text,
+  // attachments and selections are all empty (Composer.tsx), so an emptied
+  // composer is what "this recovery is spent" means to the app -- and the
+  // record LEAVING THE DURABLE STORE is the signal that nothing can restore
+  // the draft again, because the restore effect can only fire while a record
+  // exists. Waiting for the store, rather than for a quiet poll window, is what
+  // makes the state the retry types into final.
+  //
+  // ATTACHMENTS COUNT. The discard predicate requires the staged attachments
+  // to be empty as well as the text and the selections, so a tile left behind
+  // keeps the record -- and with it the restorable draft -- alive forever, and
+  // the wait below could never see the store empty: it would time out after
+  // its whole budget. Removing the tiles is therefore part of emptying the
+  // composer, not a convenience.
+  async clearComposerDraft(ref, { timeoutMs = 20000 } = {}) {
+    const settled = await this.settleComposer(ref);
+    if (settled.value !== "") {
+      await this.focusComposer(ref);
+      await this.selectAll(ref);
+      await this.press(ref, "Backspace");
+    }
+    // Chips go through their own remove buttons, one at a time: the selection
+    // list is what the record's persistence reads, and a chip left behind
+    // keeps both the record and its restorable draft alive.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const chips = await evaluate(
+        this.send,
+        `(() => { const pane = ${this.paneScopeExpr(ref)};
+          return pane
+            ? [...pane.querySelectorAll("[data-testid='composer-skill-chip'] button")].filter((b) =>
+                (b.getAttribute("aria-label") ?? "").startsWith(${JSON.stringify(CHIP_REMOVE_PREFIX)})).length
+            : 0; })()`,
+      );
+      if (!chips) break;
+      await this.removeSkillChip(ref);
+    }
+    // Attachment tiles go the same way, and for the same reason: each tile
+    // carries its own remove button (AttachmentTile's `Remove <name>`), and
+    // the record's discard predicate reads the staged attachment list, not the
+    // rendered tiles.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const tiles = await evaluate(
+        this.send,
+        `(() => { const pane = ${this.paneScopeExpr(ref)};
+          return pane
+            ? [...pane.querySelectorAll("[data-testid='attachment-tile'] button")].filter((b) =>
+                (b.getAttribute("aria-label") ?? "").startsWith("Remove ")).length
+            : 0; })()`,
+      );
+      if (!tiles) break;
+      await this.removeAttachmentTile(ref);
+    }
+    await this.waitPage(this.composerDrainedExpr(ref), {
+      timeoutMs,
+      label: `composer cleared (text, chips and tiles) and no pending recovery for ${ref}`,
+    });
+  }
+
+  // The emptied composer, as ONE reading: text, skill chips AND attachment
+  // tiles all empty, with no durable recovery record left to restore a draft
+  // from. Named separately from its one wait so the state it means is
+  // inspectable on its own -- the wait, a failure report and a test all read
+  // the same predicate.
+  composerDrainedExpr(ref) {
+    return `(async () => {
+      const state = ${this.composerStateExpr(ref)};
+      if (!state || state.text !== "" || state.chips.length > 0 || state.tiles !== 0) return null;
+      return (await ${this.noPendingRecoveryExpr(ref)}) === true ? true : null;
+    })()`;
+  }
+
+  // The turn-block ids this session's pane currently renders. Captured before
+  // the release that will dispatch a continuation leg, this is the baseline
+  // that tells waitForContinuationReply which turns existed while that leg was
+  // still undispatched -- see it for why that baseline is the wait's proof.
+  //
+  // Every transcript read is scoped to the session's own pane. Turn ids are
+  // unique per session, not per document, and a session pane is not the only
+  // place a turn block can be rendered (the stack host mounts every pane;
+  // measured on this desktop host, opening session B unmounts session A, so
+  // the collision below is latent rather than everyday). A document-wide sweep
+  // can be satisfied by another session's pane, which would make this baseline
+  // wrong in the direction that HEALS a false pass (ids from the other pane
+  // make real turns look pre-existing) or a timeout (the continuation's own
+  // block is treated as pre-existing).
+  turnIdsExpr(ref = this.sessionA) {
+    return `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      return [...pane.querySelectorAll("[data-testid='turn-block']")].map((el) => el.getAttribute("data-turn-id"));
+    })()`;
+  }
+
+  // turnIds is a BASELINE, and a baseline that failed to read is not an empty
+  // one. `[]` claims "no turns existed", which is the reading that lets
+  // waitForContinuationReply release on a turn that was already running -- the
+  // exact false pass the baseline exists to prevent. A missing pane, a null
+  // result or a page error therefore fails here, BEFORE the release that would
+  // dispatch the continuation leg it is meant to prove.
+  //
+  // A TRANSIENT failure is not that verdict. A single evaluate rejection under
+  // load used to hard-fail the scenario this barrier exists to stabilize, so
+  // an unsuccessful read is retried until it comes back or the budget expires;
+  // only then does it fail, naming the last reading (or the last error) that
+  // stood in for a baseline.
+  async readTurnIdBaseline(exprSource, label, { timeoutMs = TURN_BASELINE_RETRY_MS } = {}) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let last = null;
+      const ids = await evaluate(this.send, exprSource).catch((error) => {
+        last = `read failed: ${error}`;
+        return null;
+      });
+      if (Array.isArray(ids)) return ids;
+      if (last === null) last = `got ${JSON.stringify(ids)}`;
+      if (Date.now() > deadline) {
+        throw new Error(`${label}: no turn ids read after ${timeoutMs}ms (${last})`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+  }
+
+  async turnIds(ref = this.sessionA) {
+    return this.readTurnIdBaseline(this.turnIdsExpr(ref), `turnIds(${ref})`);
+  }
+
+  // waitForContinuationReply is the POSITIVE end-of-turn proof for a turn whose
+  // last leg is a daemon-dispatched continuation: a drained queue row folded
+  // into the running turn, or an interrupt steer. The daemon dispatches that
+  // leg only AFTER the leg before it returns, and no wire event names the
+  // dispatch, so an idle-looking status alone can be read in the gap before it
+  // (a gap that widens with load). What the wire does publish, in order, is the
+  // continuation's OWN turn boundary and then the continuation input itself: a
+  // steering item opens no turn (`EventSteeringInjected` projects to a bare
+  // notification), so the daemon announces `EventTurnStarted` for the turn that
+  // will carry it BEFORE the injection, precisely so that content is not
+  // attributed to the turn before it (agent/session_lifecycle.go's
+  // acceptNotificationInput and acceptSteeringCarrierInput both say so at the
+  // emit site; injectDrainedSteering consumes the message only after). Two
+  // orderings follow, and this wait holds the continuation to both:
+  //
+  //   1. The continuation text lands in a turn block that did NOT exist when
+  //      the release was issued, because the turn it belongs to is opened at
+  //      that boundary. `turnsBefore` is `turnIds()` captured before the
+  //      release; a turn block whose id is in it is a turn that was already
+  //      running, so nothing in it can be proof that the continuation leg ran.
+  //      The held leg's own reply lives in exactly such a block -- verified
+  //      frame by frame on a live run: the block that first receives the
+  //      continuation text appears with ZERO replies in it, while the held
+  //      leg's reply is already rendered in the block before it.
+  //   2. Inside that new turn, the continuation's own input is followed by a
+  //      reply. TurnBlock renders one turn's items in wire order, and the reply
+  //      to the continuation can only be recorded after the daemon dispatched
+  //      that leg, so a sentinel reply AFTER this text is a reply to it.
+  //
+  // What this wait must NOT be is "some turn block holds the text and the
+  // sentinel reply" -- the shape it used to have. Every scripted leg answers
+  // with the SAME sentinel, so that check is satisfied by any earlier reply
+  // sharing a block with the continuation text, and it reads as a completion
+  // proof only because this app currently renders the continuation in a block
+  // of its own. That is a layout fact, not a published ordering: had the
+  // continuation been folded into the running turn's block -- the failure the
+  // review named, where the held leg's reply is already there when the steering
+  // item is injected -- the old check would have released on the HELD leg's
+  // reply, before the continuation leg's request had even been dispatched. With
+  // the turn identity and the item order both required, that same page state
+  // fails the wait loudly instead of passing it.
+  //
+  // `text` is the continuation input the scenario submitted.
+  //
+  // The whole check runs inside the TARGET SESSION'S PANE. Turn ids are
+  // unique per session, not per document, so a document-wide sweep can be
+  // satisfied by a turn block rendered anywhere else -- above all another
+  // session's pane (identical scripted text is the norm here, since every leg
+  // answers with the same sentinel). That either confirms a pass this session
+  // never produced or hides the continuation behind an id the baseline
+  // collected from a pane the release never touched.
+  async waitForContinuationReply(text, turnsBefore, { timeoutMs = 30000, ref = this.sessionA } = {}) {
+    if (!Array.isArray(turnsBefore)) {
+      throw new Error("waitForContinuationReply needs the turnIds() captured before the release that dispatches the continuation");
+    }
+    const expr = `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      const before = new Set(${JSON.stringify(turnsBefore)});
+      return [...pane.querySelectorAll("[data-testid='turn-block']")].some((el) => {
+        const id = el.getAttribute("data-turn-id");
+        if (!id || before.has(id)) return false;
+        const block = el.textContent ?? "";
+        const at = block.indexOf(${JSON.stringify(text)});
+        if (at < 0) return false;
+        // The reply must follow the continuation TEXT, not merely follow its
+        // first character: slice from the end of the run itself ('at + 1'
+        // scanned the continuation's own tail, harmless only while the two
+        // sentinels stay disjoint -- a continuation whose text ever carried
+        // the reply sentinel would release on the input's own text, before the
+        // continuation leg's reply existed, which is exactly the premature
+        // release this wait was rewritten to prevent).
+        return block.slice(at + ${text.length}).includes(${JSON.stringify(REPLY_TEXT)});
+      }) ? true : null; })()`;
+    try {
+      await this.waitPage(expr, {
+        timeoutMs,
+        label: `the continuation leg carrying ${JSON.stringify(text)} to complete in its own turn`,
+      });
+    } catch (error) {
+      throw await this.dumpPageState(ref, error);
+    }
   }
 
   // clickQueueStripControl applies the composer-action lesson (see
@@ -951,6 +1476,7 @@ class Driver {
         label: `${label} click to take effect (attempt ${attempt}/${attempts})`,
       }).catch(() => false);
       if (landed) return;
+      if (attempt < attempts) console.error(`skillguard: ${label}: click ${attempt} had no observed effect; re-clicking`);
     }
     const diagnosis = await evaluate(
       this.send,
@@ -959,33 +1485,106 @@ class Driver {
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
-  // Every scripted turn replies with the SAME sentinel, and the transcript
-  // VIRTUALIZES its rows — older reply rows unmount as new ones render, so
-  // counting occurrences in body.innerText is a moving window that can never
-  // observe a turn that completed. Instead, snapshot WHICH turn-block ids
-  // already carry the reply and wait for a turn-block that carries it and was
-  // NOT in that snapshot. The baseline must be captured BEFORE the
-  // submit/release that triggers the reply.
-  async replyBaseline(text = REPLY_TEXT) {
-    const ids = await evaluate(
-      this.send,
-      `(() => [...document.querySelectorAll("[data-testid='turn-block']")]
-        .filter((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}))
-        .map((el) => el.getAttribute("data-turn-id")))()`,
-    ).catch(() => []);
-    return Array.isArray(ids) ? ids : [];
+  // turnTextsExpr evaluates to one session's mounted transcript text per turn:
+  // the pane's turn-blocks that share a data-turn-id, concatenated, because a
+  // turn can render as several segments (TranscriptBody's turnRow). Scoped to
+  // the pane because turn ids are session-local and two sessions are mounted.
+  // Only the rows near the end are mounted, and which ones changes with the
+  // footer's height, so a wait must ask about a turn's own content, never
+  // about which rows exist.
+  turnTextsExpr(ref) {
+    return `(() => { const byTurn = new Map();
+      const pane = ${this.paneScopeExpr(ref)};
+      for (const el of pane ? pane.querySelectorAll("[data-testid='turn-block']") : []) {
+        const id = el.getAttribute("data-turn-id");
+        byTurn.set(id, (byTurn.get(id) ?? "") + (el.textContent ?? ""));
+      }
+      return [...byTurn.values()]; })()`;
   }
 
-  async waitForReply(text, baselineIds, { timeoutMs = 25000 } = {}) {
-    if (!Array.isArray(baselineIds)) {
-      throw new Error("waitForReply needs a replyBaseline() captured before the triggering submit/release");
-    }
+  // Every scripted turn replies with the SAME sentinel, so a reply is only
+  // evidence of THIS turn when it sits in the turn that carries the submitted
+  // prose; a baseline of mounted reply rows cannot tell a new reply from an
+  // older row mounting back in.
+  async waitForReply(ref, prose, { timeoutMs = 25000 } = {}) {
     await this.waitPage(
-      `(() => { const baseline = new Set(${JSON.stringify(baselineIds)});
-        return [...document.querySelectorAll("[data-testid='turn-block']")]
-          .some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}) && !baseline.has(el.getAttribute("data-turn-id"))) ? true : null; })()`,
-      { timeoutMs, label: `a further reply "${text}" (${baselineIds.length} earlier reply turns)` },
+      `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`,
+      { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
     );
+  }
+
+  // dumpPageState is the failure report both transcript waits owe on a timeout:
+  // this condition is fed by a daemon push, so the useful question when it fails
+  // is not "how long did we wait" but "which of a late render, a queue-routed
+  // submit, or a wrong-session pane happened" -- and that is only answerable
+  // from the page, not the label. It RETURNS the caller's error with what the
+  // transcript, the queue strip and the composer actually showed appended, and
+  // the caller throws it: a report that threw on its own left the caller
+  // depending on that throw to fail its wait, so a dump that ever returned
+  // normally would have turned the timeout into a silent pass. Returning makes
+  // the propagation total -- the caller has the error in hand and rethrows it
+  // on every path.
+  //
+  // `ref` names the session the dump is ABOUT: two composers can be mounted,
+  // so a dump that assumed one of them would answer about the wrong session,
+  // and every read here is scoped to that session's own pane for the same
+  // reason (with more than one pane mounted, a document-wide sweep reports
+  // whichever session rendered a match -- which is how a failure in this
+  // session gets diagnosed using another session's turns or queue).
+  async dumpPageState(ref, error) {
+    const [blocks, blockItems, queue, composer] = await Promise.all([
+      evaluate(this.send, this.transcriptBlocksExpr(ref)).catch((e) => `turn-block read failed: ${e}`),
+      evaluate(this.send, this.transcriptBlockItemsExpr(ref)).catch((e) => `turn-block items read failed: ${e}`),
+      evaluate(this.send, this.queueStripExpr(ref)).catch((e) => `queue read failed: ${e}`),
+      this.composerState(ref).catch((e) => `composer read failed: ${e}`),
+    ]);
+    return new Error(
+      `${error instanceof Error ? error.message : String(error)}\n` +
+        `  transcript turn-blocks: ${JSON.stringify(blocks)}\n` +
+        `  turn-block items (id: testids): ${JSON.stringify(blockItems)}\n` +
+        `  queue strip: ${JSON.stringify(queue)}\n` +
+        `  composer: ${JSON.stringify(composer)}`,
+    );
+  }
+
+  // transcriptBlockItemsExpr lists, per turn block in the pane, the turn id and
+  // the data-testid of every descendant that carries one -- which turn opened
+  // and which items landed in it, the question a continuation-leg failure asks.
+  transcriptBlockItemsExpr(ref) {
+    return `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      return [...pane.querySelectorAll("[data-testid='turn-block']")].map((el) => ({
+        id: el.getAttribute("data-turn-id"),
+        items: [...el.querySelectorAll("[data-testid]")].map((n) => n.getAttribute("data-testid")),
+      }));
+    })()`;
+  }
+
+  // waitForTranscriptInput waits for `text` to appear in a rendered
+  // turn-block. On timeout it dumps what the transcript, the queue strip and
+  // the composer actually showed: this condition is fed by a daemon push, so
+  // the useful question when it fails is not "how long did we wait" but
+  // "which of a late render, a queue-routed submit, or a wrong-session pane
+  // happened" — and that is only answerable from the page, not the label.
+  // `ref` names the SESSION whose pane is searched and whose composer the
+  // timeout dump reads; it defaults to sessionA (this helper's current call
+  // site) so a reuse for sessionB asks about B, not A. The search is scoped to
+  // that pane for the same reason the continuation wait is: the scripted text
+  // is identical across panes by construction, so a document-wide sweep can be
+  // satisfied by a turn in the other mounted session while the session under
+  // test has rendered nothing. It reads the pane's turns the way every other
+  // transcript wait does (turnTextsExpr): one turn's segments are concatenated,
+  // so a text the virtualized transcript split across two rows still matches.
+  async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
+    try {
+      await this.waitPage(
+        `(() => ${this.turnTextsExpr(ref)}.some((turn) => turn.includes(${JSON.stringify(text)})) ? true : null)()`,
+        { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
+      );
+    } catch (error) {
+      throw await this.dumpPageState(ref, error);
+    }
   }
 }
 
@@ -1046,7 +1645,6 @@ async function runScenarios(driver) {
   // durable-evidence assertions that cannot race live in the transcript's
   // skill_state record and the transport scenario's stalled-transport
   // capture; a record the driver did catch must still carry prose and skill.
-  const canonicalBaseline = await driver.replyBaseline();
   // Turn-end barrier: instant here (the session has never run a turn), kept
   // so every turn/start submit in the choreography is barriered by
   // construction (see waitForTurnIdle).
@@ -1057,7 +1655,7 @@ async function runScenarios(driver) {
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("submitted-canonical", { ref: driver.sessionA, prose: PROSE.canonical });
   driver.milestone("draft-after-commit", await evaluate(driver.send, driver.draftStorageExpr()));
-  await driver.waitForReply(REPLY_TEXT, canonicalBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.canonical);
 
   // ---- scenario: draft thread-switch / remount ----
   await driver.focusComposer(driver.sessionA);
@@ -1159,22 +1757,37 @@ async function runScenarios(driver) {
   driver.milestone("drain-committed", {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
-  const drainBaseline = await driver.replyBaseline();
+  // The turns already rendered while the drain's continuation leg is still
+  // undispatched: waitForContinuationReply requires the continuation to land in
+  // a turn that is NOT one of these -- read from session A's own pane, the
+  // session this scenario drives (every read below is pane-scoped).
+  const drainTurns = await driver.turnIds(driver.sessionA);
   driver.control("release");
-  await driver.waitForReply(REPLY_TEXT, drainBaseline);
-  driver.milestone("drain-released", {});
+  // The reply wait below returns on the HELD leg's reply, which arrives while
+  // the drain's steering leg is still pending: the release unblocks the held
+  // provider call, the daemon folds the queue in at that turn boundary, and
+  // only then dispatches the continuation leg. Wait for that leg's own reply
+  // (the drained text's turn carrying the scripted answer) so the turn is
+  // provably over before the next hold is armed — no fixed settling gap.
+  await driver.waitForReply(driver.sessionA, PROSE.queueTurn);
+  await driver.waitForContinuationReply(PROSE.queue2, drainTurns, { ref: driver.sessionA });
+  driver.milestone("drain-released", {
+    turnsBefore: drainTurns,
+    blocks: await evaluate(driver.send, driver.transcriptBlockItemsExpr(driver.sessionA)),
+  });
 }
 
 async function runScenariosPart2(driver) {
   // ---- scenario: selected steering ----
-  // Turn-end barrier: the drain from the previous scenario folds its queued
+  // Turn-end barrier: the drain from the previous scenario folded its queued
   // input into the running turn as a steering leg the daemon dispatches only
-  // AFTER the held first leg returns — the first leg's reply arriving does
-  // NOT mean the turn is over. Arming this hold before the drain leg ran
-  // would capture THAT leg (verified failure mode: the captured leg never
-  // completes, the turn never ends, the steering submit silently routes to
-  // the client-side queue). Only the daemon's idle status clears the
-  // barrier.
+  // AFTER the held first leg returned — the first leg's reply arriving did NOT
+  // mean the turn was over, which is why the scenario above holds the turn to
+  // that leg's own reply before this barrier. Arming this hold with that leg
+  // undispatched would capture it (verified failure mode: the captured leg
+  // never completes, the turn never ends, the steering submit silently routes
+  // to the client-side queue). The barrier itself still re-checks the daemon's
+  // published status and the session's pending work.
   await driver.waitForTurnIdle(driver.sessionA);
   driver.control("hold");
   await driver.focusComposer(driver.sessionA);
@@ -1188,10 +1801,13 @@ async function runScenariosPart2(driver) {
   // transcript: steering before the daemon records the input folds the two
   // texts into ONE user message (interrupt semantics), which is a different
   // shape than the one this scenario's provider assertions describe.
-  await driver.waitPage(
-    `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(PROSE.steerTurn)})) ? true : null)()`,
-    { label: "steered turn's input visible in the transcript" },
-  );
+  // The input is rendered by the daemon's own turn/start push, not by the
+  // submit ACK, so it can lag the composer clear by a full round trip; and if
+  // the previous turn was not genuinely over when this submit landed, the send
+  // routes to the client queue and becomes a queued row that never turns into a
+  // transcript turn at all. The wait is therefore generous and bounded, and its
+  // failure names what the page actually showed instead of only the label.
+  await driver.waitForTranscriptInput(PROSE.steerTurn, { ref: driver.sessionA });
   driver.milestone("steer-turn-started", { prose: PROSE.steerTurn });
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.steer);
@@ -1199,14 +1815,23 @@ async function runScenariosPart2(driver) {
   await driver.clickSteer(driver.sessionA, draft(PROSE.steer));
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("steered", { prose: PROSE.steer });
-  const steerBaseline = await driver.replyBaseline();
+  // Same baseline as the drain: the held turn is on screen while the interrupt
+  // leg is still undispatched (see waitForContinuationReply).
+  const steerTurns = await driver.turnIds(driver.sessionA);
   driver.control("release");
-  await driver.waitForReply(REPLY_TEXT, steerBaseline);
+  // Same two-leg shape as the drain above: the release answers the HELD leg
+  // first, and the interrupt leg the daemon dispatches after it is the one the
+  // next hold could steal. Its own reply in the transcript is the end-of-turn
+  // proof, independent of how long the dispatch takes.
+  await driver.waitForReply(driver.sessionA, PROSE.steerTurn);
+  await driver.waitForContinuationReply(PROSE.steer, steerTurns, { ref: driver.sessionA });
   driver.milestone("steer-released", {});
 
   // ---- scenario: attachment preservation ----
   // Turn-end barrier: this submit must route to turn/start, so the steering
-  // scenario's turn (interrupt leg included) must be fully over.
+  // scenario's turn (interrupt leg included) must be fully over — which the
+  // continuation-reply wait above already proved, and the barrier re-checks
+  // against the daemon's published status and the session's pending work.
   await driver.waitForTurnIdle(driver.sessionA);
   const imagePath = await writeFixtureImage(driver.artifactDir);
   await driver.setFocusFileInput(driver.sessionA, imagePath);
@@ -1233,14 +1858,13 @@ async function runScenariosPart2(driver) {
   check(attachState.tiles === 1, `attachment tile lost across chip edits: ${JSON.stringify(attachState)}`);
   check(attachState.text.includes("[image 1]"), `attachment anchor missing: ${JSON.stringify(attachState.text)}`);
   driver.milestone("attachment-preserved", attachState);
-  const attachBaseline = await driver.replyBaseline();
   await driver.clickSubmit(driver.sessionA, draft(attachState.text, { chips: attachState.chips, tiles: attachState.tiles }));
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("attachment-submitted", {
     prose: PROSE.attachment,
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
-  await driver.waitForReply(REPLY_TEXT, attachBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
   // ---- scenario: capability loss ----
   await driver.openSession(driver.sessionB);
@@ -1312,17 +1936,26 @@ async function runScenariosPart2(driver) {
   await driver.waitPage(driver.turnFailureExpr(), { timeoutMs: 45000, label: "visible failed input" });
   driver.milestone("fail-observed", { failure: await evaluate(driver.send, driver.turnFailureExpr()) });
   // Explicit retry: the failed input kept the names and prose for correction;
-  // the user re-composes the same request and sends it again. The barrier is
-  // instant (the failed turn already ended at the visible failure cap) but
-  // keeps every fresh turn/start barriered by construction.
+  // the user re-composes the same request and sends it again.
+  //
+  // The failed request can be waiting in the COMPOSER rather than the strip: a
+  // rejected recovery record the composer has taken ownership of is filtered
+  // out of the strip (QueueStrip drops the record whose clientMutationId is
+  // activeRecoveryId) while its draft sits in the textarea, and a retry that
+  // simply typed would append to it. So the composer is taken to the state the
+  // retry composes from FIRST -- clearComposerDraft empties it and waits for
+  // the session's durable recovery store to empty too -- and only then does
+  // the barrier run (it re-reads the same store) and the retry type. Appending
+  // is impossible from both sides: the draft is gone, and so is the record the
+  // app restores drafts from.
+  await driver.clearComposerDraft(driver.sessionA);
   await driver.waitForTurnIdle(driver.sessionA);
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
-  const retryBaseline = await driver.replyBaseline();
   await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   await driver.waitForComposerCleared(driver.sessionA);
-  await driver.waitForReply(REPLY_TEXT, retryBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.fail);
   driver.milestone("fail-retried", { prose: PROSE.fail });
 
   // ---- scenario: delayed accepted-send vs newer chip edit ----
@@ -1351,9 +1984,8 @@ async function runScenariosPart2(driver) {
   check(editedState.text.includes(PROSE.delayExtra), `newer draft lost the typed edit: ${JSON.stringify(editedState)}`);
   driver.milestone("delay-edited", editedState);
   await driver.removeSkillChip(driver.sessionA);
-  const delayBaseline = await driver.replyBaseline();
   driver.control("release");
-  await driver.waitForReply(REPLY_TEXT, delayBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.delay);
   const keptState = await driver.composerState(driver.sessionA);
   check(keptState.text.includes(PROSE.delayExtra), `delayed commit clobbered the newer draft: ${JSON.stringify(keptState)}`);
   check(keptState.chips.length === 0, `delayed commit restored the removed chip: ${JSON.stringify(keptState)}`);
@@ -1366,7 +1998,6 @@ async function runScenariosPart2(driver) {
   // Turn-end barrier: the offline submit must persist as a turn/start
   // mutation, so the delayed-send turn must be fully over.
   await driver.waitForTurnIdle(driver.sessionA);
-  const netBaseline = await driver.replyBaseline();
   await driver.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.transport);
@@ -1390,7 +2021,7 @@ async function runScenariosPart2(driver) {
   // Connectivity restored: the outbox retries (the window's online event and
   // the heartbeat's reconnect both wake it) and the same durable mutation is
   // delivered exactly once.
-  await driver.waitForReply(REPLY_TEXT, netBaseline, { timeoutMs: 45000 });
+  await driver.waitForReply(driver.sessionA, PROSE.transport, { timeoutMs: 45000 });
   const onlineDurable = await evaluate(driver.send, driver.durableRecordsExpr());
   driver.milestone("net-restored", { durable: onlineDurable });
 }

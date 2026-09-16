@@ -2,17 +2,16 @@
 // drives its connect() handshake, provides it via context, and hosts the
 // workspace - DockHost (dockview) on desktop; renders NotFound in its
 // place for a path urlToPane() can't resolve at all.
+
+import type { AppwireClientLike, NavigationSessionLocation } from "@evener/appwire-client";
+import { ACTIONS, AppwireClient, rpcURLFromLocation } from "@evener/appwire-client";
+import { isNavigationUnavailable, isSettledGone, keyID } from "@evener/appwire-client/state/navigation";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { ACTIONS } from "../keybindings/actions";
+import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { isEditableTarget } from "../keybindings/dispatcher";
-import { keybindingsRegistry } from "../keybindings/registry";
 import { initNotifications } from "../notifications";
 import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { transcriptContextIncludes } from "../panes/session/transcript/openTranscript";
-import { AppwireClient } from "../protocol/client";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { rpcURLFromLocation } from "../protocol/transport";
-import type { NavigationSessionLocation } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
 import {
   selectLiveRows,
@@ -22,7 +21,6 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
-import { isNavigationUnavailable, isSettledGone, keyID } from "../stores/navigation/types";
 import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { CheatsheetOverlay } from "./cheatsheet/CheatsheetOverlay";
@@ -208,7 +206,6 @@ function routePlacementIsApplied(
     focusedPane?.type === "sessionTasks" ||
     focusedPane?.type === "sessionActivity" ||
     focusedPane?.type === "sessionDetails" ||
-    focusedPane?.type === "sessionNotes" ||
     focusedTranscriptMatchesRoute;
   const focusIsApplied = (paneId: string): boolean =>
     workspace.focusedPaneId === paneId || (allowFocusedCompanion && focusedCompanion);

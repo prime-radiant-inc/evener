@@ -1,11 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { memo, type ReactNode } from "react";
 import { afterEach, expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
-import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import { projectThread } from "../../../transcriptDisplay/projector";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
@@ -332,7 +332,10 @@ test("Chat renders a closed action group that expands reasons without tool UI (c
   if (summary === null) throw new Error("Chat intent summary did not render");
   fireEvent.click(summary);
   expect(group.hasAttribute("open")).toBe(true);
-  expect(screen.getByText("Run focused checks")).toBeTruthy();
+  // The intent text renders head + glued final word (ToolRow's .intentTail);
+  // assert it through the row rather than getByText, which only matches text
+  // contained in one element.
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Run focused checks");
   // The body is not yet expanded, so private output is hidden.
   expect(screen.queryByText("private tool output")).toBeNull();
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
@@ -351,7 +354,7 @@ test("Intent renders an open action group without a tool row (catches closed Int
   render(withConfig(config, <TurnBlock turn={turn([action], { status: "completed" }, config)} />));
 
   expect(screen.getByTestId("intent-group").hasAttribute("open")).toBe(true);
-  expect(screen.getByText("Read the configuration")).toBeTruthy();
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Read the configuration");
   expect(screen.queryByText("private file output")).toBeNull();
   // ToolCallItem renders eagerly inside the open intent group. Its body
   // (private output) is still collapsed.
@@ -444,8 +447,9 @@ test("intent row drills down through 3 levels: intent button -> summary, body ch
   expect(screen.getByTestId("tool-call-item")).toBeTruthy();
   // Tool icon is rendered (read_file uses the file icon kind).
   expect(screen.getByTestId("tool-row-icon")).toBeTruthy();
-  // Intent text is visible.
-  expect(screen.getByText("Read the configuration")).toBeTruthy();
+  // Intent text is visible (head + glued final word - see ToolRow's
+  // .intentTail).
+  expect(screen.getByTestId("tool-row-intent").textContent).toBe("Read the configuration");
   // The summary trigger (tool-row-trigger) controls summaryOpen, not body.
   // At intent level summaryOpen defaults false, so the summary is hidden.
   const summaryTrigger = screen.getByTestId("tool-row-trigger");

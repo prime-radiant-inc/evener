@@ -1,8 +1,8 @@
 // Pure helpers for the reasoning ("think block") item type. See
 // ThinkBlock.tsx for the component that consumes these.
 
+import { pendingTextJoined } from "@evener/appwire-client";
 import type { Token, Tokens } from "marked";
-import { pendingTextJoined } from "../../../../protocol/reducer";
 import { markdownLexer } from "../../../../widgets/markdown/lexer";
 
 // Lexer-only use of the app's shared Markdown tokenizer (see

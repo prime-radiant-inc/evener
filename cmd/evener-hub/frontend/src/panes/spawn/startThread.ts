@@ -3,9 +3,8 @@
 // signature + a minimal working body (bare
 // prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
-import type { AppwireClientLike } from "../../protocol/clientLike";
-import { buildComposerInput } from "../../protocol/composerInput";
-import type { LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
+import type { AppwireClientLike, LaunchConfigLayer, ThreadStartParams } from "@evener/appwire-client";
+import { buildComposerInput } from "@evener/appwire-client";
 import type { InputAttachment } from "../../stores/threads";
 import { mergeAccessModeSandbox } from "./accessMode";
 
@@ -24,6 +23,10 @@ export interface SpawnRequest {
   branch?: string;
   accessMode?: string; // merged -> launchOverrides.sandbox unless schema set it (floor §1.8)
   launchOverrides?: LaunchConfigLayer;
+  // Explicit launch source id (Component 06a). "local" is the default and is
+  // OMITTED from the wire so a local spawn stays byte-identical to before the
+  // host picker existed; any other value names the host/source to target.
+  source?: string;
 }
 
 export interface SpawnResult {
@@ -50,6 +53,7 @@ export async function startThread(client: AppwireClientLike, req: SpawnRequest):
   if (req.reasoningEffort) params.reasoningEffort = req.reasoningEffort;
   const launchOverrides = mergeAccessModeSandbox(req.launchOverrides, req.accessMode ?? "");
   if (launchOverrides) params.launchOverrides = launchOverrides;
+  if (req.source && req.source !== "local") params.source = req.source;
   const resp = await client.request("thread/start", params);
   return { ref: resp.thread.evener.ref };
 }

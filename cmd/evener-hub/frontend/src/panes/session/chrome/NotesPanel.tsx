@@ -1,8 +1,6 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { sessionActionError, WireError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import type { SessionURL } from "../../../protocol/types.gen";
+import type { SessionURL, ThreadModel } from "@evener/appwire-client";
+import { canReadSharedNotes, sessionActionError, WireError } from "@evener/appwire-client";
+import { useEffect, useRef } from "react";
 import {
   blurHumanNote,
   canWriteHumanNote,
@@ -14,7 +12,7 @@ import {
 } from "../../../stores/humanNoteDrafts";
 import { beginUrlRemoval, endUrlRemoval, usePendingUrlRemovals } from "../../../stores/pendingUrlRemovals";
 import { threadsStore } from "../../../stores/threads";
-import { Button, Sheet, Textarea, useToasts } from "../../../widgets";
+import { Button, Textarea, useToasts } from "../../../widgets";
 import { isWebHref } from "../../../widgets/contextcard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton } from "../transcript/fileOpenBeside";
@@ -47,21 +45,18 @@ function isFileHref(href: string): boolean {
   return /^file:\/\//.test(href);
 }
 
+/** A note carries content only when something survives trimming. The
+ * collapsed summary and the expanded body must judge emptiness the same
+ * way, or a whitespace-only note reads "Add a note…" collapsed while
+ * expanding shows a blank paragraph. */
+export function hasNoteText(text: string): boolean {
+  return text.trim() !== "";
+}
+
 export interface NotesPanelBodyProps {
   sessionRef: string;
   model: ThreadModel;
-}
-
-export interface NotesPanelProps extends NotesPanelBodyProps {
-  // True when SessionChrome's row has collapsed this panel's trigger into the
-  // "..." menu instead (the same hideTrigger contract Tasks/Details carry).
-  hideTrigger?: boolean;
-}
-
-/** Lets SessionChrome open this panel's Sheet from the menu, without lifting
- * `open` out of this component (the same rationale as DetailsPanelHandle). */
-export interface NotesPanelHandle {
-  open: () => void;
+  editorRef?: React.Ref<HTMLTextAreaElement>;
 }
 
 const CLASS = {
@@ -145,7 +140,7 @@ function isMissingURLEntryError(err: unknown): boolean {
   );
 }
 
-export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
+export function NotesPanelBody({ sessionRef, model, editorRef }: NotesPanelBodyProps) {
   const toasts = useToasts();
   const owner = useRef(Symbol("notes editor"));
   const state = useHumanNoteDraft(sessionRef);
@@ -205,7 +200,7 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
   // body entirely. After the hooks above (Rules of Hooks).
   if (!canReadSharedNotes(model)) return null;
 
-  const hasContent = model.humanNote !== "" || model.agentNote !== "" || model.sessionUrls.length > 0;
+  const hasContent = hasNoteText(model.humanNote) || hasNoteText(model.agentNote) || model.sessionUrls.length > 0;
 
   return (
     <div data-testid="shared-notes-section">
@@ -214,27 +209,28 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
           <>
             <div className={CLASS.editor} data-testid="shared-notes-editor">
               <Textarea
+                ref={editorRef}
                 value={draft}
                 onChange={(event) => editHumanNote(sessionRef, event.target.value)}
                 onFocus={() => focusHumanNote(sessionRef, owner.current)}
                 onBlur={() => blurHumanNote(sessionRef, owner.current)}
                 aria-label="Human note"
-                placeholder="Add context for the agent…"
+                placeholder="Make a note…"
                 autoGrow
                 rows={4}
               />
             </div>
             <HumanStatus saving={saving} saved={saved} error={error} idleWake={idleWake} />
           </>
-        ) : model.humanNote !== "" ? (
+        ) : hasNoteText(model.humanNote) ? (
           <p className={CLASS.prose} data-testid="shared-notes-human">
             {model.humanNote}
           </p>
         ) : null}
       </Section>
-      {(model.agentNote !== "" || live) && (
+      {(hasNoteText(model.agentNote) || live) && (
         <Section title="Agent">
-          {model.agentNote !== "" ? (
+          {hasNoteText(model.agentNote) ? (
             <p className={CLASS.prose} data-testid="shared-notes-agent">
               {model.agentNote}
             </p>
@@ -308,37 +304,3 @@ export function NotesPanelBody({ sessionRef, model }: NotesPanelBodyProps) {
     </div>
   );
 }
-
-/** Shared stateless notes body used by the mobile Sheet and desktop pane. */
-export const NotesPanel = forwardRef<NotesPanelHandle, NotesPanelProps>(function NotesPanel(
-  { sessionRef, model, hideTrigger = false },
-  ref,
-) {
-  const [open, setOpen] = useState(false);
-  const canReadNotes = canReadSharedNotes(model);
-  useImperativeHandle(
-    ref,
-    () => ({
-      open: () => {
-        if (canReadNotes) setOpen(true);
-      },
-    }),
-    [canReadNotes],
-  );
-
-  return (
-    <>
-      {/* Omitted while hideTrigger is set (SessionChrome collapses this into
-          the "..." menu instead). The palette's /notes toggles the
-          sessionNotes workspace pane (shell/palette/commands.ts). */}
-      {!hideTrigger && canReadNotes && (
-        <Button variant="quiet" size="sm" onClick={() => setOpen(true)}>
-          Notes
-        </Button>
-      )}
-      <Sheet open={open} onClose={() => setOpen(false)} title="Session notes">
-        {open ? <NotesPanelBody sessionRef={sessionRef} model={model} /> : null}
-      </Sheet>
-    </>
-  );
-});

@@ -1,5 +1,5 @@
-import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "../../protocol/types.gen";
-import type { NavigationInvalidationWaiter } from "./revalidator";
+import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "@evener/appwire-client";
+import type { NavigationInvalidationWaiter } from "@evener/appwire-client/state/navigation";
 import { selectLiveRows, selectNeedsYouRows } from "./selectors";
 import { awaitNavigationConvergence, navigationStore } from "./store";
 

@@ -18,7 +18,7 @@
 }
 
 .progress {
-  font-family: var(--font-mono);
+  font-family: var(--font-sans);
   font-size: var(--font-size-caption);
   color: var(--ink-mid);
   white-space: nowrap;

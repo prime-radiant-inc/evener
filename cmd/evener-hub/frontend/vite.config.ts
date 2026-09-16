@@ -49,11 +49,14 @@ export default defineConfig({
   // so the alias is what the bundler, the dev server, Vitest and the five
   // browser guards all resolve through. The targets are the package's
   // TypeScript sources, never dist/: dist/ is gitignored and never built in a
-  // dev or test flow. An alias key also matches `<key>/<subpath>`, so the two
+  // dev or test flow. An alias key also matches `<key>/<subpath>`, so the
   // specific entries have to come first or the root entry swallows them.
   resolve: {
     alias: {
       "@evener/appwire-client/docContent": path.join(appwirePackageDir, "docContent.ts"),
+      "@evener/appwire-client/state/navigation": path.join(appwirePackageDir, "state", "navigation", "index.ts"),
+      "@evener/appwire-client/state/credentials": path.join(appwirePackageDir, "state", "credentials", "index.ts"),
+      "@evener/appwire-client/state/extensions": path.join(appwirePackageDir, "state", "extensions", "index.ts"),
       "@evener/appwire-client/testing": path.join(appwirePackageDir, "testing"),
       "@evener/appwire-client": path.join(appwirePackageDir, "index.ts"),
       // Resolution runs from the importer, and the package's test files sit
@@ -63,6 +66,17 @@ export default defineConfig({
       // one fails loudly here rather than resolving to a second copy.
       "@testing-library/react": path.join(__dirname, "node_modules", "@testing-library", "react"),
       react: path.join(__dirname, "node_modules", "react"),
+      // The package has its own node_modules once `npm ci --prefix
+      // appwire-client/typescript` has run for `make test-api-package`, and
+      // typescript is one of its devDependencies - so locally this alias looks
+      // redundant and CI's web job, which installs only this app, fails
+      // without it. scripts/package-test-files.mjs now holds every bare
+      // specifier in the package's test graph against the keys of this block.
+      typescript: path.join(__dirname, "node_modules", "typescript"),
+      // The keybinding suites inject tinykeys' real parseKeybinding through
+      // the package's KeybindingParser port; the package itself never names
+      // tinykeys, so this alias serves only its tests.
+      tinykeys: path.join(__dirname, "node_modules", "tinykeys"),
     },
   },
   server: {
@@ -81,7 +95,17 @@ export default defineConfig({
       // second entry is the one addition, the shared install's real path.
       // In a normal (non-symlinked) checkout this resolves to the same
       // directory already covered by the first entry, so it's a no-op there.
-      allow: [searchForWorkspaceRoot(__dirname), fs.realpathSync(path.join(__dirname, "node_modules")), appwirePackageDir],
+      // The hub's recorded wire fixtures (cmd/evener-hub/testdata) are the
+      // last entry: the package's testing/hubWireFixtures.ts loads
+      // authwire/responses.json through a `?raw` import, and Vitest's jsdom
+      // suites transform that import through this server, which denies any
+      // file outside the allow list.
+      allow: [
+        searchForWorkspaceRoot(__dirname),
+        fs.realpathSync(path.join(__dirname, "node_modules")),
+        appwirePackageDir,
+        path.join(__dirname, "..", "testdata"),
+      ],
     },
     proxy: {
       // changeOrigin + an explicit Origin header: the hub's same-origin
@@ -107,7 +131,10 @@ export default defineConfig({
     // giving the package its own dev dependencies would change what
     // `npm ci --prefix appwire-client/typescript` fetches for the
     // qualification gate, which needs only typescript and ws.
-    include: ["**/*.{test,spec}.?(c|m)[jt]s?(x)", "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)"],
+    include: [
+      "**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+    ],
     // Node 26's experimental Web Storage global shadows jsdom's working
     // localStorage unless it is disabled in each Vitest worker.
     execArgv: ["--no-experimental-webstorage"],

@@ -79,9 +79,17 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			previous := m.detail.State
 			m.detail.State = params.Status.Type
 			m.session.processing = params.Status.Type == appwire.ThreadStatusActive
-			// Refresh on any transition so capabilities (interrupt, steer, send, etc.)
-			// reflect the source's current view. Without this, the cached idle snapshot
-			// keeps Interrupt=false for the entire turn (kata 4yvd).
+			// The set that goes with the announced status rides inline (kata
+			// 06t8; the web reducer and the mobile store apply it the same way):
+			// apply it now, so Send, Steer and Stop follow the frame instead of
+			// the read below. Absent means "no update", never "nothing offered".
+			if params.Capabilities != nil {
+				m.detail.Capabilities = hubCapabilitiesFromWire(*params.Capabilities, m.detail.Capabilities.ResumeRequired)
+			}
+			// Refresh on any transition so the rest of the detail (and a set an
+			// older daemon did not send inline) reflects the source's current
+			// view. Without this, the cached idle snapshot keeps Interrupt=false
+			// for the entire turn (kata 4yvd).
 			if previous != params.Status.Type && m.client != nil {
 				if ref, ok := m.currentRef(); ok {
 					m.statusRefreshToken++
@@ -178,26 +186,23 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			reducer := m.sessionTranscriptReducer()
 			reducer.FinalizeReasoning()
 			m.applySessionTranscriptReducer(reducer)
-			if turnID != "" && turnID == m.detail.ActiveTurnID {
+			completedActive := turnID != "" && turnID == m.detail.ActiveTurnID
+			if completedActive {
 				m.detail.ActiveTurnID = ""
-				// The turn sessionTurnRunning() was told is active just ended, so
-				// the two signals it reads must be reconciled here rather than
-				// waiting on thread/status/changed (kata s8x8). A genuine turn
-				// failure never gets one: session_lifecycle.go's
-				// processInputKindWithProvenance returns on a non-cancelled error
-				// before reaching the EventSessionEnd emit that only the
-				// clean-completion tail and the interrupt branch reach, so the
-				// projector never has a trigger to re-announce status and the
-				// composer would offer queue/steer indefinitely with no turn id to
-				// name. A successful multi-turn drain (more queued work) proves this
-				// wrong within the same notification batch — turn/started and
-				// thread/status/changed(active) ride right behind turn/completed —
-				// so clearing here costs nothing on that path.
-				m.session.processing = false
-				if m.detail.State == appwire.ThreadStatusActive {
-					m.detail.State = appwire.ThreadStatusIdle
-				}
 			}
+			// The session's status follows the wire's thread/status/changed, not
+			// the closing turn/completed: when the daemon runs the next turn
+			// inline behind this one, turn/started and thread/status/changed(active)
+			// ride right behind it as separate messages and the status never
+			// leaves active, so flipping idle here took Stop, Steer and Ctrl+S
+			// away at every inline turn boundary (the TUI's #1330). A failed turn
+			// gets its frame too: the agent's failure exit
+			// (agent/session_lifecycle.go endInputAtTurnFailure) emits
+			// EventSessionEnd with Reason "turn_failed", announced as
+			// thread/status/changed(idle) with the capabilities inline. Settling
+			// idle here ahead of it made that frame read as no transition, so the
+			// capability refresh above never fired and Send stayed withheld; the
+			// frame owns the status and the processing flag.
 			if params.Turn.Status == appwire.TurnStatusFailed {
 				m.addSessionSystemOnce(hubdiagnostics.FormatHubTurnError(params.Turn.Error, "Session error"))
 			}
@@ -410,16 +415,30 @@ func (m *hubModel) setActiveTurnID(turnID string) {
 }
 
 // applyQueueState replaces the local preview with the authoritative
-// wire-sourced snapshot (kata r80p). Called from ReadThread responses and
-// from thread/queueChanged notifications. Scoped to the current session
-// ref so a notification routed to a different session can't leak into
-// this view.
+// wire-sourced snapshot (kata r80p). Called from thread/queueChanged
+// notifications and from the ReadThread responses that arrive in stream
+// order (a session entry, a transcript-replacing read whose capture folded
+// the frames delivered ahead of it), so the state is at least as new as the
+// one held. Scoped to the current session ref so a notification routed to a
+// different session can't leak into this view.
 func (m *hubModel) applyQueueState(ref string, queue appwire.QueueState) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return
 	}
 	m.sessionQueueRef = ref
+	// The wire's queue state is stored whole, revision included: a drain swaps
+	// against the revision the client last saw, and a queue another client
+	// edited since hydrate would otherwise be refused as a conflict.
+	m.detail.Queue = queue
+	m.sessionQueueLatest = queue
+	// The stale gate set by a partial drain lifts only for a revision newer
+	// than the one that drain was sent against: a thread/read snapshot cut
+	// before the daemon moved the revision would otherwise re-enable Ctrl+S
+	// with the same stale revision.
+	if m.queueRevisionStale && queue.Revision > m.queueRevisionAtDrain {
+		m.queueRevisionStale = false
+	}
 	if queue.Depth == 0 && len(queue.Preview) == 0 {
 		m.sessionQueue = nil
 		return
@@ -450,12 +469,32 @@ func (m *hubModel) updateDashboardRowModel(ref, model string) {
 	}
 }
 
+// applyQueueRefresh folds a status-refresh read's queue state. That read takes
+// no hold on the feed, so its snapshot can be a cut older than a queueChanged
+// the model already folded; the queue revision is a high-water mark within a
+// daemon generation, and an older snapshot is ignored (the held state is put
+// back over the detail the read replaced). A Ctrl+S that carried the regressed
+// revision would be refused as a conflict every time until the next
+// queueChanged.
+func (m *hubModel) applyQueueRefresh(ref string, queue appwire.QueueState) {
+	if strings.TrimSpace(ref) == m.sessionQueueRef && queue.Revision < m.sessionQueueLatest.Revision {
+		m.detail.Queue = m.sessionQueueLatest
+		return
+	}
+	m.applyQueueState(ref, queue)
+}
+
 // clearSessionQueue empties the local queue preview. Called when
 // navigating away from a session so a stale preview never bleeds across
 // views; new state arrives via the next ReadThread / queueChanged.
 func (m *hubModel) clearSessionQueue() {
 	m.sessionQueue = nil
 	m.sessionQueueRef = ""
+	m.sessionQueueLatest = appwire.QueueState{}
+	// The stale gate a partial drain set belongs to the session it happened
+	// in; a session entered afterwards starts with its own queue state.
+	m.queueRevisionStale = false
+	m.queueRevisionAtDrain = 0
 }
 
 func (m hubModel) notificationMatchesCurrentSession(notification appwire.Notification) bool {

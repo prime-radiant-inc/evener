@@ -28,6 +28,7 @@ import (
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1709,7 +1710,7 @@ func writeStableOnceBlockingStopPlugin(t *testing.T, marker string) string {
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command := "if [ -f " + shellQuote(marker) + " ]; then printf '{}'; else : > " + shellQuote(marker) + "; printf '%s' '{\"decision\":\"block\",\"reason\":\"continue after generic Stop\"}'; fi"
+	command := "if [ -f " + shellquote.Literal(marker) + " ]; then printf '{}'; else : > " + shellquote.Literal(marker) + "; printf '%s' '{\"decision\":\"block\",\"reason\":\"continue after generic Stop\"}'; fi"
 	payload := map[string]any{"hooks": map[string]any{"Stop": []any{map[string]any{
 		"matcher": "*",
 		"hooks":   []any{map[string]any{"type": "command", "command": command}},

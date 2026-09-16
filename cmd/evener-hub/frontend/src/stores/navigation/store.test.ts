@@ -1,18 +1,27 @@
-import { afterEach, expect, test, vi } from "vitest";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import type {
   InitializeResponse,
   NavigationCapability,
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSnapshot,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import {
+  isNavigationUnavailable,
+  keyID,
+  navigationOwnedContainerKey,
+  navigationRootContainerKey,
+  navigationViewScope,
+  nextNavigationOffset,
+  type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { capability, completeSession, manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
+import { afterEach, expect, test, vi } from "vitest";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
 import {
   findSessionNode,
-  nextNavigationOffset,
   selectExpanded,
   selectGlobalRows,
   selectLocation,
@@ -27,15 +36,6 @@ import {
   selectSectionRemaining,
 } from "./selectors";
 import { awaitNavigationConvergence, initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
-import { capability, completeSession, manifest, wireV2 } from "./testing";
-import {
-  isNavigationUnavailable,
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-  type ResourceKey,
-} from "./types";
 
 const generation = "generation_test";
 const flush = async () => {

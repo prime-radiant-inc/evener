@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
 )
 
@@ -60,6 +61,8 @@ func TestRunMainAddrZeroReportsAndBindsTheRealPort(t *testing.T) {
 		newToken:        func() (string, error) { return "hub-token", nil },
 		loadAuthToken:   func(string) (string, error) { return "auth-token", nil },
 		loadCredentials: func(string) (*credentials.Store, error) { return &credentials.Store{}, nil },
+		startLivePrefetch: func(context.Context, *hubcore.ProviderRegistry, time.Duration, func(func()), func()) {
+		},
 		notifyContext: func(context.Context, ...os.Signal) (context.Context, context.CancelFunc) {
 			return ctx, func() {}
 		},

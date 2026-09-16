@@ -6,8 +6,11 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
 	"primeradiant.com/evener/rendezvous"
@@ -73,6 +76,26 @@ type WebConfig struct {
 	// fall back to the old synchronous walk (see remoteTreeThreads).
 	RemoteThreadCache *RemoteThreadCache
 
+	// RemoteHosts are the validated [[hosts]] entries (component 03) in
+	// config order. newHubSourceRegistry registers one
+	// appsource.RemoteHubSource per entry.
+	RemoteHosts []hostreg.Host
+	// RemoteHostClient returns an attached, initialized AppWire client for a
+	// remote host, attaching over SSH on first use (component 04). nil
+	// disables remote hosts (tests).
+	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
+	// RemoteHostFacts returns the component-04 preflight facts (protocol
+	// version, hub version, OS/arch, advertised features) for the AppWire
+	// connection behind client, the exact generation RemoteHostClient resolved
+	// for the capability probe; an implementation must answer from that same
+	// generation rather than racing a reconnect. The capability probe combines
+	// the facts with its AppWire reads. nil leaves the preflight-owned fields
+	// zero-valued (tests).
+	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	// controller-to-host channel (component 06). Nil leaves every remote host
+	// online (tests).
+	RemoteHostOnline func(host string) bool
+
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)
 	// instead of waiting for its next tick. Nil when the watcher isn't wired
@@ -126,4 +149,17 @@ type ResumeRequest struct {
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Resume
 	Provider      string   // instance the launch selected; gated against the registry before spawning
+}
+
+// DaemonTarget is the daemon a rendezvous entry names, as the process verifier
+// wants it: the session id (the thread id for an entry that carries none),
+// the state directory whose API log the daemon holds, and the start the
+// process must not postdate.
+func DaemonTarget(entry rendezvous.Entry) daemonprocess.Target {
+	return daemonprocess.Target{
+		PID:       entry.PID,
+		SessionID: envvars.FirstNonEmpty(entry.SessionID, entry.ThreadID),
+		StateDir:  entry.StateDir,
+		StartedAt: entry.StartedAt,
+	}
 }

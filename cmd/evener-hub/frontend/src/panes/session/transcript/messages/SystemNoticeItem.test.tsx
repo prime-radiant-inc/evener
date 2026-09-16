@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
+import { formatCharCount, makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
-import { formatCharCount } from "../../../../protocol/displayFormat";
-import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { prefsStore, resetPrefsStoreForTests } from "../../../../stores/prefs";
-import { makeTranscriptDisplayConfig } from "../../../../transcriptDisplay/config";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { TurnBlock } from "../TurnBlock";

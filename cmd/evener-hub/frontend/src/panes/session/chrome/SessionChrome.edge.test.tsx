@@ -5,23 +5,18 @@
 // - onToggleArchive error catch (207-208)
 // - onDelete error catch (221-222) + skipped warning (216-218)
 
+import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type {
-  NavigationSessionLocation,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import "../../sessionPanels";
@@ -352,7 +347,10 @@ test("archive toggle failure toasts an error", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_archive"));
   fake.on("evener/archive/set", (params) => {
-    expect(params).toEqual({ kind: "session", id: "sess_ref_archive", archived: true });
+    // Round seven: the canonical ref, not the bare session_id. A remote row's
+    // decision is read back under its host-qualified ref, and the hub
+    // normalizes a local ref to the bare ID, so this row's key is unchanged.
+    expect(params).toEqual({ kind: "session", id: "ref_archive", archived: true });
     throw new Error("archive failed");
   });
   await threadsStore.getState().ensureThread("ref_archive");

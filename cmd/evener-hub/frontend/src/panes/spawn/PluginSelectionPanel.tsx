@@ -1,16 +1,17 @@
-import type { ReactElement } from "react";
-import type { PluginLaunchCandidate, PluginPreviewResponse } from "../../protocol/types.gen";
-import { Button, Switch } from "../../widgets";
-import { requireClass } from "../../widgets/internal/requireClass";
-import styles from "./pluginSelection.module.css";
 import {
+  type PluginLaunchCandidate,
+  type PluginPreviewResponse,
   type PluginSelectionState,
   pluginSelectionIssues,
   selectAllPlugins,
   selectedPluginNames,
   selectNoPlugins,
   setPluginSelected,
-} from "./pluginSelectionState";
+} from "@evener/appwire-client";
+import type { ReactElement } from "react";
+import { Button, Switch } from "../../widgets";
+import { requireClass } from "../../widgets/internal/requireClass";
+import styles from "./pluginSelection.module.css";
 
 export interface PluginSelectionPanelProps {
   preview: PluginPreviewResponse;

@@ -12,8 +12,9 @@
 // carries prose and tool calls by default and this row only appears for
 // someone who asked for it. Read through the shared render context so a
 // configuration change re-renders the transcript live.
+
+import type { TurnModel } from "@evener/appwire-client";
 import { Fragment, type ReactNode } from "react";
-import type { TurnModel } from "../../../../protocol/model";
 import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnMetaParts } from "./turnMeta";

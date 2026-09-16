@@ -6,7 +6,7 @@
 // whose pre-flight validation rejects a conflicting (or reserved, or
 // unparseable) chord BEFORE the hub write - that message renders inline on
 // the row. The action list and per-action display bindings are sourced from
-// keybindings/display.ts - the same module the cheatsheet overlay reads -
+// keybindingDisplay.ts - the same module the cheatsheet overlay reads -
 // never a hand-maintained copy (the survey's stale-HELP_ROWS lesson).
 //
 // Editing requires a hub with synced-override support whose override state
@@ -21,19 +21,23 @@
 // (managed by the character-key setting, per shell/cheatsheet/
 // cheatsheetController.ts) renders read-only with a note.
 
-import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
-import { useStore } from "zustand";
-import { type Chord, chordDisplayKeys, modifierDisplayKey, serializeChord } from "../../../keybindings/chord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "../../../keybindings/defaults";
-import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import {
   ACTION_DISPLAY_ROWS,
+  type Binding,
+  CHARACTER_KEY_TRIGGER_BINDING_ID,
+  type Chord,
+  chordDisplayKeys,
   displayBindingFor,
   displayBindingsFor,
   isActionCustomized,
-} from "../../../keybindings/display";
-import { type Binding, keybindingsRegistry } from "../../../keybindings/registry";
-import type { OverrideRule } from "../../../keybindings/validation";
+  modifierDisplayKey,
+  type OverrideRule,
+  serializeChord,
+} from "@evener/appwire-client";
+import { type KeyboardEvent as ReactKeyboardEvent, useEffect, useRef, useState } from "react";
+import { useStore } from "zustand";
+import { keybindingsRegistry } from "../../../keybindings/appRegistry";
+import { isIMECompositionKeydown } from "../../../keybindings/dispatcher";
 import { keybindingsStore, useKeybindingsStore } from "../../../stores/keybindings";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
 import { KeyHint, Switch } from "../../../widgets";
@@ -79,11 +83,11 @@ const MODIFIER_KEYS = new Set(["Control", "Alt", "Shift", "Meta"]);
 // event.key, and the spacebar's code is "Space", so "Space" both survives
 // the grammar and matches the key. Every other whitespace-adjacent key
 // already arrives grammar-safe (Tab -> "Tab", Enter -> "Enter"). Kept at
-// the capture seam on purpose: chord.ts's parser stays grammar-pure.
+// the capture seam on purpose: keybindingChord.ts's parser stays grammar-pure.
 const CAPTURE_KEY_NAMES: Record<string, string> = { " ": "Space" };
 
 /** The held modifiers of a key event, in the chord module's canonical order
- * (chord.ts's MODIFIER_ORDER), so a recorded chord serializes canonically. */
+ * (keybindingChord.ts's MODIFIER_ORDER), so a recorded chord serializes canonically. */
 function eventModifiers(event: ReactKeyboardEvent): string[] {
   const modifiers: string[] = [];
   if (event.ctrlKey) modifiers.push("Control");
@@ -132,7 +136,7 @@ interface CaptureBoxProps {
  * cancels the capture instead of closing the pane).
  *
  * Single-press chords only: the default map is single-press throughout and
- * multi-press overlap checking is deliberately coarser (chord.ts's
+ * multi-press overlap checking is deliberately coarser (keybindingChord.ts's
  * chordsOverlap), so the editor does not author sequences. Plain Enter saves
  * and plain Escape cancels; either key WITH a modifier records as a chord.
  * The FIRST non-modifier press records the chord; later presses are ignored
@@ -340,7 +344,7 @@ function KeybindingRow({ actionId, title, editable, bindings, characterKeyTrigge
   }, [editable, capturing]);
 
   const binding = displayBindingFor(bindings, actionId);
-  const customized = isActionCustomized(bindings, actionId, characterKeyTriggers);
+  const customized = isActionCustomized(keybindingsRegistry.parseKeybinding, bindings, actionId, characterKeyTriggers);
   // Extra default entries beyond the platform base entry - in practice
   // exactly cheatsheet.toggle's conditional "?" trigger. The overrides model
   // owns an action's whole chord set, so these are the setting's to manage,

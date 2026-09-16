@@ -1,31 +1,27 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type {
-  NavigationSessionLocation,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
-import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
-import { SessionPanelPane } from "../../sessionPanels/SessionPanelPane";
+import { topNotesStore } from "../../../stores/topNotes";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
+import { TopNotesPanel } from "./TopNotesPanel";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -159,6 +155,7 @@ beforeEach(() => {
   resetActivitySummaryStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
+  topNotesStore.getState().resetForTests();
 });
 
 afterEach(() => {
@@ -322,22 +319,8 @@ test.each(["desktop", "mobile"] as const)(
       await user.click(screen.getByRole("button", { name: "Session actions" }));
       const opener = screen.queryByRole("menuitem", { name: "Notes" });
       expect.soft(opener).toBeNull();
-      // If the forbidden opener exists, follow it to its real destination so
-      // failure also establishes the user-visible blank-pane consequence.
       if (opener) await user.click(opener);
-      if (viewport === "mobile") {
-        expect(screen.queryByTestId("shared-notes-section")).toBeNull();
-        expect(screen.queryByRole("dialog", { name: "Session notes" })).toBeNull();
-      } else {
-        const pane = workspaceStore.getState().panes.find((entry) => entry.type === "sessionNotes");
-        if (pane) {
-          const { container } = render(
-            <SessionPanelPane kind="notes" params={{ ref: "ref_no_notes" }} paneId={pane.id} focused />,
-          );
-          expect(container.querySelector(`[data-pane-id="${pane.id}"]`)?.childElementCount).toBe(0);
-        }
-        expect(pane).toBeUndefined();
-      }
+      expect(topNotesStore.getState().isExpanded("ref_no_notes")).toBe(false);
     } finally {
       restoreViewport();
     }
@@ -374,10 +357,13 @@ test.each([
     render(<SessionChrome ref="ref_notes" placement={status === "notLoaded" ? "menu" : "composer"} />);
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Notes" }));
-    const pane = workspaceStore.getState().panes.find((entry) => entry.type === "sessionNotes");
-    expect(pane).toBeDefined();
-    if (!pane) throw new Error("Notes navigation did not create its workspace pane");
-    render(<SessionPanelPane kind="notes" params={{ ref: "ref_notes" }} paneId={pane.id} focused />);
+    expect(topNotesStore.getState().isExpanded("ref_notes")).toBe(true);
+    // Menu invocation requests editor focus too, matching the palette /notes
+    // instead of leaving keyboard and mouse openers inconsistent.
+    expect(topNotesStore.getState().hasPendingFocus("ref_notes")).toBe(true);
+
+    const model = threadsStore.getState().threads.get("ref_notes")!;
+    render(<TopNotesPanel sessionRef="ref_notes" model={model} />);
 
     expect(screen.getByTestId("shared-notes-agent").textContent).toBe("agent read sentinel");
     expect(screen.getByRole("link", { name: "reference sentinel" }).getAttribute("href")).toBe(
@@ -397,7 +383,7 @@ test.each([
   },
 );
 
-test("SessionChrome shows task outcome aggregates in its actions menu", async () => {
+test("SessionChrome keeps its actions-menu tasks entry count-free", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -414,10 +400,10 @@ test("SessionChrome shows task outcome aggregates in its actions menu", async ()
 
   render(<SessionChrome ref="ref_outcomes" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 5 cancelled, 1 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
 });
 
-test("SessionChrome infers a missing zero outcome in its task label", async () => {
+test("SessionChrome keeps the menu entry count-free even when an outcome is omitted", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () =>
@@ -434,7 +420,7 @@ test("SessionChrome infers a missing zero outcome in its task label", async () =
 
   render(<SessionChrome ref="ref_remaining" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
-  expect(screen.getByRole("menuitem", { name: "Tasks 1 done, 0 cancelled, 5 remaining (7 total)" })).toBeTruthy();
+  expect(screen.getByRole("menuitem", { name: "Tasks" })).toBeTruthy();
 });
 
 test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
@@ -552,6 +538,30 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("session-menu archive addresses the canonical ref so a remote row's decision sticks", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("host-a:r1"));
+  await threadsStore.getState().ensureThread("host-a:r1");
+  setLocation("host-a:r1");
+  navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
+  fake.on("evener/archive/set", (params) => {
+    // The bare session ID ("sess_host-a:r1") would be stored as this hub's own
+    // decision, which the remote row never reads back.
+    expect(params).toEqual({ kind: "session", id: "host-a:r1", archived: true });
+    return { ok: true, navigation: { generation_id: "generation_test", targets: [] } };
+  });
+
+  render(<SessionChrome ref="host-a:r1" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Archive" }));
+
+  expect(fake.calls).toContainEqual({
+    method: "evener/archive/set",
+    params: { kind: "session", id: "host-a:r1", archived: true },
+  });
 });
 
 test("session-menu pin assignment uses typed AppWire and converges its navigation receipt", async () => {

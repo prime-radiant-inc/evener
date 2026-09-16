@@ -1,6 +1,6 @@
+import type { ActivityTree } from "@evener/appwire-client";
+import { ClientNotReadyError } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { ActivityTree } from "../protocol/activityData";
-import { ClientNotReadyError } from "../protocol/errors";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore } from "./activityPanel";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";

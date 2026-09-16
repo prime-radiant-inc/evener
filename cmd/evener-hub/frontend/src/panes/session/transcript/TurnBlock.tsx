@@ -6,8 +6,10 @@
 // ever imported, regardless of what else the app happens to have loaded -
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
+
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import {
   disclosureScopeForSession,
@@ -16,12 +18,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import "./tools";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  scopedDisclosureId,
-  toggleDisclosure,
-} from "../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";

@@ -2,9 +2,9 @@
  * VirtualList a bounded height to virtualize inside (VirtualList's own .root
  * is height:100% + overflow-y:auto - it fills whatever height it's given),
  * with the optional "load older" row pinned above it as a flow:none sibling.
- * Mirrors the session pane's own transcript height chain (session.module.css
- * .transcript { height:100% }) minus the live composer/chrome the read-only
- * viewer deliberately omits. */
+ * Mirrors the session pane's own transcript height chain (session.module.css:
+ * .transcript flexes inside .contentColumn, .transcriptBody fills it) minus
+ * the live composer/chrome the read-only viewer deliberately omits. */
 .body {
   height: 100%;
   display: flex;

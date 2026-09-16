@@ -291,6 +291,14 @@ type testConfig struct {
 	// afterCommunicateBoundary observes the state transition at a completed
 	// communicate boundary. Nil in production.
 	afterCommunicateBoundary func(*Session)
+	// steeringCarrierClaimed observes the drain ladder claiming a steering
+	// carrier turn, before that turn is accepted -- the window a Stop or a
+	// write fault can land in. Nil in production.
+	steeringCarrierClaimed func(turnID string)
+	// steeringCarrierClaiming observes a steering carrier claim about to be
+	// written, before the store write -- where a test arms a write fault that
+	// refuses exactly that claim. Nil in production.
+	steeringCarrierClaiming func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)

@@ -1,4 +1,33 @@
 import "fake-indexeddb/auto";
+import type {
+  AnyNotification,
+  ConnectionState,
+  MethodName,
+  MethodTypes,
+  ModelListResponse,
+  NotesHumanSetResponse,
+  QueueState,
+  Thread,
+  ThreadCapabilities,
+  ThreadClearResponse,
+  ThreadModel,
+  ThreadReadResponse,
+  ThreadStatus,
+  ThreadTurnsListResponse,
+  TurnQueueResponse,
+  TurnStartResponse,
+} from "@evener/appwire-client";
+import {
+  applyNotification,
+  ClientNotReadyError,
+  errorKind,
+  hydrateThread,
+  notificationTargetsThread,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
+import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -9,28 +38,7 @@ import {
   upsertSubagentRow,
   useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
-import type { ConnectionState } from "../protocol/client";
-import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
-import type { ThreadModel } from "../protocol/model";
-import { applyNotification, hydrateThread, notificationTargetsThread } from "../protocol/reducer";
-import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
-import { mulberry32 } from "../protocol/testing/tokenFlood";
-import type {
-  AnyNotification,
-  MethodName,
-  MethodTypes,
-  ModelListResponse,
-  NotesHumanSetResponse,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadClearResponse,
-  ThreadReadResponse,
-  ThreadStatus,
-  ThreadTurnsListResponse,
-  TurnQueueResponse,
-  TurnStartResponse,
-} from "../protocol/types.gen";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -341,6 +349,7 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
@@ -4655,6 +4664,15 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       const indexedDB = new IDBFactory();
       setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
       const fake = connectFakeClient();
+      // A mounted draft consumer implies its session pane in production;
+      // holding the ref keeps the acknowledged draft from the pane-store
+      // eviction sweep this acknowledgment now schedules.
+      act(() => {
+        workspaceStore.setState({
+          panes: [{ id: "p_retry", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+          focusedPaneId: "p_retry",
+        });
+      });
       const snapshot = (humanNote: string) =>
         readResponse("ref_a", {
           evener: { ref: "ref_a", capabilities: CAPABILITIES, humanNote, queue: { revision: 0 } },
@@ -4753,6 +4771,14 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     const record = await threadsStore.getState().setHumanNote("ref_a", "raw draft");
     syncHumanNote("ref_a", "A");
+    // The mounted draft consumer implies a session pane in production; hold
+    // the ref so the acknowledgment's eviction sweep keeps the record.
+    act(() => {
+      workspaceStore.setState({
+        panes: [{ id: "p_rejoin", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+        focusedPaneId: "p_rejoin",
+      });
+    });
     const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
     await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
     const canonical = " \n\tcanonical\u00a0e\u0301🙂  ";
@@ -5231,6 +5257,115 @@ describe("useThreadsStore.listModels", () => {
     expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
     expect(first.data[0]?.model).toBe("model-1");
     expect(second.data[0]?.model).toBe("model-2");
+  });
+
+  test("a refresh landing before an older in-flight request keeps the cache fresh - the stale late answer never overwrites it", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preConnection = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // A keyless/no-credential-change connection emits no evener/auth/updated
+    // between the pre-connection listing and the post-connection refresh, so
+    // the epoch guard alone cannot protect the cache here.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    pending[0]?.(stale);
+    // The older request still answers its own caller; it must not become the cache.
+    expect((await preConnection).data[0]?.model).toBe("stale");
+
+    expect((await threadsStore.getState().listModels()).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
+  });
+
+  test("a refresh supersedes the shared in-flight list so a concurrent caller awaits the newest request", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preRefresh = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // A refresh with no intervening evener/auth/updated (a keyless connection,
+    // a config-only save) leaves the dedupe slot in place, so the slot must be
+    // superseded here or the next caller joins the pre-refresh request.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    const concurrent = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2);
+
+    pending[1]?.(fresh);
+    pending[0]?.(stale);
+    // The older request still answers its own caller.
+    expect((await preRefresh).data[0]?.model).toBe("stale");
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    // The concurrent caller joined the refresh, not the pre-refresh listing.
+    expect((await concurrent).data[0]?.model).toBe("fresh");
+  });
+
+  test("a request in flight across a test reset cannot repopulate the fresh cache", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const inFlight = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    // The reset clears the cache and the in-flight slot; a request already in
+    // flight must lose the cache write to the reset the way it loses it to a
+    // newer request, or its late answer becomes the post-reset cache.
+    resetThreadsStoreForTests();
+    pending[0]?.(fresh);
+    await inFlight;
+
+    const listSpy = vi.fn(() => ({ data: [{ provider: "google-vertex", model: "after" }] }));
+    fake.on("model/list", listSpy);
+    const after = await threadsStore.getState().listModels();
+    expect(listSpy).toHaveBeenCalledTimes(1);
+    expect(after.data[0]?.model).toBe("after");
+  });
+
+  test("a warm cache does not answer a non-refresh caller while a refresh is in flight", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+    // Warm the cache with the pre-refresh listing.
+    const first = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    pending[0]?.(stale);
+    expect((await first).data[0]?.model).toBe("stale");
+
+    // A refresh is now in flight. A non-refresh caller arriving alongside it
+    // must not be handed the warm cache: the refresh was issued precisely to
+    // replace that listing, and two concurrent model pickers would otherwise
+    // receive different (one stale, one fresh) results.
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+    const concurrent = threadsStore.getState().listModels();
+    await settleCallerContinuations();
+    expect(pending).toHaveLength(2); // joined the refresh, issued no third request
+
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+    expect((await concurrent).data[0]?.model).toBe("fresh");
+  });
+
+  test("an older in-flight request landing first still loses the cache to a later refresh", async () => {
+    const fake = connectFakeClient();
+    const pending = deferredModelList(fake);
+
+    const preConnection = threadsStore.getState().listModels();
+    await flushUntil(() => pending.length === 1);
+    const refreshed = threadsStore.getState().listModels(true);
+    await flushUntil(() => pending.length === 2);
+
+    pending[0]?.(stale);
+    expect((await preConnection).data[0]?.model).toBe("stale");
+    pending[1]?.(fresh);
+    expect((await refreshed).data[0]?.model).toBe("fresh");
+
+    expect((await threadsStore.getState().listModels()).data[0]?.model).toBe("fresh");
+    expect(fake.calls.filter((c) => c.method === "model/list")).toHaveLength(2);
   });
 
   test("a failed call does not cache a rejected promise - the next call retries rather than repeating the same rejection", async () => {

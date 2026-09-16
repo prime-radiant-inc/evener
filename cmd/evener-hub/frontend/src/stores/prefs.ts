@@ -71,8 +71,6 @@
 // in one tab has never live-updated another already-open tab's state in
 // this app. Not a gap this task introduces.
 
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
 import {
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -81,7 +79,9 @@ import {
   legacyConfigFromValues,
   type TranscriptDisplayConfigV1,
   type TranscriptViewportClass,
-} from "../transcriptDisplay/config";
+} from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 
 export type ThemePref = "system" | "light" | "dark";
 export type PhoneDensityPref = "compact" | "comfortable";

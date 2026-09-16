@@ -26,9 +26,16 @@
 // tsx's add-time validation both surface ONLY the custom inline error -
 // no native browser validation bubble.
 
-import type { LaunchConfigLayer, LaunchOption } from "../../../../protocol/types.gen";
+import {
+  emptyChoiceLabel,
+  type LaunchConfigLayer,
+  type LaunchConfigLayerName,
+  type LaunchOption,
+  PROMPT_COMPOSITE_SPECS,
+  resolvedDefaultLabel,
+  resolvedEmptyChoice,
+} from "@evener/appwire-client";
 import { directoryActions, extensionsStore } from "../../../../stores/extensions";
-import type { LaunchConfigLayerName } from "../../../../stores/launchConfig";
 import {
   FormRow,
   Input,
@@ -43,7 +50,6 @@ import {
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./fields.module.css";
 import { SettingsModelCatalog } from "./SettingsModelCatalog";
-import { emptyChoiceLabel, PROMPT_COMPOSITE_SPECS, resolvedDefaultLabel, resolvedEmptyChoice } from "./schema";
 
 const CLASS = {
   defaultHint: requireClass(styles.defaultHint, "fields.module.css", "defaultHint"),
@@ -165,8 +171,8 @@ export function ScalarField({
 }: ScalarFieldProps) {
   const fieldId = `launch-field-${option.field}`;
   // The resolved-default label for this field's empty marker, or undefined
-  // when there is nothing to name (schema.ts's resolvedDefaultLabel owns the
-  // rules; the custom-wording markers stay exactly as they were).
+  // when there is nothing to name (resolvedDefaultLabel owns the rules; the
+  // custom-wording markers stay exactly as they were).
   const resolvedLabel = resolvedDefaultLabel(option, layer, resolvedDefaults);
 
   if (option.kind === "radio") {
@@ -285,8 +291,8 @@ export interface PromptCompositeFieldProps {
  * its 2 leaf sub-fields (file path input, inline textarea), always both
  * visible and always both editable regardless of which mode is selected -
  * matching the legacy's own "type into the inactive one, it's silently never
- * validated/collected" behavior (schema.ts's inactivePromptDependent +
- * collectConfig are what actually gate save-time inclusion, not this
+ * validated/collected" behavior (inactivePromptDependent + collectConfig
+ * are what actually gate save-time inclusion, not this
  * component). Deliberately simpler than the legacy's nested-control-inside-
  * the-radio-option layout: the 2 sub-fields render as their own rows below
  * the radio group instead of nested inside it - same information, same

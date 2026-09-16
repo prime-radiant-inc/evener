@@ -19,31 +19,29 @@
 
 import { create } from "zustand";
 import {
+  applyNotification,
   isStaleCursorError,
+  notificationTargetsThread,
+  sessionControls,
   WireError,
-} from "../../../appwire-client/typescript/errors";
+} from "@evener/appwire-client";
 import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
-  QueueState,
-  ThreadCapabilities,
   ThreadItem,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type {
   ActivityDetail,
-  MobileCapabilities,
   MobileConversation,
   MobileTimelineItem,
   ActivityMember,
-} from "../conversation/model";
+} from "../conversation/project";
 import {
   activityState,
   clusterActivities,
   isActiveItem,
-  projectApproval,
   projectItemAttachments,
-  projectQueue,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -332,15 +330,6 @@ export interface LiveActivitySink {
     n: AnyNotification,
     identity: ActivityIdentity,
   ): NotificationOutcome;
-  // I2: Narrow strict sink for a capabilities-only refresh. Updates only the
-  // capabilities for the exact current identity and an open view; returns
-  // false on stale/missing/wrong identity. The conversation cap-refresh writer
-  // calls this independently of the notification stream, publishing refreshed
-  // caps to the bound activity sink BEFORE committing conversation caps.
-  setLiveCapabilities(
-    capabilities: ThreadCapabilities,
-    identity: ActivityIdentity,
-  ): boolean;
   reset(): void;
 }
 
@@ -376,14 +365,10 @@ interface RequestBinding {
 // effect, which awaits a new scheduler request, which cannot start until the
 // current drain loop reaches idle — a deadlock. The reread effect
 // (requestRehydrate) calls storeGet().rehydrate() directly (not through the
-// scheduler). The cap-refresh effect (requestCapabilityRefresh) calls
-// liveService.refreshCapabilities() directly (not through the scheduler).
-// handleMutationError awaits scheduler.request() OUTSIDE any effect — it is
-// called from the send/steer/queue/interrupt action body, not from within a
-// scheduler effect. This invariant is confirmed by the production call graph:
+// scheduler). handleMutationError only requests a reread (never awaits one).
+// This invariant is confirmed by the production call graph:
 //   requestRehydrate effect -> rehydrate() -> readProjection() [no scheduler]
-//   requestCapabilityRefresh effect -> refreshCapabilities() [no scheduler]
-//   handleMutationError -> scheduler.request() [awaited in action body, not effect]
+//   handleMutationError -> requestRehydrate() [fire-and-forget, action body]
 function createDrainScheduler(): DrainScheduler {
   let scheduled = false;
   let busy = false;
@@ -644,6 +629,10 @@ export interface ConversationState {
   readonly pendingMutation?: ConversationMutationState | null;
   readonly lastAcceptedMutation?: AcceptedConversationMutation | null;
 
+  // The non-projected compatibility surface, kept for screen test mocks; no
+  // production screen calls it (they open through openProjected /
+  // resumeProjected). It binds no activity sink, so it does not self-recover:
+  // a refused mutation surfaces its error and issues no reread.
   open(service: ConversationService, ref: string): Promise<void>;
   loadOlder(service: ConversationService): Promise<LoadOlderResult>;
   setDraft(text: string): void;
@@ -707,20 +696,6 @@ export interface LiveConversationState extends ConversationState {
   ): void;
 }
 
-// Extract threadId/ref from a notification's params, returning null if the
-// notification has neither (some global notifications don't).
-function notificationRef(
-  n: AnyNotification,
-): { threadId?: string; ref?: string } | null {
-  const params = n.params as Record<string, unknown> | undefined;
-  if (params === undefined || params === null) return null;
-  const threadId =
-    typeof params.threadId === "string" ? params.threadId : undefined;
-  const ref = typeof params.ref === "string" ? params.ref : undefined;
-  if (threadId === undefined && ref === undefined) return null;
-  return { threadId, ref };
-}
-
 // Check if an error is a WireError carrying the actionUnavailable
 // evenerErrorInfo. F11: uses actual WireError identity (instanceof), not a
 // structural property check, to match the canonical error discrimination
@@ -731,16 +706,28 @@ function isActionUnavailableError(err: unknown): boolean {
   );
 }
 
-// Check a capability on the current conversation and throw if false. This
-// mirrors the service's requireCap but runs in the store so the fake
-// service (which has no capability gating) still respects capabilities.
-function requireCap(
+// A mutation's precondition, re-evaluated at the mutation boundary rather than
+// trusted from the render that offered the control: the session's controls
+// (the SDK's sessionControls over the wire's status, the harness's
+// capabilities and the queue depth). A status that flipped between the render
+// and the submit refuses the mutation here, with the control's own reason.
+// Runs in the store so the fake service (which gates on nothing) still
+// respects what the hub would refuse.
+function requireControl(
   conv: MobileConversation,
-  cap: keyof MobileCapabilities,
+  control: "stop" | "steer" | "drain" | "queue" | "send",
   action: string,
 ): void {
-  if (!conv.capabilities[cap]) {
-    throw new Error(`Action "${action}" is not available for this thread`);
+  const controls = sessionControls(
+    conv.status.type,
+    conv.capabilities,
+    conv.queue?.depth ?? 0,
+  );
+  if (!controls[control]) {
+    throw new Error(
+      controls.reason[control] ??
+        `Action "${action}" is not available for this thread`,
+    );
   }
 }
 
@@ -832,18 +819,6 @@ function projectSingleItem(
   return null;
 }
 
-// Known notification methods that we handle explicitly. The default branch
-// only resyncs for unsupported item/* transitions, not for all unknown
-// notifications, to avoid reread storms from unrelated notification families.
-const ITEM_NOTIFICATION_METHODS = new Set([
-  "item/started",
-  "item/completed",
-  "item/agentMessage/delta",
-  "item/agentMessage/reset",
-  "item/reasoning/summaryTextDelta",
-  "item/toolOutput/delta",
-]);
-
 export function createConversationStore() {
   let conversationGen = 0;
   let mutationIdCounter = 0;
@@ -868,18 +843,28 @@ export function createConversationStore() {
   // entry; if it changed during the await, the rehydrate is stale with
   // respect to the error owner and must not clear or overwrite error.
   let errorOwnerRev = 0;
-  // I2: Monotonic capability-owner revision — increments on every capability
-  // publication/transition (thread/status/changed, cap refresh, rehydrate
-  // commit). Rehydrate captures this at entry; if it changed during the
-  // await, a newer capability owner published caps and the rehydrate must
-  // preserve the current caps instead of overwriting with its stale
-  // projection. If unchanged, the rehydrate commits authoritative projected
-  // capabilities.
-  let capabilityOwnerRev = 0;
-  let approvalOwnerRev = 0;
-  let goalOwnerRev = 0;
-  let turnOwnerRev = 0;
-  let tasksOwnerRev = 0;
+  // The reread's snapshot is authoritative over every thread-level write that
+  // preceded its response. AppWire orders a thread/read response at the
+  // snapshot cut and delivers frames in producer order on the one socket
+  // (docs/superpowers/plans/2026-07-28-appwire-retry-safe-mutations-and-atomic-
+  // rejoin.md:19, 372-373), so a frame this store applied while the read was
+  // in flight is already folded into the snapshot that arrives, and a frame
+  // that arrives after the response lands on top of it through the normal
+  // path. Nothing awaits between the response and the commit (the service's
+  // readProjection and rehydrate below each await the read alone), so there
+  // is no window to buffer for; the web's applyHydrationResponseCut drops its
+  // buffer at the same point for the same reason. Item-level notifications
+  // still merge through liveOwnedRevs below until D23c routes them here too.
+  //
+  // The package reducer over the conversation. Every reducer case spreads the
+  // model it was given, so the display rows (and anything else native keeps
+  // on the conversation) survive untouched.
+  function applyThreadNotification(
+    conversation: MobileConversation,
+    n: AnyNotification,
+  ): MobileConversation {
+    return applyNotification(conversation, n, Date.now()) as MobileConversation;
+  }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
   // prepended as older history; current-only non-page items (live notifications
@@ -1074,7 +1059,7 @@ export function createConversationStore() {
   }
 
   // Verify a captured binding is still current. This applies to scheduled
-  // rereads, capability refreshes, paging, and mutations. If the epoch, ref,
+  // rereads, paging, and mutations. If the epoch, ref,
   // generation, or service/sink object identity changed, suppress the stale
   // request before it can publish into the new binding.
   function isBindingCurrent(binding: RequestBinding): boolean {
@@ -1105,94 +1090,6 @@ export function createConversationStore() {
     });
   }
 
-  // I2: Request a mutation capability refresh through the store-owned drain
-  // scheduler — no direct await bypass. This serializes/coalesces with rereads.
-  // I1: captures the exact binding tuple (epoch/service/sink/ref/gen) at
-  // request time. For openProjected, captureBinding() provides the full tuple.
-  // For plain open(), boundService/boundSink are null, so we capture a
-  // service-specific tuple from the passed service argument. The effect
-  // validates isBindingCurrent BEFORE the refresh, AFTER the refresh await,
-  // and immediately before publication. A rebind to serviceB/sinkB with same
-  // gen/mutation during the await suppresses A's capabilities.
-  // I2: The capability key includes mutation identity (cap:ref:mutationId)
-  // so distinct mutations do not coalesce with each other or with rereads.
-  // handleMutationError schedules the cap refresh through the scheduler AND
-  // awaits its per-key completion before surfacing error — an unrelated
-  // replenishing reread cannot delay the error.
-  function requestCapabilityRefresh(
-    service: ConversationService,
-    ref: string,
-    gen: number,
-    mutationId: number,
-  ): Promise<void> {
-    // C1: Capture the binding from the SUPPLIED service, not the current
-    // boundService. captureOperationBinding validates that the supplied
-    // service === boundService and captures epoch/ref/gen/sink. A wrong
-    // service (A after B bound) returns null and the effect is suppressed.
-    const binding = captureOperationBinding(service);
-    if (binding === null) return Promise.resolve();
-    const capKey = `cap:${ref}:${mutationId}`;
-    // I2: scheduler.request returns a per-key completion promise — resolves
-    // when this key's effect completes/skips/errors, even while unrelated
-    // rereads remain or hang. handleMutationError awaits this exact promise.
-    return scheduler.request(capKey, async () => {
-      const g = storeGet;
-      if (g === null) return;
-      // I1: Suppress stale work BEFORE any read — validate the full binding
-      // tuple (epoch/service/sink/ref/gen). A rebind with different objects
-      // suppresses this effect.
-      if (!isBindingCurrent(binding)) return;
-      const liveService = service as LiveConversationService;
-      if (typeof liveService.refreshCapabilities !== "function") return;
-      // I2: Check active mutation before the refresh — stale recovery bail.
-      if (g().pendingMutation?.mutationId !== mutationId) return;
-      let refreshed: ThreadCapabilities | null;
-      try {
-        refreshed = await liveService.refreshCapabilities(ref);
-      } catch {
-        // If refresh fails, the mutation error handler surfaces the error.
-        return;
-      }
-      // I1: Validate the full binding tuple AGAIN after the await — a rebind
-      // to serviceB/sinkB during the refresh must suppress A's capabilities.
-      if (!isBindingCurrent(binding)) return;
-      // I2: Check active mutation AFTER the refresh too.
-      if (g().pendingMutation?.mutationId !== mutationId) return;
-      // I1: Validate generation immediately before publication.
-      if (g().conversationGeneration === gen && refreshed !== null) {
-        const currentConv = g().conversation;
-        if (currentConv !== null) {
-          // D (I2 completion seam): publish refreshed caps to the bound
-          // activity sink under exact current identity BEFORE conversation
-          // capabilities. A false/stale sink suppresses conversation cap
-          // publication — the two stores stay atomically consistent. The
-          // plain-open path (no sink) still updates conversation caps.
-          const identity: ActivityIdentity = {
-            threadId: currentConv.id,
-            ref,
-            generation: gen,
-          };
-          const sinkAccepted =
-            boundSink !== null
-              ? boundSink.setLiveCapabilities(refreshed, identity)
-              : true;
-          if (!sinkAccepted) return;
-          // I2: increment capability-owner revision for this publication.
-          capabilityOwnerRev += 1;
-          storeSet?.({
-            conversation: {
-              ...currentConv,
-              capabilities: { ...refreshed },
-            },
-          });
-        }
-      }
-    });
-  }
-
-  // Late-bound store setter — assigned inside create() so capability refresh
-  // effects can call set() outside the create() callback scope.
-  let storeSet: ((partial: Partial<ConversationState>) => void) | null = null;
   // Returns the current draft revision — passed to handleMutationError so it
   // can detect post-clear edits (type-then-delete) without exposing the
   // revision in public state.
@@ -1363,7 +1260,6 @@ export function createConversationStore() {
       rawSet(partial);
     };
     storeGet = get;
-    storeSet = set;
     return {
       ref: null,
       profileId: null,
@@ -1436,7 +1332,7 @@ export function createConversationStore() {
             olderCursor: null,
           });
           // C1: Track the plain-open service as boundService with a null
-          // sink so loadOlder/mutations/cap-refresh validate exact service
+          // sink so loadOlder/mutations validate exact service
           // identity via captureOperationBinding.
           boundService = service as LiveConversationService;
           // Subscribe to notifications for this thread.
@@ -1486,28 +1382,17 @@ export function createConversationStore() {
           lastAcceptedMutation: null,
           conversationGeneration: gen,
         });
-        const buffered: AnyNotification[] = [];
-        let needsSnapshot = false;
         let active = true;
         let unsubscribe: (() => void) | null = null;
         let liveHandler: ((notification: AnyNotification) => void) | null =
           null;
         try {
-          // Subscribe before requesting the snapshot so live events cannot fall
-          // into the gap between the server snapshot and client publication.
+          // Subscribe before the read so no frame after its response is missed;
+          // a frame before the response is already in the snapshot (the
+          // response-cut note by applyThreadNotification), so no handler yet.
           unsubscribe = service.subscribeNotifications((notification) => {
             if (!active || gen !== conversationGen) return;
-            if (liveHandler) liveHandler(notification);
-            else if (
-              notification.method === "evener/sandbox/escalation/requested" ||
-              notification.method === "evener/sandbox/escalation/resolved"
-            )
-              buffered.push(notification);
-            else {
-              const target = notificationRef(notification);
-              if (target && (target.ref === undefined || target.ref === ref))
-                needsSnapshot = true;
-            }
+            liveHandler?.(notification);
           });
           const {
             conversation,
@@ -1518,7 +1403,7 @@ export function createConversationStore() {
           } = replacement ?? (await service.readProjection(ref));
           if (gen !== conversationGen) return;
           const identity: ActivityIdentity = {
-            threadId: conversation.id,
+            threadId: conversation.threadId,
             ref,
             generation: gen,
           };
@@ -1560,11 +1445,6 @@ export function createConversationStore() {
             // its own processing for conversation-specific notifications).
             get().applyNotification(n);
           };
-          for (const notification of buffered) liveHandler(notification);
-          buffered.length = 0;
-          // Deltas may already be included in the snapshot; reread rather than
-          // replaying those non-idempotent events onto the initial content.
-          if (needsSnapshot) requestRehydrate(ref);
         } catch (err) {
           if (gen !== conversationGen) return;
           set({
@@ -1574,7 +1454,6 @@ export function createConversationStore() {
         } finally {
           if (!liveHandler) {
             active = false;
-            buffered.length = 0;
             // The service's cleanup targets its current subscription. Never
             // let an old open unsubscribe a newer conversation's listener.
             if (gen === conversationGen) unsubscribe?.();
@@ -1629,36 +1508,14 @@ export function createConversationStore() {
         });
 
         let active = true;
-        let hydrated = false;
-        let needsSnapshot = false;
-        const buffered: AnyNotification[] = [];
+        // As in openProjected: no handler until the snapshot has committed (a
+        // frame before the response is already in it — the response-cut note
+        // by applyThreadNotification).
+        let liveHandler: ((notification: AnyNotification) => void) | null =
+          null;
         const unsubscribe = service.subscribeNotifications((notification) => {
           if (!active || gen !== conversationGen) return;
-          if (!hydrated) {
-            if (
-              notification.method === "evener/sandbox/escalation/requested" ||
-              notification.method === "evener/sandbox/escalation/resolved"
-            )
-              buffered.push(notification);
-            else {
-              const target = notificationRef(notification);
-              if (target && (target.ref === undefined || target.ref === ref))
-                needsSnapshot = true;
-            }
-            return;
-          }
-          const identity = get().conversation
-            ? {
-                threadId: get().conversation?.id ?? "",
-                ref,
-                generation: gen,
-              }
-            : null;
-          if (identity) {
-            const outcome = sink.applyLiveNotification(notification, identity);
-            if (outcome === "rehydrate") requestRehydrate(ref);
-          }
-          get().applyNotification(notification);
+          liveHandler?.(notification);
         });
         try {
           await get().rehydrate(service, sink);
@@ -1682,29 +1539,21 @@ export function createConversationStore() {
           }
           suspendedService = null;
           set({ status: "open" });
-          hydrated = true;
-          const conversation = get().conversation;
-          if (conversation) {
-            const identity = {
-              threadId: conversation.id,
-              ref,
-              generation: gen,
-            };
-            for (const notification of buffered) {
-              const outcome = sink.applyLiveNotification(
-                notification,
-                identity,
-              );
+          liveHandler = (notification) => {
+            const conversation = get().conversation;
+            if (conversation) {
+              const outcome = sink.applyLiveNotification(notification, {
+                threadId: conversation.threadId,
+                ref,
+                generation: gen,
+              });
               if (outcome === "rehydrate") requestRehydrate(ref);
-              get().applyNotification(notification);
             }
-          }
-          buffered.length = 0;
-          if (needsSnapshot) requestRehydrate(ref);
+            get().applyNotification(notification);
+          };
         } finally {
           if (gen !== conversationGen || get().status === "error") {
             active = false;
-            buffered.length = 0;
             if (gen === conversationGen) unsubscribe();
           }
         }
@@ -1779,14 +1628,6 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
-        // I2: Capture capability-owner revision at entry. If it changed during
-        // the await, a newer capability owner published caps and the rehydrate
-        // must preserve the current caps.
-        const entryCapRev = capabilityOwnerRev;
-        const entryApprovalRev = approvalOwnerRev;
-        const entryGoalRev = goalOwnerRev;
-        const entryTurnRev = turnOwnerRev;
-        const entryTasksRev = tasksOwnerRev;
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1967,7 +1808,7 @@ export function createConversationStore() {
           });
           mergedItems = attachToSources(mergedItems);
           const identity: ActivityIdentity = {
-            threadId: conversation.id,
+            threadId: conversation.threadId,
             ref,
             generation: gen,
           };
@@ -1984,15 +1825,6 @@ export function createConversationStore() {
           const errorUnchanged = entryErrorRev === errorOwnerRev;
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
-          // I2: If the capability-owner revision hasn't changed during the
-          // await, commit the authoritative projected capabilities from the
-          // rehydrate. If it advanced (a newer cap refresh or notification
-          // published caps), preserve the current caps.
-          const capOwnerChanged = entryCapRev !== capabilityOwnerRev;
-          const currentConv = currentState.conversation;
-          const preservedCaps = capOwnerChanged
-            ? currentConv?.capabilities
-            : undefined;
           // Task 2A-Truncation: cap the merged items, reconcile truncation
           // ownership exactly from the FINAL retained (capped) pre-truncation
           // items. mergedItems already contains superseded live/page
@@ -2024,26 +1856,12 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
-          const committedConversation = {
+          // The snapshot's thread-level fields are authoritative (see the
+          // response-cut note by applyThreadNotification); the rows are the
+          // live/page merge above.
+          const committedConversation: MobileConversation = {
             ...conversation,
             items: committedItems,
-            activeTurnId:
-              entryTurnRev === turnOwnerRev
-                ? conversation.activeTurnId
-                : currentConv?.activeTurnId,
-            goal:
-              entryGoalRev === goalOwnerRev
-                ? conversation.goal
-                : currentConv?.goal,
-            tasks:
-              entryTasksRev === tasksOwnerRev
-                ? conversation.tasks
-                : currentConv?.tasks,
-            pendingApprovals:
-              entryApprovalRev === approvalOwnerRev
-                ? conversation.pendingApprovals
-                : (currentConv?.pendingApprovals ?? []),
-            ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision
@@ -2059,11 +1877,6 @@ export function createConversationStore() {
             }
           }
           pruneEvictedIds(committedItems);
-          // I2: If we're committing the projected capabilities (cap owner
-          // unchanged), increment the capability-owner revision.
-          if (!capOwnerChanged) {
-            capabilityOwnerRev += 1;
-          }
           const commitBase = {
             conversation: committedConversation,
             olderCursor: mergedCursor,
@@ -2286,7 +2099,7 @@ export function createConversationStore() {
       async send(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "send", "send");
+        requireControl(state.conversation, "send", "send");
         // C1: Capture a service-specific operation binding. If the supplied
         // service is wrong (A after B bound), zero request/state change.
         const opBinding = captureOperationBinding(service);
@@ -2352,11 +2165,9 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             draftText,
@@ -2366,7 +2177,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2377,7 +2188,7 @@ export function createConversationStore() {
       async steer(service, input, expectedQueueRevision) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "steer", "steer");
+        requireControl(state.conversation, "steer", "steer");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2430,11 +2241,9 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             draftText,
@@ -2444,7 +2253,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2455,7 +2264,7 @@ export function createConversationStore() {
       async queue(service, input) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "queue", "queue");
+        requireControl(state.conversation, "queue", "queue");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2507,11 +2316,9 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             draftText,
@@ -2521,7 +2328,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2532,7 +2339,7 @@ export function createConversationStore() {
       async interrupt(service) {
         const state = get();
         if (state.conversation === null) return;
-        requireCap(state.conversation, "interrupt", "interrupt");
+        requireControl(state.conversation, "stop", "interrupt");
         // C1: Capture a service-specific operation binding.
         const opBinding = captureOperationBinding(service);
         if (opBinding === null) return;
@@ -2590,11 +2397,9 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
-            service,
             state.ref,
-            gen,
             mutationId,
             mutation,
             null,
@@ -2604,7 +2409,7 @@ export function createConversationStore() {
             getErrorOwnerRev,
             set,
             get,
-            requestCapabilityRefresh,
+            requestRehydrate,
           );
           // I1: mutation settled (failed terminal) — drain deferred trailing
           // reread after handleMutationError sets the failed state.
@@ -2651,183 +2456,17 @@ export function createConversationStore() {
       applyNotification(n) {
         const state = get();
         if (state.conversation === null) return;
-
-        // Check threadId/ref against the current conversation and silently drop
-        // mismatches.
-        const nref = notificationRef(n);
-        if (nref !== null) {
-          const currentId = state.conversation.id;
-          const currentRef = state.ref;
-          const idMatch =
-            nref.threadId === undefined || nref.threadId === currentId;
-          const refMatch = nref.ref === undefined || nref.ref === currentRef;
-          if (!idMatch || !refMatch) return;
-        }
-
         const conv = state.conversation;
+
+        // The package reducer's routing: a frame names its thread by ref
+        // when it carries one, else by threadId; a frame naming neither is
+        // not about this thread. Silently drop everything else.
+        if (!notificationTargetsThread(n, conv)) return;
+
+        // The cases below are what native still applies onto its display
+        // rows itself (D23c hands them to the package reducer one by one);
+        // every other frame about this thread is the reducer's, in `default`.
         switch (n.method) {
-          case "evener/sandbox/escalation/requested": {
-            approvalOwnerRev++;
-            const approval = projectApproval(n.params);
-            set({
-              conversation: {
-                ...conv,
-                pendingApprovals: [
-                  ...conv.pendingApprovals.filter(
-                    (value) => value.id !== approval.id,
-                  ),
-                  approval,
-                ],
-              },
-            });
-            break;
-          }
-          case "evener/sandbox/escalation/resolved": {
-            approvalOwnerRev++;
-            set({
-              conversation: {
-                ...conv,
-                pendingApprovals: conv.pendingApprovals.filter(
-                  (value) => value.id !== n.params.escalationId,
-                ),
-              },
-            });
-            break;
-          }
-          case "thread/status/changed": {
-            const params = n.params as {
-              status: { type: string };
-              capabilities?: ThreadCapabilities;
-            };
-            // I2: increment capability-owner revision if capabilities are
-            // being published.
-            if (params.capabilities !== undefined) {
-              capabilityOwnerRev += 1;
-            }
-            set({
-              conversation: {
-                ...conv,
-                status: params.status.type,
-                capabilities: params.capabilities
-                  ? { ...params.capabilities }
-                  : conv.capabilities,
-              },
-            });
-            break;
-          }
-
-          case "thread/queueChanged": {
-            const params = n.params as {
-              queue: QueueState;
-            };
-            set({
-              conversation: {
-                ...conv,
-                queue: projectQueue(params.queue),
-              },
-            });
-            break;
-          }
-
-          case "evener/task/updated": {
-            tasksOwnerRev++;
-            const { total, done, cancelled, remaining, current } = n.params;
-            set({
-              conversation: {
-                ...conv,
-                tasks: { total, done, cancelled, remaining, current },
-              },
-            });
-            break;
-          }
-
-          case "evener/goal/updated": {
-            goalOwnerRev++;
-            set({ conversation: { ...conv, goal: n.params.goal } });
-            break;
-          }
-
-          case "evener/thread/name/changed": {
-            const params = n.params as { name: string };
-            set({
-              conversation: { ...conv, name: params.name },
-            });
-            break;
-          }
-
-          case "thread/model/changed": {
-            const params = n.params as {
-              modelProvider: string;
-              reasoningEffortLevels?: string[];
-              supportsReasoning?: boolean;
-            };
-            set({
-              conversation: {
-                ...conv,
-                modelProvider: params.modelProvider,
-                reasoningEffortLevels: params.reasoningEffortLevels,
-                supportsReasoning: params.supportsReasoning,
-              },
-            });
-            break;
-          }
-
-          case "thread/reasoning-effort/changed": {
-            const params = n.params as { reasoningEffort?: string };
-            set({
-              conversation: {
-                ...conv,
-                reasoningEffort: params.reasoningEffort,
-              },
-            });
-            break;
-          }
-
-          case "thread/vision-model/changed": {
-            const params = n.params as { visionModel: string };
-            set({
-              conversation: { ...conv, visionModel: params.visionModel },
-            });
-            break;
-          }
-
-          case "turn/started": {
-            turnOwnerRev++;
-            set({
-              conversation: {
-                ...conv,
-                status: "running",
-                activeTurnId: n.params.turn.id,
-              },
-            });
-            break;
-          }
-
-          case "turn/completed": {
-            const params = n.params as {
-              turn: { id: string; status: string };
-            };
-            const completedActive = conv.activeTurnId === params.turn.id;
-            // Completion is newer than an in-flight read even when this
-            // client missed the corresponding start notification.
-            turnOwnerRev++;
-            // params.turn.usage is this one turn's totals, not the session's
-            // cumulative usage — publish completion state only and leave
-            // usage as whatever the last authoritative projection set.
-            set({
-              conversation: {
-                ...conv,
-                activeTurnId: completedActive ? undefined : conv.activeTurnId,
-                status:
-                  conv.status === "running" &&
-                  (!conv.activeTurnId || completedActive)
-                    ? "ready"
-                    : conv.status,
-              },
-            });
-            break;
-          }
-
           case "item/started":
           case "item/completed": {
             const params = n.params as { item: ThreadItem };
@@ -3183,19 +2822,20 @@ export function createConversationStore() {
             break;
           }
 
-          // Default: only resync for unsupported item/* transitions, not for
-          // all unknown notifications — to avoid reread storms from unrelated
-          // notification families.
           default: {
-            if (
-              typeof n.method === "string" &&
-              n.method.startsWith("item/") &&
-              !ITEM_NOTIFICATION_METHODS.has(n.method)
-            ) {
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
+            // An item/* transition the cases above do not handle needs the
+            // canonical projection; only those resync, not every unknown
+            // family, to avoid reread storms from unrelated notifications.
+            if (n.method.startsWith("item/")) {
+              if (state.ref !== null) requestRehydrate(state.ref);
+              break;
             }
+            // Everything else about this thread is the package reducer's. It
+            // reads the ThreadModel half of the conversation and leaves the
+            // display rows alone.
+            const applied = applyThreadNotification(conv, n);
+            if (applied === conv) break;
+            set({ conversation: applied });
             break;
           }
         }
@@ -3270,29 +2910,16 @@ export function createConversationStore() {
   });
 }
 
-// Shared mutation error handler: on actionUnavailable, requests the
-// non-subscribing refreshCapabilities (never open()) through the store-owned
-// drain scheduler (I2 — no direct await bypass) to publish refreshed caps
-// before surfacing the error. On failure, the failed mutation state PERSISTS
-// (not cleared to null). The draft is only restored if the user has not edited
-// since the mutation cleared the draft — detected via draftRevision, so
-// type-then-delete (which produces "" but increments the revision) counts as
-// an edit and prevents restore. F4/F10: uses mutationId (not generation alone)
-// so out-of-order failure cannot overwrite a newer mutation's error.
-// F10: checks active mutation before the capability refresh — a newer
-// mutation may have started.
-// I2: the capability refresh is requested through the store-owned scheduler
-// so it serializes/coalesces with rereads; stale mutation recovery is
-// suppressed by the mutationId guard inside the scheduler effect.
-// Task 2A-Ops-3: after the capability refresh resolves, caps are published
-// only when both generation AND mutation operation ID remain current — a
-// newer same-generation mutation must not receive stale capability
-// publication or stale error state.
-async function handleMutationError(
+// Shared mutation error handler. On failure, the failed mutation state
+// PERSISTS (not cleared to null). The draft is only restored if the user has
+// not edited since the mutation cleared the draft — detected via
+// draftRevision, so type-then-delete (which produces "" but increments the
+// revision) counts as an edit and prevents restore. F4/F10: uses mutationId
+// (not generation alone) so out-of-order failure cannot overwrite a newer
+// mutation's error.
+function handleMutationError(
   err: unknown,
-  service: ConversationService,
   ref: string | null,
-  gen: number,
   mutationId: number,
   mutation: ConversationMutationState,
   draftSnapshot: string | null,
@@ -3302,28 +2929,20 @@ async function handleMutationError(
   getErrorOwnerRev: () => number,
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
-  requestCapabilityRefresh: (
-    service: ConversationService,
-    ref: string,
-    gen: number,
-    mutationId: number,
-  ) => Promise<void>,
-): Promise<void> {
-  // F10: Check active mutation BEFORE the capability refresh. If a newer
-  // mutation has already started, this error is stale — bail out.
+  requestRehydrate: (ref: string) => void,
+): void {
+  // F10: Check active mutation first. If a newer mutation has already
+  // started, this error is stale — bail out.
   if (get().pendingMutation?.mutationId !== mutationId) return;
 
-  // I2: on actionUnavailable, schedule the capability refresh through the
-  // store-owned drain scheduler AND await its completion before publishing
-  // capabilities/surfacing error. This preserves prior observable ordering and
-  // mutation guards — caps are published before the error is visible.
-  if (isActionUnavailableError(err) && ref !== null) {
-    await requestCapabilityRefresh(service, ref, gen, mutationId);
-  }
+  // The hub refused because its capabilities moved on without a status frame
+  // this client saw. The web's rule (decision 2): surface the typed error and
+  // let the model converge through the reducer — one coalesced reread of the
+  // authoritative snapshot — rather than a bespoke capability read and write.
+  if (isActionUnavailableError(err) && ref !== null) requestRehydrate(ref);
 
   // F10: Re-check mutationId — out-of-order failure cannot change a newer
-  // mutation, error, or draft. The capability refresh has completed (awaited);
-  // now surface the error.
+  // mutation, error, or draft.
   if (get().pendingMutation?.mutationId === mutationId) {
     // The failed mutation state PERSISTS — do NOT clear pendingMutation.
     // Task 2A-Ops-4: Draft revision prevents type-delete restore — only
@@ -3363,7 +2982,3 @@ async function handleMutationError(
     }
   }
 }
-
-// Re-export the MobileCapabilities type for consumers that import from the
-// store module.
-export type { MobileCapabilities, MobileConversation, MobileTimelineItem };

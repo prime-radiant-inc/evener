@@ -10,9 +10,57 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// A project favorite is stored under (source, project ID). The navigation
+// projection must keep that source dimension: registering every favorite under
+// its bare ID would let one host's favorite decorate another host's project.
+func TestProjectFavoritePresentationIsSourceQualified(t *testing.T) {
+	presentation := map[hubcore.ArchiveKey]bool{
+		{Kind: "project", ID: "shared", Source: "host-a"}: true,
+		{Kind: "project", ID: "mine", Source: ""}:         true,
+	}
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, nil, hubapi.AttentionSummary{}, nil, nil, projectFavoritePresentation(presentation), nil, nil)
+
+	if !inputs.ProjectFavorite[projectFavoriteKey("host-a", "shared")] {
+		t.Fatalf("remote favorite not registered under its source: %v", inputs.ProjectFavorite)
+	}
+	if inputs.ProjectFavorite["shared"] {
+		t.Fatalf("remote favorite leaked onto the bare project key: %v", inputs.ProjectFavorite)
+	}
+	if !inputs.ProjectFavorite["mine"] {
+		t.Fatalf("controller favorite not registered under the bare key: %v", inputs.ProjectFavorite)
+	}
+	if !projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: "shared", Sources: []string{"host-a"}}) {
+		t.Fatal("project owned by host-a did not resolve its favorite")
+	}
+	if projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: "shared", Sources: []string{"host-b"}}) {
+		t.Fatal("project owned by host-b inherited host-a's favorite")
+	}
+}
+
+// The rail sends no source on a project favorite, so the decision is stored
+// under the controller key. When the project is owned by one remote host the
+// classifier resolves that bare decision to the host's authority; the
+// presentation must then register under the host-qualified key the project row
+// reads, or the favorite returns OK:true but no star ever appears.
+func TestProjectFavoriteBareDecisionResolvesRemoteProject(t *testing.T) {
+	const projectID = "remote-project"
+	bare := hubcore.ArchiveKey{Kind: "project", ID: projectID}
+	authority := hubcore.FavoriteAuthority{Projects: []hubcore.FavoriteProjectAuthority{
+		{ID: projectID, Source: "host-a", Quality: hubcore.FavoriteAuthorityComplete, ClaimKey: "/srv/a\x00host-a"},
+	}}
+	classified := hubcore.ClassifyFavoriteDecisions(map[hubcore.ArchiveKey]bool{bare: true}, authority)
+	inputs := navigationBuildInputsFromTreeSnapshot("generation", 1, hubcore.Tree{}, nil, hubapi.AttentionSummary{}, nil, nil,
+		projectFavoritePresentation(classified.Presentation), nil, nil)
+
+	if !projectFavoriteForSources(inputs.ProjectFavorite, hubcore.TreeProject{Key: projectID, Sources: []string{"host-a"}}) {
+		t.Fatalf("bare remote favorite did not present on the project: %v", inputs.ProjectFavorite)
+	}
+}
 
 func testProjectID(t *testing.T, path string) string {
 	t.Helper()
@@ -40,7 +88,7 @@ func TestArchiveDecisionsFlowIntoTree(t *testing.T) {
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
 	// Manually archive the canonical project even though it has a fresh session.
-	if err := store.Set("project", project.ID, true, now); err != nil {
+	if err := store.Set("", "project", project.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
 	decisions, err := store.Decisions()
@@ -143,7 +191,7 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	if err := store.Set("project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := store.Set("", "project", project.ID, true, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatal(err)
 	}
 	s := &WebServer{cfg: hubcore.WebConfig{Archive: store}}
@@ -230,5 +278,75 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 	}
 	if meta.ID != "remote:child" || meta.ParentSessionID != "remote:parent" || !meta.IsSubagent {
 		t.Fatalf("remote subagent metadata = %+v", meta)
+	}
+}
+
+// An older daemon omits the watches field entirely, and a probe that listed
+// nothing carries no diagnostics. Both must project an empty watch list onto
+// the tree entry rather than failing the thread.
+func TestAppThreadTreeEntryWithoutWatchesYieldsEmptyList(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		diag *appwire.EvenerDiagnostics
+	}{
+		{name: "nil diagnostics", diag: nil},
+		{name: "diagnostics without watches", diag: &appwire.EvenerDiagnostics{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, entry, ok := appThreadTreeEntries(appwire.Thread{
+				ID:     "thread-empty",
+				Source: "remote",
+				Evener: appwire.EvenerThread{Ref: "remote:thread-empty", Diagnostics: tc.diag},
+			})
+			if !ok {
+				t.Fatal("appThreadTreeEntries rejected a valid remote thread")
+			}
+			if len(entry.Watches) != 0 {
+				t.Fatalf("entry.Watches = %+v, want empty when diagnostics omit Watches", entry.Watches)
+			}
+		})
+	}
+}
+
+// A watch is reported by the session's own daemon. Two sessions that can both
+// see a receiver watch each carry their own diagnostics rows; the entry must
+// never aggregate the other session's rows, or a rollup would double count.
+func TestAppThreadTreeEntryCarriesOnlyItsOwnWatches(t *testing.T) {
+	threadA := appwire.Thread{
+		ID:     "thread-a",
+		Source: "remote",
+		Evener: appwire.EvenerThread{
+			Ref: "remote:thread-a",
+			Diagnostics: &appwire.EvenerDiagnostics{Watches: []appwire.EvenerWatchInfo{
+				{ID: "watch-a", Source: "timer", Note: "owner watch"},
+			}},
+		},
+	}
+	threadB := appwire.Thread{
+		ID:     "thread-b",
+		Source: "remote",
+		Evener: appwire.EvenerThread{
+			Ref: "remote:thread-b",
+			Diagnostics: &appwire.EvenerDiagnostics{Watches: []appwire.EvenerWatchInfo{
+				{ID: "watch-b", Source: "output", Note: "receiver watch"},
+			}},
+		},
+	}
+
+	_, entryA, okA := appThreadTreeEntries(threadA)
+	_, entryB, okB := appThreadTreeEntries(threadB)
+	if !okA || !okB {
+		t.Fatalf("entries rejected: a=%v b=%v", okA, okB)
+	}
+	if len(entryA.Watches) != 1 || entryA.Watches[0].ID != "watch-a" {
+		t.Fatalf("session A watches = %+v, want only watch-a", entryA.Watches)
+	}
+	if len(entryB.Watches) != 1 || entryB.Watches[0].ID != "watch-b" {
+		t.Fatalf("session B watches = %+v, want only watch-b", entryB.Watches)
+	}
+	for _, watch := range entryB.Watches {
+		if watch.ID == "watch-a" {
+			t.Fatalf("session B carries session A's watch: %+v", entryB.Watches)
+		}
 	}
 }

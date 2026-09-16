@@ -331,6 +331,48 @@
   color: var(--danger);
 }
 
+/* The second line, when a row has one: the neutral watch count and/or the
+ * tinted activity gloss, side by side. A flex row rather than putting the
+ * count inside .activity, because .activity lives under the tint classes above
+ * (activityAlive/activityAttention/activityDanger) and a watch must never
+ * inherit a signal hue - it is pending work, not a call for a human, not a
+ * failure, not a success (the design system's four-colour budget). */
+.secondLine {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* The gloss yields the line to the count and is the part that truncates: it
+ * absorbs the row's slack while the count keeps its own width. Without this,
+ * a long gloss would push the fixed-width count out of the line instead of
+ * ellipsizing. */
+.secondLine > .activity {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The watch count, in front of the gloss: neutral --ink-mid like the gloss's
+ * own resting ink (never a semantic hue), and flex:none so ellipsis takes the
+ * gloss's tail - the branch - rather than the count. */
+.watchCount {
+  flex: none;
+  white-space: nowrap;
+  color: var(--ink-mid);
+  font-size: var(--font-size-caption);
+}
+
+/* The drawn clock a watch row leads with (RailRow's WatchGlyph): a fixed-size
+ * inline mark, neutral by design. 13px keeps it inside the title line's
+ * leading box without shifting the note off the title x of its sibling rows. */
+.watchGlyph {
+  flex: none;
+  width: 13px;
+  height: 13px;
+  color: var(--ink-mid);
+}
+
 /* Right-aligned relative timestamp - an occupant of the shared .rightSlot
  * cell (the Task-7 needs-you Badge and "Not started" are the other two;
  * RailRow.tsx renders at most one of the three, and the hover-revealed
@@ -355,6 +397,27 @@
   white-space: nowrap;
   color: var(--ink-mid);
   font-size: var(--font-size-caption);
+}
+
+/* A non-local session's host (Component 06b), rendered inline on the title
+ * line after the row's own trailing chevron. A quiet LABEL, not tree
+ * structure: .titleLine's own gap spaces it, and it stays at the caption size
+ * and lowest ink so it never competes with the title it follows. Reachability
+ * gets no semantic hue - none of attention/alive/danger means "offline" - so
+ * the offline modifier reads through italics and dimmed ink instead. This
+ * stylesheet is not a widget stylesheet and cannot reach the semantic-var
+ * allowlist; using only ink tokens is also the honest choice for a fact that
+ * is neither an error nor an appeal for attention. */
+.host {
+  flex: none;
+  color: var(--ink-low);
+  font-size: var(--font-size-caption);
+  white-space: nowrap;
+}
+
+.hostOffline {
+  font-style: italic;
+  opacity: 0.7;
 }
 
 .star {

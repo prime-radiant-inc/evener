@@ -3,8 +3,8 @@
 // - publishFetch continuation paths (lines 314-317, 327)
 // - applyFetchResult continuation-failed (lines 371, 380)
 
+import type { ActivityTree } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { ActivityTree } from "../protocol/activityData";
 import { activityPanelStore, resetActivityPanelStoreForTests, retainedActivityTree } from "./activityPanel";
 
 function makeTree(revision = 1): ActivityTree {

@@ -12,64 +12,94 @@
 // resolve from outside the Vitest root, which is a transform-time error a
 // collected-but-never-executed file hides.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import ts from "typescript";
+import { isLoadedAtRuntime, moduleSpecifierSites, parseSource, walkImportGraph } from "../../../../scripts/sdk/module-specifiers.mjs";
+import { resolveSourceFile } from "../../../../scripts/sdk/resolve-source.mjs";
+import { CONSUMER_TREES, isTestFile, sourceFiles } from "../../../../scripts/sdk/source-files.mjs";
 
 const frontend = fileURLToPath(new URL("../", import.meta.url));
 const packageDir = path.resolve(frontend, "../../../appwire-client/typescript");
 
-// Same shape as Vitest's default test glob, applied to the package tree.
-const isTestFile = (name) => /\.(test|spec)\.[cm]?[jt]sx?$/.test(name);
+// Shared with the package's own value-import derivation, which needs the same
+// answer: see scripts/sdk/source-files.mjs.
+
+// Vitest resolves this one itself; it is the only bare specifier a package
+// file may name without an alias.
+const SELF_RESOLVING = new Set(["vitest"]);
 
 // Every source file under the package, test or not - the no-app-import sweep
-// has to see the whole tree, not only its tests.
+// has to see the whole tree, not only its tests. The shared walker, sorted so
+// the disk listing compares stably against Vitest's.
 export function sourceFilesOnDisk(dir) {
-  const found = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === "dist") continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...sourceFilesOnDisk(full));
-    else if (/\.[cm]?[jt]sx?$/.test(entry.name)) found.push(full);
-  }
-  return found.sort();
+  return sourceFiles(dir).sort();
 }
-
-// Every form that names a module, not only `from "..."`: a side-effect
-// `import "..."`, a `require("...")` and a dynamic `import("...")` all reach
-// into the app just as effectively. The leading keyword is what separates an
-// import from a comment that happens to mention an app path.
-const APP_IMPORT = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'][^"']*cmd\/evener-hub\//;
 
 // A package module that reads from disk has to resolve the path against its own
 // location, because the package is consumed from wherever the consumer happens
-// to run and the process's working directory is not its own. The rule is scoped
-// to lines that actually build a filesystem path - an ordinary `../sibling`
-// import is not one - and a file that says `import.meta.url` has already
-// answered the question. testing/hubWireFixtures.ts read
-// `join("..", "testdata", "authwire", "responses.json")` against the frontend's
-// CWD; it lives in the app now, which is the other way to satisfy this.
-const FS_PATH_CALL =
-  /\b(?:join|resolve|readFileSync|readFile|readdirSync|readdir|existsSync|createReadStream|statSync|stat|openSync|open)\s*\(/;
-const MODULE_SPECIFIER = /^\s*(?:import\b|export\b[^=]*\bfrom\b|.*\brequire\s*\()/;
-const RELATIVE_PATH_LITERAL = /["'](?:\.{1,2}["'/]|[^"']*\btestdata\b)/;
-// `import fs from "node:fs"`, `require("fs")` and `await import("node:fs")`
-// all reach the filesystem; matching only the first let the other two through.
-const FS_MODULE = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["'](?:node:)?fs(?:\/promises)?["']/;
+// to run and the process's working directory is not its own. The hazard is one
+// shape: a filesystem call whose LEADING argument is a relative path literal,
+// which is what anchors it to the working directory -- `join("..", …)`,
+// `readFileSync("../x")`. Found on the AST rather than by line, so a call whose
+// argument is wrapped onto the next line is caught too. A call anchored to a
+// base identifier (`resolve(packageDir, "..")`, `new URL("../x",
+// import.meta.url)`) resolves against that base, not the cwd, and an ordinary
+// `from "../x"` import names no such call; neither matches. testing/
+// hubWireFixtures.ts once read `join("..", "testdata", …)` against the
+// frontend's CWD; it now loads the fixture through a `?raw` import, which is
+// the other way to satisfy this.
+const FS_PATH_FUNCTIONS = new Set([
+  "join",
+  "resolve",
+  "readFileSync",
+  "readFile",
+  "readdirSync",
+  "readdir",
+  "existsSync",
+  "createReadStream",
+  "statSync",
+  "stat",
+  "openSync",
+  "open",
+]);
+const cwdRelativeLiteral = (text) => /^\.\.?(?:[/\\]|$)/.test(text) || /(?:^|[/\\])testdata(?:[/\\]|$)/.test(text);
+
+// Whether the file loads node's fs by any form -- an import, a require, a
+// dynamic import -- read off the AST so all three count, where matching text
+// once let the other forms through. `path.join` for a non-fs purpose in a file
+// that never touches fs is not this rule's business.
+const importsFs = (source) =>
+  moduleSpecifierSites(ts, source).some((site) => /^(?:node:)?fs(?:\/promises)?$/.test(site.text));
 
 export function describeCwdRelativeReads(files, read, dir) {
   const offenders = [];
   for (const file of files) {
-    const source = read(file);
-    if (!FS_MODULE.test(source)) continue;
-    if (source.includes("import.meta.url")) continue;
-    source.split("\n").forEach((line, index) => {
-      if (MODULE_SPECIFIER.test(line)) return;
-      if (!FS_PATH_CALL.test(line)) return;
-      if (!RELATIVE_PATH_LITERAL.test(line)) return;
-      offenders.push(`${path.relative(dir, file)}:${index + 1}: ${line.trim()}`);
-    });
+    const source = parseSource(ts, file, read(file));
+    if (!importsFs(source)) continue;
+    const lines = source.text.split("\n");
+    const seen = new Set();
+    const visit = (node) => {
+      if (ts.isCallExpression(node)) {
+        const callee = ts.isPropertyAccessExpression(node.expression)
+          ? node.expression.name.text
+          : ts.isIdentifier(node.expression)
+            ? node.expression.text
+            : null;
+        const first = node.arguments[0];
+        if (callee && FS_PATH_FUNCTIONS.has(callee) && first && ts.isStringLiteralLike(first) && cwdRelativeLiteral(first.text)) {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line;
+          if (!seen.has(line)) {
+            seen.add(line);
+            offenders.push(`${path.relative(dir, file)}:${line + 1}: ${lines[line].trim()}`);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
   }
   if (offenders.length === 0) return "";
   return [
@@ -79,33 +109,240 @@ export function describeCwdRelativeReads(files, read, dir) {
   ].join("\n");
 }
 
-// The package is a standalone library: nothing in it may reach back into the
-// app. Two test files did, and moving them out is only half the fix - this is
-// the half that keeps it fixed.
-export function describeAppImports(files, read, dir) {
+// The `@evener/appwire-client/testing/` subpath is in-repo test support: it is
+// absent from the tarball, so a production module importing it would name
+// something no installed consumer can resolve, and would pull test fakes into
+// the shipped bundle if it could. Only test files and the dev-support files
+// that build the guard harnesses and previews may import it -- the set AGENTS.md
+// names. Judged by path so a production consumer is caught wherever it sits.
+const TESTING_SUBPATH = "@evener/appwire-client/testing/";
+// `relativePath` is the repo-relative path, so a checkout that happens to sit
+// under a directory called dev/ does not turn every file into dev-support --
+// the segment that counts is `src/dev/`, and __tests__ is matched as a path
+// segment, not anywhere in an absolute prefix.
+export function mayImportTesting(relativePath) {
+  const base = path.basename(relativePath);
+  const segments = relativePath.split(/[/\\]/);
+  return (
+    isTestFile(base) ||
+    segments.includes("__tests__") ||
+    segments.slice(0, -1).some((segment, index) => segment === "dev" && segments[index - 1] === "src") ||
+    /TestUtils\.[cm]?[jt]sx?$/.test(base)
+  );
+}
+
+export function describeTestingImportsOutsideTests(files, read, dir) {
   const offenders = [];
   for (const file of files) {
-    for (const line of read(file).split("\n")) {
-      if (APP_IMPORT.test(line)) offenders.push(`${path.relative(dir, file)}: ${line.trim()}`);
+    if (mayImportTesting(path.relative(dir, file))) continue;
+    const text = read(file);
+    if (!text.includes(TESTING_SUBPATH)) continue;
+    for (const site of moduleSpecifierSites(ts, parseSource(ts, file, text))) {
+      if (site.text.startsWith(TESTING_SUBPATH)) offenders.push(`${path.relative(dir, file)}: imports ${site.text}`);
     }
   }
   if (offenders.length === 0) return "";
   return [
-    "the AppWire package must not import from the app:",
+    "the AppWire testing/ subpath is in-repo test support; only test and dev-support files may import it:",
     ...offenders.map((line) => `  ${line}`),
-    "Move the file into cmd/evener-hub/frontend/src/, or restate the type it needs locally.",
+    "Move the use into a *.test.*, __tests__/, src/dev/ or *TestUtils.* file, or import from the package root.",
+  ].join("\n");
+}
+
+// The package is a standalone library: nothing in it may reach back into the
+// app -- nor into the mobile trees. Two test files reached into the app, and
+// moving them out is only half the fix; this is the half that keeps it fixed.
+// Read through the AST so every form counts -- a from-import, a side-effect
+// import, a require, a dynamic import -- and a comment naming a path does not,
+// being no specifier at all. A relative specifier is the offender when it
+// resolves into the whole web app (cmd/evener-hub/frontend) or either mobile
+// tree; an import into shared repo tooling (scripts/sdk) is what the package's
+// own scripts legitimately do, and a bare specifier names a dependency the
+// alias check covers.
+export function describeAppImports(files, read, dir) {
+  const repoRoot = path.resolve(dir, "..", "..");
+  // The trees the package must not reach into: the WHOLE web app (its scripts
+  // and configs are the app too, not only src), and the two mobile trees. This
+  // is broader than the value-derivation's consumer src trees on purpose -- a
+  // package file reaching into cmd/evener-hub/frontend/scripts is as much a
+  // dependency on the app as one reaching into src. scripts/sdk repo tooling
+  // sits outside all of these and stays allowed.
+  const appTrees = [
+    path.join(repoRoot, "cmd", "evener-hub", "frontend"),
+    path.join(repoRoot, "mobile-native"),
+    path.join(repoRoot, "mobile", "src"),
+  ];
+  const intoAppTree = (resolved) =>
+    appTrees.some((tree) => resolved === tree || resolved.startsWith(tree + path.sep));
+  const offenders = [];
+  for (const file of files) {
+    for (const site of moduleSpecifierSites(ts, parseSource(ts, file, read(file)))) {
+      if (!site.text.startsWith(".")) continue;
+      if (intoAppTree(path.resolve(path.dirname(file), site.text))) {
+        offenders.push(`${path.relative(dir, file)}: imports ${site.text}`);
+      }
+    }
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "the AppWire package must not import from the app or the mobile trees:",
+    ...offenders.map((line) => `  ${line}`),
+    "Move the file into the package, or restate the type it needs locally.",
+  ].join("\n");
+}
+
+// vite.config.ts's `resolve.alias`, read off its AST rather than matched: this
+// is the list the package's bare imports are held against, and a regex that
+// missed an entry would fail the gate over an alias that is there.
+//
+// Each key maps to whether that alias can serve a SUBPATH, which is decided by
+// its target: a directory can, a file cannot. `@evener/appwire-client` points
+// at index.ts, so it answers `@evener/appwire-client` and nothing below it --
+// Vite would build index.ts/testing/fakeClient, which is not a path. The
+// target is classified from the last string literal of its expression, since
+// the expressions are path.join calls this file cannot evaluate.
+const TARGET_IS_A_FILE = /\.[cm]?[jt]sx?$|\.json$/;
+
+export function aliasesFrom(configText) {
+  const source = parseSource(ts, "vite.config.ts", configText);
+  const aliases = new Map();
+  const lastLiteral = (node) => {
+    let found = null;
+    const walk = (child) => {
+      if (ts.isStringLiteralLike(child)) found = child.text;
+      ts.forEachChild(child, walk);
+    };
+    walk(node);
+    return found;
+  };
+  const visit = (node) => {
+    if (
+      ts.isPropertyAssignment(node) &&
+      !ts.isComputedPropertyName(node.name) &&
+      node.name.text === "alias" &&
+      ts.isObjectLiteralExpression(node.initializer)
+    ) {
+      for (const property of node.initializer.properties) {
+        if (!ts.isPropertyAssignment(property)) continue;
+        const name = property.name;
+        if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) continue;
+        const target = lastLiteral(property.initializer);
+        aliases.set(name.text, { servesSubpaths: target !== null && !TARGET_IS_A_FILE.test(target) });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return aliases;
+}
+
+// Whether `key` can stand in for a specifier BELOW it, decided by its target:
+// a directory alias can, a file alias (an entry point) cannot. aliasesFrom
+// records that per key, so callers -- the gate and its tests alike -- pass a
+// Map of it.
+function servesSubpaths(key, aliases) {
+  return aliases.get(key).servesSubpaths;
+}
+
+// Every module this file LOADS, by any form: a vi.mock or a require reaches a
+// dependency exactly as an import does, and an alias it needs is needed just
+// as much. An erased one reaches nothing -- `import type X from "pkg"` is gone
+// before Vite resolves anything -- so counting it would demand an alias for a
+// dependency no run has.
+function loadedSpecifiersIn(file, text) {
+  return moduleSpecifierSites(ts, parseSource(ts, file, text))
+    .filter(isLoadedAtRuntime)
+    .map((site) => site.text);
+}
+
+// The package's own files are TypeScript, plus the .mjs tooling its tests
+// reach. Extension probing and the directory/index.ts rule are the rewriter's,
+// shared rather than restated: an `existsSync` that says yes to a directory
+// returns the directory, and the caller reads it as a file.
+export const resolvePackageImport = (from, specifier) =>
+  resolveSourceFile(from, specifier, [".ts", ".tsx", ".mjs", ".js"]);
+
+// Every bare specifier reachable from the package's test files, mapped to the
+// package-relative files that name it. The walk stops at the first bare
+// specifier: what is inside node_modules is not this gate's business, and the
+// package's own scripts that Vitest never loads (qualify-package.mjs and its
+// `ws`) are not reachable from a test, so they are not held to this rule.
+export function reachableBareImports(testFiles, read, resolveRelative, dir) {
+  const bare = new Map();
+  walkImportGraph(
+    testFiles,
+    (file) => loadedSpecifiersIn(file, read(file)),
+    (file, specifier) => {
+      if (specifier.startsWith("node:")) return null;
+      // A relative import is followed; a bare one is the leaf this gate
+      // records -- what is inside node_modules is not its business.
+      if (specifier.startsWith(".")) return resolveRelative(file, specifier) || null;
+      if (!bare.has(specifier)) bare.set(specifier, []);
+      bare.get(specifier).push(path.relative(dir, file));
+      return null;
+    },
+  );
+  return bare;
+}
+
+// The alias Vite would use for a specifier: the FIRST key in config order that
+// matches, which is how Rollup's alias plugin resolves -- not the longest one.
+// The difference only shows when a general key precedes a specific one, which
+// is what describeAliasOrder refuses.
+export function firstAliasMatch(specifier, aliases) {
+  for (const key of aliases.keys()) {
+    if (specifier === key) return key;
+    // A prefix match answers only if that alias serves subpaths at all.
+    if (specifier.startsWith(`${key}/`) && servesSubpaths(key, aliases)) return key;
+  }
+  return null;
+}
+
+// First-match means order carries meaning: a key that is a path prefix of a
+// later one swallows it, and `@evener/appwire-client` placed before
+// `@evener/appwire-client/testing` would answer for every testing specifier
+// with index.ts. vite.config.ts says as much in a comment; this is the same
+// rule, enforced.
+export function describeAliasOrder(aliases) {
+  const keys = [...aliases.keys()];
+  const offenders = [];
+  for (let i = 0; i < keys.length; i++) {
+    for (let j = i + 1; j < keys.length; j++) {
+      if (keys[j].startsWith(`${keys[i]}/`)) offenders.push(`${keys[i]} precedes ${keys[j]}, which it swallows`);
+    }
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "vite.config.ts's resolve.alias is ordered so a general key answers before a specific one:",
+    ...offenders.map((line) => `  ${line}`),
+    "Vite takes the FIRST matching alias, so the specific entries have to come first.",
+  ].join("\n");
+}
+
+// A bare specifier with no alias resolves from the importer, which is inside
+// the package. That works on any machine where `npm ci --prefix
+// appwire-client/typescript` has run for make test-api-package, and fails in
+// CI's web job, which installs only this app - a green local gate over an
+// import CI cannot resolve. This is the check that stops the two diverging.
+export function describeUnaliasedImports(bare, aliases) {
+  const offenders = [];
+  for (const [specifier, files] of [...bare].sort()) {
+    if (SELF_RESOLVING.has(specifier)) continue;
+    if (firstAliasMatch(specifier, aliases) !== null) continue;
+    offenders.push(`${specifier}, imported by ${files.join(", ")}`);
+  }
+  if (offenders.length === 0) return "";
+  return [
+    "the AppWire package's test graph names bare specifiers that vite.config.ts does not alias:",
+    ...offenders.map((line) => `  ${line}`),
+    "Vite resolves those from the package directory, which has node_modules only where",
+    "`npm ci --prefix appwire-client/typescript` has run - not in CI's web job. Add an alias",
+    "in cmd/evener-hub/frontend/vite.config.ts pointing at this app's copy.",
   ].join("\n");
 }
 
 export function testFilesOnDisk(dir) {
-  const found = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === "node_modules" || entry.name === "dist") continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) found.push(...testFilesOnDisk(full));
-    else if (isTestFile(entry.name)) found.push(full);
-  }
-  return found.sort();
+  return sourceFiles(dir, { keep: isTestFile }).sort();
 }
 
 // Vitest prints one collected file per line, relative to its root.
@@ -191,11 +428,30 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error(`vitest list failed (exit ${listed.status}):\n${listed.stderr ?? ""}`);
     process.exit(1);
   }
-  const readFile = (file) => readFileSync(file, "utf8");
+  // One read per file across every check, and one walk of the package tree:
+  // the test files are the source files that are tests, not a second sweep.
+  const fileCache = new Map();
+  const readFile = (file) => {
+    let text = fileCache.get(file);
+    if (text === undefined) {
+      text = readFileSync(file, "utf8");
+      fileCache.set(file, text);
+    }
+    return text;
+  };
+  const viteAliases = aliasesFrom(readFileSync(path.join(frontend, "vite.config.ts"), "utf8"));
   const packageSources = sourceFilesOnDisk(packageDir);
+  const onDisk = packageSources.filter((file) => isTestFile(path.basename(file)));
+  // The consumer trees, for the testing/-subpath rule: a production module in
+  // the app or the mobile trees must not import in-repo test support.
+  const repoRoot = path.resolve(frontend, "..", "..", "..");
+  const consumerSources = CONSUMER_TREES.flatMap((tree) => sourceFiles(path.join(repoRoot, tree)));
   for (const problem of [
     describeAppImports(packageSources, readFile, packageDir),
     describeCwdRelativeReads(packageSources, readFile, packageDir),
+    describeAliasOrder(viteAliases),
+    describeUnaliasedImports(reachableBareImports(onDisk, readFile, resolvePackageImport, packageDir), viteAliases),
+    describeTestingImportsOutsideTests(consumerSources, readFile, repoRoot),
   ]) {
     if (problem) {
       console.error(problem);
@@ -203,7 +459,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
   }
 
-  const onDisk = testFilesOnDisk(packageDir);
   const problem = describeDifference(onDisk, collectedUnder(listed.stdout, frontend, packageDir), packageDir);
   if (problem) {
     console.error(problem);

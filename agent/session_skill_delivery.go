@@ -245,7 +245,7 @@ func (s *Session) recordSkillCarrierDurably(live, persisted schema.Turn) error {
 	persisted.SkillState = persisted.SkillState.Clone()
 	err := s.appendTurnAfterTranscriptWrite(
 		persisted,
-		func() error { return s.writeTranscriptDurableLocked(persisted) },
+		func() error { return s.writeTranscriptSyncedLocked(persisted) },
 		func() { s.history = append(s.history, live) },
 	)
 	if err != nil {

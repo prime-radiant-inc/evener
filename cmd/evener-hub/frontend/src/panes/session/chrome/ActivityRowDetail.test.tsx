@@ -1,11 +1,13 @@
-import type { ActivityDelegateRow, ActivityJobRow } from "@evener/appwire-client";
-import { cleanup, render, screen } from "@testing-library/react";
+import type { ActivityDelegate, ActivityJob, ActivitySessionNode, EvenerDelegateInfo } from "@evener/appwire-client";
+import { type ActivityDelegateRow, type ActivityJobRow, buildEntityView } from "@evener/appwire-client";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "../../../protocol/activityData";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
+import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { ActivityRowDetail } from "./ActivityRowDetail";
+import { detailLineByText } from "./detailLine.testFixture";
 
 // Pinned clock: every quiet-age assertion below measures against this instant.
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
@@ -95,6 +97,42 @@ function delegateRow(
   };
 }
 
+// The id the strip's delegate line names, and the view the session's entity
+// map holds for it. buildEntityView is the chrome's own builder (useEntityView
+// wraps it), so this is the same map ActivityPanelBody provides to the tree;
+// the tests below wrap the strip in EntityViewsProvider because the strip
+// lives outside the transcript subtree that provides the same map there.
+const DELEGATE_ID = "dlg_034HQ2kSDXfKFq1mm3idL1";
+
+function delegateEntities(id: string, task: string) {
+  const delegate: EvenerDelegateInfo = {
+    delegateId: id,
+    ownerSessionId: "sess_root",
+    rootSessionId: "sess_root",
+    childSessionId: "sess_child",
+    transcriptRef: "ref_child",
+    type: "delegate",
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    resumable: true,
+    needsAttention: false,
+    projectionRevision: 1,
+    task,
+  };
+  return buildEntityView({ sessionRef: "ref_root", delegates: [delegate], turns: [], stale: false, ended: false });
+}
+
+// Every provider-wrapped delegate-line case below renders the same strip over
+// the same fixture map; only the assertions differ.
+function renderDelegateStrip() {
+  return render(
+    <EntityViewsProvider entities={delegateEntities(DELEGATE_ID, "Inspect the repo")}>
+      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />
+    </EntityViewsProvider>,
+  );
+}
+
 // setupJobOutput spies the store method (not the module) so the preview's
 // fetch stays in-process; the default resolve is an empty tail, and tests
 // override it with mockResolvedValue/mockRejectedValue on the returned spy.
@@ -179,6 +217,56 @@ describe("ActivityRowDetail", () => {
     expect(screen.queryByText("Show more")).toBeNull();
   });
 
+  // The delegate line names a real entity, so its id renders as the shared
+  // entity card trigger rather than plain text. The line's words are otherwise
+  // unchanged, the trigger takes no tab stop of its own (the strip lives inside
+  // the row's own treeitem control - ruling R13), and it adds no second open
+  // control to a row that already carries one.
+  test("the delegate id renders as an embedded entity card trigger, not plain text", () => {
+    const { container } = renderDelegateStrip();
+
+    const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
+    const trigger = within(line).getByTestId("entity-trigger");
+    expect(trigger.textContent).toBe(DELEGATE_ID);
+    // The provider is the only path that can mint the trigger (the strip takes
+    // no `entities` prop), and it mints exactly one for the whole document.
+    expect(screen.getAllByTestId("entity-trigger")).toHaveLength(1);
+    expect(trigger.getAttribute("tabindex")).toBeNull();
+    expect(within(line).queryByRole("button")).toBeNull();
+  });
+
+  // Resolving is not enough: the trigger has to open the card, which is what a
+  // naive swap that silently fell back to plain text could never do.
+  test("the delegate id's trigger opens the entity card", () => {
+    vi.useFakeTimers();
+    try {
+      renderDelegateStrip();
+
+      fireEvent.focus(screen.getByTestId("entity-trigger"));
+      act(() => {
+        vi.advanceTimersByTime(300);
+      });
+
+      const card = screen.getByRole("tooltip");
+      expect(card.textContent).toContain("Delegate");
+      expect(card.textContent).toContain("Inspect the repo");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // No provider owns the map in a bare render (a direct strip, or the chrome
+  // before its body mounts): the id stays the plain text it always was.
+  test("with no entity provider the delegate id stays plain text", () => {
+    const { container } = render(
+      <ActivityRowDetail row={delegateRow({ delegateId: DELEGATE_ID, mandate: "Inspect the repo" })} now={NOW} />,
+    );
+
+    const line = detailLineByText(`Delegate ${DELEGATE_ID} · send · stop · status`, container);
+    expect(within(line).queryByTestId("entity-trigger")).toBeNull();
+    expect(line.textContent).toContain(DELEGATE_ID);
+  });
+
   test("live job row meta says running with quiet age, output bytes, and started time", () => {
     render(
       <ActivityRowDetail
@@ -230,6 +318,30 @@ describe("ActivityRowDetail", () => {
     );
     expect(screen.getByText(`running 42s · 0b · started ${localHHMM("2026-08-05T14:59:00Z")}`)).toBeTruthy();
   });
+
+  // A resumed run keeps the previous run's latestActivityAt until the child
+  // reports again, and an anchor that does not parse is no anchor: either way
+  // the quiet age measures from runStartedAt, never from the frozen snapshot.
+  test.each([
+    ["predates the run start", "2026-08-05T14:59:00Z", 72_000],
+    ["does not parse", "not-a-timestamp", 5_000],
+  ])(
+    "live delegate quiet age anchors at the run start when latestActivityAt %s",
+    (_case, latestActivityAt, quietForMs) => {
+      render(
+        <ActivityRowDetail
+          row={delegateRow({
+            mandate: "Inspect the repo",
+            runStartedAt: "2026-08-05T15:00:00Z",
+            latestActivityAt,
+            quietForMs,
+          })}
+          now={NOW}
+        />,
+      );
+      expect(screen.getByText(`running 12s · 0b · started ${localHHMM("2026-08-05T15:00:00Z")}`)).toBeTruthy();
+    },
+  );
 
   test("terminal row meta drops the duplicated runtime and a successful exit code", () => {
     render(

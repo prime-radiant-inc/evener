@@ -51,3 +51,27 @@
   gap: var(--space-1);
   margin-left: auto;
 }
+
+/* Three verbs (Stop, Send, Steer: every busy session on a harness that can
+ * steer) do not fit beside the status row at phone width. The row is the only
+ * shrinkable thing on the line, so it absorbed the third verb whole: measured
+ * at 320px, 13px for 60px of facts (issue #1339). Two verbs fit exactly, which
+ * is the budget statusrow.module.css's narrow-pane block was measured against,
+ * so only a three-verb cluster takes its own line, right-aligned like the
+ * cluster it was. The threshold is the status row's own phone-width one. The
+ * count is the caller's declaration (PromptCard's `verbs`, data-verbs), not
+ * inferred from the children. */
+@container (max-width: 399px) {
+  /* Wrapping is enabled only for the row declared to hold three verbs. A row
+   * that may wrap breaks lines on its items' intrinsic widths before any
+   * shrinking, so a content-sized leading slot could push a two-verb cluster
+   * onto a second line; with the wrap scoped to this row no other can wrap. */
+  .controls[data-verbs="3"] {
+    flex-wrap: wrap;
+  }
+
+  .controls[data-verbs="3"] > .actions {
+    flex-basis: 100%;
+    justify-content: flex-end;
+  }
+}

@@ -5,17 +5,23 @@ import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-libr
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
+import { WireError } from "@evener/appwire-client";
 import { resetComposerFocusStoreForTests, useComposerFocusRequest } from "../../panes/session/composer/composerFocus";
 import { resetQuoteInsertStoreForTests, useQuoteInsertRequest } from "../../panes/session/composer/quoteInsert";
-import { WireError } from "../../protocol/errors";
 import "../../panes/sessionPanels";
-import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { NavigationSessionSummary, SearchResult, ThreadCapabilities } from "../../protocol/types.gen";
+import type {
+  ItemModel,
+  NavigationSessionSummary,
+  SearchResult,
+  ThreadCapabilities,
+  ThreadModel,
+  TurnModel,
+} from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { supersededBySuccess } from "./toolSupersession";
 
 function item(overrides: Partial<ItemModel> & { id: string }): ItemModel {

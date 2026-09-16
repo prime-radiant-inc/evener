@@ -11,13 +11,14 @@
 // threadsStore.subscribe wiring), so seeding a thread whose transcript ends
 // on an unanswered ask_user call is what makes the real dock populate -
 // exactly the mechanism a live ask_user call would use.
+
+import type { Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { useEffect, useState } from "react";
 import { AskDock } from "../../panes/session/composer/askDock";
 import { Composer } from "../../panes/session/composer/Composer";
 import { writeDraft } from "../../panes/session/composer/draft";
-import { hydrateThread } from "../../protocol/reducer";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { putThreadModel } from "../../stores/threads";
 import styles from "../gallery-section.module.css";

@@ -63,7 +63,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 				id = entry.ThreadID
 			}
 			if id != "" {
-				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, OK: true}
+				return ProbeResult{SessionID: id, Status: appwire.ThreadStatusRestartRequired, ProtocolMismatch: true, OK: true}
 			}
 		}
 		return ProbeResult{}
@@ -85,6 +85,13 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if strings.TrimSpace(root.ID) == "" || rootID == "" {
 		return ProbeResult{}
 	}
+	// The answer names the answering daemon's session, and a daemon keeps its
+	// entry's session id current (rvreg.UpdateSessionID). An endpoint that
+	// answers for a session the entry does not name is another daemon that
+	// re-bound the port; its answer is not this entry's.
+	if named := strings.TrimSpace(entry.SessionID); named != "" && rootID != named {
+		return ProbeResult{}
+	}
 
 	// ThreadList carries the root and descendants from one projection cut. Keep
 	// the ThreadRead result only for identity validation, and use the matching
@@ -94,6 +101,7 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	seen := make(map[string]bool)
 	var runningSubagentIDs []string
 	var runningSubagentStates map[string]string
+	var childWatches map[string][]appwire.EvenerWatchInfo
 	for i := range listResponse.Data {
 		thread := listResponse.Data[i]
 		if isRootThread(thread, root) {
@@ -116,6 +124,16 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 				runningSubagentStates = make(map[string]string)
 			}
 			runningSubagentStates[id] = state
+		}
+		// Each child thread now carries its own watches in its diagnostics (the
+		// daemon samples them on read). Record them per child so the tree can
+		// attach them to the child's row; a child with none stays absent, which
+		// the tree reads as "no watches".
+		if watches := diagnosticsWatches(thread.Evener.Diagnostics); len(watches) > 0 {
+			if childWatches == nil {
+				childWatches = make(map[string][]appwire.EvenerWatchInfo)
+			}
+			childWatches[id] = append([]appwire.EvenerWatchInfo(nil), watches...)
 		}
 	}
 	if listedRoot == nil {
@@ -145,6 +163,8 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 		RunningSubagentStates: runningSubagentStates,
 		RunningJobs:           runningJobs,
 		CompletedJobs:         completedJobs,
+		Watches:               diagnosticsWatches(root.Evener.Diagnostics),
+		ChildWatches:          childWatches,
 		OK:                    true,
 	}
 }
@@ -187,6 +207,25 @@ func splitNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) ([]appwire.Evener
 		return nil, nil
 	}
 	return SplitNonAgentJobs(diagnostics.Jobs)
+}
+
+// diagnosticsWatches returns a daemon's own live-watch rows. A nil diagnostics
+// (old daemon, or a probe that listed nothing) and a diagnostics that omits
+// Watches both yield an empty list: absence is never an error. It mirrors
+// diagnosticsJobs — the input is already the daemon's bounded watch inventory,
+// so no hub-side cap is introduced here.
+func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
+	if diagnostics == nil {
+		return nil
+	}
+	return diagnostics.Watches
+}
+
+// DiagnosticsWatches is the exported form of diagnosticsWatches, shared with
+// package hub's own tree projection so the two cannot drift. It is the same
+// logic; the package-local name stays for the existing in-package callers.
+func DiagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
+	return diagnosticsWatches(diagnostics)
 }
 
 // SplitNonAgentJobs separates non-delegate jobs into active and terminal

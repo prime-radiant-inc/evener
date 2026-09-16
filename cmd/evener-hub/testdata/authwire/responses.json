@@ -272,6 +272,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "endpointFingerprint": "9159d2da17007fb0416ec47bd181fc60d7d0e5a8d8be82cce9389765d4e43e2b",
         "implicit": true,
         "isDefault": true,
         "authModes": [
@@ -280,7 +281,54 @@
         "activeSource": "store",
         "hasStoredFile": true,
         "hasStoredOAuth": false,
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "claude-fable-5"
+          },
+          {
+            "id": "claude-fable-5-1"
+          },
+          {
+            "id": "claude-haiku-4-5"
+          },
+          {
+            "id": "claude-haiku-4-5-20251001"
+          },
+          {
+            "id": "claude-mythos-preview"
+          },
+          {
+            "id": "claude-opus-4-5"
+          },
+          {
+            "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-6"
+          },
+          {
+            "id": "claude-opus-4-7"
+          },
+          {
+            "id": "claude-opus-4-8"
+          },
+          {
+            "id": "claude-opus-5"
+          },
+          {
+            "id": "claude-sonnet-4-5"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-6"
+          },
+          {
+            "id": "claude-sonnet-5"
+          }
+        ]
       },
       {
         "name": "openai-codex",
@@ -289,6 +337,7 @@
         "surface": "openai",
         "auth": "oauth-openai-codex",
         "baseUrl": "https://chatgpt.com/backend-api/codex",
+        "endpointFingerprint": "60e7b06303c74677c149dd6480e72ed7dd71e5fd1daa53409e2204ad0d5fd709",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -297,7 +346,12 @@
         "activeSource": "oauth",
         "hasStoredOAuth": true,
         "storedEmail": "bot@example.com",
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "gpt-6-astra"
+          }
+        ]
       },
       {
         "name": "openai",
@@ -306,6 +360,7 @@
         "surface": "openai",
         "auth": "bearer",
         "baseUrl": "https://api.openai.com/v1",
+        "endpointFingerprint": "e1cce0757f4316416c6fc4f54488242936266a1e0f5174f25dd70eb54f910169",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -314,7 +369,147 @@
         "activeSource": "env:OPENAI_API_KEY",
         "hasStoredOAuth": false,
         "envVar": "OPENAI_API_KEY",
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "chatgpt-image-latest"
+          },
+          {
+            "id": "gpt-3.5-turbo"
+          },
+          {
+            "id": "gpt-4"
+          },
+          {
+            "id": "gpt-4-turbo"
+          },
+          {
+            "id": "gpt-4.1"
+          },
+          {
+            "id": "gpt-4.1-mini"
+          },
+          {
+            "id": "gpt-4.1-nano"
+          },
+          {
+            "id": "gpt-4o"
+          },
+          {
+            "id": "gpt-4o-2024-05-13"
+          },
+          {
+            "id": "gpt-4o-2024-08-06"
+          },
+          {
+            "id": "gpt-4o-2024-11-20"
+          },
+          {
+            "id": "gpt-4o-mini"
+          },
+          {
+            "id": "gpt-5"
+          },
+          {
+            "id": "gpt-5-mini"
+          },
+          {
+            "id": "gpt-5-nano"
+          },
+          {
+            "id": "gpt-5-pro"
+          },
+          {
+            "id": "gpt-5.1"
+          },
+          {
+            "id": "gpt-5.2"
+          },
+          {
+            "id": "gpt-5.2-chat-latest"
+          },
+          {
+            "id": "gpt-5.2-pro"
+          },
+          {
+            "id": "gpt-5.3-chat-latest"
+          },
+          {
+            "id": "gpt-5.3-codex"
+          },
+          {
+            "id": "gpt-5.3-codex-spark"
+          },
+          {
+            "id": "gpt-5.4"
+          },
+          {
+            "id": "gpt-5.4-mini"
+          },
+          {
+            "id": "gpt-5.4-nano"
+          },
+          {
+            "id": "gpt-5.4-pro"
+          },
+          {
+            "id": "gpt-5.5"
+          },
+          {
+            "id": "gpt-5.5-pro"
+          },
+          {
+            "id": "gpt-5.6"
+          },
+          {
+            "id": "gpt-5.6-luna"
+          },
+          {
+            "id": "gpt-5.6-sol"
+          },
+          {
+            "id": "gpt-5.6-terra"
+          },
+          {
+            "id": "gpt-6-astra"
+          },
+          {
+            "id": "gpt-image-1-mini"
+          },
+          {
+            "id": "gpt-image-1.5"
+          },
+          {
+            "id": "gpt-realtime-2.1"
+          },
+          {
+            "id": "o1"
+          },
+          {
+            "id": "o1-pro"
+          },
+          {
+            "id": "o3"
+          },
+          {
+            "id": "o3-mini"
+          },
+          {
+            "id": "o3-pro"
+          },
+          {
+            "id": "o4-mini"
+          },
+          {
+            "id": "text-embedding-3-large"
+          },
+          {
+            "id": "text-embedding-3-small"
+          },
+          {
+            "id": "text-embedding-ada-002"
+          }
+        ]
       },
       {
         "name": "ollama",
@@ -323,6 +518,7 @@
         "surface": "generic",
         "auth": "optional-bearer",
         "baseUrl": "http://localhost:11434/v1",
+        "endpointFingerprint": "e4504377a70358057266033aa1f3e94b0da8fc1db1784c33d476cc9cdea118f5",
         "implicit": true,
         "isDefault": false,
         "authModes": [
@@ -341,6 +537,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "endpointFingerprint": "9159d2da17007fb0416ec47bd181fc60d7d0e5a8d8be82cce9389765d4e43e2b",
         "implicit": false,
         "isDefault": false,
         "authModes": [
@@ -348,7 +545,54 @@
         ],
         "activeSource": "api_key",
         "hasStoredOAuth": false,
-        "credentialRequired": true
+        "credentialRequired": true,
+        "models": [
+          {
+            "id": "claude-fable-5"
+          },
+          {
+            "id": "claude-fable-5-1"
+          },
+          {
+            "id": "claude-haiku-4-5"
+          },
+          {
+            "id": "claude-haiku-4-5-20251001"
+          },
+          {
+            "id": "claude-mythos-preview"
+          },
+          {
+            "id": "claude-opus-4-5"
+          },
+          {
+            "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-6"
+          },
+          {
+            "id": "claude-opus-4-7"
+          },
+          {
+            "id": "claude-opus-4-8"
+          },
+          {
+            "id": "claude-opus-5"
+          },
+          {
+            "id": "claude-sonnet-4-5"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-6"
+          },
+          {
+            "id": "claude-sonnet-5"
+          }
+        ]
       },
       {
         "name": "gateway",
@@ -358,6 +602,7 @@
         "surface": "generic",
         "auth": "none",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "endpointFingerprint": "a5ba6845b1716878de0e7b08785a6ecfd945cbb33b2f6636f3ac0af3ef1c4fe8",
         "implicit": false,
         "isDefault": false,
         "authModes": [
@@ -375,6 +620,7 @@
         "surface": "generic",
         "auth": "optional-bearer",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "endpointFingerprint": "a5ba6845b1716878de0e7b08785a6ecfd945cbb33b2f6636f3ac0af3ef1c4fe8",
         "credentialHeader": "Authorization=Bearer $GATEWAY_KEY",
         "implicit": false,
         "isDefault": false,
@@ -394,6 +640,7 @@
         "surface": "anthropic",
         "auth": "header",
         "baseUrl": "https://api.anthropic.com/v1",
+        "endpointFingerprint": "9159d2da17007fb0416ec47bd181fc60d7d0e5a8d8be82cce9389765d4e43e2b",
         "apiKeyEnv": "UNKEYED_KEY",
         "implicit": false,
         "isDefault": false,
@@ -405,6 +652,53 @@
         "credentialRequired": true,
         "warnings": [
           "no credential"
+        ],
+        "models": [
+          {
+            "id": "claude-fable-5"
+          },
+          {
+            "id": "claude-fable-5-1"
+          },
+          {
+            "id": "claude-haiku-4-5"
+          },
+          {
+            "id": "claude-haiku-4-5-20251001"
+          },
+          {
+            "id": "claude-mythos-preview"
+          },
+          {
+            "id": "claude-opus-4-5"
+          },
+          {
+            "id": "claude-opus-4-5-20251101"
+          },
+          {
+            "id": "claude-opus-4-6"
+          },
+          {
+            "id": "claude-opus-4-7"
+          },
+          {
+            "id": "claude-opus-4-8"
+          },
+          {
+            "id": "claude-opus-5"
+          },
+          {
+            "id": "claude-sonnet-4-5"
+          },
+          {
+            "id": "claude-sonnet-4-5-20250929"
+          },
+          {
+            "id": "claude-sonnet-4-6"
+          },
+          {
+            "id": "claude-sonnet-5"
+          }
         ]
       },
       {
@@ -415,6 +709,7 @@
         "surface": "generic",
         "auth": "gcp-adc",
         "baseUrl": "http://127.0.0.1:9/v1",
+        "endpointFingerprint": "a5ba6845b1716878de0e7b08785a6ecfd945cbb33b2f6636f3ac0af3ef1c4fe8",
         "implicit": false,
         "isDefault": false,
         "authModes": [

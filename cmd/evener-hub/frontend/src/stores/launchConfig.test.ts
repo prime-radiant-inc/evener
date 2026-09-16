@@ -1,8 +1,8 @@
 // @vitest-environment node
 
+import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOptionSchemaResponse } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { launchConfigStore, resetLaunchConfigStoreForTests } from "./launchConfig";
 

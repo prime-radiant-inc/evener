@@ -9,8 +9,8 @@ import {
 import {
 	effortLabel,
 	sessionEffortLevels,
-} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
-import type { MobileConversation } from "../../mobile/src/conversation/model";
+} from "@evener/appwire-client";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import { useColors } from "./ui";
 
 export type ComposerSetting = "model" | "reasoning" | "vision";

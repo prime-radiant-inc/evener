@@ -120,6 +120,9 @@ func build() docData {
 	// its AuthStatusResponse twin (e.g. shadowedEnvVar) would silently go
 	// undocumented here (PR #758 review).
 	register(appwire.InstanceEntry{})
+	// InstanceModelEntry likewise only nests inside InstanceEntry.models,
+	// so it needs the same explicit registration for its own table.
+	register(appwire.InstanceModelEntry{})
 
 	for _, m := range appwire.Methods {
 		d.Methods = append(d.Methods, methodView{

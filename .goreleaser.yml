@@ -34,7 +34,10 @@ builds:
       # so a bare .Env lookup makes an unset channel a hard build failure —
       # `make dist` and any hand-run `goreleaser` would die. An empty channel
       # is the intended local value (buildinfo.BuildChannel() reads it as "dev").
-      - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ envOrDefault "BUILD_CHANNEL" "" }}
+      # ReleaseTag carries the published tag so the hub's installer fallback can
+      # pin EVENER_INSTALL_VERSION to a real release (a short SHA is not a tag).
+      # It is empty for untagged/snapshot builds, which take the snapshot ref.
+      - -X primeradiant.com/evener/buildinfo.GitSHA={{ .ShortCommit }} -X primeradiant.com/evener/buildinfo.GitDirty={{ .IsGitDirty }} -X primeradiant.com/evener/buildinfo.BuildTime={{ .Date }} -X primeradiant.com/evener/buildinfo.Channel={{ envOrDefault "BUILD_CHANNEL" "" }} -X primeradiant.com/evener/buildinfo.ReleaseTag={{ .Tag }}
 
   - id: evener-dev
     main: ./cmd/evener-dev/bin/

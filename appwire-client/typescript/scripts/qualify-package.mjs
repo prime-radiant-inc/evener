@@ -7,6 +7,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { consumerPackageUsage, entrySurface } from "./consumer-value-imports.mjs";
+import { reachableModules } from "./declaration-reachability.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,144 +42,11 @@ async function qualify() {
     .map((file) => file.slice(0, -3));
   assert(shippedModules.includes("index"), "tsconfig.build.json must compile index.ts - it is the package root entry");
   assert(shippedModules.length > 1, "tsconfig.build.json lists no modules to qualify");
-  // Every runtime export of the package root. The root's generated consumer
-  // programs are built from this one list, so an export the entry point stops
-  // providing fails here instead of in somebody's consumer. Whether each
-  // shipped MODULE is reachable at all is the reachability check below.
-  const rootValues = [
-    "AppwireClient",
-    "APPWIRE_PROTOCOL_VERSION",
-    "ConnectionClosedError",
-    "RequestTimeoutError",
-    "WireError",
-    "ClientNotReadyError",
-    "GENERIC_ERROR_MESSAGE",
-    "HUB_UNREACHABLE_MESSAGE",
-    "errorKind",
-    "errorText",
-    "friendlyErrorMessage",
-    "friendlyLaunchErrorMessage",
-    "isHubLaunchError",
-    "isStaleCursorError",
-    "mutationErrorData",
-    "sessionActionError",
-    "sessionActionHeadline",
-    "rpcURLFromLocation",
-    "composeAskAnswers",
-    "parseAskUserQuestions",
-    "answeredAskUserSuffix",
-    "liveAskQuestions",
-    "reconcileBatches",
-    "translateAttachmentMarkers",
-    "buildInput",
-    "buildComposerInput",
-    "METHOD_NAMES",
-    "NOTIFICATION_NAMES",
-    "STEERING_KINDS",
-    "THREAD_ITEM_EVENT_KINDS",
-    "isFailedJobOutcome",
-    "isFailedDelegateOutcome",
-    "isActivityFailure",
-    "isTurnContainer",
-    "parseActivityTree",
-    "activityNodeID",
-    "activityDelegateBranch",
-    "activityDelegateDiagnostics",
-    "delegateHasActiveWork",
-    "defaultExpandedIDs",
-    "reconcileActivityState",
-    "ActivityList",
-    "fenceRootSession",
-    "graftContinuationTree",
-    "foldRowID",
-    "jobIsFailed",
-    "activityDelegateState",
-    "buildActivityRows",
-    "hasItemFailure",
-    "hasErrorText",
-    "hasFailureStatus",
-    "isNonZeroExit",
-    "isInProgressStatus",
-    "parseJobLogTail",
-    "SYSTEM_PRELUDE_TURN_ID",
-    "pendingTextJoined",
-    "imageSessionRouteForSession",
-    "hydrateThread",
-    "collectAuthoritativeMutationIds",
-    "prependOlderTurns",
-    "mergeOlderItemPage",
-    "resolvePendingEscalation",
-    "notificationRoutingKey",
-    "notificationTargetsThread",
-    "applyNotification",
-    "deriveSendQueueAvailability",
-    "isActionUnavailable",
-    "isThreadNotFound",
-    "stableDelegateDisplayStatus",
-    "canReadSharedNotes",
-    "DOC_FILE_MAX_BYTES",
-    "DocFileError",
-    "docFileRawURL",
-    "docImageURL",
-    "decideSubmitRoute",
-    "decideSteerRoute",
-    "isTurnActive",
-    "formatTokenCount",
-    "formatDurationMs",
-    "formatCharCount",
-    "formatClockTime",
-    "formatClockTimeSeconds",
-    "formatElapsed",
-    "firstLine",
-    "splitMandate",
-    "plainQuoteLine",
-    "clip",
-    "clipJobID",
-    "tailSlice",
-    "tailFold",
-    "formatToolDuration",
-    "formatByteCount",
-    "lineCount",
-    "parseArgs",
-    "parseJSONObject",
-    "trailingBracketFooter",
-    "str",
-    "slashCommandInvocation",
-    "visibleCatalogCommands",
-    "evaluateSlashLabel",
-    "filterSlashMenuItems",
-    "mergeSlashCommands",
-    "parseSlashToken",
-    "spliceSlashCommand",
-  ];
-  // One exported type per shipped module that declares any, so the declaration
-  // check covers each module's packed .d.ts and not just its runtime half.
-  const rootTypes = [
-    "AppwireClientOptions",
-    "AppwireClientLike",
-    "WebSocketLike",
-    "AskAnswerItem",
-    "AskUserQuestion",
-    "AskQuestionRef",
-    "AskBatch",
-    "MarkerAttachment",
-    "InputAttachment",
-    "ActivityNodeLike",
-    "ActivityTree",
-    "ActivityState",
-    "ActivityRow",
-    "ItemFailureSignals",
-    "JobLogTail",
-    "ThreadModel",
-    "NotificationRoutingKey",
-    "SendQueueAvailability",
-    "StableDelegateState",
-    "DocFileContent",
-    "SubmitRoute",
-    "SteerRoute",
-    "SlashToken",
-    "SlashMenuItem",
-  ];
+  // Each specifier's runtime values and exported types are derived below from
+  // its entry module, so the qualification surface cannot drift from what the
+  // entry point exports; an export added there is qualified without editing
+  // this file. The smoke CALLS stay hand-written -- they are behaviour probes,
+  // not a surface.
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
@@ -191,11 +60,17 @@ const askItem = {
 assert.equal(client.parseAskUserQuestions(askItem)?.[0].question, "Which store?");
 assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefined);
 assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
+const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
+const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
+const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
 const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
+const askDock = client.createAskDockStore(); askDock.reconcile("ref1", client.liveAskQuestions({ turns: [{ items: [askItem] }] })); assert.equal(askDock.beginSend("ref1", askDock.getState().byRef.get("ref1").batches[0].id), true);
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
+assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
+assert.deepEqual(client.stripMarker(client.insertMarker("go", 0, 0, client.markerText(1)).value, 9, 1), { value: "go", cursor: 0 });
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
 assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
@@ -242,10 +117,23 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
-assert.equal(client.isTurnActive("active", "turn_1"), true);
+assert.equal(client.isTurnActive("active"), true);
+assert.equal(client.isTurnActive("idle"), false);
+assert.equal(client.canSteer("active", { steer: true }), true);
+assert.equal(client.canSteer("idle", { steer: true }), false);
+assert.equal(client.canSteer("active", { steer: false }), false);
+assert.equal(client.canDrainQueue("active", { steer: true }, 0), true);
+assert.equal(client.canDrainQueue("idle", { steer: true }, 1), true);
+assert.equal(client.canDrainQueue("idle", { steer: true }, 0), false);
+assert.equal(client.canDrainQueue("idle", { steer: false }, 1), false);
+assert.deepEqual(
+  client.sessionControls("idle", { steer: true, interrupt: true, queue: false, send: true }, 1),
+  { stop: false, steer: false, drain: true, drainQueue: true, queue: false, send: true, reason: { stop: "no active turn", steer: "no active turn", queue: "Queue is not available for this session" } },
+);
 assert.equal(client.formatTokenCount(41200), "41k");
 assert.equal(client.formatDurationMs(1500), "1.5s");
 assert.equal(client.formatCharCount(2500), "2.5k chars");
@@ -257,6 +145,11 @@ assert.deepEqual(client.splitMandate("first\\n\\nrest"), { first: "first", rest:
 assert.equal(client.plainQuoteLine("# Title\\n**bold** line"), "bold line");
 assert.equal(client.slashCommandInvocation({ name: "plan", source: "plugin", pluginName: "acme" }), "/acme:plan");
 assert.deepEqual(client.visibleCatalogCommands([{ name: "plan", source: "plugin", pluginName: "acme" }], new Set()), []);
+const commandCatalog = client.createCommandCatalog({ request: async () => ({ commands: [{ name: "plan", source: "user" }] }), onNotification: () => () => {} });
+const catalogRead = commandCatalog.getState().refresh();
+assert.equal(commandCatalog.getState().loading, true);
+catalogRead.then(() => assert.deepEqual(commandCatalog.getState().commands.map((c) => c.name), ["plan"])).catch((error) => { console.error(error); process.exit(1); });
+assert.deepEqual(client.sessionPluginNames({ plugins: [{ name: "acme" }] }), new Set(["acme"]));
 const activity = new client.ActivityList({ request: async () => ({}), onNotification: () => () => {} }, "ref", "thread");
 assert.equal(activity.getSnapshot().tree, null);
 assert.equal(client.clip("hello", 3), "hel\u2026");
@@ -294,16 +187,119 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
+assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
+assert.equal(client.humanizeState("awaiting", true), "question waiting");
+assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("notLoaded", false), "idle");
+const catalogEntry = { provider: "openai", model: "gpt-5", displayName: "GPT-5", supportsTools: true, contextWindow: 200000 };
+const catalogOptions = client.toCatalogOptions([catalogEntry]);
+assert.equal(catalogOptions[0].qualified, "openai/gpt-5");
+assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
+assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
+assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
+assert.equal(client.formatCost(catalogEntry), null);
+assert.equal(client.contextWindowLabel(catalogEntry), "200k");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
+const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
+assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
+assert.equal(client.pickableModelRows(pickerRows).length, 1);
+assert.deepEqual(client.buildPickerRows(null, ""), []);
+assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
+assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
+assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
+const envInstance = {
+  name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,
+  activeSource: "env:OPENAI_API_KEY", hasStoredFile: true, hasStoredOAuth: false, credentialRequired: true,
+};
+assert.equal(client.activeSourceLabel(envInstance), "Configured via environment variable (OPENAI_API_KEY)");
+assert.deepEqual(client.credentialLayers(envInstance).map((layer) => layer.source), ["env:OPENAI_API_KEY", "store"]);
+assert.equal(client.keylessByDesign({ ...envInstance, activeSource: "none", credentialRequired: false }), true);
+assert.equal(client.unconfiguredLabel({ ...envInstance, activeSource: "none" }), "Not configured");
+assert.equal(client.styleInfoText({ ...envInstance, baseUrl: "https://api.example" }), "openai-chat · base https://api.example");
+assert.deepEqual(client.groupByProvider([envInstance]).map((group) => group.providerId), ["openai"]);
+assert.equal(client.safeCredentialTestResult("openai", { status: "bogus" }).status, "endpoint_failure");
+assert.equal(client.safeCredentialTestMessage("success"), "Credentials verified.");
+assert.equal(client.isEndpointConflict(new Error("conflict")), false);
+assert.equal(client.fingerprintUnavailable({ ...envInstance, baseUrl: "https://api.example" }), true);
+assert.equal(typeof client.ENDPOINT_CHANGED_TEST_MESSAGE, "string");
+assert.equal(client.basename("/home/me/proj/"), "proj");
+assert.equal(client.parentOf("/home/me"), "/home");
+assert.equal(client.childrenPrefix("/home/me"), "/home/me/");
+assert.equal(client.isDirEntry("/home/me/src/"), true);
+const pathRows = client.buildPathRows({
+  kind: "file", currentDir: "/home/me", entries: ["/home/me/src/", "/home/me/notes.md"],
+  value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
+});
+assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
+assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.equal(client.parseTaskListData(null), null);
+assert.deepEqual(client.parseTaskListData([]), []);
+const taskRows = client.parseTaskListData([
+  { id: 1, type: "implement", description: "a", prompt: "", status: "done" },
+  { id: 2, type: "verify", description: "b", prompt: "", status: "open" },
+]);
+assert.deepEqual(taskRows.map((row) => row.id), [1, 2]);
+assert.equal(client.taskAggregateLabel({ total: 2, done: 1 }), "1 of 2 tasks left");
+assert.deepEqual(client.groupTasks(taskRows).settled.map((row) => row.id), [1]);
+const tasksPanel = client.createTasksPanelStore(async () => [{ id: 3, type: "verify", description: "c", prompt: "", status: "open" }]);
+tasksPanel.refresh("local:smoke", () => false).then((result) => { assert.equal(result.kind, "rows"); assert.deepEqual(tasksPanel.getState().entries.get("local:smoke").rows.map((row) => row.id), [3]); });
+assert.equal(client.classifyTasksRejection(new client.WireError("thread not found: x", -32000, { evenerErrorInfo: "sessionUnavailable" }), false).kind, "empty");
+assert.equal(client.relativeTime("2026-08-09T12:00:00Z", new Date("2026-08-09T12:37:00Z")), "37m ago");
+assert.equal(client.absoluteTime("not-a-date"), "not-a-date");
+const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Skill directories", group: "Resources", kind: "pathList" };
+assert.deepEqual(client.collectConfig([launchOption], client.buildFormState([launchOption], { skillsDirs: ["/opt/skills"] })), { skillsDirs: ["/opt/skills"] });
+assert.deepEqual(client.inheritedItems(["/a", "/b"], ["/a"], (item) => item, client.asStringList), ["/b"]);
+client.validatePathListAdd(launchOption, ["/opt/skills"], "/opt/skills", async () => ({ valid: true })).then((outcome) => assert.deepEqual(outcome, { ok: false, error: "Already added." }));
+// The launch-config gateway over a two-member client port: the schema read is cached per store, the layer read is not.
+const launchCalls = [];
+const launchStore = client.createLaunchConfigStore({
+  request: async (method, params) => { launchCalls.push(method); return method === "evener/launch/schema" ? { options: [launchOption] } : params; },
+  onNotification: () => () => {},
+});
+Promise.all([launchStore.getState().schema(), launchStore.getState().schema(), launchStore.getState().getLayer("/", "global")]).then(([schema, , layer]) => {
+  assert.equal(schema.options[0].wireField, "skillsDirs");
+  assert.deepEqual(layer, { cwd: "/", layer: "global" });
+  assert.deepEqual(launchCalls, ["evener/launch/schema", "evener/launch/getLayer"]);
+});
+assert.equal(new client.LaunchSettings(null, "/", "global").getSnapshot().dirty, false);
+assert.equal(client.findBuiltinArgument([{ id: "anthropic/claude-x", label: "Claude X" }], " claude x ")?.id, "anthropic/claude-x");
+assert.equal(client.matchBuiltinInvocation("/goal fix it", [{ id: "goal", args: { kind: "free" } }])?.argsText, "fix it");
+const displayConfig = client.makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { tokenCounts: true });
+assert.equal(client.advancedEnabledCount(displayConfig), 1);
+assert.equal(client.accessibleConfigSummary(client.shippedMobileConfig), "Intent");
+assert.equal(client.accessibleConfigSummary(displayConfig), "Tools · 1 advanced");
+assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
+assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
+assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
+assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
+assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
+assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
+assert.equal(client.harnessUsesEvenerModels("external", [{ id: "external", label: "external", kind: "external" }]), false);
+const hubOverview = client.createHubOverviewStore({ request: async () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }) });
+hubOverview.getState().fetch().then(() => assert.deepEqual(hubOverview.getState().data, { hub: { pastIndex: { path: "/index", count: 0, perPage: 0 } }, mcpDiscovered: { servers: [] }, agents: [] }));
+// The keybinding group parses through a host-supplied KeybindingParser (tinykeys' parseKeybinding in both apps); this consumer supplies a plain-press one of the port's shape.
+const keybindingParser = (keybinding) => keybinding.split(" ").map((press) => { const parts = press.split("+"); return [parts.slice(0, -1), [], parts[parts.length - 1]]; });
+assert.equal(client.ACTIONS.paletteOpen, "palette.open");
+assert.deepEqual(client.parseChord(keybindingParser, "Control+K"), [{ modifiers: ["Control"], optionalModifiers: [], key: "K" }]);
+const keybindingRegistry = client.createKeybindingsRegistry(keybindingParser);
+assert.equal(keybindingRegistry.getState().registerBinding({ id: "probe", actionId: client.ACTIONS.sessionNext, chord: "Alt+ArrowRight" }).scope, client.GLOBAL_SCOPE);
+assert.deepEqual(client.defaultBindingChordsForAction(keybindingParser, client.ACTIONS.sessionPrevious), [{ id: "session.previous", scope: "global", serialized: "Alt+ArrowLeft" }]);
+assert.equal(client.displayBindingFor(keybindingRegistry.getState().bindings, client.ACTIONS.sessionNext)?.id, "probe");
+client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp");
+assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
+assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
-  // The qualification manifest: every specifier package.json publishes, and the
-  // names the package promises at each one. A subpath with no entry here is not
-  // qualified, whatever the exports map claims, so the two must agree. An
-  // in-repo-only path alias is therefore unlistable: nothing in the tarball
-  // backs it, and the apps' own typecheck is what validates it.
+  // The qualification manifest: every specifier package.json publishes, with
+  // the hand-written probes run against it; the names it promises are read off
+  // its entry module below. A subpath with no entry here is not qualified,
+  // whatever the exports map claims, so the two must agree. An in-repo-only
+  // path alias is therefore unlistable: nothing in the tarball backs it, and
+  // the apps' own typecheck is what validates it.
   const packageExports = {
     ".": {
-      values: rootValues,
-      types: rootTypes,
       // A typed construction for the specifiers that offer one, so the
       // declaration checks prove more than that the names resolve.
       esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
@@ -316,8 +312,6 @@ const version: string = APPWIRE_PROTOCOL_VERSION; void client; void version;`,
     // wants to substitute one (or spy on the module) needs a real subpath to
     // import, which a root re-export cannot give it.
     "./docContent": {
-      values: ["DOC_FILE_MAX_BYTES", "DocFileError", "docFileRawURL", "docImageURL", "readDocFile"],
-      types: ["DocFetch", "DocFileContent", "DocFileErrorKind", "DocPort", "DocResponseLike"],
       esmTypeUses: `const read: (session: string, path: string, port: DocPort) => Promise<DocFileContent> = readDocFile;
 const cap: number = DOC_FILE_MAX_BYTES; void read; void cap;`,
       cjsTypeUses: `const fetchDoc: client.DocFetch = async (url: string) => {
@@ -341,39 +335,159 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
+    // The navigation state layer, published as one subpath rather than through
+    // the root: both apps' navigation stores are built on it, it is not part of
+    // the client surface every consumer takes, and a barrel is the seam later
+    // state relocations extend rather than multiply.
+    "./state/navigation": {
+      esmTypeUses: `const key: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;
+const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;`,
+      cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;`,
+      // One call per module: types (keyID, the offset rule), immutable (the
+      // freeze and the equality), codec (a snapshot normalized into a graph),
+      // merge (an empty delta onto a manifest that carries no metadata, which
+      // the merge refuses as an invalid base), invalidation (the wildcard
+      // reaching a project page), revalidator (an instance carries its
+      // generation).
+      smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
+assert.equal(client.nextNavigationOffset(50, 25), 75);
+assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
+assert.equal(client.equalJSON({ a: [1, { b: 2 }] }, { a: [1, { b: 2 }] }), true);
+assert(Object.isFrozen(client.cloneAndDeepFreezeJSON({ a: [1] }).a));
+const navigationGraph = client.normalizedGraphFromSnapshot({ metadata: { revision: 1 }, entities: [], containers: [] });
+assert.equal(navigationGraph.metadata.revision, 1);
+assert.equal(client.normalizeSnapshot({ metadata: {}, entities: [], containers: [] }).entities.size, 0);
+const navigationVersion = { generationId: "g", revision: 1, etag: "e" };
+const emptyDelta = { upsertedEntities: [], removedEntityKeys: [], upsertedContainers: [], removedContainerKeys: [] };
+assert.throws(
+  () => client.applyDelta({ key: { kind: "manifest" }, graph: navigationGraph, version: navigationVersion }, emptyDelta, navigationVersion),
+  client.NavigationBaseInvalidError,
+);
+const projectPage = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 50 };
+assert.equal(client.matchesTarget(projectPage, { kind: "all_loaded_projects" }), true);
+const revalidator = new client.NavigationRevalidator("g");
+assert.equal(revalidator.generationID, "g");
+revalidator.dispose();
+`,
+    },
+    // The credentials state layer: the listing core each app's Providers &
+    // credentials store is an adapter over. A store is built and driven
+    // without a connection, which is the whole of what qualification can do
+    // to it: no request is issued, so the smoke proves the factory, the
+    // pure helpers and the refusal type resolve and behave.
+    "./state/credentials": {
+      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore({ ownClientId: () => "qualification" });
+const held: boolean = staleListingHeld(store.getState());
+const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
+      cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
+      smoke: `const credentialStore = client.createCredentialInstancesStore({ ownClientId: () => "qualification" });
+assert.deepEqual(credentialStore.getState().instances, []);
+assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.equal(credentialStore.getState().listingEstablished, false);
+assert.equal(
+  client.foreignListingChange({ ...credentialStore.getState(), loading: true }, credentialStore.getState()),
+  true,
+);
+assert.equal(typeof credentialStore.getState().setApiKey, "function");
+assert.equal(typeof credentialStore.getState().devicePoll, "function");
+assert.deepEqual(client.listingOf(credentialStore.getState()), {
+  instances: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
+});
+credentialStore.connectionChanged(null, "idle");
+assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
+assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
+assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
+assert.rejects(credentialStore.getState().fetch(), /no client connected/).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+Promise.all([
+  assert.rejects(credentialStore.getState().fetch(), /no client connected/),
+  assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/),
+]).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+`,
+    },
+    // The extensions state layer - the marketplaces store, with the plugins
+    // and directories stores to follow - published as one subpath for the same
+    // reason state/navigation is: a layer both apps build their settings
+    // surfaces on, not part of the client surface every consumer takes.
+    "./state/extensions": {
+      esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
+const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
+const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces; void entry;`,
+      cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;`,
+      // A store built over a client that rejects everything: the list fetch
+      // records the rejection as state and resolves, a mutation rejects, and
+      // a browse caches the failure - the two conventions the layer keeps. A
+      // promise chain rather than await: the CommonJS consumer has no
+      // top-level await, and a failure inside exits the consumer non-zero.
+      smoke: `const offline = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
+const marketplacesStore = client.createMarketplacesStore(offline);
+assert.equal(client.MARKETPLACE_REFETCH_DEBOUNCE_MS, 250);
+marketplacesStore
+  .getState()
+  .fetchMarketplaces()
+  .then(() => {
+    assert.equal(marketplacesStore.getState().marketplacesError, "offline");
+    return assert.rejects(marketplacesStore.getState().removeMarketplace("acme"), /offline/);
+  })
+  .then(() => marketplacesStore.getState().browseMarketplace("acme"))
+  .then(() => {
+    assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
+    marketplacesStore.dispose();
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+`,
+    },
   };
   const publishedSpecifiers = Object.keys(packageManifest.exports);
   for (const specifier of publishedSpecifiers)
     assert(packageExports[specifier], `published specifier is not qualified: no manifest entry for ${specifier}`);
-  for (const [specifier, surface] of Object.entries(packageExports)) {
+  for (const specifier of Object.keys(packageExports))
     assert(
       publishedSpecifiers.includes(specifier),
       `qualification manifest names ${specifier}, which package.json does not export`,
     );
-    assert(
-      Array.isArray(surface.values) && Array.isArray(surface.types),
-      `qualification manifest entry ${specifier} needs both a value and a type name list`,
-    );
-  }
+  // Each specifier's entry module, from the declarations its exports entry
+  // names: the surface the specifier promises is read off that module's source
+  // (the root's index.ts and a subpath's barrel alike), and its installed
+  // declarations anchor the reachability walk below.
+  const installedDist = join(consumerDir, "node_modules", packageManifest.name, "dist");
+  const entryDeclarations = publishedSpecifiers.map((specifier) => {
+    const declarations = packageManifest.exports[specifier].types;
+    const entryModule = shippedModules.find((module) => declarations === `./dist/${module}.d.ts`);
+    assert(entryModule, `${specifier} publishes declarations no shipped module emits: ${declarations}`);
+    Object.assign(packageExports[specifier], entrySurface(join(packageDir, `${entryModule}.ts`)));
+    return join(installedDist, `${entryModule}.d.ts`);
+  });
   // A module can be built, packed and listed here and still be unreachable: the
   // files list only decides what tsc emits, and the export checks below name
   // identifiers, not modules. Each published specifier's own installed
   // declarations are the honest record of what it re-exports, so a shipped
   // module qualifies by being some specifier's entry or by being re-exported
-  // from one. A module no published specifier reaches fails right here.
-  const reachableModules = new Set();
-  for (const specifier of publishedSpecifiers) {
-    const declarations = packageManifest.exports[specifier].types;
-    const entryModule = shippedModules.find((module) => declarations === `./dist/${module}.d.ts`);
-    assert(entryModule, `${specifier} publishes declarations no shipped module emits: ${declarations}`);
-    reachableModules.add(entryModule);
-    const text = readFileSync(join(consumerDir, "node_modules", packageManifest.name, declarations), "utf8");
-    for (const module of shippedModules) if (text.includes(`from "./${module}"`)) reachableModules.add(module);
-  }
+  // from one, each re-export resolved relative to the declaration that carries
+  // it (declaration-reachability.mjs). A module no published specifier reaches
+  // fails right here.
+  const reachable = reachableModules(entryDeclarations, installedDist);
   for (const module of shippedModules)
-    assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
+    assert(reachable.has(module), `shipped module unreachable from every published specifier: ${module}`);
   // One ESM declaration consumer, one CommonJS declaration consumer and one
-  // runtime presence check in each module form, per published specifier.
+  // runtime presence check in each module form, per published specifier. Each
+  // type is named only as an `import type` specifier, the one position that
+  // does not instantiate it, so a generic type qualifies without anyone
+  // supplying its arguments (an import alias cannot name an `export type`
+  // re-export, and a tuple of bare names cannot name a generic).
   const declarationConsumers = [];
   const runtimeConsumers = [];
   const consumerNames = new Set();
@@ -402,7 +516,6 @@ import type {
 ${surface.types.map((name) => `  ${name},`).join("\n")}
 } from "${moduleSpecifier}";
 ${surface.esmTypeUses ?? ""}
-declare const shipped: [${surface.types.join(", ")}]; void shipped;
 ${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
     );
@@ -410,7 +523,9 @@ ${surface.values.map((name) => `void ${name};`).join("\n")}
       join(consumerDir, commonjsConsumer),
       `import client = require("${moduleSpecifier}");
 ${surface.cjsTypeUses ?? ""}
-declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+import type {
+${surface.types.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
 ${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
     );
@@ -443,6 +558,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     consumerDir,
   );
   for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
+  runConsumerResolveCheck();
   const listing = run("tar", ["-tzf", tarball], consumerDir);
   for (const expected of [
     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
@@ -592,6 +708,32 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     await new Promise((resolveClose) => server.close(resolveClose));
   }
   console.log(`qualified ${packed.name}@${packed.version}: installed imports, declarations and read-only example`);
+}
+
+// Every app tree imports this package by name but declares no dependency on
+// it: each resolves the name through a repo alias onto TypeScript source, so
+// `make test-web` and `make test-native` can be green while the installed
+// tarball is missing an export. This answers that question in the one place it
+// can be answered - a real consumer with the tarball in node_modules. The
+// program is generated from what the apps actually import, read off their
+// graph, so there is no fixture to fall behind: a specifier with values is
+// imported by name, one used only as a whole module is imported for effect.
+function runConsumerResolveCheck() {
+  const programFile = "resolve-imports.mjs";
+  const usage = consumerPackageUsage(resolve(packageDir, "..", ".."));
+  // Each name is aliased under its specifier's index: docImageURL is a value of
+  // both the root and ./docContent, and importing it twice under one name would
+  // not compile.
+  const program = `${[...usage]
+    .map(([specifier, entry], index) => {
+      if (entry.values.length === 0) return `import "${specifier}";`;
+      const locals = entry.values.map((name) => `v${index}_${name}`);
+      const imported = entry.values.map((name, at) => `${name} as ${locals[at]}`);
+      return `import { ${imported.join(", ")} } from "${specifier}";\nvoid [${locals.join(", ")}];`;
+    })
+    .join("\n")}\n`;
+  writeFileSync(join(consumerDir, programFile), program);
+  run(process.execPath, [join(consumerDir, programFile)], consumerDir);
 }
 
 try {

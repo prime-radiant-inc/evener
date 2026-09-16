@@ -68,6 +68,14 @@ type LocalDaemonEntry struct {
 	// CompletedJobs carries the recent terminal non-agent jobs into the same
 	// typed diagnostics snapshot for local compatibility consumers.
 	CompletedJobs []appwire.EvenerJobInfo
+	// Watches carries the roster's live watches into the same typed thread
+	// diagnostics the hub navigation path already projects, so local AppWire
+	// clients see watch state too. A root entry holds the root session's own
+	// watches; a read-only descendant alias holds the child's own watches,
+	// copied from LiveEntry.ChildWatches by the hub entry builder. threadFromEntry
+	// emits a watch-only diagnostics block for such an alias even though its
+	// other diagnostics (jobs) stay suppressed.
+	Watches []appwire.EvenerWatchInfo
 }
 
 func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, client *http.Client) *LocalDaemonSource {
@@ -82,6 +90,29 @@ func NewLocalDaemonSource(sourceID string, entries func() []rendezvous.Entry, cl
 		}
 		return out
 	}, client)
+}
+
+// AnnounceDaemonGone tells the subscribers of the daemon that wrote entry that
+// it has left for good: the roster saw its process or its rendezvous file go.
+// The daemon's own close frame is not guaranteed to reach them (it may be
+// revoked with the connection), and nothing else would. A daemon nobody is
+// relaying has nobody to tell. sessionID is the session the roster resolved
+// for the entry - a legacy entry names none of its own, and its relay session
+// is keyed by the resolved one.
+func (s *LocalDaemonSource) AnnounceDaemonGone(entry rendezvous.Entry, sessionID string) {
+	if sessionID != "" {
+		entry.SessionID = sessionID
+	}
+	ref, err := s.relaySessionRef(entry)
+	if err != nil {
+		return
+	}
+	s.relayMu.Lock()
+	session := s.relaySessions[ref.String()]
+	s.relayMu.Unlock()
+	if session != nil {
+		session.publishDaemonGoneResync()
+	}
 }
 
 func NewLocalDaemonSourceWithEntries(sourceID string, entries func() []LocalDaemonEntry, client *http.Client) *LocalDaemonSource {
@@ -987,15 +1018,22 @@ func (s *LocalDaemonSource) localEntryForRefMode(rawRef, threadID string, allowR
 		if item.ReadOnlyAlias && !allowReadOnlyAlias {
 			continue
 		}
-		entry := localDaemonRendezvousEntry(item)
-		if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
-			return item, nil
-		}
-		if localDaemonThreadID(item) == threadID || entry.SessionID == threadID {
+		if s.localEntryNamesRef(item, requestedRef, threadID) {
 			return item, nil
 		}
 	}
 	return LocalDaemonEntry{}, appwire.SessionUnavailable("thread not found: " + threadID)
+}
+
+// localEntryNamesRef reports whether an entry is the one a ref (or, without a
+// ref, a thread id) addresses: by its workspace ref, its thread id or its
+// session id.
+func (s *LocalDaemonSource) localEntryNamesRef(item LocalDaemonEntry, requestedRef, threadID string) bool {
+	entry := localDaemonRendezvousEntry(item)
+	if requestedRef != "" && localDaemonWorkspaceRef(s.sourceID, entry, localDaemonThreadID(item)) == requestedRef {
+		return true
+	}
+	return localDaemonThreadID(item) == threadID || entry.SessionID == threadID
 }
 
 func (s *LocalDaemonSource) liveEntries() []LocalDaemonEntry {
@@ -1084,11 +1122,24 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		// branch running after it.
 		thread.Evener.Capabilities = appwire.ThreadCapabilities{SharedNotes: !item.ReadOnlyAlias}
 	}
-	if !item.ReadOnlyAlias && (len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0) {
+	if item.ReadOnlyAlias {
+		// A read-only descendant alias still carries its own live watches: they
+		// are read-only row state, not a mutation surface, so the alias guard
+		// that suppresses the jobs block does not apply to them. A child with no
+		// watches gets no diagnostics block at all.
+		if len(item.Watches) > 0 {
+			thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
+				Watches: cloneLocalDaemonWatches(item.Watches),
+			}
+		}
+	} else if len(item.RunningJobs) > 0 || len(item.CompletedJobs) > 0 || len(item.Watches) > 0 {
 		jobs := make([]appwire.EvenerJobInfo, 0, len(item.RunningJobs)+len(item.CompletedJobs))
 		jobs = append(jobs, item.RunningJobs...)
 		jobs = append(jobs, item.CompletedJobs...)
-		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(jobs)}
+		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{
+			Jobs:    cloneLocalDaemonJobs(jobs),
+			Watches: cloneLocalDaemonWatches(item.Watches),
+		}
 	}
 	if item.ReadOnlyAlias {
 		thread.Evener.Ref = appwire.Ref{SourceID: s.sourceID, ThreadID: threadID}.String()
@@ -1103,6 +1154,10 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 
 func cloneLocalDaemonJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
 	return appwire.CloneEvenerJobs(in)
+}
+
+func cloneLocalDaemonWatches(in []appwire.EvenerWatchInfo) []appwire.EvenerWatchInfo {
+	return appwire.CloneEvenerWatches(in)
 }
 
 func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {

@@ -1,10 +1,10 @@
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../protocol/errors";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
 import type { PinSectionSummary } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";

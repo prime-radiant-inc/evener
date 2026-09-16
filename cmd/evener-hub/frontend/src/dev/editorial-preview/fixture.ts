@@ -1,7 +1,7 @@
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
-import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "../../protocol/types.gen";
-import { wireV2 } from "../../stores/navigation/testing";
+import type { InputItem, MethodTypes, MutationReceipt, Turn, TurnStartParams } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { summaries as initialSummaries, initialThreads, PARENT, parentRefs, QUESTION } from "./data";
 
 export { CHILD, PARENT, QUESTION, RESUMED } from "./data";

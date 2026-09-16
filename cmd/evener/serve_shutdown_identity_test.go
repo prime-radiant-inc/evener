@@ -109,19 +109,21 @@ func TestServeShutdownAndClearPublishOneClosedBoundaryForOldIdentity(t *testing.
 	deps.bridge = func(s serveServer, sess *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		bridgeCount++
 		first := bridgeCount == 1
-		go func() {
-			sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
-				server.BridgeEvent(s.(*clearIdentityServer).Server, ev, observer)
-				if first && ev.Kind == events.EventSessionEnd {
-					state.record("session-end-projected")
-				}
-			}, func() {
-				onDrained()
-				if first {
-					close(firstDrained)
-				}
-			})
-		}()
+		// Register synchronously, as production's bridge does. Wrapped in `go`,
+		// the registration can land after shutdown has already closed the
+		// session, and ConsumeEventsLossless then reports an already-closed
+		// session drained without delivering its buffered SESSION_END.
+		sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+			server.BridgeEvent(s.(*clearIdentityServer).Server, ev, observer)
+			if first && ev.Kind == events.EventSessionEnd {
+				state.record("session-end-projected")
+			}
+		}, func() {
+			onDrained()
+			if first {
+				close(firstDrained)
+			}
+		})
 	}
 
 	cleared := make(chan error, 1)

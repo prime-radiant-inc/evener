@@ -8,8 +8,9 @@ Shift+Enter/steer keybind collision (commit `4510a984`).
 ## Pre-state
 
 - Hub running, browser authenticated, a session open with an active or
-  recently-active turn (steer only enables with `activeTurnId` set, per
-  `web-steer-live-turn.md`'s pattern) — or just a session where you only need
+  recently-active turn (Steer renders while `status.type === "active"`, per
+  `web-steer-live-turn.md`'s pattern; `activeTurnId` is transcript-row
+  metadata, not the gate) — or just a session where you only need
   to check newline-vs-send, which works regardless of turn state.
 
 ## Steps

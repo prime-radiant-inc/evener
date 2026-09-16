@@ -42,6 +42,59 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// A hub thread/list child alias must carry the child's own watches, which the
+// daemon prober samples into LiveEntry.ChildWatches, while the root alias keeps
+// only its own. Before this, each alias inherited the root roster entry, so a
+// child row carried the root's watches (and, as a read-only alias, had its
+// diagnostics suppressed anyway) and the child's own were lost entirely.
+func TestHubThreadListChildAliasCarriesItsOwnWatches(t *testing.T) {
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       4242,
+			SessionID: "sess_root",
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			Protocol:  appwire.ProtocolVersion,
+		},
+		SessionID:             "sess_root",
+		Status:                appwire.ThreadStatusIdle,
+		RunningSubagentIDs:    []string{"sess_child", "sess_bare_child"},
+		RunningSubagentStates: map[string]string{"sess_child": appwire.ThreadStatusIdle, "sess_bare_child": appwire.ThreadStatusIdle},
+		Watches:               []appwire.EvenerWatchInfo{{ID: "watch-root", Source: "timer", Events: []string{"output"}}},
+		ChildWatches: map[string][]appwire.EvenerWatchInfo{
+			"sess_child": {{ID: "watch-child", Source: "self", Events: []string{"output"}}},
+		},
+	})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	source, ok := registry.Source("local")
+	if !ok {
+		t.Fatal("local source missing")
+	}
+	response, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("thread/list: %v", err)
+	}
+	threads := map[string]appwire.Thread{}
+	for _, thread := range response.Data {
+		threads[thread.ID] = thread
+	}
+	root, child, bare := threads["sess_root"], threads["sess_child"], threads["sess_bare_child"]
+	if root.ID == "" || child.ID == "" || bare.ID == "" {
+		t.Fatalf("thread list = %+v, want root, child and bare child", response.Data)
+	}
+	// The root alias is unchanged: only its own watch.
+	if root.Evener.Diagnostics == nil || len(root.Evener.Diagnostics.Watches) != 1 || root.Evener.Diagnostics.Watches[0].ID != "watch-root" {
+		t.Fatalf("root diagnostics = %+v, want only its own watch", root.Evener.Diagnostics)
+	}
+	// The child alias carries the child's own watch, never the root's.
+	if child.Evener.Diagnostics == nil || len(child.Evener.Diagnostics.Watches) != 1 || child.Evener.Diagnostics.Watches[0].ID != "watch-child" {
+		t.Fatalf("child diagnostics = %+v, want the child's own watch", child.Evener.Diagnostics)
+	}
+	// A read-only child with no watches still has no diagnostics at all.
+	if bare.Evener.Diagnostics != nil {
+		t.Fatalf("bare child diagnostics = %+v, want none", bare.Evener.Diagnostics)
+	}
+}
+
 func TestHubRPCPluginPreviewRoute(t *testing.T) {
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
 	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))
@@ -517,6 +570,76 @@ func TestListItemTurnsPreservesPackedResponseAndLogsMetadataError(t *testing.T) 
 	t.Fatalf("logger did not receive sentinel error as an argument: %+v", logs)
 }
 
+// metadataErrorRemoteImageRPCSource is a source whose images live on another hub
+// (EnrichThreadFileBackedImages reports they are not files on this hub) and whose
+// optional metadata read fails.
+type metadataErrorRemoteImageRPCSource struct {
+	itemPackingRPCSource
+}
+
+func (*metadataErrorRemoteImageRPCSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, errors.New("metadata sentinel")
+}
+
+func (*metadataErrorRemoteImageRPCSource) EnrichThreadFileBackedImages() bool { return false }
+
+// Remote image routes must be neutralized independently of the optional metadata
+// read. The routes arrive on the item page itself, and a root-relative route left
+// on the response resolves against this hub's origin for a session this hub does
+// not have (404, or another session's bytes on an id collision). Metadata only
+// supplies the session id and CWD the local stamp/file-backed pass needs, so a
+// failed metadata read must not skip the neutralization that does not need them.
+func TestListItemTurnsNeutralizesRemoteImageRoutesWithoutMetadata(t *testing.T) {
+	const external = "https://images.example.test/plot.png"
+	route := "/s/remote-session/images/" + strings.Repeat("a", 64)
+	candidates := testItemCandidates(1)
+	candidates[0].Item.Images = []appwire.InputItem{{URL: route}, {URL: external}}
+	candidates[0].Item.OutputImages = []appwire.OutputImage{
+		{Source: "tool-result", URL: route},
+		{Source: "written-file", Path: "plot.png", URL: "/doc/image?session=remote-session&path=plot.png"},
+	}
+	source := &metadataErrorRemoteImageRPCSource{itemPackingRPCSource{
+		readCandidates: appsource.ItemCandidateResult{
+			Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+			Identity:   appitempaging.CursorIdentity{ThreadRef: "h1:t1", Incarnation: "route-incarnation", ProjectionVersion: 1},
+			Exhausted:  true,
+		},
+	}}
+
+	response, handled, err := listItemTurns(context.Background(), source, appwire.ThreadTurnsListParams{Ref: "h1:t1"}, nil)
+	if err != nil {
+		t.Fatalf("listItemTurns: %v", err)
+	}
+	if !handled {
+		t.Fatal("listItemTurns handled = false, want true")
+	}
+	items := flattenTestItems(response.Data)
+	if len(items) != 1 {
+		t.Fatalf("packed items = %+v, want the single source item", items)
+	}
+	if len(items[0].Images) != 2 {
+		t.Fatalf("input images = %+v, want both remote descriptors preserved", items[0].Images)
+	}
+	if got := items[0].Images[0].URL; got != "" {
+		t.Fatalf("remote input image route = %q, want the controller-relative route neutralized", got)
+	}
+	if got := items[0].Images[1].URL; got != external {
+		t.Fatalf("external input image URL = %q, want %q preserved", got, external)
+	}
+	if len(items[0].OutputImages) != 2 {
+		t.Fatalf("output images = %+v, want both remote descriptors preserved", items[0].OutputImages)
+	}
+	if got := items[0].OutputImages[0].URL; got != "" {
+		t.Fatalf("remote output image route = %q, want it neutralized", got)
+	}
+	if got := items[0].OutputImages[1].URL; got != "" {
+		t.Fatalf("remote /doc/image URL = %q, want it neutralized (it would resolve against the controller origin)", got)
+	}
+	if got := items[0].OutputImages[1].Path; got != "plot.png" {
+		t.Fatalf("remote /doc/image path = %q, want the relative path preserved for the staged proxy", got)
+	}
+}
+
 func TestHubRPCItemByteTrimReturnsExcludedCandidateExactlyOnce(t *testing.T) {
 	identity := appitempaging.CursorIdentity{ThreadRef: "codex:byte-packing", Incarnation: "rpc-byte-packing", ProjectionVersion: 1}
 	candidates := testItemCandidates(2)
@@ -853,7 +976,8 @@ func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
 		ResumeLocks:   hubcore.NewResumeLocks(),
 		Past:          past,
 	}
-	server := newHubAppServer(cfg, newHubSourceRegistry(cfg))
+	sources := newHubSourceRegistry(cfg)
+	server := newHubAppServer(cfg, sources)
 	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
@@ -905,7 +1029,8 @@ func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
 		Spawner:       spawner,
 	}
 
-	_, err = hubThreadResume(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: ref})
+	sources := newHubSourceRegistry(cfg)
+	_, err = hubThreadResume(context.Background(), cfg, sources, appwire.ThreadResumeParams{Ref: ref})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting resume error = %T %v, want WireError", err, err)
@@ -1860,9 +1985,10 @@ func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
 }
 
 func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
-	runDir := t.TempDir()
 	base := time.Now().UTC()
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	// Nothing answers at these endpoints, so the entries are seeded into a
+	// roster rather than left for the rendezvous directory's probe to reject.
+	older := rendezvous.Entry{
 		PID:       101,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
@@ -1870,8 +1996,8 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		ThreadID:  "02wMz5Txv2enqVTitaig6F",
 		SessionID: "02wMz5Txv2enqVTitaig6F",
 		StartedAt: base.Add(-time.Hour),
-	})
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	}
+	newer := rendezvous.Entry{
 		PID:       102,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:2/rpc",
@@ -1879,9 +2005,13 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		ThreadID:  "02wMz5Txv47YP64RR3B9YJ",
 		SessionID: "02wMz5Txv47YP64RR3B9YJ",
 		StartedAt: base,
-	})
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: older, SessionID: older.SessionID},
+		hubcore.LiveEntry{Entry: newer, SessionID: newer.SessionID},
+	)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2061,7 +2191,6 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runDir := t.TempDir()
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	liveUpdated := base
 	pastUpdated := base.Add(-time.Hour)
@@ -2083,7 +2212,9 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	// Nothing answers at this endpoint, so the live entry is seeded into a
+	// roster rather than left for the rendezvous directory's probe to reject.
+	live := rendezvous.Entry{
 		PID:       501,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:501/rpc",
@@ -2091,12 +2222,12 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 		ThreadID:  "02wMz5Txv9yYdSRJat13MZ",
 		SessionID: "02wMz5Txv9yYdSRJat13MZ",
 		StartedAt: liveStarted,
-	})
+	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
 
 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
@@ -3721,6 +3852,287 @@ func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *test
 
 	notificationsB <- relayDeltaNotification(t, threadID, "replacement event")
 	expectRelayDelta(t, client.Notifications(), "replacement event")
+}
+
+// A source that hands its subscription a leading resync — the remote hub source
+// folds the subscribed read's atomic snapshot in this way — must not have that
+// frame duplicated by the relay's own recovery resync, or the client re-reads
+// twice for one recovery. The source's frame carries the subscription's own
+// authoritative identity, so it is the one the client must see.
+func TestHubRelayRecoveryDoesNotDuplicateSourceResync(t *testing.T) {
+	const threadID = "th_resync_once"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	// The replacement subscription's first frame is the source's own resync,
+	// already buffered when the relay peeks for a leading frame.
+	notificationsB := make(chan appwire.Notification, 1)
+	notificationsB <- *appwire.NotificationMessage(appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+		ThreadID: threadID,
+		Ref:      "codex:canonical",
+	}).Notification
+	results <- relaySubscribeResult{notifications: notificationsB}
+
+	// Exactly one resync, and it is the source's authoritative one — not the
+	// relay's own ("codex:"+threadID).
+	expectRelayResync(t, client.Notifications(), threadID, "codex:canonical")
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("duplicate recovery resync delivered: method=%q params=%s", got.Method, got.Params)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A non-atomic source whose thread's current ID differs from its stable ref
+// suffix (a remote hub after an identity replacement) must register its relay
+// under the identity a ref-only thread/unsubscribe resolves. Keying the
+// downstream entry by thread.ID left a ref-addressed subscription — and, with
+// it, the source-side subscription — live forever.
+func TestHubRPCThreadUnsubscribeDropsStableRefRelay(t *testing.T) {
+	const stableRef = "host:stable"
+	source := &relayBroadcastSource{
+		id: "host",
+		thread: appwire.Thread{
+			ID:        "current",
+			SessionID: "current",
+			Source:    "host",
+			Evener:    appwire.EvenerThread{Ref: stableRef, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: stableRef, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount(stableRef); got != 1 {
+		t.Fatalf("subscriber count at the stable ref = %d, want 1 (relay keyed by thread.ID instead of the ref)", got)
+	}
+	if got := web.appRPC.SubscriberCount("host:current"); got != 0 {
+		t.Fatalf("subscriber count at the live thread id = %d, want 0", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: stableRef}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount(stableRef); got != 0 {
+		t.Fatalf("subscriber count after ref-only unsubscribe = %d, want 0", got)
+	}
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "current",
+			Ref:      stableRef,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after ref-only unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A federated (non-atomic) source is addressed by its ref, so a thread/read that
+// carries both the stable ref and the thread's current ID must register its relay
+// under the ref identity thread/unsubscribe resolves — otherwise the ref-only
+// unsubscribe names a key that was never subscribed and the downstream entry (and
+// the source-side subscription behind it) stays live forever.
+func TestHubRPCThreadUnsubscribeDropsStableRefRelayWhenReadAlsoNamedThreadID(t *testing.T) {
+	const stableRef = "host:stable"
+	source := &relayBroadcastSource{
+		id: "host",
+		thread: appwire.Thread{
+			ID:        "current",
+			SessionID: "current",
+			Source:    "host",
+			Evener:    appwire.EvenerThread{Ref: stableRef, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: stableRef, ThreadID: "current", Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if got := web.appRPC.SubscriberCount(stableRef); got != 1 {
+		t.Fatalf("subscriber count at the stable ref = %d, want 1 (relay keyed by the caller's current ID instead of the ref)", got)
+	}
+	if got := web.appRPC.SubscriberCount("host:current"); got != 0 {
+		t.Fatalf("subscriber count at the live thread id = %d, want 0 (the ref is the delivery identity)", got)
+	}
+
+	if _, err := client.ThreadUnsubscribe(context.Background(), appwire.ThreadUnsubscribeParams{Ref: stableRef}); err != nil {
+		t.Fatalf("ThreadUnsubscribe: %v", err)
+	}
+	if got := web.appRPC.SubscriberCount(stableRef); got != 0 {
+		t.Fatalf("subscriber count after ref-only unsubscribe = %d, want 0", got)
+	}
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "current",
+			Ref:      stableRef,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after unsubscribe",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("notification delivered after ref-only unsubscribe: %+v", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A relay's recovery must re-address the thread by the authoritative ref the read
+// named, not by the caller's bare threadId. A federated source's daemon edge
+// resolves a bare threadId in preference to the ref, so once an identity
+// replacement moves the live thread ID the original ID names nothing while the
+// stable ref beside it still resolves; reusing the original request verbatim
+// makes every recovery attempt in the stale state fail forever.
+func TestHubRelayRecoveryUsesAuthoritativeRefNotStaleThreadID(t *testing.T) {
+	const (
+		stableRef = "host:stable"
+		liveID    = "current"
+	)
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &recordingSubscribeParamsSource{
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	source.thread = appwire.Thread{
+		ID:        liveID,
+		SessionID: liveID,
+		Source:    "host",
+		Evener:    appwire.EvenerThread{Ref: stableRef, Capabilities: appwire.ThreadCapabilities{Send: true}},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: stableRef, ThreadID: liveID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	// The subscription ends, so the relay recovers. The current ID has moved on
+	// (an identity replacement), leaving the original bare threadId stale.
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	// The source claimed its subscription again, so the recovered relay delivers.
+	expectRelayResync(t, client.Notifications(), liveID, stableRef)
+	notificationsB <- relayDeltaNotification(t, liveID, "recovered event")
+	expectRelayDelta(t, client.Notifications(), "recovered event")
+
+	params := source.subscribeParams()
+	if len(params) < 2 {
+		t.Fatalf("subscribe calls = %d, want an initial and a recovery call", len(params))
+	}
+	recovery := params[1]
+	if recovery.Ref != stableRef {
+		t.Fatalf("recovery subscribe ref = %q, want the authoritative %q", recovery.Ref, stableRef)
+	}
+	if recovery.ThreadID != "" {
+		t.Fatalf("recovery subscribe resent the caller's bare threadId %q, which a stale identity no longer resolves", recovery.ThreadID)
+	}
 }
 
 func TestRelayRetryClockWaitStopsOnCancellation(t *testing.T) {
@@ -7001,6 +7413,37 @@ type scriptedRelaySource struct {
 	subscribeCalls chan<- struct{}
 }
 
+// recordingSubscribeParamsSource is a non-atomic relay source that records the
+// params of every SubscribeThread call, so a recovery re-subscribe can be
+// inspected. ID is "host", standing in for a federated source.
+type recordingSubscribeParamsSource struct {
+	relayLifecycleSource
+	results        <-chan relaySubscribeResult
+	subscribeCalls chan<- struct{}
+
+	mu     sync.Mutex
+	params []appwire.ThreadReadParams
+}
+
+func (s *recordingSubscribeParamsSource) ID() string { return "host" }
+
+func (s *recordingSubscribeParamsSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.params = append(s.params, params)
+	s.mu.Unlock()
+	if s.subscribeCalls != nil {
+		s.subscribeCalls <- struct{}{}
+	}
+	result := <-s.results
+	return result.notifications, result.err
+}
+
+func (s *recordingSubscribeParamsSource) subscribeParams() []appwire.ThreadReadParams {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]appwire.ThreadReadParams(nil), s.params...)
+}
+
 type blockingRecoveryRelaySource struct {
 	relayLifecycleSource
 	mu                 sync.Mutex
@@ -7210,16 +7653,41 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 		if got.Method != appwire.NotifyEvenerThreadResync {
 			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
 		}
-		var params appwire.ThreadResyncParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("unmarshal thread resync: %v", err)
-		}
-		want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
-		if params != want {
-			t.Fatalf("thread resync params=%+v, want %+v", params, want)
-		}
+		expectResyncParams(t, got, wantThreadID, wantRef)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for thread resync after relay recovery")
+	}
+}
+
+// awaitRelayResync is expectRelayResync for a client that also receives other
+// traffic (navigation invalidations, status frames): those are skipped, and
+// the resync may take as long as timeout to arrive.
+func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case got := <-notifications:
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			expectResyncParams(t, got, wantThreadID, wantRef)
+			return
+		case <-deadline:
+			t.Fatalf("no thread resync for %s within %v", wantRef, timeout)
+		}
+	}
+}
+
+func expectResyncParams(t *testing.T, got appwire.Notification, wantThreadID, wantRef string) {
+	t.Helper()
+	var params appwire.ThreadResyncParams
+	if err := json.Unmarshal(got.Params, &params); err != nil {
+		t.Fatalf("unmarshal thread resync: %v", err)
+	}
+	want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
+	if params != want {
+		t.Fatalf("thread resync params=%+v, want %+v", params, want)
 	}
 }
 
@@ -9421,12 +9889,21 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 }
 
 func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
+	// The stand-in answers the hub's resume read and, with no roster in this
+	// hub, the rendezvous directory's identity probe (thread/list and a bare
+	// thread/read naming the root) that lists it in the first place. Like a
+	// real daemon it carries one id as both thread and session id: the probe
+	// lists it by session id, and the resume reads it by thread id.
+	resumed := appwire.Thread{ID: "th_resumed", SessionID: "th_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{resumed}}, nil
+	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if params.Ref != "local:th_resumed" {
+		if params.Ref != "" && params.Ref != "local:th_resumed" {
 			t.Fatalf("ref=%q", params.Ref)
 		}
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}}, nil
+		return appwire.ThreadReadResponse{Thread: resumed}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -9438,12 +9915,14 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 				t.Fatalf("resume session=%q", req.SessionID)
 			}
 			entry := rendezvous.Entry{
-				PID:       105,
+				// The probe, not this PID, decides whether the entry is
+				// listed; it still has to be a live process.
+				PID:       os.Getpid(),
 				Protocol:  appwire.ProtocolVersion,
 				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
 				SourceID:  "local",
 				ThreadID:  "th_resumed",
-				SessionID: "sess_resumed",
+				SessionID: "th_resumed",
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -9594,7 +10073,7 @@ func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method 
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
 	writeRendezvous(t, runDir, entry)
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	if !roster.HasConfirmedEntry(entry) {
 		t.Fatal("owner not confirmed")
@@ -11568,8 +12047,22 @@ func newTestCredentialsStore(t *testing.T) *credentials.Store {
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
 // runMain's composed evener/tree/changed wiring in main.go) before the server
 // starts serving requests.
+// rosterOverRunDir is the roster a test hub gets when it names a rendezvous
+// directory and no roster: the production shape (main.go wires one over the
+// run dir with the status prober), refreshed once so the files already there
+// are listed. A test that adds daemons later refreshes it again.
+func rosterOverRunDir(t *testing.T, runDir string) *hubcore.Roster {
+	t.Helper()
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	return roster
+}
+
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
+	if cfg.Roster == nil && cfg.RunDir != "" {
+		cfg.Roster = rosterOverRunDir(t, cfg.RunDir)
+	}
 	// An unset root falls back to a HOME/XDG-derived default, which under this
 	// package's TestMain is the one throwaway root every test in the binary
 	// shares, so two parallel tests that both leave a root unset read each
@@ -11935,6 +12428,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerInstanceEdit,
 		appwire.MethodEvenerInstanceRemove,
 		appwire.MethodEvenerInstanceSetDefault,
+		appwire.MethodEvenerInstanceSetModelDisabled,
+		appwire.MethodEvenerInstanceRefreshModels,
 		appwire.MethodEvenerLaunchResolve,
 		appwire.MethodEvenerLaunchSchema,
 		appwire.MethodEvenerLaunchGetLayer,
@@ -11979,6 +12474,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerPluginCheckNow,
 		appwire.MethodEvenerPluginPreview,
+		// Component 07a's remote-admin proxy.
+		appwire.MethodEvenerHostRequest,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does

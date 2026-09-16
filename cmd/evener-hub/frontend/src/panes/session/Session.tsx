@@ -20,22 +20,25 @@
 // "chips beside the composer", per its own doc comment) and shares its
 // --session-measure so the input aligns with the transcript's own content
 // column; SessionChrome now lives in the composer's own PromptCard control row.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import { configFingerprint, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
-import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { ForceStopDialog } from "../../shell/sessionMenu/ForceStopDialog";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { configFingerprint, resolveEffectiveConfig } from "../../transcriptDisplay/config";
 import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { SessionChrome } from "./chrome/SessionChrome";
+import { TopNotesPanel } from "./chrome/TopNotesPanel";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { AskDock, AskDockAnnouncements, useAskDockActivationEpoch, useAskDockPending } from "./composer/askDock";
 import { Composer } from "./composer/Composer";
@@ -511,7 +514,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             {model.status.type === "notLoaded" &&
               !recoveryOwnerRef &&
               ref.startsWith("local:") &&
-              !model.capabilities.send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
+              !controlsFor(model).send && <SessionChrome ref={ref} placement="menu" discoverActivity />}
             {reconciliationFailed && (
               <div role="alert">Message recovery has not completed. Sending will resume after recovery succeeds.</div>
             )}
@@ -521,17 +524,20 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         </div>
       }
     >
-      <SandboxEscalationRail sessionRef={ref} />
-      {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
-        <ColdStartSkeleton />
-      ) : isDormantTranscript(model.turns) ? (
-        <EmptyTranscript
-          active={model.status.type === "active"}
-          restartRequired={model.status.type === "restartRequired"}
-        />
-      ) : (
-        transcript
-      )}
+      <div className={styles.contentColumn}>
+        <TopNotesPanel sessionRef={ref} model={model} />
+        <SandboxEscalationRail sessionRef={ref} />
+        {showColdStartSkeleton && isDormantTranscript(model.turns) ? (
+          <ColdStartSkeleton />
+        ) : isDormantTranscript(model.turns) ? (
+          <EmptyTranscript
+            active={model.status.type === "active"}
+            restartRequired={model.status.type === "restartRequired"}
+          />
+        ) : (
+          transcript
+        )}
+      </div>
     </PaneScaffold>
   );
 }

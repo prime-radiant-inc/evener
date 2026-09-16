@@ -1,12 +1,10 @@
+import type { ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
 import { buildEntityView } from "@evener/appwire-client";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ActivityTree } from "../../../../protocol/activityData";
 import { toolRendererFor } from "../toolRenderers";
 import "./jobTools";
 import "./jobWatch";
-import type { ItemModel } from "../../../../protocol/model";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 
 afterEach(() => {
@@ -106,6 +104,15 @@ test("job controls keep same-owner job suffixes distinct in summaries", () => {
     expect(summary(second)).toContain("000000000002");
     expect(summary(first)).not.toBe(summary(second));
   }
+});
+
+test("job_status: summary renders the full job id, never a clipped one", () => {
+  const d = toolRendererFor("job_status");
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const output = JSON.stringify({ id, type: "shell", status: "running" });
+  expect(d.summary(item({ toolName: "job_status", argumentsJSON: JSON.stringify({ target: id }), output }))).toBe(
+    `Checked ${id} · running`,
+  );
 });
 
 test("job_status: body falls back to raw text when item.raw is absent (legacy/stored transcript)", () => {
@@ -537,6 +544,14 @@ test("job_stop: no footer yet (request in flight) shows just the target", () => 
   expect(d.summary(item({ toolName: "job_stop", argumentsJSON: args, output: "" }))).toBe("Stopped job_8");
 });
 
+test("job_stop: summary renders the full job id, never a clipped one", () => {
+  const d = toolRendererFor("job_stop");
+  const id = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  expect(d.summary(item({ toolName: "job_stop", argumentsJSON: JSON.stringify({ target: id }), output: "" }))).toBe(
+    `Stopped ${id}`,
+  );
+});
+
 // --- delegate_send (+ legacy job_send_message alias) ---------------------
 
 test("delegate_send: summary names the target delegate and a one-word status, not the raw footer", () => {
@@ -560,6 +575,15 @@ test("delegate_send: summary degrades gracefully with no target arg", () => {
   const d = toolRendererFor("delegate_send");
   expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: "{}", output: "" }))).toBe(
     "Sent a message to a delegate",
+  );
+});
+
+test("delegate_send: summary renders the full target id, never a clipped one", () => {
+  const d = toolRendererFor("delegate_send");
+  const target = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+  const args = JSON.stringify({ to: target, message: "status?" });
+  expect(d.summary(item({ toolName: "delegate_send", argumentsJSON: args, output: "" }))).toBe(
+    `Sent a message to delegate ${target}`,
   );
 });
 

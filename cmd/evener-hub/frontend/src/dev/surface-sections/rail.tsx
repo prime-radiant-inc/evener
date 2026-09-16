@@ -3,19 +3,20 @@
 // plain zustand store, so the Rail renders from already-present data and
 // never issues a network request. A FakeClient supplies the production client
 // context without opening a socket.
-import { useEffect } from "react";
-import { FakeClient } from "../../protocol/testing/fakeClient";
+
 import type {
   NavigationManifest,
   NavigationProjectCatalog,
   NavigationProjectResource,
   NavigationSectionResource,
   NavigationSessionSummary,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { keyID, type ResourceState } from "@evener/appwire-client/state/navigation";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { useEffect } from "react";
 import { ClientProvider } from "../../shell/clientContext";
 import { Rail } from "../../shell/rail/Rail";
 import { navigationStore } from "../../stores/navigation/store";
-import { keyID, type ResourceState } from "../../stores/navigation/types";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 

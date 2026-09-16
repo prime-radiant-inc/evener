@@ -7,17 +7,18 @@
 // "no dropped-chunk correctness failures" half exactly; see
 // docs/superpowers/plans/wave4-report.md for the measured frame-budget
 // numbers this half's sibling produced.
+
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { applyNotification } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { buildFloodChunks, buildFloodStream, hydrateFloodModel } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { memo } from "react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { applyNotification } from "../../protocol/reducer";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { buildFloodChunks, buildFloodStream, hydrateFloodModel } from "../../protocol/testing/tokenFlood";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
-import { flushPendingTurnsProjectionForTests } from "./composer/queue/pendingTurnsStore";
+import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
 import { type ItemRenderProps, ignoringTurn, registerItemRenderer } from "./transcript/types";
 

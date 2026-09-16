@@ -22,6 +22,7 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/shellquote"
 	"primeradiant.com/evener/llm"
 )
 
@@ -39,7 +40,6 @@ func TestRouteNoToolCalls(t *testing.T) {
 		{name: "user input", kind: EntryUserInput, want: runNoToolCalls},
 		{name: "continuation", kind: EntryContinuation, want: runNoToolCalls},
 		{name: "delegate attention", kind: EntryDelegateAttention, want: runNoToolCalls},
-		{name: "steering carrier", kind: EntrySteeringCarrier, want: runNoToolCalls},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -2870,7 +2870,7 @@ func writeStableSubagentStopPlugin(t *testing.T, marker, decision string) string
 	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	command := "printf 'run\\n' >> " + shellQuote(marker) + "; printf '%s' " + shellQuote(decision)
+	command := "printf 'run\\n' >> " + shellquote.Literal(marker) + "; printf '%s' " + shellquote.Literal(decision)
 	payload := map[string]any{"hooks": map[string]any{"SubagentStop": []any{map[string]any{
 		"matcher": "*",
 		"hooks":   []any{map[string]any{"type": "command", "command": command}},
@@ -3092,7 +3092,7 @@ func stableSupervisionStopHook(output string) *hooks.Runner {
 	runner.Add(plugin.HookSubagentStop, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: "printf '%s' " + shellQuote(output),
+		Command: "printf '%s' " + shellquote.Literal(output),
 		Timeout: 5,
 	})
 	return runner

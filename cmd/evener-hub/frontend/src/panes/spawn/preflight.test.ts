@@ -1,8 +1,8 @@
 // @vitest-environment node
 
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, test } from "vitest";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import { createDir, preflightDir } from "./preflight";
 
 describe("preflightDir", () => {
@@ -80,5 +80,36 @@ describe("createDir", () => {
     });
 
     await expect(createDir(fake, "/tmp/file")).rejects.toThrow("a file already exists at that path");
+  });
+});
+
+// Component 07b: a remote host's directory is validated and created on that
+// host through evener/host/request, not on the controller.
+describe("preflightDir/createDir (remote host routing)", () => {
+  test("preflightDir wraps path validation for a remote host", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/host/request", () => ({ path: "/srv/app", valid: true }));
+
+    expect(await preflightDir(fake, "/srv/app", "buildbox")).toEqual({ kind: "ok" });
+    expect(fake.calls).toEqual([
+      {
+        method: "evener/host/request",
+        params: { host: "buildbox", method: "evener/path/validate", params: { path: "/srv/app", kind: "dir" } },
+      },
+    ]);
+  });
+
+  test("createDir wraps directory creation for a remote host", async () => {
+    const fake = new FakeClient("ready");
+    fake.on("evener/host/request", () => ({ path: "/srv/app", created: true }));
+
+    await createDir(fake, "/srv/app", "buildbox");
+
+    expect(fake.calls).toEqual([
+      {
+        method: "evener/host/request",
+        params: { host: "buildbox", method: "evener/dirs/create", params: { path: "/srv/app" } },
+      },
+    ]);
   });
 });

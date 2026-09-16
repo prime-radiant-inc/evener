@@ -7,11 +7,12 @@
 // and pendingTurnsStore - Composer.tsx/Session.tsx are outside this manifest,
 // so mounting this inside Composer's own tree happens at the wave
 // integration merge (T6), not here.
+
+import type { InputItem } from "@evener/appwire-client";
+import { canonicalSkillNames, errorText, STEER_UNAVAILABLE, sessionActionError } from "@evener/appwire-client";
 import { type ReactNode, useState } from "react";
-import { canonicalSkillNames } from "../../../../protocol/composerInput";
-import { errorText, sessionActionError } from "../../../../protocol/errors";
-import type { InputItem } from "../../../../protocol/types.gen";
 import { copyToClipboard } from "../../../../shell/palette/commands";
+import { controlsFor, pressRefusal } from "../../../../stores/liveControls";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { InputAttachment } from "../../../../stores/threads";
 import { threadsStore, useThreadsStore } from "../../../../stores/threads";
@@ -193,6 +194,10 @@ export function QueueStrip({
 
   if (!model || !visible) return null;
 
+  // Drain and promote read the session's controls (submitRouting.ts
+  // sessionControls: harness steer, and a running turn or a queue a Stop parked).
+  const controls = controlsFor(model);
+
   const ids = queue?.ids;
   const texts = queue?.texts;
   const preview = queue?.preview;
@@ -210,6 +215,13 @@ export function QueueStrip({
   }
 
   async function handlePromote(index: number, entryId: string): Promise<void> {
+    // Judged on the store's live controls at the press, not the render's
+    // (stores/liveControls.ts): the turn can have ended in between.
+    const refusal = pressRefusal(sessionRef, "drain");
+    if (refusal !== undefined) {
+      toasts.push("error", refusal);
+      return;
+    }
     setRowBusy(entryId, true);
     try {
       await threadsStore.getState().promoteQueuedAsSteer(sessionRef, index, entryId);
@@ -265,6 +277,11 @@ export function QueueStrip({
   }
 
   async function handleDrain(): Promise<void> {
+    const refusal = pressRefusal(sessionRef, "drain");
+    if (refusal !== undefined) {
+      toasts.push("error", refusal);
+      return;
+    }
     const { text, attachments, hasPending, skillNames } = getComposerText();
     if (hasPending) {
       toasts.push("error", "Image attachment is still processing");
@@ -362,7 +379,7 @@ export function QueueStrip({
     <section className={CLASS.strip}>
       <div className={CLASS.header}>
         <h3 className={CLASS.title}>Queued messages ({depth + pendingQueueEntries.length + durableEntries.length})</h3>
-        {hasQueuedWork && (
+        {hasQueuedWork && controls.drain && (
           <Tooltip label="Send your message and everything queued into the current turn">
             <Button variant="quiet" size="sm" onClick={() => void handleDrain()} disabled={busy}>
               Steer queue now
@@ -410,8 +427,14 @@ export function QueueStrip({
                   label="Steer now"
                   icon={<span aria-hidden="true">⇧</span>}
                   size="sm"
-                  disabled={!actionsAvailable || busy}
-                  disabledReason={actionsAvailable ? undefined : ACTIONS_UNAVAILABLE_REASON}
+                  disabled={!actionsAvailable || !controls.drain || busy}
+                  disabledReason={
+                    !actionsAvailable
+                      ? ACTIONS_UNAVAILABLE_REASON
+                      : controls.drain
+                        ? undefined
+                        : (controls.reason.drain ?? STEER_UNAVAILABLE)
+                  }
                   onClick={() => {
                     if (entryId !== undefined) void handlePromote(index, entryId);
                   }}

@@ -324,7 +324,7 @@ func TestCovInferRemoteSourcesFromRef(t *testing.T) {
 // with zero authorities (favorite_authority.go:327).
 func TestCovClassifyFavoriteProjectNoAuthorities(t *testing.T) {
 	projects := favoriteProjectIndex{
-		byID: map[string][]FavoriteProjectAuthority{},
+		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{},
 	}
 	result := classifyFavoriteProject(ArchiveKey{Kind: "project", ID: "/some/path"}, projects)
 	if result.State != FavoriteDecisionDormant {
@@ -336,10 +336,10 @@ func TestCovClassifyFavoriteProjectNoAuthorities(t *testing.T) {
 // ambiguous IDs (favorite_authority.go:327).
 func TestCovClassifyFavoriteProjectAmbiguous(t *testing.T) {
 	projects := favoriteProjectIndex{
-		byID: map[string][]FavoriteProjectAuthority{
-			"/some/path": {{ID: "/some/path", Quality: FavoriteAuthorityComplete}},
+		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{
+			{id: "/some/path"}: {{ID: "/some/path", Quality: FavoriteAuthorityComplete}},
 		},
-		ambiguousIDs: map[string]bool{"/some/path": true},
+		ambiguousKeys: map[projectDecisionKey]bool{{id: "/some/path"}: true},
 	}
 	result := classifyFavoriteProject(ArchiveKey{Kind: "project", ID: "/some/path"}, projects)
 	if result.State != FavoriteDecisionDormant {
@@ -351,8 +351,8 @@ func TestCovClassifyFavoriteProjectAmbiguous(t *testing.T) {
 // quality branch (favorite_authority.go:330-331).
 func TestCovClassifyFavoriteProjectIncompleteQuality(t *testing.T) {
 	projects := favoriteProjectIndex{
-		byID: map[string][]FavoriteProjectAuthority{
-			"/some/path": {{ID: "/some/path", Quality: FavoriteAuthorityIncomplete}},
+		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{
+			{id: "/some/path"}: {{ID: "/some/path", Quality: FavoriteAuthorityIncomplete}},
 		},
 	}
 	result := classifyFavoriteProject(ArchiveKey{Kind: "project", ID: "/some/path"}, projects)
@@ -365,8 +365,8 @@ func TestCovClassifyFavoriteProjectIncompleteQuality(t *testing.T) {
 // (favorite_authority.go:333).
 func TestCovClassifyFavoriteProjectValid(t *testing.T) {
 	projects := favoriteProjectIndex{
-		byID: map[string][]FavoriteProjectAuthority{
-			"/some/path": {{ID: "/some/path", Quality: FavoriteAuthorityComplete}},
+		byKey: map[projectDecisionKey][]FavoriteProjectAuthority{
+			{id: "/some/path"}: {{ID: "/some/path", Quality: FavoriteAuthorityComplete}},
 		},
 	}
 	result := classifyFavoriteProject(ArchiveKey{Kind: "project", ID: "/some/path"}, projects)

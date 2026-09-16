@@ -14,7 +14,7 @@ package hub
 // registered RPC handler over a hermetic registry, encodes the answer the way
 // the wire does, and pins it in testdata/authwire/responses.json. Both other
 // consumers decode that same file — cmd/evener-tui/hub_auth_wire_test.go and
-// the frontend's credentialLabels.wire.test.ts — so no client can drift from
+// the AppWire package's credentialLabels.wire.test.ts — so no client can drift from
 // the hub's answers without this test failing first.
 //
 // Regenerate after an intentional wire change with:
@@ -305,6 +305,9 @@ func authWireScenarios() []authWireScenario {
 				t.Helper()
 				dir := t.TempDir()
 				stateDir := t.TempDir()
+				// Fixed key: this case records endpoint fingerprints into the
+				// committed corpus, which is compared byte for byte.
+				pinEndpointFingerprintKey(t, stateDir)
 				tomlPath := filepath.Join(dir, "providers.toml")
 				if err := os.WriteFile(tomlPath, []byte(mixedInstancesToml), 0o644); err != nil {
 					t.Fatalf("write providers.toml: %v", err)

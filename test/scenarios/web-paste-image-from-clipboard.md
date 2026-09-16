@@ -145,7 +145,7 @@ inline banner.
   own text is `item.name`, plus ` (processing…)` while the PNG round-trip is
   in flight, `Spawn.tsx:573-575`). `promptValue` contains the marker
   `[image 1]`, spliced in at the cursor synchronously
-  (`attachments/textareaMarkers.ts:19-21`). `toast` is empty. Falsification:
+  (`appwire-client/typescript/textareaMarkers.ts#markerText`). `toast` is empty. Falsification:
   `chipCount` is 0, `promptValue` has no marker left in it, **and** the toast
   reads `screenshot.png (image decode failed)`
   (`attachments/useAttachments.ts:188`) — that is the kata `1pgw` failure
@@ -156,7 +156,7 @@ inline banner.
   No toast. Falsification: `path` is still `/new`, or a toast appears
   (commonly `Image attachment is still processing.` from `Spawn.tsx:433-434`,
   or `Couldn't attach <name> (maximum 8 images)` / `(maximum 8 MB)` from
-  `attachments/limits.ts:23-29` + `useAttachments.ts:193-199`).
+  `appwire-client/typescript/attachmentLimits.ts:23-29` + `useAttachments.ts:193-199`).
 - **Step 5 (transcript)**: the outline shows the first user turn carrying
   both the prompt text and an image part; the raw entry's image part has
   `media_type` `image/png` with non-empty `data`. A later assistant turn's
@@ -233,7 +233,7 @@ curl -s -X POST -H "Content-Type: application/json" \
   is by design: the typical "see this:" + screenshot paste should leave the
   prose in the textarea AND attach the image alongside.
 - **Caps are 8 attachments and 8 MiB per file**, client-side
-  (`attachments/limits.ts:9-10,26-27`), with the message naming the file and
+  (`appwire-client/typescript/attachmentLimits.ts:9-10,26-27`), with the message naming the file and
   the limit it broke. A 64×64 PNG is ~200 bytes; nowhere near. The server has
   its own separate ceilings (`hubcore.SendMaxImageBytes` is 8 MiB and `SendMaxRequestBytes` is 96 MiB,
   `internal/hubcore/types.go:13-14`, enforced in `web_session.go:29-49`) — don't conflate

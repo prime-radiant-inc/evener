@@ -1,13 +1,17 @@
 // New-session drafts live only for this page's lifetime, keyed by the exact
 // working directory used by launch/default resolution. No image bytes or
 // unsent prompts are persisted. Each draft owns its async attachment pipeline.
+
+import type {
+  AdvancedValues,
+  LaunchConfigLayer,
+  PluginSelectionError,
+  PluginSelectionState,
+} from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { LaunchConfigLayer, PluginSelectionError } from "../../protocol/types.gen";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
-import type { PluginSelectionState } from "./pluginSelectionState";
-import type { AdvancedValues } from "./schema";
 import { resolveInitialDefaults } from "./spawnDefaults";
 import { readUrlPrefill } from "./urlPrefill";
 
@@ -16,9 +20,20 @@ interface DraftFields {
   promptRevision: number;
   harness: string;
   model: string;
+  /** The model value the uncredentialed-default fallback installed into `model`
+   * for THIS draft, or null when `model` did not come from it. Provenance is a
+   * property of the draft, not of the mounted form: SpawnForm is a singleton
+   * reused across drafts (no key) and is unmounted/remounted with the pane, so
+   * a form-local marker leaked one draft's provenance onto an identical model
+   * string in another draft and vanished on remount (Component 06b review,
+   * round eight). */
+  defaultModelFallback: string | null;
   staleModelNotice: string | null;
   reasoningEffort: string;
   accessMode: string;
+  /** Launch source id for this draft (Component 06b's host picker). "local"
+   * is the default and is omitted from the wire by startThread. */
+  source: string;
   advancedOverrides: LaunchConfigLayer;
   advancedValues: AdvancedValues;
   pluginSelection: PluginSelectionState;
@@ -30,7 +45,16 @@ interface DraftFields {
   advancedErrors: Record<string, string>;
   busy: boolean;
   busyStartedAt: number | null;
+  /** The pending "Create directory and start?" confirmation, and the host that
+   * PREFLIGHTED the path it names (component 07b review, round seven). The two
+   * travel together because the confirmation is an action against one host:
+   * the dialog can outlive the selection that opened it (the manifest's
+   * `online` flag is live), and a confirm that fires against a different host
+   * is a different action than the one the user was offered. Kept in the draft
+   * rather than component state for the same reason the path is: a pane
+   * remount restores the dialog, so the binding has to survive it too. */
   createDialogPath: string | null;
+  createDialogHost: string | null;
 }
 
 function createDraft(cwd: string) {
@@ -42,9 +66,11 @@ function createDraft(cwd: string) {
       promptRevision: 0,
       harness: defaults.harness ?? "",
       model: defaults.model ?? "",
+      defaultModelFallback: null,
       staleModelNotice: null,
       reasoningEffort: defaults.reasoningEffort ?? "",
       accessMode: defaults.accessMode ?? "",
+      source: "local",
       advancedOverrides: {},
       advancedValues: {},
       pluginSelection: { mode: "default" },
@@ -53,6 +79,7 @@ function createDraft(cwd: string) {
       busy: false,
       busyStartedAt: null,
       createDialogPath: null,
+      createDialogHost: null,
     })),
     attachments: createAttachmentStore(),
     busyRef: { current: false },

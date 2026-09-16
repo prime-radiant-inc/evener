@@ -1,21 +1,37 @@
+import type { AuthTestResponse } from "@evener/appwire-client";
+import {
+  activeSourceLabel,
+  CONNECTION_REPLACED_ERROR,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  friendlyErrorMessage,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../../../protocol/errors";
-import type { AuthTestResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
-import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
-import { Button, Dialog, Skeleton, useToasts } from "../../../../widgets";
+import {
+  credentialsStore,
+  isStaleListingRefusal,
+  staleListingHeld,
+  useCredentialsStore,
+} from "../../../../stores/credentials";
+import { Button, Dialog, Skeleton, useFocusRehome, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./ConnectProviderDialog.module.css";
-import { activeSourceLabel, safeCredentialTestResult } from "./credentialLabels";
+import { CredentialsSection } from "./CredentialsSection";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { type InstanceReports, ProviderConnection } from "./ProviderConnection";
 
 const CLASS = {
   body: requireClass(styles.body, "ConnectProviderDialog.module.css", "body"),
   intro: requireClass(styles.intro, "ConnectProviderDialog.module.css", "intro"),
   status: requireClass(styles.status, "ConnectProviderDialog.module.css", "status"),
+  notice: requireClass(styles.notice, "ConnectProviderDialog.module.css", "notice"),
   error: requireClass(styles.error, "ConnectProviderDialog.module.css", "error"),
   empty: requireClass(styles.empty, "ConnectProviderDialog.module.css", "empty"),
   providerList: requireClass(styles.providerList, "ConnectProviderDialog.module.css", "providerList"),
@@ -30,19 +46,78 @@ const CLASS = {
 // A stored-value editor's kind doubles as the auth mode that offers it, so
 // the same lookup finds the instance a "Set API key" or "Set credential
 // JSON" editor is open for and closes the editor once that mode is gone.
-type StoredValueEditor = { kind: "apiKey" | "credentialJson"; name: string };
+// expectedEndpointFingerprint is captured from the row the user acted on when
+// the editor opens: the dialog asserts it at submit, so a concurrent change
+// that re-points the name cannot send the already-entered secret to an
+// endpoint the user never reviewed. Undefined when the row showed no endpoint,
+// which asserts nothing.
+type StoredValueEditor = { kind: "apiKey" | "credentialJson"; name: string; expectedEndpointFingerprint?: string };
 type OpenEditor = { kind: "add" } | StoredValueEditor | OAuthEditor | null;
 
 const TEST_INTERRUPTED_MESSAGE = "Provider configuration refreshed while testing. Test the connection again.";
 
 export interface ConnectProviderDialogProps {
   onClose(): void;
-  onConnected(): void;
+  onConnected(name?: string): void;
 }
 
-export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderDialogProps) {
-  const { instances, availableProviders, diagnostics, userLayer, writesRefused, loading, error, fetch } =
-    useCredentialsStore();
+export function ConnectProviderDialog(props: ConnectProviderDialogProps) {
+  const [view, setView] = useState<"connect" | "manage" | "settings">("connect");
+  // Instance-identity reports (rename/removal) made in the full settings view
+  // flow through the connection's own mailbox, which scopes them to the guided
+  // owner mounted when they arrive; this dialog only forwards them.
+  const reportsRef = useRef<InstanceReports | null>(null);
+  return (
+    <>
+      <ProviderConnection
+        {...props}
+        visible={view === "connect"}
+        onManage={() => setView("manage")}
+        reportsRef={reportsRef}
+      />
+      {view === "settings" && (
+        <Dialog open onClose={props.onClose} title="Full provider settings">
+          <Button variant="quiet" onClick={() => setView("connect")}>
+            Back to connection choices
+          </Button>
+          <CredentialsSection
+            sectionId="credentials"
+            fullEditor
+            onInstanceRenamed={(from, to) => reportsRef.current?.renamed(from, to)}
+            onInstanceRemoved={(name) => reportsRef.current?.removed(name)}
+          />
+        </Dialog>
+      )}
+      {view === "manage" && (
+        <ManageConnections {...props} onBack={() => setView("connect")} onSettings={() => setView("settings")} />
+      )}
+    </>
+  );
+}
+
+function ManageConnections({
+  onClose,
+  onConnected,
+  onBack,
+  onSettings,
+}: ConnectProviderDialogProps & { onBack(): void; onSettings(): void }) {
+  const {
+    instances,
+    availableProviders,
+    diagnostics,
+    userLayer,
+    writesRefused,
+    loading,
+    error,
+    listingFromPreviousConnection,
+    fetch,
+  } = useCredentialsStore();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  // The gate the rows and footer below refuse on, derived from the same
+  // predicate the store's own refusal uses (staleListingHeld) so a control can
+  // never be refused here that the store would allow, or allowed here and
+  // refused there.
+  const actionsDisabled = useCredentialsStore(staleListingHeld);
   const [openEditor, setOpenEditor] = useState<OpenEditor>(null);
   const [testState, setTestState] = useState<{
     name: string;
@@ -61,7 +136,14 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     instanceVersion.current += 1;
   }
 
-  useConnectedEffect(fetch, [fetch]);
+  useConnectedEffect(async () => {
+    const state = credentialsStore.getState();
+    // Discovery already requested the listing. Reuse its pending answer,
+    // data or error; only load here if navigation preceded connection readiness.
+    if (!state.loading && !state.error && !state.listingEstablished) {
+      await fetch();
+    }
+  }, [fetch]);
 
   useEffect(() => {
     mounted.current = true;
@@ -126,6 +208,13 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     );
   }, [storedValueEditorInstance]);
 
+  // A listing change can remove the row - or the action inside it - that held
+  // the keyboard: React unmounts it, focus falls to <body>, and FocusScope
+  // (which focuses on mount only) has nothing left to restore it with. The hook
+  // watches what holds focus inside this dialog and re-homes it to the first
+  // control when that control is gone; anything else leaves focus where it was.
+  useFocusRehome(bodyRef);
+
   const closeEditor = useCallback(() => {
     operationVersion.current += 1;
     setTestState(null);
@@ -148,20 +237,69 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     setOpenEditor(editor);
   }
 
+  // instanceFingerprint is where the row the user acted on says the name
+  // resolves. The probe asserts it, so the hub can refuse a check whose name was
+  // re-pointed since this listing was read.
+  function instanceFingerprint(name: string): string | undefined {
+    return instances.find((candidate) => candidate.name === name)?.endpointFingerprint;
+  }
+
   async function testConnection(name: string): Promise<void> {
+    // A destination the hub cannot fingerprint has no assertion to send: the
+    // probe would dial whatever the name resolves to now, so it is refused here
+    // with the same notice an interrupted test gets.
+    if (fingerprintUnavailable(instances.find((candidate) => candidate.name === name))) {
+      beginOperation();
+      setTestState({
+        name,
+        version: instanceVersion.current,
+        pending: false,
+        notice: FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+      });
+      return;
+    }
     const operation = beginOperation();
     const version = instanceVersion.current;
     setTestState({ name, version, pending: true });
     try {
-      const result = safeCredentialTestResult(name, await credentialsStore.getState().testCredentials(name));
+      const result = safeCredentialTestResult(
+        name,
+        await credentialsStore.getState().testCredentials(name, instanceFingerprint(name)),
+      );
       if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
       if (result.status === "success") {
-        onConnected();
+        onConnected(name);
         return;
       }
       setTestState({ name, version, pending: false, result });
-    } catch {
+    } catch (err) {
       if (!mounted.current || operationVersion.current !== operation || instanceVersion.current !== version) return;
+      // The store's own refusal of a probe issued from the previous
+      // connection's listing (requireWritableClient). This row's rendered gate
+      // refuses the click long before it reaches the store, so arriving here
+      // means that gate and the store disagreed about the connection - but the
+      // refusal still gets the treatment every other probe in this series gives
+      // it: name the change, ask for this connection's listing, and never dress
+      // it up as an endpoint that could not be reached.
+      if (isStaleListingRefusal(err)) {
+        setTestState({ name, version, pending: false, notice: CONNECTION_REPLACED_ERROR });
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        return;
+      }
+      if (isEndpointConflict(err)) {
+        // The hub refused the asserted endpoint: the name moved since this
+        // listing was read. Say so, and re-read the listing so a retry asserts
+        // the destination now on screen rather than the stale one just refused.
+        setTestState({ name, version, pending: false, notice: ENDPOINT_CHANGED_TEST_MESSAGE });
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        return;
+      }
       setTestState({
         name,
         version,
@@ -180,7 +318,18 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
       const editor = await startOAuthFlow(name, isCurrent);
       if (editor && isCurrent()) setOpenEditor(editor);
     } catch (err) {
-      if (isCurrent()) toast.push("error", `Sign-in failed: ${friendlyErrorMessage(err)}`);
+      if (!isCurrent()) return;
+      // Same refusal, same treatment as the probe above: the row's gate and the
+      // store disagreeing about the connection is not a sign-in failure.
+      if (isStaleListingRefusal(err)) {
+        toast.push("warning", CONNECTION_REPLACED_ERROR);
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        return;
+      }
+      toast.push("error", `Sign-in failed: ${friendlyErrorMessage(err)}`);
     }
   }
 
@@ -188,7 +337,14 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
     const instance = storedValueEditorInstance(openEditor);
     if (instance) {
       const Editor = openEditor.kind === "apiKey" ? ApiKeyDialog : CredentialJsonDialog;
-      return <Editor instance={instance} onCancel={closeEditor} onSuccess={closeEditor} />;
+      return (
+        <Editor
+          instance={instance}
+          expectedEndpointFingerprint={openEditor.expectedEndpointFingerprint}
+          onCancel={closeEditor}
+          onSuccess={closeEditor}
+        />
+      );
     }
   }
   if (openEditor?.kind === "add") {
@@ -223,23 +379,59 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
 
   const visibleInstances = instances.filter((instance) => !instance.hidden);
   const onboardingDiagnostics = diagnostics.filter((diagnostic) => !userLayer || diagnostic !== userLayer);
+  // Rows and provider facts read on a connection that has since been replaced
+  // name instances and endpoints that are gone: everything that would act on
+  // them stays unavailable until this connection's own listing lands, and
+  // reopens on the listing that read produced. Deliberately not keyed on
+  // `loading`: every read sets that, including a same-connection refresh whose
+  // rows are still the user's.
+  //
+  // Refused with aria-disabled and a guarded handler, not the native
+  // `disabled` these controls used before rows were kept mounted: a native
+  // disabled control that holds the keyboard's focus drops focus to <body>
+  // (measured in Chrome), which is the focus loss keeping the rows mounted
+  // exists to prevent - the stale transition would put the keyboard back where
+  // the unmounting one left it.
 
   return (
     <Dialog open onClose={closeDialog} title="Connect provider">
-      <div className={CLASS.body}>
+      <div className={CLASS.body} ref={bodyRef}>
         <p className={CLASS.intro}>Choose a provider instance, configure it if needed, then test the connection.</p>
-        {loading && <Skeleton />}
+        {/* The gate's own refusal, said out loud: the controls below stay
+            mounted and focusable (aria-disabled, never the native attribute -
+            a native disabled control holding focus drops it to <body>), so a
+            click that runs nothing has to say why. Every other credential
+            surface reports this refusal; silence here reads as a broken button. */}
+        {actionsDisabled && (
+          <p className={CLASS.notice} role="status">
+            {CONNECTION_REPLACED_ERROR}
+          </p>
+        )}
+        {/* A refresh in flight keeps the listing already on screen. These rows
+            are this dialog's own focus targets - FocusScope moves focus to the
+            first one when the dialog opens - so swapping them for the skeleton
+            unmounts the row the keyboard is on, and focus falls to <body> with
+            nothing to restore it (the scope focuses on mount only). A listing
+            read a background change schedules would then take the keyboard out
+            of the dialog the user is working in. The skeleton stays for the
+            state it was written for: no listing to show yet. */}
+        {loading && visibleInstances.length === 0 && <Skeleton />}
         {error && (
           <div className={CLASS.actions}>
             <p className={CLASS.error} role="alert">
               Failed to load providers: {friendlyErrorMessage(error)}
             </p>
-            <Button variant="secondary" onClick={() => void fetch()}>
+            {/* fetch() rejects when there is no client; this error region is
+                already the recovery affordance, so a failed retry stays here. */}
+            <Button variant="secondary" onClick={() => void fetch().catch(() => {})}>
               Retry
             </Button>
           </div>
         )}
-        {onboardingDiagnostics.length > 0 && (
+        {/* A diagnostic describes the listing that produced it, so a
+            replacement connection's warnings are not shown until its own read
+            lands - the same rule the rows follow. */}
+        {!listingFromPreviousConnection && onboardingDiagnostics.length > 0 && (
           <ul className={CLASS.diagnostics} aria-label="Provider warnings">
             {onboardingDiagnostics.map((diagnostic, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: registry diagnostics are an unordered list without stable identities
@@ -250,7 +442,13 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
         {!loading && !error && visibleInstances.length === 0 && (
           <p className={CLASS.empty}>No provider instances are available.</p>
         )}
-        {!loading && !error && visibleInstances.length > 0 && (
+        {/* The rows stay for the error path too: readListing keeps the listing
+            it already had when a refresh fails, and the rows are this dialog's
+            focus targets, so gating them on `!error` would unmount the row the
+            keyboard is on - the same focus loss the loading gate above exists
+            to prevent, just reached by a failed read instead of a pending one.
+            The banner sits above the rows it explains. */}
+        {visibleInstances.length > 0 && (
           <ul className={CLASS.providerList}>
             {visibleInstances.map((instance) => {
               const providerName =
@@ -282,24 +480,61 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
                   </div>
                   <div className={CLASS.actions}>
                     {supportsApiKey && (
-                      <Button variant="secondary" onClick={() => chooseEditor({ kind: "apiKey", name: instance.name })}>
+                      <Button
+                        variant="secondary"
+                        aria-disabled={actionsDisabled}
+                        onClick={() => {
+                          if (actionsDisabled) return;
+                          chooseEditor({
+                            kind: "apiKey",
+                            name: instance.name,
+                            expectedEndpointFingerprint: instance.endpointFingerprint,
+                          });
+                        }}
+                      >
                         {instance.hasStoredFile ? "Replace API key" : "Set API key"}
                       </Button>
                     )}
                     {supportsCredentialJson && (
                       <Button
                         variant="secondary"
-                        onClick={() => chooseEditor({ kind: "credentialJson", name: instance.name })}
+                        aria-disabled={actionsDisabled}
+                        onClick={() => {
+                          if (actionsDisabled) return;
+                          chooseEditor({
+                            kind: "credentialJson",
+                            name: instance.name,
+                            expectedEndpointFingerprint: instance.endpointFingerprint,
+                          });
+                        }}
                       >
                         {instance.hasStoredFile ? "Replace credential JSON" : "Set credential JSON"}
                       </Button>
                     )}
                     {supportsOAuth && (
-                      <Button variant="secondary" onClick={() => void startSignIn(instance.name)}>
+                      <Button
+                        variant="secondary"
+                        aria-disabled={actionsDisabled}
+                        onClick={() => {
+                          if (actionsDisabled) return;
+                          void startSignIn(instance.name);
+                        }}
+                      >
                         {instance.hasStoredOAuth ? "Refresh sign-in" : "Sign in"}
                       </Button>
                     )}
-                    <Button onClick={() => void testConnection(instance.name)} disabled={pending}>
+                    {/* Pending is a mark, not a native disabled attribute:
+                        this button's own click is what focused it, and a
+                        native disabled control holding focus drops focus to
+                        <body> - the same hazard the row's other controls
+                        answer with aria-disabled. */}
+                    <Button
+                      aria-disabled={pending || actionsDisabled}
+                      onClick={() => {
+                        if (pending || actionsDisabled) return;
+                        void testConnection(instance.name);
+                      }}
+                    >
                       {pending ? "Testing connection…" : result || notice ? "Retry test" : "Test connection"}
                     </Button>
                   </div>
@@ -310,8 +545,32 @@ export function ConnectProviderDialog({ onClose, onConnected }: ConnectProviderD
         )}
         <div className={CLASS.actions}>
           <Button
+            variant="quiet"
+            onClick={() => {
+              operationVersion.current += 1;
+              onBack();
+            }}
+          >
+            Back to connection choices
+          </Button>
+          <Button
+            variant="quiet"
+            aria-disabled={actionsDisabled}
+            onClick={() => {
+              if (actionsDisabled) return;
+              operationVersion.current += 1;
+              onSettings();
+            }}
+          >
+            Full provider settings
+          </Button>
+          <Button
             variant="secondary"
-            onClick={() => chooseEditor({ kind: "add" })}
+            aria-disabled={actionsDisabled}
+            onClick={() => {
+              if (actionsDisabled) return;
+              chooseEditor({ kind: "add" });
+            }}
             disabled={writesRefused || availableProviders.length === 0}
           >
             Add provider instance

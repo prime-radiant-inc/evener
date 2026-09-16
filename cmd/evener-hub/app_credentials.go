@@ -27,6 +27,13 @@ const (
 type credentialProbeClient interface {
 	Models(context.Context, string) (llm.ModelListing, error)
 	Close() error
+	// Registry is the configuration snapshot this client will dial.
+	// runCredentialTest validates an asserted endpoint fingerprint against it -
+	// not against the hub's own registry - because it is what the model-list
+	// call resolves the name through - and binds that same registry's state
+	// root to the request (see withScopedCodexAuth), so a client loaded from a
+	// custom root reads that root's Codex record.
+	Registry() *registry.Registry
 }
 
 type credentialProbeLoader func(path string, noUserLayer bool) (credentialProbeClient, error)
@@ -34,6 +41,16 @@ type credentialProbeLoader func(path string, noUserLayer bool) (credentialProbeC
 type credentialTestCall struct {
 	done   chan struct{}
 	result appwire.AuthTestResponse
+	err    error
+}
+
+// credentialTestKey scopes the sharing of one in-flight probe to one asserted
+// destination. Two callers checking the same name against the same endpoint
+// share the dial; a caller asserting a different endpoint - or none - gets its
+// own check, because a joined result would answer about a destination it never
+// stated.
+func credentialTestKey(name, asserted string) string {
+	return name + "\x00" + asserted
 }
 
 // loadCredentialTestClient builds the probe client the child would get: the
@@ -46,16 +63,23 @@ func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeCli
 		if err != nil {
 			return nil, err
 		}
-		return cmdutil.NewRegistryClient(r, ""), nil
+		return LiveRegistryClient(r), nil
 	}
 	var (
 		client *llm.Client
 		err    error
 	)
-	if strings.TrimSpace(path) == "" {
-		client, err = cmdutil.LoadClient("")
-	} else {
-		client, err = cmdutil.LoadClientAt(path, "")
+	// Serialized like every other registry-client construction: the loaders
+	// below wire process-wide tokenauth seams. An empty path means the
+	// default user layer; anything else names the file to read.
+	var opts []registry.Option
+	if trimmed := strings.TrimSpace(path); trimmed != "" {
+		opts = append(opts, registry.WithConfigPath(trimmed))
+	}
+	var r *registry.Registry
+	r, _, err = cmdutil.LoadRegistry(opts...)
+	if err == nil && r != nil {
+		client = LiveRegistryClient(r)
 	}
 	if err != nil {
 		// A typed nil in the interface would read as a usable client.
@@ -69,19 +93,21 @@ func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeCli
 // response is deliberately limited to a fixed status and safe message.
 func (c *hubAuthController) TestCredentials(ctx context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
+	asserted := strings.TrimSpace(params.ExpectedEndpointFingerprint)
+	key := credentialTestKey(name, asserted)
 
 	c.credentialTestMu.Lock()
 	if c.credentialTests == nil {
 		c.credentialTests = map[string]*credentialTestCall{}
 	}
-	if existing := c.credentialTests[name]; existing != nil {
+	if existing := c.credentialTests[key]; existing != nil {
 		c.credentialTestMu.Unlock()
 		if c.credentialTestJoined != nil {
 			c.credentialTestJoined()
 		}
 		select {
 		case <-existing.done:
-			return existing.result, nil
+			return existing.result, existing.err
 		case <-ctx.Done():
 			return credentialTestResponse(name, appwire.AuthTestStatusEndpointFailure, credentialTestEndpointMessage), nil
 		}
@@ -91,57 +117,102 @@ func (c *hubAuthController) TestCredentials(ctx context.Context, params appwire.
 		loader = loadCredentialTestClient
 	}
 	call := &credentialTestCall{done: make(chan struct{})}
-	c.credentialTests[name] = call
+	c.credentialTests[key] = call
 	c.credentialTestMu.Unlock()
 
-	call.result = c.runCredentialTest(ctx, name, loader)
+	call.result, call.err = c.runCredentialTest(ctx, name, asserted, loader)
 	c.credentialTestMu.Lock()
-	if current := c.credentialTests[name]; current == call {
-		delete(c.credentialTests, name)
+	if current := c.credentialTests[key]; current == call {
+		delete(c.credentialTests, key)
 		close(call.done)
 	}
 	c.credentialTestMu.Unlock()
-	return call.result, nil
+	return call.result, call.err
+}
+
+// verifyProbeEndpoint refuses a check whose client asserted an endpoint the
+// probe's own registry no longer resolves the name to. It reads the registry
+// the probe client was built from, so the comparison and the model-list call
+// see one configuration: the hub's own registry can lag a file-level
+// reconfiguration, and a client that asserted the endpoint it was shown must
+// not have its stored credential sent to a different one.
+//
+// An assertion the probe's registry cannot describe at all - the name does not
+// resolve there, it is hidden, or the hub cannot key a fingerprint right now -
+// is a refusal, not a bypass, exactly as verifyEndpointFingerprint treats one.
+// An empty assertion is not checked here: the client captured no fingerprint to
+// compare, which is what a client that was shown no endpoint sends.
+func (c *hubAuthController) verifyProbeEndpoint(client credentialProbeClient, name, asserted string) error {
+	r := client.Registry()
+	if r == nil {
+		return appwire.Conflict(name + " cannot be checked: the probe cannot say where it would connect, so review its destination and run the check again")
+	}
+	inst, ok := r.Instance(name)
+	if !ok {
+		resolved, err := r.ResolveInstance(name)
+		if err != nil {
+			return appwire.Conflict(name + " cannot be checked: it does not resolve on the configuration the check would use, so review its destination and run the check again")
+		}
+		inst = registry.Instance{Name: name, Auth: resolved.Transport.Auth, CredentialSource: resolved.Credential.Source}
+	}
+	current := destinationFingerprint(c.stateDir, r, inst)
+	if current == "" {
+		return appwire.Conflict(name + " cannot be checked against the endpoint this check was started for: the probe cannot describe that destination, so review it and run the check again")
+	}
+	if current != asserted {
+		return appwire.Conflict(name + " no longer resolves to the endpoint this check was started for: review its destination and run the check again")
+	}
+	return nil
 }
 
 // runCredentialTest asks the registry what the instance needs and whether it
 // has it, then makes one harmless model-list call with the client the launch
 // path would build. A providers.toml the registry read is never a
 // configuration failure here (spec §11.3).
-func (c *hubAuthController) runCredentialTest(ctx context.Context, name string, loader credentialProbeLoader) appwire.AuthTestResponse {
+func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserted string, loader credentialProbeLoader) (appwire.AuthTestResponse, error) {
 	r := c.registry()
 	if r == nil {
-		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
+		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
 	}
 	inst, ok := r.Instance(name)
 	if !ok {
 		res, err := r.ResolveInstance(name)
 		if err != nil {
-			return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
+			return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
 		}
 		inst = registry.Instance{Name: name, Auth: res.Transport.Auth, CredentialSource: res.Credential.Source}
 	}
 	required := inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer
 	if required && inst.CredentialSource == "none" {
-		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage)
+		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage), nil
 	}
 	client, err := loader(c.providersConfigPath, childNoUserLayer(c.noUserLayer, c.reg))
 	if err != nil || client == nil {
-		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage)
+		return credentialTestResponse(name, appwire.AuthTestStatusConfigurationFailure, credentialTestConfigurationMessage), nil
 	}
 	defer func() { _ = client.Close() }()
 
-	probeCtx, cancel := context.WithTimeout(ctx, credentialTestTimeout)
+	// The probe dials what the loader just built, so that snapshot is what an
+	// asserted endpoint fingerprint has to match: between the caller's listing
+	// and this load the name can be re-pointed, and a check that ignored that
+	// would send the stored credential to an endpoint the user never reviewed.
+	if asserted != "" {
+		if err := c.verifyProbeEndpoint(client, name, asserted); err != nil {
+			return appwire.AuthTestResponse{}, err
+		}
+	}
+
+	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
 	if err != nil {
 		status, message := classifyCredentialTestError(err)
-		return credentialTestResponse(name, status, message)
+		return credentialTestResponse(name, status, message), nil
 	}
 	if !listing.Live {
-		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage)
+		return credentialTestResponse(name, appwire.AuthTestStatusUnsupported, credentialTestUnsupportedMessage), nil
 	}
-	return credentialTestResponse(name, appwire.AuthTestStatusSuccess, credentialTestSuccessMessage)
+	return credentialTestResponse(name, appwire.AuthTestStatusSuccess, credentialTestSuccessMessage), nil
 }
 
 func classifyCredentialTestError(err error) (string, string) {

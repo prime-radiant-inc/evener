@@ -1,16 +1,17 @@
+import type { Thread, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../protocol/model";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import "../../panes/sessionPanels";
+import { QUEUE_EMPTY, QUEUE_UNAVAILABLE, STEER_UNAVAILABLE } from "@evener/appwire-client";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
-import { keyID } from "../../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -217,13 +218,13 @@ test("/notes is unavailable when the focused model lacks shared-notes capability
   expect(notes?.unavailableReason).toBe(UNAVAILABLE_REASON);
 });
 
-test("/notes cannot open an unsupported workspace pane even when invoked directly", () => {
+test("/notes cannot open when unsupported even when invoked directly", () => {
   focusSession("ref_a");
   seedModel("ref_a", { capabilities: { ...CAPS, sharedNotes: false } });
 
   cmd("notes").run?.(runContext());
 
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test("only /notes is unavailable before the focused session model hydrates", () => {
@@ -242,7 +243,7 @@ test("/notes refuses direct invocation before the focused model hydrates", () =>
   const result = cmd("notes").run?.(runContext());
 
   expect.soft(isBlocked(result)).toBe(true);
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test("a previously available /notes invocation rechecks the current capability", () => {
@@ -254,7 +255,7 @@ test("a previously available /notes invocation rechecks the current capability",
 
   notes?.run?.(runContext());
 
-  expect(workspaceStore.getState().panes.filter((pane) => pane.type === "sessionNotes")).toEqual([]);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
 test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
@@ -268,9 +269,7 @@ test.each(["idle", "active", "ended", "closed", "notLoaded"] as const)(
 
     notes?.run?.(runContext());
 
-    expect(workspaceStore.getState().panes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
-    );
+    expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
   },
 );
 
@@ -278,6 +277,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  topNotesStore.getState().resetForTests();
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
@@ -561,6 +561,98 @@ test("/steer sends turn/steer when a turn is active", async () => {
   expect(call?.params).toMatchObject({ ref: "ref_a", input: [{ type: "text", text: "go left" }] });
 });
 
+test("/steer sends turn/steer while the session is active with no open turn row yet", async () => {
+  const fake = connectFake();
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+  focusSession("ref_a");
+  seedModel("ref_a", { status: { type: "active" }, activeTurnId: undefined });
+  const c = cmd("steer");
+  if (c.args?.kind !== "free") throw new Error("expected free args");
+  await c.args.run(runContext(), "go left");
+  await vi.waitFor(() => expect(fake.calls.some((call) => call.method === "turn/steer")).toBe(true));
+});
+
+// The handler applies the same rule the menu does (Command.available, from
+// submitRouting.ts sessionControls): a busy session on a harness that
+// advertises no steer (or no queue) is refused here, never sent a request the
+// daemon answers Unavailable.
+test.each([
+  ["steer", "turn/steer", { steer: false }, STEER_UNAVAILABLE],
+  ["queue", "turn/queue", { queue: false }, QUEUE_UNAVAILABLE],
+] as const)(
+  "/%s on a busy session whose harness lacks the capability is blocked and sends nothing",
+  (id, method, missing, reason) => {
+    const fake = connectFake();
+    focusSession("ref_a");
+    seedModel("ref_a", { status: { type: "active" }, activeTurnId: "t1", capabilities: { ...CAPS, ...missing } });
+    const c = cmd(id);
+    if (c.args?.kind !== "free") throw new Error("expected free args");
+    const result = c.args.run(runContext(), "go left");
+    expect(isBlocked(result)).toBe(true);
+    expect(blockedMessage(result)).toBe(reason);
+    expect(fake.calls.some((call) => call.method === method)).toBe(false);
+  },
+);
+
+// /drain-as-steer carries the same per-action reason: the capability sentence
+// on a busy session whose harness cannot steer, the status floor with nothing
+// running and nothing parked.
+test.each([
+  ["active", 0, { steer: false }, STEER_UNAVAILABLE],
+  ["idle", 0, {}, "drain failed: no active turn"],
+  // Argless: with nothing queued there is nothing to drain, and the daemon
+  // would refuse it after the fact ("queue is empty").
+  ["active", 0, {}, QUEUE_EMPTY],
+] as const)(
+  "/drain-as-steer at %s with depth %d and %o is blocked with the shared reason",
+  (statusType, depth, missing, message) => {
+    const fake = connectFake();
+    focusSession("ref_a");
+    seedModel("ref_a", {
+      status: { type: statusType },
+      activeTurnId: statusType === "active" ? "t1" : undefined,
+      capabilities: { ...CAPS, ...missing },
+      queue: { revision: 0, depth },
+    });
+    const result = cmd("drain-as-steer").run?.(runContext());
+    expect(blockedMessage(result)).toBe(message);
+    expect(fake.calls.some((call) => call.method === "turn/drainAsSteer")).toBe(false);
+  },
+);
+
+// The hub advertises steer as harness support (it no longer folds the active
+// status in), so an idle steering harness carries steer:true. The menu's
+// available set must equal the handler's rule: /steer needs a running turn,
+// /drain-as-steer a running turn or a queue a Stop parked (idle with depth >
+// 0), the same sessionControls the composer and queue strip read.
+test.each([
+  ["idle", 0, UNAVAILABLE_REASON, UNAVAILABLE_REASON],
+  ["idle", 1, UNAVAILABLE_REASON, undefined],
+  ["active", 0, undefined, UNAVAILABLE_REASON],
+  ["active", 1, undefined, undefined],
+] as const)(
+  "at status %s with queue depth %d the menu marks /steer %s and /drain-as-steer %s",
+  (statusType, depth, steer, drain) => {
+    focusSession("ref_a");
+    seedModel("ref_a", {
+      status: { type: statusType },
+      activeTurnId: statusType === "active" ? "t1" : undefined,
+      capabilities: CAPS,
+      queue: { revision: 0, depth },
+    });
+    const byId = new Map(sessionBuiltinCommands(buildPaletteContext()).map((c) => [c.id, c]));
+    expect(byId.get("steer")?.unavailableReason).toBe(steer);
+    expect(byId.get("drain-as-steer")?.unavailableReason).toBe(drain);
+  },
+);
+
 test("/queue and /drain-as-steer each block with their own no-active-turn message", () => {
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "idle" }, activeTurnId: undefined });
@@ -570,13 +662,12 @@ test("/queue and /drain-as-steer each block with their own no-active-turn messag
   expect(blockedMessage(cmd("drain-as-steer").run?.(runContext()))).toBe("drain failed: no active turn");
 });
 
-// /interrupt is not in that list, for the same reason /model is not: only the
-// daemon knows. turn/interrupt names no turn (appwire v3) and its precondition
-// is the session's own quiescence, so a palette that answers "is a turn in
-// flight" itself can only ever refuse a Stop the daemon would have accepted.
-// The state is real: a session holding queued work reports active with no turn
-// running, so activeTurnId is absent while the user is looking at a session
-// that is plainly not settled (kata vewa/5gdv).
+// /interrupt carries its own rule too (available: stopAvailable, sessionControls'
+// stop: an active status and the interrupt capability). It never reads
+// activeTurnId: turn/interrupt names no turn (appwire v3), and the id is absent
+// in states the wire really reaches -- a session holding queued work reports
+// active with no turn running (kata vewa/5gdv), and the transcript clears it
+// between the turn/completed and turn/started of an inline turn boundary.
 test("/interrupt sends turn/interrupt for a working session whose turn has no name yet", async () => {
   const fake = connectFake();
   fake.on("turn/interrupt", (params) => ({
@@ -964,17 +1055,56 @@ test("/tasks and /status toggle-close already-open panes", () => {
   expect(workspaceStore.getState().panes.some((p) => p.type === "sessionDetails")).toBe(false);
 });
 
-test("/notes toggles the sessionNotes workspace pane", () => {
+test("/notes toggles the top notes panel and requests focus", () => {
   focusSession("ref_a");
   seedModel("ref_a");
 
   cmd("notes").run?.(runContext());
-  expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: "ref_a" } })]),
-  );
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
+  expect(topNotesStore.getState().hasPendingFocus("ref_a")).toBe(true);
 
   cmd("notes").run?.(runContext());
-  expect(workspaceStore.getState().panes.some((p) => p.type === "sessionNotes")).toBe(false);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
+});
+
+test("/notes focuses or opens the session pane, not just the notes state", () => {
+  // Only a details pane is mounted: the session pane itself is not open, so
+  // a notes-state change alone would look like a no-op.
+  workspaceStore.setState({
+    panes: [{ id: "pd1", type: "sessionDetails", params: { ref: "ref_a" }, slot: "main" }],
+    focusedPaneId: "pd1",
+  });
+  seedModel("ref_a");
+
+  cmd("notes").run?.(runContext());
+
+  const session = workspaceStore
+    .getState()
+    .panes.find((p) => p.type === "session" && (p.params as { ref?: string }).ref === "ref_a");
+  expect(session).toBeDefined();
+  expect(workspaceStore.getState().focusedPaneId).toBe(session?.id);
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(true);
+});
+
+test("/notes closing from a companion pane leaves the session pane unfocused", () => {
+  focusSession("ref_a");
+  seedModel("ref_a");
+  cmd("notes").run?.(runContext()); // opens
+
+  // Move focus to a details pane for the same session; notes stay expanded.
+  workspaceStore.setState({
+    panes: [
+      { id: "p1", type: "session", params: { ref: "ref_a" }, slot: "main" },
+      { id: "pd1", type: "sessionDetails", params: { ref: "ref_a" }, slot: "secondary" },
+    ],
+    focusedPaneId: "pd1",
+  });
+
+  cmd("notes").run?.(runContext()); // closes
+
+  expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
+  // Closing must not yank focus to the session pane the user already left.
+  expect(workspaceStore.getState().focusedPaneId).toBe("pd1");
 });
 
 // FIX 2 (real-user report): a user hunting for the keyboard shortcut legend

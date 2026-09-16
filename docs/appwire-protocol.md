@@ -160,6 +160,8 @@ no router (reserved).
 | `evener/instance/edit` | hub | `InstanceEditParams` | `InstanceListResponse` | Edits a provider instance; returns the updated list. |
 | `evener/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
 | `evener/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
+| `evener/instance/setModelDisabled` | hub | `InstanceSetModelDisabledParams` | `InstanceListResponse` | Enables or disables one model row on an instance; returns the updated list. |
+| `evener/instance/refreshModels` | hub | `InstanceRefreshModelsParams` | `InstanceListResponse` | Fetches the instance's live model listing, then returns the updated list. |
 | `evener/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded. |
 | `evener/plugin/preview` | hub | `PluginPreviewParams` | `PluginPreviewResponse` | Previews the plugins selected for a launch without starting a session or executing plugin commands. |
 | `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
@@ -185,6 +187,7 @@ no router (reserved).
 | `evener/settings/agentsDoc/get` | hub | `EmptyParams` | `AgentsDocResponse` | Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content. |
 | `evener/settings/agentsDoc/set` | hub | `AgentsDocSetParams` | `AgentsDocResponse` | Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed. |
 | `evener/sandbox/escalation/resolve` | both | `SandboxEscalationResolveParams` | `EmptyResponse` | Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays. |
+| `evener/host/request` | hub | `HostRequestParams` | `HostForwardedResult` | Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult). |
 
 ## Notifications (server → client)
 
@@ -232,6 +235,7 @@ Pushed to subscribed connections; no `id`. The web client maps these in
 | `evener/settings/transcriptDisplay/changed` | `TranscriptDisplayChangedParams` | Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration. |
 | `evener/settings/keybindings/changed` | `KeybindingsOverrides` | Broadcast after the user keybinding overrides change; carries the revision and canonical rules. |
 | `evener/settings/agentsDoc/changed` | `AgentsDocResponse` | Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content. |
+| `evener/host/notification` | `HostNotificationParams` | Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here. |
 
 ## Type reference
 
@@ -284,6 +288,7 @@ An embedded type contributes its own fields inline.
 | `id` | `string` |  |  |
 | `workingDir` | `string` | yes |  |
 | `archived` | `bool` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ArchiveResponse`
@@ -307,6 +312,8 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthApiKeySetParams`
@@ -315,6 +322,8 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthCredentialJsonSetParams`
@@ -323,6 +332,8 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `value` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollParams`
@@ -331,6 +342,7 @@ An embedded type contributes its own fields inline.
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthDevicePollResponse`
@@ -374,6 +386,7 @@ An embedded type contributes its own fields inline.
 | `provider` | `string` |  |  |
 | `flowId` | `string` |  |  |
 | `redirectUrl` | `string` |  |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLoginCompleteResponse`
@@ -404,6 +417,8 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `AuthLogoutResponse`
@@ -448,6 +463,7 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `provider` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `AuthTestResponse`
@@ -497,6 +513,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `provider` | `string` | yes |  |
 | `activeSource` | `string` | yes |  |
+| `originClientId` | `string` | yes |  |
 
 
 ### `EvenerDelegateInfo`
@@ -617,6 +634,7 @@ _(no fields)_
 | `kind` | `string` |  |  |
 | `id` | `string` |  |  |
 | `favorited` | `bool` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `FavoriteSetResponse`
@@ -677,6 +695,29 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.HarnessDescriptor` |  |  |
+
+
+### `HostForwardedResult`
+
+_(no fields)_
+
+
+### `HostNotificationParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `method` | `string` |  |  |
+| `params` | `jsontext.Value` | yes |  |
+
+
+### `HostRequestParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `host` | `string` |  |  |
+| `method` | `string` |  |  |
+| `params` | `jsontext.Value` | yes |  |
 
 
 ### `InitializeParams`
@@ -743,6 +784,7 @@ _(no fields)_
 | `surface` | `string` | yes |  |
 | `auth` | `string` |  |  |
 | `baseUrl` | `string` | yes |  |
+| `endpointFingerprint` | `string` | yes |  |
 | `vars` | `map[string]string` | yes |  |
 | `apiKeyEnv` | `string` | yes |  |
 | `credentialHeader` | `string` | yes |  |
@@ -758,6 +800,7 @@ _(no fields)_
 | `storedEmail` | `string` | yes |  |
 | `credentialRequired` | `bool` |  |  |
 | `warnings` | `[]string` | yes |  |
+| `models` | `[]appwire.InstanceModelEntry` | yes |  |
 
 
 ### `InstanceListResponse`
@@ -771,11 +814,27 @@ _(no fields)_
 | `writesRefused` | `bool` | yes |  |
 
 
+### `InstanceModelEntry`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `id` | `string` |  |  |
+| `disabled` | `bool` | yes |  |
+
+
+### `InstanceRefreshModelsParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+
+
 ### `InstanceRemoveParams`
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+| `expectedEndpointFingerprint` | `string` | yes |  |
 
 
 ### `InstanceSetDefaultParams`
@@ -783,6 +842,15 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `name` | `string` |  |  |
+
+
+### `InstanceSetModelDisabledParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `name` | `string` |  |  |
+| `model` | `string` |  |  |
+| `disabled` | `bool` |  |  |
 
 
 ### `ItemLifecycleParams`
@@ -1361,6 +1429,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `key` | `string` |  |  |
 | `workingDir` | `string` |  |  |
+| `source` | `string` | yes |  |
 
 
 ### `ProjectDeleteResponse`
@@ -1779,6 +1848,7 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `harness` | `string` | yes |  |
+| `source` | `string` | yes |  |
 | `cwd` | `string` |  |  |
 | `input` | `[]appwire.InputItem` | yes |  |
 | `modelProvider` | `string` | yes |  |

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"unicode/utf8"
 
@@ -415,7 +416,8 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 		!utf8.ValidString(value.Project) || utf8.RuneCountInString(value.Title) > maxNavigationTitleRunes ||
 		utf8.RuneCountInString(value.Branch) > maxNavigationLabelRunes || len(value.Children) != 0 ||
 		!navigationIntCount(value.ClusterCount) || !navigationIntCount(value.MoreSubagents) ||
-		!navigationIntCount(value.OmittedDescendants) {
+		!navigationIntCount(value.OmittedDescendants) || !navigationIntCount(value.OmittedWatches) ||
+		!navigationIntCount(value.OmittedArmedWatches) || value.OmittedArmedWatches > value.OmittedWatches {
 		return false
 	}
 	for _, jobs := range []hubapi.NavigationArray[hubapi.NavigationJobSummary]{value.RunningJobs, value.CompletedJobs} {
@@ -428,7 +430,64 @@ func navigationSessionValueValid(value hubapi.NavigationSessionSummary) bool {
 			}
 		}
 	}
+	for _, watch := range value.Watches {
+		if !navigationWatchValueValid(watch) {
+			return false
+		}
+	}
 	return true
+}
+
+// navigationWatchValueValid mirrors the web codec's watch row validation for one
+// wire watch summary. The codec validates a watch as part of the session entity,
+// so one malformed row fails the whole navigation resource; every producer of a
+// NavigationWatchSummary (the projector included) reads this one predicate
+// rather than an ad-hoc subset.
+func navigationWatchValueValid(watch hubapi.NavigationWatchSummary) bool {
+	if !navigationSchemaIdentity(watch.ID, false) || !navigationSchemaIdentity(watch.Source, false) ||
+		!navigationIntCount(watch.Deliveries) || utf8.RuneCountInString(watch.Target) > maxNavigationLabelRunes ||
+		utf8.RuneCountInString(watch.SendTo) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.Note) > maxNavigationLabelRunes ||
+		utf8.RuneCountInString(watch.OutputMatch) > maxNavigationLabelRunes || utf8.RuneCountInString(watch.CreatedAt) > maxNavigationLabelRunes ||
+		utf8.RuneCountInString(watch.EndReason) > maxNavigationLabelRunes {
+		return false
+	}
+	for _, cadence := range watch.Cadence {
+		// Mirror the web codec's watchCadenceValue: kind is a required,
+		// non-empty identity bounded to maxNavigationIdentityBytes, a present
+		// seconds value must be finite and non-negative, every is a safe
+		// non-negative count, and filter is bounded like every other rendered
+		// label.
+		if !navigationSchemaIdentity(cadence.Kind, false) ||
+			!navigationCadenceSeconds(cadence.Seconds) ||
+			!navigationIntCount(cadence.Every) ||
+			utf8.RuneCountInString(cadence.Filter) > maxNavigationLabelRunes ||
+			(cadence.DerivedNextFireAt != "" && !validNavigationTimestamp(cadence.DerivedNextFireAt)) {
+			return false
+		}
+	}
+	for _, event := range watch.Events {
+		if utf8.RuneCountInString(event) > maxNavigationLabelRunes {
+			return false
+		}
+	}
+	// The codec validates created_at and each delivery_times entry as strict
+	// RFC3339 and fails the whole snapshot on one bad value, so reject it
+	// here before a malformed instant can reach the client.
+	if !validNavigationTimestamp(watch.CreatedAt) {
+		return false
+	}
+	for _, at := range watch.DeliveryTimes {
+		if !validNavigationTimestamp(at) {
+			return false
+		}
+	}
+	return true
+}
+
+// navigationCadenceSeconds mirrors the web codec's cadence seconds rule: an
+// absent value is zero, and a present one must be finite and non-negative.
+func navigationCadenceSeconds(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }
 
 func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {
@@ -437,6 +496,20 @@ func navigationProjectSummaryValid(value hubapi.NavigationProjectSummary) bool {
 		len(value.WorkingDir) > maxNavigationWorkingDirBytes || !utf8.ValidString(value.WorkingDir) ||
 		utf8.RuneCountInString(value.RollupState) > maxNavigationLabelRunes {
 		return false
+	}
+	// Sources are the project's owning sources: the controller's own spelled
+	// "local" and one entry per configured host that also owns rows in it.
+	// Bounded like every other summary field — the list cannot exceed the
+	// controller plus the 64 hosts the inputs admit, and each name is an
+	// identity — but no entry may be empty, because an empty name would reach a
+	// client as a decision key that addresses no source.
+	if len(value.Sources) > maxNavigationProjectSources {
+		return false
+	}
+	for _, source := range value.Sources {
+		if !navigationSchemaIdentity(source, false) {
+			return false
+		}
 	}
 	for _, count := range counts {
 		if !navigationIntCount(count) {

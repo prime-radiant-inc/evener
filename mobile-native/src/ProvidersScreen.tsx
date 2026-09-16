@@ -24,9 +24,10 @@ import {
   credentialLayers,
   groupByProvider,
   styleInfoText,
-} from "../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/credentialLabels";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+} from "@evener/appwire-client";
+import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
+import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
 import { ProviderInstances } from "./providerInstances";
@@ -44,6 +45,7 @@ export function ProvidersScreen({
     flow: ProviderSignIn;
   } | null>(null);
   const [revision, setRevision] = useState(0);
+  const store = useCredentialStore();
   useEffect(() => () => signIn?.flow.dispose(), [signIn]);
   useEffect(() => {
     if (!signIn) return;
@@ -63,10 +65,11 @@ export function ProvidersScreen({
       {client && state === "ready" ? (
         <Providers
           key={`${activeProfile.id}:${revision}`}
-          client={client}
+          store={store}
           hubName={activeProfile.name}
           onSignIn={(name) => {
-            const flow = new ProviderSignIn(client, name);
+            const flow = new ProviderSignIn(store, name);
+            flow.setConnection(client);
             setSignIn({ hubId: activeProfile.id, name, flow });
             void flow.start();
           }}
@@ -95,16 +98,16 @@ export function ProvidersScreen({
 }
 
 function Providers({
-  client,
+  store,
   hubName,
   onSignIn,
 }: {
-  client: ConversationClientLike;
+  store: CredentialInstancesStore;
   hubName: string;
   onSignIn(name: string): void;
 }) {
   const colors = useColors();
-  const model = useMemo(() => new ProviderInstances(client), [client]);
+  const model = useMemo(() => new ProviderInstances(store), [store]);
   const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
   const editorVersion = useRef(0);
   const [selected, setSelected] = useState<string | null>(null);

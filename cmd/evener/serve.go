@@ -112,6 +112,7 @@ type serveServer interface {
 	SetRetrySafeTurnFunctions(server.RetrySafeTurnFunctions)
 	RecordDescendantAppEvent(string, events.SessionEvent)
 	SetDescendantTranscriptPathFunc(func(threadID string) string)
+	SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo)
 	InputCh() <-chan server.InputMessage
 	SubmitContinuation(string)
 	SubmitNotification()
@@ -911,6 +912,19 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		stateDir := s.StateDir()
 		srv.SetDescendantTranscriptPathFunc(func(threadID string) string {
 			return filepath.Join(stateDir, "sessions", threadID+".transcript.jsonl")
+		})
+		// A descendant session's own watches live in that child's job manager and
+		// appear on no row today, because only the root's status is projected. The
+		// root's own row also carries watches the diagnostics facet only re-samples
+		// on a few events and a turn boundary, so it can lag a watch armed in
+		// between. The appwire thread LIST samples both on read through this seam,
+		// resolving the root to its own rows and a descendant to that child's, for
+		// every row of a page in one walk of the live tree. Wire it beside the
+		// transcript resolver: both reach across the appwire-server/delegate-controller
+		// boundary, and both must track the session that is current after a
+		// thread/clear identity swap.
+		srv.SetDescendantLiveWatchesFunc(func(threadIDs []string) map[string][]agent.WatchStatusInfo {
+			return s.LiveWatchRowsForSessions(threadIDs)
 		})
 		// The M7 sandbox-escalation gate blocks a denied tool call only when a human
 		// is actually watching this thread; the probe reads the live AppWire
@@ -1712,6 +1726,7 @@ func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus 
 			Usage: cloneServeUsage(delegate.Usage), Worktree: cloneServeWorktree(delegate.Worktree),
 		})
 	}
+	out.Watches = cloneServeWatches(ds.Watches)
 	if ds.TurnSlots != nil {
 		out.TurnSlots = &server.TurnSlotStatus{
 			InUse: ds.TurnSlots.InUse, Cap: ds.TurnSlots.Cap, Jobs: ds.TurnSlots.Jobs, Drives: ds.TurnSlots.Drives,
@@ -1752,6 +1767,24 @@ func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivity
 	}
 	clone := *value
 	return &clone
+}
+
+// cloneServeWatches returns a defensive copy of the watch diagnostics in a
+// DetailedStatus. Cadence, event, and delivery-time slices are copied so a
+// consumer mutating its copy cannot reach the shared status value, matching
+// appwire.CloneEvenerWatches and appWatchFromDetailedStatus.
+func cloneServeWatches(watches []agent.WatchStatusInfo) []agent.WatchStatusInfo {
+	if watches == nil {
+		return nil
+	}
+	out := make([]agent.WatchStatusInfo, len(watches))
+	for i := range watches {
+		out[i] = watches[i]
+		out[i].Cadence = append([]agent.WatchCadenceInfo(nil), watches[i].Cadence...)
+		out[i].Events = append([]string(nil), watches[i].Events...)
+		out[i].DeliveryTimes = append([]string(nil), watches[i].DeliveryTimes...)
+	}
+	return out
 }
 
 // liveThreadEnvelopeSource is the daemon's one sampling window onto live session
