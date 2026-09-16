@@ -139,6 +139,18 @@ export type {
   TurnModel,
 } from "./model";
 export { SYSTEM_PRELUDE_TURN_ID } from "./model";
+export type { PickerModelRow, PickerRow } from "./modelCatalogPickerRows";
+export { buildPickerRows, pickableModelRows, rowMeta, unavailableLine } from "./modelCatalogPickerRows";
+export type { ModelCatalog, ModelCatalogDiagnostic, ModelCatalogEntry } from "./modelCatalogTypes";
+export type { CatalogOption } from "./modelCatalogView";
+export {
+  capabilityLabels,
+  contextWindowLabel,
+  filterCatalog,
+  formatCost,
+  toCatalogOptions,
+  withGroupHeads,
+} from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
