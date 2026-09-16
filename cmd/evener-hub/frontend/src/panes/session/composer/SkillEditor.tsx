@@ -111,7 +111,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const { doc } = view.state;
         const from = textOffsetToDocumentPosition(doc, start);
         const to = textOffsetToDocumentPosition(doc, end, 1);
-        const suffix = serializeSkillDocument(doc).text.slice(documentPositionToTextOffset(doc, to));
+        const suffix = doc.textBetween(to, doc.content.size);
         const separator = /^\s/.test(suffix) ? "" : " ";
         const content = [skillSchema.nodes.skill.create({ name })];
         if (separator) content.push(skillSchema.text(separator));
@@ -162,8 +162,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
             );
           return true;
         },
-        clipboardTextSerializer: (slice) =>
-          slice.content.textBetween(0, slice.content.size, "", (node) => `/${node.attrs.name}`),
+        clipboardTextSerializer: (slice) => slice.content.textBetween(0, slice.content.size, ""),
       },
     );
     viewRef.current = view;
@@ -185,7 +184,8 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       current.skillNames.every((name, index) => props.value.skillNames[index] === name);
     if (!echo) {
       const replacement = parseSkillDocument(props.value);
-      if (!replacement.eq(view.state.doc)) view.updateState(createState(props.value));
+      if (!replacement.eq(view.state.doc))
+        view.updateState(EditorState.create({ doc: replacement, plugins: view.state.plugins }));
     }
     view.setProps({
       attributes: {
