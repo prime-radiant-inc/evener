@@ -1007,13 +1007,17 @@ function SpawnForm({
   // has not answered yet, or an empty one would read as "the host offers
   // nothing" and wipe a perfectly valid draft.
   const [catalogHostSettled, setCatalogHostSettled] = useState<string | null>(null);
-  // True only while a host CHANGE's answers are outstanding. The initial mount is
-  // deliberately not pending: nothing has been invalidated yet, so the form stays
-  // startable exactly as it was before host routing existed. A switch is
-  // different - the catalogs have just been cleared and the draft's host-derived
+  // True while the CURRENT host's answers are outstanding. A switch is pending
+  // because the catalogs have just been cleared and the draft's host-derived
   // launch config has not been reconciled against the new host's, so a submit in
-  // that window could carry a value the host does not offer.
-  const [hostCatalogPending, setHostCatalogPending] = useState(false);
+  // that window could carry a value the host does not offer. A mount that starts
+  // on a REMOTE draft is pending for the same reason: drafts persist at module
+  // scope, so the form can come back with a remote source and a launch config
+  // chosen from that host's (or another one's) catalogs before this mount has
+  // heard an answer from it. A LOCAL mount is deliberately still not pending:
+  // nothing about it is host-derived, so the form stays startable exactly as it
+  // was before host routing existed.
+  const [hostCatalogPending, setHostCatalogPending] = useState(() => !isLocalHost(submittedSource));
   useEffect(() => {
     let active = true;
     // A changed target retires the previous host's catalogs before the new
@@ -1024,6 +1028,26 @@ function SpawnForm({
       setHarnesses([]);
       setSchemaOptions([]);
       setHostCatalogPending(true);
+      // The cleared catalogs make the "settled" stamp a lie: without this, a
+      // rapid A→B→A switch keeps reading settled === A while harnesses/
+      // schemaOptions hold the just-cleared EMPTY arrays, and the reconciliation
+      // below wipes the draft's harness and every Advanced-options value against
+      // them. Only answers that land for the CURRENT host re-stamp it.
+      setCatalogHostSettled(null);
+      // A plugin selection is a list of names resolved against the SELECTED
+      // host's own preview, and a preview that fails for the new host never
+      // reconciles it: pluginSelectionBlocked goes false again (no host that
+      // never answered has reported an issue) while the previous host's explicit
+      // names still ride combinedOverrides into the new host's preview, slash
+      // catalog and thread/start. A selection this host cannot resolve is not a
+      // selection, so a host switch drops it back to the host's own default -
+      // the same reset handleHarnessChange applies when a harness does not
+      // support plugin selection. Blocking until the new host's preview succeeds
+      // instead would dead-end: the failed-with-no-list state renders no panel,
+      // so no control is left to clear the block but Retry, which may never
+      // succeed against the very selection it would retry.
+      setPluginSelection({ mode: "default" });
+      setKnownSelectionIssues([]);
     }
     const harnessesRequest = hostRequest(client, submittedSource, "evener/harnesses/list", {}).then(
       (r) => {
@@ -1054,7 +1078,7 @@ function SpawnForm({
     return () => {
       active = false;
     };
-  }, [client, submittedSource]);
+  }, [client, submittedSource, setPluginSelection, setKnownSelectionIssues]);
 
   // The draft's launch config is chosen from the SELECTED host's catalogs, and
   // the draft store carries it across a host switch (component 07b review, round
@@ -1086,7 +1110,16 @@ function SpawnForm({
     const keptValues = Object.fromEntries(Object.entries(values).filter(([field]) => offered.has(field)));
     if (Object.keys(keptValues).length !== Object.keys(values).length) {
       setAdvancedValues(keptValues);
-      setAdvancedErrors({});
+    }
+    // An error is state about a FIELD, not about the host: the error of a kept
+    // field survives (it explains a validation the user still has to fix), while
+    // a dropped field's error goes with the field. Clearing the whole map here
+    // discarded the kept fields' errors - the fields stayed invalid with nothing
+    // left saying why (component 07b review, round four).
+    const errors = draft.fields.getState().advancedErrors;
+    const keptErrors = Object.fromEntries(Object.entries(errors).filter(([field]) => offered.has(field)));
+    if (Object.keys(keptErrors).length !== Object.keys(errors).length) {
+      setAdvancedErrors(keptErrors);
     }
   }, [
     catalogHostSettled,
