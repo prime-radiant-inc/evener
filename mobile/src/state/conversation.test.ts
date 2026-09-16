@@ -3,7 +3,7 @@
 // conflict restore, and no auto-retry.
 
 import { describe, expect, it } from "vitest";
-import { WireError } from "@evener/appwire-client";
+import { sessionControls, WireError } from "@evener/appwire-client";
 import type {
   AnyNotification,
   InputItem,
@@ -124,7 +124,9 @@ function makeConversation(
     sessionId: "session-1",
     preview: "hello",
     modelProvider: "anthropic",
-    status: "ready",
+    // The wire's vocabulary: a running turn, which is what the steering
+    // submissions below need. Idle and failed cases set their own.
+    status: "active",
     items: [],
     capabilities: ALL_TRUE_CAPS,
     queue: { revision: 0, depth: 0, preview: [] },
@@ -822,6 +824,7 @@ describe("ConversationStore", () => {
 
     it("marks running on turn/started", async () => {
       const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "idle" });
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().applyNotification({
@@ -832,14 +835,16 @@ describe("ConversationStore", () => {
           turn: { id: "t1", itemsView: "default", status: "running" },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).toBe("running");
+      // The status is thread/status/changed's, never turn/started's (the
+      // status frame rides right behind it); the turn id is this frame's.
+      expect(store.getState().conversation?.status).toBe("idle");
+      expect(store.getState().conversation?.activeTurnId).toBe("t1");
     });
 
-    it("marks idle on turn/completed", async () => {
+    it("leaves the status to the status frame on turn/completed", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      // First set running
       store.getState().applyNotification({
         method: "turn/started",
         params: {
@@ -848,7 +853,7 @@ describe("ConversationStore", () => {
           turn: { id: "t1", itemsView: "default", status: "running" },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).toBe("running");
+      expect(store.getState().conversation?.status).toBe("active");
       // Now complete
       store.getState().applyNotification({
         method: "turn/completed",
@@ -863,7 +868,79 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status).not.toBe("running");
+      // A completed turn is followed by its status frame (idle at session end,
+      // active at an inline boundary); this frame leaves the status alone.
+      expect(store.getState().conversation?.status).toBe("active");
+    });
+
+    // The inline turn boundary through the store: turn/completed(previous),
+    // turn/started(next), status(active), one frame each, and the controls
+    // the SDK derives from the store's status never blink (the web's and
+    // TUI's #1330).
+    it("keeps steer and stop through an inline turn boundary", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "active", activeTurnId: "t1" });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const frames: AnyNotification[] = [
+        {
+          method: "turn/completed",
+          params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t1", itemsView: "", status: "completed" } },
+        } as AnyNotification,
+        {
+          method: "turn/started",
+          params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t2", itemsView: "default", status: "inProgress" } },
+        } as AnyNotification,
+        {
+          method: "thread/status/changed",
+          params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" } },
+        } as AnyNotification,
+      ];
+      for (const frame of frames) {
+        store.getState().applyNotification(frame);
+        const conv = store.getState().conversation;
+        if (conv === null) throw new Error("conversation gone");
+        const controls = sessionControls(conv.status, conv.capabilities, conv.queue.depth);
+        expect({ frame: frame.method, steer: controls.steer, stop: controls.stop }).toEqual({
+          frame: frame.method,
+          steer: true,
+          stop: true,
+        });
+      }
+    });
+
+    // A genuine failure ends as turn/completed{status: "failed"} with no
+    // status frame behind it, so the store settles idle on that frame.
+    it("settles idle when the active turn fails", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "active", activeTurnId: "t1" });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status).toBe("idle");
+      expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+    });
+
+    // The control is re-evaluated at the mutation boundary: a Steer the
+    // screen offered while active is refused if the status flipped idle
+    // before the submit reached the store.
+    it("refuses a steer submitted after the status flipped idle", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
+      await expect(store.getState().steer(service, textInput("x"))).rejects.toThrow(/no active turn/);
+      expect(service.steerCallCount).toBe(0);
     });
 
     it("does not merge a completed turn's usage into the cumulative conversation usage", async () => {
@@ -948,17 +1025,18 @@ describe("ConversationStore", () => {
       service.openConv = makeConversation({ id: "thread-2" });
       await store.getState().open(service, "ref-2");
       expect(store.getState().conversation?.id).toBe("thread-2");
-      // A stale notification for ref-1 should be dropped
+      // A stale notification for ref-1 should be dropped: ref-2 keeps the
+      // status it opened with rather than taking ref-1's idle.
       store.getState().applyNotification({
         method: "thread/status/changed",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
-          status: { type: "running" },
+          status: { type: "idle" },
         },
       } as AnyNotification);
       expect(store.getState().conversation?.id).toBe("thread-2");
-      expect(store.getState().conversation?.status).toBe("ready");
+      expect(store.getState().conversation?.status).toBe("active");
     });
   });
 

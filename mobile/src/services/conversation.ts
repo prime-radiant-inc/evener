@@ -1201,7 +1201,7 @@ function projectOlderTurns(
     modelProvider: "",
     createdAt: 0,
     updatedAt: 0,
-    status: { type: "ready" },
+    status: { type: "idle" },
     cwd: "",
     cliVersion: "",
     source: "",
