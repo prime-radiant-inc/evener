@@ -6,28 +6,35 @@
 // section, catalog, pin section or project target reaches the same set of
 // loaded pages in every client. Pure: no requests, no store, no scheduler.
 import type { NavigationInvalidationTarget } from "../../types.gen";
-import { isProjectResource, type ResourceKey, targetBase } from "./types";
-
-function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
-  if (key.kind !== base.kind) {
-    if (!(base.kind === "project" && key.kind === "project_page")) return false;
-  }
-  if (base.kind === "section" && key.kind === "section") return key.section === base.section;
-  if (base.kind === "catalog" && key.kind === "catalog") return key.catalog === base.catalog;
-  if (base.kind === "pin_section" && key.kind === "pin_section") return key.sectionId === base.sectionId;
-  if (base.kind === "project" && (key.kind === "project" || key.kind === "project_page"))
-    return key.projectKey === base.projectKey;
-  return key.kind === base.kind;
-}
+import { isProjectResource, type ResourceKey } from "./types";
 
 /** True when `target` names the resource `key` identifies: same kind and
  * scope regardless of page offset, a project target also naming that
  * project's pages, and the `all_loaded_projects` wildcard naming every
- * project resource. A target outside the vocabulary names nothing. */
+ * project resource. A target outside the vocabulary (an unknown kind, a
+ * scoped kind with its scope missing) names nothing. */
 export function matchesTarget(key: ResourceKey, target: NavigationInvalidationTarget): boolean {
-  if (target.kind === "all_loaded_projects") return isProjectResource(key);
-  const base = targetBase(target);
-  return base ? matchesBase(key, base) : false;
+  switch (target.kind) {
+    case "all_loaded_projects":
+      return isProjectResource(key);
+    case "manifest":
+    case "pin_catalog":
+      return key.kind === target.kind;
+    case "section":
+      return key.kind === "section" && key.section === target.section;
+    case "catalog":
+      return key.kind === "catalog" && key.catalog === target.catalog;
+    case "pin_section":
+      return key.kind === "pin_section" && !!target.sectionId && key.sectionId === target.sectionId;
+    case "project":
+      return (
+        (key.kind === "project" || key.kind === "project_page") &&
+        !!target.projectKey &&
+        key.projectKey === target.projectKey
+      );
+    default:
+      return false;
+  }
 }
 
 /** The targets among `targets` that name `key`, in their original order. */

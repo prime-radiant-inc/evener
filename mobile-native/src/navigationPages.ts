@@ -99,7 +99,7 @@ export class NavigationPages<T> {
 	private normalized: NormalizedResource | null = null;
 	/** The resource these pages read, as invalidation targets name it; the
 	 * page offsets play no part in matching. */
-	private readonly resourceKey: ResourceKey;
+	readonly resourceKey: ResourceKey;
 	private owner: (() => void) | null = null;
 	private paused = false;
 	private rereads = singleFlight(
@@ -167,7 +167,7 @@ export class NavigationPages<T> {
 		if (gap || targets.some((t) => t.revision === undefined)) this.uncertain++;
 		this.requiredRevision = Math.max(
 			this.requiredRevision,
-			requiredRevision(this.resourceKey, targets),
+			requiredRevision(this.resourceKey, p.targets),
 		);
 		const loaded = this.version;
 		const held =
@@ -185,10 +185,6 @@ export class NavigationPages<T> {
 		// cancelled read still leaves the owed re-read behind.
 		if (this.state.stale && !this.state.loading) this.scheduleReread();
 	}
-	private receiptRevision(receipt: NavigationMutation) {
-		return requiredRevision(this.resourceKey, receipt.targets);
-	}
-
 	/** Drop the read in flight and stop re-reading on the owner's behalf until
 	 * resume(); a re-read the hub still owes waits for it. */
 	cancel() {
@@ -219,7 +215,7 @@ export class NavigationPages<T> {
 		this.mutationGeneration = receipt.generation_id;
 		this.mutationFloor = Math.max(
 			this.mutationFloor,
-			this.receiptRevision(receipt),
+			requiredRevision(this.resourceKey, receipt.targets),
 		);
 		if (!(await this.load(true, receipt)))
 			throw new Error(
@@ -272,7 +268,9 @@ export class NavigationPages<T> {
 					"Could not read this navigation page. Refresh to try again.",
 				);
 			}
-			const receiptRevision = receipt ? this.receiptRevision(receipt) : 0;
+			const receiptRevision = receipt
+				? requiredRevision(this.resourceKey, receipt.targets)
+				: 0;
 			if (
 				reset &&
 				epoch === this.notificationEpoch &&

@@ -24,7 +24,6 @@ import {
   type DecodedNavigationResponse,
   decodeNavigationResponse,
   isGenerationMismatch,
-  isNavigationNotInitialized,
   isNavigationUnavailable,
   isRevalidatorDisposed,
   isSequenceGap,
@@ -54,6 +53,15 @@ type ResourceMap = ReadonlyMap<string, ResourceState>;
  * emits nothing (e.g. shutting down an already-exited session is a success
  * no-op), so the action still converges instead of hanging forever. */
 export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
+
+/** True when error is this store's not-initialized rejection (a waiter armed
+ * while no revalidator existed — e.g. a shutdown action racing client
+ * replacement, with navigation becoming v2 before convergence begins). There
+ * is nothing to converge against yet the caller's mutation already committed,
+ * so callers treat it as a successful no-op. */
+function isNavigationNotInitialized(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("navigation is not initialized");
+}
 
 /** Await a matching invalidation, but fall back to converging `targets`
  * directly when none arrives within the timeout. A receipt only ends the

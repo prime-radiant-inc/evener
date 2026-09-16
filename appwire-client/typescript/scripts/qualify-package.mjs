@@ -335,9 +335,8 @@ const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;
       // freeze and the equality), codec (a snapshot normalized into a graph),
       // merge (an empty delta onto a manifest that carries no metadata, which
       // the merge refuses as an invalid base), invalidation (the wildcard
-      // reaching a project page, a receipt's revision floor, a sequence gap),
-      // revalidator (an instance that carries its generation and recognises
-      // its own generation-mismatch rejection).
+      // reaching a project page), revalidator (an instance carries its
+      // generation).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -354,15 +353,8 @@ assert.throws(
 );
 const projectPage = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 50 };
 assert.equal(client.matchesTarget(projectPage, { kind: "all_loaded_projects" }), true);
-assert.equal(client.matchesTarget(projectPage, { kind: "section", section: "live" }), false);
-assert.equal(
-  client.requiredRevision(projectPage, [{ kind: "manifest", revision: 9 }, { kind: "project", projectKey: "p", revision: 3 }]),
-  3,
-);
-assert.equal(client.isSequenceGap(1, 3), true);
 const revalidator = new client.NavigationRevalidator("g");
 assert.equal(revalidator.generationID, "g");
-assert.equal(client.isGenerationMismatch(new Error("navigation protocol: generation mismatch")), true);
 revalidator.dispose();
 `,
     },

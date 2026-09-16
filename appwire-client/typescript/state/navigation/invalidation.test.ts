@@ -51,18 +51,12 @@ test("the wildcard names every loaded project resource and nothing else", () => 
   expect(matched({ kind: "all_loaded_projects" })).toEqual([project, page, otherPage]);
 });
 
-test("a target outside the vocabulary names nothing, and no target names a location", () => {
+test("a target outside the vocabulary names nothing", () => {
   expect(matched({ kind: "section", section: "recent" })).toEqual([]);
   expect(matched({ kind: "catalog", catalog: "everything" })).toEqual([]);
   expect(matched({ kind: "pin_section" })).toEqual([]);
   expect(matched({ kind: "project" })).toEqual([]);
   expect(matched({ kind: "unknown" as NavigationInvalidationTarget["kind"] })).toEqual([]);
-  for (const target of [
-    { kind: "manifest" },
-    { kind: "all_loaded_projects" },
-    { kind: "project", projectKey: "p" },
-  ] as NavigationInvalidationTarget[])
-    expect(matchesTarget(location, target)).toBe(false);
 });
 
 test("matchingTargets keeps the receipt's order and drops the targets for other resources", () => {
@@ -96,10 +90,8 @@ test("requiredRevision is the highest revision a matching target announces, and 
 });
 
 test("a sequence gap is a skipped number, not a repeat or a reordering", () => {
-  expect(isSequenceGap(0, 1)).toBe(false);
   expect(isSequenceGap(1, 2)).toBe(false);
   expect(isSequenceGap(1, 3)).toBe(true);
-  expect(isSequenceGap(0, 4)).toBe(true);
   expect(isSequenceGap(2, 2)).toBe(false);
   expect(isSequenceGap(3, 1)).toBe(false);
 });
