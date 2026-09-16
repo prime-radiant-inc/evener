@@ -1579,6 +1579,59 @@ describe("host-partitioned instance lists (component 07b)", () => {
     // the listing it was refreshing is still the one the store holds.
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
   });
+
+  // The generation above orders reads across a CONNECTION transition, never
+  // between two reads of the SAME host: both overlapping fetchHost calls capture
+  // one generation, so the older answer can commit over the newer partition.
+  // The product reaches that state without anything unusual — a mount-time load
+  // of the selected host raced by the 250ms wrapped-notification refetch, or a
+  // user's retry — so the per-host order needs its own monotonic sequence, the
+  // same guard the package's credential instances store puts on its listing
+  // reads (appwire-client's instances.ts requestVersion).
+  test("an older in-flight remote load cannot overwrite a newer one for the same host", async () => {
+    const fake = connectFakeClient();
+    const answers: Array<(value: HostForwardedResult) => void> = [];
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    // The most recently parked request is the newest read; answering it out of
+    // order is the whole shape under test, so the resolver is taken by the end
+    // of the queue rather than by a bare index.
+    const answerLatest = (): ((value: HostForwardedResult) => void) => {
+      const resolve = answers.pop();
+      if (!resolve) throw new Error("no in-flight forwarded request to answer");
+      return resolve;
+    };
+
+    const stale = fetchHost("buildbox");
+    await Promise.resolve();
+    const newer = fetchHost("buildbox");
+    await Promise.resolve();
+    expect(answers).toHaveLength(2);
+
+    // The NEWER request answers first. The older one then lands with the answer
+    // it computed before it: a credential change on the host, a retry, or any
+    // other read that started earlier and finished later.
+    const afterEdit: InstanceListResponse = {
+      instances: [{ ...REMOTE_INSTANCE, name: "edited-on-the-host" }],
+      availableProviders: [],
+    };
+    answerLatest()(afterEdit as unknown as HostForwardedResult);
+    await newer;
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterEdit.instances);
+
+    answerLatest()(REMOTE_LIST as unknown as HostForwardedResult);
+    await stale;
+
+    // The superseded answer is dropped instead of committing over the newer
+    // partition, and the partition is not left claiming a load is still running.
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterEdit.instances);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
+  });
 });
 
 describe("auth RPCs: thin proxies, no local state mutation", () => {

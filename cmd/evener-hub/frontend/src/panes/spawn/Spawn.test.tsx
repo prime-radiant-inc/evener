@@ -7681,6 +7681,66 @@ test("a selected remote host's wrapped config notification reloads the pane mode
   await waitFor(() => expect(paneLoads()).toBeGreaterThan(before));
 });
 
+// The same wrapper, in the same unsettled window the picker's revalidation test
+// above pins: a withholding manifest makes hostChoice a provisional "local"
+// while the pane's catalog is still scoped to the draft's host. Keying this
+// listener on hostChoice dropped the host's own wrapper for the length of every
+// revalidation, so a credential or model change made on the host during one
+// never invalidated the catalog this form validates against (component 07b
+// review, residual).
+test("the draft's host wrapped config notification reloads the catalog while the manifest revalidates", async () => {
+  seedSources(REMOTE_SOURCES, { loading: true, stale: true });
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: {
+        // Both host reads stay in flight: the instance partition therefore
+        // keeps one identity (nothing in the pane's catalog cache key moves
+        // with it) and every catalog request is a fresh, recorded one rather
+        // than a settled answer reused from it - the same isolation the
+        // settled version of this test uses.
+        "evener/instance/list": new Promise(() => {}),
+        "model/list": new Promise(() => {}),
+      },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const cwd = "/tmp/host-notify-revalidate";
+  const draft = selectSpawnDirectory(cwd);
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", `/new?dir=${cwd}`);
+  renderSpawn(fake);
+  await settled();
+  // Unsettled manifest: the settled list is withheld, so hostChoice is a
+  // provisional "local" while the launch target and every discovery call stay
+  // on the draft's host.
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+
+  const catalogLoads = (params: unknown) =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === "buildbox" &&
+        (call.params as HostRequestParams).method === "model/list" &&
+        JSON.stringify((call.params as HostRequestParams).params) === JSON.stringify(params),
+    ).length;
+  // The pane passes through a harness value on its way to the settled draft
+  // scope, and issues one catalog request per scope. Wait for the SETTLED
+  // scope's own request: its promise stays in the pane's per-scope cache (the
+  // host's answer never lands), so from here only a cache invalidation - the
+  // credential generation this test is about - can issue another one.
+  await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(0));
+  const before = catalogLoads({ cwd });
+
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+
+  await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(before));
+});
+
 // The provider editor (ConnectProviderDialog) is controller-scoped: it reads and
 // writes the credentialsStore's top-level fields on the plain connection. A
 // remote host's provider verdict now comes from that host's own partition, so
@@ -7738,6 +7798,36 @@ test("switching hosts with the same directory drops the previous host's branch r
   await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
 
   await waitFor(() => expect(screen.queryByTestId("spawn-branch")).toBeNull());
+});
+
+// ...and the readout must survive the manifest going UNSETTLED again. A
+// revalidating manifest withholds its sources, so hostChoice is a provisional
+// "local" while the draft's host is still the launch and discovery target
+// (round nine) - the same window the picker above pins. Keying the readout on
+// hostChoice instead blanked a readout the pane's own evener/git/head call had
+// already answered for the draft's host, for the length of every revalidation
+// (component 07b review, residual).
+test("the branch readout keeps the draft's host while the manifest revalidates", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) => {
+    f.on("evener/git/head", () => ({ head: "local-branch" }));
+    answerRemoteHost(f, { overrides: { "evener/git/head": { head: "host-branch" } } });
+  });
+  connectionStore.getState().connect(fake);
+  window.history.pushState({}, "", "/new?dir=/tmp/host-branch-revalidate");
+  renderSpawn(fake);
+  await settled();
+
+  await user.selectOptions(screen.getByLabelText("Host"), "buildbox");
+  await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch"));
+
+  // The fresh manifest is in flight: the settled list is withheld, so the
+  // launch target stays the draft's host (round nine) and so does the host the
+  // readout describes.
+  await act(async () => seedSources(REMOTE_SOURCES, { loading: true, stale: true }));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect(screen.getByTestId("spawn-branch").textContent).toBe("host-branch");
 });
 
 // The resolved default launch config is a property of the selected host, not

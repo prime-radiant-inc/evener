@@ -30,6 +30,14 @@ import (
 // instances, launch config, marketplaces/plugins, auth/credentials, the
 // personal AGENTS.md, and the host-dependent discovery helpers the remote
 // settings panes and the spawn form call. Nothing else.
+//
+// The spawn form's own forwarded subset is checked in at
+// host_request_methods.txt, the one list the web UI's inventory test and
+// TestHostAdminAllowListCoversSharedForwardedMethods both read: a method
+// deleted here (with its policy row and retry classification, which keep this
+// package's other tests green) still fails that cross-language test rather than
+// leaving the browser to forward a call this proxy answers with
+// InvalidParams.
 var remoteHostAdminMethods = map[string]struct{}{
 	// Provider instances (hubInstancesController, app_instances.go). The
 	// settings panes drive these five handlers remotely; the catalog's newer
