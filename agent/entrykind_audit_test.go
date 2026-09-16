@@ -126,7 +126,6 @@ var entryKindTurnOpening = map[EntryKind]turnOpening{
 	EntryContinuation:      opensOnItsContentEvent,
 	EntryNotification:      opensOnTurnStarted,
 	EntryDelegateAttention: unservedSoUnaddressable,
-	EntrySteeringCarrier:   opensOnTurnStarted,
 }
 
 func TestEveryEntryKindDeclaresHowItsTurnOpens(t *testing.T) {
@@ -281,32 +280,6 @@ func observeTurnOpeningServed(t *testing.T, kind EntryKind) turnOpeningObservati
 			t.Fatalf("ProcessClientMutationStart: %v", err)
 		} else if !claimed {
 			t.Fatal("ProcessClientMutationStart claimed no durable start; the probe drove no turn")
-		}
-	case EntrySteeringCarrier:
-		// The carrier exists only to deliver steering the client has already had
-		// accepted, so with nothing pending the wake stands down and opens no
-		// turn at all: accepting a steer first is what gives it something to
-		// carry.
-		//
-		// The id it runs under is that steer's OWN reserved id --
-		// claimSteeringCarrierTurn reuses it rather than minting a fresh one --
-		// so the receipt the client is already holding is the promise the
-		// announcement below has to keep.
-		accepted, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
-			ClientMutationID: "entrykind-audit-probe-steer",
-			Input:            []appwire.InputItem{{Type: "text", Text: "probe"}},
-		})
-		if err != nil {
-			t.Fatalf("AcceptClientMutationSteer: %v", err)
-		}
-		if accepted.Receipt.TurnID == "" {
-			t.Fatal("turn/steer handed the client no turn id; the comparison below would hold vacuously")
-		}
-		promisedTurnID = accepted.Receipt.TurnID
-		if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil {
-			t.Fatalf("ProcessPendingUserInput: %v", err)
-		} else if !ran {
-			t.Fatal("ProcessPendingUserInput ran no carrier turn; the probe drove no turn")
 		}
 	default:
 		if kind == EntryNotification {

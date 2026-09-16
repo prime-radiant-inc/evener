@@ -29,6 +29,11 @@
       "types": "./dist/state/credentials/index.d.ts",
       "import": "./dist/state/credentials/index.js",
       "require": "./dist/state/credentials/index.js"
+    },
+    "./state/extensions": {
+      "types": "./dist/state/extensions/index.d.ts",
+      "import": "./dist/state/extensions/index.js",
+      "require": "./dist/state/extensions/index.js"
     }
   },
   "scripts": {

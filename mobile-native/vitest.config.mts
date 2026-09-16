@@ -20,6 +20,9 @@ export default defineConfig({
 			"@evener/appwire-client/state/credentials": fileURLToPath(
 				new URL("../appwire-client/typescript/state/credentials/index.ts", import.meta.url),
 			),
+			"@evener/appwire-client/state/extensions": fileURLToPath(
+				new URL("../appwire-client/typescript/state/extensions/index.ts", import.meta.url),
+			),
 			"@evener/appwire-client/testing": fileURLToPath(
 				new URL("../appwire-client/typescript/testing", import.meta.url),
 			),

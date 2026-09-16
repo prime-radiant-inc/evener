@@ -8,7 +8,7 @@
 // imperative innerHTML.
 
 import type { CommandDescriptor, NavigationSessionSummary, SearchResponse, SearchResult } from "@evener/appwire-client";
-import { errorText, isHubLaunchError } from "@evener/appwire-client";
+import { errorText, isHubLaunchError, sessionPluginNames } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
@@ -256,12 +256,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const activeThread = useStore(threadsStore, (state) =>
     ctx.sessionRef !== null ? state.threads.get(ctx.sessionRef) : undefined,
   );
-  const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(() => {
-    if (ctx.sessionRef === null) return undefined;
-    const diagnostics = activeThread?.diagnostics;
-    if (!diagnostics?.plugins) return null;
-    return new Set(diagnostics.plugins.map((plugin) => plugin.name));
-  }, [activeThread, ctx.sessionRef]);
+  const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(
+    () => (ctx.sessionRef === null ? undefined : sessionPluginNames(activeThread?.diagnostics)),
+    [activeThread, ctx.sessionRef],
+  );
   const visibleCatalog = useMemo(
     () => visibleCatalogCommands(catalogCommands, activePluginNames),
     [activePluginNames, catalogCommands],

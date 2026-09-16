@@ -1,12 +1,9 @@
+// @vitest-environment node
+
 import { expect, it } from "vitest";
-import type {
-  AnyNotification,
-  LaunchConfigLayer,
-  LaunchConfigLayerName,
-  LaunchConfigResolved,
-} from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { LaunchSettings } from "./launchSettings";
+import { type LaunchConfigClient, LaunchSettings } from "./launchConfig";
+import type { LaunchConfigLayerName } from "./launchSchema";
+import type { AnyNotification, LaunchConfigLayer, LaunchConfigResolved } from "./types.gen";
 
 function fixture(layerName: LaunchConfigLayerName = "global", cwd = "/") {
   let layer: LaunchConfigLayer = {
@@ -58,9 +55,7 @@ function fixture(layerName: LaunchConfigLayerName = "global", cwd = "/") {
       if (method === "evener/launch/getLayer") return structuredClone(layer);
       if (method === "evener/launch/resolve") return resolved();
       if (method === "evener/launch/setLayer") {
-        layer = structuredClone(
-          (params as { config: LaunchConfigLayer }).config,
-        );
+        layer = structuredClone((params as { config: LaunchConfigLayer }).config);
         return resolved();
       }
       throw Error(method);
@@ -77,7 +72,7 @@ function fixture(layerName: LaunchConfigLayerName = "global", cwd = "/") {
         listeners.delete(listener);
       };
     },
-  } as ConversationClientLike;
+  } as LaunchConfigClient;
   return {
     client,
     model: new LaunchSettings(client, cwd, layerName),
@@ -117,9 +112,7 @@ it("retains a draft while offline and reconciles the same hub without writing", 
   expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
   expect(f.model.getSnapshot().dirty).toBe(true);
   expect(f.model.getSnapshot().changedElsewhere).toBe(false);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(0);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(0);
   expect(await f.model.save()).toBe(true);
 });
 it("preserves a reconnect draft and rejects an externally changed baseline", async () => {
@@ -155,9 +148,7 @@ it("does not send a write after its preflight connection has been replaced", asy
   release();
   expect(await save).toBe(false);
   expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(0);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(0);
 });
 it("reconciles a write applied before disconnect without replaying or accepting its late reply", async () => {
   const f = fixture();
@@ -191,9 +182,7 @@ it("reconciles a write applied before disconnect without replaying or accepting 
   expect(await save).toBe(false);
   expect(f.model.getSnapshot().draft?.maxRounds).toBe(10);
   expect(f.model.getSnapshot().dirty).toBe(true);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(1);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(1);
 });
 it("refuses fields outside the editable schema and layers", async () => {
   const f = fixture();
@@ -207,9 +196,7 @@ it("rejects a stale save before any write and preserves the draft", async () => 
   f.model.edit("maxRounds", 8);
   f.layer = { ...f.layer, model: "external/model" };
   expect(await f.model.save()).toBe(false);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(0);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(0);
   expect(f.model.getSnapshot().changedElsewhere).toBe(true);
   expect(f.model.getSnapshot().draft?.maxRounds).toBe(8);
   await f.model.refresh(true);
@@ -242,9 +229,7 @@ it("does not replay uncertain writes and reads the actual layer afterwards", asy
     return result;
   };
   expect(await f.model.save()).toBe(false);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(1);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(1);
   expect(f.model.getSnapshot().current?.maxRounds).toBe(8);
   expect(f.model.getSnapshot().error).toBeTruthy();
   expect(f.model.getSnapshot().dirty).toBe(false);
@@ -253,9 +238,7 @@ it("keeps layer editing available if only effective-value resolution fails", asy
   const f = fixture();
   const original = f.io.request;
   f.io.request = (method, params) =>
-    method.endsWith("resolve")
-      ? Promise.reject(Error("unavailable"))
-      : original(method, params);
+    method.endsWith("resolve") ? Promise.reject(Error("unavailable")) : original(method, params);
   await f.model.refresh();
   expect(f.model.getSnapshot().current?.maxRounds).toBe(3);
   expect(f.model.getSnapshot().resolved).toBeNull();
@@ -296,9 +279,7 @@ it("allows only one save and prevents edits during its preflight", async () => {
   expect(() => f.model.edit("maxRounds", 9)).toThrow();
   release();
   expect(await save).toBe(true);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(1);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(1);
 });
 it("keeps a failed preflight retryable without sending a write", async () => {
   const f = fixture();
@@ -309,9 +290,7 @@ it("keeps a failed preflight retryable without sending a write", async () => {
     throw Error("offline");
   };
   expect(await f.model.save()).toBe(false);
-  expect(
-    f.calls.filter((call) => call.method.endsWith("setLayer")),
-  ).toHaveLength(0);
+  expect(f.calls.filter((call) => call.method.endsWith("setLayer"))).toHaveLength(0);
   expect(f.model.getSnapshot().dirty).toBe(true);
   f.io.request = original;
   expect(await f.model.save()).toBe(true);
@@ -343,21 +322,16 @@ it("scopes project reads and writes and refuses global-only fields", async () =>
   expect(() => f.model.edit("nonInteractive", true)).toThrow();
   f.model.edit("maxRounds", 7);
   expect(await f.model.save()).toBe(true);
-  const writes = f.calls.filter(
-    (call) => call.method === "evener/launch/setLayer",
-  );
+  const writes = f.calls.filter((call) => call.method === "evener/launch/setLayer");
   expect(writes).toHaveLength(1);
   expect(writes[0]?.params).toEqual({
     cwd: "/project-fixture",
     layer: "project",
     config: { model: "fixture/model", maxRounds: 7, env: { KEEP: "value" } },
   });
-  const reads = f.calls.filter(
-    (call) => call.method === "evener/launch/getLayer",
-  );
+  const reads = f.calls.filter((call) => call.method === "evener/launch/getLayer");
   expect(reads.length).toBeGreaterThan(0);
-  for (const read of reads)
-    expect(read.params).toEqual({ cwd: "/project-fixture", layer: "project" });
+  for (const read of reads) expect(read.params).toEqual({ cwd: "/project-fixture", layer: "project" });
 });
 
 it("trusts only the reviewed repository hash and confirms with independent resolve", async () => {
@@ -384,21 +358,17 @@ it("trusts only the reviewed repository hash and confirms with independent resol
   };
   await f.model.refresh();
   expect(await f.model.trustRepository("obsolete")).toBe(false);
-  expect(
-    f.calls.filter((c) => c.method === "evener/launch/trustRepo"),
-  ).toHaveLength(0);
+  expect(f.calls.filter((c) => c.method === "evener/launch/trustRepo")).toHaveLength(0);
   f.model.edit("maxRounds", 8);
   expect(await f.model.trustRepository("reviewed")).toBe(false);
   await f.model.refresh(true);
   expect(await f.model.trustRepository("reviewed")).toBe(true);
-  expect(f.calls.filter((c) => c.method === "evener/launch/trustRepo")).toEqual(
-    [
-      {
-        method: "evener/launch/trustRepo",
-        params: { cwd: "/repo", hash: "reviewed" },
-      },
-    ],
-  );
+  expect(f.calls.filter((c) => c.method === "evener/launch/trustRepo")).toEqual([
+    {
+      method: "evener/launch/trustRepo",
+      params: { cwd: "/repo", hash: "reviewed" },
+    },
+  ]);
   expect(f.model.getSnapshot().resolved?.repo?.trust).toBe("trusted");
   expect(f.calls.at(-1)?.method).toBe("evener/launch/resolve");
 });
