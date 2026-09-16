@@ -36,3 +36,14 @@ export function queueSheetPresentation(conversation: ControlsSource) {
       : "Messages run in order. Your next message runs first, then the queue.",
   };
 }
+
+/**
+ * Why a queue-sheet steering press must be refused right now, or null when it
+ * may proceed. Read at press time against the live conversation, not the one
+ * the sheet rendered with: a status that flipped in between (awaiting, idle
+ * with the queue gone) is caught here with the control's own reason.
+ */
+export function queueActionRefusal(conversation: ControlsSource): string | null {
+  const controls = conversationControls(conversation);
+  return controls.drain ? null : (controls.reason.drain ?? "Steer is not available for this session");
+}

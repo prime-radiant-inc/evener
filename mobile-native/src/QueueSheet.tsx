@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { queueSheetPresentation } from "./conversationControls";
+import { queueActionRefusal, queueSheetPresentation } from "./conversationControls";
 import {
   ActivityIndicator,
   Modal,
@@ -15,12 +15,16 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function QueueSheet({
   conversation,
+  latest,
   service,
   ready,
   refresh,
   close,
 }: {
   conversation: MobileConversation;
+  /** The live conversation at press time; the render's `conversation` may be
+   * a status behind it. */
+  latest: () => MobileConversation | null;
   service: QueueConversationService;
   ready: boolean;
   refresh: () => Promise<void>;
@@ -47,6 +51,13 @@ export function QueueSheet({
   const disabled = !ready || pending || !!error || !instanceId;
   async function act(operation: () => Promise<unknown>) {
     if (disabled || busy.current) return;
+    // Re-check the control against the live conversation: the status may
+    // have flipped since the render that offered this action.
+    const refusal = queueActionRefusal(latest() ?? conversation);
+    if (refusal !== null) {
+      setError(refusal);
+      return;
+    }
     busy.current = true;
     setPending(true);
     let failure: string | null = null;

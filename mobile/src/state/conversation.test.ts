@@ -928,6 +928,32 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.activeTurnId).toBeUndefined();
     });
 
+    // The status is authoritative and the turn id can be absent while the
+    // session is active (a read cut between turns); a failed completion then
+    // still settles idle, while one for a superseded turn is left alone.
+    it("settles idle on a failed completion with no active turn id, not on a superseded one", async () => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ status: "active", activeTurnId: undefined });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t-x", itemsView: "", status: "failed", error: { message: "boom" } } },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status).toBe("idle");
+
+      const other = new FakeConversationService();
+      other.openConv = makeConversation({ status: "active", activeTurnId: "t2" });
+      const store2 = createConversationStore();
+      await store2.getState().open(other, "ref-1");
+      store2.getState().applyNotification({
+        method: "turn/completed",
+        params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t1", itemsView: "", status: "failed", error: { message: "late" } } },
+      } as AnyNotification);
+      expect(store2.getState().conversation?.status).toBe("active");
+      expect(store2.getState().conversation?.activeTurnId).toBe("t2");
+    });
+
     // The control is re-evaluated at the mutation boundary: a Steer the
     // screen offered while active is refused if the status flipped idle
     // before the submit reached the store.

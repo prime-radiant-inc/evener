@@ -1777,7 +1777,7 @@ export function ConversationScreen({
 
 	const settingsOwnRow =
 		fontScale > 1.4 ||
-		!!conversation?.activeTurnId ||
+		conversation?.status === "active" ||
 		draft.submitting ||
 		commandPending ||
 		!connected ||
@@ -1994,6 +1994,7 @@ export function ConversationScreen({
 			{queueOpen && conversation && service ? (
 				<QueueSheet
 					conversation={conversation}
+					latest={() => store.getState().conversation}
 					service={service}
 					ready={ready}
 					refresh={async () => {

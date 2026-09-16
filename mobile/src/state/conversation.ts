@@ -2848,10 +2848,14 @@ export function createConversationStore() {
             // the agent returns before EventSessionEnd, kata s8x8), so the
             // failed active turn settles the session idle here, as the web
             // reducer does.
+            // The transcript's id is not required: it can be absent while the
+            // session is active (a read cut between turns), and the failure is
+            // still this session's; a failed completion naming a turn another
+            // turn has superseded leaves the status alone.
             const failedActive =
-              completedActive &&
               params.turn.status === "failed" &&
-              conv.status === "active";
+              conv.status === "active" &&
+              (completedActive || conv.activeTurnId === undefined);
             set({
               conversation: {
                 ...conv,

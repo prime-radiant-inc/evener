@@ -1,5 +1,10 @@
 import { expect, it } from "vitest";
-import { canComposeFor, conversationControls, queueSheetPresentation } from "./conversationControls";
+import {
+  canComposeFor,
+  conversationControls,
+  queueActionRefusal,
+  queueSheetPresentation,
+} from "./conversationControls";
 
 const STEERING = {
   send: true,
@@ -45,4 +50,15 @@ it("can compose when any action or a goal is available, not otherwise", () => {
   expect(canComposeFor(conversation("idle"))).toBe(true);
   expect(canComposeFor(conversation("active", 0, { ...STEERING, send: false, goal: false }))).toBe(true);
   expect(canComposeFor(conversation("active", 0, { ...STEERING, send: false, steer: false, goal: false }))).toBe(false);
+});
+
+// The sheet re-checks at press time: a status that flipped to awaiting between
+// the render that offered the action and the press refuses with the status
+// reason, and a harness without steer with the capability reason.
+it("refuses a queue action pressed after the status flipped, with the control's reason", () => {
+  expect(queueActionRefusal(conversation("active", 1))).toBeNull();
+  expect(queueActionRefusal(conversation("awaiting", 1))).toBe("no active turn");
+  expect(queueActionRefusal(conversation("idle", 1, { ...STEERING, steer: false }))).toBe(
+    "Steer is not available for this session",
+  );
 });
