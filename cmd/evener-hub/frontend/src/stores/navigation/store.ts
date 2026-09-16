@@ -43,7 +43,8 @@ import {
 } from "@evener/appwire-client/state/navigation";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
+import { projectNodeExpansionKey } from "../../shell/rail/railExpansion";
+import { type NavigationPersistence, railExpansionPersistence } from "./persistence";
 
 type ResourceMap = ReadonlyMap<string, ResourceState>;
 
@@ -182,7 +183,9 @@ export interface NavigationStoreState {
 }
 
 const initialAttention = { changed: [], summary: null };
-const initial = (): Omit<
+const initial = (
+  persistence: NavigationPersistence,
+): Omit<
   NavigationStoreState,
   | "loadManifest"
   | "loadSection"
@@ -206,11 +209,17 @@ const initial = (): Omit<
   lastSequence: 0,
   manifest: null,
   resources: new Map(),
-  expanded: loadExpansion(),
+  expanded: persistence.readExpansion(),
   attention: initialAttention,
   protocolError: null,
 });
-export const navigationStore = createStore<NavigationStoreState>(() => ({ ...initial(), ...actions() }));
+/** The store's whole state: what the host persisted, plus the actions bound
+ * to the port that persisted it. */
+const navigationState = (persistence: NavigationPersistence): NavigationStoreState => ({
+  ...initial(persistence),
+  ...actions(persistence),
+});
+export const navigationStore = createStore<NavigationStoreState>(() => navigationState(railExpansionPersistence));
 export function useNavigationStore<T>(selector: (s: NavigationStoreState) => T): T;
 export function useNavigationStore(): NavigationStoreState;
 export function useNavigationStore<T>(selector?: (s: NavigationStoreState) => T): T | NavigationStoreState {
@@ -496,7 +505,7 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
   if (gone) revalidator?.force([projectResourceKey]);
   return load<NavigationProjectResource>(projectResourceKey);
 }
-function actions() {
+function actions(persistence: NavigationPersistence) {
   return {
     loadManifest: () => load<NavigationManifest>({ kind: "manifest" }),
     loadSection: (section: "live" | "needs_you", offset = 0, limit = PAGE_LIMIT) =>
@@ -566,14 +575,14 @@ function actions() {
       const expandedMap = new Map(navigationStore.getState().expanded);
       expandedMap.set(projectKey, expanded);
       navigationStore.setState({ expanded: expandedMap });
-      saveExpansion(expandedMap);
+      persistence.writeExpansion(expandedMap);
       const mode = navigationStore.getState().mode;
       if (expanded && mode === "v2") void hydrateProject(projectKey, bootEpoch);
     },
     toggleExpanded: (projectKey: string) => {
       const m = new Map(navigationStore.getState().expanded);
       m.set(projectKey, !(m.get(projectKey) ?? false));
-      saveExpansion(m);
+      persistence.writeExpansion(m);
       navigationStore.setState({ expanded: m });
       if (m.get(projectKey) && navigationStore.getState().mode === "v2") void hydrateProject(projectKey, bootEpoch);
     },
@@ -858,7 +867,9 @@ export function initNavigation(
     }
   };
 }
-export function resetNavigationStoreForTests(): void {
+/** Rebuilds the store over a host port; the browser's own when a caller
+ * names none. */
+export function resetNavigationStoreForTests(persistence: NavigationPersistence = railExpansionPersistence): void {
   bootEpoch++;
   unsubs.forEach((u) => {
     u();
@@ -869,5 +880,5 @@ export function resetNavigationStoreForTests(): void {
   activeClient = null;
   bootStartedEpoch = -1;
   manifestFanout = null;
-  navigationStore.setState({ ...initial(), ...actions() });
+  navigationStore.setState(navigationState(persistence));
 }
