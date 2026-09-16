@@ -67,6 +67,7 @@ import {
   deleteProject,
   deleteSession,
   type NavigationMutationReceipt,
+  projectOwnership,
   renamePinSection,
   setArchived,
   setFavorite,
@@ -1318,7 +1319,11 @@ function NavigationRail({
       onToggleArchiveSession: (session) => {
         const archiving = session.tier !== "archived";
         return runAction(
-          () => setArchived("session", session.session_id, archiving),
+          // The canonical ref, not the bare session ID: a remote row's ref is
+          // host-qualified and is the identity its archive decision is read
+          // back under, while "local:<id>" refs normalize server-side to the
+          // bare ID local decisions already use.
+          () => setArchived("session", session.ref, archiving),
           "Couldn't update archive state",
           archiving ? { kind: "hideSession", ref: session.ref } : undefined,
           true,
@@ -1349,21 +1354,39 @@ function NavigationRail({
       },
       onToggleFavoriteProject: (project) => {
         const value = !project.favorite;
-        void runAction(() => setFavorite(client, "project", project.key, value), "Couldn't update favorite", {
-          kind: "projectFavorite",
-          key: project.key,
-          value,
-        });
+        void runAction(
+          () => setFavorite(client, "project", project.key, value, project.sources),
+          "Couldn't update favorite",
+          {
+            kind: "projectFavorite",
+            key: project.key,
+            value,
+          },
+        );
       },
       onToggleArchiveProject: (project) => {
         const value = !(project.is_archived ?? false);
         void runAction(
-          () => setArchived("project", project.key, value, project.working_dir),
+          () => setArchived("project", project.key, value, project.working_dir, project.sources),
           "Couldn't update archive state",
           value ? { kind: "hideProject", key: project.key } : undefined,
         );
       },
-      onDeleteProjectRequest: (project) => setDeleteTarget(project),
+      onDeleteProjectRequest: (project) => {
+        // Deletion is local-only (the hub refuses any other source), and a
+        // merged project — this hub's own rows plus a remote host's under the
+        // same canonical ID and path — must never be answered with a delete of
+        // the local project. Refuse before the confirmation dialog opens.
+        const { hosts } = projectOwnership(project.sources);
+        if (hosts.length > 0) {
+          toasts.push(
+            "error",
+            `Couldn't delete "${project.name}": it also has sessions on ${hosts.join(", ")}, and deletion is local-only`,
+          );
+          return;
+        }
+        setDeleteTarget(project);
+      },
     }),
     [client, runAction, toasts.push],
   );
@@ -1379,7 +1402,7 @@ function NavigationRail({
     let converged = false;
     setPending((ops) => [...ops, optimistic]);
     try {
-      const result = await deleteProject(target.key, target.working_dir ?? "");
+      const result = await deleteProject(target.key, target.working_dir ?? "", target.sources);
       mutationCompleted = true;
       await convergeMutation(result);
       converged = true;

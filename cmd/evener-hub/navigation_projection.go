@@ -47,6 +47,10 @@ const (
 	// OmittedWatches, and the projector keeps armed rows ahead of inert ones so
 	// the rail's armed count survives the cut.
 	maxNavigationWatches = 32
+	// maxNavigationProjectSources bounds a project summary's owning-source
+	// list: the navigation inputs already cap configured sources at 64, and the
+	// controller's own source is the one extra entry a merged project adds.
+	maxNavigationProjectSources = 65
 )
 
 type navigationResourceKind string
@@ -1007,7 +1011,38 @@ func navigationResourceWithRevision(resource any, revision uint64) any {
 }
 
 func (p navigationProjection) projectSummary(project hubcore.TreeProject) hubapi.NavigationProjectSummary {
-	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: project.MoreArchived, Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: projectFavoriteForSources(p.inputs.ProjectFavorite, project), SessionCount: project.TotalSessionCount()}
+	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: project.MoreArchived, Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: projectFavoriteForSources(p.inputs.ProjectFavorite, project), Sources: navigationProjectSources(project.Sources), SessionCount: project.TotalSessionCount()}
+}
+
+// navigationProjectSources spells a tree project's owning sources for the wire.
+// The tree's own spelling uses "" for the controller's sessions (the decision
+// store's key) and the configured host name for a remote host's; the wire says
+// "local" for the controller so a client never has to interpret an empty
+// string, matching the source vocabulary the mutation params accept. A project
+// whose sessions all belong to the controller returns nil, so the common local
+// catalog entry keeps the zero value and the field is omitted: the same "no
+// sources means the controller" default the decision readers apply. A merged
+// project (the same canonical ID and path owned by the controller and one or
+// more hosts) therefore always carries "local" next to its host names, which is
+// what lets a caller refuse a mutation that cannot name a single owner.
+func navigationProjectSources(sources []string) hubapi.NavigationArray[string] {
+	if len(sources) == 0 {
+		return nil
+	}
+	out := make(hubapi.NavigationArray[string], 0, len(sources))
+	remote := false
+	for _, source := range sources {
+		if source == "" {
+			out = append(out, "local")
+			continue
+		}
+		remote = true
+		out = append(out, source)
+	}
+	if !remote {
+		return nil
+	}
+	return out
 }
 
 func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]navigationPinSection, error) {

@@ -451,6 +451,7 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 
 	if m.opts.beforeHostGate != nil {
 		m.opts.beforeHostGate(name)
+	}
 	// Reuse only a channel that is still usable. A link-lost channel has lost
 	// closed but is not yet closed (the supervisor clears and replaces it after
 	// markLost), so isClosed alone would hand back a dead channel in that window.

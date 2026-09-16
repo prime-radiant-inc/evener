@@ -1,10 +1,13 @@
 package hub
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -12,6 +15,55 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/rendezvous"
 )
+
+// A project-level mutation (delete, archive, favorite) is addressed by
+// (source, project ID) or refused, so the summary a client acts on must carry
+// the project's owning sources. The controller's own source is spelled "local"
+// on the wire, a controller-only project omits the field (the same default the
+// empty decision-key list applies), and a merged project keeps "local" next to
+// every host name so a caller can tell it apart from a remote-only project and
+// refuse a single-owner mutation instead of guessing.
+func TestProjectSummaryCarriesOwningSources(t *testing.T) {
+	cases := []struct {
+		name    string
+		sources []string
+		want    []string
+	}{
+		{name: "controller only", sources: []string{""}},
+		{name: "no recorded sources", sources: nil},
+		{name: "remote host", sources: []string{"host-a"}, want: []string{"host-a"}},
+		{name: "merged controller and host", sources: []string{"", "host-a"}, want: []string{"local", "host-a"}},
+		{name: "merged hosts", sources: []string{"host-a", "host-b"}, want: []string{"host-a", "host-b"}},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			summary := navigationProjection{}.projectSummary(hubcore.TreeProject{Key: "p", Name: "Project", Sources: testCase.sources})
+			if !slices.Equal([]string(summary.Sources), testCase.want) {
+				t.Fatalf("summary.Sources = %#v, want %#v", []string(summary.Sources), testCase.want)
+			}
+			if !navigationProjectSummaryValid(summary) {
+				t.Fatalf("projected summary failed its own schema validation: %#v", summary)
+			}
+			raw, err := json.Marshal(summary)
+			if err != nil {
+				t.Fatalf("marshal summary: %v", err)
+			}
+			if len(testCase.want) == 0 {
+				if bytes.Contains(raw, []byte(`"sources"`)) {
+					t.Fatalf("controller-only project emitted a sources field: %s", raw)
+				}
+				return
+			}
+			wantJSON, err := json.Marshal(testCase.want)
+			if err != nil {
+				t.Fatalf("marshal want: %v", err)
+			}
+			if !bytes.Contains(raw, append([]byte(`"sources":`), wantJSON...)) {
+				t.Fatalf("summary %s does not carry sources %s", raw, wantJSON)
+			}
+		})
+	}
+}
 
 func TestNavigationPreservesKnownFavoritesDuringOwnershipFailure(t *testing.T) {
 	runDir := t.TempDir()
