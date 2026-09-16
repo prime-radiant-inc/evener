@@ -26,6 +26,20 @@ interface PageState<T> {
 	error: string | null;
 	stale: boolean;
 }
+export type PageStatus = "loading" | "error" | "stale" | "more";
+/** What a list should say about a page beyond its rows. An error keeps its
+ * retry even while the page is stale: a failed automatic re-read leaves both
+ * set, and "Updating…" must never hide the way out. Views that show an
+ * action's error beside the page pass that merged error in. */
+export function pageStatus(
+	page: Pick<PageState<unknown>, "loading" | "error" | "stale" | "remaining">,
+): PageStatus | null {
+	if (page.loading) return "loading";
+	if (page.error) return "error";
+	if (page.stale) return "stale";
+	if (page.remaining > 0) return "more";
+	return null;
+}
 type NativeNavigationParams = Omit<
 	NavigationReadParams,
 	"representationVersion"
