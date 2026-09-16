@@ -191,7 +191,14 @@ function renamedInstanceLanded(
   const newName = params.newName;
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
-  if (listed === undefined || listed.implicit !== before.implicit) return undefined;
+  if (listed === undefined) return undefined;
+  // Renaming an instance that had no authored entry authors one under the new
+  // name (hubInstancesController.Edit), so implicit becoming authored is that
+  // rename's own outcome rather than evidence of a later tenant of the freed
+  // name. The other direction, and any change on an authored row, still says
+  // this save's instance is not what holds the new name.
+  const authoredByRename = before.implicit && !listed.implicit;
+  if (listed.implicit !== before.implicit && !authoredByRename) return undefined;
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
   const untouched = RENAME_IDENTITY_FIELDS.filter(

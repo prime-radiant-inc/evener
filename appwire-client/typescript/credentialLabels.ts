@@ -113,6 +113,13 @@ export function keylessByDesign(instance: InstanceEntry): boolean {
 // takes it away.
 export function fromEnvironment(instance: InstanceEntry): boolean {
   if (!instance.implicit) return false;
+  // The Codex transport reads only its OAuth record, and the instance exists
+  // because that record file does - a record the hub cannot parse is still the
+  // user's, and removing it is how a broken sign-in goes away. The scheme is
+  // what says so, because the status reports no usable source for an
+  // unreadable record (cmd/evener-hub's openAIInstanceStatus) while the
+  // registry reports the oauth source and permits the removal.
+  if (instance.auth === "oauth-openai-codex") return false;
   return instance.activeSource !== "store" && instance.activeSource !== "oauth";
 }
 

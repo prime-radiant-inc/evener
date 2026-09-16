@@ -1298,7 +1298,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// An instance the user credentialed through the UI has no authored entry:
 	// the credential cleanup above IS the removal, and writing the absent file
 	// back as an empty one would leave a providers.toml the user never had. The
-	// reload below is what re-derives the instance set either way.
+	// reload below is what re-derives the instance set either way. The file is
+	// still written when its `default` named this instance, because dropping
+	// that pointer is a real change to a file that already exists - leaving it
+	// behind would name an instance the next load cannot find.
 	_, authored := before.Providers[name]
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
@@ -1306,19 +1309,28 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	if l.Default == name {
 		l.Default = ""
 	}
-	if authored {
+	configChanged := authored || l.Default != before.Default
+	if configChanged {
 		if err := c.writeLoadable(l); err != nil {
 			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
 		}
 	}
 	if err := c.reg.Reload(); err != nil {
-		if !authored {
+		if !configChanged {
 			// Nothing was written, so there is no file to put back: restoring
 			// the credentials this call deleted is the whole rollback, and a
 			// write here would create the providers.toml the guard above
-			// exists to avoid.
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			// exists to avoid. The reload is still retried once the credentials
+			// are back: the failure above parked the registry on the
+			// implicit-only view a failed load leaves (writes refused, this row
+			// missing), and the state the file describes is unchanged, so a
+			// second attempt is the recovery rather than a repetition.
+			restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
 				fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
+			if reloadErr := c.reg.Reload(); reloadErr != nil {
+				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", restored, reloadErr)
+			}
+			return restored
 		}
 		// writeLoadable's dry parse only checks the layer against the registry
 		// schema; Reload resolves it, so a config that parses can still fail to
