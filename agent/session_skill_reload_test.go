@@ -14,7 +14,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1880,21 +1879,24 @@ func countReloadOutcomes(s *Session, invocationID string) int {
 	return n
 }
 
-// plantReloadReceipt seeds one valid-selection handoff for opaque under the
-// given publication identity — the deterministic invocation identity a retry
-// re-derives is publicationID + ":" + name.
-func plantReloadReceipt(s *Session, publicationID string) {
+// plantReloadReceipt seeds one delivered handoff carrying selection under the
+// given publication identity — for a valid selection, the deterministic
+// invocation identity a retry re-derives is publicationID + ":" + name.
+func plantReloadReceipt(s *Session, publicationID string, selection schema.SkillReloadSelection) {
 	s.mu.Lock()
 	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
 		Phase: skillCompactionReceiptDelivered,
 		Operation: schema.SkillCompactionOperation{
 			Generation:    1,
-			Selection:     schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}},
+			Selection:     selection,
 			PublicationID: publicationID,
 		},
 	}}
 	s.mu.Unlock()
 }
+
+// opaqueReloadSelection selects the fixture skill "opaque" for reload.
+var opaqueReloadSelection = schema.SkillReloadSelection{State: "valid", Names: []string{"opaque"}}
 
 // TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure pins the
 // idempotence of a reload-failure notice across a transient admission-save
@@ -1917,7 +1919,7 @@ func TestSkillReload_FailedNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 		t.Fatalf("remove the fixture source: %v", err)
 	}
 	const publication = "pub-notice-retry"
-	plantReloadReceipt(s, publication)
+	plantReloadReceipt(s, publication, opaqueReloadSelection)
 	invocationID := publication + ":opaque"
 
 	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
@@ -1965,7 +1967,7 @@ func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 	}, reloadSummaryResponder("SUMMARY_reuse_retry", nil))
 	plantOrdinaryRecord(t, s, root, "opaque", true)
 	const publication = "pub-reuse-retry"
-	plantReloadReceipt(s, publication)
+	plantReloadReceipt(s, publication, opaqueReloadSelection)
 	invocationID := publication + ":opaque"
 
 	batch, outcomes, staged, err := s.prepareCompactedSkillReloads(context.Background())
@@ -2011,16 +2013,7 @@ func TestSkillReload_ReuseNoticeNotReappendedAfterSaveFailure(t *testing.T) {
 // plantReminderReceipt stages one delivered handoff whose selection authorized
 // no reload, the shape preparation answers with a complete inventory reminder.
 func plantReminderReceipt(s *Session, publicationID string) {
-	s.mu.Lock()
-	s.skillLifecycle.PendingHandoffs = []schema.SkillCompactionReceipt{{
-		Phase: skillCompactionReceiptDelivered,
-		Operation: schema.SkillCompactionOperation{
-			Generation:    1,
-			Selection:     schema.SkillReloadSelection{State: "absent"},
-			PublicationID: publicationID,
-		},
-	}}
-	s.mu.Unlock()
+	plantReloadReceipt(s, publicationID, schema.SkillReloadSelection{State: "absent"})
 }
 
 // TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff: consuming a
@@ -2030,39 +2023,22 @@ func plantReminderReceipt(s *Session, publicationID string) {
 // forgotten a reminder no restart can then deliver.
 func TestSkillReloadReminder_FailedConsumptionSaveKeepsTheHandoff(t *testing.T) {
 	t.Parallel()
-	s := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withoutGitSnapshot())
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	drainSessionEvents(s)
 	const publication = "pub-consumption-save-failure"
 	plantReminderReceipt(s, publication)
 
-	repair := breakSessionMetaPath(t, s)
-	err := s.consumeSkillReloadReminders(map[string]bool{publication: true})
-	repair()
-	if err == nil {
+	if err := s.consumeSkillReloadReminders(map[string]bool{publication: true}); err == nil {
 		t.Fatal("a failed consumption save must surface an error")
 	}
 	handoffs := pendingHandoffsSnapshot(s)
 	if len(handoffs) != 1 || handoffs[0].Operation.PublicationID != publication {
 		t.Fatalf("handoffs after the failed save = %+v, want the reminder's receipt still pending", handoffs)
 	}
-}
-
-// failRenameDuringMetaSaveFS fails the metadata save's final rename, and runs
-// during just before it — the window in which the save holds no session lock
-// and another publication can record a handoff of its own.
-type failRenameDuringMetaSaveFS struct {
-	afero.Fs
-	during func()
-}
-
-func (fs *failRenameDuringMetaSaveFS) Rename(oldname, newname string) error {
-	if fs.during != nil {
-		fs.during()
-	}
-	return errors.New("injected meta save failure")
 }
 
 // TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff: the
@@ -2074,17 +2050,14 @@ func TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff(t *tes
 	t.Parallel()
 	const consumed = "pub-consumed-reminder"
 	const arrived = "pub-arrived-mid-save"
-	metaFS := &failRenameDuringMetaSaveFS{Fs: afero.NewMemMapFs()}
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
 	s := newSession(t,
 		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
 		withoutGitSnapshot(),
 	)
-	go func() {
-		for range s.Events() {
-		}
-	}()
+	drainSessionEvents(s)
 	plantReminderReceipt(s, consumed)
-	metaFS.during = func() {
+	metaFS.before = func() {
 		s.mu.Lock()
 		s.recordSkillCompactionHandoffLocked(schema.SkillCompactionReceipt{
 			Phase: skillCompactionReceiptDelivered,
@@ -2113,21 +2086,6 @@ func TestSkillReloadReminder_FailedConsumptionSaveKeepsAConcurrentHandoff(t *tes
 	}
 }
 
-// countRecordedReminders reports how many reminder turns the history holds for
-// one publication.
-func countRecordedReminders(s *Session, publicationID string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, turn := range s.history {
-		state := turn.SkillState
-		if state != nil && state.ReloadReminder != nil && state.ReloadReminder.PublicationID == publicationID {
-			n++
-		}
-	}
-	return n
-}
-
 // TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn:
 // the reminder turn IS the admission, and keeping the receipt when its metadata
 // consumption fails is what makes the retry possible. What the retry must retry
@@ -2135,37 +2093,33 @@ func countRecordedReminders(s *Session, publicationID string) int {
 // the same inventory twice for one handoff.
 func TestSkillReloadReminder_RetryAfterAFailedConsumptionSaveAppendsNoSecondTurn(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
-	markGitRoot(t, root)
-	s, _, _ := newReloadSession(t, root, 0, func(llm.Request) llm.Response {
-		return llm.Response{Message: llm.Assistant("unused")}
-	}, reloadSummaryResponder("SUMMARY_reminder_retry", nil))
+	metaFS := &notesRenameFailureFS{Fs: afero.NewMemMapFs(), fail: true, err: errParkedNotesSave}
+	s := newSession(t,
+		withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{metaFS: metaFS}}),
+		withoutGitSnapshot(),
+	)
+	drainSessionEvents(s)
 	plantPreloadRecord(t, s, "opaque", "fixture description")
 	const publication = "pub-reminder-retry"
 	plantReminderReceipt(s, publication)
-	go func() {
-		for range s.Events() {
-		}
-	}()
 
-	repair := breakSessionMetaPath(t, s)
 	if _, _, _, err := s.prepareCompactedSkillReloads(context.Background()); err == nil {
 		t.Fatal("a failed consumption save must surface an error")
 	}
-	repair()
-	if got := countRecordedReminders(s, publication); got != 1 {
+	if got := countSkillReloadReminderTurns(s); got != 1 {
 		t.Fatalf("reminders after the failed save = %d, want exactly one", got)
 	}
 	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 1 {
 		t.Fatalf("the failed save must leave the receipt pending, got %+v", handoffs)
 	}
 
+	metaFS.fail = false
 	if _, _, staged, err := s.prepareCompactedSkillReloads(context.Background()); err != nil {
 		t.Fatalf("prepareCompactedSkillReloads (retry): %v", err)
 	} else if staged != 0 {
 		t.Fatalf("the retry staged %d input tokens for a reminder it appended nothing for, want 0", staged)
 	}
-	if got := countRecordedReminders(s, publication); got != 1 {
+	if got := countSkillReloadReminderTurns(s); got != 1 {
 		t.Fatalf("reminders after the retry = %d, want 1: the transcript already holds the only reminder this handoff is owed", got)
 	}
 	if handoffs := pendingHandoffsSnapshot(s); len(handoffs) != 0 {
