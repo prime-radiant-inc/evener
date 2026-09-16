@@ -30,6 +30,7 @@
 
 import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evener/appwire-client";
 import {
+  CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
   keylessByDesign,
@@ -39,7 +40,7 @@ import {
 } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
-import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
+import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Chip, FormRow, Input, Select, Sheet, StatusDot, Switch, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./InstanceSheet.module.css";
@@ -426,6 +427,25 @@ export function InstanceSheet({
         if (refreshed !== undefined) seed(refreshed);
       }
     } catch (err) {
+      // The store's own refusal of a write issued from the previous
+      // connection's listing (stores/credentials.ts's requireWritableClient):
+      // the draft was seeded from rows that connection read, so nothing was
+      // sent. Keep the draft, name the change, and ask for this connection's
+      // listing - its arrival is what makes the retry land. Reported as a save
+      // failure it would tell the user their edit could not be saved when no
+      // save ever went out.
+      if (isStaleListingRefusal(err)) {
+        void credentialsStore
+          .getState()
+          .fetch()
+          .catch(() => {});
+        if (shownName.current === instance.name) {
+          setRenamingFrom(undefined);
+          setFormError(CONNECTION_REPLACED_ERROR);
+        }
+        toast.push("warning", CONNECTION_REPLACED_ERROR);
+        return;
+      }
       const message = errorText(err);
       // The toast is owed wherever the user has gone - they asked for a write
       // that did not happen. The form's error line is not: it belongs to the

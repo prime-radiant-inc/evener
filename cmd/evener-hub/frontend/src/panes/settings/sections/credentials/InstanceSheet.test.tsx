@@ -58,7 +58,15 @@ function renderSheet(
 ) {
   const handlers = noopHandlers();
   const onClose = vi.fn();
-  credentialsStore.setState({ instances: inst === null ? [] : [inst], availableProviders: providers });
+  // The section has these rows on screen because it read them on the
+  // connection the store would write to now: seeding them with the stale mark
+  // still set would describe a replaced connection, which is not the state
+  // these tests are about - and the store refuses writes issued from one.
+  credentialsStore.setState({
+    instances: inst === null ? [] : [inst],
+    availableProviders: providers,
+    listingFromPreviousConnection: false,
+  });
   const tree = (name: string | null) => (
     <>
       <Toast />
@@ -937,6 +945,44 @@ describe("the form", () => {
     expect(screen.getByRole("alert").textContent).toContain("replaced under the same name");
     // ...and the form re-anchors to the instance now on screen.
     expect(field("Base URL").value).toBe("https://gw.example.test/v2");
+  });
+
+  // The store refuses a save issued from the previous connection's listing
+  // (stores/credentials.ts's requireWritableClient): the draft was seeded from
+  // rows that connection read. That is not a failed save - nothing was sent -
+  // and the raw store message names the store's internals rather than what the
+  // user can do, so the sheet says what changed and keeps the draft for the
+  // retry this connection's own listing sets up.
+  test("a save issued while the held listing is stale is refused with the change, not a save failure", async () => {
+    const WORK = instance({ name: "work", providerId: "openai", baseUrl: "https://gw.example.test/v1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/edit", () => {
+      throw new Error("must not be called");
+    });
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [OPENAI] }));
+    connectionStore.getState().connect(fake);
+    renderSheet(WORK, {}, [OPENAI]);
+
+    // The connection is replaced and its own listing has not landed yet.
+    act(() => credentialsStore.setState({ listingFromPreviousConnection: true }));
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/stale");
+
+    await user.click(saveButton());
+
+    // The edit was refused before it was sent...
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(0);
+    // ...reported as the change it is, in the form and as a warning, never as
+    // the store's own words or a "Save failed" toast...
+    await waitFor(() => expect(screen.getAllByText(/connection was replaced/).length).toBeGreaterThan(0));
+    expect(screen.queryByText(/credentials store/)).toBeNull();
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    // ...the draft is kept, so the retry is the save the user typed...
+    expect(field("Base URL").value).toBe("https://gw.example.test/v1/stale");
+    expect(saveButton().disabled).toBe(false);
+    // ...and the refusal asked for this connection's listing, whose arrival is
+    // what makes that retry land.
+    expect(fake.calls.some((c) => c.method === "evener/instance/list")).toBe(true);
   });
 
   // The fingerprint is the part of the identity baseUrl cannot show: two
