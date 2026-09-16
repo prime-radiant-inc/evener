@@ -6,8 +6,12 @@ import type {
   AuthTestResponse,
   InstanceCreateParams,
   InstanceEditParams,
-  InstanceListResponse,
 } from "@evener/appwire-client";
+import {
+  type CredentialListing,
+  createCredentialInstancesStore,
+  listingOf,
+} from "@evener/appwire-client/state/credentials";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 interface ProviderState {
@@ -16,14 +20,22 @@ interface ProviderState {
     pending: boolean;
     result?: AuthTestResponse;
   } | null;
-  data: InstanceListResponse | null;
+  // Null until a read has landed: the core's empty listing and "never read"
+  // look the same from its state, and the screen shows a spinner for one and
+  // an empty list for the other.
+  data: CredentialListing | null;
   loading: boolean;
   busy: boolean;
   error: string | null;
 }
 
-/** Provider data and operations owned by one connected hub's screen lifetime. */
+/** Provider data and operations owned by one connected hub's screen lifetime:
+ * the package's credential instances listing core, driven for one client and
+ * projected into the snapshot the Providers screen renders. The screen's own
+ * rules stay here - one write at a time (`busy`), a re-read after every write
+ * whatever its reply, and a credential test that never echoes the wire. */
 export class ProviderInstances {
+  private core = createCredentialInstancesStore();
   private state: ProviderState = {
     credentialTest: null,
     data: null,
@@ -35,10 +47,11 @@ export class ProviderInstances {
   private unsubscribe?: () => void;
   private disposed = false;
   private dirty = false;
-  private revision = 0;
   private testRevision = 0;
   private inFlight?: Promise<void>;
-  constructor(private client: ConversationClientLike) {}
+  constructor(private client: ConversationClientLike) {
+    this.core.connectionChanged(client, "ready");
+  }
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {
     this.listeners.add(listener);
@@ -74,16 +87,17 @@ export class ProviderInstances {
     this.publish({ loading: true, error: null });
     do {
       this.dirty = false;
-      const revision = this.revision;
-      try {
-        const data = await this.client.request("evener/instance/list", {});
-        if (!this.dirty && revision === this.revision) this.publish({ data });
-      } catch (error) {
-        if (!this.dirty && revision === this.revision)
-          this.publish({
-            error: sessionActionError("Could not load providers", error),
-          });
-      }
+      // The core drops a read a newer request outran (fetch resolves false
+      // with no error), so only an applied answer reaches the screen; a read
+      // asked for while this one was out re-runs below instead.
+      const applied = await this.core.getState().fetch();
+      if (this.dirty) continue;
+      const state = this.core.getState();
+      if (applied) this.publish({ data: listingOf(state) });
+      else if (state.error !== null)
+        this.publish({
+          error: sessionActionError("Could not load providers", state.error),
+        });
     } while (this.dirty && !this.disposed && !this.state.busy);
     this.publish({ loading: false });
   }
@@ -92,7 +106,6 @@ export class ProviderInstances {
     if (this.state.busy) throw new Error("A provider operation is in progress");
     if (configuration && (!this.state.data || this.state.data.writesRefused))
       throw new Error("Provider configuration is unavailable for editing");
-    this.revision += 1;
     this.testRevision += 1;
     this.publish({ busy: true, credentialTest: null });
     try {
@@ -105,25 +118,13 @@ export class ProviderInstances {
     }
   }
   create = (params: InstanceCreateParams) =>
-    this.mutate(
-      () => this.client.request("evener/instance/create", params),
-      true,
-    );
+    this.mutate(() => this.core.getState().create(params), true);
   edit = (params: InstanceEditParams) =>
-    this.mutate(
-      () => this.client.request("evener/instance/edit", params),
-      true,
-    );
+    this.mutate(() => this.core.getState().edit(params), true);
   remove = (name: string) =>
-    this.mutate(
-      () => this.client.request("evener/instance/remove", { name }),
-      true,
-    );
+    this.mutate(() => this.core.getState().remove(name), true);
   setDefault = (name: string) =>
-    this.mutate(
-      () => this.client.request("evener/instance/setDefault", { name }),
-      true,
-    );
+    this.mutate(() => this.core.getState().setDefault(name), true);
   setApiKey = (provider: string, value: string) =>
     this.mutate(
       () => this.client.request("evener/auth/apiKey/set", { provider, value }),
@@ -174,5 +175,9 @@ export class ProviderInstances {
     this.disposed = true;
     this.unsubscribe?.();
     this.listeners.clear();
+    // Nothing more may go out on this client for a screen that is gone: this
+    // cancels the core's pending coalesced refetch and its restore-on-ready
+    // read, and drops whatever in-flight answer was still its to apply.
+    this.core.connectionChanged(null, "closed");
   }
 }

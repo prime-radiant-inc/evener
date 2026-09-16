@@ -117,7 +117,8 @@ export async function revealNavigationRow<T>(
 			);
 		if (state.error || state.stale)
 			throw new Error(
-				state.error || "This list changed. Refresh to locate the session.",
+				state.error ||
+					"The list changed while locating the session. Locate again.",
 			);
 		const path = pathTo(state.rows, ref, key, children);
 		if (path) return path;

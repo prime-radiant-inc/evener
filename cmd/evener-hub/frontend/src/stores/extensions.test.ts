@@ -86,6 +86,23 @@ afterEach(() => {
   resetExtensionsStoreForTests();
 });
 
+describe("resetExtensionsStoreForTests", () => {
+  test("clears marketplaces fields seeded straight into the store, not only ones the core published", () => {
+    extensionsStore.setState({
+      marketplaces: [MARKETPLACE_A],
+      marketplacesError: "stale",
+      browseCatalogs: new Map([["acme-plugins", { status: "loaded" as const, plugins: [] }]]),
+    });
+    resetExtensionsStoreForTests();
+    expect(extensionsStore.getState()).toMatchObject({
+      marketplaces: null,
+      marketplacesLoading: false,
+      marketplacesError: null,
+    });
+    expect(extensionsStore.getState().browseCatalogs.size).toBe(0);
+  });
+});
+
 describe("fetchMarketplaces", () => {
   test("populates marketplaces from evener/marketplace/list", async () => {
     const fake = connectFakeClient();
