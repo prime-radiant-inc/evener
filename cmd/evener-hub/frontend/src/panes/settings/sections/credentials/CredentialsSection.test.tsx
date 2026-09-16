@@ -296,6 +296,49 @@ test("a replaced connection's warnings are hidden even when its listing held no 
   expect(screen.queryByText("Warnings")).toBeNull();
 });
 
+// A refresh is a read, so it is allowed while the rows are a replaced
+// connection's - but its ANSWER speaks about this connection, and merging it
+// into the previous connection's rows (or clearing the listing error a failed
+// full read left) would present those rows as current. The full listing read
+// that lands next is what makes the row a refresh can speak about.
+test("a model refresh while the rows are a replaced connection's does not apply its answer", async () => {
+  const fake = connectFakeClient();
+  const row = { ...WORK, models: [{ id: "claude-opus-4-6", disabled: false }] };
+  fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
+  render(
+    <>
+      <CredentialsSection sectionId="credentials" />
+      <Toast />
+    </>,
+  );
+  await screen.findByText("work");
+  const user = userEvent.setup();
+  const inspector = await openSheet(user, "work");
+
+  // The replacement's own read is held open, and its refresh answer carries a
+  // different inventory for the same name.
+  const replacement = new FakeClient("ready");
+  replacement.on("evener/instance/list", () => new Promise<InstanceListResponse>(() => {}));
+  replacement.on("evener/instance/refreshModels", () => ({
+    instances: [{ ...row, models: [{ id: "claude-sonnet-5", disabled: true }] }],
+    availableProviders: [],
+  }));
+  await act(async () => connectionStore.getState().connect(replacement));
+  expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
+  await act(async () => credentialsStore.setState({ error: "listing unavailable" }));
+
+  await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
+  await act(async () => {
+    await Promise.resolve();
+  });
+
+  // The refreshed inventory is not presented as current for rows that still
+  // belong to the connection that is gone...
+  expect(credentialsStore.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["claude-opus-4-6"]);
+  // ...and the failed full read's error is not cleared by it.
+  expect(credentialsStore.getState().error).toBe("listing unavailable");
+});
+
 describe("the detail sheet", () => {
   test("clicking a row opens the inspector; its close button dismisses it", async () => {
     const fake = connectFakeClient();

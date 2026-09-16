@@ -518,10 +518,11 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
   async refreshModels(name) {
     // A read keeps the read gate: reads stay available while the rows on screen
     // are a replaced connection's - a read is what clears the mark - and this one
-    // never clears it. Its answer is dropped outright when the client it was
-    // issued on is gone (the client check below), it touches only one row's model
-    // inventory, and it never sets listingFromPreviousConnection false. Gating it
-    // would refuse a view the very read that repairs it.
+    // never clears it. Gating it would refuse a view the very read that repairs
+    // it. Its ANSWER is another matter: it is dropped outright when the client it
+    // was issued on is gone, and while the rows on screen are still a replaced
+    // connection's it is not applied at all (see the apply below) - what makes a
+    // row a refresh can speak about is this connection's own listing read.
     const client = requireClient();
     // Per-instance version, not the global counter: a refresh for B must not
     // cancel an in-flight refresh for A. Only a newer refresh for THIS
@@ -540,16 +541,31 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         return;
       const row = response.instances.find((entry) => entry.name === name);
       if (row) {
-        const current = credentialsStore.getState().instances;
-        const known = current.some((existing) => existing.name === name);
+        const state = credentialsStore.getState();
+        const known = state.instances.some((existing) => existing.name === name);
         // A removal that landed while this refresh was out: merging nothing
         // preserves it instead of resurrecting a phantom stub row.
         if (listEstablished && !known) return;
+        if (state.listingFromPreviousConnection) {
+          // The rows on screen are a replaced connection's, and an answer naming
+          // one of them describes the hub that is there now: merging its
+          // inventory into that row presents the old row as current, and
+          // clearing the failed full read's error would make the pane look
+          // recovered. The listing read that lands next is what makes such a row
+          // this refresh's to speak about.
+          if (known) return;
+          // A row this connection never held is this read's own data, so it is
+          // staged - the reconnect is not blank while its listing is out - with
+          // the error left exactly where it is.
+          refreshedInstances.set(name, (refreshedInstances.get(name) ?? 0) + 1);
+          credentialsStore.setState({ instances: [...state.instances, { ...row }] });
+          return;
+        }
         // Only the MODEL INVENTORY comes from this answer: every other field
         // of the row may have been updated by a newer read or write that
         // landed while this refresh was in flight, and a refresh only ever
         // knows about live models.
-        const merged = current.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
+        const merged = state.instances.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
         if (!known) merged.push({ ...row });
         refreshedInstances.set(name, (refreshedInstances.get(name) ?? 0) + 1);
         credentialsStore.setState({ instances: merged, error: null });
