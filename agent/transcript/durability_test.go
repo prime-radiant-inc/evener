@@ -98,7 +98,7 @@ func TestAppendSyncedReturnsNilWhenTheBarrierConfirmsARetainedRecord(t *testing.
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded and then synced"))); err != nil {
+	if _, err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded and then synced"))); err != nil {
 		t.Fatalf("AppendSynced error = %v, want nil: the barrier made the retained record durable", err)
 	}
 	if w.Poisoned() {
@@ -126,7 +126,7 @@ func TestAppendSyncedReturnsErrorWhenDurabilityCannotBeEstablished(t *testing.T)
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded but never synced"))); err == nil {
+	if _, err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("recorded but never synced"))); err == nil {
 		t.Fatal("AppendSynced reported success; durability was never established")
 	} else if !errors.Is(err, fault.ErrInjected) {
 		t.Fatalf("AppendSynced error = %v, want the injected barrier failure", err)
@@ -173,12 +173,12 @@ func TestAppendSyncedDoesNotDropAnotherAppendsQueuedWarning(t *testing.T) {
 	}
 	// Buffered append: whole line lands, its fsync (op 5) fails → retained,
 	// warning queued, writer usable.
-	if err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("buffered retained"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnUserInput, llm.User("buffered retained"))); err != nil {
 		t.Fatalf("buffered Append error = %v, want nil", err)
 	}
 	// A following AppendSynced (clean, past the single faulted op) must not
 	// touch the queued warning.
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("synced clean"))); err != nil {
+	if _, err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("synced clean"))); err != nil {
 		t.Fatalf("AppendSynced error = %v, want nil", err)
 	}
 	warnings := w.DrainWarnings()
@@ -197,7 +197,7 @@ func TestAppendSyncedDoesNotDoubleFsyncACleanAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("clean and synced"))); err != nil {
+	if _, err := w.AppendSynced(schema.NewTurn(schema.TurnAssistant, llm.Assistant("clean and synced"))); err != nil {
 		t.Fatalf("AppendSynced error = %v, want nil: a clean append needs no second barrier fsync", err)
 	}
 	if entries := faultTestEntries(t, base); len(entries) != 1 {
@@ -222,7 +222,7 @@ func TestAppendSyncedReportsRetainedUnsyncedForAdoptionWithoutDuplication(t *tes
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("recorded, not durable")))
+	_, err = w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("recorded, not durable")))
 	if !errors.Is(err, ErrRetainedUnsynced) {
 		t.Fatalf("AppendSynced error = %v, want ErrRetainedUnsynced so the owner adopts rather than re-appends", err)
 	}
@@ -252,13 +252,13 @@ func TestAppendSyncedFailsClosedOnAClosedWriter(t *testing.T) {
 	if err := w.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("during shutdown"))); !errors.Is(err, ErrWriterClosed) {
+	if _, err := w.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("during shutdown"))); !errors.Is(err, ErrWriterClosed) {
 		t.Fatalf("AppendSynced on a closed writer = %v, want ErrWriterClosed (a synced owner must not read a dropped write as durable)", err)
 	}
 	// A writer that never existed stays a nil no-op, so a stateless session's
 	// owners do not error.
 	var nilWriter *Writer
-	if err := nilWriter.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("no writer"))); err != nil {
+	if _, err := nilWriter.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("no writer"))); err != nil {
 		t.Fatalf("AppendSynced on a nil writer = %v, want nil no-op", err)
 	}
 }

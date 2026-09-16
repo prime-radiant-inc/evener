@@ -86,7 +86,7 @@ func TestAppend_HappyReadBack(t *testing.T) {
 
 	turns := []string{"one", "two", "three"}
 	for _, msg := range turns {
-		if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(msg))); err != nil {
+		if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant(msg))); err != nil {
 			t.Fatalf("Append %q: %v", msg, err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestAppendDurable_Success(t *testing.T) {
 	// false afterward even though the interval has not elapsed.
 	w.SyncInterval = time.Hour
 
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable"))); err != nil {
+	if _, err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("durable"))); err != nil {
 		t.Fatalf("AppendDurable: %v", err)
 	}
 	w.mu.Lock()
@@ -166,7 +166,7 @@ func TestAppendDurable_WriteFailsRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
+	_, err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
 	if err == nil {
 		t.Fatal("expected error from faulted entry write")
 	}
@@ -196,7 +196,7 @@ func TestAppendDurable_SyncFailsRollback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
+	_, err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
 	if err == nil {
 		t.Fatal("expected error from faulted entry sync")
 	}
@@ -219,7 +219,7 @@ func TestAppendDurable_SeekStartFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
+	_, err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
 	if err == nil {
 		t.Fatal("expected error from faulted seek-to-end")
 	}
@@ -243,7 +243,7 @@ func TestAppend_SyncFailsNoRollback(t *testing.T) {
 		t.Fatalf("newWriterFS: %v", err)
 	}
 	// SyncInterval defaults to 0 => sync every write. Write is index 4, Sync index 5.
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x"))); err != nil {
 		t.Fatalf("Append error = %v, want nil: the whole line is a record", err)
 	}
 	warnings := w.DrainWarnings()
@@ -272,7 +272,7 @@ func TestAppendDurable_WriteFailsRollbackAlsoFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
+	_, err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
 	if err == nil {
 		t.Fatal("expected error from faulted write + faulted rollback")
 	}
@@ -301,10 +301,10 @@ func TestAppendDurable_WriteTransferredNothingLeavesWriterUsable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); !errors.Is(err, ErrRollbackFailed) {
+	if _, err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("never left the caller"))); !errors.Is(err, ErrRollbackFailed) {
 		t.Fatalf("append error = %v, want the rollback failure over a write that transferred nothing", err)
 	}
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands"))); err != nil {
+	if _, err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("lands"))); err != nil {
 		t.Fatalf("append after a write that transferred nothing: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -357,7 +357,7 @@ func TestAppendDurable_SyncFailsRollbackAlsoFails(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newWriterFS: %v", err)
 			}
-			err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
+			_, err = w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("x")))
 			if tc.retained {
 				if err != nil {
 					t.Fatalf("AppendDurable error = %v, want nil: the truncate failed, so the whole line is a record", err)
@@ -417,7 +417,7 @@ func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T
 	// The entry is a record, so the durable append returns nil; it is not yet
 	// durable (retained debt), which the writer tracks as dirty and the sync
 	// failure surfaces as a warning. The writer stays usable.
-	if err := w.AppendDurable(retained); err != nil {
+	if _, err := w.AppendDurable(retained); err != nil {
 		t.Fatalf("append error = %v, want nil: the whole line is a record", err)
 	}
 	if w.Poisoned() {
@@ -428,7 +428,7 @@ func TestAppendDurable_RetainedEntryAdvancesSequenceAndFailureCount(t *testing.T
 	}
 	// The next durable append settles the debt with its own fsync; no barrier
 	// is needed to keep writing.
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+	if _, err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
 		t.Fatalf("append after retained entry: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -491,13 +491,13 @@ func TestAppend_SyncFailureSpendsTheSequenceOfTheLineItLeft(t *testing.T) {
 	w.TrackFailures(nil, 0)
 
 	retained := toolResultTurn(llm.ToolResultData{ToolCallID: "call_1", Name: "read_file", IsError: true})
-	if err := w.Append(retained); err != nil {
+	if _, err := w.Append(retained); err != nil {
 		t.Fatalf("buffered append error = %v, want nil: the whole line is a record", err)
 	}
 	if len(w.DrainWarnings()) != 1 {
 		t.Fatal("the buffered sync failure surfaced no warning")
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after"))); err != nil {
 		t.Fatalf("append after the faulted sync: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -528,10 +528,10 @@ func TestWriter_NilAndClosedNoOps(t *testing.T) {
 	turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("x"))
 
 	var nilW *Writer
-	if err := nilW.Append(turn); err != nil {
+	if _, err := nilW.Append(turn); err != nil {
 		t.Fatalf("nil Append: %v", err)
 	}
-	if err := nilW.AppendDurable(turn); err != nil {
+	if _, err := nilW.AppendDurable(turn); err != nil {
 		t.Fatalf("nil AppendDurable: %v", err)
 	}
 
@@ -544,7 +544,7 @@ func TestWriter_NilAndClosedNoOps(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 	// After Close, further writes are no-ops (closed flag short-circuits).
-	if err := w.Append(turn); err != nil {
+	if _, err := w.Append(turn); err != nil {
 		t.Fatalf("closed Append: %v", err)
 	}
 	// The persisted file still holds only the header: the closed writes did nothing.
@@ -573,7 +573,7 @@ func TestClose_FlushesAndIdempotent(t *testing.T) {
 	}
 	// Long interval leaves the append un-synced so Close must flush it.
 	w.SyncInterval = time.Hour
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("pending"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("pending"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	w.mu.Lock()
@@ -615,7 +615,7 @@ func TestClose_SyncFails(t *testing.T) {
 		t.Fatalf("newWriterFS: %v", err)
 	}
 	w.SyncInterval = time.Hour
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("pending"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("pending"))); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	err = w.Close()
@@ -641,7 +641,7 @@ func TestClose_FileCloseFails(t *testing.T) {
 		t.Fatalf("NewWriter: %v", err)
 	}
 	// Durable append leaves dirty == false so Close goes straight to file.Close().
-	if err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("a"))); err != nil {
+	if _, err := w.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("a"))); err != nil {
 		t.Fatalf("AppendDurable: %v", err)
 	}
 	w.mu.Lock()
@@ -671,10 +671,10 @@ func makeValidTranscript(t *testing.T) (afero.Fs, []byte) {
 	if err != nil {
 		t.Fatalf("newWriterFS: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("a"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("a"))); err != nil {
 		t.Fatalf("Append a: %v", err)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("b"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("b"))); err != nil {
 		t.Fatalf("Append b: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -710,7 +710,7 @@ func TestOpenWriterFS_HappyReopen(t *testing.T) {
 	if seq != 2 {
 		t.Fatalf("resumed seq = %d, want 2 (maxSeq+1)", seq)
 	}
-	if err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("c"))); err != nil {
+	if _, err := w.Append(schema.NewTurn(schema.TurnAssistant, llm.Assistant("c"))); err != nil {
 		t.Fatalf("Append after resume: %v", err)
 	}
 	if err := w.Close(); err != nil {

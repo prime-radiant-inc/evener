@@ -473,9 +473,9 @@ func (w *Writer) Header() Header {
 // A caller that needs a turn RECORDED AND DURABLE — the environment producer,
 // the delegate-attention side-writes — uses AppendSynced, which returns an
 // error unless the line is both.
-func (w *Writer) Append(turn schema.Turn) error {
-	_, _, err := w.appendBatch([]schema.Turn{turn}, false, true)
-	return err
+func (w *Writer) Append(turn schema.Turn) (seq int, err error) {
+	seq, _, err = w.appendBatch([]schema.Turn{turn}, false, true)
+	return seq, err
 }
 
 // AppendDurable writes a turn and fsyncs it before returning; a whole line that
@@ -483,9 +483,9 @@ func (w *Writer) Append(turn schema.Turn) error {
 // failure queued for DrainWarnings. See the contract on Append. No-op if the
 // receiver is nil — see Append for why that makes a write into a not-yet-open
 // writer silently succeed.
-func (w *Writer) AppendDurable(turn schema.Turn) error {
-	_, _, err := w.appendBatch([]schema.Turn{turn}, true, true)
-	return err
+func (w *Writer) AppendDurable(turn schema.Turn) (seq int, err error) {
+	seq, _, err = w.appendBatch([]schema.Turn{turn}, true, true)
+	return seq, err
 }
 
 // AppendSynced records a turn and establishes its durability. It has three
@@ -507,35 +507,35 @@ func (w *Writer) AppendDurable(turn schema.Turn) error {
 // ordinary producers use AppendDurable and never inspect durability. It raises
 // the recovery barrier ONLY when the append's own fsync failed (retained !=
 // nil); a clean durable append is not fsynced twice.
-func (w *Writer) AppendSynced(turn schema.Turn) error {
+func (w *Writer) AppendSynced(turn schema.Turn) (seq int, err error) {
 	if w == nil {
-		return nil // no writer to record into — see Append's nil no-op
+		return 0, nil // no writer to record into — see Append's nil no-op
 	}
 	if w.closed.Load() {
 		// A closed writer records nothing; a synced owner must not read that as
 		// durable (LOW). The nil no-op is only for a writer that never existed.
-		return ErrWriterClosed
+		return 0, ErrWriterClosed
 	}
-	firstSeq, retained, err := w.appendBatch([]schema.Turn{turn}, true, false)
-	if err != nil {
-		return err // not recorded
+	firstSeq, retained, appendErr := w.appendBatch([]schema.Turn{turn}, true, false)
+	if appendErr != nil {
+		return 0, appendErr // not recorded
 	}
 	if retained == nil {
-		return nil // recorded and its own fsync succeeded: durable
+		return firstSeq, nil // recorded and its own fsync succeeded: durable
 	}
 	// Recorded but unsynced: the record is in the file, so a barrier that
 	// fsyncs the whole file settles it.
-	barrierErr := w.EstablishDurability()
-	if barrierErr == nil {
-		return nil
+	if barrierErr := w.EstablishDurability(); barrierErr == nil {
+		return firstSeq, nil
+	} else {
+		// The record is durable neither by its own fsync nor the barrier. It is
+		// still a record — the caller adopts it at firstSeq: queue its
+		// diagnostic for the session to surface, and report the retained error.
+		w.mu.Lock()
+		w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
+		w.mu.Unlock()
+		return firstSeq, &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 	}
-	// The record is durable neither by its own fsync nor the barrier. It is
-	// still a record: queue its diagnostic for the session to surface, and tell
-	// the owner to adopt it rather than re-append.
-	w.mu.Lock()
-	w.queueWarningLocked(errors.Join(retained, fmt.Errorf("establish durability: %w", barrierErr)))
-	w.mu.Unlock()
-	return &RetainedUnsyncedError{Seq: firstSeq, Cause: retained}
 }
 
 // AppendBatch writes every turn as one write and one fsync, all-or-nothing:
