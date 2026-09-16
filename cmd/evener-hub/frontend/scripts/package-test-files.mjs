@@ -160,14 +160,24 @@ export function describeTestingImportsOutsideTests(files, read, dir) {
 // dependency the alias check covers.
 export function describeAppImports(files, read, dir) {
   const repoRoot = path.resolve(dir, "..", "..");
-  const consumerTrees = CONSUMER_TREES.map((tree) => path.join(repoRoot, tree));
-  const intoConsumerTree = (resolved) =>
-    consumerTrees.some((tree) => resolved === tree || resolved.startsWith(tree + path.sep));
+  // The trees the package must not reach into: the WHOLE web app (its scripts
+  // and configs are the app too, not only src), and the two mobile trees. This
+  // is broader than the value-derivation's consumer src trees on purpose -- a
+  // package file reaching into cmd/evener-hub/frontend/scripts is as much a
+  // dependency on the app as one reaching into src. scripts/sdk repo tooling
+  // sits outside all of these and stays allowed.
+  const appTrees = [
+    path.join(repoRoot, "cmd", "evener-hub", "frontend"),
+    path.join(repoRoot, "mobile-native"),
+    path.join(repoRoot, "mobile", "src"),
+  ];
+  const intoAppTree = (resolved) =>
+    appTrees.some((tree) => resolved === tree || resolved.startsWith(tree + path.sep));
   const offenders = [];
   for (const file of files) {
     for (const site of moduleSpecifierSites(ts, parseSource(ts, file, read(file)))) {
       if (!site.text.startsWith(".")) continue;
-      if (intoConsumerTree(path.resolve(path.dirname(file), site.text))) {
+      if (intoAppTree(path.resolve(path.dirname(file), site.text))) {
         offenders.push(`${path.relative(dir, file)}: imports ${site.text}`);
       }
     }
