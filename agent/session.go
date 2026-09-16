@@ -1753,18 +1753,23 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	turn := schema.NewTurn(schema.TurnEnvironment, llm.User(block))
 	turn.StableTurnID = "turn_environment_" + ulid.Make().String()
 	// The environment tracker is a durability owner: it may only claim the
-	// model saw a turn once that turn is durably in the transcript, or a
-	// restart renders every later block as a diff against a baseline the model
-	// never received. So the write goes through AppendSynced (records AND
-	// syncs, or errors) via the pair helper: on success the pair commits
-	// (history + pair log) and the tracker advance below stands; on error the
-	// turn is not durably in front of the model, so the tracker rewinds to the
-	// last state it did see and the next turn re-renders the whole observation.
-	// A failed AppendSynced can leave a retained record behind — a redundant
-	// entry a reader reconciles — which is strictly safer than a tracker
-	// advanced past context no restart can see. RenderDiff advanced the tracker
-	// before the write so it could render the diff; attentionMu holds the pair
-	// whole against a fold publication exactly as the clean path's is held.
+	// model saw a turn once that turn is a record, or a restart renders every
+	// later block as a diff against a baseline the model never received. So the
+	// write goes through AppendSynced (records AND syncs, else reports) via the
+	// pair helper, which resolves to one of three things (see
+	// appendTurnAfterTranscriptWriteLocked):
+	//   - nil (durable): the pair committed history + pair log, and the tracker
+	//     advance below stands;
+	//   - a retained record (ErrRetainedUnsynced): the whole line is in the
+	//     file, so the pair ADOPTS it and returns nil — the tracker still
+	//     advances, and the next fsync settles the debt. The entry is recorded
+	//     once; the tracker is NOT rewound and the block is NOT re-emitted,
+	//     which is what keeps a restart from carrying the environment twice;
+	//   - any other error: nothing was recorded, so the tracker rewinds to the
+	//     last state the model saw and the next turn re-renders the observation.
+	// RenderDiff advanced the tracker before the write so it could render the
+	// diff; attentionMu holds the pair whole against a fold publication exactly
+	// as the clean path's is held.
 	err := s.appendTurnAfterTranscriptWriteLocked(
 		turn,
 		func() error { return s.writeTranscriptSyncedLocked(turn) },

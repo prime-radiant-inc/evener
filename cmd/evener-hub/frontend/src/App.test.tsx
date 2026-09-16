@@ -1,6 +1,7 @@
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
 import { AppwireClient } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { wireV2 } from "@evener/appwire-client/testing/navigation";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
@@ -8,7 +9,6 @@ import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "./stores/navigation/store";
-import { wireV2 } from "./stores/navigation/testing";
 import { resetThreadsStoreForTests } from "./stores/threads";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 

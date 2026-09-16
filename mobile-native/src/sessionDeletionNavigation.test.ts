@@ -1,9 +1,6 @@
 import { expect, it } from "vitest";
 import { WireError } from "@evener/appwire-client";
-import {
-	manifest,
-	wireV2,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/testing";
+import { manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { readSessionDeletion } from "./sessionDeletionNavigation";
