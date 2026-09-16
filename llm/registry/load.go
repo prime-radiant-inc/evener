@@ -544,6 +544,7 @@ func cloneModelView(m Model) Model {
 	out := m
 	out.Headers = maps.Clone(m.Headers)
 	out.Caps = cloneCaps(m.Caps)
+	out.Disabled = clonePointer(m.Disabled)
 	if m.Transport != nil {
 		transport := cloneTransportView(*m.Transport)
 		out.Transport = &transport
@@ -793,6 +794,9 @@ func foldModel(prev, src Model, presets map[string]Transport, where string) (Mod
 	}
 	if src.Protocol != "" || src.Transport != nil {
 		prev.Hidden = false
+	}
+	if src.Disabled != nil {
+		prev.Disabled = clonePointer(src.Disabled)
 	}
 	return prev, nil
 }

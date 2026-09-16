@@ -123,6 +123,19 @@ export interface CredentialsSectionProps {
   onInstanceRemoved?: (name: string) => void;
 }
 
+// NO_PENDING_KEYS is the shared empty set a render with no sheet open hands
+// down, instead of allocating one per render.
+const NO_PENDING_KEYS: ReadonlySet<string> = new Set();
+
+// withoutKey removes one pending key, keeping the same set object when it is
+// already absent so React can bail out of an unchanged update.
+function withoutKey(current: ReadonlySet<string>, key: string): ReadonlySet<string> {
+  if (!current.has(key)) return current;
+  const next = new Set(current);
+  next.delete(key);
+  return next;
+}
+
 export function CredentialsSection({
   fullEditor = false,
   onInstanceRenamed,
@@ -147,6 +160,34 @@ export function CredentialsSection({
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [credentialTests, setCredentialTests] = useState<Record<string, CredentialTestState>>({});
+  // Live-model refresh for the sheet is manual: the hub prefetches every
+  // instance's listing at startup and every few minutes after, so the
+  // Models toggles read cached inventory. The Refresh button below
+  // re-fetches on demand; failures toast and keep the cached rows. The
+  // pending set holds every in-flight instance, so concurrent refreshes
+  // for A and B each disable only their own sheet.
+  const [refreshingInstances, setRefreshingInstances] = useState<ReadonlySet<string>>(new Set());
+  // Pending model toggles by `instance/model`: switches stay enabled
+  // only when no write for their row is in flight, so rapid clicks
+  // cannot submit duplicate or reordered writes against a stale
+  // `checked` prop (a quick disable-then-enable settles in order).
+  const [pendingToggles, setPendingToggles] = useState<ReadonlySet<string>>(new Set());
+  // pendingToggleKeys is the synchronous half of the same guard: React may
+  // defer the state updater below past the next click, so the check has to
+  // read a ref that this handler has already written. The state copy is what
+  // renders the switch disabled.
+  const pendingToggleKeys = useRef(new Set<string>());
+
+  async function handleRefreshModels(name: string): Promise<void> {
+    setRefreshingInstances((current) => new Set(current).add(name));
+    try {
+      await credentialsStore.getState().refreshModels(name);
+    } catch (err) {
+      toast.push("error", `Live refresh failed: ${friendlyErrorMessage(err)}`);
+    } finally {
+      setRefreshingInstances((current) => withoutKey(current, name));
+    }
+  }
   const previousInstances = useRef(instances);
   const instanceVersion = useRef(0);
   if (previousInstances.current !== instances) {
@@ -193,6 +234,30 @@ export function CredentialsSection({
   // name was re-pointed since that read.
   function instanceFingerprint(name: string): string | undefined {
     return instances.find((candidate) => candidate.name === name)?.endpointFingerprint;
+  }
+
+  // Model toggles are self-contained like "make default": no confirm, and
+  // a toast only on failure — plus a success toast naming the change, since
+  // unlike a default flag the switch needs visible confirmation it landed.
+  async function handleToggleModel(name: string, model: string, disabled: boolean): Promise<void> {
+    const key = `${name}/${model}`;
+    // A second click on the same row while its write is in flight is a
+    // no-op: the switch is disabled meanwhile, and this guards the
+    // programmatic path too. The ref is what makes the guard synchronous —
+    // two clicks in one tick both run before React re-renders the switch
+    // disabled, so a state-only check would let both reach the wire.
+    if (pendingToggleKeys.current.has(key)) return;
+    pendingToggleKeys.current.add(key);
+    setPendingToggles((current) => new Set(current).add(key));
+    try {
+      await credentialsStore.getState().setModelDisabled({ name, model, disabled });
+      toast.push("success", `${disabled ? "Disabled" : "Enabled"} ${model}`);
+    } catch (err) {
+      toast.push("error", `Model toggle failed: ${friendlyErrorMessage(err)}`);
+    } finally {
+      pendingToggleKeys.current.delete(key);
+      setPendingToggles((current) => withoutKey(current, key));
+    }
   }
 
   async function handleTestCredentials(name: string): Promise<void> {
@@ -468,6 +533,14 @@ export function CredentialsSection({
         onSetDefault={() => {
           if (selectedInstance !== null) void handleSetDefault(selectedInstance);
         }}
+        onToggleModel={(model, disabled) => {
+          if (selectedInstance !== null) void handleToggleModel(selectedInstance, model, disabled);
+        }}
+        onRefreshModels={() => {
+          if (selectedInstance !== null) void handleRefreshModels(selectedInstance);
+        }}
+        modelsRefreshing={selectedInstance !== null && refreshingInstances.has(selectedInstance)}
+        pendingToggles={selectedInstance !== null ? pendingToggles : NO_PENDING_KEYS}
         onTestCredentials={() => {
           if (selectedInstance !== null) void handleTestCredentials(selectedInstance);
         }}

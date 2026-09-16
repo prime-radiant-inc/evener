@@ -234,6 +234,10 @@ assert.equal(client.taskAggregateLabel({ total: 2, done: 1 }), "1 of 2 tasks lef
 assert.deepEqual(client.groupTasks(taskRows).settled.map((row) => row.id), [1]);
 assert.equal(client.relativeTime("2026-08-09T12:00:00Z", new Date("2026-08-09T12:37:00Z")), "37m ago");
 assert.equal(client.absoluteTime("not-a-date"), "not-a-date");
+const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Skill directories", group: "Resources", kind: "pathList" };
+assert.deepEqual(client.collectConfig([launchOption], client.buildFormState([launchOption], { skillsDirs: ["/opt/skills"] })), { skillsDirs: ["/opt/skills"] });
+assert.deepEqual(client.inheritedItems(["/a", "/b"], ["/a"], (item) => item, client.asStringList), ["/b"]);
+client.validatePathListAdd(launchOption, ["/opt/skills"], "/opt/skills", async () => ({ valid: true })).then((outcome) => assert.deepEqual(outcome, { ok: false, error: "Already added." }));
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not

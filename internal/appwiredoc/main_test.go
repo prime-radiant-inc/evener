@@ -229,3 +229,27 @@ func TestFieldsOfSkillInputContracts(t *testing.T) {
 		t.Fatalf("EvenerDiagnostics.skillDiagnostics = %+v, want an omitempty []appwire.EvenerSkillDiagnostic", skillDiagnostics)
 	}
 }
+
+// TestBuildIncludesInstanceModelEntry guards the same gap one level
+// down: InstanceModelEntry only ever appears nested inside
+// InstanceEntry.models, so without an explicit registration it silently
+// gets no field table of its own.
+func TestBuildIncludesInstanceModelEntry(t *testing.T) {
+	d := build()
+	for _, tv := range d.Types {
+		if tv.Name != "InstanceModelEntry" {
+			continue
+		}
+		fields := map[string]bool{}
+		for _, field := range tv.Fields {
+			fields[field.JSON] = true
+		}
+		for _, name := range []string{"id", "disabled"} {
+			if !fields[name] {
+				t.Fatalf("InstanceModelEntry missing field %q: %+v", name, tv.Fields)
+			}
+		}
+		return
+	}
+	t.Fatal("build() missing InstanceModelEntry")
+}

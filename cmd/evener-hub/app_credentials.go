@@ -30,7 +30,9 @@ type credentialProbeClient interface {
 	// Registry is the configuration snapshot this client will dial.
 	// runCredentialTest validates an asserted endpoint fingerprint against it -
 	// not against the hub's own registry - because it is what the model-list
-	// call resolves the name through.
+	// call resolves the name through - and binds that same registry's state
+	// root to the request (see withScopedCodexAuth), so a client loaded from a
+	// custom root reads that root's Codex record.
 	Registry() *registry.Registry
 }
 
@@ -61,16 +63,23 @@ func loadCredentialTestClient(path string, noUserLayer bool) (credentialProbeCli
 		if err != nil {
 			return nil, err
 		}
-		return cmdutil.NewRegistryClient(r, ""), nil
+		return LiveRegistryClient(r), nil
 	}
 	var (
 		client *llm.Client
 		err    error
 	)
-	if strings.TrimSpace(path) == "" {
-		client, err = cmdutil.LoadClient("")
-	} else {
-		client, err = cmdutil.LoadClientAt(path, "")
+	// Serialized like every other registry-client construction: the loaders
+	// below wire process-wide tokenauth seams. An empty path means the
+	// default user layer; anything else names the file to read.
+	var opts []registry.Option
+	if trimmed := strings.TrimSpace(path); trimmed != "" {
+		opts = append(opts, registry.WithConfigPath(trimmed))
+	}
+	var r *registry.Registry
+	r, _, err = cmdutil.LoadRegistry(opts...)
+	if err == nil && r != nil {
+		client = LiveRegistryClient(r)
 	}
 	if err != nil {
 		// A typed nil in the interface would read as a usable client.
@@ -193,7 +202,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 		}
 	}
 
-	probeCtx, cancel := context.WithTimeout(ctx, credentialTestTimeout)
+	probeCtx, cancel := context.WithTimeout(withScopedCodexAuth(ctx, client.Registry()), credentialTestTimeout)
 	defer cancel()
 	listing, err := client.Models(probeCtx, name)
 	if err != nil {

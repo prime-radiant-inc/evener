@@ -42,6 +42,12 @@ type Call struct {
 	Headers map[string]string
 	Req     llm.Request
 	Res     registry.Resolved
+	// Auth, when set, replaces the process-global
+	// AuthenticatorFor(Res.Transport.Auth) lookup for this call: the
+	// caller binds the authenticator (and its state root) to the
+	// request instead of racing a global rewire. Nil keeps the
+	// historical global lookup.
+	Auth llm.Authenticator
 	// Client is nil for DefaultClient.
 	Client *http.Client
 	// Reclassify, when set, post-processes the classified error of a non-2xx
@@ -88,8 +94,11 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	if c.Body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
-	auth, ok := llm.AuthenticatorFor(c.Res.Transport.Auth)
-	if !ok {
+	auth := c.Auth
+	if auth == nil {
+		auth = llm.AuthenticatorForContext(ctx, c.Res.Transport.Auth)
+	}
+	if auth == nil {
 		return nil, &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: no authenticator for auth scheme %q", c.Res.Instance, c.Res.Transport.Auth)}
 	}
 	if err := auth.Apply(ctx, httpReq, c.Res); err != nil {
