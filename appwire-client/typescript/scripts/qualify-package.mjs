@@ -368,13 +368,15 @@ assert.throws(
     // to it: no request is issued, so the smoke proves the factory, the
     // pure helpers and the refusal type resolve and behave.
     "./state/credentials": {
-      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore();
+      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore({ ownClientId: () => "qualification" });
 const held: boolean = staleListingHeld(store.getState());
 const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
       cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
-      smoke: `const credentialStore = client.createCredentialInstancesStore();
+      smoke: `const credentialStore = client.createCredentialInstancesStore({ ownClientId: () => "qualification" });
 assert.deepEqual(credentialStore.getState().instances, []);
 assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.equal(typeof credentialStore.getState().setApiKey, "function");
+assert.equal(typeof credentialStore.getState().devicePoll, "function");
 assert.deepEqual(client.listingOf(credentialStore.getState()), {
   instances: [],
   availableProviders: [],
@@ -386,7 +388,7 @@ credentialStore.connectionChanged(null, "idle");
 assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
 assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
 assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
-assert.throws(() => credentialStore.requireWritableClient(), /no client connected/);
+assert.rejects(credentialStore.getState().fetch(), /no client connected/);
 `,
     },
     // The extensions state layer - the marketplaces store, with the plugins

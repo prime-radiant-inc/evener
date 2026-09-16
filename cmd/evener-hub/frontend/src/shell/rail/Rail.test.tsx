@@ -31,7 +31,7 @@ import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { ClientProvider } from "../clientContext";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests } from "../workspace";
-import { adaptNavigationResources, Rail } from "./Rail";
+import { adaptNavigationResources, archiveSessionIdentity, Rail } from "./Rail";
 import railStyles from "./Rail.module.css";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
 import { projectNodes } from "./railNodes";
@@ -1603,10 +1603,13 @@ describe("resource-backed Rail", () => {
     navigationStore.setState({ applyNavigationMutation });
     const client = new FakeClient();
     client.on("evener/archive/set", (params) => {
-      // The canonical ref, not the bare session ID: a remote row's archive
-      // decision is read back under its host-qualified ref, and "local:a"
-      // normalizes server-side to the bare ID local decisions already use.
-      expect(params).toEqual({ kind: "session", id: "local:a", archived: true });
+      // The BARE session_id for a local row (round eleven; round ten sent the
+      // wire ref here, storing the decision under "local:a" - a key no reader
+      // consults, since hubcore's decisionFor is called with the local node ID
+      // and the bare LiveEntry.SessionID, and nothing expands "local:<id>" on
+      // the archive path). This assertion used to be id: "local:a", which baked
+      // in the wrong assumption instead of catching it.
+      expect(params).toEqual({ kind: "session", id: "a", archived: true });
       return {
         ok: true,
         navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
@@ -1622,6 +1625,46 @@ describe("resource-backed Rail", () => {
     resolveConvergence();
     await act(async () => undefined);
     expect(screen.getByText("Archivable")).toBeTruthy();
+  });
+  // Component 06a's round-six finding (its rail half is this component's): the
+  // archive mutation addressed the bare session_id, so a REMOTE row's decision
+  // landed on an identity nothing consults - the row is read under its
+  // host-qualified ref. The row menu now sends that canonical ref, while the
+  // local test above sends its bare session_id: together they pin both branches
+  // of archiveSessionIdentity, which is the key each row's read path consults.
+  test("a remote row's archive addresses the host-qualified ref its decision is read under", async () => {
+    installState([
+      sectionResource("live", [
+        summary({ ref: "buildbox:t1", host_id: "buildbox", session_id: "t1", title: "Remote row" }),
+      ]),
+    ]);
+    navigationStore.setState({ applyNavigationMutation: vi.fn(() => Promise.resolve()) });
+    const archiveParams: unknown[] = [];
+    const client = new FakeClient();
+    client.on("evener/archive/set", (params) => {
+      archiveParams.push(params);
+      return {
+        ok: true,
+        navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
+      };
+    });
+    connectionStore.getState().connect(client);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for remote row/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await act(async () => undefined);
+    expect(archiveParams).toEqual([{ kind: "session", id: "buildbox:t1", archived: true }]);
+  });
+  // The two tests above pin what each row shape actually sends. This one pins
+  // the contract they share, in the shape the read model consults it: a local
+  // session's decision key is its bare session_id and a remote session's is its
+  // host-qualified ref. One identity serves both menu directions - the same key
+  // must find the decision when the row is archived and when it is restored.
+  test("archiveSessionIdentity keys a session's decision by host, both directions", () => {
+    expect(archiveSessionIdentity(summary())).toBe("a");
+    expect(archiveSessionIdentity(summary({ ref: "buildbox:t1", host_id: "buildbox", session_id: "t1" }))).toBe(
+      "buildbox:t1",
+    );
   });
   test("rolls back a rejected AppWire archive and leaves the row visible with an error toast", async () => {
     installState([sectionResource("live", [summary({ title: "Rejectable" })])]);
