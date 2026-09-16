@@ -458,10 +458,14 @@ export function Composer({ ref, focused }: ComposerProps) {
   // the live editor selection so two attachment gestures before React commits
   // insert consecutive markers rather than reusing the first position.
   const textEditor: TextEditor = {
-    read: () => ({
-      text: textRef.current,
-      cursor: cursorToRestoreRef.current ?? editorRef.current?.getCursor() ?? textRef.current.length,
-    }),
+    read: () => {
+      const cursor = cursorToRestoreRef.current ?? editorRef.current?.getCursor() ?? textRef.current.length;
+      const selection =
+        cursorToRestoreRef.current === null && editorRef.current
+          ? editorRef.current.getSelection()
+          : { start: cursor, end: cursor };
+      return { text: textRef.current, cursor, selection };
+    },
     write: (nextText, cursor, source) => {
       // Submission cleanup retires this mount's markers without claiming a
       // shared draft that another composer has edited in the meantime.

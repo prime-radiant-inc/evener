@@ -21,6 +21,7 @@ export interface SkillEditorHandle {
   focus(): void;
   /** UTF-16 offset in serialized text. */
   getCursor(): number;
+  getSelection(): { start: number; end: number };
   setSelection(start: number, end?: number): void;
   insertSkill(start: number, end: number, name: string): void;
 }
@@ -97,6 +98,15 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       getCursor: () => {
         const view = viewRef.current;
         return view ? documentPositionToTextOffset(view.state.doc, view.state.selection.head) : 0;
+      },
+      getSelection: () => {
+        const view = viewRef.current;
+        return view
+          ? {
+              start: documentPositionToTextOffset(view.state.doc, view.state.selection.from),
+              end: documentPositionToTextOffset(view.state.doc, view.state.selection.to),
+            }
+          : { start: 0, end: 0 };
       },
       setSelection: (start, end = start) => {
         const view = viewRef.current;

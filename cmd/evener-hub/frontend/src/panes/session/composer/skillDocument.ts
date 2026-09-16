@@ -41,7 +41,9 @@ export function parseSkillDocument(value: SkillEditorValue): ProseMirrorNode {
       const end = offset + candidate.length + 1;
       return (
         value.text.startsWith(`/${candidate}`, offset) &&
-        (end === value.text.length || !tokenCharacter.test(value.text.charAt(end)))
+        (end === value.text.length ||
+          !tokenCharacter.test(value.text.charAt(end)) ||
+          (value.text.charAt(end) === "." && !tokenCharacter.test(value.text.charAt(end + 1))))
       );
     });
     if (!name) continue;

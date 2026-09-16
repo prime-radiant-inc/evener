@@ -36,6 +36,19 @@ describe("skill document", () => {
     });
   });
 
+  it.each([
+    { text: "Run /cleanup.", selected: ["cleanup"], active: ["cleanup"] },
+    { text: "Run /cleanup.v2", selected: ["cleanup", "cleanup.v2"], active: ["cleanup.v2"] },
+    { text: "Run /cleanup.v2", selected: ["cleanup"], active: [] },
+    { text: "Run /cleanup/extra", selected: ["cleanup"], active: [] },
+  ])("review regression: round trips $text with selected $selected", ({ text, selected, active }) => {
+    const doc = parseSkillDocument({ text, skillNames: selected });
+    expect.soft(serializeSkillDocument(doc)).toEqual({ text, skillNames: active });
+    expect
+      .soft(doc.content.content.filter((node) => node.type.name === "skill").map((node) => node.attrs.name))
+      .toEqual(active);
+  });
+
   it("keeps empty documents and whitespace without invisible metadata", () => {
     for (const text of ["", " \n\n ", "/unknown\n"]) {
       expect(serializeSkillDocument(parseSkillDocument({ text, skillNames: ["review"] }))).toEqual({

@@ -3206,6 +3206,37 @@ test("mixed image and text paste preserves both the marker and caption", async (
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
 
+test.each([
+  { kind: "image-only", image: true, caption: "", replacement: "[image 1]" },
+  { kind: "mixed image and text", image: true, caption: "caption", replacement: "[image 1]caption" },
+  { kind: "plain-text control", image: false, caption: "caption", replacement: "caption" },
+])("review regression: $kind paste replaces selected prose and skill atom", async ({ image, caption, replacement }) => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_selected_paste";
+  const before = "Keep before ";
+  const selected = "replace /cleanup and prose";
+  const after = " keep after";
+  writeComposerDraft(ref, { text: before + selected + after, skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getByTestId("composer-skill-chip").textContent).toBe("/cleanup");
+  expect(readComposerDraft(ref)).toEqual({ text: before + selected + after, skillNames: ["cleanup"] });
+
+  selectEditorText(editor, before.length, (before + selected).length);
+  expect(editor.ownerDocument.getSelection()?.toString()).toBe(selected);
+  if (image) {
+    pastePngInto(editor, "shot.png", caption);
+    await screen.findByRole("button", { name: "View shot.png" });
+  } else {
+    await user.paste(caption);
+  }
+
+  expect.soft(editor.textContent).toBe(before + replacement + after);
+  expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+  expect.soft(readComposerDraft(ref)).toEqual({ text: before + replacement + after, skillNames: [] });
+});
+
 test("same-text attachment removal consumes its cursor before the next native edit", async () => {
   installCanvasStubs();
   const user = userEvent.setup();
