@@ -24,7 +24,7 @@
 // item.
 
 import type { ItemModel, TurnModel } from "@evener/appwire-client";
-import { firstLine, formatCharCount, formatDurationMs } from "@evener/appwire-client";
+import { firstLine, formatCharCount, formatDurationMs, scopedDisclosureId } from "@evener/appwire-client";
 import type { TranscriptMetadataVisibility } from "../../../../transcriptDisplay/projector";
 import {
   disclosureScopeForSession,
@@ -32,12 +32,7 @@ import {
   useTranscriptRenderContext,
 } from "../../../../transcriptDisplay/renderContext";
 import { FailureGlyph, Markdown } from "../../../../widgets";
-import {
-  disclosureDefault,
-  isDisclosureOpen,
-  scopedDisclosureId,
-  toggleDisclosure,
-} from "../../../../widgets/disclosure/disclosureStore";
+import { disclosureDefault, isDisclosureOpen, toggleDisclosure } from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { SYSTEM_PROMPT_ITEM_ID } from "../transcriptVisibility";
 import { asTurnError } from "../turnFailure";
