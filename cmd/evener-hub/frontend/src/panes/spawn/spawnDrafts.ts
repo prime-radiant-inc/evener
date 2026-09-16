@@ -2,13 +2,16 @@
 // working directory used by launch/default resolution. No image bytes or
 // unsent prompts are persisted. Each draft owns its async attachment pipeline.
 
-import type { LaunchConfigLayer, PluginSelectionError } from "@evener/appwire-client";
+import type {
+  AdvancedValues,
+  LaunchConfigLayer,
+  PluginSelectionError,
+  PluginSelectionState,
+} from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useCallback } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { createAttachmentStore } from "../session/composer/attachments/useAttachments";
-import type { PluginSelectionState } from "./pluginSelectionState";
-import type { AdvancedValues } from "./schema";
 import { resolveInitialDefaults } from "./spawnDefaults";
 import { readUrlPrefill } from "./urlPrefill";
 

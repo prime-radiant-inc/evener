@@ -273,6 +273,10 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	for _, err := range mergedTailWriteErrs {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
+	// The fold's buffered marker/steering writes and its durable merged-tail
+	// copies each queue a diagnostic when a whole line landed but did not sync;
+	// this is the fold's one owner for surfacing them, outside the door.
+	s.surfaceTranscriptWarnings()
 	if hook := s.cfg.testOnly.beforeFoldSideEffectsFlush; hook != nil {
 		hook()
 	}
