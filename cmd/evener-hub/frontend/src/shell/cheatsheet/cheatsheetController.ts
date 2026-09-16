@@ -4,7 +4,7 @@
 // the cheatsheet.toggle action's handler.
 //
 // The character-key trigger ("?", the default map's one CONDITIONAL entry -
-// keybindings/defaults.ts's CHARACTER_KEY_TRIGGER_BINDING_ID) is live only
+// keybindingDefaults.ts's CHARACTER_KEY_TRIGGER_BINDING_ID) is live only
 // while the characterKeyTriggers pref (stores/prefs.ts, the WCAG 2.1.4
 // turn-off, default ON) is on. reconcileCharacterKeyTrigger enforces that as
 // an invariant and is subscribed to BOTH sources that can break it:

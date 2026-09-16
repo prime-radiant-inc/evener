@@ -4,9 +4,9 @@
 // unlike transcript display there is no localStorage layer: an unsupported
 // or unreachable hub means defaults only, never a local fallback copy.
 //
-// Applied overrides live in the keybindings registry (src/keybindings/), not
+// Applied overrides live in the keybindings registry (keybindings/appRegistry.ts), not
 // in this store's state: startup `get` and every `changed` notification are
-// validated semantically (keybindings/validation.ts) and reconciled into the
+// validated semantically (the package's keybindingValidation.ts) and reconciled into the
 // registry as a DELTA - only actions whose effective chord changed are
 // rebound, and actions whose overrides vanished get their defaults restored -
 // so in-flight dispatcher state for untouched actions is never torn down.

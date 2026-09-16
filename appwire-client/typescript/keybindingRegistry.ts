@@ -80,7 +80,8 @@ export interface KeybindingsState {
   popScope(scope: string): boolean;
 }
 
-/** Runs after every state change with the new state and the one it replaced. */
+/** Runs after every state change with the new state and the one it replaced
+ * - the listener shape zustand's useStore subscribes with. */
 export type KeybindingsListener = (state: KeybindingsState, previous: KeybindingsState) => void;
 
 export interface KeybindingsRegistry {

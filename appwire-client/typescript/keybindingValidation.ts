@@ -122,40 +122,22 @@ interface ReservedPress {
   keyValue: string;
 }
 interface ReservedChords {
+  /** Each reserved chord in canonicalPress form, for the literal-key path. */
   canonical: ReadonlySet<string>;
   presses: readonly ReservedPress[];
 }
 
-function reservedChords(parse: KeybindingParser, chords: readonly string[]): ReservedChords {
-  const presses = chords.map((chord) => {
+/** The platform's reserved chords, parsed through the host's parser like
+ * every other chord (the package has no parser of its own to build them at
+ * module load). validateOverrideRules runs at load and patch, so this is
+ * rebuilt per call rather than cached. */
+function reservedChords(parse: KeybindingParser, platform: KeybindingsPlatform): ReservedChords {
+  const presses = [...COMMON_RESERVED, ...(platform === "apple" ? APPLE_RESERVED : OTHER_RESERVED)].map((chord) => {
     const press = parseChord(parse, chord)[0];
     if (press === undefined || press.key instanceof RegExp) throw new Error(`bad reserved chord "${chord}"`);
     return { modifiers: press.modifiers.join("+"), keyValue: keyComparisonIdentity(press.key) };
   });
-  const canonical = new Set(
-    chords.map((chord) => {
-      const canonical = canonicalPress(parseChord(parse, chord));
-      if (canonical === null) throw new Error(`bad reserved chord "${chord}"`);
-      return canonical;
-    }),
-  );
-  return { canonical, presses };
-}
-
-// The reserved lists are fixed strings, but they are parsed through the
-// host's parser like every other chord, so they are built once per parser on
-// first use rather than at module load (the package has no parser of its own).
-const reservedByParser = new WeakMap<KeybindingParser, Record<KeybindingsPlatform, ReservedChords>>();
-function reservedFor(parse: KeybindingParser): Record<KeybindingsPlatform, ReservedChords> {
-  let tables = reservedByParser.get(parse);
-  if (tables === undefined) {
-    tables = {
-      apple: reservedChords(parse, [...COMMON_RESERVED, ...APPLE_RESERVED]),
-      other: reservedChords(parse, [...COMMON_RESERVED, ...OTHER_RESERVED]),
-    };
-    reservedByParser.set(parse, tables);
-  }
-  return tables;
+  return { canonical: new Set(presses.map((press) => `${press.modifiers}+${press.keyValue}`)), presses };
 }
 
 export interface OverrideRule {
@@ -229,7 +211,7 @@ export function validateOverrideRules(
 ): ValidatedOverrides {
   const warnings: ValidationWarning[] = [];
   const parse = registry.parseKeybinding;
-  const reserved = reservedFor(parse)[platform];
+  const reserved = reservedChords(parse, platform);
 
   interface Candidate {
     rule: OverrideRule;

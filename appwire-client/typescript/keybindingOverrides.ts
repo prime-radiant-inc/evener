@@ -11,7 +11,7 @@
 // Every throwing path (unknown action, unparseable chord, conflict with
 // another action's effective binding) throws BEFORE mutating the registry, so
 // a failed rebind never leaves the action half-unbound. The store's semantic
-// validation layer (validation.ts) pre-checks the same conditions and skips
+// validation layer (keybindingValidation.ts) pre-checks the same conditions and skips
 // bad rules with warnings, so these throws should never reach startup; they
 // exist so a direct caller cannot corrupt the registry either. Every helper
 // parses through the registry's own parser.
@@ -75,7 +75,7 @@ export function rebindAction(registry: KeybindingsRegistry, actionId: string, ch
  * restore (finding 27): with the pref off the conditional "?" entry is not
  * re-registered - the cheatsheetController owns it and re-adds it when the
  * pref turns on. The caller (the overrides store) knows the pref; the
- * simulation (validation.ts via defaultBindingShapesForAction) consults the
+ * simulation (keybindingValidation.ts via defaultBindingShapesForAction) consults the
  * SAME inclusion test, so restore and simulation stay in lockstep. */
 export function restoreDefaultBinding(
   registry: KeybindingsRegistry,

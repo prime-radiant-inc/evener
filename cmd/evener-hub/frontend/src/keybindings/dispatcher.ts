@@ -24,7 +24,7 @@
 // the pre-dispatcher AppShell ⌘K/⌘I/⌘J, Settings Escape, and SelectionQuote
 // ⌘' listeners - but NOT RailHost's ⌘B listener, which had no
 // defaultPrevented check and so binds with ignoreIfDefaultPrevented: false
-// in defaults.ts.
+// in the package's keybindingDefaults.ts.
 
 import { GLOBAL_SCOPE, type KeybindingsRegistry, type KeybindingsState, serializeChord } from "@evener/appwire-client";
 import { createKeybindingsHandler, type KeybindingsMap } from "tinykeys";

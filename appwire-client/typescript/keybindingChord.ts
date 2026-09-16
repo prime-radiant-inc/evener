@@ -123,7 +123,7 @@ function pressesOverlap(pressA: Chord, pressB: Chord): boolean {
 
 /** Does a regex press key match any event spelling carrying this key value
  * (the value itself, or the code name of any physical key producing it)?
- * Shared by chordsOverlap's literal-vs-regex branch and validation.ts's
+ * Shared by chordsOverlap's literal-vs-regex branch and keybindingValidation.ts's
  * reserved-chord check (roborev PR #884 round 14). */
 export function regexMatchesKeyValue(regex: RegExp, keyValue: string): boolean {
   const candidates = [keyValue, ...(KEY_TO_CODE_NAMES[keyValue] ?? [])];
@@ -229,7 +229,7 @@ for (const [code, key] of Object.entries(CODE_TO_KEY_CANONICAL)) {
 
 /** The comparison identity of one press's key: regex keys by source, string
  * keys lowercased with code-name aliases folded to their key value. Shared by
- * chord.ts's overlap predicate and validation.ts's reserved check. */
+ * this module's overlap predicate and keybindingValidation.ts's reserved check. */
 export function keyComparisonIdentity(key: string | RegExp): string {
   if (key instanceof RegExp) return key.source;
   const lowered = key.toLowerCase();

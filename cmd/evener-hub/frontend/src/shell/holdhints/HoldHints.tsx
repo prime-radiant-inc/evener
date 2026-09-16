@@ -4,7 +4,7 @@
 // that affordance triggers. Release - or any of the cleanup paths in
 // holdHintsController.ts - hides them.
 //
-// The chords are registry-sourced through keybindings/display.ts's
+// The chords are registry-sourced through keybindingDisplay.ts's
 // displayBindingFor - the same read the cheatsheet overlay and the Settings
 // section make - so a hub-synced override (or an unbound action, whose chip
 // then does not render) shows truthfully, and no hand-maintained copy can go

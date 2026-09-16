@@ -263,7 +263,7 @@ export const DEFAULT_BINDINGS: readonly DefaultBindingInput[] = [
   // (chordDisplayKeys), so the row still reads "?". The entry is
   // CONDITIONAL: shell/cheatsheet/cheatsheetController.ts keeps it
   // registered only while the characterKeyTriggers pref is on.
-  // Listed SECOND for the action so defaultInputFor (overrides.ts) keeps
+  // Listed SECOND for the action so defaultInputFor (keybindingOverrides.ts) keeps
   // the $mod+/ entry's policy flags for overrides.
   {
     id: CHARACTER_KEY_TRIGGER_BINDING_ID,
