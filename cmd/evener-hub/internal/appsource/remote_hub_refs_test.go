@@ -587,6 +587,75 @@ func TestRemoteHubJobsListPreservesUnrecognizedPayloads(t *testing.T) {
 	}
 }
 
+// TestRemoteHubJobsListPreservesUndecodableTreePayloads pins the second half of
+// the recognition boundary: a payload can satisfy activityTreeRecognized's
+// discriminator test — `revision` a non-negative integer, `root` an object
+// carrying `sessionId` and `ref` as strings — and STILL fail to decode as a
+// complete appwire.JobActivityTree. Spec 05 names exactly this case: "every
+// payload that fails it — or that passes it but still fails to decode as a tree
+// — is preserved as the `any` value it arrived as, never rewritten."
+//
+// The declared field types are what make these payloads malformed: entries is
+// []JobActivityEntry, so a JSON object there is a type error (the case a
+// reviewer named as `entries: {}`); a declared nested node carries its own
+// required string fields; a declared container is a struct, not a scalar; and
+// revision is a uint64, so a non-negative integral float64 too large for it is
+// recognized but not decodable. Each payload carries a tree-shaped `root.ref`
+// because that is the rewrite a walk that trusted the discriminator gate alone
+// would perform: the controller would then receive an address the remote hub
+// never minted for a payload it does not understand.
+//
+// As in TestRemoteHubJobsListPreservesUnrecognizedPayloads, each payload is
+// served as raw JSON through the real stream client and compared against an
+// independent decode of the same bytes; deep equality on that value is the
+// byte-for-byte pin, and assertNoRewrittenRefs names a rewrite explicitly.
+func TestRemoteHubJobsListPreservesUndecodableTreePayloads(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"entries is an object", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","entries":{}}}`},
+		{"entry node carries a non-string kind", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","entries":[{"kind":5,"job":{"jobId":"job_a","ownerRef":"local:th_1","transcriptRef":"local:th_1"}}]}}`},
+		{"counts is not an object", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","counts":"x"}}`},
+		{"branch is not an object", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","branch":"x"}}`},
+		{"revision overflows uint64", `{"revision":1e300,"root":{"sessionId":"S","ref":"local:th_1","entries":[]}}`},
+		{"delegate child is not an object", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","entries":[{"kind":"delegate","delegate":{"delegateId":"dlg_1","childRef":"local:th_1","child":"local:th_1"}}]}}`},
+		{"delegate turn carries a non-string job id", `{"revision":1,"root":{"sessionId":"S","ref":"local:th_1","entries":[{"kind":"delegate","delegate":{"delegateId":"dlg_1","childRef":"local:th_1","turns":[{"jobId":7,"ownerRef":"local:th_1"}]}}]}}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var want any
+			if err := json.Unmarshal([]byte(tc.payload), &want); err != nil {
+				t.Fatalf("decode the expected payload %s: %v", tc.payload, err)
+			}
+			// The case is only interesting if the discriminator gate accepts it, so
+			// the payload must actually be recognized as a tree. That is asserted
+			// rather than assumed: a payload that failed recognition would pass
+			// through for the wrong reason.
+			object, ok := want.(map[string]any)
+			if !ok || !activityTreeRecognized(object) {
+				t.Fatalf("payload %s is not recognized as a tree, so it does not exercise the decode gate", tc.payload)
+			}
+			source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+				if method != appwire.MethodEvenerJobsList {
+					return scriptedReply{result: map[string]any{}}
+				}
+				return scriptedReply{result: appwire.JobsListResponse{Data: json.RawMessage(tc.payload)}}
+			})
+
+			resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+			if err != nil {
+				t.Fatalf("ListJobs: %v", err)
+			}
+			if !reflect.DeepEqual(resp.Data, want) {
+				t.Fatalf("Data = %#v, want the undecodable payload preserved as %#v", resp.Data, want)
+			}
+			assertNoRewrittenRefs(t, resp.Data)
+		})
+	}
+}
+
 // assertNoRewrittenRefs walks a decoded JSON value and fails on any string that
 // names the controller namespace. It is a failure-mode aid for the pass-through
 // cases, whose authoritative pin is the deep-equality assertion against an
