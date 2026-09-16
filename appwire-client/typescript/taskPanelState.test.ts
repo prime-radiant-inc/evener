@@ -202,3 +202,99 @@ test("the pure classifiers and the entry transition are exposed for a caller tha
   expect(applyTasksFetchResult(loaded, { kind: "daemon-gone" })).toMatchObject({ rows: [], daemonGone: true });
   expect(applyTasksFetchResult(loaded, { kind: "unsupported" })).toMatchObject({ rows: null, unsupported: true });
 });
+
+test("a read that throws synchronously still settles the caller and clears the run", async () => {
+  const store = createTasksPanelStore(() => {
+    throw new Error("no client yet");
+  });
+  const result = await store.refresh("local:test", () => true);
+  expect(result).toMatchObject({ kind: "failure" });
+  expect(store.getState().entries.get("local:test")).toMatchObject({ loading: false, rows: null });
+  expect(store.getState().entries.get("local:test")?.failure?.sentence).toContain("no client yet");
+  // The run is gone: the next refresh starts a fresh one rather than joining a ghost.
+  expect(await store.refresh("local:test", () => true)).toMatchObject({ kind: "failure" });
+});
+
+test("a hasAggregate that throws does not strand the run", async () => {
+  const store = createTasksPanelStore(async () => {
+    throw new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  });
+  await expect(
+    store.refresh("local:test", () => {
+      throw new Error("model gone");
+    }),
+  ).rejects.toThrow("model gone");
+  expect(await store.refresh("local:test", () => false)).toEqual({ kind: "empty" });
+});
+
+test("resetForTests settles the waiters of a run in flight and stops it looping into the reset store", async () => {
+  const { store, io, requests, entry } = boundary();
+  let complete!: (value: unknown) => void;
+  io.read = () =>
+    new Promise((resolve) => {
+      complete = resolve;
+    });
+  const first = store.refresh("local:test", () => true);
+  const joined = store.refresh("local:test", () => true);
+  store.getState().resetForTests();
+  expect(await first).toBeNull();
+  expect(await joined).toBeNull();
+  io.read = async () => [row(2)];
+  complete([row(1)]);
+  await Promise.resolve();
+  await Promise.resolve();
+  // The abandoned run neither re-read nor published into the reset store.
+  expect(requests).toHaveLength(1);
+  expect(entry()).toBeUndefined();
+  expect(await store.refresh("local:test", () => true)).toMatchObject({ kind: "rows" });
+  expect(entry()?.rows?.map((item) => item.id)).toEqual([2]);
+});
+
+test("a thrown hasAggregate settles the entry as a failure, not a spinner", async () => {
+  const store = createTasksPanelStore(async () => {
+    throw new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  });
+  await expect(
+    store.refresh("local:test", () => {
+      throw new Error("model gone");
+    }),
+  ).rejects.toThrow("model gone");
+  const entry = store.getState().entries.get("local:test");
+  expect(entry?.loading).toBe(false);
+  expect(entry?.failure?.sentence).toContain("model gone");
+});
+
+test("a thrown hasAggregate rejects only the run's owner; earlier callers still resolve null", async () => {
+  let complete!: (value: unknown) => void;
+  const store = createTasksPanelStore(
+    () =>
+      new Promise((resolve) => {
+        complete = resolve;
+      }),
+  );
+  const throwing = () => {
+    throw new Error("model gone");
+  };
+  const first = store.refresh("local:test", throwing);
+  const owner = store.refresh("local:test", throwing);
+  // Only a rejection classifies through hasAggregate; make the read reject.
+  const failing = new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  complete(Promise.reject(failing));
+  await expect(owner).rejects.toThrow("model gone");
+  expect(await first).toBeNull();
+});
+
+test("a push-driven refresh whose port throws leaves no unhandled rejection behind", async () => {
+  const { store, io, notifications, notify, entry } = boundary();
+  io.read = async () => {
+    throw new WireError("thread not found: t", -32000, { evenerErrorInfo: "sessionUnavailable" });
+  };
+  const stop = store.watch(notifications, "local:test", "thread", () => {
+    throw new Error("model gone");
+  });
+  await vi.waitFor(() => expect(entry()?.loading).toBe(false));
+  notify();
+  await vi.waitFor(() => expect(entry()?.failure?.sentence).toContain("model gone"));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  stop();
+});

@@ -19,6 +19,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -1796,4 +1797,55 @@ func task6CommunicateOutputSchema(t *testing.T, request llm.Request) any {
 	}
 	t.Fatal("provider request omitted communicate tool")
 	return nil
+}
+
+// TestDelegateResourceCreate_FailedConstructionRetainsPinnedScratch is the
+// regression for a failed stable-delegate creation disposing a PINNED fresh
+// scratch. construct pins isolation.env's freshly sandboxed scratch into the
+// root's durable retention manifest before it builds the child; when a later
+// construction step fails, isolation.cleanup disposed that directory with
+// os.RemoveAll while the manifest kept its reference and binding slot. The
+// reference is append-only and there is no unpin API, so the root was left
+// with a dangling reference naming a removed directory and its retirement
+// preparation permanently refused. The create path must retain the pinned
+// allocation (release the lease, keep the directory), exactly as the
+// restore-path teardowns do.
+func TestDelegateResourceCreate_FailedConstructionRetainsPinnedScratch(t *testing.T) {
+	root, _, _ := newDelegateResourceBootstrapSession(t)
+	owner, ok := root.scratchRetentionOwner()
+	if !ok {
+		t.Fatal("root has no scratch retention owner")
+	}
+	constructErr := errors.New("injected construction failure after the scratch pin")
+	root.cfg.testOnly.subagentPrepareFault = func(point string) error {
+		if point == "new_session" {
+			return constructErr
+		}
+		return nil
+	}
+
+	result := root.createDelegate(context.Background(), delegateArgs{
+		Task:                "fail after pinning a fresh scratch",
+		Sandbox:             "restricted",
+		DelegationAllowance: new(0),
+	})
+	if !errors.Is(result.Err, constructErr) {
+		t.Fatalf("createDelegate error = %v, want the injected construction failure", result.Err)
+	}
+
+	manifest, err := sandbox.LoadScratchRetention(owner)
+	if err != nil {
+		t.Fatalf("load retention manifest: %v", err)
+	}
+	if len(manifest.References) == 0 {
+		t.Fatal("fixture pinned no scratch; the failed create observed nothing")
+	}
+	for _, ref := range manifest.References {
+		if _, err := os.Stat(filepath.Clean(ref.Dir)); err != nil {
+			t.Errorf("dangling retained reference after a failed delegate create: dir=%q kind=%q err=%v", ref.Dir, ref.Kind, err)
+		}
+	}
+	if err := root.validateRetainedScratchPresent(); err != nil {
+		t.Errorf("validateRetainedScratchPresent failed after a failed delegate create: %v", err)
+	}
 }

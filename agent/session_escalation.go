@@ -164,6 +164,11 @@ func (s *Session) escalateOnSandboxDenial(ctx context.Context, callName string, 
 	if !ok || !s.escalationAllowed(callName, denied) {
 		return res
 	}
+	work, admitted := s.beginEnvWork("sandbox-escalation")
+	if !admitted {
+		return res
+	}
+	defer s.endEnvWork(work)
 
 	id, seq := newEscalationID()
 	ch := make(chan sandbox.EscalationDecision, 1)

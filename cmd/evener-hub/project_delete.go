@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -21,6 +22,21 @@ import (
 )
 
 type projectDeleteSkip = appwire.ProjectDeleteSkip
+
+// projectRemoteSources returns the hosts a tree project reports as owning it.
+// The tree spells the controller's own sessions with the empty string — the
+// decision store's key — so every other entry is a host that shares the
+// project's canonical ID and path. Sorted by the tree, so the refusal reads
+// deterministically.
+func projectRemoteSources(sources []string) []string {
+	var hosts []string
+	for _, source := range sources {
+		if source != "" {
+			hosts = append(hosts, source)
+		}
+	}
+	return hosts
+}
 
 func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, skipped []projectDeleteSkip, changed bool, project string) (appwire.ProjectDeleteResponse, error) {
 	navigation := s.emptyNavigationMutation()
@@ -56,9 +72,14 @@ func (s *WebServer) navigationAfterDeletion(ctx context.Context, hint navigation
 }
 
 var (
-	removeProjectSessionFile            = os.Remove
-	removeProjectSessionDir             = os.RemoveAll
-	removeProjectSessionRendezvousEntry = rendezvous.Remove
+	removeProjectSessionFile = os.Remove
+	removeProjectSessionDir  = os.RemoveAll
+	// removeProjectSessionRendezvousEntry deletes one matched session's
+	// rendezvous file only while it still carries the exact identity that was
+	// just read. Deleting by PID alone would destroy a live replacement's entry
+	// if that PID were reused (or a respawn raced a slow exit) between the list
+	// and the unlink, permanently losing Hub discovery for the replacement.
+	removeProjectSessionRendezvousEntry = rendezvous.RemoveIfOwned
 	rebuildProjectDeletionPast          = func(past *hubcore.PastIndex) (bool, error) { return past.Rebuild() }
 	// projectSessionLive is the deletion-safety liveness predicate (kata
 	// 8at6): a retained crash marker (LiveEntry.Crashed=true, written by
@@ -97,6 +118,19 @@ func projectSessionOwnership(ctx context.Context, cfg hubcore.WebConfig, id stri
 func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDeleteParams) (appwire.ProjectDeleteResponse, error) {
 	if params.Key == "" || params.WorkingDir == "" {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key and workingDir are required")
+	}
+	// Deletion is local-only: v1 has no remote deletion, and this handler only
+	// ever removes the controller's own sessions. A request that names a host is
+	// refused before any resolution or removal — a remote row must never be
+	// answered with a controller-local delete, and a remote project that merely
+	// shares an ID or path with a local one must not take the local project's
+	// sessions with it. "local" (and an absent field) is the controller's own
+	// source, the same normalization archive and favorite use.
+	if source := hubcore.NormalizeDecisionSource(params.Source); source != "" {
+		if err := validateDecisionSource(s.cfg, source); err != nil {
+			return appwire.ProjectDeleteResponse{}, err
+		}
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("project delete is local-only; " + source + " is not this hub")
 	}
 	if params.Key == "no-project" {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("no-project is not a local project")
@@ -152,6 +186,18 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	}
 	if matched == nil || matched.WorkingDir != project.CanonicalPath {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key does not match workingDir")
+	}
+	// A merged project — the controller's own rows plus a host's under the same
+	// canonical ID and path — is not deletable here either. The rail refuses it
+	// before the confirmation dialog opens, and the wire must refuse it too: a
+	// request that named no source would otherwise remove the controller's
+	// sessions of a project a host also owns, leaving one project half-deleted
+	// and the UI and the API disagreeing about the same row. The tree's sources
+	// are the authority ("" is the controller), so the gate matches the
+	// ownership the client just rendered.
+	if hosts := projectRemoteSources(matched.Sources); len(hosts) > 0 {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams(
+			"project delete is local-only; this project also belongs to " + strings.Join(hosts, ", "))
 	}
 
 	// Resolve every distinct candidate path before deleting anything. This uses
@@ -383,10 +429,42 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
 func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
+	// Remove the artifacts first: the release below is authorized by that
+	// deletion succeeding, not by the attempt. Releasing before a removal that
+	// can still fail would tombstone a session whose metadata and transcript
+	// survive (and stay resumable), so a later resume would mint replacement
+	// scratch and let the originally retained directories be collected.
 	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
-		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, nil
+		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, decisionErrors
 	}
-	return true, nil, s.scrubSessionDecisions(threadID)
+	// Under this verified deletion ownership, release the exact target root's
+	// scratch-retention manifest now that its state is purged. A manifest owned
+	// by a surviving root is never touched, so a child-only deletion cannot
+	// release its parent's retained scratch. A release failure is recorded, not
+	// silently dropped, so deletion still proceeds conservatively.
+	if err := releaseProjectDeletionScratchRetention(stateDir, threadID); err != nil {
+		decisionErrors = append(decisionErrors, "scratch retention release error: "+err.Error())
+	}
+	return true, nil, append(decisionErrors, s.scrubSessionDecisions(threadID)...)
+}
+
+// releaseProjectDeletionScratchRetention writes the terminal tombstone for the
+// scratch-retention manifest owned by exactly sessionID. It is a no-op when no
+// manifest exists for that id, so a session that is not a retention root (a
+// delegate child, or one that never minted scratch) cannot release a surviving
+// root's manifest.
+func releaseProjectDeletionScratchRetention(stateDir, sessionID string) error {
+	if stateDir == "" || sessionID == "" {
+		return nil
+	}
+	manifestPath := filepath.Join(stateDir, "scratch-retention", sessionID+".json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return agentsandbox.ReleaseScratchRetention(agentsandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID})
 }
 
 func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []string) {
@@ -394,14 +472,14 @@ func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []str
 	aliases := hubcore.LocalSessionDecisionAliases(threadID, authority)
 	if s.cfg.Archive != nil {
 		for _, id := range aliases {
-			if err := s.cfg.Archive.Delete("session", id); err != nil {
+			if err := s.cfg.Archive.Delete("", "session", id); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("archive store error: %v", err))
 			}
 		}
 	}
 	if s.cfg.Favorite != nil {
 		for _, id := range aliases {
-			if err := s.cfg.Favorite.Delete("session", id); err != nil {
+			if err := s.cfg.Favorite.Delete("", "session", id); err != nil {
 				decisionErrors = append(decisionErrors, fmt.Sprintf("favorite store error: %v", err))
 			}
 		}
@@ -440,12 +518,12 @@ func (s *WebServer) cleanupProjectDeletion(
 	}
 	if len(result.Skipped) == 0 && record.WholeProject {
 		if s.cfg.Archive != nil {
-			if err := s.cfg.Archive.Delete("project", record.ProjectID); err != nil {
+			if err := s.cfg.Archive.Delete("", "project", record.ProjectID); err != nil {
 				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("archive store error: %v", err))
 			}
 		}
 		if s.cfg.Favorite != nil {
-			if err := s.cfg.Favorite.Delete("project", record.ProjectID); err != nil {
+			if err := s.cfg.Favorite.Delete("", "project", record.ProjectID); err != nil {
 				result.DecisionErrors = append(result.DecisionErrors, fmt.Sprintf("favorite store error: %v", err))
 			}
 		}
@@ -537,7 +615,7 @@ func removeProjectSessionRendezvous(runDir, sessionID string) error {
 		if entry.SessionID != sessionID && entry.ThreadID != sessionID {
 			continue
 		}
-		if err := removeProjectSessionRendezvousEntry(runDir, entry.PID); err != nil {
+		if err := removeProjectSessionRendezvousEntry(runDir, entry); err != nil {
 			return err
 		}
 	}

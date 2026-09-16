@@ -6,6 +6,7 @@ import {
 	decodeNavigationResponse,
 	materializeNavigationResource,
 	normalizedGraphFromSnapshot,
+	requiredRevision,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
@@ -146,16 +147,11 @@ export async function refreshPinNavigation(
 			throw Error(
 				"The hub restarted before the pin change could be confirmed. Refresh to read its current state.",
 			);
-		if (version.generationId === receipt.generation_id) {
-			const floor = Math.max(
-				0,
-				...receipt.targets
-					.filter((target) => target.kind === "pin_catalog")
-					.map((target) => target.revision ?? 0),
-			);
-			if (version.revision < floor)
-				throw Error("The pin catalog is older than the acknowledged change.");
-		}
+		if (
+			version.generationId === receipt.generation_id &&
+			version.revision < requiredRevision(pages.resourceKey, receipt.targets)
+		)
+			throw Error("The pin catalog is older than the acknowledged change.");
 	}
 	checkCurrent();
 	checkedPage();

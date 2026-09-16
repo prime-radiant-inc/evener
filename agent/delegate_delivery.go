@@ -161,6 +161,11 @@ func (c *delegateTreeController) waitForDelegateInline(ctx context.Context, wait
 }
 
 func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (delegateDeliveryToken, bool, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return delegateDeliveryToken{}, false, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if plan.controller != c || plan.deliveryID == "" || plan.claim.deliveryID != plan.deliveryID {
@@ -233,6 +238,7 @@ func (c *delegateTreeController) BeginDelivery(plan delegateDeliveryPlan) (deleg
 }
 
 func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, committed bool) (delegateMutationPlans, error) {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	receipt := c.deliveries[token.processID]
@@ -308,6 +314,11 @@ func (c *delegateTreeController) CompleteDelivery(token delegateDeliveryToken, c
 }
 
 func (c *delegateTreeController) ReplayDeliveries() []delegateDeliveryPlan {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	ids := make([]string, 0, len(c.durable))
@@ -679,6 +690,9 @@ func (c *delegateTreeController) notifyStableDelegateAttention() {
 }
 
 func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) error {
+	if plans.retirementRelease != nil {
+		defer plans.retirementRelease()
+	}
 	if s == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
 	}
@@ -805,6 +819,11 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 	if s == nil {
 		return delegateMutationPlans{}, false, errDelegateDeliveryReceiverUnavailable
 	}
+	release, err := s.beginRetirementMutation("delegate_delivery")
+	if err != nil {
+		return delegateMutationPlans{}, false, err
+	}
+	defer release()
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	// goalInTurn remains true across a terminal communicate's Idle transition
@@ -838,6 +857,11 @@ func (s *Session) flushPendingDelegateDeliveries() error {
 	if s == nil {
 		return nil
 	}
+	release, err := s.beginRetirementMutation("delegate_delivery")
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.delegateDeliveryMu.Lock()
 	if s.delegateDeliveryPumping {
 		s.delegateDeliveryMu.Unlock()

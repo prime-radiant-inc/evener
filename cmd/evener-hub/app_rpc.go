@@ -48,7 +48,12 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 			_, _ = fmt.Fprintf(os.Stderr, "[hub] remote hosts skipped (no SSH client wired): %s\n", strings.Join(names, ", "))
 		} else {
 			for _, host := range cfg.RemoteHosts {
-				registry.Add(appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient))
+				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
+				source.SetHostFacts(cfg.RemoteHostFacts)
+				source.SetHostOnline(func() bool {
+					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
+				})
+				registry.Add(source)
 			}
 		}
 	}
@@ -447,7 +452,11 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 				}
 				return appserver.SubscriptionAdmissionResolution{Key: ref.String(), Intent: appserver.SubscriptionAdmissionResolved}
 			}
-			key, _, err := threadRelayTarget(source, params)
+			// A federated source is keyed by the ref it was addressed with
+			// (relayDeliveryTarget), so a read carrying both the stable ref and
+			// the thread's current ID admits under the identity a ref-only
+			// thread/unsubscribe resolves.
+			key, _, err := relayDeliveryTarget(source, params)
 			if err != nil {
 				return appserver.SubscriptionAdmissionResolution{Intent: appserver.SubscriptionAdmissionInvalid}
 			}
@@ -500,6 +509,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
 	registerMiscHandlers(server, cfg, sources)
@@ -507,6 +517,26 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
+	// Component 07a: the remote-admin proxy and its host-tagged config
+	// notification fan-out. Nothing here reads or writes a credential.
+	//
+	// The fan-out is a server-lifetime worker, not a per-connection one: it must
+	// stay subscribed while no browser is connected so that a host's config
+	// change is still relayed when one returns, and it re-subscribes itself
+	// across client reconnects. Its context is the RPC server's own lifetime
+	// handle (round eight), which Shutdown cancels when shutdown begins. Bound
+	// this way the fan-out stops with the server it belongs to: a hub server
+	// recreated in-process no longer leaves the previous server's fan-outs
+	// subscribed forever (one goroutine per remote host, each still holding the
+	// old server's sources and broadcaster, which would also duplicate every
+	// host notification once a replacement subscribed too). Pinned by
+	// TestHostAdminFanOutStopsWhenServerShutdown here and by
+	// TestHostAdminFanOutStopsWhenContextCanceled at the controller level.
+	// The binding only holds if something actually shuts the server down: the
+	// hub's top-level lifecycle drains it unconditionally on the way out
+	// (main.go), not only on the tracing path, and does so before the SSH
+	// manager closes the transports these fan-outs read from.
+	registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
 	return server
 }
 
@@ -697,13 +727,23 @@ func registerThreadHandlers(
 	// thread/unsubscribe drops only the calling connection's downstream
 	// subscription — the browser's own read of a thread it is navigating away
 	// from. The relay key is derived by the same helper thread/read's relay
-	// uses (threadRelayTarget), so the removal lands on the exact registry
-	// entry Subscribe created. Resolution deliberately uses the plain registry
-	// lookup without session activation because an unsubscribe must not
-	// start a session just to stop delivering to it. When no source resolves,
-	// the ref's own namespace (parsed from the ref itself) is the best key
-	// available; Unsubscribe is conn-scoped and idempotent, so a missed key
-	// costs only a subscription the connection-close cleanup reaps anyway.
+	// uses (relayDeliveryTarget), so the removal lands on the exact registry
+	// entry Subscribe created. That helper is deliberately NOT
+	// threadRelayTarget: for a federated source (anything but the local
+	// daemon) the ref's suffix wins over the caller's bare threadId, because
+	// the ref is the stable identity that survives an identity replacement
+	// while the thread's current ID moves. Keying such a read by the threadId
+	// registered the relay under "host:<currentID>" while a ref-addressed
+	// unsubscribe resolved "host:<stableRef>", so the downstream entry — and
+	// the source-side subscription behind it — was never dropped. Both ends
+	// must keep resolving through relayDeliveryTarget; re-deriving either from
+	// threadRelayTarget reintroduces that mismatch. Resolution deliberately
+	// uses the plain registry lookup without session activation because an
+	// unsubscribe must not start a session just to stop delivering to it. When
+	// no source resolves, the ref's own namespace (parsed from the ref itself)
+	// is the best key available; Unsubscribe is conn-scoped and idempotent, so
+	// a missed key costs only a subscription the connection-close cleanup
+	// reaps anyway.
 	appserver.HandleTyped(server.Router(), appwire.MethodThreadUnsubscribe, func(ctx context.Context, params appwire.ThreadUnsubscribeParams) (appwire.EmptyResponse, error) {
 		source, err := sourceForThread(sources, params.Ref, params.ThreadID)
 		if err != nil {
@@ -717,7 +757,7 @@ func registerThreadHandlers(
 			appserver.UnsubscribeLifecycle(ctx, "local:"+strings.TrimSpace(params.ThreadID))
 			return appwire.EmptyResponse{}, nil
 		}
-		relayKey, _, keyErr := threadRelayTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
+		relayKey, _, keyErr := relayDeliveryTarget(source, appwire.ThreadReadParams{ThreadID: params.ThreadID, Ref: params.Ref})
 		if keyErr != nil {
 			return appwire.EmptyResponse{}, keyErr
 		}
@@ -867,6 +907,17 @@ func registerThreadHandlers(
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+			}
+			resolved = false
+			return attemptStart()
+		}
+		if isLifecycleRetiringError(err) {
+			// The owning daemon refused the mutation because it is retiring and
+			// still owns the session. Resolve the race under existing recovery
+			// authority — admission fences, ownership alias locks, confirmed exit,
+			// one resume — then retry the original request verbatim.
+			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
+				return appwire.TurnStartResponse{}, resumeErr
 			}
 			resolved = false
 			return attemptStart()

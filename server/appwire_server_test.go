@@ -181,7 +181,7 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	// Production restores before it bridges: SessionStart carries the persisted
 	// entry count so live ids start above the seeded ones.
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{Restored: true, TranscriptEntries: 2}})
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetCancelFunc(func() {})
 	installProjectedMutationCallbacksForTest(srv)
 
@@ -688,9 +688,10 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	var gotText string
 	var gotImages []ImageAttachment
-	srv.SetSteerWithImagesFunc(func(text string, images []ImageAttachment) {
+	srv.SetSteerWithImagesFunc(func(text string, images []ImageAttachment) error {
 		gotText = text
 		gotImages = append([]ImageAttachment(nil), images...)
+		return nil
 	})
 	installProjectedMutationCallbacksForTest(srv)
 
@@ -724,8 +725,9 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	var steered []string
-	srv.SetSteerFunc(func(text string) {
+	srv.SetSteerFunc(func(text string) error {
 		steered = append(steered, text)
+		return nil
 	})
 	installProjectedMutationCallbacksForTest(srv)
 
@@ -2021,17 +2023,41 @@ func TestServerAppWireThreadReadKeepsSeededHistoryAheadOfLiveTurns(t *testing.T)
 	}
 }
 
-func TestServerAppWireThreadShutdownInvokesCallback(t *testing.T) {
+// thread/shutdown owes its reply ("the daemon runs it asynchronously",
+// appwire/protocol.go) and the shutdown ends the process, which closes this
+// socket (#1501). The shutdown func here does to the connection what process
+// exit does - cancels it - so a shutdown that starts before the reply frame
+// is written loses the reply the same way the daemon did.
+func TestServerAppWireThreadShutdownRepliesBeforeTheShutdownStarts(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	done := make(chan struct{})
+	srv.SetShutdownFunc(func() {
+		defer close(done)
+		_ = srv.AppServer().Shutdown(context.Background())
+	})
+
+	client := dialServerAppWire(t, srv)
+	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown callback was not invoked")
+	}
+}
+
+// A shutdown request with no transport to wait on (nothing will ever write
+// its reply) still has to shut the daemon down.
+func TestServerAppWireThreadShutdownInvokesCallbackWithoutATransport(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	done := make(chan struct{}, 1)
 	srv.SetShutdownFunc(func() { done <- struct{}{} })
 
-	conn := srv.AppServer().NewConnection("test")
-	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
-	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadShutdown, appwire.ThreadShutdownParams{Ref: "local:th_1"}))
-	if resp.Kind() != appwire.MessageResponse {
-		t.Fatalf("resp=%v", resp.Kind())
+	if _, err := srv.handleAppThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
 	select {
 	case <-done:

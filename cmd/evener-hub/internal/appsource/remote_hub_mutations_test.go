@@ -1,0 +1,1055 @@
+package appsource
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"strings"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
+)
+
+const (
+	testControllerRef = "host:S"
+	testRemoteRef     = "local:S"
+	testThreadID      = "S"
+)
+
+// wireEnvelope decodes the ref/threadId/clientMutationId fields common to the
+// params forwarded to the remote hub.
+type wireEnvelope struct {
+	Ref              string `json:"ref"`
+	ThreadID         string `json:"threadId"`
+	ClientMutationID string `json:"clientMutationId"`
+	Harness          string `json:"harness"`
+}
+
+func decodeWireEnvelope(t *testing.T, raw json.RawMessage) wireEnvelope {
+	t.Helper()
+	var env wireEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("decode forwarded params %s: %v", raw, err)
+	}
+	return env
+}
+
+// TestRemoteHubMutationWireMethodsAndRefs asserts, for every 05c method, the
+// exact wire method it sends, that a controller ref arrives as local:, and that
+// clientMutationId is forwarded unchanged on the mutation-envelope methods.
+func TestRemoteHubMutationWireMethodsAndRefs(t *testing.T) {
+	type methodCase struct {
+		name       string
+		wantMethod string
+		ref        bool
+		threadID   bool
+		cmid       string
+		invoke     func(context.Context, *RemoteHubSource) error
+	}
+
+	cases := []methodCase{
+		// Mutation envelope (ClientMutationID present).
+		{"StartTurn", appwire.MethodTurnStart, true, true, "cmid-StartTurn", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.StartTurn(ctx, appwire.TurnStartParams{Ref: testControllerRef, ThreadID: testThreadID, ClientMutationID: "cmid-StartTurn"})
+			return err
+		}},
+		{"SteerTurn", appwire.MethodTurnSteer, true, true, "cmid-SteerTurn", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.SteerTurn(ctx, appwire.TurnSteerParams{Ref: testControllerRef, ThreadID: testThreadID, ClientMutationID: "cmid-SteerTurn"})
+			return err
+		}},
+		{"InterruptTurn", appwire.MethodTurnInterrupt, true, true, "cmid-InterruptTurn", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.InterruptTurn(ctx, appwire.TurnInterruptParams{Ref: testControllerRef, ThreadID: testThreadID, ClientMutationID: "cmid-InterruptTurn"})
+			return err
+		}},
+		{"QueueTurn", appwire.MethodTurnQueue, true, false, "cmid-QueueTurn", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.QueueTurn(ctx, appwire.TurnQueueParams{Ref: testControllerRef, ClientMutationID: "cmid-QueueTurn"})
+			return err
+		}},
+		{"DrainAsSteer", appwire.MethodTurnDrainAsSteer, true, false, "cmid-DrainAsSteer", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.DrainAsSteer(ctx, appwire.TurnDrainAsSteerParams{Ref: testControllerRef, ClientMutationID: "cmid-DrainAsSteer"})
+			return err
+		}},
+		{"PromoteQueuedAsSteer", appwire.MethodTurnPromoteQueuedAsSteer, true, false, "cmid-PromoteQueuedAsSteer", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.PromoteQueuedAsSteer(ctx, appwire.TurnPromoteQueuedAsSteerParams{Ref: testControllerRef, ClientMutationID: "cmid-PromoteQueuedAsSteer"})
+			return err
+		}},
+		{"CancelQueued", appwire.MethodTurnCancelQueued, true, false, "cmid-CancelQueued", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.CancelQueued(ctx, appwire.TurnCancelQueuedParams{Ref: testControllerRef, ClientMutationID: "cmid-CancelQueued"})
+			return err
+		}},
+		{"NotesHumanSet", appwire.MethodNotesHumanSet, true, false, "cmid-NotesHumanSet", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.NotesHumanSet(ctx, appwire.NotesHumanSetParams{Ref: testControllerRef, ClientMutationID: "cmid-NotesHumanSet"})
+			return err
+		}},
+		{"UrlsRemove", appwire.MethodUrlsRemove, true, false, "cmid-UrlsRemove", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.UrlsRemove(ctx, appwire.UrlsRemoveParams{Ref: testControllerRef, ClientMutationID: "cmid-UrlsRemove"})
+			return err
+		}},
+		{"ClearThread", appwire.MethodThreadClear, true, false, "cmid-ClearThread", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: testControllerRef, ClientMutationID: "cmid-ClearThread"})
+			return err
+		}},
+
+		// Thread/turn lifecycle without a ClientMutationID.
+		{"StartThread", appwire.MethodThreadStart, false, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.StartThread(ctx, appwire.ThreadStartParams{Harness: "host", CWD: "/work"})
+			return err
+		}},
+		{"ResumeThread", appwire.MethodThreadResume, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.ResumeThread(ctx, appwire.ThreadResumeParams{Ref: testControllerRef})
+			return err
+		}},
+		{"ForkThread", appwire.MethodThreadFork, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.ForkThread(ctx, appwire.ThreadForkParams{Ref: testControllerRef})
+			return err
+		}},
+		{"CompactThread", appwire.MethodThreadCompactStart, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.CompactThread(ctx, appwire.ThreadCompactStartParams{Ref: testControllerRef})
+		}},
+		{"ShutdownThread", appwire.MethodThreadShutdown, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.ShutdownThread(ctx, appwire.ThreadShutdownParams{Ref: testControllerRef})
+		}},
+		{"SetThreadModel", appwire.MethodThreadModelSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.SetThreadModel(ctx, appwire.ThreadModelSetParams{Ref: testControllerRef})
+		}},
+		{"SetThreadReasoningEffort", appwire.MethodThreadReasoningEffortSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.SetThreadReasoningEffort(ctx, appwire.ThreadReasoningEffortSetParams{Ref: testControllerRef})
+		}},
+		{"SetThreadVisionModel", appwire.MethodThreadVisionModelSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.SetThreadVisionModel(ctx, appwire.ThreadVisionModelSetParams{Ref: testControllerRef})
+		}},
+		{"SetThreadName", appwire.MethodEvenerThreadNameSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.SetThreadName(ctx, appwire.ThreadNameSetParams{Ref: testControllerRef, Name: "n"})
+		}},
+		{"GoalSet", appwire.MethodGoalSet, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.GoalSet(ctx, appwire.GoalSetParams{Ref: testControllerRef})
+			return err
+		}},
+		{"ResolveSandboxEscalation", appwire.MethodEvenerSandboxEscalationResolve, true, true, "", func(ctx context.Context, s *RemoteHubSource) error {
+			return s.ResolveSandboxEscalation(ctx, appwire.SandboxEscalationResolveParams{Ref: testControllerRef, ThreadID: testThreadID})
+		}},
+
+		// Read-only forwards.
+		{"ListTasks", appwire.MethodEvenerTasksList, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.ListTasks(ctx, appwire.TaskListParams{Ref: testControllerRef})
+			return err
+		}},
+		{"ListJobs", appwire.MethodEvenerJobsList, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.ListJobs(ctx, appwire.JobsListParams{Ref: testControllerRef})
+			return err
+		}},
+		{"JobOutput", appwire.MethodEvenerJobsOutput, true, false, "", func(ctx context.Context, s *RemoteHubSource) error {
+			_, err := s.JobOutput(ctx, appwire.JobsOutputParams{Ref: testControllerRef, JobID: "j1"})
+			return err
+		}},
+	}
+
+	// StartThread's harness is the controller's source selector; it must be
+	// rewritten before forwarding, or the remote hub resolves it as one of its
+	// own source ids and thread creation fails.
+	wantHarness := map[string]string{"StartThread": "evener"}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+				return scriptedReply{result: map[string]any{}}
+			})
+			if err := tc.invoke(t.Context(), source); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			env := decodeWireEnvelope(t, lastMethodCall(t, calls(), tc.wantMethod))
+			if tc.ref && env.Ref != testRemoteRef {
+				t.Errorf("%s ref = %q, want %q", tc.name, env.Ref, testRemoteRef)
+			}
+			if tc.threadID && env.ThreadID != testThreadID {
+				t.Errorf("%s threadId = %q, want %q", tc.name, env.ThreadID, testThreadID)
+			}
+			if tc.cmid != "" && env.ClientMutationID != tc.cmid {
+				t.Errorf("%s clientMutationId = %q, want %q", tc.name, env.ClientMutationID, tc.cmid)
+			}
+			if want := wantHarness[tc.name]; env.Harness != want {
+				t.Errorf("%s harness = %q, want %q", tc.name, env.Harness, want)
+			}
+		})
+	}
+}
+
+// TestRemoteHubAttachHandshakeTimeoutIsSessionUnavailable pins the reviewer's
+// case for component 05c. The sshconn attach handshake is bounded by its own
+// initTimeout child context, and client.Initialize returns that child's
+// context.DeadlineExceeded, which attach wraps as
+// "ErrSSHStart: ... initialize: %w". The chain therefore satisfies BOTH
+// errors.Is(err, sshconn.ErrSSHStart) and errors.Is(err, context.DeadlineExceeded).
+//
+// mapCallError short-circuits a deadline raw before transportUnavailable can
+// match ErrSSHStart, so the acquisition step of a mutation must not use it:
+// it maps through mapConnectError like call, so the chain becomes the
+// SessionUnavailable the auto-resume gate reads. The gate's consumer is
+// isSessionUnavailableError in cmd/evener-hub/app_compact.go (CodeUnavailable
+// plus ErrorSessionUnavailable); that function is in package hub, which imports
+// appsource, so this test asserts exactly the two conditions it reads rather
+// than calling across the import cycle.
+//
+// A genuine caller deadline is unaffected: the ctx.Err() guard precedes the
+// mapping on both paths, pinned by
+// TestRemoteHubMutationCallerContextStaysRaw/client acquisition deadline.
+func TestRemoteHubAttachHandshakeTimeoutIsSessionUnavailable(t *testing.T) {
+	// Built exactly as sshconn attaches it (manager.go, the Initialize error
+	// branch): fmt.Errorf("%w: host %q initialize: %w: %s", ErrSSHStart,
+	// host.Name, err, sink.tail()) with err == context.DeadlineExceeded from
+	// the initTimeout-bounded client.Initialize.
+	attachTimeout := fmt.Errorf("%w: host %q initialize: %w: %s",
+		sshconn.ErrSSHStart, "host", context.DeadlineExceeded, "")
+	if !errors.Is(attachTimeout, sshconn.ErrSSHStart) {
+		t.Fatal("fixture is not an ErrSSHStart chain")
+	}
+	if !errors.Is(attachTimeout, context.DeadlineExceeded) {
+		t.Fatal("fixture does not satisfy errors.Is(err, context.DeadlineExceeded); it would not pin the reviewer's chain")
+	}
+
+	assertSessionUnavailable := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("call succeeded despite a timed-out remote attach")
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want %d (an acquisition failure must not be an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+		}
+		if got := wireErrorInfo(wire); got != string(appwire.ErrorSessionUnavailable) {
+			t.Fatalf("evenerErrorInfo = %q, want %q (the marker isSessionUnavailableError reads)", got, appwire.ErrorSessionUnavailable)
+		}
+	}
+
+	t.Run("read path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		_, err := source.ListModels(t.Context(), appwire.ModelListParams{})
+		assertSessionUnavailable(t, err)
+	})
+
+	t.Run("mutation path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-attach-timeout"})
+		assertSessionUnavailable(t, err)
+	})
+
+	// The forwarded-admin paths acquire the client the same way, so a timed-out
+	// attach must classify identically there: the acquisition failure happens
+	// before dispatch, so nothing crossed the wire and the outcome is known.
+	t.Run("admin read path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		var out json.RawMessage
+		if err := source.AdminCall(t.Context(), appwire.MethodEvenerInstanceList, nil, &out); err == nil {
+			t.Fatal("AdminCall succeeded despite a timed-out remote attach")
+		} else {
+			assertSessionUnavailable(t, err)
+		}
+	})
+
+	t.Run("admin mutation path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		var out json.RawMessage
+		if err := source.AdminMutationCall(t.Context(), appwire.MethodEvenerPluginInstall, nil, &out); err == nil {
+			t.Fatal("AdminMutationCall succeeded despite a timed-out remote attach")
+		} else {
+			// Nothing crossed the wire, so this stays the safe-retry
+			// SessionUnavailable the auto-resume gate reads, never an in-doubt
+			// mutation outcome.
+			assertSessionUnavailable(t, err)
+		}
+	})
+}
+
+// TestRemoteHubAdminCallerContextStaysRaw mirrors
+// TestRemoteHubMutationCallerContextStaysRaw for the forwarded-admin paths: a
+// caller context that ends while the host is still being acquired stays raw on
+// both AdminCall and AdminMutationCall. The caller's own context ending is not
+// host unavailability, and the mutation-unknown retry disposition would
+// re-drive a mutation the caller abandoned.
+func TestRemoteHubAdminCallerContextStaysRaw(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, *RemoteHubSource) error
+	}{
+		{"AdminCall", func(ctx context.Context, s *RemoteHubSource) error {
+			var out json.RawMessage
+			return s.AdminCall(ctx, appwire.MethodEvenerInstanceList, nil, &out)
+		}},
+		{"AdminMutationCall", func(ctx context.Context, s *RemoteHubSource) error {
+			var out json.RawMessage
+			return s.AdminMutationCall(ctx, appwire.MethodEvenerPluginInstall, nil, &out)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer deadlineCancel()
+			source := NewRemoteHubSource("host", nil, func(ctx context.Context, _ string) (*appwire.Client, error) {
+				// Wait for the caller's context to end, then fail the attach, so
+				// the acquisition error's classification is unambiguous.
+				<-ctx.Done()
+				return nil, errors.New("attach failed")
+			})
+			err := tc.call(deadlineCtx, source)
+			assertRawContextError(t, err, context.DeadlineExceeded)
+		})
+	}
+}
+
+func localThreadFixture() appwire.Thread {
+	return appwire.Thread{
+		ID:     "S",
+		Source: "local",
+		Evener: appwire.EvenerThread{Ref: "local:S", ParentRef: "local:P", InstanceID: "xyz"},
+	}
+}
+
+// TestRemoteHubMutationOutboundThreadTranslation asserts that thread-creating
+// and clearing responses have their Thread (and ClearThread's Ref) moved from
+// the remote "local:" namespace into the controller's "host:" namespace.
+func TestRemoteHubMutationOutboundThreadTranslation(t *testing.T) {
+	cases := []struct {
+		name   string
+		invoke func(context.Context, *RemoteHubSource) (appwire.Thread, string, error)
+	}{
+		{"StartThread", func(ctx context.Context, s *RemoteHubSource) (appwire.Thread, string, error) {
+			resp, err := s.StartThread(ctx, appwire.ThreadStartParams{CWD: "/work"})
+			return resp.Thread, "", err
+		}},
+		{"ResumeThread", func(ctx context.Context, s *RemoteHubSource) (appwire.Thread, string, error) {
+			resp, err := s.ResumeThread(ctx, appwire.ThreadResumeParams{Ref: testControllerRef})
+			return resp.Thread, "", err
+		}},
+		{"ForkThread", func(ctx context.Context, s *RemoteHubSource) (appwire.Thread, string, error) {
+			resp, err := s.ForkThread(ctx, appwire.ThreadForkParams{Ref: testControllerRef})
+			return resp.Thread, "", err
+		}},
+		{"ClearThread", func(ctx context.Context, s *RemoteHubSource) (appwire.Thread, string, error) {
+			resp, err := s.ClearThread(ctx, appwire.ThreadClearParams{Ref: testControllerRef, ClientMutationID: "cmid-clear"})
+			return resp.Thread, resp.Ref, err
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+				switch method {
+				case appwire.MethodThreadStart:
+					return scriptedReply{result: appwire.ThreadStartResponse{Thread: localThreadFixture()}}
+				case appwire.MethodThreadResume:
+					return scriptedReply{result: appwire.ThreadResumeResponse{Thread: localThreadFixture()}}
+				case appwire.MethodThreadFork:
+					return scriptedReply{result: appwire.ThreadForkResponse{Thread: localThreadFixture()}}
+				case appwire.MethodThreadClear:
+					return scriptedReply{result: appwire.ThreadClearResponse{Thread: localThreadFixture(), Ref: testRemoteRef}}
+				default:
+					t.Errorf("unexpected method %q", method)
+					return scriptedReply{result: map[string]any{}}
+				}
+			})
+			thread, ref, err := tc.invoke(t.Context(), source)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if thread.Source != "host" {
+				t.Errorf("Thread.Source = %q, want host", thread.Source)
+			}
+			if thread.Evener.Ref != testControllerRef {
+				t.Errorf("Thread.Evener.Ref = %q, want %q", thread.Evener.Ref, testControllerRef)
+			}
+			if thread.Evener.ParentRef != "host:P" {
+				t.Errorf("Thread.Evener.ParentRef = %q, want host:P", thread.Evener.ParentRef)
+			}
+			if thread.Evener.InstanceID != "xyz" {
+				t.Errorf("Thread.Evener.InstanceID = %q, want xyz", thread.Evener.InstanceID)
+			}
+			if tc.name == "ClearThread" && ref != testControllerRef {
+				t.Errorf("ClearThread Ref = %q, want %q", ref, testControllerRef)
+			}
+		})
+	}
+}
+
+// TestRemoteHubMutationOutcomeUnknownOnResponseLoss asserts a lost mutation
+// response becomes ErrorMutationOutcomeUnknown while the same loss on a
+// read-only call stays SessionUnavailable.
+func TestRemoteHubMutationOutcomeUnknownOnResponseLoss(t *testing.T) {
+	t.Run("mutation", func(t *testing.T) {
+		source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+			return scriptedReply{closeConn: true}
+		})
+		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-loss"})
+		if err == nil {
+			t.Fatal("StartTurn succeeded after the remote closed the pipe")
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeInternalError {
+			t.Fatalf("code = %d, want %d", wire.Code, appwire.CodeInternalError)
+		}
+		data, ok := wire.Data.(appwire.ErrorData)
+		if !ok {
+			t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown {
+			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorMutationOutcomeUnknown)
+		}
+		if data.ClientMutationID != "cmid-loss" {
+			t.Fatalf("clientMutationId = %q, want cmid-loss", data.ClientMutationID)
+		}
+		if data.MutationOutcome != appwire.MutationOutcomeUnknown {
+			t.Fatalf("mutationOutcome = %q, want %q", data.MutationOutcome, appwire.MutationOutcomeUnknown)
+		}
+		if data.RetryDisposition != appwire.RetryDispositionAutomatic {
+			t.Fatalf("retryDisposition = %q, want %q", data.RetryDisposition, appwire.RetryDispositionAutomatic)
+		}
+	})
+
+	t.Run("non-mutation", func(t *testing.T) {
+		source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+			return scriptedReply{closeConn: true}
+		})
+		_, err := source.ListModels(t.Context(), appwire.ModelListParams{})
+		if err == nil {
+			t.Fatal("ListModels succeeded after the remote closed the pipe")
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want %d (read loss must stay SessionUnavailable)", wire.Code, appwire.CodeUnavailable)
+		}
+		data, ok := wire.Data.(appwire.ErrorData)
+		if !ok {
+			t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+		}
+		if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+			t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorSessionUnavailable)
+		}
+	})
+}
+
+// TestRemoteHubMutationPreservesSemanticWireError asserts a semantic wire error
+// from the responder passes through both call and mutationCall unchanged.
+func TestRemoteHubMutationPreservesSemanticWireError(t *testing.T) {
+	t.Run("call", func(t *testing.T) {
+		semantic := appwire.InvalidParams("boom")
+		source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+			return scriptedReply{wireErr: &semantic}
+		})
+		_, err := source.ListModels(t.Context(), appwire.ModelListParams{})
+		assertSemanticBoom(t, err)
+	})
+
+	t.Run("mutation", func(t *testing.T) {
+		semantic := appwire.InvalidParams("boom")
+		source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+			return scriptedReply{wireErr: &semantic}
+		})
+		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-sem"})
+		assertSemanticBoom(t, err)
+	})
+}
+
+func assertSemanticBoom(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("call succeeded despite a semantic error")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("code = %d, want %d (semantic error remapped)", wire.Code, appwire.CodeInvalidParams)
+	}
+	if !strings.Contains(wire.Message, "boom") {
+		t.Fatalf("message = %q, want it to preserve %q", wire.Message, "boom")
+	}
+}
+
+// TestRemoteHubMutationForeignRefRefusedWithoutCall asserts a mutation whose
+// ref names another source is refused locally before any wire call.
+func TestRemoteHubMutationForeignRefRefusedWithoutCall(t *testing.T) {
+	source, calls := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{result: map[string]any{}}
+	})
+	_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: "other:X", ClientMutationID: "cmid-foreign"})
+	if err == nil {
+		t.Fatal("StartTurn accepted a foreign ref")
+	}
+	if !strings.Contains(err.Error(), "source not found: other") {
+		t.Fatalf("error = %v, want it to contain %q", err, "source not found: other")
+	}
+	for _, call := range calls() {
+		if call.method == appwire.MethodTurnStart {
+			t.Fatalf("foreign ref was forwarded: %+v", calls())
+		}
+	}
+}
+
+// TestRemoteHubMutationClientAcquisitionFailureIsSessionUnavailable asserts a
+// failure to acquire the remote client (dial/attach) is reported as
+// SessionUnavailable, not as an in-doubt mutation: no request was sent, so the
+// outcome is known and the hub's auto-resume gate must be able to fire.
+func TestRemoteHubMutationClientAcquisitionFailureIsSessionUnavailable(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+		return nil, io.EOF
+	})
+
+	_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-offline"})
+	if err == nil {
+		t.Fatal("StartTurn succeeded despite an unreachable remote host")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d (client acquisition is not an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T %v, want appwire.ErrorData", wire.Data, wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorSessionUnavailable)
+	}
+}
+
+// TestRemoteHubJobsListTranslatesActivityRefs asserts the recursive activity
+// tree returned by a remote hub has every DECLARED session ref moved from the
+// remote "local:" namespace into the controller's "host:" namespace, while the
+// opaque "job:<id>" transcript ref of a shell job and an undeclared
+// delegate-level "transcriptRef" (JobActivityDelegate declares only childRef)
+// are preserved byte-for-byte.
+func TestRemoteHubJobsListTranslatesActivityRefs(t *testing.T) {
+	rawTree := map[string]any{
+		"revision": 3,
+		"root": map[string]any{
+			"sessionId": "root",
+			"ref":       "local:root",
+			"entries": []any{
+				map[string]any{"kind": "shell", "job": map[string]any{
+					"jobId": "job_a", "ownerSessionId": "root", "ownerRef": "local:root",
+					"transcriptRef": "job:job_a", "type": "shell",
+				}},
+				map[string]any{"kind": "delegate", "delegate": map[string]any{
+					"delegateId": "dlg_1", "ownerSessionId": "root", "childSessionId": "child",
+					"childRef": "local:child", "transcriptRef": "local:child",
+					"child": map[string]any{
+						"sessionId": "child",
+						"ref":       "local:child",
+						"entries": []any{
+							map[string]any{"kind": "shell", "job": map[string]any{
+								"jobId": "job_b", "ownerSessionId": "child", "ownerRef": "local:child",
+								"transcriptRef": "job:job_b", "type": "shell",
+							}},
+						},
+					},
+				}},
+			},
+		},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: rawTree}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	tree, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("Data = %T, want the decoded activity tree map", resp.Data)
+	}
+	root := activityMap(t, tree["root"], "root")
+	if root["ref"] != "host:root" {
+		t.Errorf("root.ref = %v, want %q", root["ref"], "host:root")
+	}
+	if root["sessionId"] != "root" {
+		t.Errorf("root.sessionId = %v, want bare id %q", root["sessionId"], "root")
+	}
+	entries, ok := root["entries"].([]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("root.entries = %#v, want two entries", root["entries"])
+	}
+	shellJob := activityMap(t, activityMap(t, entries[0], "entry 0")["job"], "job_a")
+	if shellJob["ownerRef"] != "host:root" {
+		t.Errorf("shell job ownerRef = %v, want %q", shellJob["ownerRef"], "host:root")
+	}
+	if shellJob["transcriptRef"] != "job:job_a" {
+		t.Errorf("shell job transcriptRef = %v, want opaque %q", shellJob["transcriptRef"], "job:job_a")
+	}
+	delegate := activityMap(t, activityMap(t, entries[1], "entry 1")["delegate"], "delegate")
+	if delegate["childRef"] != "host:child" {
+		t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
+	}
+	// JobActivityDelegate declares no transcriptRef; only childRef is a declared
+	// ref field, so this key is not a routed address and must reach the
+	// controller byte-for-byte like any other undeclared key.
+	if delegate["transcriptRef"] != "local:child" {
+		t.Errorf("delegate transcriptRef = %v, want untouched %q (undeclared key)", delegate["transcriptRef"], "local:child")
+	}
+	child := activityMap(t, delegate["child"], "child session")
+	if child["ref"] != "host:child" {
+		t.Errorf("child.ref = %v, want %q", child["ref"], "host:child")
+	}
+	childEntries, ok := child["entries"].([]any)
+	if !ok || len(childEntries) != 1 {
+		t.Fatalf("child.entries = %#v, want one entry", child["entries"])
+	}
+	childJob := activityMap(t, activityMap(t, childEntries[0], "child entry")["job"], "job_b")
+	if childJob["ownerRef"] != "host:child" {
+		t.Errorf("child job ownerRef = %v, want %q", childJob["ownerRef"], "host:child")
+	}
+	if childJob["transcriptRef"] != "job:job_b" {
+		t.Errorf("child job transcriptRef = %v, want opaque %q", childJob["transcriptRef"], "job:job_b")
+	}
+}
+
+func activityMap(t *testing.T, value any, label string) map[string]any {
+	t.Helper()
+	node, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("%s = %#v, want a JSON object", label, value)
+	}
+	return node
+}
+
+// TestRemoteHubJobsListLeavesOpaquePayloadsUntouched pins that the activity-ref
+// walk rewrites only the structural ref fields the JobActivity* types declare.
+// A delegate's message and structuredResult are opaque model-produced JSON
+// (json.RawMessage on the typed struct), so a key literally named "ref",
+// "ownerRef", or "transcriptRef" inside them is data, not a routed session
+// address, and must reach the controller byte-for-byte. The same holds for a
+// key the enclosing node does not declare at all: a delegate-level
+// "transcriptRef" is not a JobActivityDelegate field (its only ref field is
+// childRef), so it survives untouched. The structural refs alongside them must
+// still translate.
+func TestRemoteHubJobsListLeavesOpaquePayloadsUntouched(t *testing.T) {
+	rawTree := map[string]any{
+		"revision": 1,
+		"root": map[string]any{
+			"sessionId": "root",
+			"ref":       "local:root",
+			"entries": []any{
+				map[string]any{"kind": "shell", "job": map[string]any{
+					"jobId": "job_a", "ownerSessionId": "root", "ownerRef": "local:root",
+					"transcriptRef": "job:job_a",
+				}},
+				map[string]any{"kind": "delegate", "delegate": map[string]any{
+					"delegateId": "dlg_1", "ownerSessionId": "root", "childSessionId": "child",
+					"childRef": "local:child", "transcriptRef": "local:child",
+					"message":          map[string]any{"ref": "local:main", "transcriptRef": "local:main"},
+					"structuredResult": map[string]any{"ref": "local:main", "nested": []any{map[string]any{"ownerRef": "local:main", "childRef": "local:main"}}},
+					"turns": []any{
+						map[string]any{"jobId": "turn_1", "ownerRef": "local:child", "transcriptRef": "local:child"},
+					},
+					"child": map[string]any{
+						"sessionId": "child",
+						"ref":       "local:child",
+						"entries":   []any{},
+					},
+				}},
+			},
+		},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: rawTree}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	tree := activityMap(t, resp.Data, "tree")
+	root := activityMap(t, tree["root"], "root")
+	if root["ref"] != "host:root" {
+		t.Errorf("root.ref = %v, want %q", root["ref"], "host:root")
+	}
+	entries, ok := root["entries"].([]any)
+	if !ok || len(entries) != 2 {
+		t.Fatalf("root.entries = %#v, want two entries", root["entries"])
+	}
+	delegate := activityMap(t, activityMap(t, entries[1], "entry 1")["delegate"], "delegate")
+	if delegate["childRef"] != "host:child" {
+		t.Errorf("delegate childRef = %v, want %q", delegate["childRef"], "host:child")
+	}
+	// A delegate-level transcriptRef is not declared by JobActivityDelegate (its
+	// only ref field is childRef), so it is opaque data: untouched.
+	if delegate["transcriptRef"] != "local:child" {
+		t.Errorf("delegate transcriptRef = %v, want untouched %q (undeclared key)", delegate["transcriptRef"], "local:child")
+	}
+	turns, ok := delegate["turns"].([]any)
+	if !ok || len(turns) != 1 {
+		t.Fatalf("delegate.turns = %#v, want one turn", delegate["turns"])
+	}
+	turn := activityMap(t, turns[0], "turn 0")
+	if turn["ownerRef"] != "host:child" || turn["transcriptRef"] != "host:child" {
+		t.Errorf("turn refs = %#v, want both translated to host:child", turn)
+	}
+
+	message := activityMap(t, delegate["message"], "message")
+	if message["ref"] != "local:main" || message["transcriptRef"] != "local:main" {
+		t.Errorf("opaque message was rewritten: %#v", message)
+	}
+	structured := activityMap(t, delegate["structuredResult"], "structuredResult")
+	if structured["ref"] != "local:main" {
+		t.Errorf("opaque structuredResult.ref was rewritten: %#v", structured)
+	}
+	nested, ok := structured["nested"].([]any)
+	if !ok || len(nested) != 1 {
+		t.Fatalf("structuredResult.nested = %#v, want one element", structured["nested"])
+	}
+	nestedNode := activityMap(t, nested[0], "structuredResult.nested[0]")
+	if nestedNode["ownerRef"] != "local:main" || nestedNode["childRef"] != "local:main" {
+		t.Errorf("opaque nested payload was rewritten: %#v", nestedNode)
+	}
+}
+
+// TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs pins the retired flat-array
+// jobs/list shape an older daemon may still return (docs/appwire-protocol.md,
+// evener/jobs/list): a session-valued transcriptRef must move from the remote
+// "local:" namespace into the controller's "host:" namespace, while the opaque
+// "job:<id>" transcriptRef of a shell job and every bare-id key are preserved
+// byte-for-byte.
+func TestRemoteHubJobsListTranslatesLegacyFlatArrayRefs(t *testing.T) {
+	legacy := []any{
+		map[string]any{"jobId": "turn_1", "jobType": "delegate", "ownerSessionId": "S", "transcriptRef": "local:child"},
+		map[string]any{"jobId": "job_a", "jobType": "shell", "ownerSessionId": "S", "transcriptRef": "job:job_a"},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodEvenerJobsList {
+			return scriptedReply{result: map[string]any{}}
+		}
+		return scriptedReply{result: appwire.JobsListResponse{Data: legacy}}
+	})
+
+	resp, err := source.ListJobs(t.Context(), appwire.JobsListParams{Ref: testControllerRef})
+	if err != nil {
+		t.Fatalf("ListJobs: %v", err)
+	}
+	jobs, ok := resp.Data.([]any)
+	if !ok || len(jobs) != 2 {
+		t.Fatalf("Data = %#v, want the legacy flat array of two jobs", resp.Data)
+	}
+	delegateTurn := activityMap(t, jobs[0], "delegate turn")
+	if delegateTurn["transcriptRef"] != "host:child" {
+		t.Errorf("delegate turn transcriptRef = %v, want %q", delegateTurn["transcriptRef"], "host:child")
+	}
+	if delegateTurn["ownerSessionId"] != "S" {
+		t.Errorf("ownerSessionId = %v, want bare id %q", delegateTurn["ownerSessionId"], "S")
+	}
+	shellJob := activityMap(t, jobs[1], "shell job")
+	if shellJob["transcriptRef"] != "job:job_a" {
+		t.Errorf("shell job transcriptRef = %v, want opaque %q", shellJob["transcriptRef"], "job:job_a")
+	}
+}
+
+// TestRemoteHubMutationPreservesRemoteSessionUnavailable pins the boundary the
+// mutation-unknown mapping must NOT cross: a sessionUnavailable that arrives as
+// an intact error frame from the remote hub is a semantic verdict ("the target
+// session is not available"), not a lost response, so it stays SessionUnavailable
+// for the auto-resume gate. Only a transport loss — which mapCallError turns
+// into a locally synthesized typed SessionUnavailable — is in doubt and becomes
+// MutationOutcomeUnknown (TestRemoteHubMutationOutcomeUnknownOnResponseLoss).
+// Converting this decoded-shape verdict would re-drive a mutation against a
+// session known to be absent.
+func TestRemoteHubMutationPreservesRemoteSessionUnavailable(t *testing.T) {
+	remoteErr := appwire.SessionUnavailable("session gone")
+	source, _ := newScriptedRemote(t, "host", func(string, json.RawMessage) scriptedReply {
+		return scriptedReply{wireErr: &remoteErr}
+	})
+	_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-sem-unavail"})
+	if err == nil {
+		t.Fatal("StartTurn succeeded despite a remote sessionUnavailable")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("code = %d, want %d (a delivered verdict must not become an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+	}
+	if got := wireErrorInfo(wire); got != string(appwire.ErrorSessionUnavailable) {
+		t.Fatalf("evenerErrorInfo = %q, want %q", got, appwire.ErrorSessionUnavailable)
+	}
+}
+
+// TestRemoteHubMutationCallerContextStaysRaw asserts that a caller cancellation
+// or deadline reaching mutationCall never becomes SessionUnavailable or
+// MutationOutcomeUnknown: the caller's own context ending is not host
+// unavailability, and the mutation-unknown automatic-retry disposition would
+// re-drive a mutation the caller abandoned. It mirrors
+// LocalDaemonSource.withClientCallMapper, which returns ctx.Err() raw after the
+// dial and after fn.
+func TestRemoteHubMutationCallerContextStaysRaw(t *testing.T) {
+	t.Run("request deadline", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		clientConn, serverConn := net.Pipe()
+		server := appwire.NewStreamTransport(serverConn)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				if _, err := server.Recv(context.Background()); err != nil {
+					return
+				}
+				// Read the request but never answer, so the client waits on the
+				// caller context rather than on a response.
+			}
+		}()
+
+		client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+		client.Start(ctx)
+		defer func() {
+			_ = client.Close()
+			_ = serverConn.Close()
+			<-drained
+		}()
+
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer deadlineCancel()
+		_, err := source.StartTurn(deadlineCtx, appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-deadline"})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("client acquisition deadline", func(t *testing.T) {
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer deadlineCancel()
+		source := NewRemoteHubSource("host", nil, func(ctx context.Context, _ string) (*appwire.Client, error) {
+			// Wait for the caller's context to end, then fail the attach, so the
+			// acquisition error's classification is unambiguous.
+			<-ctx.Done()
+			return nil, errors.New("attach failed")
+		})
+		_, err := source.StartTurn(deadlineCtx, appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-attach"})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+}
+
+func assertRawContextError(t *testing.T, err error, want error) {
+	t.Helper()
+	if !errors.Is(err, want) {
+		t.Fatalf("err = %T %v, want %v", err, err, want)
+	}
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
+		t.Fatalf("error = %#v, want a raw context error, never a wire mutation outcome", wire)
+	}
+}
+
+// TestRemoteHubCallCallerContextStaysRaw asserts that a caller cancellation or
+// deadline reaching the plain call path — the new non-mutationCall forwards
+// such as StartThread, ResumeThread, ForkThread, and CompactThread — never
+// becomes SessionUnavailable. The caller's own context ending is not host
+// unavailability, so mapping it through would incorrectly fire the hub's
+// auto-resume gate. It mirrors mutationCall and LocalDaemonSource's
+// withClientCallMapper, which return ctx.Err() raw at every step.
+func TestRemoteHubCallCallerContextStaysRaw(t *testing.T) {
+	t.Run("request deadline", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+
+		clientConn, serverConn := net.Pipe()
+		server := appwire.NewStreamTransport(serverConn)
+		drained := make(chan struct{})
+		go func() {
+			defer close(drained)
+			for {
+				if _, err := server.Recv(context.Background()); err != nil {
+					return
+				}
+				// Read the request but never answer, so the client waits on the
+				// caller context rather than on a response.
+			}
+		}()
+
+		client := appwire.NewClient(appwire.NewStreamTransport(clientConn))
+		client.Start(ctx)
+		defer func() {
+			_ = client.Close()
+			_ = serverConn.Close()
+			<-drained
+		}()
+
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+		defer deadlineCancel()
+		_, err := source.StartThread(deadlineCtx, appwire.ThreadStartParams{})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+
+	t.Run("client acquisition deadline", func(t *testing.T) {
+		deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+		defer deadlineCancel()
+		source := NewRemoteHubSource("host", nil, func(ctx context.Context, _ string) (*appwire.Client, error) {
+			// Wait for the caller's context to end, then fail the attach, so the
+			// acquisition error's classification is unambiguous.
+			<-ctx.Done()
+			return nil, errors.New("attach failed")
+		})
+		_, err := source.StartThread(deadlineCtx, appwire.ThreadStartParams{})
+		assertRawContextError(t, err, context.DeadlineExceeded)
+	})
+}
+
+// TestRemoteHubThreadDiagnosticsTranslateNestedRefs asserts fromRemoteThread
+// rewrites the session-valued refs nested in a thread's diagnostics — a
+// delegate's and a delegate job's transcriptRef — while leaving an opaque
+// "job:<id>" ref and every bare session id untouched.
+func TestRemoteHubThreadDiagnosticsTranslateNestedRefs(t *testing.T) {
+	thread := appwire.Thread{
+		ID:     "S",
+		Source: "local",
+		Evener: appwire.EvenerThread{
+			Ref:       testRemoteRef,
+			ParentRef: "local:P",
+			Diagnostics: &appwire.EvenerDiagnostics{
+				Jobs: []appwire.EvenerJobInfo{
+					{JobID: "dlg_job", JobType: "delegate", TranscriptRef: "local:child"},
+					{JobID: "job_a", JobType: "shell", TranscriptRef: "job:job_a"},
+				},
+				Delegates: []appwire.EvenerDelegateInfo{
+					{DelegateID: "dlg_1", OwnerSessionID: "child", ChildSessionID: "child", TranscriptRef: "local:child"},
+				},
+			},
+		},
+	}
+
+	source, _ := newScriptedRemote(t, "host", func(method string, _ json.RawMessage) scriptedReply {
+		if method != appwire.MethodThreadRead {
+			t.Errorf("method = %q, want %q", method, appwire.MethodThreadRead)
+		}
+		return scriptedReply{result: appwire.ThreadReadResponse{Thread: thread}}
+	})
+
+	resp, err := source.ReadThread(t.Context(), appwire.ThreadReadParams{Ref: testControllerRef, ThreadID: testThreadID})
+	if err != nil {
+		t.Fatalf("ReadThread: %v", err)
+	}
+	diagnostics := resp.Thread.Evener.Diagnostics
+	if diagnostics == nil {
+		t.Fatal("ReadThread dropped the thread diagnostics")
+	}
+	if got := diagnostics.Delegates[0].TranscriptRef; got != "host:child" {
+		t.Errorf("delegate transcriptRef = %q, want %q", got, "host:child")
+	}
+	if got := diagnostics.Delegates[0].ChildSessionID; got != "child" {
+		t.Errorf("delegate childSessionId = %q, want bare id %q", got, "child")
+	}
+	if got := diagnostics.Jobs[0].TranscriptRef; got != "host:child" {
+		t.Errorf("delegate job transcriptRef = %q, want %q", got, "host:child")
+	}
+	if got := diagnostics.Jobs[1].TranscriptRef; got != "job:job_a" {
+		t.Errorf("shell job transcriptRef = %q, want opaque %q", got, "job:job_a")
+	}
+}
+
+// TestRemoteHubAcquisitionErrSSHStartIsSessionUnavailable pins the production
+// connector's retryable acquisition class. sshManager.Ensure surfaces
+// sshconn.ErrSSHStart (wrapping *exec.ExitError or plain stderr text) when the
+// ssh bridge cannot start or handshake; it carries no transport-shaped text, so
+// text matching alone misses it and an unreachable host would surface as a
+// generic error that never fires the hub's auto-resume gate. ErrSSHStart must
+// therefore map to SessionUnavailable on BOTH the read (call) and mutation
+// (mutationCall) paths, while the terminal classes stay raw.
+func TestRemoteHubAcquisitionErrSSHStartIsSessionUnavailable(t *testing.T) {
+	startErr := fmt.Errorf("%w: host %q: %w: ssh: connect to host host port 22: Connection refused",
+		sshconn.ErrSSHStart, "host", errors.New("exit status 255"))
+
+	assertSessionUnavailable := func(t *testing.T, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatal("call succeeded despite an unreachable remote host")
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) {
+			t.Fatalf("error = %T %v, want appwire.WireError", err, err)
+		}
+		if wire.Code != appwire.CodeUnavailable {
+			t.Fatalf("code = %d, want %d (an acquisition failure must not be an in-doubt mutation)", wire.Code, appwire.CodeUnavailable)
+		}
+		if got := wireErrorInfo(wire); got != string(appwire.ErrorSessionUnavailable) {
+			t.Fatalf("evenerErrorInfo = %q, want %q", got, appwire.ErrorSessionUnavailable)
+		}
+	}
+
+	t.Run("read path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, startErr
+		})
+		_, err := source.ListModels(t.Context(), appwire.ModelListParams{})
+		assertSessionUnavailable(t, err)
+	})
+
+	t.Run("mutation path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, startErr
+		})
+		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-sshstart"})
+		assertSessionUnavailable(t, err)
+	})
+
+	terminal := []struct {
+		name string
+		err  error
+	}{
+		{"ssh auth", fmt.Errorf("%w: host %q: permission denied", sshconn.ErrSSHAuth, "host")},
+		{"host not found", fmt.Errorf("%w: %q", sshconn.ErrHostNotFound, "host")},
+		{"protocol incompatible", fmt.Errorf("%w: host %q: peer speaks -1", sshconn.ErrProtocolIncompatible, "host")},
+	}
+	for _, tc := range terminal {
+		t.Run("terminal "+tc.name, func(t *testing.T) {
+			source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+				return nil, tc.err
+			})
+			_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-terminal"})
+			if err == nil {
+				t.Fatal("StartTurn succeeded despite a terminal acquisition failure")
+			}
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("error = %v, want the terminal class preserved", err)
+			}
+			if wire, ok := errors.AsType[appwire.WireError](err); ok {
+				t.Fatalf("terminal acquisition error was remapped to a wire error: %#v", wire)
+			}
+		})
+	}
+}

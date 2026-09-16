@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -46,6 +47,7 @@ type WebConfig struct {
 	KeybindingsStoreErr       error                    // diagnostic returned while loading the injected store; retained for startup diagnostics
 	DaemonProcesses           daemonprocess.Controller // nil selects verified native process operations
 	RunDir                    string                   // run directory where rendezvous files live
+	DaemonIdleTimeout         time.Duration            // configured idle-retirement deadline the Hub passes to spawned daemons; surfaced in settings
 	PastIndexPath             string                   // path to the SQLite past-index DB, for display in settings
 	Roster                    *Roster
 	Past                      *PastIndex
@@ -83,6 +85,17 @@ type WebConfig struct {
 	// remote host, attaching over SSH on first use (component 04). nil
 	// disables remote hosts (tests).
 	RemoteHostClient func(ctx context.Context, host string) (*appwire.Client, error)
+	// RemoteHostFacts returns the component-04 preflight facts (protocol
+	// version, hub version, OS/arch, advertised features) for the AppWire
+	// connection behind client, the exact generation RemoteHostClient resolved
+	// for the capability probe; an implementation must answer from that same
+	// generation rather than racing a reconnect. The capability probe combines
+	// the facts with its AppWire reads. nil leaves the preflight-owned fields
+	// zero-valued (tests).
+	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
+	// controller-to-host channel (component 06). Nil leaves every remote host
+	// online (tests).
+	RemoteHostOnline func(host string) bool
 
 	// PokeAttention nudges the hub's attention watcher to recompute
 	// immediately (e.g. after an archive decision changes tier eligibility)

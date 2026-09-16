@@ -8,7 +8,9 @@ and the user-facing message helpers every failure display goes through, the
 pure question formatter, the ask_user question parser and the answered recap
 it reads back out of a transcript, the live-question derivation an answering
 dock renders from a thread, the batch reconciliation that keeps an in-flight
-answer's questions frozen while late ones arrive, the attachment count, size
+answer's questions frozen while late ones arrive, the ask-dock store that
+reconciliation feeds (`createAskDockStore({ send })`, a framework-free store
+each app points at its thread source with `followThreads`), the attachment count, size
 and type limits every composer rejects a staged file against, the `[image N]`
 marker splicing that anchors a staged image in the composer text and removes
 it again, the translation that turns those markers into prose at send and
@@ -17,9 +19,13 @@ attached images beside the text, the thread view model and
 its notification reducer, the activity tree parser, merge and disclosure
 rules, the job log tail parser, the send/queue availability table, the
 send/steer/queue/drain routing decisions a composer makes off it, the stable
-delegate status rule,
+delegate status rule, the delegate timing and model derivations both apps'
+delegate details render from,
 the slash invocation and catalog visibility rules the palette and composer
-share, the inline slash-completion token parser, menu merge, filter and
+share, the command catalog itself as a framework-free store
+(`createCommandCatalog(client)`, the hub-wide list re-read on a plugin change,
+and `createSessionCommandCatalog(client, ref)`, one session's slash menu read
+beside its diagnostics), the inline slash-completion token parser, menu merge, filter and
 splice the composer's own menu is built from, the reasoning-effort labels
 and picker ladders every effort chip and select share, the task-list
 parser, aggregate sentence, status grouping and timestamp formatters the
@@ -62,7 +68,14 @@ names neither a store library nor a parser; that triple is
 `createFrameworkFreeStore`, the base every shared store here is built on; the
 disclosure store both transcripts keep a row's open/closed choice in across a
 remount (`createDisclosureStore()`, the triple plus store-bound actions, read
-reactively through the `isDisclosureOpenIn` selector) - and the doc-pane URL builders, which hang
+reactively through the `isDisclosureOpenIn` selector); the keybindings
+overrides store both apps' shortcut settings run on
+(`createKeybindingsStore({ client, registry?, characterKeyTriggers?, drafts? })`:
+one hub's `evener/settings/keybindings` get/patch/changed posture, reconciled
+into the host's registry as a delta when it has one, with a checkpointed draft
+editor over an injected storage port for a host that edits offline; the host
+drives the connection lifecycle through `setSupport`, `beginReadyGeneration`,
+`endReadyGeneration` and `detachHub`) - and the doc-pane URL builders, which hang
 their hrefs off a base origin the host supplies (empty for a same-origin web
 page). The doc-pane data layer is published at the `./docContent` subpath as
 well, where `readDocFile` takes the host's `DocPort` - that base origin paired
@@ -78,16 +91,37 @@ completion affordance and ships its MIT attribution at
 
 ## Published subpaths
 
-Besides the root, `package.json` `exports` publishes two subpaths:
+Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
 - `@evener/appwire-client/state/navigation` - the navigation state layer both
   apps' navigation stores are built on: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
-  merge (`merge`) and the deep-freeze helpers they share (`immutable`). The
-  subpath resolves to `state/navigation/index.ts`, a barrel that re-exports
-  the four modules whole.
+  merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
+  matching a hub invalidation target to a loaded resource and the revision it
+  obliges it to reach (`invalidation`), and the revalidator that re-reads
+  loaded resources on the hub's invalidations through injected request
+  callbacks (`revalidator`). The subpath resolves to
+  `state/navigation/index.ts`, a barrel that re-exports the six modules whole.
+- `@evener/appwire-client/state/extensions` - the extensions state layer both
+  apps' plugin settings surfaces are built on: the marketplaces store
+  (`createMarketplacesStore(client)`, a framework-free store over a
+  `request`/`onNotification` client port holding a hub's marketplace list and
+  one cached browse result per marketplace, where fetches record their failure
+  in state and mutations reject), with the installed-plugin and directory
+  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
+  barrel over the layer's modules.
+- `@evener/appwire-client/state/credentials` - the credentials state layer:
+  `createCredentialInstancesStore({ ownClientId })` is the framework-free
+  store core (`instances`) each app's Providers & credentials store adapts:
+  the instance listing and its writes, the API-key, credential-file, sign-out,
+  sign-in, status (`authStatus`) and probe RPCs, and the `evener/auth/updated` refetch with its
+  own-echo correlation, over a `request`/`onNotification` client port; with
+  the stale-listing refusal and its `staleListingHeld` predicate, the
+  `foreignListingChange` predicate both hosts gate a credential probe on, and
+  `listingEstablished` in the state. Resolves to
+  `state/credentials/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

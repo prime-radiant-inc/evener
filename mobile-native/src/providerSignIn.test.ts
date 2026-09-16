@@ -1,6 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ProviderSignIn } from "./providerSignIn";
+import { authCalls, boundary as kit, type RecordedCall, signInClient } from "./providerSignIn.testkit";
 
 const device = {
   provider: "work",
@@ -16,22 +15,65 @@ const authorizedStatus = {
   activeSource: "oauth",
   hasStoredOAuth: true,
 };
-function boundary() {
-  const calls: { method: string; params: unknown }[] = [];
-  const io = {
-    request: async (method: string, _params: unknown): Promise<unknown> =>
-      method.endsWith("/start") ? device : { state: "pending" },
-  };
-  const client = {
-    request: (method, params) => {
-      calls.push({ method, params });
-      return io.request(method, params);
-    },
-  } as ConversationClientLike;
-  const flow = new ProviderSignIn(client, "work");
-  return { flow, calls, io, client };
-}
+const boundary = () => kit((method) => (method.endsWith("/start") ? device : { state: "pending" }));
 afterEach(() => vi.useRealTimers());
+
+it("routes every RPC through the credential store's client, not its connected-gate token", async () => {
+  vi.useFakeTimers();
+  const { flow, calls, io } = boundary();
+  // The token the screen hands setConnection is not a transport the flow may use.
+  const token = { request: vi.fn() };
+  flow.setConnection(token);
+  io.request = async (method) =>
+    method === "evener/auth/device/start"
+      ? { ...device, fallback: true }
+      : method === "evener/auth/login/start"
+        ? { provider: "work", flowId: "browser-flow", url: "https://example.test/auth" }
+        : method === "evener/auth/status"
+          ? authorizedStatus
+          : { status: authorizedStatus };
+  await flow.start();
+  await flow.checkStatus();
+  await flow.complete("https://example.test/callback?code=fixture");
+  expect(authCalls(calls).map((call) => call.method)).toEqual([
+    "evener/auth/device/start",
+    "evener/auth/login/start",
+    "evener/auth/status",
+    "evener/auth/login/complete",
+  ]);
+  expect(token.request).not.toHaveBeenCalled();
+
+  const second = boundary();
+  second.flow.setConnection(token);
+  await second.flow.start();
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(authCalls(second.calls).map((call) => call.method)).toEqual([
+    "evener/auth/device/start",
+    "evener/auth/device/poll",
+  ]);
+  expect(token.request).not.toHaveBeenCalled();
+  flow.dispose();
+  second.flow.dispose();
+});
+
+it("a start from a replaced connection's listing is refused and reads as not started", async () => {
+  const { flow, io, store, connect } = boundary();
+  io.request = async () => ({
+    instances: [{ name: "work", providerId: "openai-codex" }],
+    availableProviders: [],
+  });
+  await store.getState().fetch();
+  // The hub connection is replaced; its own listing has not landed yet, so the
+  // rows on screen belong to the connection that is gone.
+  const replacement = boundary();
+  connect(replacement.client);
+  await flow.start();
+  expect(flow.getSnapshot().phase).toBe("error");
+  expect(flow.getSnapshot().error).toContain("could not be started");
+  expect(authCalls(replacement.calls)).toEqual([]);
+  flow.dispose();
+});
+
 it("polls the returned device flow at its interval and stops after authorization", async () => {
   vi.useFakeTimers();
   const { flow, calls, io } = boundary();
@@ -43,11 +85,13 @@ it("polls the returned device flow at its interval and stops after authorization
   await vi.advanceTimersByTimeAsync(1);
   expect(calls[1]).toEqual({
     method: "evener/auth/device/poll",
-    params: { provider: "work", flowId: "flow-1" },
+    params: { provider: "work", flowId: "flow-1", originClientId: "native-test" },
   });
   expect(flow.getSnapshot().phase).toBe("authorized");
+  // The store refreshes its listing after the landed poll; the flow itself
+  // issues nothing more.
   await vi.advanceTimersByTimeAsync(10000);
-  expect(calls).toHaveLength(2);
+  expect(authCalls(calls)).toHaveLength(2);
   flow.dispose();
 });
 it("clamps a huge device interval instead of overflowing into a tight poll loop", async () => {
@@ -90,6 +134,7 @@ it("uses browser fallback and completes with its own flow ID", async () => {
       provider: "work",
       flowId: "browser-2",
       redirectUrl: "https://example.test/callback?code=fixture",
+      originClientId: "native-test",
     },
   });
   expect(flow.getSnapshot().phase).toBe("authorized");
@@ -185,27 +230,27 @@ it("does not publish late authorization after disposal", async () => {
   resolve({ state: "authorized" });
   await poll;
   expect(flow.getSnapshot().phase).not.toBe("authorized");
+  // The landed poll still lands on the hub, so the store's own listing
+  // refresh fires; the disposed flow schedules no poll of its own.
+  await vi.advanceTimersByTimeAsync(300);
   expect(vi.getTimerCount()).toBe(0);
 });
 it("retains the device flow across a hub connection replacement", async () => {
   vi.useFakeTimers();
-  const { flow, calls } = boundary();
+  const { flow, calls, store, connect } = boundary();
   await flow.start();
-  flow.setConnection(null);
+  connect(null);
   await vi.advanceTimersByTimeAsync(10000);
   expect(calls).toHaveLength(1);
-  const replacementCalls: unknown[] = [];
-  flow.setConnection({
-    request: async (method, params) => {
-      replacementCalls.push({ method, params });
-      return { state: "authorized", status: authorizedStatus };
-    },
-  } as ConversationClientLike);
+  const replacementCalls: RecordedCall[] = [];
+  connect(
+    signInClient({ request: async () => ({ state: "authorized", status: authorizedStatus }) }, replacementCalls),
+  );
   await vi.advanceTimersByTimeAsync(2000);
-  expect(replacementCalls).toEqual([
+  expect(authCalls(replacementCalls)).toEqual([
     {
       method: "evener/auth/device/poll",
-      params: { provider: "work", flowId: "flow-1" },
+      params: { provider: "work", flowId: "flow-1", originClientId: "native-test" },
     },
   ]);
   expect(flow.getSnapshot().phase).toBe("authorized");
@@ -213,7 +258,7 @@ it("retains the device flow across a hub connection replacement", async () => {
 });
 it("does not accept a late poll from the disconnected client", async () => {
   vi.useFakeTimers();
-  const { flow, io } = boundary();
+  const { flow, io, connect } = boundary();
   await flow.start();
   let resolve!: (value: unknown) => void;
   io.request = () =>
@@ -221,7 +266,7 @@ it("does not accept a late poll from the disconnected client", async () => {
       resolve = done;
     });
   const poll = flow.retryPoll();
-  flow.setConnection(null);
+  connect(null);
   resolve({ state: "authorized", status: authorizedStatus });
   await poll;
   expect(flow.getSnapshot().phase).toBe("device");
@@ -230,7 +275,7 @@ it("does not accept a late poll from the disconnected client", async () => {
   flow.dispose();
 });
 it("keeps browser continuation across reconnect without replaying completion", async () => {
-  const { flow, io } = boundary();
+  const { flow, io, store, connect } = boundary();
   io.request = async (method) =>
     method === "evener/auth/device/start"
       ? { ...device, fallback: true }
@@ -246,11 +291,11 @@ it("keeps browser continuation across reconnect without replaying completion", a
       resolve = done;
     });
   const complete = flow.complete("https://example.test/callback?code=fixture");
-  flow.setConnection(null);
+  connect(null);
   resolve({ status: {} });
   await complete;
-  const request = vi.fn();
-  flow.setConnection({ request } as unknown as ConversationClientLike);
+  const request = vi.fn(async (): Promise<unknown> => undefined);
+  connect(signInClient({ request }, []));
   expect(request).not.toHaveBeenCalled();
   expect(flow.getSnapshot().phase).toBe("browser");
   expect(flow.getSnapshot().error).toContain("confirmed");
@@ -361,12 +406,12 @@ it("reads unconfigured status without claiming an authorization result", async (
 
 it("marks an in-flight poll uncertain and requires explicit retry after reconnect", async () => {
   vi.useFakeTimers();
-  const { flow, io, calls } = boundary();
+  const { flow, io, calls, connect } = boundary();
   await flow.start();
   let resolve!: (value: unknown) => void;
   io.request = () => new Promise((done) => (resolve = done));
   const poll = flow.retryPoll();
-  flow.setConnection(null);
+  connect(null);
   resolve({ state: "pending" });
   await poll;
   await vi.advanceTimersByTimeAsync(10000);
@@ -420,7 +465,7 @@ it("restores the device timer after a read outlasts the polling interval", async
 
 it("does not let a stale rejected poll poison a newly started flow", async () => {
   vi.useFakeTimers();
-  const { flow, io } = boundary();
+  const { flow, io, store, connect } = boundary();
   await flow.start();
   let reject!: (reason: unknown) => void;
   io.request = async () =>
@@ -428,18 +473,18 @@ it("does not let a stale rejected poll poison a newly started flow", async () =>
       reject = fail;
     });
   const oldPoll = flow.retryPoll();
-  flow.setConnection(null);
+  connect(null);
   const replacement = boundary();
   replacement.io.request = async (method) =>
     method.endsWith("/start") ? device : { state: "pending" };
-  flow.setConnection(replacement.client);
+  connect(replacement.client);
   await flow.start();
   reject(new Error("old transport"));
   await oldPoll;
   expect(flow.getSnapshot().phase).toBe("device");
   expect(flow.getSnapshot().error).toBeNull();
   await vi.advanceTimersByTimeAsync(2000);
-  expect(replacement.calls.map((call) => call.method)).toEqual([
+  expect(authCalls(replacement.calls).map((call) => call.method)).toEqual([
     "evener/auth/device/start",
     "evener/auth/device/poll",
   ]);
@@ -448,7 +493,7 @@ it("does not let a stale rejected poll poison a newly started flow", async () =>
 });
 
 it("does not treat an interrupted browser status read as a write", async () => {
-  const { flow, io } = boundary();
+  const { flow, io, connect } = boundary();
   io.request = async (method) =>
     method === "evener/auth/device/start"
       ? { ...device, fallback: true }
@@ -461,7 +506,7 @@ it("does not treat an interrupted browser status read as a write", async () => {
   let resolve!: (value: unknown) => void;
   io.request = () => new Promise((done) => (resolve = done));
   const read = flow.checkStatus();
-  flow.setConnection(null);
+  connect(null);
   resolve({ ...authorizedStatus, activeSource: "store" });
   await read;
   expect(flow.getSnapshot().phase).toBe("browser");
@@ -471,7 +516,7 @@ it("does not treat an interrupted browser status read as a write", async () => {
 });
 
 it("clears completion operation after authorized response", async () => {
-  const { flow, io } = boundary();
+  const { flow, io, connect } = boundary();
   io.request = async (method) =>
     method === "evener/auth/device/start"
       ? { ...device, fallback: true }
@@ -484,7 +529,7 @@ it("clears completion operation after authorized response", async () => {
         : { status: authorizedStatus };
   await flow.start();
   await flow.complete("https://example.test/callback?code=fixture");
-  flow.setConnection(null);
+  connect(null);
   expect(flow.getSnapshot().phase).toBe("authorized");
   expect(flow.getSnapshot().error).toBeNull();
   flow.dispose();

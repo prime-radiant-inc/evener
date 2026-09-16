@@ -23,6 +23,7 @@ import {
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { MarkdownResponse } from "./MarkdownResponse";
+import { tasksReadThroughCurrentClient } from "./tasksRead";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const statusLabel = {
@@ -63,13 +64,14 @@ export function TasksSheet({
   const store = useMemo(
     () =>
       createTasksPanelStore(
-        async (ref) =>
-          (await currentClient.current.request("evener/tasks/list", { ref }))
-            .data,
+        tasksReadThroughCurrentClient(() => currentClient.current),
       ),
     [],
   );
-  const refresh = () => void store.refresh(sessionRef, hasAggregate);
+  // A thrown port rejects after the store has already settled the entry as
+  // a failure, which the header below shows with Try again; nothing to add.
+  const refresh = () =>
+    void store.refresh(sessionRef, hasAggregate).catch(() => undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: hasAggregate reads a ref, so its identity does not matter
   useEffect(
     () => store.watch(client, sessionRef, threadId, hasAggregate),

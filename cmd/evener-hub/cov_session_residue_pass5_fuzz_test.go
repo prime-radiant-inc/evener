@@ -35,10 +35,10 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			dir := t.TempDir()
 			archive := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
 			favorite := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
-			if err := archive.Set("session", "remote:thread-5", true, now); err != nil {
+			if err := archive.Set("", "session", "remote:thread-5", true, now); err != nil {
 				t.Fatal(err)
 			}
-			if err := favorite.Set("session", "remote:thread-5", true, now); err != nil {
+			if err := favorite.Set("", "session", "remote:thread-5", true, now); err != nil {
 				t.Fatal(err)
 			}
 			web := NewWebServer(hubcore.WebConfig{Archive: archive, Favorite: favorite})

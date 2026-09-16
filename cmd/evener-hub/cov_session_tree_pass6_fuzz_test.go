@@ -57,10 +57,10 @@ func FuzzSessionTreePass6(f *testing.F) {
 			favorite := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "past-6", Name: title, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/project"}}})
-			if err := archive.Set("project", testProjectID(t, "/work/project"), true, now); err != nil {
+			if err := archive.Set("", "project", testProjectID(t, "/work/project"), true, now); err != nil {
 				t.Fatal(err)
 			}
-			if err := favorite.Set("session", "past-6", true, now); err != nil {
+			if err := favorite.Set("", "session", "past-6", true, now); err != nil {
 				t.Fatal(err)
 			}
 			_ = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})

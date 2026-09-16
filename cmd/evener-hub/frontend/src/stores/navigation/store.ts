@@ -23,12 +23,17 @@ import {
   canonicalResourceKey,
   type DecodedNavigationResponse,
   decodeNavigationResponse,
+  isGenerationMismatch,
   isNavigationUnavailable,
+  isRevalidatorDisposed,
+  isSequenceGap,
   isSettledGone,
   keyID,
   materializeNavigationResource,
   NavigationBaseInvalidError,
+  type NavigationInvalidationWaiter,
   type NavigationRequest,
+  NavigationRevalidator,
   type NormalizedResource,
   nextNavigationOffset,
   normalizedGraphFromSnapshot,
@@ -39,13 +44,6 @@ import {
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "../../shell/rail/railExpansion";
-import {
-  isGenerationMismatch,
-  isNavigationNotInitialized,
-  isRevalidatorDisposed,
-  type NavigationInvalidationWaiter,
-  NavigationRevalidator,
-} from "./revalidator";
 
 type ResourceMap = ReadonlyMap<string, ResourceState>;
 
@@ -55,6 +53,15 @@ type ResourceMap = ReadonlyMap<string, ResourceState>;
  * emits nothing (e.g. shutting down an already-exited session is a success
  * no-op), so the action still converges instead of hanging forever. */
 export const NAVIGATION_INVALIDATION_TIMEOUT_MS = 10_000;
+
+/** True when error is this store's not-initialized rejection (a waiter armed
+ * while no revalidator existed — e.g. a shutdown action racing client
+ * replacement, with navigation becoming v2 before convergence begins). There
+ * is nothing to converge against yet the caller's mutation already committed,
+ * so callers treat it as a successful no-op. */
+function isNavigationNotInitialized(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("navigation is not initialized");
+}
 
 /** Await a matching invalidation, but fall back to converging `targets`
  * directly when none arrives within the timeout. A receipt only ends the
@@ -766,7 +773,7 @@ export function initNavigation(
         navigationStore.setState({ protocolError: new Error("navigation sequence or generation mismatch") });
         return;
       }
-      const gap = p.sequence > s.lastSequence + 1;
+      const gap = isSequenceGap(s.lastSequence, p.sequence);
       navigationStore.setState({ lastSequence: p.sequence });
       if (revalidator) {
         if (gap) revalidator.force(revalidator.loadedKeys());

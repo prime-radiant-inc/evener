@@ -67,6 +67,8 @@ import {
   deleteProject,
   deleteSession,
   type NavigationMutationReceipt,
+  partialFanOutNotice,
+  projectOwnership,
   renamePinSection,
   setArchived,
   setFavorite,
@@ -838,6 +840,31 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
   );
 }
 
+// archiveSessionIdentity is the identity a session's archive decision is
+// stored and read back under, and it is not the same string for every row
+// (round eleven's high finding). A REMOTE row's decision is consulted under its
+// host-qualified ref: web_api_tree.go's appThreadTreeEntries stamps a remote
+// thread's meta.ID and LiveEntry.SessionID with ref.String() ("buildbox:t1"),
+// and hubcore's decisionFor (tree.go) looks the stored key up verbatim - both
+// for the tree rows that call it and for tierEligible (attention.go), which is
+// handed the bare LiveEntry.SessionID. A LOCAL row's two ids are the bare
+// session ID instead (tree.go builds local nodes with ID: m.ID; the local
+// entries in web_api_tree.go carry SessionID: past.Meta.ID), so a "local:<id>"
+// key is one no reader ever consults: archive decisions reach the read model
+// through archiveDecisions() verbatim (web_api_tree.go's memoTreeWithAuthority
+// and navigation_service.go's Capture), with no alias expansion - unlike
+// favorites, which pass through ClassifyFavoriteDecisions.
+//
+// Round ten sent the wire ref for every row, which left a local archive stored
+// under "local:<id>" and therefore inert: the optimistic hideSession overlay
+// keyed by that same ref removed the row, so the archive looked applied until
+// the next read put the session back in its tier. The ref is also what the
+// overlay matches on (railPending.ts), which is why only the mutation identity
+// changes here.
+export function archiveSessionIdentity(session: NavigationSessionSummary): string {
+  return session.host_id === "local" ? session.session_id : session.ref;
+}
+
 function NavigationRail({
   onHide,
   width,
@@ -1318,7 +1345,13 @@ function NavigationRail({
       onToggleArchiveSession: (session) => {
         const archiving = session.tier !== "archived";
         return runAction(
-          () => setArchived("session", session.session_id, archiving),
+          // The identity the decision is read back under, host for host - see
+          // archiveSessionIdentity. Component 06a's round six was right that a
+          // remote row's host-qualified ref is that identity, but the server
+          // stores whatever it is handed (app_archive.go's archiveSet) and no
+          // reader expands "local:<id>", so a local row must send its bare
+          // session_id rather than the wire ref (round eleven).
+          () => setArchived("session", archiveSessionIdentity(session), archiving),
           "Couldn't update archive state",
           archiving ? { kind: "hideSession", ref: session.ref } : undefined,
           true,
@@ -1349,21 +1382,55 @@ function NavigationRail({
       },
       onToggleFavoriteProject: (project) => {
         const value = !project.favorite;
-        void runAction(() => setFavorite(client, "project", project.key, value), "Couldn't update favorite", {
-          kind: "projectFavorite",
-          key: project.key,
-          value,
-        });
+        void runAction(
+          async () => {
+            // A merged project's favorite is one decision per owning source.
+            // The fan-out settles every owner, so a partial result is a commit
+            // for the owners that answered: present the value the settled set
+            // yields (the read side shows a favorite when any owner holds one)
+            // and name the owners still holding the old decision. The row's own
+            // favorite is what the settled set is derived from: it says whether
+            // any owner held one, so a clear that missed an owner of a project
+            // nobody had favorited cannot present the row as favorited.
+            const result = await setFavorite(client, "project", project.key, value, project.sources, {
+              favoritedBefore: project.favorite ?? false,
+            });
+            const notice = partialFanOutNotice(result.failedSources);
+            if (notice) toasts.push("warning", `Favorite not updated everywhere: ${notice}`);
+            return result;
+          },
+          "Couldn't update favorite",
+          (result) => ({ kind: "projectFavorite", key: project.key, value: result.favorite }),
+        );
       },
       onToggleArchiveProject: (project) => {
         const value = !(project.is_archived ?? false);
         void runAction(
-          () => setArchived("project", project.key, value, project.working_dir),
+          async () => {
+            const result = await setArchived("project", project.key, value, project.working_dir, project.sources);
+            const notice = partialFanOutNotice(result.failedSources);
+            if (notice) toasts.push("warning", `Archive state not updated everywhere: ${notice}`);
+            return result;
+          },
           "Couldn't update archive state",
           value ? { kind: "hideProject", key: project.key } : undefined,
         );
       },
-      onDeleteProjectRequest: (project) => setDeleteTarget(project),
+      onDeleteProjectRequest: (project) => {
+        // Deletion is local-only (the hub refuses any other source), and a
+        // merged project — this hub's own rows plus a remote host's under the
+        // same canonical ID and path — must never be answered with a delete of
+        // the local project. Refuse before the confirmation dialog opens.
+        const { hosts } = projectOwnership(project.sources);
+        if (hosts.length > 0) {
+          toasts.push(
+            "error",
+            `Couldn't delete "${project.name}": it also has sessions on ${hosts.join(", ")}, and deletion is local-only`,
+          );
+          return;
+        }
+        setDeleteTarget(project);
+      },
     }),
     [client, runAction, toasts.push],
   );
@@ -1379,7 +1446,7 @@ function NavigationRail({
     let converged = false;
     setPending((ops) => [...ops, optimistic]);
     try {
-      const result = await deleteProject(target.key, target.working_dir ?? "");
+      const result = await deleteProject(target.key, target.working_dir ?? "", target.sources);
       mutationCompleted = true;
       await convergeMutation(result);
       converged = true;

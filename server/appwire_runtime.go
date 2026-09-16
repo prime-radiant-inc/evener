@@ -1236,6 +1236,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodUrlsRemove, s.handleAppUrlsRemove)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
+	appserver.HandleTyped(router, appwire.MethodEvenerDaemonStatus, s.handleAppDaemonStatus)
+	appserver.HandleTyped(router, appwire.MethodEvenerDaemonRetire, s.handleAppDaemonRetire)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
 	appserver.HandleTyped(router, appwire.MethodThreadVisionModelSet, s.handleAppThreadVisionModelSet)
@@ -1939,7 +1941,7 @@ func (s *Server) handleAppThreadCompactStart(ctx context.Context, params appwire
 	return appwire.EmptyResponse{}, fn(ctx)
 }
 
-func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+func (s *Server) handleAppThreadShutdown(ctx context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.EmptyResponse{}, err
 	}
@@ -1949,7 +1951,12 @@ func (s *Server) handleAppThreadShutdown(_ context.Context, params appwire.Threa
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("shutdown not available")
 	}
-	go fn()
+	// The shutdown ends the process, which closes this socket, so the reply
+	// this handler owes has to reach the transport first: a reply still queued
+	// in the connection's send loop when the process exits is never written,
+	// and the client reads EOF in its place (#1501). Only a request with no
+	// transport to wait on starts the shutdown right away.
+	appserver.RunAfterResponseWritten(ctx, func() { go fn() })
 	return appwire.EmptyResponse{}, nil
 }
 
@@ -2230,8 +2237,7 @@ func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.Thread
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("rename not available")
 	}
-	fn(name)
-	return appwire.EmptyResponse{}, nil
+	return appwire.EmptyResponse{}, fn(name)
 }
 
 func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
@@ -2251,8 +2257,7 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 	if err := llm.ValidateReasoningEffort(effort); err != nil {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("invalid reasoning effort: " + params.ReasoningEffort)
 	}
-	fn(effort)
-	return appwire.EmptyResponse{}, nil
+	return appwire.EmptyResponse{}, fn(effort)
 }
 
 func (s *Server) requireRootMutationTarget(rawRef, threadID string) error {

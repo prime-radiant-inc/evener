@@ -447,7 +447,10 @@ export function TasksPanelBody({ sessionRef, model }: TasksPanelBodyProps) {
       .refresh(sessionRef, () => model.tasks !== null)
       .then((result) => {
         if (live && result?.kind === "failure") toasts.push("error", result.failure.sentence);
-      });
+      })
+      // A thrown port rejects after the store has already settled the entry
+      // as a failure, which renderBody shows with Try again; nothing to add.
+      .catch(() => undefined);
     return () => {
       live = false;
     };

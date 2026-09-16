@@ -1,16 +1,10 @@
-import { parseKeybinding } from "tinykeys";
 import { describe, expect, test } from "vitest";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
-import { CHARACTER_KEY_TRIGGER_BINDING_ID, registerDefaultBindings } from "./keybindingDefaults";
+import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
 import { rebindAction, restoreDefaultBinding } from "./keybindingOverrides";
-import { createKeybindingsRegistry, GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
-
-function withDefaults(): KeybindingsRegistry {
-  const registry = createKeybindingsRegistry(parseKeybinding);
-  registerDefaultBindings(registry);
-  return registry;
-}
+import { GLOBAL_SCOPE, type KeybindingsRegistry } from "./keybindingRegistry";
+import { registryWithDefaults as withDefaults } from "./testing/keybindingRegistry";
 
 function bindingsFor(registry: KeybindingsRegistry, actionId: string) {
   return registry.getState().bindings.filter((b) => b.actionId === actionId);

@@ -86,6 +86,23 @@ afterEach(() => {
   resetExtensionsStoreForTests();
 });
 
+describe("resetExtensionsStoreForTests", () => {
+  test("clears marketplaces fields seeded straight into the store, not only ones the core published", () => {
+    extensionsStore.setState({
+      marketplaces: [MARKETPLACE_A],
+      marketplacesError: "stale",
+      browseCatalogs: new Map([["acme-plugins", { status: "loaded" as const, plugins: [] }]]),
+    });
+    resetExtensionsStoreForTests();
+    expect(extensionsStore.getState()).toMatchObject({
+      marketplaces: null,
+      marketplacesLoading: false,
+      marketplacesError: null,
+    });
+    expect(extensionsStore.getState().browseCatalogs.size).toBe(0);
+  });
+});
+
 describe("fetchMarketplaces", () => {
   test("populates marketplaces from evener/marketplace/list", async () => {
     const fake = connectFakeClient();
@@ -1027,6 +1044,69 @@ describe("notification-triggered refetch", () => {
     expect(extensionsStore.getState().launchLayer).toEqual({ pluginDirs: [] });
     await vi.advanceTimersByTimeAsync(1);
     expect(extensionsStore.getState().launchLayer).toEqual({ pluginDirs: ["/opt/plugins"] });
+  });
+
+  // A remote host's own config notifications reach this browser wrapped in
+  // evener/host/notification tagged with the host that owns them
+  // (cmd/evener-hub/app_host_admin.go's relayHostNotifications). pluginRevision
+  // is the revision the spawn form's HOST-scoped plugin consumers key on -
+  // usePluginPreview/useSpawnSlashCatalog build their request key from it and
+  // then ask the SELECTED host through evener/host/request - so a plugin
+  // enabled or disabled on that host must bump it exactly as the controller's
+  // own update does. Without this the form keeps rendering the pre-change list,
+  // and a plugin reconciled from that stale preview is sent as a thread/start
+  // launchOverride the host no longer has.
+  test("a wrapped remote plugin update bumps pluginRevision", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    await extensionsStore.getState().fetchPlugins();
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
+
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/plugin/updated", params: {} },
+    });
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+
+    // The store's own list is the CONTROLLER's (evener/plugin/list over the
+    // plain connection), and a remote host's change is not evidence about it:
+    // no controller refetch is scheduled.
+    const listCalls = fake.calls.filter((call) => call.method === "evener/plugin/list").length;
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/list").length).toBe(listCalls);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+  });
+
+  // The launch layer this store holds is the controller's own
+  // (evener/launch/getLayer with GLOBAL_LAYER_PARAMS) and its only readers are
+  // the controller-scoped settings sections, so a remote host's launch change
+  // must not schedule that refetch - it would replace this hub's layer with
+  // this hub's unchanged one.
+  test("a wrapped remote launch update never refetches the controller's launch layer", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: [] }));
+    await extensionsStore.getState().fetchLaunchLayer();
+    const layerCalls = fake.calls.filter((call) => call.method === "evener/launch/getLayer").length;
+
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/launch/updated", params: {} },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(fake.calls.filter((call) => call.method === "evener/launch/getLayer").length).toBe(layerCalls);
+  });
+
+  // The wrapper is not a general-purpose remote-notification tunnel: only the
+  // two host-owned methods the spawn form consumes move this store. A wrapped
+  // evener/auth/updated is the spawn pane's own concern (it advances that pane's
+  // catalog generation) and must not be read as a plugin change here.
+  test("a wrapped remote method this store does not own leaves pluginRevision alone", () => {
+    const fake = connectFakeClient();
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    });
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
   });
 
   test("wiring attaches as soon as a client connects, with no prior fetch call required", async () => {

@@ -234,6 +234,10 @@ export async function waitForBrowserReady(guard, { announcementTimeoutMs = CHROM
 export function chromeProfileIsolationArgs(platform = process.platform) {
   const args = ["--disable-crash-reporter"];
   if (platform === "darwin") args.push("--use-mock-keychain");
+  // These empty, disposable guard profiles contain no real credentials. On
+  // Linux, avoid blocking cookie-key initialization on an ambient keyring;
+  // the basic store is plaintext and must not be used for a shared profile.
+  if (platform === "linux") args.push("--password-store=basic");
   return args;
 }
 

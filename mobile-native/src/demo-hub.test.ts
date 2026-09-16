@@ -25,9 +25,9 @@ describe("native demonstration hub", () => {
 			for (const text of ["First", "Second", "Third"])
 				await service.queue([{ type: "text", text }]);
 			const observed = await service.open("demo:playground");
-			expect(observed.queue.texts).toEqual(["First", "Second", "Third"]);
-			const [first, second] = observed.queue.ids ?? [];
-			if (!first || !second || !observed.instanceId)
+			expect(observed.queue?.texts).toEqual(["First", "Second", "Third"]);
+			const [first, second] = observed.queue?.ids ?? [];
+			if (!first || !second || !observed.instanceId || !observed.queue)
 				throw new Error("Missing queue guards");
 			await service.cancelQueued(0, first, observed.instanceId);
 			await expect(
@@ -37,12 +37,13 @@ describe("native demonstration hub", () => {
 				service.drainAsSteer(observed.queue.revision, observed.instanceId),
 			).rejects.toMatchObject({ code: -32013 });
 			const remaining = await service.open("demo:playground");
-			expect(remaining.queue.texts).toEqual(["Second", "Third"]);
+			expect(remaining.queue?.texts).toEqual(["Second", "Third"]);
 			await service.promoteQueuedAsSteer(0, second, observed.instanceId);
 			const last = await service.open("demo:playground");
-			expect(last.queue.texts).toEqual(["Third"]);
+			expect(last.queue?.texts).toEqual(["Third"]);
+			if (!last.queue) throw new Error("Missing queue guards");
 			await service.drainAsSteer(last.queue.revision, observed.instanceId);
-			expect((await service.open("demo:playground")).queue.depth).toBe(0);
+			expect((await service.open("demo:playground")).queue?.depth).toBe(0);
 		} finally {
 			service.close();
 			client.close();
@@ -96,11 +97,11 @@ describe("native demonstration hub", () => {
 			await firstService.send([
 				{ type: "text", text: "Only on the first hub" },
 			]);
-			expect((await firstService.open("demo:playground")).status).toBe(
+			expect((await firstService.open("demo:playground")).status.type).toBe(
 				"active",
 			);
 			const untouched = await secondService.open("demo:playground");
-			expect(untouched.status).toBe("idle");
+			expect(untouched.status.type).toBe("idle");
 			expect(untouched.items).toHaveLength(0);
 		} finally {
 			for (const service of services) service.close();
@@ -170,7 +171,7 @@ describe("native demonstration hub", () => {
 		const statusChanged = (status: string) =>
 			new Promise<void>((resolve) => {
 				const unsubscribe = store.subscribe((state) => {
-					if (state.conversation?.status !== status) return;
+					if (state.conversation?.status.type !== status) return;
 					unsubscribe();
 					resolve();
 				});
@@ -215,7 +216,7 @@ describe("native demonstration hub", () => {
 			]);
 			expect(receipt.projectionState).toBe("pending");
 			const active = await service.open("demo:playground");
-			expect(active.status).toBe("active");
+			expect(active.status.type).toBe("active");
 			expect(active.items.find((item) => item.kind === "user")).toMatchObject({
 				text: "  mobile input\n🦋  ",
 			});
@@ -223,7 +224,7 @@ describe("native demonstration hub", () => {
 			expect(active.capabilities.interrupt).toBe(true);
 			const stopped = await service.interrupt();
 			expect(stopped.projectionState).toBe("reflected");
-			expect((await service.open("demo:playground")).status).toBe("idle");
+			expect((await service.open("demo:playground")).status.type).toBe("idle");
 			await expect(
 				client.request("turn/start", {
 					ref: "demo:playground",

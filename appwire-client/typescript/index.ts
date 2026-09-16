@@ -57,6 +57,18 @@ export {
 } from "./activityRows";
 export type { AskAnswerItem, AskResolution } from "./askAnswers";
 export { composeAskAnswers } from "./askAnswers";
+export type {
+  AskAnswerSender,
+  AskAnswerState,
+  AskDockPorts,
+  AskDockRefState,
+  AskDockState,
+  AskDockStore,
+  AskDockThreads,
+  AskDockThreadsSnapshot,
+  SendBatchOutcome,
+} from "./askDock";
+export { createAskDockStore, nextUnansweredKey } from "./askDock";
 export type { AskUserOption, AskUserQuestion } from "./askShared";
 export { answeredAskUserSuffix, parseAskUserQuestions } from "./askShared";
 export type { RejectableFile } from "./attachmentLimits";
@@ -69,6 +81,14 @@ export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommand
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
+export type {
+  CommandCatalog,
+  CommandCatalogClient,
+  CommandCatalogState,
+  SessionCommandCatalog,
+  SessionCommandCatalogState,
+} from "./commandCatalog";
+export { createCommandCatalog, createSessionCommandCatalog, sessionPluginNames } from "./commandCatalog";
 export type { InputAttachment } from "./composerInput";
 export { buildComposerInput, buildInput, canonicalSkillNames } from "./composerInput";
 export type { CredentialLayerView, InstanceProviderGroup } from "./credentialLabels";
@@ -88,6 +108,8 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
+export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
+export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureState, DisclosureStore } from "./disclosure";
@@ -176,6 +198,18 @@ export type {
   WhenClause,
 } from "./keybindingRegistry";
 export { createKeybindingsRegistry, GLOBAL_SCOPE } from "./keybindingRegistry";
+export type {
+  KeybindingDraftCheckpoint,
+  KeybindingDraftStorage,
+  KeybindingsClient,
+  KeybindingsStore,
+  KeybindingsStoreActions,
+  KeybindingsStoreDeps,
+  KeybindingsStoreFields,
+  KeybindingsStoreState,
+  KeybindingsSupport,
+} from "./keybindingsStore";
+export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
 export type {
   KeybindingsPlatform,
   OverrideRule,

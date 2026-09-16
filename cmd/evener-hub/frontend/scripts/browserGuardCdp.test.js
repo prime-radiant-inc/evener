@@ -416,6 +416,89 @@ test("navigateTo stops listening when the load event never arrives", async () =>
   assert.equal(socket.listenerCount("message"), 0);
 });
 
+// The load timer is armed before Page.navigate's timer. If it expires while
+// that command is pending, serial awaits leave its rejection unobserved and
+// eventually replace the useful load failure with the command's later error.
+test("a load timeout rejects navigation while Page.navigate is still pending", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const socket = fakeSocket();
+  let announceNavigate;
+  const navigateIssued = new Promise((resolve) => {
+    announceNavigate = resolve;
+  });
+  let rejectNavigate;
+  const reply = new Promise((_, reject) => {
+    rejectNavigate = reject;
+  });
+  const send = (method) => {
+    if (method === "Page.enable") return Promise.resolve({});
+    assert.equal(method, "Page.navigate");
+    // Model one tick spent sending the command, so the earlier load deadline
+    // can fire independently rather than both tripwires firing in one tick.
+    vi.advanceTimersByTime(1);
+    announceNavigate();
+    return reply;
+  };
+  let outcome;
+  const observed = navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/").then(
+    () => { outcome = { loaded: true }; },
+    (error) => { outcome = { error }; },
+  );
+  try {
+    await navigateIssued;
+    await vi.advanceTimersToNextTimerAsync();
+    assert.ok(outcome?.error, "the load failure must reach the caller before Page.navigate settles");
+    assert.match(outcome.error.message, /timeout calling navigateTo after 30000ms/);
+    assert.equal(socket.listenerCount("message"), 0);
+  } finally {
+    // A later command failure must also be observed, without replacing the
+    // failure already delivered to the caller or becoming unhandled.
+    rejectNavigate(new Error("late Page.navigate failure"));
+    await observed;
+    await drainMicrotasks();
+  }
+  assert.match(outcome.error.message, /timeout calling navigateTo after 30000ms/);
+  assert.equal(vi.getTimerCount(), 0);
+});
+
+for (const first of ["load", "reply"]) {
+  test(`navigateTo waits for both completions when ${first} arrives first`, async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const socket = fakeSocket();
+    let announceNavigate;
+    const navigateIssued = new Promise((resolve) => {
+      announceNavigate = resolve;
+    });
+    let resolveNavigate;
+    const reply = new Promise((resolve) => {
+      resolveNavigate = resolve;
+    });
+    const send = (method) => {
+      if (method === "Page.enable") return Promise.resolve({});
+      assert.equal(method, "Page.navigate");
+      announceNavigate();
+      return reply;
+    };
+    const load = () => socket.dispatch("message", { data: JSON.stringify({ method: "Page.loadEventFired" }) });
+    const completeReply = () => resolveNavigate({ result: { frameId: "fixture-frame" } });
+    let completed = false;
+    const navigation = navigateTo({ ws: socket, send }, "http://127.0.0.1:65535/").then(() => { completed = true; });
+    await navigateIssued;
+    try {
+      (first === "load" ? load : completeReply)();
+      await drainMicrotasks();
+      assert.equal(completed, false, "one completion must not make the page ready");
+    } finally {
+      load();
+      completeReply();
+      await navigation;
+    }
+    assert.equal(completed, true);
+    assert.equal(socket.listenerCount("message"), 0);
+    assert.equal(vi.getTimerCount(), 0);
+  });
+}
+
 // A CDP error on the navigate itself means the page will never load, so the
 // load wait has to be settled by hand. Left pending it holds the guard open for
 // its own 30 seconds and then rejects with nobody awaiting it -- an unhandled

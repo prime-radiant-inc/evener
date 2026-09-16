@@ -226,6 +226,15 @@ it("preserves newer live work state across an older hydration and isolates sessi
 				current: { id: 2, description: "task-sentinel" },
 			},
 		});
+		// Both frames preceded the read's response, so the hub cut the
+		// snapshot after them: the response carries the updated goal and
+		// tasks, and the commit shows them as the snapshot's own values.
+		thread.evener.goal = updated;
+		thread.evener.tasks = {
+			total: 3,
+			done: 1,
+			current: { id: 2, description: "task-sentinel" },
+		};
 		finishRead();
 		await refresh;
 		expect(store.getState().conversation?.goal).toEqual(updated);
@@ -515,6 +524,15 @@ it.each(["advertised", "turn"])(
 				},
 			});
 			expect(store.getState().conversation?.activeTurnId).toBe("second");
+			// Both turn frames preceded the read's response, so the hub cut the
+			// snapshot after them: it names `second` as the active turn (by the
+			// advertised id, or by the one turn still in progress).
+			if (source === "advertised") thread.evener.activeTurnId = "second";
+			else
+				thread.turns = [
+					{ id: "first", status: "completed", itemsView: "full", items: [] },
+					{ id: "second", status: "inProgress", itemsView: "full", items: [] },
+				];
 			finish();
 			await refresh;
 			expect(store.getState().conversation?.activeTurnId).toBe("second");
@@ -590,7 +608,7 @@ it.each([
 				// (sessionControls): a running turn on a harness that advertises
 				// the action; the argless drain also needs a queue to drain.
 				turn: () => ({
-					status: "active",
+					status: { type: "active" },
 					capabilities: { steer: true, queue: true, interrupt: true },
 					queue: { revision: 7, depth: method === "turn/drainAsSteer" ? 1 : 0 },
 				}),
@@ -631,15 +649,17 @@ it.each(["/steer sentinel", "/queue sentinel", "/drain-as-steer"])(
 	},
 );
 
+// A turn that starts and completes while a read is in flight, with neither
+// frame's effect ever observed as an active turn here: the completion
+// precedes the read's response, so the hub's snapshot no longer names the
+// turn active, and the commit carries no active turn.
 it("does not resurrect a turn that completes during a read before its start was observed", async () => {
 	const { thread, io, service } = boundary();
 	const store = createConversationStore();
 	const activity = createActivityStore().getState();
 	try {
 		await store.getState().openProjected(service, activity, "local:test");
-		thread.evener.activeTurnId = "missed-start";
 		io.read = async () => {
-			const stale = structuredClone(thread);
 			store.getState().applyNotification({
 				method: "turn/completed",
 				params: {
@@ -653,7 +673,9 @@ it("does not resurrect a turn that completes during a read before its start was 
 					},
 				},
 			});
-			return { thread: stale };
+			const settled = structuredClone(thread);
+			settled.evener.activeTurnId = undefined;
+			return { thread: settled };
 		};
 		await store.getState().rehydrate(service, activity);
 		expect(store.getState().conversation?.activeTurnId).toBeUndefined();
@@ -931,7 +953,7 @@ it("installs a clear replacement without allowing an older read to restore its t
 		releaseRead();
 		await oldRead;
 		expect(store.getState().conversation).toMatchObject({
-			id: "replacement-thread",
+			threadId: "replacement-thread",
 			instanceId: "replacement-instance",
 			items: [],
 			goal: null,

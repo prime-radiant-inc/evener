@@ -48,7 +48,7 @@ const probeTimeout = 3 * time.Second
 
 // probeDeps contains the external boundaries used by one Probe call. It is
 // passed by value to keep test configuration local to that call; production
-// supplies the normal lookup and default-client behavior below.
+// supplies the normal lookup and Probe's per-call client.
 type probeDeps struct {
 	lookupPath func(string) (string, error)
 	httpClient *http.Client
@@ -74,7 +74,29 @@ type Result struct {
 // writer and results is only read after wg.Wait() establishes
 // happens-before (mirrors agent/internal/mcp's NewManager).
 func Probe(ctx context.Context, configs []mcpconfig.ServerConfig) []Result {
-	return probeWithDeps(ctx, configs, probeDeps{lookupPath: exec.LookPath})
+	client, release := probeHTTPClient()
+	defer release()
+	return probeWithDeps(ctx, configs, probeDeps{lookupPath: exec.LookPath, httpClient: client})
+}
+
+// probeHTTPClient returns the client the http/sse probes of one Probe call
+// share, and the function that releases its connection pool afterwards.
+// Pooling probe connections in http.DefaultTransport would let any other
+// component's CloseIdleConnections break a handshake in flight (#1486; the
+// net/http window is described on
+// TestProbe_HTTP_ProcessWideIdleConnClose_Available), and releasing the pool
+// is what stops the probe leaking keep-alive connections to every configured
+// server. Cloning keeps DefaultTransport's proxy, dial and TLS settings. A
+// DefaultTransport that is not an *http.Transport (the hub's sandbox tests
+// install a deny-all RoundTripper to catch stray network access) has no pool
+// of ours to protect and is used as-is.
+func probeHTTPClient() (*http.Client, func()) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Transport: http.DefaultTransport}, func() {}
+	}
+	transport := base.Clone()
+	return &http.Client{Transport: transport}, transport.CloseIdleConnections
 }
 
 // probeWithDeps is Probe with its process lookup and HTTP client supplied by
@@ -150,8 +172,8 @@ func probeOne(ctx context.Context, cfg mcpconfig.ServerConfig, deps probeDeps) R
 // transportForConfig (which mcpprobe cannot use directly): the same
 // http/sse transport construction and header injection, minus the stdio
 // CommandTransport machinery mcpprobe doesn't need — probeOne handles stdio
-// through its lookup dependency. The supplied client remains nil in production
-// unless headers require the existing header-injecting wrapper.
+// through its lookup dependency. A nil client leaves the SDK on
+// http.DefaultClient; Probe always supplies its own.
 func transportForProbe(cfg mcpconfig.ServerConfig, deps probeDeps) (mcpsdk.Transport, error) {
 	client := deps.httpClient
 	if len(cfg.Headers) > 0 {
@@ -197,20 +219,13 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return h.base.RoundTrip(req)
 }
 
-// httpClientWithHeaders returns a copy of base that injects headers. A nil
-// base preserves the pre-existing production client behavior: use the default
-// transport in a new client rather than inheriting mutable DefaultClient state.
+// httpClientWithHeaders returns a copy of base (a fresh client when base is
+// nil) that injects headers.
 func httpClientWithHeaders(base *http.Client, headers map[string]string) *http.Client {
-	if base == nil {
-		return &http.Client{
-			Transport: &headerRoundTripper{
-				base:    http.DefaultTransport,
-				headers: headers,
-			},
-		}
+	client := http.Client{}
+	if base != nil {
+		client = *base
 	}
-
-	client := *base
 	transport := client.Transport
 	if transport == nil {
 		transport = http.DefaultTransport

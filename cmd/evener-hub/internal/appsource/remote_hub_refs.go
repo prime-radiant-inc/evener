@@ -1,6 +1,8 @@
 package appsource
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -38,13 +40,21 @@ func (s *RemoteHubSource) toRemoteRef(rawRef, threadID string) (appwire.Ref, err
 
 // remapRemoteSourceIDs rewrites a thread/list SourceIDs filter from controller
 // host names into the remote hub's namespace. Only this source's own ID is
-// representable remotely ("local"); every other entry is dropped. An empty
-// result leaves the remote list unfiltered, which is the controller's intent
-// when only this host was selected: sourceAllowedForList gates whether the
-// source is called at all, and the remote side does the actual filtering.
+// representable remotely ("local"); every other entry is dropped.
+//
+// An empty controller filter means "every source the controller has", NOT
+// "whatever sources the remote hub has": this source must still ask the remote
+// for its own "local" source alone. Left unfiltered, the remote would also
+// return threads from ITS OWN nested remote sources, whose refs live in another
+// hub's namespace and cannot be represented here. fromRemoteThread refuses such
+// a ref and translateOut drops that unaddressable row, so an unfiltered forward
+// would quietly omit threads the controller can never route to; asking only for
+// "local" keeps the response to the threads this source can represent.
+// sourceAllowedForList gates whether this source is called at all; within the
+// call the answer is always exactly "local".
 func remapRemoteSourceIDs(sourceID string, ids []string) []string {
 	if len(ids) == 0 {
-		return nil
+		return []string{remoteHubNamespace}
 	}
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -78,8 +88,8 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 // remoteForwardedThreadCapabilities lists the thread actions this source can
 // actually forward to the remote hub. It is the controller-side half of the
 // capability answer: maskRemoteThreadCapabilities intersects it with the remote
-// hub's own claim, so a later component re-enables an action by adding it here
-// once its method stops returning notImplemented (remote_hub_source.go):
+// hub's own claim, so an action is re-enabled by adding it here once its method
+// stops returning notImplemented (remote_hub_source.go):
 //
 //   - Send (StartTurn, ResumeThread), Steer (SteerTurn), Interrupt
 //     (InterruptTurn), Queue (QueueTurn, DrainAsSteer, PromoteQueuedAsSteer,
@@ -87,13 +97,16 @@ func (s *RemoteHubSource) fromRemoteRefString(raw string) (string, error) {
 //     (ForkThread), Shutdown (ShutdownThread), ChangeModel (SetThreadModel,
 //     SetThreadReasoningEffort), ChangeVisionModel (SetThreadVisionModel),
 //     Goal (GoalSet), SharedNotes (NotesHumanSet, UrlsRemove), and Rename
-//     (SetThreadName) are the turn mutations and lifecycle verbs 05c forwards.
+//     (SetThreadName) are the turn mutations and lifecycle verbs component 05c
+//     implements in remote_hub_mutations.go.
 //   - SkillInput rides on the input-bearing turn mutations
-//     (appwire.ValidateSkillInputSupport), so 05c re-enables it with Send.
+//     (appwire.ValidateSkillInputSupport).
 //
-// 05d replaces this constant answer with a completed capability probe of the host,
-// intersected with the remote hub's claim; until then the intersection is empty
-// and every action is masked.
+// The answer stays empty until component 05d supplies the host's own capability
+// probe: the remote hub's claim describes the REMOTE daemon, so forwarding it
+// verbatim would advertise actions this controller cannot verify the host
+// supports. 05d replaces this constant with that probe, intersected with the
+// remote hub's claim.
 func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{}
 }
@@ -102,12 +115,12 @@ func remoteForwardedThreadCapabilities() appwire.ThreadCapabilities {
 // for its own thread with the actions this source can carry today.
 //
 // The remote hub reports the capabilities of its OWN session daemon: they describe
-// what the remote daemon can do, not what this controller can forward. On this
-// branch (05a) every mutating, lifecycle, and subscription method of
-// RemoteHubSource still returns notImplemented, so forwarding the remote's set
-// verbatim would advertise send, fork, rename, model, and queue actions that fail
-// with an internal error the moment a client used one (the hub gates each of them
-// on exactly these fields — cmd/evener-hub's threadActionAvailable).
+// what the remote daemon can do, not what this controller can forward. Forwarding
+// the remote's set verbatim would advertise an action this controller cannot carry:
+// it would fail with an internal error the moment a client used one (the hub gates
+// each of them on exactly these fields — cmd/evener-hub's threadActionAvailable).
+// Component 05c implements the mutations but forwards nothing here; the flags turn
+// on with 05d's host capability probe.
 //
 // Fields are listed one by one rather than copied wholesale so a capability added
 // to appwire.ThreadCapabilities later starts masked until a component names the
@@ -132,6 +145,196 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 	}
 }
 
+// capabilitiesField is the JSON field name of every capability set a remote
+// response or notification can carry. appwire has exactly two shapes, and
+// translateThreadRaw plus the status-frame branch of translateNotification cover
+// both:
+//
+//   - EvenerThread.Capabilities (appwire/types.go), nested as
+//     "capabilities" inside the "evener" object of every Thread — the snapshot's
+//     thread and the one a thread/started notification carries.
+//   - ThreadStatusChangedParams.Capabilities, the top-level "capabilities" of
+//     the one notification whose params carry a set of their own
+//     (thread/status/changed).
+//
+// Enumerating them like this is the point: a capability added to another payload
+// later has to be named here, and until then it is not masked.
+const capabilitiesField = "capabilities"
+
+// maskRemoteCapabilitiesRaw applies maskRemoteThreadCapabilities to a raw JSON
+// capabilities object in a payload this source is translating. A value it cannot
+// decode is returned byte-for-byte: the mask narrows the actions a client can
+// reach, and must never drop or re-mint a field a newer remote hub sent.
+func maskRemoteCapabilitiesRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var remote appwire.ThreadCapabilities
+	if err := json.Unmarshal(raw, &remote); err != nil {
+		return raw
+	}
+	masked, err := json.Marshal(maskRemoteThreadCapabilities(remote))
+	if err != nil {
+		return raw
+	}
+	return masked
+}
+
+// nestedSessionRefFields are the JSON field names whose values carry a session
+// handle nested inside a larger payload: thread diagnostics
+// (jobs[].transcriptRef, delegates[].transcriptRef), the job and delegate
+// projections those arrays hold, and job-activity rows (ownerRef/childRef). A
+// value that is the remote hub's own "local:<thread>" handle is translated into
+// the controller namespace; every other value is left exactly as it arrived, so
+// the opaque "job:<id>" and "proj:<project>:<thread>" handles keep working and a
+// nested hub's ref is not silently rewritten. The top-level routing "ref" and
+// "parentRef" fields are deliberately NOT in this set: routing depends on them,
+// so an unrepresentable one must be refused rather than passed through (see
+// translateNotification and translateThreadRaw).
+var nestedSessionRefFields = map[string]struct{}{
+	"transcriptRef": {},
+	"childRef":      {},
+	"ownerRef":      {},
+	"sessionRef":    {},
+}
+
+// pendingEscalationsField is the EvenerThread field holding the redacted
+// approval cards for the sandbox escalations currently blocked on a session.
+// Each entry's "ref" is a session handle a client routes the card by (see
+// appwire.SandboxEscalationRequested), so it moves into the controller
+// namespace with the rest of the thread. It is translated structurally in
+// translateThreadRaw rather than by adding "ref" to nestedSessionRefFields:
+// "ref" is the routing key at every structural location it appears in, and that
+// shared set is only for field names that always hold a session handle.
+const pendingEscalationsField = "pendingEscalations"
+
+// translatePendingEscalationsRaw rewrites the "ref" of every entry in a
+// pendingEscalations JSON array into the controller namespace, preserving every
+// other field. It never fails: a value it cannot decode is returned byte-for-
+// byte, mirroring translateNestedRefs, and an unrepresentable ref (a nested
+// hub's, an opaque handle) is left exactly as it arrived.
+func (s *RemoteHubSource) translatePendingEscalationsRaw(raw json.RawMessage) json.RawMessage {
+	var entries []json.RawMessage
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return raw
+	}
+	for index := range entries {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(entries[index], &fields); err != nil || fields == nil {
+			continue
+		}
+		handle, ok := fields["ref"]
+		if !ok {
+			continue
+		}
+		var rawRef string
+		if err := json.Unmarshal(handle, &rawRef); err != nil {
+			continue
+		}
+		encoded, err := json.Marshal(s.translateNestedRef(rawRef))
+		if err != nil {
+			continue
+		}
+		fields["ref"] = encoded
+		entry, err := json.Marshal(fields)
+		if err != nil {
+			continue
+		}
+		entries[index] = entry
+	}
+	encoded, err := json.Marshal(entries)
+	if err != nil {
+		return raw
+	}
+	return encoded
+}
+
+// opaquePayloadFields are JSON fields whose values are arbitrary model or tool
+// JSON, not the hub's own structures: a turn's items ("turns", and the "raw"
+// item payload), a delegate's result packet ("message"/"structuredResult").
+// Their contents share this doc's field names by coincidence — a tool argument
+// named transcriptRef is a tool argument — so the nested-ref walk must not
+// descend into them. No session handle this source must translate ever lives
+// there.
+var opaquePayloadFields = map[string]struct{}{
+	"turns":            {},
+	"raw":              {},
+	"message":          {},
+	"structuredResult": {},
+}
+
+// translateNestedRef maps a nested session handle into the controller
+// namespace. A value that is not the remote hub's own "local:<thread>" handle is
+// returned unchanged: "job:<id>" and "proj:<project>:<thread>" are opaque to
+// this translation, and a nested hub's ref is not addressable here.
+func (s *RemoteHubSource) translateNestedRef(handle string) string {
+	if handle == "" {
+		return handle
+	}
+	translated, err := s.fromRemoteRefString(handle)
+	if err != nil {
+		return handle
+	}
+	return translated
+}
+
+// translateNestedRefs walks a raw JSON value and translates every nested session
+// handle it finds, preserving every leaf it does not recognize. It never fails:
+// a value it cannot decode is returned byte-for-byte, so a notification can
+// never be dropped by this pass. OpaquePayloadFields subtrees are skipped
+// entirely; see their comment.
+func (s *RemoteHubSource) translateNestedRefs(raw json.RawMessage) json.RawMessage {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return raw
+	}
+	switch trimmed[0] {
+	case '{':
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
+			return raw
+		}
+		for key, value := range fields {
+			if _, opaque := opaquePayloadFields[key]; opaque {
+				continue
+			}
+			if _, ok := nestedSessionRefFields[key]; ok {
+				var handle string
+				if err := json.Unmarshal(value, &handle); err != nil {
+					continue
+				}
+				encoded, err := json.Marshal(s.translateNestedRef(handle))
+				if err != nil {
+					continue
+				}
+				fields[key] = encoded
+				continue
+			}
+			fields[key] = s.translateNestedRefs(value)
+		}
+		encoded, err := json.Marshal(fields)
+		if err != nil {
+			return raw
+		}
+		return encoded
+	case '[':
+		var items []json.RawMessage
+		if err := json.Unmarshal(trimmed, &items); err != nil {
+			return raw
+		}
+		for index := range items {
+			items[index] = s.translateNestedRefs(items[index])
+		}
+		encoded, err := json.Marshal(items)
+		if err != nil {
+			return raw
+		}
+		return encoded
+	default:
+		return raw
+	}
+}
+
 // fromRemoteThread rewrites every ref-bearing field of a thread the remote hub
 // returned. Thread.Source becomes this source's ID; Evener.Ref and
 // Evener.ParentRef (sub-thread aliases) and each
@@ -140,6 +343,9 @@ func maskRemoteThreadCapabilities(remote appwire.ThreadCapabilities) appwire.Thr
 // opaque precondition token round-tripped into turn/start.expectedInstanceId.
 // Evener.Capabilities is masked to the actions this source can forward: the
 // remote hub describes its own daemon, not this controller's ability to reach it.
+// Nested session handles inside Evener.Diagnostics (a job's or delegate's
+// transcriptRef) and Evener.PendingEscalations (each entry's ref, which clients
+// route an escalation card by) are translated too; see translateNestedRef.
 func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Thread, error) {
 	thread.Source = s.id
 	thread.Evener.Capabilities = maskRemoteThreadCapabilities(thread.Evener.Capabilities)
@@ -165,38 +371,8 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 	for index := range thread.Evener.PendingEscalations {
 		thread.Evener.PendingEscalations[index].Ref = s.fromRemoteNestedRef(thread.Evener.PendingEscalations[index].Ref)
 	}
-	s.fromRemoteDiagnosticRefs(thread.Evener.Diagnostics)
+	s.fromRemoteDiagnostics(thread.Evener.Diagnostics)
 	return thread, nil
-}
-
-// fromRemoteDiagnosticRefs rewrites the nested transcript references the remote
-// hub put on a thread's diagnostics.
-//
-// Delegate refs are session refs in the remote hub's own "local:<session>"
-// namespace (agent/delegate_tree_start.go stamps encodeRef("", childSessionID)),
-// so an untranslated one collides with the controller's local source exactly
-// like Evener.Ref does: a client following it reads a controller-local session,
-// or fails, instead of the remote child. They are moved into this source's
-// namespace.
-//
-// Shell-job refs are "job:<id>" (agent.jobTranscriptRef names a job record in a
-// daemon-internal namespace, not a source-qualified thread ref), and a
-// project-scoped "proj:<project>:<session>" ref names a remote daemon object the
-// controller cannot address by source. Neither can collide with a controller
-// source the way "local:" does, so both pass through byte-for-byte: refusing
-// them would fail every remote read that carries a background shell job. A
-// client that tries to follow one still fails loudly at lookup ("source not
-// found: job"/"proj") rather than reaching the wrong host.
-func (s *RemoteHubSource) fromRemoteDiagnosticRefs(diagnostics *appwire.EvenerDiagnostics) {
-	if diagnostics == nil {
-		return
-	}
-	for index := range diagnostics.Delegates {
-		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteNestedRef(diagnostics.Delegates[index].TranscriptRef)
-	}
-	for index := range diagnostics.Jobs {
-		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteNestedRef(diagnostics.Jobs[index].TranscriptRef)
-	}
 }
 
 // fromRemoteNestedRef translates a nested diagnostic ref that names the remote
@@ -215,25 +391,291 @@ func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
 	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String()
 }
 
+// translateThreadRaw rewrites a thread object's ref-bearing fields at the JSON
+// level, preserving every field this hub does not understand. Round-tripping
+// through appwire.Thread would silently drop a field a newer remote hub sent —
+// the same reason the notification translator works in RawMessage throughout.
+// Source, Evener.Ref and Evener.ParentRef are rewritten; Evener.Capabilities is
+// masked to the actions this source can forward, exactly as fromRemoteThread
+// masks the snapshot's, so a subscribed client cannot re-enable a mutation from
+// a thread-bearing notification that the read path answered as unavailable.
+// InstanceID and everything else pass through byte-for-byte. Nested session
+// handles under Evener (diagnostics job/delegate transcriptRefs, and each
+// pendingEscalations entry's ref) are rewritten as well.
+func (s *RemoteHubSource) translateThreadRaw(raw json.RawMessage) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		// JSON null is not a thread object: pass it through byte-for-byte rather
+		// than materializing an empty object and stamping a source on it.
+		return raw, nil
+	}
+	source, err := json.Marshal(s.id)
+	if err != nil {
+		return nil, err
+	}
+	fields["source"] = source
+	if evener, ok := fields["evener"]; ok && len(evener) > 0 {
+		var evenerFields map[string]json.RawMessage
+		if err := json.Unmarshal(evener, &evenerFields); err != nil {
+			return nil, err
+		}
+		for _, key := range []string{"ref", "parentRef"} {
+			field, ok := evenerFields[key]
+			if !ok {
+				continue
+			}
+			var rawRef string
+			if err := json.Unmarshal(field, &rawRef); err != nil {
+				return nil, err
+			}
+			if rawRef == "" {
+				continue
+			}
+			translated, err := s.fromRemoteRefString(rawRef)
+			if err != nil {
+				return nil, err
+			}
+			encoded, err := json.Marshal(translated)
+			if err != nil {
+				return nil, err
+			}
+			evenerFields[key] = encoded
+		}
+		if rawCapabilities, ok := evenerFields[capabilitiesField]; ok {
+			evenerFields[capabilitiesField] = maskRemoteCapabilitiesRaw(rawCapabilities)
+		}
+		if rawEscalations, ok := evenerFields[pendingEscalationsField]; ok && len(rawEscalations) > 0 {
+			evenerFields[pendingEscalationsField] = s.translatePendingEscalationsRaw(rawEscalations)
+		}
+		encoded, err := json.Marshal(evenerFields)
+		if err != nil {
+			return nil, err
+		}
+		fields["evener"] = s.translateNestedRefs(encoded)
+	}
+	return json.Marshal(fields)
+}
+
+// fromRemoteDiagnostics rewrites the session-valued refs nested in a thread's
+// diagnostics tree. A delegate's TranscriptRef always names its child session,
+// and a delegate job's TranscriptRef names the same child session, so both live
+// in the remote hub's "local:" namespace and must move to "<host>:" or a
+// controller client would route a child-thread read to the local source. A
+// shell job's TranscriptRef is the opaque "job:<id>" ref, preserved
+// byte-for-byte, and every bare-id field (sessionId, ownerSessionId,
+// childSessionId, rootSessionId) is an id, not a ref, so none is touched.
+func (s *RemoteHubSource) fromRemoteDiagnostics(diagnostics *appwire.EvenerDiagnostics) {
+	if diagnostics == nil {
+		return
+	}
+	for index := range diagnostics.Delegates {
+		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Delegates[index].TranscriptRef)
+	}
+	for index := range diagnostics.Jobs {
+		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteRefOrOpaque(diagnostics.Jobs[index].TranscriptRef)
+	}
+}
+
+// fromRemoteRefOrOpaque maps a remote "local:<thread>" ref into the controller
+// namespace, but leaves a value this source cannot address — an opaque
+// "job:<id>" ref or a project-scoped ref — byte-for-byte rather than failing the
+// enclosing thread. It is the single-value counterpart of translateActivityRefs's
+// per-key policy.
+func (s *RemoteHubSource) fromRemoteRefOrOpaque(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	translated, err := s.fromRemoteRefString(raw)
+	if err != nil {
+		return raw
+	}
+	return translated
+}
+
 // translateOut applies outbound ref translation to whichever response type
 // embeds a Thread. Responses without refs (e.g. thread/turns/list, model/list)
 // pass through unchanged.
 func (s *RemoteHubSource) translateOut(out any) error {
 	switch response := out.(type) {
 	case *appwire.ThreadListResponse:
+		// Translate rows independently: a row from a nested remote hub carries a
+		// non-local ref this controller cannot address, and that one row must not
+		// discard the valid local rows returned alongside it. The unrepresentable
+		// row is skipped; every representable row is translated and retained.
+		if len(response.Data) == 0 {
+			break
+		}
+		translated := make([]appwire.Thread, 0, len(response.Data))
 		for index := range response.Data {
 			thread, err := s.fromRemoteThread(response.Data[index])
 			if err != nil {
-				return err
+				continue
 			}
-			response.Data[index] = thread
+			translated = append(translated, thread)
 		}
+		response.Data = translated
 	case *appwire.ThreadReadResponse:
 		thread, err := s.fromRemoteThread(response.Thread)
 		if err != nil {
 			return err
 		}
 		response.Thread = thread
+	case *appwire.ThreadStartResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+	case *appwire.ThreadResumeResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+	case *appwire.ThreadForkResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+	case *appwire.ThreadClearResponse:
+		thread, err := s.fromRemoteThread(response.Thread)
+		if err != nil {
+			return err
+		}
+		response.Thread = thread
+		ref, err := s.fromRemoteRefString(response.Ref)
+		if err != nil {
+			return err
+		}
+		response.Ref = ref
+	case *appwire.JobsListResponse:
+		response.Data = s.translateActivityRefs(response.Data)
 	}
 	return nil
+}
+
+// translateActivityRefs rewrites the session refs embedded in a remote hub's
+// jobs/list response.
+//
+// The current shape is a decoded activity tree: JobsListResponse.Data is `any`,
+// so the wire tree arrives as nested map[string]any/[]any rather than typed
+// appwire.JobActivity* nodes. The walk follows ONLY the structural containers
+// JobActivityTree declares (root, entries, job, delegate, delegate.child,
+// delegate.turns) and rewrites ONLY the ref fields those nodes declare (a
+// session's ref; a job's ownerRef and transcriptRef; a delegate's childRef). No
+// other key is ever treated as a ref, so a key literally named "ref" or
+// "transcriptRef" inside an opaque payload — a delegate's message or
+// structuredResult, which are json.RawMessage on the typed struct, or an
+// undeclared key such as a delegate-level "transcriptRef" (JobActivityDelegate
+// has no such field) — survives byte-for-byte.
+//
+// An older daemon may still answer with the retired flat array of EvenerJobInfo
+// (docs/appwire-protocol.md, evener/jobs/list); that shape is translated by the
+// same declared-field policy as the tree's job nodes.
+//
+// A value that does not parse as a session ref (an opaque "job:" ref, a bare
+// id from an older daemon, or a nested non-local ref) is left untouched rather
+// than failing the whole list.
+func (s *RemoteHubSource) translateActivityRefs(value any) any {
+	switch node := value.(type) {
+	case map[string]any:
+		s.translateActivitySession(node["root"])
+	case []any:
+		s.translateLegacyJobRefs(node)
+	}
+	return value
+}
+
+// translateLegacyJobRefs rewrites the declared ref field of each element of the
+// retired flat jobs array. EvenerJobInfo's only ref-valued field is
+// transcriptRef: a session ref for a delegate turn and the opaque "job:<id>"
+// for a shell job. Every other key is an id, not an address, so only
+// transcriptRef is a candidate and translateActivityRefField leaves a value it
+// cannot address (a bare id, an opaque "job:" ref) untouched.
+func (s *RemoteHubSource) translateLegacyJobRefs(jobs []any) {
+	for _, job := range jobs {
+		entry, ok := job.(map[string]any)
+		if !ok {
+			continue
+		}
+		s.translateActivityRefField(entry, "transcriptRef")
+	}
+}
+
+// translateActivitySession rewrites one JobActivitySession node: its own ref,
+// then each entry's job or delegate.
+func (s *RemoteHubSource) translateActivitySession(value any) {
+	session, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityRefField(session, "ref")
+	for _, entry := range activityChildren(session["entries"]) {
+		s.translateActivityEntry(entry)
+	}
+}
+
+// translateActivityEntry rewrites one JobActivityEntry node by dispatching to
+// its job or delegate child.
+func (s *RemoteHubSource) translateActivityEntry(value any) {
+	entry, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityJob(entry["job"])
+	s.translateActivityDelegate(entry["delegate"])
+}
+
+// translateActivityJob rewrites the ref fields one JobActivityJob node
+// declares: its owner session ref and its transcript ref (a session ref for a
+// delegate turn, the opaque "job:<id>" for a shell job).
+func (s *RemoteHubSource) translateActivityJob(value any) {
+	job, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityRefField(job, "ownerRef")
+	s.translateActivityRefField(job, "transcriptRef")
+}
+
+// translateActivityDelegate rewrites a JobActivityDelegate node's childRef,
+// then recurses into its child session and its delegate turns. The delegate
+// node declares childRef as its only ref field (appwire.JobActivityDelegate),
+// so a delegate-level "transcriptRef" is not a declared address and is
+// deliberately left byte-for-byte; the turn nodes that DO declare transcriptRef
+// are rewritten by translateActivityJob.
+func (s *RemoteHubSource) translateActivityDelegate(value any) {
+	delegate, ok := value.(map[string]any)
+	if !ok {
+		return
+	}
+	s.translateActivityRefField(delegate, "childRef")
+	s.translateActivitySession(delegate["child"])
+	for _, turn := range activityChildren(delegate["turns"]) {
+		s.translateActivityJob(turn)
+	}
+}
+
+// translateActivityRefField rewrites one declared ref field in place when its
+// value parses as a remote session ref. A non-string, an empty value, or a
+// value this source cannot address (an opaque "job:" ref, a nested non-local
+// ref, a bare id) is left exactly as it arrived.
+func (s *RemoteHubSource) translateActivityRefField(node map[string]any, key string) {
+	raw, ok := node[key].(string)
+	if !ok || raw == "" {
+		return
+	}
+	if translated, err := s.fromRemoteRefString(raw); err == nil {
+		node[key] = translated
+	}
+}
+
+// activityChildren returns a decoded JSON array, or nil for any other shape.
+func activityChildren(value any) []any {
+	children, _ := value.([]any)
+	return children
 }
