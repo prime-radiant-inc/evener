@@ -1131,58 +1131,84 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const generation = activeEpoch;
     const stillMine = () => writeStillMine(generation, token);
     setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
-    let value: KeybindingsOverrides;
+    let result: unknown;
     try {
       // The saving publish above may have disposed the store or retired the
       // payload (a host tearing down on the transition): the checkpoint stays
       // for the next instance to restore, and nothing leaves.
       if (!stillMine()) throw new Error("Shortcut save was cancelled.");
-      const decoded = fromWireOverrides(
-        await client.request("evener/settings/keybindings/patch", {
-          expectedRevision: revision,
-          config: { version: 1, rules: checked },
-        }),
-      );
-      if (decoded === undefined || decoded.loadError !== undefined || decoded.revision < revision)
-        throw new Error(MALFORMED_MESSAGE);
-      value = decoded;
+      result = await client.request("evener/settings/keybindings/patch", {
+        expectedRevision: revision,
+        config: { version: 1, rules: checked },
+      });
     } catch (error) {
-      // The write's outcome is unknown; that fact is the state (writeUncertain)
-      // rather than a message. A malformed reply is hub-sourced and rides
-      // hubError like patchOverrides' does.
-      if (stillMine())
-        setState({
-          saving: false,
-          draftConflict: true,
-          writeUncertain: true,
-          ...(errorText(error) === MALFORMED_MESSAGE ? { hubError: MALFORMED_MESSAGE } : {}),
-        });
+      // No reply: the write's outcome is unknown, and that fact is the state
+      // (writeUncertain) rather than a message. The checkpoint already says so.
+      if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
       throw error;
     }
-    // A genuinely newer external revision may have landed (through the
-    // broadcast) while the reply was in flight: the proposal then stays for
-    // review against it instead of being reported as applied. This is the
-    // one place the comparison is `>`, not "differs": an equal revision is
-    // this write's own broadcast arriving ahead of its reply.
-    const conflict = stillMine() && getState().revision > value.revision;
+    // The reply is back. What follows is ONE ordered sequence with no side
+    // effect ahead of the fence, because every earlier shape of it left a hole:
+    // (1) FENCE. If this reply is no longer ours (the generation ended, support
+    //     dropped, a later write left, the store was disposed), retirePayload
+    //     has already published writeUncertain and the checkpoint on the port
+    //     is the only durable record of that uncertainty - so nothing here may
+    //     touch state, registry or storage. Return the current payload, as
+    //     patchOverrides does for a fenced reply. Same order as patchOverrides:
+    //     a reply that is not ours is discarded without interpretation.
+    // (2) DECODE. A malformed reply is hub-sourced: hubError, like
+    //     patchOverrides; the outcome stays unknown (writeUncertain), the
+    //     checkpoint stays.
+    // (3) APPLY, settling the in-flight flags on EVERY path. The hub confirmed
+    //     the write, so saving ends and writeUncertain clears whether or not the
+    //     registry can take the rules: a reconciler throw (a wedged registry;
+    //     it has already rolled back) rides hubError and rejects this call the
+    //     way patchOverrides' does, but never leaves saving true behind. A
+    //     newer external revision that landed meanwhile keeps the proposal for
+    //     review instead of reporting it applied - the one place the
+    //     comparison is `>`, not "differs": an equal revision is this write's
+    //     own broadcast arriving ahead of its reply.
+    // (4) STORAGE LAST. Only once the outcome is in state does the checkpoint
+    //     change: released on a confirmed write, re-marked settled when the
+    //     proposal stays for review. A cleanup failure keeps the draft in view
+    //     with the port marked unavailable, and never turns a confirmed write
+    //     back into an unknown outcome.
+    if (!stillMine()) {
+      const state = getState();
+      return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
+    }
+    const value = fromWireOverrides(result);
+    if (value === undefined || value.loadError !== undefined || value.revision < revision) {
+      setState({ saving: false, draftConflict: true, writeUncertain: true, hubError: MALFORMED_MESSAGE });
+      throw new Error(MALFORMED_MESSAGE);
+    }
+    const newerExternal = getState().revision > value.revision;
+    const settled: Partial<KeybindingsStoreFields> = {
+      saving: false,
+      writeUncertain: false,
+      draftConflict: newerExternal,
+    };
+    let applyFailure: unknown = null;
+    try {
+      if (newerExternal) setState(settled);
+      else applyHubOverrides(value, settled);
+    } catch (error) {
+      applyFailure = error;
+      setState({ ...settled, hubError: errorText(error) });
+    }
     let storageError: string | null = null;
     try {
-      if (conflict) persistDraft({ ...checkpoint, writeUncertain: false });
+      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
       else drafts.removeIf(checkpoint);
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
-    if (!stillMine()) return value;
-    const settled: Partial<KeybindingsStoreFields> = {
-      saving: false,
-      draft: conflict || storageError !== null ? getState().draft : null,
-      draftConflict: conflict,
-      writeUncertain: false,
+    setState({
+      draft: newerExternal || storageError !== null ? getState().draft : null,
       storageUnavailable: storageError !== null,
       draftError: storageError,
-    };
-    if (conflict) setState(settled);
-    else applyHubOverrides(value, settled);
+    });
+    if (applyFailure !== null) throw applyFailure;
     return value;
   }
 

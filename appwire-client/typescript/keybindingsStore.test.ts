@@ -436,6 +436,124 @@ describe("a retired payload fences every reply still in flight", () => {
   });
 });
 
+describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () => {
+  const applied = { action: ACTIONS.paletteOpen, chord: "Control+P" };
+  const proposed = [{ action: ACTIONS.paletteOpen, chord: "Control+Shift+P" }];
+
+  interface Scenario {
+    name: string;
+    /** The rules the draft proposes (default: a rebind of palette.open). */
+    rules?: KeybindingsOverrides["rules"];
+    /** Runs while the reply is on the wire. */
+    arrange?: (store: KeybindingsStore, registry: KeybindingsRegistry) => void;
+    /** The hub's reply (default: the proposed rules confirmed at revision 4). */
+    reply?: KeybindingsOverrides;
+    rejects: boolean;
+    after: { writeUncertain: boolean; stored: "intact" | null; hubError: boolean };
+    /** Brings the store back to a confirmed state the way its host would. */
+    settle: (store: KeybindingsStore) => Promise<void>;
+  }
+
+  const refresh = async (store: KeybindingsStore) => {
+    await store.getState().refreshOverrides();
+  };
+  const scenarios: Scenario[] = [
+    {
+      name: "fenced out by the generation ending before the reply lands",
+      arrange: (store) => store.endReadyGeneration(),
+      rejects: false,
+      after: { writeUncertain: true, stored: "intact", hubError: false },
+      settle: async (store) => {
+        store.beginReadyGeneration();
+        await refresh(store);
+      },
+    },
+    {
+      name: "fenced out by support dropping before the reply lands",
+      arrange: (store) => store.setSupport("unsupported"),
+      rejects: false,
+      after: { writeUncertain: true, stored: "intact", hubError: false },
+      settle: async (store) => {
+        store.setSupport("supported");
+        await vi.waitFor(() => expect(store.getState().loaded).toBe(true));
+      },
+    },
+    {
+      // The oracle's wedge: the draft drops the override, and a foreign binding
+      // squats palette.open's default chord meanwhile, so restoring the default
+      // throws inside the reconcile and the registry rolls back.
+      name: "the reconciler throws on the confirmed rules (a foreign binding took the default chord meanwhile)",
+      rules: [],
+      arrange: (_store, registry) => {
+        const paletteDefault = registryWithDefaults()
+          .getState()
+          .bindings.find((b) => b.id === ACTIONS.paletteOpen);
+        if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
+        registry
+          .getState()
+          .registerBinding({
+            id: "foreign.squatter",
+            actionId: "foreign",
+            chord: serializeChord(paletteDefault.chord),
+          });
+      },
+      rejects: true,
+      after: { writeUncertain: false, stored: null, hubError: true },
+      settle: refresh,
+    },
+    {
+      name: "a malformed reply",
+      reply: { version: 2 } as unknown as KeybindingsOverrides,
+      rejects: true,
+      after: { writeUncertain: true, stored: "intact", hubError: true },
+      settle: refresh,
+    },
+    {
+      name: "success",
+      rejects: false,
+      after: { writeUncertain: false, stored: null, hubError: false },
+      settle: refresh,
+    },
+  ];
+
+  test.each(scenarios)(
+    "$name",
+    async ({ rules = proposed, arrange, reply = payload(4, rules), rejects, after, settle }) => {
+      const registry = registryWithDefaults();
+      const drafts = memoryKeybindingDraftStorage();
+      const client = clientServing(3, [applied]);
+      const store = await readyStore(client, { registry, drafts: drafts.storage });
+      const wire = deferred<KeybindingsOverrides>();
+      client.on(patchMethod, () => wire.promise);
+
+      const save = store.getState().saveDraft(rules);
+      await vi.waitFor(() => expect(client.calls.filter((c) => c.method === patchMethod)).toHaveLength(1));
+      const checkpoint = drafts.stored();
+      expect(checkpoint).toMatchObject({ baseRevision: 3, rules, writeUncertain: true });
+      arrange?.(store, registry);
+      wire.resolve(reply);
+      if (rejects) await expect(save).rejects.toThrow();
+      else await expect(save).resolves.toBeDefined();
+
+      // Nothing is in flight; the outcome is recorded once, in state AND on the
+      // port: an unknown outcome keeps its checkpoint, a known one releases it.
+      expect(store.getState().saving).toBe(false);
+      expect(store.getState().writeUncertain).toBe(after.writeUncertain);
+      expect(drafts.stored()).toEqual(after.stored === "intact" ? checkpoint : null);
+      expect(store.getState().hubError !== null).toBe(after.hubError);
+
+      await settle(store);
+      expect(store.getState()).toMatchObject({
+        saving: false,
+        writeUncertain: false,
+        draftConflict: false,
+        loaded: true,
+      });
+      expect(() => store.getState().editDraft([])).not.toThrow();
+    },
+  );
+});
+
 describe("payload rules shared by both apps", () => {
   test("a GET carrying loadError is authoritative even at a lower revision", async () => {
     const client = new FakeClient("ready");
