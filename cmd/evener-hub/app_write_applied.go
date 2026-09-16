@@ -1,6 +1,10 @@
 package hub
 
-import "errors"
+import (
+	"errors"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+)
 
 // A hub write that applied is announced to every client, whatever the step
 // after it did. The clients hold no record of what they sent: since D11
@@ -27,6 +31,17 @@ func writeApplied(err error) error {
 		return nil
 	}
 	return appliedWriteError{err}
+}
+
+// storeWriteError marks a store failure that landed its write, so the one
+// predicate below answers for the hub's own writes and for the state stores
+// (hubcore.ErrWriteApplied) and the plugin store (plugins.ErrStoreChanged)
+// alike. The wire class of what it wraps is preserved.
+func storeWriteError(err error) error {
+	if errors.Is(err, hubcore.ErrWriteApplied) {
+		return writeApplied(err)
+	}
+	return err
 }
 
 // writeDidApply answers the handlers' one question: is there a change the

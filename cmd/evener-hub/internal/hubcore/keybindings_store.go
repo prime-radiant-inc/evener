@@ -34,6 +34,15 @@ type keybindingsStoreFaults struct {
 	AfterRename  func() error
 }
 
+// ErrWriteApplied marks a store failure that happened after the write landed:
+// the file carries the new state and the store adopted it, so only the step
+// after it failed. A caller that announces applied writes to other clients
+// (the hub broadcasts the canonical state) must announce one of these too, or
+// every other client stays on the pre-write revision. Every store's
+// applied-then-failed state wraps it, so one errors.Is answers the question
+// for all of them rather than each caller knowing a type.
+var ErrWriteApplied = errors.New("the write landed before this failed")
+
 // KeybindingsPostRenameError wraps a durable failure that happened AFTER the
 // rename published the new snapshot: the stored overrides advanced to the new
 // revision, but a follow-up directory sync or hook failed. Callers must treat
@@ -42,7 +51,10 @@ type keybindingsStoreFaults struct {
 type KeybindingsPostRenameError struct{ Err error }
 
 func (e *KeybindingsPostRenameError) Error() string { return e.Err.Error() }
-func (e *KeybindingsPostRenameError) Unwrap() error { return e.Err }
+
+// Unwrap reports ErrWriteApplied beside the failure itself: this type is the
+// keybindings store's name for that state, and the RPC layer reads the state.
+func (e *KeybindingsPostRenameError) Unwrap() []error { return []error{e.Err, ErrWriteApplied} }
 
 // KeybindingsStore is the hub-authoritative store for user keybinding
 // overrides. One mutex serializes each durable update.

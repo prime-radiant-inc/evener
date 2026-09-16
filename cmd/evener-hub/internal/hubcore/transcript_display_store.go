@@ -118,6 +118,13 @@ func (s *TranscriptDisplayStore) Patch(params appwire.TranscriptDisplayDefaultsP
 		s.state = next
 	}
 	if err != nil {
+		if renamed {
+			// The rename published the new revision and the store adopted it,
+			// so this patch applied and only the step after it failed. The
+			// applied state rides along for the caller's broadcast; the error
+			// is what the client that asked is told.
+			return transcriptDisplayPatchResponse(params.Layout, *updated), fmt.Errorf("%w: %w", ErrWriteApplied, err)
+		}
 		return appwire.TranscriptDisplayPatchResponse{}, err
 	}
 	return transcriptDisplayPatchResponse(params.Layout, *updated), nil
