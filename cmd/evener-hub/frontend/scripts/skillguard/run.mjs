@@ -105,11 +105,17 @@ const STEERED_TURN_INPUT_TIMEOUT_MS = envMillis("SKILLGUARD_STEERED_TURN_TIMEOUT
 const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 
 // envMillis reads a millisecond budget from the environment, defaulting when
-// unset or empty and refusing a non-numeric value rather than silently
-// treating it as NaN (which would disable a timeout entirely).
+// unset or BLANK and refusing anything else non-numeric rather than silently
+// treating it as NaN (which would disable a timeout entirely). Blank is not
+// merely "": Number(" ") and Number("\t") are both 0 -- finite and
+// non-negative -- so a whitespace-only value used to sail through the checks
+// below and silently select 0. For SKILLGUARD_TURN_IDLE_SETTLE_MS that
+// disables the settle barrier outright, which is the load-dependent flakiness
+// this budget exists to remove. A blank value therefore takes the DEFAULT, the
+// same as an unset one.
 function envMillis(name, fallback) {
   const raw = process.env[name];
-  if (raw === undefined || raw === "") return fallback;
+  if (raw === undefined || raw.trim() === "") return fallback;
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(`${name} must be a non-negative number of milliseconds, got ${JSON.stringify(raw)}`);
@@ -565,18 +571,45 @@ class Driver {
   // that long (sampled once per poll) before the wait resolves, so a transient
   // reading cannot release it. Every caller that gates an IRREVERSIBLE action
   // (arming a hold, a submit that routes differently while busy) passes it.
+  //
+  // An evaluate that could not run -- a CDP hiccup, a navigation in flight --
+  // is NOT a reading, in either direction. It must not release the wait (the
+  // null check is what stops that) and it must not RESET the settle timer
+  // either: under load a single failed poll in the middle of a settle window
+  // used to throw the whole hold away and start it over, which is exactly the
+  // kind of load-dependent behaviour this barrier exists to remove. Only a
+  // reading that CAME BACK, including one that answers "not yet", ends a hold.
+  //
+  // The settle window itself is part of the budget the caller asked for, so
+  // the deadline is extended once, to `settleMs` after the condition is first
+  // held. Without it a condition that first holds inside the last settleMs of
+  // the budget could never release -- a guaranteed timeout at exactly the
+  // loaded moment the wait was widened to survive. It is accounted for ONCE:
+  // re-extending on every hold would let a flapping condition postpone the
+  // deadline indefinitely, and a wait that cannot fail is worse than a slow one.
   async waitPage(exprSource, { timeoutMs = 15000, label, settleMs = 0 } = {}) {
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
     let heldSince = null;
+    let settleAccounted = false;
     for (;;) {
-      const value = await evaluate(this.send, exprSource).catch(() => null);
-      const held = value !== null && value !== undefined && value !== false;
+      let errored = false;
+      const value = await evaluate(this.send, exprSource).catch(() => {
+        errored = true;
+        return null;
+      });
+      const held = !errored && value !== null && value !== undefined && value !== false;
       const now = Date.now();
       if (held) {
         if (settleMs <= 0) return value;
-        if (heldSince === null) heldSince = now;
+        if (heldSince === null) {
+          heldSince = now;
+          if (!settleAccounted) {
+            settleAccounted = true;
+            deadline = Math.max(deadline, now + settleMs);
+          }
+        }
         if (now - heldSince >= settleMs) return value;
-      } else {
+      } else if (!errored) {
         heldSince = null;
       }
       if (now > deadline) {
@@ -999,7 +1032,16 @@ class Driver {
   //      (send/steer/drain entries) and the "Queued messages" strip (queue
   //      rows, plus recovery/blocked records) render, from the same durable
   //      outbox and authoritative pending-mutation projections the durable
-  //      reads use, so either one being on screen blocks the release.
+  //      reads use, so either one being on screen blocks the release; and
+  //   4. the session's DURABLE recovery records, because (3)'s strip is not
+  //      authoritative for them: QueueStrip filters out the record its own
+  //      composer has taken ownership of (activeRecoveryId), so a failed
+  //      request the composer has restored as a draft renders NOTHING in the
+  //      strip -- and the barrier would release over a composer that is about
+  //      to resend it. The store is the record's own storage and is not
+  //      filtered by who owns it, so "no strip" plus "no record" is what the
+  //      release means. (A record that cannot be read is not a release: the
+  //      reading is retried and only times out.)
   // A session still working, or still holding any pending work, cannot release
   // the barrier even though its busy flag reads false.
   //
@@ -1013,20 +1055,48 @@ class Driver {
   // can outlive the release of that wait. Reply waits cannot substitute on
   // their own: such a turn produces a reply PER leg, and the first leg's reply
   // arrives while the continuation leg is still pending.
+  //
+  // The session's own recovery records are read from the DURABLE store that
+  // owns them, not from a render of them: QueueStrip hides the record its
+  // composer has taken ownership of (activeRecoveryId), so the strip is
+  // blind to a failed request that has already been restored into the
+  // composer. True is returned only when the store was read AND holds no such
+  // record for this session: an unreadable store (null) and a pending record
+  // (false) both keep the barrier from releasing.
+  noPendingRecoveryExpr(ref) {
+    return `(async () => {
+      const durable = await ${this.durableRecordsExpr()};
+      if (!durable || !Array.isArray(durable.recovery)) return null;
+      return durable.recovery.some(
+        (record) => record.targetRef === ${JSON.stringify(ref)} && record.method !== "notes/human/set",
+      )
+        ? false
+        : true;
+    })()`;
+  }
+
+  // One expression, so every reading of "this session is idle" is the same
+  // reading: the barrier below waits on it, and nothing else has a private
+  // copy that could drift from it.
+  turnIdleExpr(ref) {
+    return `(async () => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      const state = ${this.composerStateExpr(ref)};
+      if (!state || state.steerVisible !== false) return null;
+      const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
+      if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
+      if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
+      if (pane.querySelector("[data-testid='pending-chips']") !== null) return null;
+      if ([...pane.querySelectorAll("h3")].some((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}))) return null;
+      if ((await ${this.noPendingRecoveryExpr(ref)}) !== true) return null;
+      return true;
+    })()`;
+  }
+
   async waitForTurnIdle(ref, { timeoutMs = 30000 } = {}) {
     await this.waitPage(
-      `(() => {
-        const pane = ${this.paneScopeExpr(ref)};
-        if (!pane) return null;
-        const state = ${this.composerStateExpr(ref)};
-        if (!state || state.steerVisible !== false) return null;
-        const cadence = pane.querySelector("[data-testid='pane-cadence-slot'] [role='img']");
-        if (!cadence || cadence.getAttribute("aria-label") === "Working") return null;
-        if (pane.querySelector("[data-testid='status-row-queue']") !== null) return null;
-        if (pane.querySelector("[data-testid='pending-chips']") !== null) return null;
-        if ([...pane.querySelectorAll("h3")].some((h) => h.textContent.startsWith(${JSON.stringify(QUEUED_MESSAGES_HEADER)}))) return null;
-        return true;
-      })()`,
+      this.turnIdleExpr(ref),
       {
         timeoutMs,
         settleMs: TURN_IDLE_SETTLE_MS,
@@ -1035,17 +1105,90 @@ class Driver {
     );
   }
 
-  // The turn-block ids currently on the page. Captured before the release that
-  // will dispatch a continuation leg, this is the baseline that tells
-  // waitForContinuationReply which turns existed while that leg was still
-  // undispatched -- see it for why that baseline is the wait's proof.
-  turnIdsExpr() {
-    return `(() => [...document.querySelectorAll("[data-testid='turn-block']")].map((el) => el.getAttribute("data-turn-id")))()`;
+  // clearComposerDraft takes one session's composer to the state a fresh
+  // re-composition starts from, and holds it there against the app's own
+  // persistence until the session's durable recovery store is EMPTY.
+  //
+  // Why it exists: a failed request can come back to the composer instead of
+  // resting in the strip. Composer's fresh-recovery effect restores a rejected
+  // record into an EMPTY composer and takes ownership of it, and QueueStrip
+  // then hides the record (activeRecoveryId) -- so the strip is empty AND the
+  // composer holds the failed draft, and a retry that types without looking
+  // appends to it instead of composing it. Clearing is not a workaround for
+  // that shape: it is the app's own reading of it.
+  // queueRecoveryPersistence discards the record once the composer's text,
+  // attachments and selections are all empty (Composer.tsx), so an emptied
+  // composer is what "this recovery is spent" means to the app -- and the
+  // record LEAVING THE DURABLE STORE is the signal that nothing can restore
+  // the draft again, because the restore effect can only fire while a record
+  // exists. Waiting for the store, rather than for a quiet poll window, is what
+  // makes the state the retry types into final.
+  async clearComposerDraft(ref, { timeoutMs = 20000 } = {}) {
+    const settled = await this.settleComposer(ref);
+    if (settled.value !== "") {
+      await this.focusComposer(ref);
+      await this.selectAll(ref);
+      await this.press(ref, "Backspace");
+    }
+    // Chips go through their own remove buttons, one at a time: the selection
+    // list is what the record's persistence reads, and a chip left behind
+    // keeps both the record and its restorable draft alive.
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const chips = await evaluate(
+        this.send,
+        `(() => { const pane = ${this.paneScopeExpr(ref)};
+          return pane
+            ? [...pane.querySelectorAll("[data-testid='composer-skill-chip'] button")].filter((b) =>
+                (b.getAttribute("aria-label") ?? "").startsWith(${JSON.stringify(CHIP_REMOVE_PREFIX)})).length
+            : 0; })()`,
+      );
+      if (!chips) break;
+      await this.removeSkillChip(ref);
+    }
+    await this.waitPage(
+      `(async () => {
+        const state = ${this.composerStateExpr(ref)};
+        if (!state || state.text !== "" || state.chips.length > 0) return null;
+        return (await ${this.noPendingRecoveryExpr(ref)}) === true ? true : null;
+      })()`,
+      { timeoutMs, label: `composer cleared and no pending recovery for ${ref}` },
+    );
   }
 
-  async turnIds() {
-    const ids = await evaluate(this.send, this.turnIdsExpr()).catch(() => []);
-    return Array.isArray(ids) ? ids : [];
+  // The turn-block ids this session's pane currently renders. Captured before
+  // the release that will dispatch a continuation leg, this is the baseline
+  // that tells waitForContinuationReply which turns existed while that leg was
+  // still undispatched -- see it for why that baseline is the wait's proof.
+  //
+  // Every transcript read is scoped to the session's own pane. Turn ids are
+  // unique per session, not per document, and a session pane is not the only
+  // place a turn block can be rendered (the stack host mounts every pane;
+  // measured on this desktop host, opening session B unmounts session A, so
+  // the collision below is latent rather than everyday). A document-wide sweep
+  // can be satisfied by another session's pane, which would make this baseline
+  // wrong in the direction that HEALS a false pass (ids from the other pane
+  // make real turns look pre-existing) or a timeout (the continuation's own
+  // block is treated as pre-existing).
+  turnIdsExpr(ref = this.sessionA) {
+    return `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      return [...pane.querySelectorAll("[data-testid='turn-block']")].map((el) => el.getAttribute("data-turn-id"));
+    })()`;
+  }
+
+  // turnIds is a BASELINE, and a baseline that failed to read is not an empty
+  // one. `[]` claims "no turns existed", which is the reading that lets
+  // waitForContinuationReply release on a turn that was already running -- the
+  // exact false pass the baseline exists to prevent. A missing pane, a null
+  // result or a page error therefore fails here, BEFORE the release that would
+  // dispatch the continuation leg it is meant to prove.
+  async turnIds(ref = this.sessionA) {
+    const ids = await evaluate(this.send, this.turnIdsExpr(ref));
+    if (!Array.isArray(ids)) {
+      throw new Error(`turnIds(${ref}): no turn ids read for this session (got ${JSON.stringify(ids)})`);
+    }
+    return ids;
   }
 
   // waitForContinuationReply is the POSITIVE end-of-turn proof for a turn whose
@@ -1091,18 +1234,36 @@ class Driver {
   // fails the wait loudly instead of passing it.
   //
   // `text` is the continuation input the scenario submitted.
+  //
+  // The whole check runs inside the TARGET SESSION'S PANE. Turn ids are
+  // unique per session, not per document, so a document-wide sweep can be
+  // satisfied by a turn block rendered anywhere else -- above all another
+  // session's pane (identical scripted text is the norm here, since every leg
+  // answers with the same sentinel). That either confirms a pass this session
+  // never produced or hides the continuation behind an id the baseline
+  // collected from a pane the release never touched.
   async waitForContinuationReply(text, turnsBefore, { timeoutMs = 30000, ref = this.sessionA } = {}) {
     if (!Array.isArray(turnsBefore)) {
       throw new Error("waitForContinuationReply needs the turnIds() captured before the release that dispatches the continuation");
     }
-    const expr = `(() => { const before = new Set(${JSON.stringify(turnsBefore)});
-      return [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => {
+    const expr = `(() => {
+      const pane = ${this.paneScopeExpr(ref)};
+      if (!pane) return null;
+      const before = new Set(${JSON.stringify(turnsBefore)});
+      return [...pane.querySelectorAll("[data-testid='turn-block']")].some((el) => {
         const id = el.getAttribute("data-turn-id");
         if (!id || before.has(id)) return false;
         const block = el.textContent ?? "";
         const at = block.indexOf(${JSON.stringify(text)});
         if (at < 0) return false;
-        return block.slice(at + 1).includes(${JSON.stringify(REPLY_TEXT)});
+        // The reply must follow the continuation TEXT, not merely follow its
+        // first character: slice from the end of the run itself ('at + 1'
+        // scanned the continuation's own tail, harmless only while the two
+        // sentinels stay disjoint -- a continuation whose text ever carried
+        // the reply sentinel would release on the input's own text, before the
+        // continuation leg's reply existed, which is exactly the premature
+        // release this wait was rewritten to prevent).
+        return block.slice(at + ${text.length}).includes(${JSON.stringify(REPLY_TEXT)});
       }) ? true : null; })()`;
     try {
       await this.waitPage(expr, {
@@ -1157,14 +1318,22 @@ class Driver {
   // already carry the reply and wait for a turn-block that carries it and was
   // NOT in that snapshot. The baseline must be captured BEFORE the
   // submit/release that triggers the reply.
+  //
+  // Like turnIds, this is a BASELINE: a read that failed is not an empty one.
+  // `[]` here claims "no turn carried a reply", so an earlier reply would
+  // satisfy waitForReply -- a false pass over the very completion the wait
+  // exists to prove.
   async replyBaseline(text = REPLY_TEXT) {
     const ids = await evaluate(
       this.send,
       `(() => [...document.querySelectorAll("[data-testid='turn-block']")]
         .filter((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}))
         .map((el) => el.getAttribute("data-turn-id")))()`,
-    ).catch(() => []);
-    return Array.isArray(ids) ? ids : [];
+    );
+    if (!Array.isArray(ids)) {
+      throw new Error(`replyBaseline(${JSON.stringify(text)}): no reply-turn ids read (got ${JSON.stringify(ids)})`);
+    }
+    return ids;
   }
 
   async waitForReply(text, baselineIds, { timeoutMs = 25000 } = {}) {
@@ -1208,13 +1377,19 @@ class Driver {
   // the useful question when it fails is not "how long did we wait" but
   // "which of a late render, a queue-routed submit, or a wrong-session pane
   // happened" — and that is only answerable from the page, not the label.
-  // `ref` names the session whose composer the timeout dump reads; it
-  // defaults to sessionA (this helper's current call site) so a reuse for
-  // sessionB reports B's composer, not A's.
+  // `ref` names the SESSION whose pane is searched and whose composer the
+  // timeout dump reads; it defaults to sessionA (this helper's current call
+  // site) so a reuse for sessionB asks about B, not A. The search is scoped to
+  // that pane for the same reason the continuation wait is: the scripted text
+  // is identical across panes by construction, so a document-wide sweep can be
+  // satisfied by a turn in the other mounted session while the session under
+  // test has rendered nothing.
   async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
     try {
       await this.waitPage(
-        `(() => [...document.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)})) ? true : null)()`,
+        `(() => { const pane = ${this.paneScopeExpr(ref)};
+          if (!pane) return null;
+          return [...pane.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)})) ? true : null; })()`,
         { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
       );
     } catch (error) {
@@ -1396,8 +1571,9 @@ async function runScenarios(driver) {
   const drainBaseline = await driver.replyBaseline();
   // The turns already rendered while the drain's continuation leg is still
   // undispatched: waitForContinuationReply requires the continuation to land in
-  // a turn that is NOT one of these.
-  const drainTurns = await driver.turnIds();
+  // a turn that is NOT one of these -- read from session A's own pane, the
+  // session this scenario drives (both reads below are pane-scoped).
+  const drainTurns = await driver.turnIds(driver.sessionA);
   driver.control("release");
   // The reply wait below returns on the HELD leg's reply, which arrives while
   // the drain's steering leg is still pending: the release unblocks the held
@@ -1406,7 +1582,7 @@ async function runScenarios(driver) {
   // (the drained text's turn carrying the scripted answer) so the turn is
   // provably over before the next hold is armed — no fixed settling gap.
   await driver.waitForReply(REPLY_TEXT, drainBaseline);
-  await driver.waitForContinuationReply(PROSE.queue2, drainTurns);
+  await driver.waitForContinuationReply(PROSE.queue2, drainTurns, { ref: driver.sessionA });
   driver.milestone("drain-released", {});
 }
 
@@ -1440,7 +1616,7 @@ async function runScenariosPart2(driver) {
   // routes to the client queue and becomes a queued row that never turns into a
   // transcript turn at all. The wait is therefore generous and bounded, and its
   // failure names what the page actually showed instead of only the label.
-  await driver.waitForTranscriptInput(PROSE.steerTurn);
+  await driver.waitForTranscriptInput(PROSE.steerTurn, { ref: driver.sessionA });
   driver.milestone("steer-turn-started", { prose: PROSE.steerTurn });
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.steer);
@@ -1451,14 +1627,14 @@ async function runScenariosPart2(driver) {
   const steerBaseline = await driver.replyBaseline();
   // Same baseline as the drain: the held turn is on screen while the interrupt
   // leg is still undispatched (see waitForContinuationReply).
-  const steerTurns = await driver.turnIds();
+  const steerTurns = await driver.turnIds(driver.sessionA);
   driver.control("release");
   // Same two-leg shape as the drain above: the release answers the HELD leg
   // first, and the interrupt leg the daemon dispatches after it is the one the
   // next hold could steal. Its own reply in the transcript is the end-of-turn
   // proof, independent of how long the dispatch takes.
   await driver.waitForReply(REPLY_TEXT, steerBaseline);
-  await driver.waitForContinuationReply(PROSE.steer, steerTurns);
+  await driver.waitForContinuationReply(PROSE.steer, steerTurns, { ref: driver.sessionA });
   driver.milestone("steer-released", {});
 
   // ---- scenario: attachment preservation ----
@@ -1571,9 +1747,19 @@ async function runScenariosPart2(driver) {
   await driver.waitPage(driver.turnFailureExpr(), { timeoutMs: 45000, label: "visible failed input" });
   driver.milestone("fail-observed", { failure: await evaluate(driver.send, driver.turnFailureExpr()) });
   // Explicit retry: the failed input kept the names and prose for correction;
-  // the user re-composes the same request and sends it again. The barrier is
-  // instant (the failed turn already ended at the visible failure cap) but
-  // keeps every fresh turn/start barriered by construction.
+  // the user re-composes the same request and sends it again.
+  //
+  // The failed request can be waiting in the COMPOSER rather than the strip: a
+  // rejected recovery record the composer has taken ownership of is filtered
+  // out of the strip (QueueStrip drops the record whose clientMutationId is
+  // activeRecoveryId) while its draft sits in the textarea, and a retry that
+  // simply typed would append to it. So the composer is taken to the state the
+  // retry composes from FIRST -- clearComposerDraft empties it and waits for
+  // the session's durable recovery store to empty too -- and only then does
+  // the barrier run (it re-reads the same store) and the retry type. Appending
+  // is impossible from both sides: the draft is gone, and so is the record the
+  // app restores drafts from.
+  await driver.clearComposerDraft(driver.sessionA);
   await driver.waitForTurnIdle(driver.sessionA);
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.fail);
