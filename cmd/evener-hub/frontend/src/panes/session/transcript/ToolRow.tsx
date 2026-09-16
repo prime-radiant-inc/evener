@@ -67,7 +67,7 @@ import { Fragment, type ReactNode, useId, useMemo } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { EntityRef } from "./EntityRef";
-import { type EntityTextSegment, segmentEntityIds } from "./entitySegments";
+import { type EntityTextSegment, type ProtectedSpan, segmentEntityIds } from "./entitySegments";
 import { splitTrailingWord } from "./tailWord";
 import styles from "./toolcallitem.module.css";
 
@@ -243,18 +243,27 @@ export function statedIntentOf(item: { description?: string }): string | undefin
  * each caller maps its segments to its own nodes. */
 type SummarySegment = EntityTextSegment;
 
+/** The FIRST-occurrence span of the summary's URL - the one and only
+ * occurrence linkifySummary links. Entity segmentation protects exactly this
+ * span (summarySegments below), and linkifySummary renders from it, so the
+ * two can never disagree about which occurrence is the link. */
+function linkSpan(text: string, href: string | undefined): ProtectedSpan | undefined {
+  if (href === undefined) return undefined;
+  const start = text.indexOf(href);
+  return start === -1 ? undefined : { start, end: start + href.length };
+}
+
 /** Splits a summary string into its text and entity segments, in order. The
  * summary's URL, when there is one, is a span entity segmentation must keep
  * WHOLE: a hub URL can embed one of the session's own entity ids
  * (".../jobs/job_<id>/log"), and an id-shaped substring inside the URL would
  * otherwise split the URL across segments - no single segment would hold the
- * whole URL, so linkifySummary's first-occurrence match would find nothing
- * and the link would silently drop. The id inside the URL therefore stays
- * plain text: a card trigger nested inside the link it lives in would open a
- * card from inside the very link the row is drawing. */
+ * whole URL, linkifySummary's whole-href match would find nothing in any
+ * fragment, and the link would silently drop. The id inside the URL
+ * therefore stays plain text: a card trigger nested inside the link it
+ * lives in would open a card from inside the very link the row is drawing. */
 function summarySegments(text: string, summaryLink: string | undefined): SummarySegment[] {
-  const start = summaryLink === undefined ? -1 : text.indexOf(summaryLink);
-  return start === -1 ? segmentEntityIds(text) : segmentEntityIds(text, { start, end: start + summaryLink.length });
+  return segmentEntityIds(text, linkSpan(text, summaryLink));
 }
 
 /** A segment's length in code POINTS, never UTF-16 units: a cut through a
@@ -442,16 +451,15 @@ function summarySegmentNodes(segments: SummarySegment[], href: string | undefine
  * leaves the visible text byte-identical; toolRowGrammar.test.tsx pins
  * both. */
 function linkifySummary(text: string, href: string | undefined): ReactNode {
-  if (href === undefined) return text;
-  const start = text.indexOf(href);
-  if (start === -1) return text;
+  const span = linkSpan(text, href);
+  if (span === undefined) return text;
   return (
     <>
-      {text.slice(0, start)}
+      {text.slice(0, span.start)}
       <a href={href} target="_blank" rel="noopener noreferrer">
-        {href}
+        {text.slice(span.start, span.end)}
       </a>
-      {text.slice(start + href.length)}
+      {text.slice(span.end)}
     </>
   );
 }

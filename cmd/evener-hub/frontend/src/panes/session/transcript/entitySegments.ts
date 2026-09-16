@@ -7,6 +7,10 @@ import { findEntityIds } from "@evener/appwire-client";
  * an id is. */
 export type EntityTextSegment = { kind: "text"; text: string } | { kind: "entity"; id: string };
 
+/** A span of a string, in the same UTF-16 indices `findEntityIds` and
+ * `String.indexOf` use, that a caller of segmentEntityIds must keep whole. */
+export type ProtectedSpan = { start: number; end: number };
+
 /** Splits a string into its text and entity segments, in order. An id is ONE
  * segment wherever it lands, never split across two: a clipped id with an
  * ellipsis inside it is not even detectable as an id, so no card could attach
@@ -15,7 +19,7 @@ export type EntityTextSegment = { kind: "text"; text: string } | { kind: "entity
  * between segments rather than inside one. `protect` names a span the caller
  * must keep whole: any id overlapping it stays part of the surrounding text
  * run instead of becoming an entity segment. */
-export function segmentEntityIds(text: string, protect?: EntitySpan): EntityTextSegment[] {
+export function segmentEntityIds(text: string, protect?: ProtectedSpan): EntityTextSegment[] {
   const segments: EntityTextSegment[] = [];
   let cursor = 0;
   for (const match of findEntityIds(text)) {
@@ -27,7 +31,3 @@ export function segmentEntityIds(text: string, protect?: EntitySpan): EntityText
   if (cursor < text.length) segments.push({ kind: "text", text: text.slice(cursor) });
   return segments;
 }
-
-/** A span of a string, in the same UTF-16 indices `findEntityIds` and
- * `String.indexOf` use, that a caller of segmentEntityIds must keep whole. */
-export type EntitySpan = { start: number; end: number };

@@ -1966,12 +1966,9 @@ test("an expanded summary whose anchor ends at an entity id glues the trailing c
   expect(summaryEl.textContent).toBe(summary);
 });
 
-// The summaryLink URL must survive entity segmentation WHOLE (roborev r5's
-// followup finding): a hub URL can embed one of the session's own entity
-// ids (".../jobs/job_<id>/log"), and an id-shaped substring inside the URL
-// would otherwise split it across segments - no single segment would hold
-// the whole URL, linkifySummary's first-occurrence match would find nothing
-// in any fragment, and the link would silently drop.
+// The grammar-level pin for ToolRow's summarySegments URL protection - the
+// full rationale lives on that function. Red-first evidence: this failed
+// with a null anchor before the fix.
 test("a summaryLink URL embedding an entity id renders whole as one link, never split by id detection", () => {
   const url = `https://internal.example/jobs/${SUMMARY_ENTITY_JOB}/log`;
   const summary = `Fetched ${url} · 200`;

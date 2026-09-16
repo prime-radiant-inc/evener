@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { segmentEntityIds } from "./entitySegments";
+import { type ProtectedSpan, segmentEntityIds } from "./entitySegments";
 import { SUMMARY_ENTITY_JOB } from "./entityView.testFixture";
 
 /** The job id the tests embed in URLs and plain text: one the product itself
@@ -7,7 +7,7 @@ import { SUMMARY_ENTITY_JOB } from "./entityView.testFixture";
 const ID = SUMMARY_ENTITY_JOB;
 
 /** Renders segments readably: ids as <id>, text runs as themselves. */
-function seg(text: string, protect?: { start: number; end: number }): string[] {
+function seg(text: string, protect?: ProtectedSpan): string[] {
   return segmentEntityIds(text, protect).map((s) => (s.kind === "entity" ? `<${s.id}>` : s.text));
 }
 
@@ -28,7 +28,7 @@ test("a span covering a whole URL keeps the URL one text segment", () => {
   const url = `https://x/jobs/${ID}/log`;
   const text = `Read ${url} · 200`;
   const start = text.indexOf(url);
-  expect(segmentEntityIds(text, { start, end: start + url.length })).toEqual([{ kind: "text", text }]);
+  expect(seg(text, { start, end: start + url.length })).toEqual([text]);
 });
 
 test("ids adjacent to the protected span still segment: touching edges is not overlap", () => {
