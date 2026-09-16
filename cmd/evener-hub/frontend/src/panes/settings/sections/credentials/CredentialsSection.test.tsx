@@ -17,6 +17,11 @@ import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { CredentialsSection } from "./CredentialsSection";
 
+/** The refusal these controls use instead of the native attribute: a click that
+ * starts work must not drop the keyboard, so the pending/busy state is
+ * aria-disabled (Button/Switch swallow the activation themselves). */
+const isRefused = (el: HTMLElement): boolean => el.getAttribute("aria-disabled") === "true";
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
   connectionStore.getState().connect(fake);
@@ -532,17 +537,13 @@ describe("credential verification", () => {
     const testButton = within(inspector).getByRole("button", { name: "Test credentials" });
     await userEvent.setup().click(testButton);
 
-    expect(
-      (within(inspector).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(isRefused(within(inspector).getByRole("button", { name: "Testing credentials…" }))).toBe(true);
     expect((within(inspector).getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
 
     response.resolve({ provider: customName, status: "success", message: "Credentials verified." });
     expect((await screen.findByRole("status")).textContent).toContain("Credentials verified.");
-    expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false);
   });
 
   test("suppresses duplicate clicks for one pending instance while another instance stays enabled", async () => {
@@ -564,30 +565,24 @@ describe("credential verification", () => {
     await user.click(workButton);
     await user.click(workButton);
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(1);
-    expect(
-      (within(workInspector).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(isRefused(within(workInspector).getByRole("button", { name: "Testing credentials…" }))).toBe(true);
 
     // The other instance's sheet is independent: its Test stays enabled.
     await user.click(within(workInspector).getByRole("button", { name: "Close" }));
     const personalInspector = await openSheet(user, PERSONAL.name);
     const personalButton = within(personalInspector).getByRole("button", { name: "Test credentials" });
-    expect((personalButton as HTMLButtonElement).disabled).toBe(false);
+    expect(isRefused(personalButton)).toBe(false);
     await user.click(personalButton);
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toHaveLength(2);
 
     workResponse.resolve({ provider: WORK.name, status: "success", message: "Credentials verified." });
     personalResponse.resolve({ provider: PERSONAL.name, status: "success", message: "Credentials verified." });
     await waitFor(() =>
-      expect(
-        (within(personalInspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled,
-      ).toBe(false),
+      expect(isRefused(within(personalInspector).getByRole("button", { name: "Test credentials" }))).toBe(false),
     );
     await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
     const workAgain = await openSheet(user, WORK.name);
-    expect((within(workAgain).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(isRefused(within(workAgain).getByRole("button", { name: "Test credentials" }))).toBe(false);
   });
 
   test.each([
@@ -685,7 +680,7 @@ describe("credential verification", () => {
     // lands live; the stale pending state from the old configuration is gone.
     await screen.findByText("Not configured · openai-chat · base https://new.example/v1");
     const refreshedButton = within(inspector).getByRole("button", { name: /Test(?:ing credentials…)?/ });
-    expect((refreshedButton as HTMLButtonElement).disabled).toBe(false);
+    expect(isRefused(refreshedButton)).toBe(false);
     response.resolve({ provider: "work", status: "success", message: "Credentials verified." });
     await act(async () => {
       await response.promise;
@@ -717,9 +712,7 @@ describe("credential verification", () => {
 
     expect(fake.calls.filter((call) => call.method === "evener/auth/test")).toEqual([]);
     await screen.findByText(FINGERPRINT_UNAVAILABLE_TEST_MESSAGE);
-    expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false);
   });
 
   // roborev PR #1136: the probe asserts the destination the row was read from,
@@ -771,9 +764,7 @@ describe("credential verification", () => {
     const user = userEvent.setup();
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
-    expect(
-      (within(inspector).getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(isRefused(within(inspector).getByRole("button", { name: "Testing credentials…" }))).toBe(true);
 
     // The connection is replaced and its own listing is held open, so the rows
     // on screen are still the ones the pending test was issued against.
@@ -791,9 +782,7 @@ describe("credential verification", () => {
 
     // The pending test is released rather than left as this row's state...
     await waitFor(() =>
-      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
+      expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false),
     );
 
     // ...and its answer, which describes the connection that is gone, is not
@@ -833,9 +822,7 @@ describe("credential verification", () => {
     // The refused assertion is not a result: the pending test clears and the
     // action returns to its idle label.
     await waitFor(() =>
-      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
+      expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false),
     );
     // A retry has to assert the destination now on screen, so the listing is
     // re-read after the refusal.
@@ -889,9 +876,7 @@ describe("actions refused while the held listing belongs to a replaced connectio
     expect(screen.queryByText(/provider endpoint could not be reached/)).toBeNull();
     // The pending test clears, so the action does not sit in "Testing…".
     await waitFor(() =>
-      expect((within(inspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      ),
+      expect(isRefused(within(inspector).getByRole("button", { name: "Test credentials" }))).toBe(false),
     );
     // The refusal asked for this connection's own listing, and that read is
     // what reopens the action.
@@ -1311,14 +1296,10 @@ describe("model live refresh", () => {
     await user.click(within(personalInspector).getByRole("button", { name: "Refresh live models" }));
     await user.click(within(personalInspector).getByRole("button", { name: "Close" }));
     const workInspector = await openSheet(user, "work");
-    expect(
-      (within(workInspector).getByRole("button", { name: "Refresh live models" }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    expect(isRefused(within(workInspector).getByRole("button", { name: "Refresh live models" }))).toBe(false);
     gate.resolve({ instances: [WORK, PERSONAL], availableProviders: [] });
     await waitFor(() =>
-      expect(
-        (within(workInspector).getByRole("button", { name: "Refresh live models" }) as HTMLButtonElement).disabled,
-      ).toBe(false),
+      expect(isRefused(within(workInspector).getByRole("button", { name: "Refresh live models" }))).toBe(false),
     );
   });
 
@@ -1400,18 +1381,113 @@ describe("model toggles", () => {
     const inspector = await openSheet(user, "work");
     const toggle = within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
     await user.click(toggle);
-    // While the write is out, the same switch is disabled (plain DOM
-    // property — this tree has no jest-dom matchers): a second rapid
-    // click cannot submit a duplicate write.
-    const isDisabled = (el: HTMLElement): boolean => (el as HTMLButtonElement).disabled;
+    // While the write is out, the same switch is refused with aria-disabled,
+    // never the native attribute: a control the click itself disables would drop
+    // the keyboard to <body> (and the pane's focus recovery would then scroll
+    // the sheet to wherever it put it back). A second rapid click still cannot
+    // submit a duplicate write.
     await waitFor(() =>
-      expect(isDisabled(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(true),
+      expect(isRefused(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(true),
     );
     release({ instances: [{ ...WORK, models: [{ id: "claude-opus-4-6", disabled: true }] }], availableProviders: [] });
     await screen.findByText("Disabled claude-opus-4-6");
     await waitFor(() =>
-      expect(isDisabled(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(false),
+      expect(isRefused(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }))).toBe(false),
     );
+  });
+
+  // The click that starts a toggle is what disables the switch it was made on,
+  // and a natively disabled control cannot hold the keyboard (Chrome drops it to
+  // <body>): the pane's focus recovery then had to put focus back somewhere
+  // else, scrolling the sheet to that control - the jump this pins away.
+  test("a toggle in flight keeps the keyboard on its switch", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    let release!: (value: InstanceListResponse) => void;
+    fake.on(
+      "evener/instance/setModelDisabled",
+      () =>
+        new Promise<InstanceListResponse>((resolve) => {
+          release = resolve;
+        }),
+    );
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    const toggle = within(inspector).getByRole("switch", { name: "claude-opus-4-6" });
+
+    await user.click(toggle);
+    await waitFor(() =>
+      expect(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }).getAttribute("aria-disabled")).toBe(
+        "true",
+      ),
+    );
+    expect(document.activeElement).toBe(within(inspector).getByRole("switch", { name: "claude-opus-4-6" }));
+
+    release({ instances: [{ ...WORK, models: [{ id: "claude-opus-4-6", disabled: true }] }], availableProviders: [] });
+    await screen.findByText("Disabled claude-opus-4-6");
+  });
+
+  // The same property for the two buttons whose own click starts their work:
+  // the in-flight state is a refusal, so the button that was clicked keeps the
+  // keyboard instead of dropping it to <body> (see widgets/switch).
+  test("clicking Test credentials keeps the keyboard on it while its probe is out", async () => {
+    const fake = connectFakeClient();
+    const probe = deferred<AuthTestResponse>();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/auth/test", () => probe.promise);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
+
+    await waitFor(() =>
+      expect(isRefused(within(inspector).getByRole("button", { name: "Testing credentials…" }))).toBe(true),
+    );
+    expect(document.activeElement).toBe(within(inspector).getByRole("button", { name: "Testing credentials…" }));
+
+    probe.resolve({ provider: "work", status: "success", message: "Credentials verified." });
+    expect((await screen.findByRole("status")).textContent).toContain("Credentials verified.");
+  });
+
+  test("clicking Refresh live models keeps the keyboard on it while the read is out", async () => {
+    const fake = connectFakeClient();
+    const row = { ...WORK, models: [{ id: "claude-opus-4-6", disabled: false }] };
+    const refresh = deferred<InstanceListResponse>();
+    fake.on("evener/instance/list", () => ({ instances: [row], availableProviders: [] }));
+    fake.on("evener/instance/refreshModels", () => refresh.promise);
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.click(within(inspector).getByRole("button", { name: "Refresh live models" }));
+
+    await waitFor(() =>
+      expect(isRefused(within(inspector).getByRole("button", { name: "Refreshing live models…" }))).toBe(true),
+    );
+    expect(document.activeElement).toBe(within(inspector).getByRole("button", { name: "Refreshing live models…" }));
+
+    refresh.resolve({ instances: [row], availableProviders: [] });
+    await act(async () => {
+      await refresh.promise;
+    });
   });
 
   test("two clicks in the same tick submit one toggle", async () => {
@@ -1812,7 +1888,7 @@ describe("Clear / Clear stored key / Remove confirm dialogs", () => {
     // A dirty draft in the sheet's own editor lights its Save button - exactly
     // the control that must not survive onto the replacement implicit row.
     await user.type(within(inspector).getByLabelText("Base URL"), "https://edited.example");
-    expect((within(inspector).getByRole("button", { name: "Save" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(isRefused(within(inspector).getByRole("button", { name: "Save" }))).toBe(false);
     await user.click(within(inspector).getByRole("button", { name: "Remove" }));
     const confirm = screen.getByRole("dialog", { name: "Remove instance" });
     await user.click(within(confirm).getByRole("button", { name: "Remove" }));
@@ -1962,9 +2038,7 @@ describe("diagnostics and writesRefused", () => {
     expect((within(workInspector).getByRole("button", { name: "Replace key" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
-    expect(
-      (within(workInspector).getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    expect(isRefused(within(workInspector).getByRole("button", { name: "Test credentials" }))).toBe(false);
     await user.click(within(workInspector).getByRole("button", { name: "Close" }));
 
     // Only PERSONAL is non-default, so it is the only sheet offering "make default".

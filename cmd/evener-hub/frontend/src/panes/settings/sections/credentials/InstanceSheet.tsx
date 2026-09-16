@@ -532,7 +532,7 @@ export function InstanceSheet({
       size="wide"
       footer={
         instance !== undefined && (
-          <Button onClick={() => void handleSave()} disabled={!dirty || busy || writesRefused}>
+          <Button onClick={() => void handleSave()} aria-disabled={busy} disabled={!dirty || writesRefused}>
             Save
           </Button>
         )
@@ -661,7 +661,7 @@ export function InstanceSheet({
                 {/* Refresh is a read: the RPC deliberately skips
                     refuseWhenBroken, so it stays available while
                     providers.toml cannot be written. */}
-                <Button variant="quiet" onClick={onRefreshModels} disabled={busy || modelsRefreshing}>
+                <Button variant="quiet" onClick={onRefreshModels} aria-disabled={modelsRefreshing} disabled={busy}>
                   {modelsRefreshing ? "Refreshing live models…" : "Refresh live models"}
                 </Button>
               </div>
@@ -671,7 +671,8 @@ export function InstanceSheet({
                     <Switch
                       label={row.id}
                       checked={!row.disabled}
-                      disabled={busy || writesRefused || (pendingToggles?.has(`${name}/${row.id}`) ?? false)}
+                      pending={pendingToggles?.has(`${name}/${row.id}`) ?? false}
+                      disabled={busy || writesRefused}
                       onChange={(checked) => onToggleModel(row.id, !checked)}
                     />
                   </div>
@@ -681,7 +682,12 @@ export function InstanceSheet({
           )}
           <div className={CLASS.actionRows}>
             <div className={CLASS.fullRow}>
-              <Button variant="quiet" onClick={onTestCredentials} disabled={busy || testCredentialsPending}>
+              <Button
+                variant="quiet"
+                onClick={onTestCredentials}
+                aria-disabled={testCredentialsPending}
+                disabled={busy}
+              >
                 {testCredentialsPending ? "Testing credentials…" : "Test credentials"}
               </Button>
             </div>

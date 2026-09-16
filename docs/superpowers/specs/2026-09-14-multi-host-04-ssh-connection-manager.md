@@ -406,8 +406,27 @@ reuses the local gate's rules:
 `disconnected → preflighting → (deploying → restarting) → attaching → attached →
 reconnecting → …`. `Close` is terminal. A dropped link does **not** stop the
 remote hub or its daemons (design §2 lifecycle; docs/evener-hub.md:499-502); the
-manager transitions to `reconnecting` and re-runs `Ensure` on the same `dest`,
-which re-attaches as a client.
+manager transitions to `reconnecting` and the supervisor re-runs the attach
+ladder on the same `dest` in **reconnect mode** (`ensureOnce(ctx, host, false)`,
+`sshconn/manager.go`), which re-attaches as a client.
+
+**Both attach modes run the same ladder; only the bootstrap start differs.**
+`Ensure` calls `ensureOnce` with `explicit=true`; the supervisor's
+`reconnectOnce` calls it with `explicit=false`, and everything else is one
+path: every attempt re-runs the preflight, re-probes the running hub's
+`/api/health` version, and re-applies the deploy/restart decision, so facts are
+re-read per attempt and never cached from the attach that opened the channel —
+the replacement `Channel`'s `Preflight()`/`Handshake()` describe the reconnect
+attempt, not the original attach. The modes differ in exactly one place: the
+first-attach bootstrap below (§5). `explicit=true` may start a stopped host's
+hub (component 06's first host action); `explicit=false` never starts a hub —
+with nothing running and no pending restart the attempt attaches nothing, so
+the loop retries under the backoff until the hub returns or a terminal error
+ends it. Callers see the difference only through the event stream: an explicit
+caller gets the channel or the error back from `Ensure`; a reconnect's callers
+observe `EventDetached` and then `EventAttached` once the replacement is
+installed (connection state only — the event carries no client), and resolve
+the current client per call (§"Client handoff").
 
 `Close` is terminal in the strong sense: once it runs, a later or in-flight
 `Ensure` returns **`ErrManagerClosed`** rather than attaching a channel nothing
@@ -1010,9 +1029,14 @@ version-match can verify the deploy landed.
   unit, cannot be started: the bootstrap is refused with
   `ErrDeploy`/`ErrRestart`, the host stays offline, and the UI must show that
   refusal (component 06, §"Connecting a configured host").
-  **Implementation status:** the shipped 04b `ensureOnce` has no bootstrap
-  branch (it attaches as before when nothing answers); this is the implementing
-  PR's requirement, not a present fact.
+  **Implementation status:** the bootstrap branch has landed (`ensureOnce` and
+  `bootstrapHub`, `sshconn/manager.go`), gated on the explicit-attach flag
+  exactly as above: `Ensure` passes `explicit=true`, the supervisor's
+  `reconnectOnce` passes `false` (§"Channel lifecycle states"). One shipped
+  detail differs from the paragraph above: the ad hoc launch uses the discard
+  fallback (`relaunchCommand(hubBootstrapArgv(…), "")` in `bootstrapHub` —
+  output to `/dev/null`) rather than the state-root log path the paragraph
+  names.
 
   Post-restart verification is the same probe run under `waitHealthy`
   (`version.go`): it polls the host's `/api/health` until the response reports

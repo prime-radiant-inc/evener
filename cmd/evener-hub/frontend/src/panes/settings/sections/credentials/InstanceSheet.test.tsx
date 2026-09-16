@@ -9,6 +9,11 @@ import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { InstanceSheet } from "./InstanceSheet";
 
+/** The refusal these controls use instead of the native attribute: a click that
+ * starts work must not drop the keyboard, so the pending/busy state is
+ * aria-disabled (Button/Switch swallow the activation themselves). */
+const isRefused = (el: HTMLElement): boolean => el.getAttribute("aria-disabled") === "true";
+
 function instance(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
   return {
     protocol: "openai-chat",
@@ -527,7 +532,7 @@ describe("action callbacks fire", () => {
 
   test("pending verification disables only the Test credentials action", () => {
     renderSheet(instance({ name: "a", providerId: "x" }), { testCredentialsPending: true });
-    expect((screen.getByRole("button", { name: "Testing credentials…" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(isRefused(screen.getByRole("button", { name: "Testing credentials…" }))).toBe(true);
     expect((screen.getByRole("button", { name: "Remove" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -571,7 +576,7 @@ describe("writesRefused disables instance-CRUD actions only", () => {
       }),
       { writesRefused: true },
     );
-    expect((screen.getByRole("button", { name: "Test credentials" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(isRefused(screen.getByRole("button", { name: "Test credentials" }))).toBe(false);
     expect((screen.getByRole("button", { name: "Replace key" }) as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByRole("button", { name: "Clear" }) as HTMLButtonElement).disabled).toBe(false);
   });
@@ -741,7 +746,7 @@ describe("the form", () => {
   // shows the instance under its old name, so anything clicked in that window
   // goes out against a name the write is moving away from - and the credential
   // actions would recreate under it the orphan the rename just moved.
-  test("a save in flight disables every instance action", async () => {
+  test("a save in flight makes every instance action unavailable", async () => {
     const FULL = instance({
       name: "work",
       providerId: "openai",
@@ -760,21 +765,43 @@ describe("the form", () => {
       "Clear",
       "Remove",
     ];
-    const disabledStates = () =>
-      actions.map((name) => (screen.getByRole("button", { name }) as HTMLButtonElement).disabled);
+    // Unavailable, not necessarily natively disabled: the actions the click
+    // itself gated (the save) refuse with aria-disabled to keep the keyboard,
+    // the rest are disabled outright - the user can reach neither.
+    const unavailableStates = () =>
+      actions.map((name) => {
+        const control = screen.getByRole("button", { name }) as HTMLButtonElement;
+        return control.disabled || control.getAttribute("aria-disabled") === "true";
+      });
 
     const { fake, finish } = deferredEdit();
     renderSheet(FULL, {}, [OPENAI]);
-    expect(disabledStates()).toEqual(actions.map(() => false));
+    expect(unavailableStates()).toEqual(actions.map(() => false));
 
     const user = userEvent.setup();
     await user.type(field("Base URL"), "/x");
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
-    expect(disabledStates()).toEqual(actions.map(() => true));
+    expect(unavailableStates()).toEqual(actions.map(() => true));
 
     await act(async () => finish({ instances: [FULL], availableProviders: [OPENAI] }));
-    expect(disabledStates()).toEqual(actions.map(() => false));
+    expect(unavailableStates()).toEqual(actions.map(() => false));
+  });
+
+  test("the save button keeps the keyboard while the save is out", async () => {
+    const { fake, finish } = deferredEdit();
+    renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    await sentEditParams(fake);
+
+    // Its own click made it unavailable, so it refuses (aria-disabled) and keeps
+    // the keyboard rather than dropping it to <body>.
+    expect(saveButton().getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(saveButton());
+
+    await act(async () => finish({ instances: [WORK], availableProviders: [OPENAI] }));
   });
 
   // The Name field is editable on every instance. A rename always authors an
