@@ -1,5 +1,5 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
 import { connectionStore } from "./connection";
 
 describe("connection handshake metadata", () => {

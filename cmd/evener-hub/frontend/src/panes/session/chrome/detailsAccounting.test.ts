@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
 import { formatTimestamp, sessionTokens } from "./detailsAccounting";
 
 function model(overrides: Partial<ThreadModel> = {}): ThreadModel {

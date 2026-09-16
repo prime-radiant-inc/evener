@@ -10,9 +10,10 @@
 // this one starts - the same safety property the legacy's own per-tick
 // "is openEditor still this exact flow" staleness check exists for, via
 // React's own idiomatic mechanism instead of a hand-rolled flag.
+
+import type { AuthDevicePollResponse } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { type FormEvent, useEffect, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { AuthDevicePollResponse } from "../../../../protocol/types.gen";
 import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, useToasts } from "../../../../widgets";

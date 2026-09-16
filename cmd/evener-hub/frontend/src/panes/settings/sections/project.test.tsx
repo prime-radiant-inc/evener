@@ -1,8 +1,8 @@
+import type { LaunchConfigLayer, LaunchOptionSchemaResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { LaunchConfigLayer, LaunchOptionSchemaResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { resetLaunchConfigStoreForTests } from "../../../stores/launchConfig";
 import { Toast } from "../../../widgets";

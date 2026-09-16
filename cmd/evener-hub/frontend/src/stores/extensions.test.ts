@@ -1,7 +1,7 @@
+import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { threadStartedNotification } from "@evener/appwire-client/testing/notifications";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import { threadStartedNotification } from "../protocol/testing/notifications";
-import type { MarketplaceCatalogPlugin, MarketplaceEntry, PluginEntry } from "../protocol/types.gen";
 import { connectionStore } from "./connection";
 import { extensionsStore, type MarketplaceCatalogEntry, resetExtensionsStoreForTests } from "./extensions";
 

@@ -21,9 +21,10 @@
 // manifest. A popstate listener keeps it in sync with in-app navigation
 // (routing.ts's own navigate() dispatches popstate on every push, the same
 // signal AppShell itself listens for).
+
+import type { LaunchConfigLayer, LaunchOption } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { LaunchConfigLayer, LaunchOption } from "../../../protocol/types.gen";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { LaunchConfigForm } from "./launchShared/LaunchConfigForm";

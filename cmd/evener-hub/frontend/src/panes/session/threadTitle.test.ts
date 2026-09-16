@@ -1,6 +1,5 @@
+import type { NavigationSessionSummary, ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ThreadModel } from "../../protocol/model";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { resolveThreadName } from "./threadTitle";
 
 function summary(title: string): NavigationSessionSummary {

@@ -1,16 +1,17 @@
-import { fenceRootSession, graftContinuationTree } from "../protocol/activityMerge";
-
-export { graftContinuationTree } from "../protocol/activityMerge";
-
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
 import {
   type ActivityCounts,
   type ActivityDisclosureState,
   type ActivityTree,
   defaultExpandedIDs,
+  fenceRootSession,
+  graftContinuationTree,
   reconcileActivityState,
-} from "../protocol/activityData";
+} from "@evener/appwire-client";
+
+export { graftContinuationTree } from "@evener/appwire-client";
+
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { activitySummaryStore } from "./activitySummary";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 import type { PanelLoadFailure } from "./tasksPanel";

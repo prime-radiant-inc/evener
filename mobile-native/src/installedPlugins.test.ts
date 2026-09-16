@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import type {
   AnyNotification,
   PluginEntry,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { InstalledPlugins } from "./installedPlugins";
 

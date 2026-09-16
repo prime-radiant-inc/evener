@@ -1,14 +1,14 @@
-import { afterEach, expect, test, vi } from "vitest";
-import { WireError } from "../../protocol/errors";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import type {
   InitializeResponse,
   NavigationCapability,
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSnapshot,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
+import { afterEach, expect, test, vi } from "vitest";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
 import {
   findSessionNode,

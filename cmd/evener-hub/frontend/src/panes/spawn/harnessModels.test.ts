@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { HarnessDescriptor } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { HarnessDescriptor } from "../../protocol/types.gen";
 import { harnessUsesEvenerModels } from "./harnessModels";
 
 const HARNESSES: HarnessDescriptor[] = [

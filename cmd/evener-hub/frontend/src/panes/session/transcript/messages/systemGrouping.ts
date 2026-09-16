@@ -5,7 +5,7 @@
 // ensureSystemRun/coalesceSystemRun "adjacency-only" run continuation
 // (parity-m4-transcript.md #9: any other item type in between forces a new
 // run) without needing a stateful accumulator.
-import type { ItemModel } from "../../../../protocol/model";
+import type { ItemModel } from "@evener/appwire-client";
 
 export interface SystemRun {
   items: ItemModel[];

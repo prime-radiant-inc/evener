@@ -3,9 +3,10 @@
 // (parity-m7-settings.md §11). Appwire: evener/launch/{resolve,trustRepo}.
 //
 // Directory selection resolves only after explicit confirmation.
+
+import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { LaunchConfigResolved, RepoLaunchConfigStatus } from "../../../protocol/types.gen";
 import { directoryActions, extensionsStore } from "../../../stores/extensions";
 import { launchConfigStore } from "../../../stores/launchConfig";
 import { Button, FormRow, Loader, PathField } from "../../../widgets";

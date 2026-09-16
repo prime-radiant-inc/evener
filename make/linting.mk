@@ -1,4 +1,4 @@
-.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-cache-clean secret-scan
+.PHONY: lint lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports lint-cache-clean secret-scan
 
 # secret-scan runs gitleaks over the whole working tree using the committed
 # .gitleaks.toml ruleset. Part of the gate (`make lint`); skips with a warning
@@ -209,13 +209,34 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
-LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
+# lint-package-imports keeps the AppWire TypeScript package addressed by its
+# package name. A relative path into appwire-client/typescript/ typechecks and
+# bundles exactly as well as @evener/appwire-client, so nothing else in the
+# tree notices one reappearing - and each one is a line that has to be
+# rewritten again the next time the package moves, which is the coupling the
+# SDK migration exists to remove.
+## Fail if a web or native import names the AppWire TypeScript package by
+## path instead of by its package name.
+## proves: Every import specifier under cmd/evener-hub/frontend/src,
+##   mobile-native and mobile/src spells the package @evener/appwire-client
+##   (or one of its two in-repo subpaths), with no file exempt but the resolver
+##   configs and mobile-native/src/metroResolver.test.ts, which asserts that
+##   mapping - each named one by one.
+## trigger: Required CI (via make lint); local pre-merge. Well under a second.
+## requires: None beyond a POSIX shell and grep.
+## fails-when: Any import specifier in those trees names the package directory
+##   or the protocol/ directory it moved out of, or a swept tree is missing.
+lint-package-imports:
+	$(call run_quiet_lint,scripts/sdk/package-import-paths-check.sh)
 
-## Go lint, formatting, tagged floors, generated outputs, and secrets.
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry lint-package-imports secret-scan
+
+## Go lint, formatting, tagged floors, generated outputs, imports, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
-##   and the repo secret scan.
+##   that no web or native import names the AppWire TypeScript package by
+##   path; and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.

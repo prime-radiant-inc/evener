@@ -1,4 +1,4 @@
-import { isThreadNotFound } from "../../appwire-client/typescript/sessionErrors";
+import { isThreadNotFound } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { navigationReadback } from "./navigationReadback";

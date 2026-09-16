@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { readDocFile } from "../../appwire-client/typescript/docContent";
+import { readDocFile } from "@evener/appwire-client/docContent";
 import { nativeDocImageSource, nativeDocPort } from "./nativeDocPort";
 
 afterEach(() => {

@@ -1,5 +1,5 @@
+import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
 import { type RefObject, useCallback, useEffect, useRef, useState } from "react";
-import type { AuthTestResponse, InstanceEntry, ProviderDescriptor } from "../../../../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, FormRow, Input, Skeleton } from "../../../../widgets";

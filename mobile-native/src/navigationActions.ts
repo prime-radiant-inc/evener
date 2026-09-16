@@ -6,7 +6,7 @@ import type {
 	SessionDeleteParams,
 	SessionPinAssignParams,
 	SessionPinUnpinParams,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type {
 	NavigationActionCheckpoint,

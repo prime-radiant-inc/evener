@@ -1,10 +1,10 @@
 // DOM assertions for the watch detail's delivery timeline: real props, real
 // component, positions derived only from the supplied instants and `now`.
+
+import type { NavigationWatchSummary } from "@evener/appwire-client";
+import { type ActivityWatchRow, formatClockTime, watchRowID } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { type ActivityWatchRow, watchRowID } from "../../../protocol/activityRows";
-import { formatClockTime } from "../../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { ActivityWatchDetail, WATCH_NO_SCHEDULE_LINE } from "./ActivityRowDetail";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");
