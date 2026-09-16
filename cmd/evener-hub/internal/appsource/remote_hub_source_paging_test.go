@@ -49,17 +49,55 @@ func itemPageWithCursor(entry uint64, cursor string) appwire.ThreadTurnsListResp
 	}
 }
 
-func remoteItemCursor(t *testing.T, entry uint64) string {
-	t.Helper()
-	cursor, err := appitempaging.EncodeCursor(appitempaging.CursorIdentity{
+// remoteCursorIdentity is the remote hub's own item-cursor identity in these
+// fixtures. A real remote hub mints the cursors it returns from its own identity
+// for the thread (cmd/evener-hub's packedOlderCursor and apptranscript's item
+// windows), never from the controller's.
+func remoteCursorIdentity() appitempaging.CursorIdentity {
+	return appitempaging.CursorIdentity{
 		ThreadRef:         "local:t1",
 		Incarnation:       "remote-incarnation-1",
 		ProjectionVersion: 1,
-	}, appwire.ThreadItemPosition{Entry: entry})
+	}
+}
+
+func remoteItemCursor(t *testing.T, entry uint64) string {
+	t.Helper()
+	return remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: entry})
+}
+
+// remoteItemCursorAt mints a remote cursor at an explicit position, for a page
+// that starts inside an entry rather than at its first item.
+func remoteItemCursorAt(t *testing.T, position appwire.ThreadItemPosition) string {
+	t.Helper()
+	cursor, err := appitempaging.EncodeCursor(remoteCursorIdentity(), position)
 	if err != nil {
 		t.Fatalf("encode remote cursor: %v", err)
 	}
 	return cursor
+}
+
+// remoteItemCursorFor mints a remote cursor under a named incarnation, so a test
+// can hand back a cursor that does not belong to the page it arrived with.
+func remoteItemCursorFor(t *testing.T, incarnation string, entry uint64) string {
+	t.Helper()
+	identity := remoteCursorIdentity()
+	identity.Incarnation = incarnation
+	cursor, err := appitempaging.EncodeCursor(identity, appwire.ThreadItemPosition{Entry: entry})
+	if err != nil {
+		t.Fatalf("encode remote cursor: %v", err)
+	}
+	return cursor
+}
+
+// remoteEntries returns the entry positions from..to, for building one item-mode
+// page that covers a contiguous run of the transcript.
+func remoteEntries(from, to uint64) []uint64 {
+	entries := make([]uint64, 0, to-from+1)
+	for entry := from; entry <= to; entry++ {
+		entries = append(entries, entry)
+	}
+	return entries
 }
 
 // RemoteHubSource must own the item cursor identity the controller consumes,
@@ -204,7 +242,10 @@ func TestRemoteHubSourceCompletePageContinuationServedLocally(t *testing.T) {
 // decodes afterwards. An untouched or appended transcript is compatible; a page
 // that starts before the retained head is a rewrite and rotates the identity.
 func TestRemoteHubSourceReusesIdentityWhileTranscriptDoesNotShrink(t *testing.T) {
-	remoteCursor := remoteItemCursor(t, 10)
+	// The hub mints its page cursor at the page's oldest item (entry 8 here), not
+	// at its newest: a cursor naming any other position is refused before it is
+	// retained.
+	remoteCursor := remoteItemCursor(t, 8)
 	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: itemPageWithPositions(remoteCursor, 8, 10)}
 	})
@@ -447,7 +488,8 @@ func TestRemoteHubSourceCompleteContinuationAnswersEarlierBoundaries(t *testing.
 // incarnation must rotate so cursors minted against the replaced history fail
 // closed instead of being rebased onto the changed transcript.
 func TestRemoteHubSourceRotatesIdentityWhenObservedItemRewritten(t *testing.T) {
-	remoteCursor := remoteItemCursor(t, 10)
+	// Canonical for the [8,10] page below: the cursor names its oldest item.
+	remoteCursor := remoteItemCursor(t, 8)
 	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: itemPageWithKeyedEntries(remoteCursor, 8, 10)}
 	})
@@ -617,14 +659,113 @@ func TestRemoteHubSourceRecordsUnobservedForwardSpanWithoutRotating(t *testing.T
 	}
 }
 
+// Round ten: a forward append leaves an unobserved span between the retained
+// window and the new tail ([1..5] and then [40..49] leave 6..39 unobserved), and
+// the client then fills that span piecewise through the retained remote cursor.
+// No single page spans both edges, so bookkeeping that clears a span only when
+// one page reaches from one edge to the other keeps it forever: once the remote
+// cursor is exhausted the complete window serves only the prefix below the span,
+// and replaying a cursor minted for the tail page fails as stale even though its
+// boundary is retained and the transcript is fully observed. That defeats the
+// idempotent-replay invariant the retained window exists for.
+func TestRemoteHubSourceKeepsTailCursorsLiveAfterPiecewiseSpanFill(t *testing.T) {
+	cursor40 := remoteItemCursor(t, 40)
+	cursor30 := remoteItemCursor(t, 30)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+		switch remote.Cursor {
+		case "":
+			return scriptedReply{result: itemPageWithKeyedEntries("", remoteEntries(1, 5)...)}
+		case cursor40:
+			return scriptedReply{result: itemPageWithKeyedEntries(cursor30, remoteEntries(30, 39)...)}
+		case cursor30:
+			return scriptedReply{result: itemPageWithKeyedEntries("", remoteEntries(6, 29)...)}
+		default:
+			t.Errorf("unexpected remote cursor %q", remote.Cursor)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+	})
+
+	retained, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("retained window: %v", err)
+	}
+	if !retained.Exhausted || retained.Candidates.OlderCursor != "" {
+		t.Fatalf("retained window = %+v, want a complete page with no cursor", retained)
+	}
+
+	// The transcript grows: a fresh read returns the forward tail [40..49], which
+	// shares no position with the retained window and does not resume at its
+	// successor, so the span between them is recorded rather than assumed.
+	grown, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: itemPageWithKeyedEntries("", remoteEntries(40, 49)...).Data},
+		OlderCursor: cursor40,
+	})
+	if err != nil {
+		t.Fatalf("appended tail read: %v", err)
+	}
+	if grown.Identity != retained.Identity {
+		t.Fatalf("appended tail rotated the identity: got %+v, want %+v", grown.Identity, retained.Identity)
+	}
+	tailCursor := grown.Candidates.OlderCursor
+	if grown.Exhausted || tailCursor == "" {
+		t.Fatalf("appended tail = %+v, want a live continuation over the unobserved span", grown)
+	}
+
+	// The client pages back through the remote cursor. Each page is fetched as the
+	// continuation of the previous one, so together they observe every position
+	// between the retained window and the tail.
+	cursor := tailCursor
+	for step, want := range []struct{ oldest, newest uint64 }{{30, 39}, {6, 29}} {
+		filled, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+			Ref: "host:t1", ItemsView: "fragment", Cursor: cursor,
+		})
+		if err != nil {
+			t.Fatalf("span fill step %d: %v", step, err)
+		}
+		got := filled.Candidates.Candidates
+		if len(got) == 0 || got[0].Position.Entry != want.oldest || got[len(got)-1].Position.Entry != want.newest {
+			t.Fatalf("span fill step %d = %+v, want entries [%d..%d]", step, got, want.oldest, want.newest)
+		}
+		cursor = filled.Candidates.OlderCursor
+	}
+	if cursor != "" {
+		t.Fatalf("span fill left cursor %q, want the remote cursor exhausted", cursor)
+	}
+
+	// The whole window is observed now, so the cursor minted for the tail page must
+	// still be answered: its boundary is retained and nothing between it and the
+	// retained window was skipped.
+	replayed, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: tailCursor,
+	})
+	if err != nil {
+		t.Fatalf("replayed tail cursor: %v", err)
+	}
+	got := replayed.Candidates.Candidates
+	if len(got) != 39 || got[0].Position.Entry != 1 || got[len(got)-1].Position.Entry != 39 {
+		t.Fatalf("replayed tail cursor = %+v, want the filled prefix [1..39]", got)
+	}
+	if !replayed.Exhausted || replayed.Candidates.OlderCursor != "" {
+		t.Fatalf("replayed tail cursor = %+v, want exhaustion", replayed)
+	}
+}
+
 // An ordinary append can advance the visible entry ordinal by more than one:
 // every logical group consumes an entry ordinal, including one that projects no
 // visible item, so the next visible turn after entry 10 can be entry 12. A fresh
 // page that resumes at that later entry is not a rewrite; rotating the
 // incarnation over it would stale the cursor a client minted before the append.
 func TestRemoteHubSourceKeepsIdentityAcrossSkippedEntryAppend(t *testing.T) {
-	older := remoteItemCursor(t, 4)
-	rebased := remoteItemCursor(t, 8)
+	// The remote cursor the first page carries names that page's oldest item (8),
+	// and the client's replay names the newest retained item (10): the source
+	// rebases the retained cursor onto the caller's boundary before forwarding it.
+	older := remoteItemCursor(t, 8)
+	rebased := remoteItemCursor(t, 10)
 	source, calls := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
 		var remote appwire.ThreadTurnsListParams
 		if err := json.Unmarshal(params, &remote); err != nil {
@@ -668,8 +809,12 @@ func TestRemoteHubSourceKeepsIdentityAcrossSkippedEntryAppend(t *testing.T) {
 	// The cursor stays live, and its continuation is answered from the remote: the
 	// retained window never observed the span between the two pages, so the remote
 	// cursor is the authority for what lies between them.
+	replay, err := appitempaging.EncodeCursor(first.Identity, first.Candidates.Candidates[1].Position)
+	if err != nil {
+		t.Fatalf("encode replayed boundary: %v", err)
+	}
 	continuation, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
-		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+		Ref: "host:t1", ItemsView: "fragment", Cursor: replay,
 	})
 	if err != nil {
 		t.Fatalf("continuation of a pre-append cursor: %v", err)
@@ -738,6 +883,119 @@ func TestRemoteHubSourceRejectsCursorBoundaryOutsideRetainedWindow(t *testing.T)
 	}
 }
 
+// The remote hub is a separate process, possibly a different version: like the
+// local daemon source, this source validates a continuation page before it is
+// retained. A page that does not progress strictly past the boundary the remote
+// was asked to continue from, or a cursor that does not canonically name the page
+// it arrived with under the identity the request cursor carried, is a stale or
+// repeating remote answer: retaining it would hand the same page back forever and
+// leave every controller cursor minted from it non-advancing.
+func TestRemoteHubSourceRejectsInvalidRemoteContinuationPages(t *testing.T) {
+	boundary := remoteItemCursor(t, 40)
+	cases := []struct {
+		name string
+		page appwire.ThreadTurnsListResponse
+	}{
+		{
+			name: "repeated page does not progress",
+			page: itemPageWithKeyedEntries(boundary, remoteEntries(40, 49)...),
+		},
+		{
+			name: "cursor does not name the page it arrived with",
+			page: itemPageWithKeyedEntries(boundary, remoteEntries(30, 39)...),
+		},
+		{
+			name: "cursor comes from another incarnation",
+			page: itemPageWithKeyedEntries(remoteItemCursorFor(t, "remote-incarnation-2", 30), remoteEntries(30, 39)...),
+		},
+		{
+			name: "cursor without a page",
+			page: appwire.ThreadTurnsListResponse{NextCursor: remoteItemCursor(t, 30)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+				var remote appwire.ThreadTurnsListParams
+				if err := json.Unmarshal(params, &remote); err != nil {
+					t.Errorf("decode turns params: %v", err)
+				}
+				if remote.Cursor == "" {
+					return scriptedReply{result: itemPageWithKeyedEntries(boundary, remoteEntries(40, 49)...)}
+				}
+				return scriptedReply{result: tc.page}
+			})
+
+			first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+			if err != nil {
+				t.Fatalf("first page: %v", err)
+			}
+			if first.Exhausted || first.Candidates.OlderCursor == "" {
+				t.Fatalf("first page = %+v, want a live cursor", first)
+			}
+
+			if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+				Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+			}); err == nil {
+				t.Fatal("an invalid remote continuation page was retained")
+			} else {
+				requireInverseStale(t, err)
+			}
+
+			// Nothing was cached: the retained cursor and window still name exactly
+			// the first page, so a correct remote answer can still continue it.
+			state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
+			if !ok || state.native != boundary || len(state.candidates) != 10 {
+				t.Fatalf("retained state after the rejection = %+v, want the first page under %q", state, boundary)
+			}
+		})
+	}
+}
+
+// The mirrored rule tolerates what the local daemon source tolerates: a remote
+// page that rescans the requested boundary is clipped to the items strictly older
+// than it, rather than failing the continuation or re-serving items the caller
+// already holds.
+func TestRemoteHubSourceClipsRemoteContinuationPageToTheRequestedBoundary(t *testing.T) {
+	boundary := remoteItemCursor(t, 40)
+	source, _ := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
+		var remote appwire.ThreadTurnsListParams
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+		if remote.Cursor == "" {
+			return scriptedReply{result: itemPageWithKeyedEntries(boundary, remoteEntries(40, 49)...)}
+		}
+		// The remote answers the boundary at 40 with a page that reaches back above
+		// it, the way a remote whose page limit is larger than the caller's request
+		// would.
+		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, 38), remoteEntries(38, 45)...)}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	clipped, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("clipped continuation: %v", err)
+	}
+	got := clipped.Candidates.Candidates
+	if len(got) != 2 || got[0].Position.Entry != 38 || got[1].Position.Entry != 39 {
+		t.Fatalf("clipped continuation = %+v, want only the items below the requested boundary [38,39]", got)
+	}
+	if clipped.Exhausted || clipped.Candidates.OlderCursor == "" {
+		t.Fatalf("clipped continuation = %+v, want a live cursor at the clipped page's oldest item", clipped)
+	}
+}
+
 // Traversing a long transcript merges one page per continuation into the
 // retained window. The bound must cap that window: past it the source rotates
 // the incarnation and keeps only the newest page, so the cursor just returned
@@ -746,7 +1004,6 @@ func TestRemoteHubSourceRejectsCursorBoundaryOutsideRetainedWindow(t *testing.T)
 func TestRemoteItemPagingBoundsRetainedCandidates(t *testing.T) {
 	const pageSize = 40
 	pages := remoteItemPagingCandidateCapacity/pageSize + 4
-	native := remoteItemCursor(t, 1)
 	var served atomic.Int64
 	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
 		page := int(served.Add(1))
@@ -755,7 +1012,14 @@ func TestRemoteItemPagingBoundsRetainedCandidates(t *testing.T) {
 		for index := range entries {
 			entries[index] = base - pageSize + 1 + uint64(index)
 		}
-		return scriptedReply{result: itemPageWithKeyedEntries(native, entries...)}
+		// The hub mints NextCursor at the packed page's oldest item; a cursor naming
+		// any other position is refused before it is retained.
+		cursor, err := appitempaging.EncodeCursor(remoteCursorIdentity(), appwire.ThreadItemPosition{Entry: entries[0]})
+		if err != nil {
+			t.Errorf("encode remote page cursor: %v", err)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
+		}
+		return scriptedReply{result: itemPageWithKeyedEntries(cursor, entries...)}
 	})
 
 	cursor := ""
@@ -825,8 +1089,9 @@ func TestRemoteHubSourceRejectsForwardPageBeginningMidEntry(t *testing.T) {
 	// Entry 11 is observed from item 5 onward: items 0..4 of entry 11 were never
 	// returned, so the page does not abut the retained newest item (10, 0).
 	grown, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
-		Thread:      appwire.Thread{Turns: itemPageWithItemPositions("", appwire.ThreadItemPosition{Entry: 11, Item: 5}, appwire.ThreadItemPosition{Entry: 11, Item: 6}).Data},
-		OlderCursor: remoteItemCursor(t, 11),
+		Thread: appwire.Thread{Turns: itemPageWithItemPositions("", appwire.ThreadItemPosition{Entry: 11, Item: 5}, appwire.ThreadItemPosition{Entry: 11, Item: 6}).Data},
+		// Canonical for that window: its oldest item is (11, 5), not (11, 0).
+		OlderCursor: remoteItemCursorAt(t, appwire.ThreadItemPosition{Entry: 11, Item: 5}),
 	})
 	if err != nil {
 		t.Fatalf("grown read: %v", err)
@@ -898,7 +1163,8 @@ func TestRemoteItemPagingTrimsOversizedRotatedPage(t *testing.T) {
 		entries[index] = uint64(index + 1)
 	}
 	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
-		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, uint64(oversized)), entries...)}
+		// Canonical for the page below: the cursor names its oldest item, entry 1.
+		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, 1), entries...)}
 	})
 
 	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
@@ -947,7 +1213,7 @@ func TestRemoteItemPagingTrimsOversizedRotatedPage(t *testing.T) {
 // alone exceeds the budget so the window is never emptied.
 func TestRemoteItemPagingTrimsOversizedRotatedPageByBytes(t *testing.T) {
 	const itemBytes = 2 << 20
-	page := itemPageWithLargeText(remoteItemCursor(t, 6), 5, itemBytes)
+	page := itemPageWithLargeText(remoteItemCursor(t, 1), 5, itemBytes)
 	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: page}
 	})
@@ -1014,7 +1280,7 @@ func TestRemoteItemPagingBoundsRetainedImageBytes(t *testing.T) {
 	// Three 3 MiB images cannot fit two-to-a-page inside the 8 MiB bound, so the
 	// newest two are retained and the third is dropped.
 	const imageBytes = 3 << 20
-	page := itemPageWithImages(remoteItemCursor(t, 5), 5, imageBytes)
+	page := itemPageWithImages(remoteItemCursor(t, 1), 5, imageBytes)
 	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
 		return scriptedReply{result: page}
 	})

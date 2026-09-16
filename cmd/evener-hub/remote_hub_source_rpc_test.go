@@ -145,7 +145,21 @@ func newScriptedRemoteClient(t *testing.T) *appwire.Client {
 					OlderCursor: remoteHubPageCursor(t, 10),
 				}
 			case appwire.MethodThreadTurnsList:
-				reply = remoteHubItemPage(10, remoteHubPageCursor(t, 10))
+				// A hub mints NextCursor at the packed page's oldest item, so the
+				// continuation the controller forwards asks for items strictly older
+				// than that boundary and is answered with the next older page. A remote
+				// re-serving the boundary's own page would be a stale answer and is
+				// refused before it is cached.
+				var params appwire.ThreadTurnsListParams
+				if err := json.Unmarshal(msg.Request.Params, &params); err != nil {
+					reply = appwire.EmptyResponse{}
+					break
+				}
+				if params.Cursor == "" {
+					reply = remoteHubItemPage(10, remoteHubPageCursor(t, 10))
+					break
+				}
+				reply = remoteHubItemPage(9, remoteHubPageCursor(t, 9))
 			default:
 				reply = appwire.EmptyResponse{}
 			}
