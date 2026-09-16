@@ -376,10 +376,16 @@ function SpawnForm({
   // Scoped by cwd AND host so neither a draft switch nor a host switch can show
   // the previous project's/host's branch while the new evener/git/head request
   // is in flight - or indefinitely after it fails (resolveHeadBranch fails soft
-  // to ""). hostChoice is the machine the effect below asks, so a same-cwd host
-  // switch must invalidate the previous host's answer immediately.
+  // to ""). The stamped host is submittedSource, the machine the effect below
+  // actually asks, so the readout has to be keyed on that same value: a same-cwd
+  // host switch must invalidate the previous host's answer immediately, and
+  // while the manifest is unsettled - when hostChoice is a provisional "local"
+  // and the draft's own host is what every request is issued against - the
+  // readout must keep describing the tree the answer came from rather than
+  // blanking until the manifest settles.
   const [branchHead, setBranchHead] = useState<{ cwd: string; host: string; head: string } | null>(null);
-  const branch = branchHead !== null && branchHead.host === hostChoice && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
+  const branch =
+    branchHead !== null && branchHead.host === submittedSource && branchHead.cwd === cwd ? branchHead.head : ""; // display-only (floor §1.7)
   const [accessMode, setAccessMode] = useDraftField(draft, "accessMode");
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
@@ -813,17 +819,21 @@ function SpawnForm({
         // credential or model change made on that host never invalidates this
         // pane's model/list cache, and the form keeps validating against a
         // stale list (a removed credential still reads "configured", an added
-        // one still reads "missing"). Only the selected host's wrapper is
-        // relevant; another host's never moves this form.
+        // one still reads "missing"). Only the host whose catalog this form
+        // reads - submittedSource, which every request below is scoped to - has
+        // a relevant wrapper; another host's never moves this form. While the
+        // manifest is unsettled that is the draft's own host, not hostChoice's
+        // provisional "local": keying this listener on hostChoice dropped the
+        // wrapper for the length of every revalidation.
         if (
           n.method === "evener/host/notification" &&
-          n.params.host === hostChoice &&
+          n.params.host === submittedSource &&
           n.params.method === "evener/auth/updated"
         ) {
           setCredentialsGeneration((generation) => generation + 1);
         }
       }),
-    [client, hostChoice],
+    [client, submittedSource],
   );
   const modelListCache = useRef<{
     client: object;

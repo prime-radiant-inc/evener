@@ -143,11 +143,25 @@ function nonEmpty(value: string | undefined): string | undefined {
 // key (only when the harness uses evener models AND a model was chosen), and the
 // global working_dir (on every submit that has one).
 export function saveDefaults(input: SaveDefaultsInput): void {
-  const blob: SpawnDefaultsBlob = {};
   const harness = nonEmpty(input.harness);
   const accessMode = nonEmpty(input.accessMode);
   const reasoningEffort = nonEmpty(input.reasoningEffort);
   const model = nonEmpty(input.model);
+  // A local submit is authoritative for its whole blob: it names every field the
+  // form carries, so a field it leaves empty really is "this submit chose none",
+  // and the blob is rebuilt from it. A remote submit is not: it names only the
+  // fields the remote form re-supplied, and the blob is keyed by the cwd ALONE -
+  // a path that is as often a local checkout of the same path as it is the
+  // remote one. Rebuilding the blob from the remote form therefore deleted every
+  // stored field the remote form left empty. Round nine fixed exactly that for
+  // the model alone (the carry-over the model line below replaced) and the fix
+  // HID the rest: carrying the stored model over was what kept the write
+  // non-empty, so the erasure of the other fields was silent whenever the stored
+  // blob also had a model. A remote submit now starts from the stored blob
+  // instead and overlays only the fields it names - the same "leave the local
+  // layer as you found it" rule, stated for every field rather than for the
+  // model alone (component 07b review, residual).
+  const blob: SpawnDefaultsBlob = input.remoteLaunch ? { ...loadDefaultsBlob(input.cwd) } : {};
   if (harness) blob.harness = harness;
   if (accessMode) blob.access_mode = accessMode;
   if (reasoningEffort) blob.reasoning_effort = reasoningEffort;
@@ -163,17 +177,13 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (model && input.harnessUsesEvenerModels && !input.remoteLaunch) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
-  // ...and the remote launch must not ERASE a model a previous LOCAL launch
-  // stored for this path either. The write below replaces the whole blob, so
-  // omitting model was not "this submit names no model" - it was "this path has
-  // no model", and a later local spawn of the same cwd silently lost its sticky
-  // choice (round nine). A remote submit therefore carries the existing blob's
-  // model over verbatim: it contributes no model of its own (round eight's
-  // intent, above) while leaving the local one exactly as it found it.
-  if (input.remoteLaunch) {
-    const previous = loadDefaultsBlob(input.cwd).model;
-    if (typeof previous === "string" && previous.trim() !== "") blob.model = previous;
-  }
+  // The remote launch must not ERASE a model a previous LOCAL launch stored for
+  // this path either. The write below replaces the whole blob, so omitting model
+  // was not "this submit names no model" - it was "this path has no model", and
+  // a later local spawn of the same cwd silently lost its sticky choice (round
+  // nine). That carry-over is now the blob base above: a remote submit starts
+  // from the stored blob verbatim, contributes no model of its own (round
+  // eight's intent), and leaves the local one exactly as it found it.
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
   // A remote submit that contributes no field of its own must not take the
   // removeRaw path either (component 07b review, round four, adopted onto main's

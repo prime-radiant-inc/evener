@@ -86,7 +86,7 @@ describe("model toggles", () => {
     credentialsStore.setState({ instances: [{ ...entry(), models: undefined }], availableProviders: [] });
     render(<InstanceSheet name="work" {...h} writesRefused />);
     const button = screen.getByRole("button", { name: "Refresh live models" });
-    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("false");
     fireEvent.click(button);
     expect(h.onRefreshModels).toHaveBeenCalledTimes(1);
   });
@@ -104,6 +104,8 @@ describe("model toggles", () => {
     credentialsStore.setState({ instances: [entry()], availableProviders: [] });
     render(<InstanceSheet name="work" {...handlers()} modelsRefreshing />);
     const button = screen.getByRole("button", { name: "Refreshing live models…" });
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    // A refusal, not the native attribute: the click that started the refresh
+    // keeps the keyboard on this button (see widgets/switch and Button).
+    expect(button.getAttribute("aria-disabled")).toBe("true");
   });
 });

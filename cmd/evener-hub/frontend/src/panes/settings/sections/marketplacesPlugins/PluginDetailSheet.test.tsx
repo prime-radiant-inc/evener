@@ -138,7 +138,9 @@ test("a failed enable toggle re-enables the switch too", async () => {
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
-  await waitFor(() => expect((enabledSwitch as HTMLButtonElement).disabled).toBe(false));
+  // The refusal is aria-disabled, never the native attribute: the click that
+  // starts the toggle keeps the keyboard where it was (see widgets/switch).
+  await waitFor(() => expect(enabledSwitch.getAttribute("aria-disabled")).not.toBe("true"));
 });
 
 test("a failed enable toggle toasts 'Toggle enable failed'", async () => {
@@ -170,11 +172,11 @@ test("the Enabled switch is disabled while its RPC is in flight, and re-enables 
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   const enabledSwitch = screen.getByRole("switch", { name: "Enabled by default" });
   await user.click(enabledSwitch);
-  expect((enabledSwitch as HTMLButtonElement).disabled).toBe(true);
+  expect(enabledSwitch.getAttribute("aria-disabled")).toBe("true");
 
   resolveDisable({ plugins: [{ ...LINTER, enabled: false }] });
   await waitFor(() =>
-    expect((screen.getByRole("switch", { name: "Enabled by default" }) as HTMLButtonElement).disabled).toBe(false),
+    expect(screen.getByRole("switch", { name: "Enabled by default" }).getAttribute("aria-disabled")).not.toBe("true"),
   );
 });
 
@@ -221,7 +223,10 @@ test("Upgrade calls pluginUpgrade, toasts a checked-for-upgrades success, and is
   render(<PluginDetailSheet target={TARGET} onClose={() => {}} />);
   const upgradeButton = screen.getByRole("button", { name: "Upgrade" });
   await user.click(upgradeButton);
-  expect((upgradeButton as HTMLButtonElement).disabled).toBe(true);
+  // Its own click made it unavailable: a refusal that keeps the keyboard, not
+  // the native attribute (which would drop focus to <body>).
+  expect(upgradeButton.getAttribute("aria-disabled")).toBe("true");
+  expect(document.activeElement).toBe(upgradeButton);
 
   resolveUpgrade({ plugins: [LINTER] });
   await waitFor(() =>
