@@ -746,6 +746,30 @@ function sameIdentities(left: readonly unknown[], right: readonly unknown[]): bo
  * the existing rail and hydration code. Entity/container identity remains in
  * the NormalizedResource; this projection only provides the compatibility
  * read model while callers migrate selectors to graph-native inputs. */
+/** The normalized resource a decoded snapshot stands for: its graph, its
+ * version, and the presence every snapshot carries. Built by hand at five
+ * call sites before this; "present" is the part that must not drift. */
+export function snapshotResource(
+  key: ResourceKey,
+  decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
+): NormalizedResource {
+  return {
+    key,
+    graph: normalizedGraphFromSnapshot(decoded.snapshot),
+    version: decoded.version,
+    presence: "present",
+  };
+}
+
+/** The rows a decoded snapshot renders as - what a one-shot reader wants,
+ * with no previous resource to reconcile against. */
+export function materializeSnapshot(
+  key: ResourceKey,
+  decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
+): MaterializedValue {
+  return materializeNavigationResource(snapshotResource(key, decoded));
+}
+
 export function materializeNavigationResource(resource: NormalizedResource): MaterializedValue {
   const { key } = resource;
   const { graph } = resource;

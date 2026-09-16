@@ -5,12 +5,11 @@ import type {
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
-	materializeNavigationResource,
-	normalizedGraphFromSnapshot,
+	materializeSnapshot,
+	navigationParamsToResourceKey,
 	requiredRevision,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { resourceKeyFor } from "./navigationPages";
 
 function resourceFor(
 	target: NavigationInvalidationTarget,
@@ -53,7 +52,7 @@ export async function navigationReadback(
 	) => {
 		const params = { ...input, representationVersion: 2 };
 		check();
-		const key = resourceKeyFor(params);
+		const key = navigationParamsToResourceKey(params);
 		const wire = await client.request("evener/navigation/read", {
 			...params,
 			representationVersion: 2,
@@ -73,15 +72,7 @@ export async function navigationReadback(
 			);
 		return {
 			...decoded,
-			data:
-				decoded.status === "snapshot"
-					? materializeNavigationResource({
-							key,
-							graph: normalizedGraphFromSnapshot(decoded.snapshot),
-							version: decoded.version,
-							presence: "present",
-						})
-					: null,
+			data: decoded.status === "snapshot" ? materializeSnapshot(key, decoded) : null,
 		};
 	};
 	const manifestParams = { resource: "manifest" };

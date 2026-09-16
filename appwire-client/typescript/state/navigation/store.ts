@@ -34,6 +34,7 @@ import {
   materializeNavigationResource,
   type NormalizedResource,
   normalizedGraphFromSnapshot,
+  snapshotResource,
 } from "./codec";
 import { isSequenceGap } from "./invalidation";
 import { applyDelta, reconcileSnapshot } from "./merge";
@@ -48,6 +49,8 @@ import {
   isNavigationUnavailable,
   isSettledGone,
   keyID,
+  NAVIGATION_CATALOG_LIMIT,
+  NAVIGATION_SECTION_LIMIT,
   NavigationBaseInvalidError,
   type NavigationRequest,
   nextNavigationOffset,
@@ -137,8 +140,8 @@ export interface NavigationStoreState {
 }
 
 const initialAttention = { changed: [], summary: null };
-const PAGE_LIMIT = 50;
-const CATALOG_LIMIT = 100;
+const PAGE_LIMIT = NAVIGATION_SECTION_LIMIT;
+const CATALOG_LIMIT = NAVIGATION_CATALOG_LIMIT;
 const NAVIGATION_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
 const key = (resourceKey: ResourceKey) => Object.freeze(canonicalResourceKey(resourceKey));
 function pinCatalogData(page: ResourceState<NavigationPinSectionCatalog>): NavigationPinSectionCatalog {
@@ -397,13 +400,7 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
       const previous = (k.kind === "manifest" ? state.manifest : state.resources.get(keyID(k)))?.normalized ?? null;
       let normalized: NormalizedResource | undefined;
       if (decoded.status === "snapshot") {
-        const incoming: NormalizedResource = {
-          key: k,
-          graph: normalizedGraphFromSnapshot(decoded.snapshot),
-          version: decoded.version,
-          presence: "present",
-        };
-        normalized = reconcileSnapshot(previous, incoming);
+        normalized = reconcileSnapshot(previous, snapshotResource(k, decoded));
       } else if (decoded.status === "delta") {
         if (!previous) throw new NavigationProtocolError("delta has no cached base");
         normalized = applyDelta(previous, decoded.delta, decoded.version);
