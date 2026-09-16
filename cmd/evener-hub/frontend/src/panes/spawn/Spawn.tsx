@@ -750,14 +750,10 @@ function SpawnForm({
   // remote hub's own thread/start error is the authority. (Source-aware
   // discovery needs the evener/host/request proxy, which is not in this branch.)
   const remoteLaunch = submittedSource !== "" && submittedSource !== "local";
-  // The live target mode, for async callbacks that outlive the render they were
-  // registered in: a request started while this draft was local must not act
-  // once the picker has moved it to a remote host (round ten), and vice versa.
-  const remoteLaunchRef = useRef(remoteLaunch);
-  remoteLaunchRef.current = remoteLaunch;
-  // The selected target's own label for the disclosure below; falls back to the
-  // raw source id only while no manifest has ever named the host (the display
-  // view keeps the label across a revalidation, when the settled list is empty).
+  // The selected target's own label for the notices and disclosures that name
+  // it; falls back to the raw source id only while no manifest has ever named
+  // the host (the display view keeps the label across a revalidation, when the
+  // settled list is empty).
   const remoteSourceLabel =
     displaySources.find((candidate) => candidate.id === submittedSource)?.label ?? submittedSource;
   const usesEvenerModels = harnessUsesEvenerModels(harness, harnesses);
@@ -2216,28 +2212,6 @@ function SpawnForm({
               ))}
             </select>
           </FormRow>
-        )}
-
-        {/* A remote target's environment cannot yet be queried from here. Say
-            exactly which readings are the controller's - path BROWSING
-            (evener/paths/complete), models (model/list), providers
-            (evener/instance/list) and plugins (evener/plugin/preview) - rather
-            than present them as the target's: a remote-only model must not read
-            as a fact about the host the session will run on. Path CHECKS are not
-            among them: the controller cannot see the host's filesystem, so a
-            path-kind field is never judged invalid here and the selected host
-            validates its own cwd and paths when the session starts (round
-            nine). The launch itself goes to the selected source, whose own hub
-            resolves its environment. Removed when source-aware discovery (the
-            evener/host/request proxy) lands. */}
-        {remoteLaunch && (
-          <div className={CLASS.notice} role="status" data-testid="spawn-remote-host-notice">
-            <span>
-              Running on {remoteSourceLabel}. Path browsing, models, providers and plugins below come from this
-              controller; {remoteSourceLabel} resolves its own environment when the session starts, path checks
-              included.
-            </span>
-          </div>
         )}
 
         <div className={CLASS.promptIntro} data-testid="spawn-prompt-intro">

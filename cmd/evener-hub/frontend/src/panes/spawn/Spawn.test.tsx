@@ -6387,35 +6387,6 @@ test("a remote host submission is not blocked by missing controller-local provid
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
 });
 
-// The form's catalogs and readiness are still fetched from THIS controller
-// (source-aware discovery needs the evener/host/request proxy, absent from this
-// branch), so selecting a remote host must SAY so rather than present the
-// controller's environment as the target's.
-test("a remote host selection discloses that discovery is controller-local", async () => {
-  seedSources([
-    { id: "local", label: "Local", kind: "local", online: true },
-    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
-  ]);
-  renderSpawn(readyClient());
-  await settled();
-
-  expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
-
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
-  const notice = screen.getByTestId("spawn-remote-host-notice");
-  expect(notice.textContent).toContain("buildbox");
-  expect(notice.getAttribute("role")).toBe("status");
-  // Naming BOTH owners is the whole point of the disclosure: the controller is
-  // where the readings below come from, and the selected host is what resolves
-  // its own environment at start. Asserted so the copy cannot drift into
-  // claiming the controller's readings are the host's (or drop the host).
-  expect(notice.textContent).toContain("come from this controller");
-  expect(notice.textContent).toContain("buildbox resolves its own environment when the session starts");
-
-  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "local" } });
-  expect(screen.queryByTestId("spawn-remote-host-notice")).toBeNull();
-});
-
 // The remote-target fix must not trade a WRONG early judgment for no feedback at
 // all. With a remote host selected the launch really reaches thread/start, and
 // the selected host's own validation is what reports: its WireError surfaces
