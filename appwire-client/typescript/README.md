@@ -113,7 +113,7 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
   the instance listing and its writes, the API-key, credential-file, sign-out,
-  sign-in and probe RPCs, and the `evener/auth/updated` refetch with its
+  sign-in, status (`authStatus`) and probe RPCs, and the `evener/auth/updated` refetch with its
   own-echo correlation, over a `request`/`onNotification` client port; with
   the stale-listing refusal and its `staleListingHeld` predicate. Resolves to
   `state/credentials/index.ts`, a barrel.
