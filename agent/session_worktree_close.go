@@ -211,10 +211,7 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 	budget := LaneClosePassBudget / 2
 	cascadeDeadline, bounded := ctx.Deadline()
 	if bounded {
-		remaining := time.Until(cascadeDeadline)
-		if remaining < budget {
-			budget = remaining / 2
-		}
+		budget = CloseStopJoinBudget(time.Until(cascadeDeadline))
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, budget)
 	if ObserveCloseStopJoin != nil && bounded {
@@ -223,6 +220,20 @@ func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelF
 		}
 	}
 	return stopCtx, cancel
+}
+
+// CloseStopJoinBudget is the rule closeStopJoinContext bounds a stop join by,
+// given what the cascade has left: half of LaneClosePassBudget when at least
+// that much remains, else half of the remainder, so a nested stop cannot
+// consume the time its parent has left. EXPORTED so the cmd/evener
+// wedged-delegate run tests check the close tree against this rule rather
+// than a copy of it that can drift.
+func CloseStopJoinBudget(remaining time.Duration) time.Duration {
+	budget := LaneClosePassBudget / 2
+	if remaining < budget {
+		budget = remaining / 2
+	}
+	return budget
 }
 
 // ObserveCloseStopJoin sees every stop join closeStopJoinContext bounds under

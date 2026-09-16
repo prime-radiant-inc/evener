@@ -248,6 +248,17 @@ type closeStopJoin struct {
 	mintedAt, stopDeadline, cascadeDeadline time.Time
 }
 
+// reservedItsShare reports what the stop join left of the cascade's remaining
+// budget for the joins behind it, what closeStopJoinContext's rule says it
+// should have left (agent.CloseStopJoinBudget, the one rule both sides call),
+// and whether the two agree within 250ms of mint skew.
+func (join closeStopJoin) reservedItsShare() (reserved, want time.Duration, ok bool) {
+	remaining := join.cascadeDeadline.Sub(join.mintedAt)
+	want = remaining - agent.CloseStopJoinBudget(remaining)
+	reserved = join.cascadeDeadline.Sub(join.stopDeadline)
+	return reserved, want, reserved >= want-250*time.Millisecond
+}
+
 func observeCloseStopJoins(t *testing.T) *closeStopJoinObservations {
 	t.Helper()
 	obs := &closeStopJoinObservations{}
@@ -277,10 +288,8 @@ func (obs *closeStopJoinObservations) assertHalfReserved(t *testing.T, drainAt t
 		if !join.mintedAt.Before(drainAt) {
 			afterDrain++
 		}
-		remaining := join.cascadeDeadline.Sub(join.mintedAt)
-		want := min(agent.LaneClosePassBudget/2, remaining/2)
-		if reserved := join.cascadeDeadline.Sub(join.stopDeadline); reserved < want-250*time.Millisecond {
-			t.Fatalf("a close stop join reserved %s of the cascade's remaining %s for the joins behind it, want %s: the hopeless stop consumed the joins' half of the close budget (#420)", reserved, remaining, want)
+		if reserved, want, ok := join.reservedItsShare(); !ok {
+			t.Fatalf("a close stop join reserved %s of the cascade's remaining %s for the joins behind it, want %s: the hopeless stop consumed the joins' share of the close budget (#420)", reserved, join.cascadeDeadline.Sub(join.mintedAt), want)
 		}
 	}
 	if afterDrain == 0 {
@@ -365,5 +374,39 @@ func TestRunExitsWithALiveDelegateItNeverStopped(t *testing.T) {
 	// The machine-readable warning code is the oracle; the human message is not.
 	if !strings.Contains(stderr.String(), "[warning:"+events.WarningCodeDelegateAbandonedByDrain+"]") {
 		t.Fatalf("stderr never announced the structured abandonment event:\n%s", stderr.String())
+	}
+}
+
+// TestCloseStopJoinReservationFollowsTheHelpersRule pins the check against
+// closeStopJoinContext's own rule. The stop join takes LaneClosePassBudget/2
+// of a cascade with at least that much left, and half of what is left below
+// it; so a close whose preamble spent part of the budget before the join --
+// remaining in [L/2, L) -- reserves remaining - L/2, less than remaining/2. A
+// check that wanted min(L/2, remaining/2) rejected that correctly wired close
+// whenever the preamble ran long, which is load sensitivity through another
+// door (#1495 review).
+func TestCloseStopJoinReservationFollowsTheHelpersRule(t *testing.T) {
+	shrinkCloseBudget(t, 3*time.Second)
+	at := time.Date(2026, 9, 16, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name      string
+		remaining time.Duration
+		stopAfter time.Duration // the stop join's own budget, as the helper mints it
+		ok        bool
+	}{
+		{"fresh cascade: the stop takes L/2, reserves L/2", 3 * time.Second, 1500 * time.Millisecond, true},
+		{"preamble spent 1s: the stop still takes L/2, reserves 500ms", 2 * time.Second, 1500 * time.Millisecond, true},
+		{"under L/2 left: the stop takes half of it", time.Second, 500 * time.Millisecond, true},
+		{"the stop took the whole cascade (#420)", 3 * time.Second, 3 * time.Second, false},
+		{"the stop took the whole remainder", 2 * time.Second, 2 * time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			join := closeStopJoin{mintedAt: at, cascadeDeadline: at.Add(tc.remaining), stopDeadline: at.Add(tc.stopAfter)}
+			reserved, want, ok := join.reservedItsShare()
+			if ok != tc.ok {
+				t.Fatalf("reservedItsShare() = (reserved %s, want %s, ok %v), want ok=%v", reserved, want, ok, tc.ok)
+			}
+		})
 	}
 }
