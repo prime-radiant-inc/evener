@@ -10,4 +10,5 @@ export * from "./immutable";
 export * from "./invalidation";
 export * from "./merge";
 export * from "./revalidator";
+export * from "./store";
 export * from "./types";
