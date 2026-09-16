@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { NavigationManifest } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
-import { relativeAge, selectRailModel, selectSources } from "./selectors";
+import { relativeAge, selectDisplaySources, selectRailModel, selectSources } from "./selectors";
 import {
   isSettledGone,
   navigationOwnedContainerKey,
@@ -280,4 +280,38 @@ test("selectSources returns the same empty snapshot whenever it withholds source
   expect(sourcesOf(manifestResource({ loading: true }))).toBe(withheld);
   expect(sourcesOf(manifestResource({ error: new Error("read failed") }))).toBe(withheld);
   expect(sourcesOf(null)).toBe(withheld);
+});
+
+// ...and the DISPLAY view beside it, which answers the other question: what does
+// the reader's screen already know about the hosts? Withholding the retained
+// snapshot there hid the host picker and flipped every remote row's offline
+// badge to ONLINE for the length of the refresh (round nine).
+const displaySourcesOf = (manifest: ResourceState<NavigationManifest> | null) =>
+  selectDisplaySources({ manifest } as unknown as Parameters<typeof selectDisplaySources>[0]);
+
+test("selectDisplaySources keeps the last-known sources while the manifest is unsettled", () => {
+  for (const overrides of [{ loading: true }, { stale: true }, { error: new Error("read failed") }]) {
+    expect(displaySourcesOf(manifestResource(overrides)).map((source) => source.id)).toEqual(["local", "buildbox"]);
+  }
+  // Nothing has ever been read: there is no last-known reading to display.
+  expect(displaySourcesOf(manifestResource({ data: null }))).toEqual([]);
+  expect(displaySourcesOf(null)).toEqual([]);
+});
+
+test("selectDisplaySources hands back the store's own array, so snapshots stay identical", () => {
+  // Same useSyncExternalStore contract as selectSources: a fresh array (or a
+  // fresh copy) on every read would re-render the store's subscribers forever.
+  expect(displaySourcesOf(manifestResource())).toBe(manifestData.sources);
+  const retained = displaySourcesOf(manifestResource({ stale: true }));
+  expect(displaySourcesOf(manifestResource({ loading: true }))).toBe(retained);
+});
+
+test("the two views differ exactly where settledness does", () => {
+  // A settled manifest: launch decisions and display agree.
+  const settled = manifestResource();
+  expect(displaySourcesOf(settled)).toBe(sourcesOf(settled));
+  // Unsettled: only the display read keeps describing the hosts.
+  const stale = manifestResource({ stale: true });
+  expect(sourcesOf(stale)).toEqual([]);
+  expect(displaySourcesOf(stale).map((source) => source.id)).toEqual(["local", "buildbox"]);
 });

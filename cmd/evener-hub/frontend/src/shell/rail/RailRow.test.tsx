@@ -74,7 +74,10 @@ function seedPinCatalogForPicker(): void {
 // Seeds the manifest's launch sources, which a row's host badge/offline
 // affordance derives from (Component 06b). A row whose host the manifest does
 // not name reads as online, so the default empty manifest adds no affordance.
-function seedSources(sources: NavigationManifest["sources"]): void {
+function seedSources(
+  sources: NavigationManifest["sources"],
+  overrides: Partial<ResourceState<NavigationManifest>> = {},
+): void {
   const resource: ResourceState<NavigationManifest> = {
     key: { kind: "manifest" },
     data: manifest({ sources }),
@@ -86,6 +89,7 @@ function seedSources(sources: NavigationManifest["sources"]): void {
     stale: false,
     error: null,
     generationID: generation,
+    ...overrides,
   };
   navigationStore.setState({ manifest: resource });
 }
@@ -2252,5 +2256,27 @@ test("a row on an online host has no offline affordance", () => {
 test("a host the manifest does not name defaults to online (no offline affordance)", () => {
   renderRow({ ref: "mystery:abc", host_id: "mystery" });
   expect(screen.getByTestId("rail-row-host").textContent).toContain("mystery");
+  expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
+});
+
+// The badge is a DISPLAY of the last reading, and the store retains that reading
+// while the fresh manifest is in flight (loading/stale). A display read that
+// withheld it turned every offline badge back into an ONLINE host for the length
+// of the refresh (round nine).
+test("an offline host's badge survives a manifest revalidation", () => {
+  const sources: NavigationManifest["sources"] = [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ];
+  seedSources(sources);
+  renderRow({ ref: "buildbox:abc", host_id: "buildbox" });
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+
+  act(() => seedSources(sources, { loading: true, stale: true }));
+  expect(screen.getByTestId("rail-row-host-offline").textContent).toContain("offline");
+
+  // The FRESH manifest, once it settles, is the authority again: a host it no
+  // longer names is the unchanged "unknown host" case and reads as online.
+  act(() => seedSources([{ id: "local", label: "Local", kind: "local", online: true }]));
   expect(screen.queryByTestId("rail-row-host-offline")).toBeNull();
 });
