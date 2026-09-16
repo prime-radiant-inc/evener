@@ -49,6 +49,8 @@ import {
 } from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
+import { selectDisplaySources } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
 import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
@@ -96,6 +98,8 @@ const CLASS = {
   activityDanger: requireClass(styles.activityDanger, "RailRow.module.css", "activityDanger"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
+  host: requireClass(styles.host, "RailRow.module.css", "host"),
+  hostOffline: requireClass(styles.hostOffline, "RailRow.module.css", "hostOffline"),
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
@@ -384,6 +388,11 @@ function spawnInProject(project: RailProject): void {
   navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
 }
 
+// The project menu offers delete unconditionally: the request is local-only,
+// and the Rail owns that judgement - onDeleteProjectRequest refuses a project
+// a remote host also owns, with a toast that names the hosts (Rail.test.tsx
+// pins it), so the person gets an explanation instead of an item that is
+// silently missing. The row keeps no ownership verdict of its own.
 function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
@@ -497,8 +506,36 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   );
 }
 
+// A row's host reachability, derived from the manifest's sources (Component
+// 06a) keyed by the row's own host_id. This is deliberately NOT part of the
+// row schema and does NOT reuse Dormant: Jesse's standing decision keeps
+// Dormant meaning "never run". Unknown hosts - including the many RailRow
+// tests that render a row with no manifest store state at all - read as
+// ONLINE, so the badge is purely additive and existing rows keep their
+// meaning. The selector returns a primitive, so a fresh inline closure each
+// render is safe for the store's reference-equality check.
+//
+// The DISPLAY view, not the settled one: a badge reports what the rail knows
+// about the host, and a manifest re-read (loading/stale) must not blank the
+// last reading - that flipped every offline badge back to online for the length
+// of the refresh (round nine). A host the fresh manifest has dropped still
+// leaves its rows reading online once the NEW manifest lands, which is the
+// unchanged "unknown host" contract below.
+function useHostOnline(hostId: string): boolean {
+  return useNavigationStore((state) => {
+    const source = selectDisplaySources(state).find((candidate) => candidate.id === hostId);
+    return source ? source.online : true;
+  });
+}
+
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
+  // A non-local row names its host on the title line (a LABEL, not a tree
+  // re-layout); reachability comes from the manifest's sources, not from the
+  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
+  const hostId = session.host_id;
+  const showsHost = hostId !== "" && hostId !== "local";
+  const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);
   // The state this row PRESENTS (railNodes' displayState): a turn-ended
   // subagent presents as idle, not "your move", because its next input comes
@@ -588,6 +625,20 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             {session.title}
           </span>
           <TrailingChevron info={info} />
+          {/* Host label after the chevron (which hugs the title text), so a
+              remote row says where it lives without pushing the title. The
+              offline marker is visible text, not a color or an aria-only
+              state, and the title carries the same fact for hover. */}
+          {showsHost && (
+            <span
+              data-testid="rail-row-host"
+              className={hostOnline ? CLASS.host : `${CLASS.host} ${CLASS.hostOffline}`}
+              title={hostOnline ? `Host ${hostId}` : `Host ${hostId} is offline`}
+            >
+              {hostId}
+              {!hostOnline && <span data-testid="rail-row-host-offline">{" (offline)"}</span>}
+            </span>
+          )}
         </span>
         {showsSecondLine && (
           // The second line: the watch count and/or the tinted activity gloss,
@@ -915,8 +966,8 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
   const nextProject = next.node.project;
   // Keep this list in lockstep with ProjectRow, projectMenuItems, and
   // spawnInProject. Descendant/page fields are Tree recursion inputs, not row
-  // presentation or action inputs, so they deliberately do not cross this
-  // memo boundary.
+  // presentation or action inputs, so they deliberately do not cross this memo
+  // boundary.
   return (
     previous.node.id === next.node.id &&
     previous.node.displayName === next.node.displayName &&

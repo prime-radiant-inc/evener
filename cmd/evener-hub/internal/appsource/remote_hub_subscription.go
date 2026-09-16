@@ -1074,9 +1074,24 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 				stranded = append(stranded, sub)
 			}
 		}
+		var orphaned []*remoteHubHostSubscription
+		for sub := range s.hostSubs {
+			if sub.client == client {
+				delete(s.hostSubs, sub)
+				orphaned = append(orphaned, sub)
+			}
+		}
 		s.subMu.Unlock()
 		for _, sub := range stranded {
 			sub.cancel()
+		}
+		// Signal teardown on a dedicated channel and never close in: in stays
+		// the drain goroutine's alone, so a host-fan-out send can never race a
+		// close, and a pump parked on a full out is still unblocked (it selects
+		// on clientDone) so the consumer observes the close and re-subscribes
+		// against the next client.
+		for _, sub := range orphaned {
+			close(sub.clientDone)
 		}
 	}()
 	for {
@@ -1084,6 +1099,12 @@ func (s *RemoteHubSource) drainLoop(client *appwire.Client) {
 		if !ok {
 			return
 		}
+		// Host-level consumers see the notifications their filter accepts;
+		// delivery is scoped to the owning client so one connection's traffic
+		// never reaches another's subscriptions. It is prompt (non-blocking) and
+		// stays in read order: it happens before this notification's thread
+		// routing.
+		s.publishHostNotification(client, notification)
 		s.routeNotification(client, notification)
 	}
 }

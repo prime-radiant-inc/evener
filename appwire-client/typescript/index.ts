@@ -108,6 +108,8 @@ export {
   styleInfoText,
   unconfiguredLabel,
 } from "./credentialLabels";
+export type { DelegateModelFields, DelegateTiming, DelegateTimingFields } from "./delegateDetails";
+export { delegateModel, delegatePacket, delegateTiming } from "./delegateDetails";
 export type { AskQuestionRef } from "./deriveAskQuestions";
 export { liveAskQuestions } from "./deriveAskQuestions";
 export type { DisclosureState, DisclosureStore } from "./disclosure";
@@ -196,6 +198,18 @@ export type {
   WhenClause,
 } from "./keybindingRegistry";
 export { createKeybindingsRegistry, GLOBAL_SCOPE } from "./keybindingRegistry";
+export type {
+  KeybindingDraftCheckpoint,
+  KeybindingDraftStorage,
+  KeybindingsClient,
+  KeybindingsStore,
+  KeybindingsStoreActions,
+  KeybindingsStoreDeps,
+  KeybindingsStoreFields,
+  KeybindingsStoreState,
+  KeybindingsSupport,
+} from "./keybindingsStore";
+export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
 export type {
   KeybindingsPlatform,
   OverrideRule,

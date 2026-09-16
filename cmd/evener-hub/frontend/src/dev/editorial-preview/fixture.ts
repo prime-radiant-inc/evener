@@ -260,7 +260,12 @@ export function createEditorialClient(): EditorialClient {
   client.on("turn/start", completeInput);
   client.on("turn/steer", (params) => ({ receipt: completeInput(params).receipt }));
   client.on("evener/settings/overview", () => ({
-    hub: { version: "fixture", listenAddr: "Fixture only; no hub listener", runDir: "/fixture/run" },
+    hub: {
+      version: "fixture",
+      listenAddr: "Fixture only; no hub listener",
+      runDir: "/fixture/run",
+      daemonIdleTimeoutMillis: 3600000,
+    },
     storage: { stateDir: "/fixture/state" },
     agents: [{ name: "fixture" }],
   }));

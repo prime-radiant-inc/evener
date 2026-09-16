@@ -144,6 +144,24 @@ export class MutationDispatcher {
         applyHumanNoteResponse?.({ note: result.note, receipt });
       }
       await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
+      // An applied drain consumed the whole server queue, but neither push
+      // that follows names the consumed queue intents' ids (queueChanged
+      // carries only the remaining entries; steering/injected only the drain's
+      // own id). Same-client queue intents accepted before the drain would sit
+      // in the optimistic store unreflected forever and resurface as queue-
+      // strip rows. Retire exactly those: dispatch is per-target FIFO, so an
+      // earlier optimistic queue intent was necessarily accepted before the
+      // drain was sent, and accepted-before-drain means consumed-by-drain. A
+      // later queue intent lands on the emptied queue as fresh work and must
+      // survive; recovery records were never accepted, so only the optimistic
+      // store is touched.
+      if (method === "turn/drainAsSteer") {
+        const optimistic = await this.#storage.listOptimistic(record.targetRef);
+        const consumed = optimistic.filter(
+          (queued) => queued.method === "turn/queue" && queued.intentSequence < record.intentSequence,
+        );
+        await Promise.all(consumed.map((queued) => this.#storage.settleApplied(queued.clientMutationId)));
+      }
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {

@@ -81,6 +81,13 @@ func (s *SessionScratch) Retain() error {
 	return err
 }
 
+// HasLease reports whether this scratch still owns its live lease. A scratch
+// whose lease was released (Retain/Cleanup) keeps its directory but can no
+// longer be pinned.
+func (s *SessionScratch) HasLease() bool {
+	return s != nil && s.lease != nil
+}
+
 func canonicalScratchRoot(root string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", nil
@@ -227,6 +234,11 @@ func SweepCrashedSessionScratch(workspaceRoot string) error {
 // sweepCrashedSessionScratch removes old Evener-owned children only when their
 // lease is currently acquirable. A candidate whose lease is held, or whose age
 // cannot be read, is left untouched and is not an error: it is someone else's.
+// A candidate carrying a retention pin is skipped while that owner's manifest is
+// unreleased, held through the retention check and any removal so a concurrent
+// same-path restore cannot interleave, and its identity is verified after the
+// lease is acquired. A malformed or conflicting pin is conservatively retained
+// with a bounded diagnostic.
 func sweepCrashedSessionScratch(base string) error {
 	entries, err := sessionScratchReadDir(base)
 	if err != nil {
@@ -243,16 +255,35 @@ func sweepCrashedSessionScratch(base string) error {
 			continue
 		}
 		dir := filepath.Join(base, entry.Name())
+		before, statErr := os.Stat(dir)
+		if statErr != nil {
+			continue
+		}
 		lease, contended, err := acquireScratchLease(filepath.Join(dir, sessionScratchLeaseName))
 		if err != nil || contended {
 			continue
 		}
-		if err := lease.Release(); err != nil {
+		after, statErr := os.Stat(dir)
+		if statErr != nil || !os.SameFile(before, after) {
+			_ = lease.Release()
 			continue
 		}
+		retain, retentionErr := scratchDirectoryRetained(dir)
+		if retentionErr != nil {
+			failures = append(failures, retentionErr)
+			_ = lease.Release()
+			continue
+		}
+		if retain {
+			_ = lease.Release()
+			continue
+		}
+		// Hold the lease through removal: releasing first would let a same-path
+		// restore acquire the lease and be deleted out from under it.
 		if err := os.RemoveAll(dir); err != nil {
 			failures = append(failures, fmt.Errorf("sandbox: remove crashed session scratch %q: %w", dir, err))
 		}
+		_ = lease.Release()
 	}
 	return errors.Join(failures...)
 }

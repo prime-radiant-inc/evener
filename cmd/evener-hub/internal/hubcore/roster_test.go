@@ -1508,11 +1508,90 @@ type survivingOwnerProber struct {
 	fail    bool
 }
 
+// TestHasConfirmedEntryMissingPIDFailsFast pins the missing-PID branch: a PID
+// absent from byPID must answer false without consulting the entry's
+// SessionID. With the PID absent there is no SessionID to route by, and the
+// lookup would otherwise index bySess at the zero-value key "" -- a key the
+// roster's own scan never populates, but one a test can seed to prove the
+// lookup does not depend on it. The boolean outcome is the same either way
+// (the result is gated by `ok`), so this is a guard on the fail-fast
+// contract, not a behavior change.
+func TestHasConfirmedEntryMissingPIDFailsFast(t *testing.T) {
+	roster := NewRosterWithEntries()
+	// Seed the zero-value session key so a lookup that ignores the missing PID
+	// has something to find there.
+	seeded := LiveEntry{PID: 4242}
+	roster.bySess[""] = seeded
+	roster.byPID[4242] = seeded
+
+	if roster.HasConfirmedEntry(rendezvous.Entry{PID: 9999}) {
+		t.Fatal("a PID absent from byPID was confirmed through the empty session key")
+	}
+	// The same seeded maps still confirm a PID that IS present, so the guard
+	// above cannot pass vacuously and the fail-fast branch leaves ok == true
+	// untouched.
+	if !roster.HasConfirmedEntry(roster.byPID[4242].Entry) {
+		t.Fatal("a PID present in byPID with a matching route must still confirm")
+	}
+}
+
 func (p *survivingOwnerProber) Probe(e rendezvous.Entry) ProbeResult {
 	if e.PID != p.livePID || p.fail {
 		return ProbeResult{}
 	}
 	return ProbeResult{SessionID: e.SessionID, Status: "restartRequired", OK: true}
+}
+
+// TestRosterIdentityUsesCanonicalOwnershipFingerprint is the regression test for
+// the second hand-rolled identity comparison: the roster must decide exact
+// daemon ownership through the same canonical fingerprint the daemon and hub
+// enforce (rendezvous.OwnershipFingerprint), not a hand-picked field subset.
+// The old roster copy ignored WorkingDir and StateDir (so a daemon that merely
+// moved its working or state directory still confirmed as the same owner) while
+// including HubToken, which the canonical fingerprint deliberately excludes.
+// The assertions go through the public HasConfirmedEntry route, not the
+// unexported helper.
+func TestRosterIdentityUsesCanonicalOwnershipFingerprint(t *testing.T) {
+	base := rendezvous.Entry{
+		PID:          4242,
+		Address:      "127.0.0.1:50001",
+		Endpoint:     "ws://daemon/rpc",
+		Protocol:     appwire.ProtocolVersion,
+		SourceID:     "local",
+		ThreadID:     "thread-1",
+		SessionID:    "session-1",
+		InstanceID:   "instance-1",
+		WorkspaceRef: "local/thread-1",
+		WorkingDir:   "/work/a",
+		StateDir:     "/state/a",
+		HubToken:     "token-a",
+		StartedAt:    time.Unix(1700000000, 0).UTC(),
+	}
+	roster := NewRosterWithEntries(LiveEntry{Entry: base, SessionID: base.SessionID})
+	if !roster.HasConfirmedEntry(base) {
+		t.Fatal("identical entry did not confirm its own route")
+	}
+	for _, tc := range []struct {
+		name    string
+		mutate  func(*rendezvous.Entry)
+		confirm bool
+	}{
+		// Fields the hand-rolled copy omitted: an ownership change must no longer
+		// confirm the stale route.
+		{"WorkingDir", func(e *rendezvous.Entry) { e.WorkingDir = "/work/b" }, false},
+		{"StateDir", func(e *rendezvous.Entry) { e.StateDir = "/state/b" }, false},
+		// Field the hand-rolled copy wrongly included: the canonical fingerprint
+		// treats it as outside exact ownership, so it must still confirm.
+		{"HubToken", func(e *rendezvous.Entry) { e.HubToken = "token-b" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			changed := base
+			tc.mutate(&changed)
+			if got := roster.HasConfirmedEntry(changed); got != tc.confirm {
+				t.Fatalf("HasConfirmedEntry(%s changed)=%v, want %v", tc.name, got, tc.confirm)
+			}
+		})
+	}
 }
 
 func TestRosterRefreshEntryDoesNotSucceedWithoutRouteAfterNewerMiss(t *testing.T) {
@@ -1649,6 +1728,105 @@ func TestRosterReadSpawnedThreadPublishesStatusFlags(t *testing.T) {
 	if again, _ := r.Find("01SPAWNED"); !slices.Contains(again.ActiveFlags, "resumeRequired") {
 		t.Fatalf("Find must return a defensive copy of the status flags: %+v", again)
 	}
+}
+
+// TestRosterReclaimsOnlyExactlyOwnedRendezvousEntries is the regression test
+// for the PID-only removal defect. The crash-reclamation paths may delete a
+// rendezvous file only while it still carries the exact identity the roster
+// probed. A replacement daemon that rewrites <pid>.json during the probe window
+// (PID reuse, or a hub respawn racing a slow exit) must keep its entry, while a
+// genuinely dead stale file is still reclaimed.
+func TestRosterReclaimsOnlyExactlyOwnedRendezvousEntries(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().UTC().Add(-25 * time.Hour)
+	// PID 1001: stale and never resolved a session id -> the unlink path that
+	// runs before the crash-retention window.
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001", StartedAt: old})
+	// PID 1002: stale with a resolved session id -> the crash-retention-expired
+	// unlink path.
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID: 1002, Address: "127.0.0.1:50002", SessionID: "01DEAD", ThreadID: "01DEAD", StartedAt: old,
+	})
+	// PID 1003: genuinely dead and stale -> must still be reclaimed.
+	writeRendezvous(t, dir, rendezvous.Entry{
+		PID: 1003, Address: "127.0.0.1:50003", SessionID: "01RECLAIM", ThreadID: "01RECLAIM", StartedAt: old,
+	})
+
+	// The entries a live replacement daemon publishes when it reuses each PID
+	// with a new exact identity, racing the roster's read-then-unlink window.
+	replacements := map[int]rendezvous.Entry{
+		1001: {
+			PID: 1001, Address: "127.0.0.1:50001", Protocol: appwire.ProtocolVersion,
+			Endpoint: "ws://replacement/rpc", SourceID: "local",
+			SessionID: "01NEW1", ThreadID: "01NEW1", StartedAt: time.Now().UTC(),
+		},
+		1002: {
+			PID: 1002, Address: "127.0.0.1:50002", Protocol: appwire.ProtocolVersion,
+			Endpoint: "ws://replacement/rpc", SourceID: "local",
+			SessionID: "01NEW2", ThreadID: "01NEW2", StartedAt: time.Now().UTC(),
+		},
+	}
+	prober := &rendezvousRewriteProber{dir: dir, replacements: replacements}
+	r := NewRoster(dir, prober)
+	r.SetProcessAlive(func(int) bool { return false })
+	r.Refresh()
+
+	if err := prober.firstError(); err != nil {
+		t.Fatalf("replacement write: %v", err)
+	}
+	read := func(pid int) (rendezvous.Entry, bool) {
+		t.Helper()
+		entries, err := rendezvous.List(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.PID == pid {
+				return e, true
+			}
+		}
+		return rendezvous.Entry{}, false
+	}
+	for _, pid := range []int{1001, 1002} {
+		got, ok := read(pid)
+		if !ok {
+			t.Fatalf("reclamation deleted the live replacement's rendezvous for PID %d", pid)
+		}
+		if got.SessionID != replacements[pid].SessionID {
+			t.Fatalf("PID %d holds %q, want the replacement %q", pid, got.SessionID, replacements[pid].SessionID)
+		}
+	}
+	if _, ok := read(1003); ok {
+		t.Fatal("genuinely dead stale rendezvous file was not reclaimed")
+	}
+}
+
+// rendezvousRewriteProber fails every probe but first rewrites the rendezvous
+// file for selected PIDs, simulating a replacement daemon racing a slow exit.
+type rendezvousRewriteProber struct {
+	dir          string
+	replacements map[int]rendezvous.Entry
+	mu           sync.Mutex
+	firstErr     error
+}
+
+func (p *rendezvousRewriteProber) Probe(e rendezvous.Entry) ProbeResult {
+	if replacement, ok := p.replacements[e.PID]; ok {
+		if _, err := rendezvous.Write(p.dir, replacement); err != nil {
+			p.mu.Lock()
+			if p.firstErr == nil {
+				p.firstErr = err
+			}
+			p.mu.Unlock()
+		}
+	}
+	return ProbeResult{}
+}
+
+func (p *rendezvousRewriteProber) firstError() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.firstErr
 }
 
 // A daemon that crashed leaves its rendezvous file, and the kernel may hand
@@ -1844,21 +2022,23 @@ func TestRosterAnnouncesASessionGoneOnceAndOnlyForGood(t *testing.T) {
 	}
 }
 
-// heldProber blocks each probe of the gated session until released, in call
-// order, so two refreshes can be held open together; every other session
-// fails its probe.
+// heldProber blocks each probe of the gated session until released, so two
+// refreshes can be held open together; every other session fails its probe.
+// A probe reports itself on started with the channel that releases it, so
+// the test decides which refresh a release reaches by the probe it saw
+// start, not by which probe parked first.
 type heldProber struct {
 	gated   string
-	started chan struct{}
-	release chan struct{}
+	started chan chan struct{}
 }
 
 func (p *heldProber) Probe(entry rendezvous.Entry) ProbeResult {
 	if entry.SessionID != p.gated {
 		return ProbeResult{}
 	}
-	p.started <- struct{}{}
-	<-p.release
+	release := make(chan struct{})
+	p.started <- release
+	<-release
 	return ProbeResult{SessionID: p.gated, Status: appwire.ThreadStatusIdle, OK: true}
 }
 
@@ -1871,7 +2051,7 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 	steady := rendezvous.Entry{PID: 1002, SessionID: "01STEADY", ThreadID: "01STEADY", Protocol: appwire.ProtocolVersion, Endpoint: "ws://daemon/rpc"}
 	writeRendezvous(t, dir, parked)
 	writeRendezvous(t, dir, steady)
-	prober := &heldProber{gated: "01STEADY", started: make(chan struct{}, 2), release: make(chan struct{})}
+	prober := &heldProber{gated: "01STEADY", started: make(chan chan struct{}, 2)}
 	roster := NewRoster(dir, prober)
 	roster.SetProcessAlive(func(int) bool { return true })
 	var mu sync.Mutex
@@ -1885,8 +2065,7 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 	// unresolved (its probe missed, its process answers).
 	initial := make(chan struct{})
 	go func() { roster.Refresh(); close(initial) }()
-	<-prober.started
-	prober.release <- struct{}{}
+	close(<-prober.started)
 	<-initial
 	if len(roster.UnconfirmedEntries()) != 1 {
 		t.Fatalf("unconfirmed = %+v, want the parked claim", roster.UnconfirmedEntries())
@@ -1899,12 +2078,12 @@ func TestRosterOverlappingRefreshesAnnounceADepartureOnce(t *testing.T) {
 	}
 	first, second := make(chan struct{}), make(chan struct{})
 	go func() { roster.Refresh(); close(first) }()
-	<-prober.started
+	releaseFirst := <-prober.started
 	go func() { roster.Refresh(); close(second) }()
-	<-prober.started
-	prober.release <- struct{}{}
+	releaseSecond := <-prober.started
+	close(releaseFirst)
 	<-first
-	prober.release <- struct{}{}
+	close(releaseSecond)
 	<-second
 	mu.Lock()
 	defer mu.Unlock()

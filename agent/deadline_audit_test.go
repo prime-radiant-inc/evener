@@ -350,33 +350,48 @@ var deadlineAuditAllowlist = map[string]bool{}
 // dir and returns one finding per bare wall-clock bound, skipping any file
 // named in allowlist. allowlist may be nil.
 func deadlineAuditFindings(dir string, allowlist map[string]bool) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+	fset, files, err := parseAgentTestFiles(dir)
 	if err != nil {
 		return nil, err
 	}
 	var findings []string
-	fset := token.NewFileSet()
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") {
-			continue
-		}
+	for _, file := range files {
+		name := filepath.Base(fset.Position(file.Pos()).Filename)
 		if allowlist[name] {
 			continue
-		}
-		path := filepath.Join(dir, name)
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		file, err := parser.ParseFile(fset, path, raw, parser.ParseComments)
-		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 		findings = append(findings, deadlineAuditFileFindings(name, file, fset)...)
 	}
 	sort.Strings(findings)
 	return findings, nil
+}
+
+// parseAgentTestFiles parses the *_test.go files directly in dir
+// (non-recursive), comments included, for the source audits in this package.
+func parseAgentTestFiles(dir string) (*token.FileSet, []*ast.File, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, nil, err
+		}
+		file, err := parser.ParseFile(fset, path, raw, parser.ParseComments)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse %s: %w", path, err)
+		}
+		files = append(files, file)
+	}
+	return fset, files, nil
 }
 
 func deadlineAuditFileFindings(name string, file *ast.File, fset *token.FileSet) []string {

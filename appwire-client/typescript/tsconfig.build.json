@@ -45,6 +45,7 @@
     "sendQueueAvailability.ts",
     "sessionErrors.ts",
     "stableDelegate.ts",
+    "delegateDetails.ts",
     "docContent.ts",
     "submitRouting.ts",
     "displayFormat.ts",
@@ -74,8 +75,12 @@
     "state/navigation/index.ts",
     "state/navigation/codec.ts",
     "state/navigation/immutable.ts",
+    "state/navigation/invalidation.ts",
     "state/navigation/merge.ts",
+    "state/navigation/revalidator.ts",
     "state/navigation/types.ts",
+    "state/credentials/index.ts",
+    "state/credentials/instances.ts",
     "state/extensions/index.ts",
     "state/extensions/listRevision.ts",
     "state/extensions/marketplaces.ts",
@@ -89,6 +94,7 @@
     "keybindingDisplay.ts",
     "keybindingOverrides.ts",
     "keybindingRegistry.ts",
-    "keybindingValidation.ts"
+    "keybindingValidation.ts",
+    "keybindingsStore.ts"
   ]
 }

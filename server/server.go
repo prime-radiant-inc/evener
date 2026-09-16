@@ -401,8 +401,8 @@ type Server struct {
 	retrySafeTurns               RetrySafeTurnFunctions
 	cancelFunc                   context.CancelFunc
 	interruptWired               bool
-	steerFunc                    func(string)
-	steerWithImagesFunc          func(string, []ImageAttachment)
+	steerFunc                    func(string) error
+	steerWithImagesFunc          func(string, []ImageAttachment) error
 	queueFunc                    func(string) error
 	queueWithImagesFunc          func(string, []ImageAttachment) error
 	goalFunc                     func(objective string) (bool, error)
@@ -426,13 +426,15 @@ type Server struct {
 	clearJournalErr     error
 	modelFunc           func(string) error
 	visionModelFunc     func(string) error
-	nameFunc            func(string)
-	reasoningEffortFunc func(string)
+	nameFunc            func(string) error
+	reasoningEffortFunc func(string) error
 	listModelsFunc      func(context.Context) ([]appwire.ModelDescriptor, error)
 	tasksFn             func() any
 	jobsFn              func(appwire.JobsListParams) (any, error)
 	jobOutputFn         func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
 	shutdownFunc        func()
+	daemonStatusFunc    func() appwire.DaemonLifecycle
+	daemonRetireFunc    func(context.Context, appwire.DaemonRetireParams) (appwire.DaemonRetireResponse, error)
 
 	// costLookupMu guards costLookup. It is deliberately NOT s.mu: the turn
 	// projector calls the lookup from inside Project, which RecordAppEvent
@@ -635,7 +637,7 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 
 // SetSteerFunc sets the function called by turn/steer. It is invoked
 // regardless of whether the session is currently processing.
-func (s *Server) SetSteerFunc(fn func(string)) {
+func (s *Server) SetSteerFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.steerFunc = fn
 	s.mu.Unlock()
@@ -643,7 +645,7 @@ func (s *Server) SetSteerFunc(fn func(string)) {
 
 // SetSteerWithImagesFunc sets the function called by AppWire turn/steer when
 // the input carries image attachments.
-func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment)) {
+func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment) error) {
 	s.mu.Lock()
 	s.steerWithImagesFunc = fn
 	s.mu.Unlock()
@@ -775,7 +777,7 @@ func (s *Server) SetVisionModelFunc(fn func(string) error) {
 }
 
 // SetNameFunc sets the function called by the rename appwire method.
-func (s *Server) SetNameFunc(fn func(string)) {
+func (s *Server) SetNameFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.nameFunc = fn
 	s.mu.Unlock()
@@ -783,7 +785,7 @@ func (s *Server) SetNameFunc(fn func(string)) {
 
 // SetReasoningEffortFunc sets the function called to change the reasoning effort
 // of the running session.
-func (s *Server) SetReasoningEffortFunc(fn func(string)) {
+func (s *Server) SetReasoningEffortFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.reasoningEffortFunc = fn
 	s.mu.Unlock()

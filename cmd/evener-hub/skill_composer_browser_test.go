@@ -41,6 +41,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -289,7 +290,21 @@ func TestSkillComposerBrowser(t *testing.T) {
 	if err := os.MkdirAll(hubStateRoot, 0o700); err != nil {
 		t.Fatalf("hub state root: %v", err)
 	}
-	web := NewWebServer(hubcore.WebConfig{
+	// Every AppWire frame the hub exchanges with the browser goes into the
+	// artifacts (the same trace `evener-hub --appwire-trace` records). It is
+	// the evidence the daemon request logs and the page dump cannot give: when
+	// a leg the daemon dispatched and completed never renders (#1434, run
+	// 35083213356), whether the hub sent its frames to the page or not.
+	appwireTrace, err := appserver.NewWebSocketTrace(filepath.Join(fixture.artifact, "appwire-trace.jsonl"))
+	if err != nil {
+		t.Fatalf("appwire trace: %v", err)
+	}
+	t.Cleanup(func() {
+		if closeErr := appwireTrace.Close(); closeErr != nil {
+			t.Errorf("close appwire trace: %v", closeErr)
+		}
+	})
+	web := newWebServer(hubcore.WebConfig{
 		AuthToken:     token,
 		HubStateRoot:  hubStateRoot,
 		RunDir:        fixture.runDir,
@@ -297,7 +312,7 @@ func TestSkillComposerBrowser(t *testing.T) {
 		Roster:        roster,
 		StateDir:      fixture.stateRoot,
 		PastIndexPath: filepath.Join(hubStateRoot, "index.db"),
-	})
+	}, appwireTrace)
 	// Navigation invalidation wiring mirrors runMain so the SPA actually
 	// receives evener/navigation/invalidated when the roster or index changes.
 	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
@@ -443,6 +458,12 @@ func skillGuardSetup(t *testing.T) *skillGuardFixture {
 			// that say what it was waiting for.
 			skillGuardAwaitDriver(t, fixture.driverFinished, skillGuardDriverDrainTimeout)
 			skillGuardLogDriverTail(t, filepath.Join(root, "artifacts", "driver.log"))
+			return
+		}
+		if os.Getenv("SKILLGUARD_KEEP_ARTIFACTS") != "" {
+			// A passing run's milestones and request logs are the baseline a
+			// failing run's are compared against; keep them on request.
+			t.Logf("SKILLGUARD_KEEP_ARTIFACTS set; keeping artifacts under %s", root)
 			return
 		}
 		os.RemoveAll(root)

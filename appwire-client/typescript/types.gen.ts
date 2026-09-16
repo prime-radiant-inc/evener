@@ -30,6 +30,7 @@ export interface ArchiveParams {
   id: string;
   workingDir?: string;
   archived: boolean;
+  source?: string;
 }
 
 export interface ArchiveResponse {
@@ -191,6 +192,64 @@ export interface CommandDescriptor {
 
 export interface CommandListResponse {
   commands: CommandDescriptor[];
+}
+
+export interface DaemonBlocker {
+  category: string;
+  sessionId?: string;
+  delegateId?: string;
+}
+
+export interface DaemonIdentity {
+  ref: string;
+  pid: number;
+  startedAt: string;
+  generation: string;
+}
+
+export interface DaemonLifecycle {
+  phase: string;
+  timeoutMillis: number;
+  eligibleSince?: string;
+  deadline?: string;
+  blockers: DaemonBlocker[];
+  failure?: string;
+}
+
+export interface DaemonListParams {
+}
+
+export interface DaemonListResponse {
+  defaultTimeoutMillis: number;
+  daemons: DaemonResident[];
+}
+
+export interface DaemonResident {
+  identity: DaemonIdentity;
+  name: string;
+  protocol: string;
+  compatibility: string;
+  archived: boolean;
+  probeState: string;
+  lifecycle?: DaemonLifecycle;
+  canRetire: boolean;
+  canForceStop: boolean;
+}
+
+export interface DaemonRetireParams {
+  identity: DaemonIdentity;
+}
+
+export interface DaemonRetireResponse {
+  accepted: boolean;
+  lifecycle: DaemonLifecycle;
+}
+
+export interface DaemonStatusParams {
+}
+
+export interface DaemonStatusResponse {
+  lifecycle: DaemonLifecycle;
 }
 
 export interface DeletionSkip {
@@ -479,6 +538,7 @@ export interface FavoriteSetParams {
   kind: string;
   id: string;
   favorited: boolean;
+  source?: string;
 }
 
 export interface FavoriteSetResponse {
@@ -553,6 +613,21 @@ export interface HarnessListParams {
 
 export interface HarnessListResponse {
   data: HarnessDescriptor[];
+}
+
+export interface HostForwardedResult {
+}
+
+export interface HostNotificationParams {
+  host: string;
+  method: string;
+  params?: unknown;
+}
+
+export interface HostRequestParams {
+  host: string;
+  method: string;
+  params?: unknown;
 }
 
 export interface InitializeParams {
@@ -1200,6 +1275,7 @@ export interface NavigationProjectSummary {
   worktrees?: number;
   is_archived?: boolean;
   favorite?: boolean;
+  sources?: string[];
   session_count: number;
 }
 
@@ -1488,6 +1564,7 @@ export interface PluginSetAutoUpgradeParams {
 export interface ProjectDeleteParams {
   key: string;
   workingDir: string;
+  source?: string;
 }
 
 export interface ProjectDeleteResponse {
@@ -1662,6 +1739,7 @@ export interface SettingsHubOverview {
   spawnTimeout?: string;
   bearerTokenAge?: string;
   pastIndex?: SettingsPastIndexOverview;
+  daemonIdleTimeoutMillis: number;
 }
 
 export interface SettingsMCPOverview {
@@ -1809,6 +1887,7 @@ export interface ThreadCompactStartParams {
 
 export interface ThreadForceStopParams {
   ref: string;
+  expectedDaemon?: DaemonIdentity;
 }
 
 export interface ThreadForkParams {
@@ -1973,6 +2052,7 @@ export interface ThreadShutdownParams {
 
 export interface ThreadStartParams {
   harness?: string;
+  source?: string;
   cwd: string;
   input?: InputItem[];
   modelProvider?: string;
@@ -2355,6 +2435,9 @@ export const METHOD_NAMES = [
   "evener/tasks/list",
   "evener/jobs/list",
   "evener/jobs/output",
+  "evener/daemon/list",
+  "evener/daemon/retire",
+  "evener/daemon/status",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -2426,6 +2509,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
+  "evener/host/request",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -2470,6 +2554,7 @@ export const NOTIFICATION_NAMES = [
   "evener/settings/transcriptDisplay/changed",
   "evener/settings/keybindings/changed",
   "evener/settings/agentsDoc/changed",
+  "evener/host/notification",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2552,6 +2637,9 @@ export interface MethodTypes {
   "evener/tasks/list": { params: TaskListParams; result: TaskListResponse };
   "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
   "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
+  "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
+  "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
+  "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
@@ -2623,6 +2711,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
 }
 
 export interface NotificationTypes {
@@ -2665,6 +2754,7 @@ export interface NotificationTypes {
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
   "evener/settings/keybindings/changed": KeybindingsOverrides;
   "evener/settings/agentsDoc/changed": AgentsDocResponse;
+  "evener/host/notification": HostNotificationParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

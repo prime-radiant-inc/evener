@@ -244,6 +244,71 @@ func TestRemoteHubAttachHandshakeTimeoutIsSessionUnavailable(t *testing.T) {
 		_, err := source.StartTurn(t.Context(), appwire.TurnStartParams{Ref: testControllerRef, ClientMutationID: "cmid-attach-timeout"})
 		assertSessionUnavailable(t, err)
 	})
+
+	// The forwarded-admin paths acquire the client the same way, so a timed-out
+	// attach must classify identically there: the acquisition failure happens
+	// before dispatch, so nothing crossed the wire and the outcome is known.
+	t.Run("admin read path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		var out json.RawMessage
+		if err := source.AdminCall(t.Context(), appwire.MethodEvenerInstanceList, nil, &out); err == nil {
+			t.Fatal("AdminCall succeeded despite a timed-out remote attach")
+		} else {
+			assertSessionUnavailable(t, err)
+		}
+	})
+
+	t.Run("admin mutation path", func(t *testing.T) {
+		source := NewRemoteHubSource("host", nil, func(context.Context, string) (*appwire.Client, error) {
+			return nil, attachTimeout
+		})
+		var out json.RawMessage
+		if err := source.AdminMutationCall(t.Context(), appwire.MethodEvenerPluginInstall, nil, &out); err == nil {
+			t.Fatal("AdminMutationCall succeeded despite a timed-out remote attach")
+		} else {
+			// Nothing crossed the wire, so this stays the safe-retry
+			// SessionUnavailable the auto-resume gate reads, never an in-doubt
+			// mutation outcome.
+			assertSessionUnavailable(t, err)
+		}
+	})
+}
+
+// TestRemoteHubAdminCallerContextStaysRaw mirrors
+// TestRemoteHubMutationCallerContextStaysRaw for the forwarded-admin paths: a
+// caller context that ends while the host is still being acquired stays raw on
+// both AdminCall and AdminMutationCall. The caller's own context ending is not
+// host unavailability, and the mutation-unknown retry disposition would
+// re-drive a mutation the caller abandoned.
+func TestRemoteHubAdminCallerContextStaysRaw(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(context.Context, *RemoteHubSource) error
+	}{
+		{"AdminCall", func(ctx context.Context, s *RemoteHubSource) error {
+			var out json.RawMessage
+			return s.AdminCall(ctx, appwire.MethodEvenerInstanceList, nil, &out)
+		}},
+		{"AdminMutationCall", func(ctx context.Context, s *RemoteHubSource) error {
+			var out json.RawMessage
+			return s.AdminMutationCall(ctx, appwire.MethodEvenerPluginInstall, nil, &out)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deadlineCtx, deadlineCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer deadlineCancel()
+			source := NewRemoteHubSource("host", nil, func(ctx context.Context, _ string) (*appwire.Client, error) {
+				// Wait for the caller's context to end, then fail the attach, so
+				// the acquisition error's classification is unambiguous.
+				<-ctx.Done()
+				return nil, errors.New("attach failed")
+			})
+			err := tc.call(deadlineCtx, source)
+			assertRawContextError(t, err, context.DeadlineExceeded)
+		})
+	}
 }
 
 func localThreadFixture() appwire.Thread {

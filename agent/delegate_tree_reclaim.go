@@ -36,6 +36,11 @@ type delegateRuntimeReclamationCandidate struct {
 // mutated; the claim only fences process-local runtime ownership while callers
 // close the selected sessions outside the controller mutex.
 func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegateRuntimeReclamationClaim, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return nil, retirementErr
+	}
+	defer retirementRelease()
 	if c == nil {
 		return nil, errors.New("delegate controller is unavailable")
 	}
@@ -142,6 +147,7 @@ func (c *delegateTreeController) ClaimRuntimeReclamation(required int) (*delegat
 // CompleteRuntimeReclamation clears only the exact runtime pointers that the
 // caller reports closed. A replacement installed after the claim survives.
 func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRuntimeReclamationClaim, closed map[string]*Session) error {
+	defer c.retirementChanged()
 	if c == nil {
 		return errors.New("delegate controller is unavailable")
 	}
@@ -166,6 +172,7 @@ func (c *delegateTreeController) CompleteRuntimeReclamation(claim *delegateRunti
 }
 
 func (c *delegateTreeController) AbortRuntimeReclamation(claim *delegateRuntimeReclamationClaim) error {
+	defer c.retirementChanged()
 	if c == nil {
 		return errors.New("delegate controller is unavailable")
 	}

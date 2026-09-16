@@ -141,6 +141,9 @@ var Methods = []MethodSpec{
 	{MethodEvenerTasksList, TaskListParams{}, TaskListResponse{}, ScopeBoth, "Lists the session's tasks."},
 	{MethodEvenerJobsList, JobsListParams{}, JobsListResponse{}, ScopeBoth, "Returns the current-session activity tree. Hub-served for exited sessions via the persisted jobs.jsonl fallback; older daemons may still return a flat array in JobsListResponse.Data."},
 	{MethodEvenerJobsOutput, JobsOutputParams{}, JobsOutputResponse{}, ScopeBoth, "Reads a byte tail of one job's output. Hub-served for exited sessions via the persisted jobs.jsonl fallback."},
+	{MethodEvenerDaemonList, DaemonListParams{}, DaemonListResponse{}, ScopeHub, "Lists resident daemons with lifecycle and exact ownership identity, including archived, incompatible, and unresolved discovered processes."},
+	{MethodEvenerDaemonRetire, DaemonRetireParams{}, DaemonRetireResponse{}, ScopeBoth, "Requests safe daemon retirement against exact ownership identity; reports whether the claim was accepted with the current lifecycle."},
+	{MethodEvenerDaemonStatus, DaemonStatusParams{}, DaemonStatusResponse{}, ScopeDaemon, "Reports the daemon retirement lifecycle snapshot; a detached control read that never resets eligibility."},
 	{MethodEvenerThreadTranscriptsList, ThreadTranscriptListParams{}, ThreadTranscriptListResponse{}, ScopeHub, "Lists transcript targets (subagents/related threads) for a ref."},
 	{MethodEvenerSubagentPreview, EvenerSubagentPreviewParams{}, EvenerSubagentPreviewResponse{}, ScopeHub, "Reads a bounded lazy preview of a subagent transcript's latest direct items."},
 	{MethodEvenerPathsComplete, PathsCompleteParams{}, PathsCompleteResponse{}, ScopeHub, "Path autocompletion for a prefix."},
@@ -212,6 +215,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSettingsAgentsDocGet, EmptyParams{}, AgentsDocResponse{}, ScopeHub, "Reads the personal AGENTS.md under the user config root: its path, whether it exists, and its content."},
 	{MethodEvenerSettingsAgentsDocSet, AgentsDocSetParams{}, AgentsDocResponse{}, ScopeHub, "Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed."},
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
+	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
@@ -309,4 +313,5 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerSettingsTranscriptDisplayChanged, TranscriptDisplayChangedParams{}, "Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration."},
 	{NotifyEvenerSettingsKeybindingsChanged, KeybindingsOverrides{}, "Broadcast after the user keybinding overrides change; carries the revision and canonical rules."},
 	{NotifyEvenerSettingsAgentsDocChanged, AgentsDocResponse{}, "Broadcast after the personal AGENTS.md is written; carries the new path, existence, and content."},
+	{NotifyEvenerHostNotification, HostNotificationParams{}, "Re-emits one host-owned config notification to the controller's browser clients tagged with the source host (component 07a); local notifications keep their unwrapped methods. This is the Go-side fan-out contract: the client-side unwrapping into host-scoped stores is component 07b, and no Go-side consumer exists here."},
 }

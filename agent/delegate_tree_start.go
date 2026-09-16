@@ -106,6 +106,11 @@ type delegateInputClaim struct {
 }
 
 func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor delegatestore.Descriptor) (*delegateStartReservation, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return nil, retirementErr
+	}
+	defer retirementRelease()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -180,6 +185,11 @@ func (c *delegateTreeController) ReserveCreate(actor delegateActor, descriptor d
 // receiver transcript outside c.mu. The locked work authenticates the exact
 // resident runtime and reserves drive capacity; it performs no transcript I/O.
 func (c *delegateTreeController) ReserveAttention(runtime *Session, attentionID string) (*delegateStartReservation, error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -424,6 +434,7 @@ func (c *delegateTreeController) BeginStartInput(lease delegateLease) (delegateI
 }
 
 func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, committed bool, failure delegateFinish) (delegateMutationPlans, error) {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {
@@ -587,6 +598,11 @@ func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, l
 }
 
 func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID string) (*delegateStartReservation, error) {
+	retirementRelease, retirementErr := c.beginRetirementMutation()
+	if retirementErr != nil {
+		return nil, retirementErr
+	}
+	defer retirementRelease()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closing {
@@ -646,6 +662,7 @@ func (c *delegateTreeController) ReserveStart(actor delegateActor, delegateID st
 }
 
 func (c *delegateTreeController) AbortStart(reservation *delegateStartReservation) error {
+	defer c.retirementChanged()
 	c.mu.Lock()
 	record, err := c.reservationRecordLocked(reservation)
 	if err != nil {

@@ -62,6 +62,7 @@ assert.equal(client.parseAskUserQuestions({ argumentsJSON: "not json" }), undefi
 assert.equal(client.liveAskQuestions({ turns: [{ items: [askItem] }] })[0].key, "ask1:0");
 const counter = client.createFrameworkFreeStore((set) => ({ n: 0, bump: () => set((s) => ({ n: s.n + 1 })) })); counter.getState().bump(); assert.equal(counter.getState().n, 1);
 const disclosureStore = client.createDisclosureStore(); disclosureStore.toggle(client.scopedDisclosureId("live", "tool"), false); assert.equal(client.isDisclosureOpenIn(disclosureStore.getState(), client.scopedDisclosureId("live", "tool"), false), true);
+const keybindingsStore = client.createKeybindingsStore({ client: { request: async () => { throw new Error("offline"); }, onNotification: () => () => {} } }); keybindingsStore.setSupport(client.keybindingsSupport({ keybindingsSettings: true })); assert.equal(keybindingsStore.getState().hubSupport, "supported"); assert.deepEqual(client.fromWireOverrides({ version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }), { version: 1, revision: 2, rules: [{ action: "palette.open", chord: null }] }); assert.equal(client.fromWireOverrides({ version: 2 }), undefined);
 const askBatches = client.reconcileBatches([], client.liveAskQuestions({ turns: [{ items: [askItem] }] }), () => "batch1");
 assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
@@ -116,6 +117,7 @@ assert.equal(client.deriveSendQueueAvailability({ statusType: "restartRequired",
 assert.equal(client.isActionUnavailable(new Error("not a wire error")), false);
 assert.equal(client.isThreadNotFound(new Error("not a wire error")), false);
 assert.equal(client.stableDelegateDisplayStatus({ status: "running" }), "running");
+assert.equal(client.delegateTiming({ terminal: true, runStartedAt: "2026-09-07T00:00:00Z", runEndedAt: "2026-09-07T00:00:05Z" }, Number.NaN).durationMs, 5000);
 assert.equal(client.docFileRawURL("", "s", "p"), "/doc/file?format=raw&session=s&path=p");
 assert.equal(client.decideSubmitRoute({ hasContent: false, availability: { canSend: true, canQueue: false } }), "none");
 assert.equal(client.decideSteerRoute({ hasText: true, hasAttachments: false, queueDepth: 0 }), "steer");
@@ -333,18 +335,21 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
-    // The navigation quartet, published as one subpath rather than through the
-    // root: it is a state layer both apps' navigation stores are built on, not
-    // part of the client surface every consumer takes, and a barrel is the seam
-    // later state relocations extend rather than multiply.
+    // The navigation state layer, published as one subpath rather than through
+    // the root: both apps' navigation stores are built on it, it is not part of
+    // the client surface every consumer takes, and a barrel is the seam later
+    // state relocations extend rather than multiply.
     "./state/navigation": {
       esmTypeUses: `const key: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
-const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;`,
+const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;
+const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;`,
       cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;`,
       // One call per module: types (keyID, the offset rule), immutable (the
       // freeze and the equality), codec (a snapshot normalized into a graph),
       // merge (an empty delta onto a manifest that carries no metadata, which
-      // the merge refuses as an invalid base).
+      // the merge refuses as an invalid base), invalidation (the wildcard
+      // reaching a project page), revalidator (an instance carries its
+      // generation).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -359,6 +364,55 @@ assert.throws(
   () => client.applyDelta({ key: { kind: "manifest" }, graph: navigationGraph, version: navigationVersion }, emptyDelta, navigationVersion),
   client.NavigationBaseInvalidError,
 );
+const projectPage = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 50 };
+assert.equal(client.matchesTarget(projectPage, { kind: "all_loaded_projects" }), true);
+const revalidator = new client.NavigationRevalidator("g");
+assert.equal(revalidator.generationID, "g");
+revalidator.dispose();
+`,
+    },
+    // The credentials state layer: the listing core each app's Providers &
+    // credentials store is an adapter over. A store is built and driven
+    // without a connection, which is the whole of what qualification can do
+    // to it: no request is issued, so the smoke proves the factory, the
+    // pure helpers and the refusal type resolve and behave.
+    "./state/credentials": {
+      esmTypeUses: `const store: CredentialInstancesStore = createCredentialInstancesStore({ ownClientId: () => "qualification" });
+const held: boolean = staleListingHeld(store.getState());
+const listing: CredentialListing = listingOf(store.getState()); void held; void listing;`,
+      cjsTypeUses: `const refusal: client.StaleListingRefusal = new client.StaleListingRefusal(); void refusal;`,
+      smoke: `const credentialStore = client.createCredentialInstancesStore({ ownClientId: () => "qualification" });
+assert.deepEqual(credentialStore.getState().instances, []);
+assert.equal(credentialStore.getState().listingFromPreviousConnection, false);
+assert.equal(credentialStore.getState().listingEstablished, false);
+assert.equal(
+  client.foreignListingChange({ ...credentialStore.getState(), loading: true }, credentialStore.getState()),
+  true,
+);
+assert.equal(typeof credentialStore.getState().setApiKey, "function");
+assert.equal(typeof credentialStore.getState().devicePoll, "function");
+assert.deepEqual(client.listingOf(credentialStore.getState()), {
+  instances: [],
+  availableProviders: [],
+  diagnostics: [],
+  userLayer: "",
+  writesRefused: false,
+});
+credentialStore.connectionChanged(null, "idle");
+assert.equal(client.staleListingHeld({ instances: [], availableProviders: [], listingFromPreviousConnection: true }), false);
+assert.equal(client.isStaleListingRefusal(new client.StaleListingRefusal()), true);
+assert.equal(client.isStaleListingRefusal(new Error("boom")), false);
+assert.rejects(credentialStore.getState().fetch(), /no client connected/).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
+Promise.all([
+  assert.rejects(credentialStore.getState().fetch(), /no client connected/),
+  assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/),
+]).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 `,
     },
     // The extensions state layer - the marketplaces store, with the plugins

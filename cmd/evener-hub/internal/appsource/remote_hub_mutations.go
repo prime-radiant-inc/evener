@@ -107,6 +107,16 @@ func (s *RemoteHubSource) remoteHubMutationCallError(clientMutationID string, er
 func (s *RemoteHubSource) StartThread(ctx context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	remote := params
 	remote.Harness = "evener"
+	// Source and a non-"evener" Harness are both controller-side routing hints:
+	// Source names this source in the controller's registry, and the remote
+	// hub's launchSourceID reads any non-"evener" Harness as a source id too.
+	// The remote hub would resolve either against its own registry, so neither
+	// may be forwarded: Source is cleared, and Harness is neutralized to the
+	// remote hub's own default. Leaving Harness set would re-route a start the
+	// controller already targeted at this host (Source=remote-a, Harness=remote-b
+	// would spawn on remote-b on the remote hub); the remote hub's own local
+	// spawn is the intended target.
+	remote.Source = ""
 	var out appwire.ThreadStartResponse
 	if err := s.call(ctx, appwire.MethodThreadStart, remote, &out); err != nil {
 		return appwire.ThreadStartResponse{}, err

@@ -18,7 +18,7 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type { AppwireClientLike, LaunchConfigLayer, PathValidateResponse } from "@evener/appwire-client";
+import type { AnyNotification, AppwireClientLike, LaunchConfigLayer, PathValidateResponse } from "@evener/appwire-client";
 import { errorText } from "@evener/appwire-client";
 import {
   createMarketplacesStore,
@@ -31,6 +31,7 @@ import {
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import { connectionStore, onConnectionNotification } from "./connection";
+import { isLocalHost } from "./hostRouting";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
@@ -74,9 +75,32 @@ const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
 // connectionStore's CURRENT client at request time. They publish into
 // extensionsStore (below the store) so the sections keep reading one store;
 // the launch-layer slice is still written here.
+
+// onHubConfigNotification delivers the config notifications THIS hub's fetches
+// are about. The controller's own arrive plainly. A host's own arrive wrapped
+// in evener/host/notification tagged with the host that owns them
+// (cmd/evener-hub/app_host_admin.go's relayHostNotifications, one fan-out per
+// remote host, over the remoteHostConfigNotifications allowlist), and every
+// fetch reached from here - evener/marketplace/list, evener/plugin/list,
+// evener/launch/getLayer - reads this hub over the plain connection, so
+// another host's change is no evidence about any of them and goes no further.
+// A wrapper tagged with the controller itself is this hub's own change, and is
+// delivered unwrapped: indistinguishable from the plain notification. The one
+// thing a remote host's plugin change does move is pluginRevision (below).
+function onHubConfigNotification(handler: (n: AnyNotification) => void): () => void {
+  return onConnectionNotification((n) => {
+    if (n.method !== "evener/host/notification") {
+      handler(n);
+      return;
+    }
+    if (!isLocalHost(n.params.host)) return;
+    handler({ method: n.params.method, params: n.params.params } as AnyNotification);
+  });
+}
+
 const hubClient = {
   request: (method, params, opts) => requireClient().request(method, params, opts),
-  onNotification: onConnectionNotification,
+  onNotification: onHubConfigNotification,
 } satisfies MarketplacesClient & PluginsClient;
 const marketplaces = createMarketplacesStore(hubClient);
 marketplaces.start();
@@ -184,8 +208,32 @@ function scheduleLaunchLayerRefetch(): void {
   }, REFETCH_DEBOUNCE_MS);
 }
 
-onConnectionNotification((n) => {
+onHubConfigNotification((n) => {
   if (n.method === "evener/launch/updated") scheduleLaunchLayerRefetch();
+});
+
+// A REMOTE host's plugin change moves pluginRevision, and nothing else here.
+//
+// pluginRevision is the revision the HOST-SCOPED plugin consumers key their
+// requests on: usePluginPreview and useSpawnSlashCatalog build their logical
+// key from it and then issue their own evener/plugin/preview /
+// evener/spawn/slashCatalog against the SELECTED host through
+// evener/host/request. Without the bump a plugin enabled or disabled on that
+// host is never observed, so the spawn form keeps rendering the pre-change
+// list - and a plugin reconciled from that stale preview is sent as a
+// thread/start launchOverride the host no longer has. So the revision moves
+// for a remote host's update exactly as it does for the controller's own
+// (component 07b review, round three), which the plugins core moves from its
+// own subscription.
+//
+// The core's list refetch is a different matter, and is why this is written
+// here rather than delivered to the core: evener/plugin/list reads THIS hub
+// over the plain connection, and a remote host's change is no evidence about
+// this hub's plugins.
+onConnectionNotification((n) => {
+  if (n.method !== "evener/host/notification") return;
+  if (n.params.method !== "evener/plugin/updated" || isLocalHost(n.params.host)) return;
+  plugins.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
 });
 
 // resetExtensionsStoreForTests resets the store to its initial state,

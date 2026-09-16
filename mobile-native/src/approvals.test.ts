@@ -3,7 +3,6 @@ import type {
   SandboxEscalationRequested,
   Thread,
 } from "@evener/appwire-client";
-import { projectApproval } from "../../mobile/src/conversation/project";
 import {
   type ConversationClientLike,
   createConversationService,
@@ -71,26 +70,26 @@ describe("native approval projection", () => {
     const { service } = boundary();
     const store = createConversationStore();
     await store.getState().open(service, "local:s");
-    expect(store.getState().conversation?.pendingApprovals).toEqual([
-      projectApproval(pending),
+    expect(store.getState().conversation?.pendingEscalations).toEqual([
+      pending,
     ]);
     store.getState().applyNotification({
       method: "evener/sandbox/escalation/resolved",
       params: { threadId: "other", ref: "other:s", escalationId: "approval" },
     });
-    expect(store.getState().conversation?.pendingApprovals).toHaveLength(1);
+    expect(store.getState().conversation?.pendingEscalations).toHaveLength(1);
     store.getState().applyNotification({
       method: "evener/sandbox/escalation/requested",
       params: { ...pending, deniedPath: "/updated" },
     });
-    expect(store.getState().conversation?.pendingApprovals).toEqual([
-      projectApproval({ ...pending, deniedPath: "/updated" }),
+    expect(store.getState().conversation?.pendingEscalations).toEqual([
+      { ...pending, deniedPath: "/updated" },
     ]);
     store.getState().applyNotification({
       method: "evener/sandbox/escalation/resolved",
       params: pending,
     });
-    expect(store.getState().conversation?.pendingApprovals).toEqual([]);
+    expect(store.getState().conversation?.pendingEscalations).toEqual([]);
   });
 });
 
@@ -108,18 +107,17 @@ describe("approval decisions", () => {
         return {};
       },
     } as unknown as ConversationClientLike;
-    const approval = projectApproval(pending);
     const controls = new ApprovalControls(
       client,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {
         refreshed++;
       },
     );
-    const request = controls.resolve(approval, true);
-    await controls.resolve(approval, false);
+    const request = controls.resolve(pending, true);
+    await controls.resolve(pending, false);
     await controls.refresh();
     expect(refreshed).toBe(0);
     expect(sent).toEqual([
@@ -135,9 +133,9 @@ describe("approval decisions", () => {
   });
   it("rejects resolved, changed and old-owner approvals before dispatch", async () => {
     let calls = 0;
-    let values = [projectApproval(pending)];
+    let values = [pending];
     let current = true;
-    const displayed = projectApproval(pending);
+    const displayed = pending;
     const client = {
       request: async () => {
         calls++;
@@ -151,7 +149,7 @@ describe("approval decisions", () => {
       () => current,
       async () => {},
     );
-    values = [{ ...displayed, path: "/different" }];
+    values = [{ ...displayed, deniedPath: "/different" }];
     await controls.resolve(displayed, true);
     values = [];
     await controls.resolve(displayed, false);
@@ -165,7 +163,6 @@ describe("approval decisions", () => {
   });
   it("retains failure and never repeats an unconfirmed decision", async () => {
     let calls = 0;
-    const approval = projectApproval(pending);
     const client = {
       request: async () => {
         calls++;
@@ -175,14 +172,14 @@ describe("approval decisions", () => {
     const controls = new ApprovalControls(
       client,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {},
     );
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
     expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     expect(calls).toBe(1);
   });
   it.each(
@@ -190,8 +187,7 @@ describe("approval decisions", () => {
   )(
     "treats malformed resolution receipt $receipt as uncertain",
     async ({ receipt }) => {
-      const approval = projectApproval(pending);
-      let calls = 0;
+        let calls = 0;
       const client = {
         request: async () => {
           calls++;
@@ -202,22 +198,21 @@ describe("approval decisions", () => {
       const controls = new ApprovalControls(
         client,
         "local:s",
-        () => [approval],
+        () => [pending],
         () => true,
         async () => {
           refreshed++;
         },
       );
-      await controls.resolve(approval, true);
+      await controls.resolve(pending, true);
       expect(refreshed).toBe(0);
       expect(controls.getSnapshot().error).not.toBeNull();
-      await controls.resolve(approval, false);
+      await controls.resolve(pending, false);
       expect(calls).toBe(1);
       expect(controls.getSnapshot().pending).toBeNull();
     },
   );
   it("requires a successful current refresh before allowing another decision", async () => {
-    const approval = projectApproval(pending);
     let refreshFails = true;
     let calls = 0;
     const controls = new ApprovalControls(
@@ -228,30 +223,29 @@ describe("approval decisions", () => {
         },
       } as unknown as ConversationClientLike,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {
         if (refreshFails) throw new Error("offline");
       },
     );
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
     await controls.refresh();
     expect(controls.getSnapshot().error).not.toBeNull();
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
     refreshFails = false;
     await controls.refresh();
     expect(controls.getSnapshot().error).toBeNull();
     expect(calls).toBe(1);
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(2);
   });
   it("does not dispatch a card removed by the recovery read", async () => {
-    const approval = projectApproval(pending);
-    let values = [approval];
+    let values = [pending];
     let calls = 0;
     const controls = new ApprovalControls(
       {
@@ -267,14 +261,13 @@ describe("approval decisions", () => {
         values = [];
       },
     );
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     await controls.refresh();
     expect(controls.getSnapshot().error).toBeNull();
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(1);
   });
   it("serializes recovery reads and retains uncertainty when the binding changes", async () => {
-    const approval = projectApproval(pending);
     let current = true;
     let calls = 0;
     let reads = 0;
@@ -287,7 +280,7 @@ describe("approval decisions", () => {
         },
       } as unknown as ConversationClientLike,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => current,
       () => {
         reads++;
@@ -299,7 +292,7 @@ describe("approval decisions", () => {
     const reading = controls.refresh();
     expect(controls.getSnapshot().refreshing).toBe(true);
     await controls.refresh();
-    await controls.resolve(approval, true);
+    await controls.resolve(pending, true);
     expect(reads).toBe(1);
     expect(calls).toBe(0);
     current = false;
@@ -308,11 +301,10 @@ describe("approval decisions", () => {
     expect(controls.getSnapshot().refreshing).toBe(false);
     expect(controls.getSnapshot().error).not.toBeNull();
     current = true;
-    await controls.resolve(approval, false);
+    await controls.resolve(pending, false);
     expect(calls).toBe(0);
   });
   it("ignores late acknowledgments and reads after disposal", async () => {
-    const approval = projectApproval(pending);
     let release!: () => void;
     let reads = 0;
     const controls = new ApprovalControls(
@@ -323,13 +315,13 @@ describe("approval decisions", () => {
           }),
       } as unknown as ConversationClientLike,
       "local:s",
-      () => [approval],
+      () => [pending],
       () => true,
       async () => {
         reads++;
       },
     );
-    const request = controls.resolve(approval, true);
+    const request = controls.resolve(pending, true);
     const before = controls.getSnapshot();
     controls.dispose();
     release();
@@ -340,6 +332,9 @@ describe("approval decisions", () => {
   });
 });
 
+// A resolution delivered while a reread is in flight precedes that reread's
+// response, and AppWire cuts the snapshot after it: the response arrives
+// without the card, and the store commits that snapshot as authoritative.
 it("does not resurrect an approval resolved while an older snapshot is in flight", async () => {
   const base = boundary();
   let reads = 0;
@@ -355,13 +350,16 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
         ref: "local:s",
         includeTurns: true,
       });
-      if (++reads === 2) {
-        started();
-        await new Promise<void>((resolve) => {
-          release = resolve;
-        });
-      }
-      return response;
+      if (++reads !== 2) return response;
+      started();
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const thread = response.thread;
+      return {
+        ...response,
+        thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
+      };
     },
   } as unknown as ConversationClientLike;
   const service = createConversationService(client),
@@ -376,8 +374,11 @@ it("does not resurrect an approval resolved while an older snapshot is in flight
   });
   release();
   await refresh;
-  expect(store.getState().conversation?.pendingApprovals).toEqual([]);
+  expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
+// A resolution delivered before the initial read's response precedes the
+// snapshot cut: the response arrives without the card, and that snapshot is
+// what the open commits — no buffer, no replay.
 it("keeps resolutions delivered between the initial snapshot and its response", async () => {
   const base = boundary();
   let release!: () => void;
@@ -397,7 +398,11 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
       await new Promise<void>((resolve) => {
         release = resolve;
       });
-      return response;
+      const thread = response.thread;
+      return {
+        ...response,
+        thread: { ...thread, evener: { ...thread.evener, pendingEscalations: [] } },
+      };
     },
     onNotification: (listener: typeof notification) => {
       notification = listener;
@@ -415,7 +420,7 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
   });
   release();
   await open;
-  expect(store.getState().conversation?.pendingApprovals).toEqual([]);
+  expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
 it("unsubscribes a failed initial read", async () => {
   let unsubscribed = 0;

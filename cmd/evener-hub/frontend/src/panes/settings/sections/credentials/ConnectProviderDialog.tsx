@@ -140,7 +140,7 @@ function ManageConnections({
     const state = credentialsStore.getState();
     // Discovery already requested the listing. Reuse its pending answer,
     // data or error; only load here if navigation preceded connection readiness.
-    if (!state.loading && !state.error && state.instances.length === 0 && state.availableProviders.length === 0) {
+    if (!state.loading && !state.error && !state.listingEstablished) {
       await fetch();
     }
   }, [fetch]);

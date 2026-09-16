@@ -1,5 +1,8 @@
-import type { AppwireClient, InitializeResponse } from "@evener/appwire-client";
-import type { KeybindingDraftStorage } from "./keybindingDraftRepository";
+import type {
+	AppwireClient,
+	InitializeResponse,
+	KeybindingDraftStorage,
+} from "@evener/appwire-client";
 import { NativePreferences } from "./nativePreferences";
 import type { TranscriptDraftStorage } from "./preferenceDraftRepository";
 

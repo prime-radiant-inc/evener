@@ -4,7 +4,12 @@ import { FakeClient, failing } from "./testing/fakeClient";
 import type { SettingsOverviewResponse } from "./types.gen";
 
 const SAMPLE: SettingsOverviewResponse = {
-  hub: { version: "1.2.3", listenAddr: "127.0.0.1:9180", runDir: "/tmp/run" },
+  hub: {
+    version: "1.2.3",
+    listenAddr: "127.0.0.1:9180",
+    runDir: "/tmp/run",
+    daemonIdleTimeoutMillis: 3600000,
+  },
   storage: { stateDir: "/home/user/.evener" },
   agents: [{ name: "default" }],
 };
@@ -137,12 +142,15 @@ describe("fetch and refresh", () => {
 describe("wire decoding", () => {
   test("omitted empty collections and zero counters decode to [] and 0; absent sections stay absent", async () => {
     const { fake, store } = storeWithFake();
-    fake.on(OVERVIEW, () => ({ hub: { pastIndex: { path: "/index" } }, mcpDiscovered: {} }));
+    fake.on(OVERVIEW, () => ({
+      hub: { pastIndex: { path: "/index" }, daemonIdleTimeoutMillis: 3600000 },
+      mcpDiscovered: {},
+    }));
 
     await store.getState().refresh();
 
     expect(store.getState().data).toEqual({
-      hub: { pastIndex: { path: "/index", count: 0, perPage: 0 } },
+      hub: { pastIndex: { path: "/index", count: 0, perPage: 0 }, daemonIdleTimeoutMillis: 3600000 },
       mcpDiscovered: { servers: [] },
       agents: [],
     });
@@ -151,7 +159,7 @@ describe("wire decoding", () => {
 
   test("populated collections and counters are left alone", async () => {
     const populated: SettingsOverviewResponse = {
-      hub: { pastIndex: { path: "/index", count: 3, perPage: 20 } },
+      hub: { pastIndex: { path: "/index", count: 3, perPage: 20 }, daemonIdleTimeoutMillis: 3600000 },
       mcpDiscovered: { servers: [{ name: "one" }] },
       agents: [{ name: "a" }],
     };

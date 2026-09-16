@@ -1,8 +1,10 @@
-// Fixture-driven tests for the AppWire-to-mobile thread projection.
-// Every fixture is a literal Thread wire object; no network, no provider
-// credentials, no ambient state. These exercise projectThread's item
-// classification, clustering, capability/queue/usage projection, and the
-// forward-compatibility rule (unknown item types must NOT disappear).
+// Fixture-driven tests for the native display-row projection over the
+// package's hydrated ThreadModel. Every fixture is a literal Thread wire
+// object; no network, no provider credentials, no ambient state. These
+// exercise projectConversation's item classification and clustering, the
+// forward-compatibility rule (unknown item types must NOT disappear), and
+// native's contract on the thread-level fields hydrateThread supplies
+// (capabilities, queue, usage/cost, reasoning profile, identity).
 
 import { describe, expect, it } from "vitest";
 import type {
@@ -19,8 +21,15 @@ import type {
   ActivityFamily,
   MobileConversation,
   MobileTimelineItem,
-} from "./model";
-import { projectThread } from "./project";
+} from "./project";
+import { hydrateThread } from "@evener/appwire-client";
+import { projectConversation } from "./project";
+
+// The oracle drives the shim exactly as the service does: hydrate the wire
+// Thread through the package, then project the display rows.
+function projectThread(thread: Thread): MobileConversation {
+  return projectConversation(hydrateThread({ thread }, thread.evener.ref, 0));
+}
 
 // --- fixture helpers ---------------------------------------------------------
 
@@ -248,15 +257,11 @@ describe("projectThread", () => {
     const c = projectThread(
       thread([], {
         status: { type: "restartRequired" },
-        evener: evenerThread({
-          resumeRequired: true,
-          mutationStateAuthoritative: false,
-        }),
+        evener: evenerThread({ resumeRequired: true }),
       }),
     );
-    expect(c.status).toBe("restartRequired");
+    expect(c.status).toEqual({ type: "restartRequired" });
     expect(c.resumeRequired).toBe(true);
-    expect(c.mutationStateAuthoritative).toBe(false);
     expect(c.items).toEqual([]);
   });
 
@@ -309,11 +314,11 @@ describe("projectThread", () => {
       });
     });
 
-    it("projects an agentMessage with a delta as streaming while incomplete", () => {
+    it("projects an agentMessage as streaming while its turn is incomplete", () => {
       const t = thread([
         turn(
           "t1",
-          [item({ id: "a1", type: "agentMessage", delta: "partial" })],
+          [item({ id: "a1", type: "agentMessage", text: "partial" })],
           { status: "inProgress" },
         ),
       ]);
@@ -326,23 +331,28 @@ describe("projectThread", () => {
       });
     });
 
-    it("joins text and delta into markdown when both present", () => {
-      const t = thread([
-        turn(
-          "t1",
-          [
-            item({
-              id: "a1",
-              type: "agentMessage",
-              text: "final text",
-              delta: "streaming tail",
-            }),
-          ],
-          { status: "inProgress" },
-        ),
-      ]);
-      const c = projectThread(t);
-      const a = c.items[0];
+    // A snapshot never carries in-flight text (the wire's delta field is set
+    // only by the subagent preview, and hydrateThread ignores it); a live
+    // reducer accumulates it as pendingText chunks, which the row joins onto
+    // the settled text.
+    it("joins settled text and pending delta chunks into markdown", () => {
+      const model = hydrateThread(
+        {
+          thread: thread([
+            turn(
+              "t1",
+              [item({ id: "a1", type: "agentMessage", text: "final text" })],
+              { status: "inProgress" },
+            ),
+          ]),
+        },
+        "ref-1",
+        0,
+      );
+      const streamingItem = model.turns[0]?.items[0];
+      if (!streamingItem) throw new Error("fixture lost its item");
+      streamingItem.pendingText = ["streaming ", "tail"];
+      const a = projectConversation(model).items[0];
       expect(a?.kind).toBe("assistant");
       if (a?.kind === "assistant") {
         expect(a.markdown).toBe("final textstreaming tail");
@@ -1182,13 +1192,16 @@ describe("projectThread", () => {
       expect(kinds(c)).toEqual(["user", "question"]);
       const q = c.items.find((i) => i.kind === "question");
       if (q?.kind === "question") {
-        expect(q.batch.callId).toBe("call-ask");
-        expect(q.batch.questions).toHaveLength(2);
-        expect(q.batch.questions[0]?.key).toBe("call-ask:0");
-        expect(q.batch.questions[1]?.key).toBe("call-ask:1");
-        expect(q.batch.questions[0]?.header).toBe("Direction");
-        expect(q.batch.questions[0]?.multiSelect).toBe(false);
-        expect(q.batch.questions[0]?.options[0]?.recommended).toBe(true);
+        expect(q.questions).toHaveLength(2);
+        expect(q.questions.map((question) => question.callId)).toEqual([
+          "call-ask",
+          "call-ask",
+        ]);
+        expect(q.questions[0]?.key).toBe("call-ask:0");
+        expect(q.questions[1]?.key).toBe("call-ask:1");
+        expect(q.questions[0]?.header).toBe("Direction");
+        expect(q.questions[0]?.multiSelect).toBe(false);
+        expect(q.questions[0]?.options[0]?.recommended).toBe(true);
       }
     });
 
@@ -1344,7 +1357,7 @@ describe("projectThread", () => {
   });
 
   describe("capability projection", () => {
-    it("maps ThreadCapabilities booleans 1:1 to MobileCapabilities", () => {
+    it("passes ThreadCapabilities through unchanged", () => {
       const caps: ThreadCapabilities = {
         send: true,
         steer: false,
@@ -1366,8 +1379,11 @@ describe("projectThread", () => {
     });
   });
 
+  // The queue is the wire QueueState itself, as on the package ThreadModel:
+  // identity, revision, full texts and previews stay distinct fields, and an
+  // absent depth is the reader's to default (queue?.depth ?? 0).
   describe("queue state", () => {
-    it("retains queue identity, revision and full text independently of previews", () => {
+    it("carries queue identity, revision, full texts and previews as the wire sent them", () => {
       const queue: QueueState = {
         revision: 9,
         depth: 2,
@@ -1376,85 +1392,53 @@ describe("projectThread", () => {
         preview: ["first…", "second…"],
         clientMutationIds: ["send-a", "send-b"],
       };
-      const projected = projectThread(
-        thread([], { evener: evenerThread({ queue }) }),
-      ).queue;
-      expect(projected).toEqual(queue);
-      queue.ids?.reverse();
-      queue.texts?.push("later");
-      expect(projected.ids).toEqual(["entry-a", "entry-b"]);
-      expect(projected.texts).toEqual(["full first", "full second"]);
-    });
-    it("projects an empty queue as depth 0", () => {
-      const t = thread([]);
-      const c = projectThread(t);
-      expect(c.queue).toEqual({ revision: 0, depth: 0, preview: [] });
+      const c = projectThread(thread([], { evener: evenerThread({ queue }) }));
+      expect(c.queue).toEqual(queue);
     });
 
-    it("projects queue depth and previews", () => {
-      const queue: QueueState = {
-        revision: 3,
-        depth: 2,
-        texts: ["first queued", "second queued"],
-        preview: ["first queued"],
-      };
-      const t = thread([], { evener: evenerThread({ queue }) });
-      const c = projectThread(t);
-      expect(c.queue).toEqual({
-        revision: 3,
-        depth: 2,
-        preview: ["first queued"],
-        texts: ["first queued", "second queued"],
-      });
-    });
-
-    it("falls back to texts when preview absent", () => {
-      const queue: QueueState = {
-        revision: 1,
-        depth: 2,
-        texts: ["a", "b"],
-      };
-      const t = thread([], { evener: evenerThread({ queue }) });
-      const c = projectThread(t);
-      expect(c.queue.depth).toBe(2);
-      expect(c.queue.preview).toEqual(["a", "b"]);
+    it("carries a bare queue without inventing a depth or previews", () => {
+      expect(projectThread(thread([])).queue).toEqual({ revision: 0 });
     });
   });
 
   describe("usage projection", () => {
-    it.each([undefined, "", "off", "provider/model"])(
-      "preserves the wire vision model value %j",
-      (visionModel) => {
-        const t = thread([], {
-          evener: evenerThread({ visionModel }),
-        });
-        expect(projectThread(t).visionModel).toBe(visionModel);
-      },
-    );
+    // An absent wire vision model reads as "" — the package ThreadModel's
+    // shape (hydrateThread's default), so "off" and a named model stay
+    // distinct from unset without a third state.
+    it.each([
+      [undefined, ""],
+      ["", ""],
+      ["off", "off"],
+      ["provider/model", "provider/model"],
+    ])("projects the wire vision model %j as %j", (visionModel, projected) => {
+      const t = thread([], {
+        evener: evenerThread({ visionModel }),
+      });
+      expect(projectThread(t).visionModel).toBe(projected);
+    });
 
-    it("projects usage from EvenerThread", () => {
+    it("projects usage and cost from EvenerThread", () => {
       const t = thread([], {
         evener: evenerThread({
           usage: { inputTokens: 100, outputTokens: 200, totalTokens: 300 },
           cost: "0.05",
-          contextUsed: 5000,
-          contextWindow: 200000,
-          contextRemaining: 195000,
-          contextPressure: 0.025,
         }),
       });
       const c = projectThread(t);
       expect(c.usage).toEqual({
         inputTokens: 100,
         outputTokens: 200,
-        cacheReadTokens: undefined,
         totalTokens: 300,
-        cost: "0.05",
-        contextUsed: 5000,
-        contextWindow: 200000,
-        contextRemaining: 195000,
-        contextPressure: 0.025,
       });
+      expect(c.cost).toBe("0.05");
+    });
+
+    // No token data is null, never a zero-valued object: EvenerThread.Usage
+    // uses nil for "no token data", and cost is unknown (not "$0.00").
+    it("projects absent usage and cost as null", () => {
+      const c = projectThread(thread([]));
+      expect(c.usage).toBeNull();
+      expect(c.cost).toBeNull();
     });
 
     it("projects reasoning effort and levels", () => {
@@ -1468,31 +1452,41 @@ describe("projectThread", () => {
       const c = projectThread(t);
       expect(c.reasoningEffort).toBe("high");
       expect(c.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
-      expect(c.visionModel).toBeUndefined();
+      expect(c.visionModel).toBe("");
       expect(c.supportsReasoning).toBe(true);
+    });
+
+    it("projects an absent reasoning profile as no levels and no support", () => {
+      const c = projectThread(thread([]));
+      expect(c.reasoningEffort).toBeUndefined();
+      expect(c.reasoningEffortLevels).toEqual([]);
+      expect(c.supportsReasoning).toBe(false);
     });
   });
 
   describe("profile / session identity", () => {
-    it("carries thread id, sessionId, name, preview, modelProvider, status", () => {
+    it("carries thread id, name, modelProvider and the whole status", () => {
       const t = thread(
         [turn("t1", [item({ id: "u1", type: "userMessage", text: "hi" })])],
         {
           id: "thread-42",
-          sessionId: "sess-9",
           name: "My session",
-          preview: "hi",
           modelProvider: "openai",
           status: { type: "running", activeFlags: ["generating"] },
         },
       );
       const c = projectThread(t);
-      expect(c.id).toBe("thread-42");
-      expect(c.sessionId).toBe("sess-9");
+      expect(c.threadId).toBe("thread-42");
       expect(c.name).toBe("My session");
-      expect(c.preview).toBe("hi");
       expect(c.modelProvider).toBe("openai");
-      expect(c.status).toBe("running");
+      expect(c.status).toEqual({
+        type: "running",
+        activeFlags: ["generating"],
+      });
+    });
+
+    it("projects an unnamed thread's name as the empty string", () => {
+      expect(projectThread(thread([])).name).toBe("");
     });
 
     it("projects items across multiple turns in order", () => {

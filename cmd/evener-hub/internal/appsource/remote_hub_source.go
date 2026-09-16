@@ -2,10 +2,12 @@ package appsource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -30,11 +32,11 @@ type RemoteHubClientFunc func(ctx context.Context, host string) (*appwire.Client
 // controller's "<host>:<thread>" namespace and the remote hub's
 // "local:<thread>" namespace.
 //
-// This is components 05a-05c: the read path (ID, ListThreads, ReadThread,
+// This is components 05a-05d: the read path (ID, ListThreads, ReadThread,
 // ListTurns, ListModels, and the item-mode paging seam) plus registration,
-// subscription fan-out, and the turn/thread lifecycle mutations (including
-// mutation-unknown mapping) that live in remote_hub_mutations.go. The
-// capability probe (05d) is still staged.
+// subscription fan-out, the turn/thread lifecycle mutations (including
+// mutation-unknown mapping) that live in remote_hub_mutations.go, and the
+// capability probe in remote_hub_probe.go.
 //
 // The client is never cached here: every request re-invokes the connector, so a
 // component-04 reconnect that swaps the underlying client is picked up
@@ -70,6 +72,36 @@ type RemoteHubSource struct {
 	// predecessor's unsubscribe for the same remote thread. subMu is always
 	// taken inside it, never the other way around.
 	remoteMu sync.Mutex
+	// facts is the optional component-04 preflight seam for the facts AppWire
+	// cannot report on an already-initialized connection (see HostFacts).
+	facts HostFactsFunc
+
+	// online is the optional availability signal: it reports whether the
+	// remote host currently has a live channel. nil means online (the pre-06
+	// default); the setter is called once at registration.
+	online func() bool
+
+	// hostSubs are host-level (non-thread) notification consumers registered
+	// through SubscribeHostNotifications, e.g. the component-07a remote-admin
+	// fan-out. They are fed by the same drainLoop that routes thread
+	// notifications, never by a second reader of Client.Notifications().
+	hostSubs map[*remoteHubHostSubscription]struct{}
+	// hostFilter is the optional publish-time method filter for host-level
+	// consumers: nil accepts every notification. It exists so a consumer can
+	// exclude the noisy notification families it does not own before they reach
+	// its bounded buffer. Guarded by subMu; installed once before serving.
+	hostFilter func(method string) bool
+	// hostNotifyDropped counts host-level notifications dropped because a
+	// consumer's buffer was full. Host fan-out is deliberately non-blocking so a
+	// stalled consumer cannot stall thread routing; this counter makes the
+	// tradeoff observable.
+	hostNotifyDropped atomic.Int64
+
+	// probeMu guards probe (the last successful probe, cached against the
+	// client it ran on) and facts (the preflight seam HostCapabilities reads
+	// while probing). It is never held across a wire call.
+	probeMu sync.Mutex
+	probe   *remoteHubProbe
 }
 
 var (
@@ -80,11 +112,12 @@ var (
 
 func NewRemoteHubSource(id string, roots []string, client RemoteHubClientFunc) *RemoteHubSource {
 	return &RemoteHubSource{
-		id:     id,
-		roots:  roots,
-		client: client,
-		subs:   map[string]*remoteHubSubscription{},
-		drains: map[*appwire.Client]struct{}{},
+		id:       id,
+		roots:    roots,
+		client:   client,
+		subs:     map[string]*remoteHubSubscription{},
+		drains:   map[*appwire.Client]struct{}{},
+		hostSubs: map[*remoteHubHostSubscription]struct{}{},
 	}
 }
 
@@ -105,6 +138,44 @@ func (s *RemoteHubSource) ID() string { return s.id }
 // already enriched its own replies.
 func (s *RemoteHubSource) EnrichThreadFileBackedImages() bool { return false }
 
+// SetHostFacts installs the component-04 preflight facts seam used by the
+// capability probe. It is optional and expected to be called once at
+// registration before the source serves. With no facts seam a probe leaves
+// ProtocolVersion, HubVersion, OS, Arch, and Features zero-valued.
+//
+// The write is guarded by probeMu, the same lock HostCapabilities reads the
+// seam under, so a caller that installs facts while a probe is in flight does
+// not race the read.
+func (s *RemoteHubSource) SetHostFacts(fn HostFactsFunc) {
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+	s.facts = fn
+}
+
+// SetHostOnline installs the availability signal: it reports whether the
+// source's remote host currently has a live channel. It is optional and
+// expected to be called once at registration before the source serves. With
+// no signal installed the source reports online (the pre-06 default).
+func (s *RemoteHubSource) SetHostOnline(fn func() bool) { s.online = fn }
+
+// SetHostNotificationFilter installs the optional publish-time method filter
+// for host-level notification consumers: only methods it accepts are published
+// to them (nil accepts every notification). It is expected to be called once at
+// registration before the source serves, like SetHostFacts and SetHostOnline.
+func (s *RemoteHubSource) SetHostNotificationFilter(fn func(method string) bool) {
+	s.subMu.Lock()
+	s.hostFilter = fn
+	s.subMu.Unlock()
+}
+
+// Online reports whether this source can currently serve requests.
+func (s *RemoteHubSource) Online() bool {
+	if s.online == nil {
+		return true
+	}
+	return s.online()
+}
+
 // call forwards one request over the current remote client and translates any
 // refs in the response back into the controller namespace.
 //
@@ -122,6 +193,17 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 			return cerr
 		}
 		return s.mapConnectError(err)
+	}
+	return s.callOn(ctx, client, method, params, out)
+}
+
+// callOn forwards one request on an already-resolved client and translates any
+// refs in the response. The capability probe uses it so every wire call runs on
+// the exact client its cache was keyed against, not on whatever client the
+// connector returns between calls.
+func (s *RemoteHubSource) callOn(ctx context.Context, client *appwire.Client, method string, params any, out any) error {
+	if err := ctx.Err(); err != nil {
+		return s.mapCallError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {
 		if cerr := ctx.Err(); cerr != nil {
@@ -178,6 +260,24 @@ func (s *RemoteHubSource) mapConnectError(err error) error {
 // transportUnavailable maps a non-wire transport failure. Caller cancellation
 // stays raw; every transport-shaped failure names the host so the fleet view
 // and the auto-resume gate can attribute it.
+//
+// A write-side connection failure counts as transport loss, which is what makes
+// io.ErrClosedPipe, os.ErrClosed, net.ErrClosed, and appwire.ErrStreamClosed
+// listed here (round eight). The send path reports them when the stream's write
+// side is already gone — a partial write onto a connection the peer has torn
+// down, or the first write after this end closed it — and they are deliberately
+// not distinguishable from the read-side failures around it: like io.EOF or
+// EPIPE they say the connection failed mid-call, not that the request was never
+// sent. All four shapes are needed because each layer reports its own: a pipe
+// gives io.ErrClosedPipe, the SSH stdio path's closed descriptor gives
+// os.ErrClosed ("file already closed", often wrapped in an *fs.PathError), a
+// closed network connection gives net.ErrClosed, and the stream transport's
+// closed or poisoned state gives appwire.ErrStreamClosed, which is the shape a
+// host channel's teardown produces on the next write. For a forwarded read that
+// is SessionUnavailable either way, and for a forwarded mutation
+// remoteHubAdminMutationCallError re-labels exactly this unavailability to
+// outcome-unknown/blocked, so a closed write cannot escape as a raw error a
+// caller might blind-retry.
 func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if err == nil {
 		return nil
@@ -205,6 +305,10 @@ func (s *RemoteHubSource) transportUnavailable(err error) error {
 	if errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, appwire.ErrStreamClosed) ||
+		errors.Is(err, os.ErrClosed) ||
+		errors.Is(err, net.ErrClosed) ||
 		errors.Is(err, io.EOF) ||
 		errors.Is(err, io.ErrUnexpectedEOF) ||
 		errors.Is(err, context.DeadlineExceeded) {
@@ -229,6 +333,13 @@ func remoteHubTransportText(lower string) bool {
 		strings.Contains(lower, "connection refused"),
 		strings.Contains(lower, "connection reset"),
 		strings.Contains(lower, "broken pipe"),
+		strings.Contains(lower, "closed pipe"),
+		// os.ErrClosed's text: the descriptor this end writes to is gone, the
+		// same class of failure as net.ErrClosed's "use of closed network
+		// connection" below. It matters on the WireError path, where the
+		// failure arrives as the peer's message and errors.Is has nothing to
+		// match against.
+		strings.Contains(lower, "file already closed"),
 		strings.Contains(lower, "use of closed network connection"),
 		strings.Contains(lower, "i/o timeout"):
 		return true
@@ -1299,4 +1410,346 @@ func (s *RemoteHubSource) mintRemoteItemIdentity(key string) appitempaging.Curso
 		Incarnation:       fmt.Sprintf("remote-hub-incarnation-%d", remoteHubItemIncarnationSequence.Add(1)),
 		ProjectionVersion: remoteHubItemCursorProjectionVersion,
 	}
+}
+
+// AdminCall forwards one hub-scoped admin RPC to this remote host's hub over
+// the shared per-host client and returns that method's own result verbatim
+// (component 07a). It translates nothing: the caller has already decided the
+// method is one the proxy may forward, and the answer is the remote hub's
+// answer, not a re-shaped one.
+//
+// The client is resolved per call, so a component-04 reconnect that swaps the
+// underlying client is picked up automatically. Errors are mapped exactly as on
+// the other forwarding paths: an application-level WireError keeps its semantic
+// code and message (a launch credential-env refusal or an auth Codex/gcp-adc
+// refusal reaches the browser unchanged), while a transport-level failure
+// (dial, EOF, reset, timeout) becomes SessionUnavailable so the browser sees
+// CodeUnavailable/auto-resume rather than an InternalError, and so it matches
+// the pre-call offline refusal. A caller can still tell the two apart: a remote
+// refusal keeps its own code, a dead channel is SessionUnavailable.
+//
+// This mapping is right for the read-only methods on the proxy's allow-list.
+// A forwarded method that mutates the host uses AdminMutationCall instead,
+// whose lost-response mapping reports the mutation outcome as unknown.
+func (s *RemoteHubSource) AdminCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		return s.mapCallError(err)
+	}
+	client, err := s.client(ctx, s.id)
+	if err != nil {
+		// Acquiring the client dials/attaches the remote host, so a failure here
+		// means no request crossed the wire: it must stay a SessionUnavailable
+		// the auto-resume gate can act on. This is the connect mapper, matching
+		// call and mutationCall — the attach handshake is bounded by its own
+		// initTimeout child context, so a timed-out attach arrives as an
+		// ErrSSHStart chain that also satisfies errors.Is(err,
+		// context.DeadlineExceeded), which mapCallError would hand back raw
+		// while mapConnectError still classifies it (and keeps a genuine caller
+		// cancellation raw).
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		return s.mapConnectError(err)
+	}
+	if err := client.Request(ctx, method, params, out); err != nil {
+		return s.mapCallError(err)
+	}
+	return nil
+}
+
+// AdminMutationCall forwards one allow-listed hub-scoped admin RPC that is a
+// non-idempotent mutation (component 07a). It is AdminCall's mutating twin: the
+// request/response path is identical, and the remote's own result or semantic
+// refusal is returned verbatim, but a lost response is mapped differently.
+//
+// A transport failure on a forwarded mutation cannot be told apart from one
+// where the remote applied the change and only the answer was lost. Reporting
+// that as SessionUnavailable — AdminCall's mapping, correct for the read-only
+// methods — would invite exactly the blind retry that is unsafe for an
+// operation with no idempotency key: a retried instance/create makes a second
+// instance and a retried plugin/install a second install. The loss therefore
+// becomes ErrorMutationOutcomeUnknown with RetryDispositionBlocked, so the
+// caller is told the outcome is unknown and is not told to retry automatically.
+//
+// It mirrors mutationCall's remoteHubMutationCallError except for that
+// disposition. A forwarded thread mutation carries a clientMutationId the
+// remote dedups on, so the appwire retry-safe-mutation model can call its
+// transport loss "automatic"; an admin forward carries no such id
+// (HostRequestParams has none) and no admin method dedups, so the same loss is
+// "blocked". A semantic WireError keeps its code and message, exactly as on
+// AdminCall.
+//
+// Only a failure of client.Request is a possible lost response. A failure to
+// acquire the client — the host is offline, the attach is refused, the dial
+// fails — happens before any request frame is sent, so the mutation provably
+// did not reach the host and the outcome is not unknown. That failure maps
+// through mapCallError exactly as on AdminCall (SessionUnavailable for a dead
+// channel), which is a safe retry; reporting it as outcome-unknown/blocked
+// would discourage a retry that cannot double-apply anything.
+//
+// The caller's own context ending while the call is in flight is reported the
+// same blocked way (round seven). The browser disconnecting cancels the RPC
+// handler's context, and appwire.Client reports that identically whether it
+// stopped the frame write (StreamTransport.Send's own ctx check,
+// appwire/stream_transport.go) or the response wait after the frame went out
+// (Client.request's select on ctx.Done(), appwire/client.go). Nothing in the
+// client's API distinguishes those two once the frame has been dispatched, so
+// the post-send reading — the response was lost, the host may have applied the
+// change — is the only safe one: the raw cancellation this used to return reads
+// as "nothing happened, retry", which duplicates a forwarded instance/create or
+// plugin/install whenever the frame did reach the host. The pre-call ctx check
+// inside the call stays, because a context already canceled before the request
+// is handed to the client cannot have sent anything.
+//
+// The client does distinguish one earlier window (round eight): a context that
+// has already ended when the request reaches the point where its frame would be
+// written — typically queued behind another writer on the client's single write
+// slot, since a controller browser can have two admin RPCs in flight on one
+// host at once — comes back as appwire.RequestNotSentError, which proves nothing
+// was transmitted, and since round nine it does so as soon as the context ends
+// rather than waiting for the writer ahead of it. That case maps exactly as the
+// pre-call check above does: a raw caller context error (cancellation or
+// expired deadline — both stay raw, as they do on every other path), and never
+// outcome-unknown, because a mutation that never reached the host cannot have
+// been applied and blocking its retry is simply wrong. Only from dispatch onward
+// does the ambiguous in-flight reading apply.
+func (s *RemoteHubSource) AdminMutationCall(ctx context.Context, method string, params json.RawMessage, out *json.RawMessage) error {
+	if err := ctx.Err(); err != nil {
+		// Provably not sent: this runs before the request is handed to the
+		// client, so the caller's context ending maps exactly as AdminCall maps
+		// it (a raw cancellation or expired deadline), which is a safe retry.
+		return s.mapCallError(err)
+	}
+	client, err := s.client(ctx, s.id)
+	if err != nil {
+		// Acquiring the client dials/attaches the host; a failure here never
+		// reached the wire, so it keeps the same safe-retry mapping as the
+		// pre-call check (a raw caller cancellation or deadline), and an attach
+		// failure classifies through the connect mapper as SessionUnavailable,
+		// exactly as call and mutationCall do.
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		return s.mapConnectError(err)
+	}
+	if err := client.Request(ctx, method, params, out); err != nil {
+		return s.remoteHubAdminMutationCallError(err)
+	}
+	return nil
+}
+
+// remoteHubAdminMutationCallError turns a transport-level loss on a forwarded
+// admin mutation into an explicit outcome-unknown error.
+//
+// Four shapes reach it. A pre-send failure the client proved never reached the
+// transport (appwire.RequestNotSentError — the caller's context ended while the
+// request was queued on the client's write slot) is not a lost response at all,
+// so it maps exactly as the pre-call context check does: a raw cancellation or
+// expired deadline, both safe retries. A context end
+// the in-flight call observed (the caller's cancellation or deadline) is the
+// ambiguous case described on AdminMutationCall: it becomes
+// outcome-unknown/blocked directly, so the classification no longer depends on
+// mapCallError turning a deadline into SessionUnavailable and the
+// unavailability re-label below catching it. A semantic wire refusal keeps its
+// own code and message, exactly as on AdminCall. Everything else is mapped by
+// mapCallError, and only an unavailability it produced is re-labelled: that
+// mapping stays deliberately narrow because mapCallError's other outcomes are
+// not lost responses.
+func (s *RemoteHubSource) remoteHubAdminMutationCallError(err error) error {
+	if _, notSent := errors.AsType[appwire.RequestNotSentError](err); notSent {
+		// Provably not transmitted, so the mutation provably did not happen:
+		// report it the way the pre-call context check reports an unsent call
+		// rather than as an unknown outcome that blocks a safe retry.
+		return s.mapCallError(err)
+	}
+	var refused appwire.WireError
+	if !errors.As(err, &refused) && callerContextEnded(err) {
+		return s.hubAdminMutationOutcomeUnknown(
+			"mutation outcome is unknown after the caller's context ended while the remote hub call was in flight")
+	}
+	mapped := s.mapCallError(err)
+	var wire appwire.WireError
+	if !errors.As(mapped, &wire) {
+		return mapped
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		return mapped
+	}
+	return s.hubAdminMutationOutcomeUnknown("mutation outcome is unknown after remote hub response loss")
+}
+
+// callerContextEnded reports whether err is the caller's own context ending
+// while the call was in flight, as appwire.Client reports it: a bare
+// context.Canceled or context.DeadlineExceeded. A remote's own refusal is a
+// WireError and never reaches this test — remoteHubAdminMutationCallError
+// checks that first — so a semantic error keeps its code and message.
+func callerContextEnded(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// hubAdminMutationOutcomeUnknown builds the blocked-retry error every lost
+// forwarded admin mutation is reported as. The message names the host (the id
+// is the source's identity in the controller's registry) and the reason, so an
+// operator reading a hub log can tell a lost response from a caller-side
+// context end.
+func (s *RemoteHubSource) hubAdminMutationOutcomeUnknown(reason string) appwire.WireError {
+	return appwire.WireError{
+		Code:    appwire.CodeInternalError,
+		Message: reason + ": " + s.id,
+		Data: appwire.ErrorData{
+			EvenerErrorInfo:  appwire.ErrorMutationOutcomeUnknown,
+			MutationOutcome:  appwire.MutationOutcomeUnknown,
+			RetryDisposition: appwire.RetryDispositionBlocked,
+		},
+	}
+}
+
+// remoteHubHostSubscription is one host-level notification consumer, e.g. the
+// component-07a remote-admin fan-out.
+//
+// Two channels with one writer each, mirroring remoteHubSubscription. in is
+// written only by the owning client's drainLoop and is NEVER closed, so a
+// delivery can never panic on a closed channel, and a full buffer drops rather
+// than blocking the shared drain. out is written and closed only by the
+// subscription's pump goroutine, so it is out's sole owner: the pump closes it
+// on context end or on client teardown, which is what makes the returned
+// channel's documented closure contract hold on every path. done is closed by
+// the pump on exit so a publisher can skip a subscription whose pump is already
+// gone. clientDone is closed by the owning client's drainLoop when that client
+// is torn down, which unblocks a pump parked on a full out and ends the
+// subscription even though in is never closed.
+type remoteHubHostSubscription struct {
+	client     *appwire.Client
+	in         chan appwire.Notification
+	out        chan appwire.Notification
+	done       chan struct{}
+	clientDone chan struct{}
+}
+
+// SubscribeHostNotifications registers a consumer for this remote hub's
+// host-level notifications: every notification the shared client delivers —
+// including the config broadcasts (evener/auth/updated and friends) that carry
+// no thread route and are therefore dropped by thread routing.
+//
+// Registration starts the client's drain, so an admin-only consumer with no
+// thread subscribers still receives notifications. The returned channel is
+// closed when ctx ends or when the client's notification stream ends (a
+// reconnect or a dead channel), so the caller re-subscribes and binds whatever
+// client the connector returns next. Each call runs one pump goroutine for
+// exactly the subscription's lifetime; it exits on either termination path, so
+// a reconnecting host never accumulates one goroutine per reconnect.
+//
+// This is deliberately not a second reader of Client.Notifications(): that
+// channel already has exactly one consumer (drainLoop), and a second reader
+// would race it and silently split the stream.
+func (s *RemoteHubSource) SubscribeHostNotifications(ctx context.Context) (<-chan appwire.Notification, error) {
+	client, err := s.client(ctx, s.id)
+	if err != nil {
+		return nil, s.mapCallError(err)
+	}
+	sub := &remoteHubHostSubscription{
+		client:     client,
+		in:         make(chan appwire.Notification, remoteHubSubBuffer),
+		out:        make(chan appwire.Notification, remoteHubSubBuffer),
+		done:       make(chan struct{}),
+		clientDone: make(chan struct{}),
+	}
+	s.subMu.Lock()
+	s.hostSubs[sub] = struct{}{}
+	s.ensureDrainLocked(client)
+	s.subMu.Unlock()
+	go s.pumpHostSubscription(ctx, sub)
+	return sub.out, nil
+}
+
+// HostNotificationSubscribers reports how many host-level notification
+// consumers are attached to this source right now. A subscription is counted
+// from registration until its pump exits — on its own context ending or on the
+// owning client's teardown — so the count is the observable form of "a consumer
+// like the component-07a fan-out is still subscribed". A server-lifecycle test
+// uses it to prove a shut-down hub released its fan-out's subscription, the
+// same way SubscriberCount exposes thread subscriptions on the RPC server.
+func (s *RemoteHubSource) HostNotificationSubscribers() int {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return len(s.hostSubs)
+}
+
+// publishHostNotification delivers one remote notification to every host-level
+// consumer owned by client. It runs on that client's drain goroutine only, so it
+// is the sole writer of each of its subscriptions' in channels; in is never
+// closed, so no send can race a close, and no notification from one client
+// connection can reach a subscription owned by another.
+//
+// Delivery is non-blocking: a full consumer buffer drops the notification and
+// counts it. Unlike thread routing — where a dropped turn/completed is the
+// failure this component exists to prevent — a dropped config broadcast only
+// leaves a settings pane stale until its next refresh, whereas blocking here
+// would stall the shared drain and therefore every thread notification for the
+// same client. A healthy consumer's pump keeps reading in, so drops are the
+// exception rather than the rule.
+//
+// The filter is applied before the matching subscriptions are snapshotted, so a
+// notification the filter rejects — the high-frequency thread/streaming
+// families that are the overwhelming majority of traffic on this goroutine —
+// costs a lock and a method comparison and builds no slice. Only a notification
+// the filter accepts pays for the snapshot.
+func (s *RemoteHubSource) publishHostNotification(client *appwire.Client, notification appwire.Notification) {
+	s.subMu.Lock()
+	filter := s.hostFilter
+	if filter != nil && !filter(notification.Method) {
+		s.subMu.Unlock()
+		return
+	}
+	subs := make([]*remoteHubHostSubscription, 0, len(s.hostSubs))
+	for sub := range s.hostSubs {
+		if sub.client == client {
+			subs = append(subs, sub)
+		}
+	}
+	s.subMu.Unlock()
+	for _, sub := range subs {
+		select {
+		case sub.in <- notification:
+		case <-sub.done:
+		default:
+			s.hostNotifyDropped.Add(1)
+		}
+	}
+}
+
+// pumpHostSubscription owns sub.out and sub.done: it is out's only sender and
+// only closer, so the returned channel closes on every termination path — its
+// context ending or the owning client being torn down. The clientDone case in
+// the out send is what makes the second path reachable even when a full out
+// would otherwise park the pump.
+func (s *RemoteHubSource) pumpHostSubscription(ctx context.Context, sub *remoteHubHostSubscription) {
+	defer close(sub.out)
+	defer close(sub.done)
+	defer s.unregisterHostSubscription(sub)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sub.clientDone:
+			return
+		case notification := <-sub.in:
+			select {
+			case sub.out <- notification:
+			case <-ctx.Done():
+				return
+			case <-sub.clientDone:
+				return
+			}
+		}
+	}
+}
+
+// unregisterHostSubscription removes sub from the routing table. It is safe to
+// call after drainLoop has already removed it on client teardown.
+func (s *RemoteHubSource) unregisterHostSubscription(sub *remoteHubHostSubscription) {
+	s.subMu.Lock()
+	delete(s.hostSubs, sub)
+	s.subMu.Unlock()
 }

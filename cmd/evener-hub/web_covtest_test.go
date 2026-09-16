@@ -10,10 +10,19 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 )
+
+// offlineStubSource is a scripted source with a settable OnlineSource signal.
+type offlineStubSource struct {
+	*scriptedAppSource
+	online bool
+}
+
+func (s *offlineStubSource) Online() bool { return s.online }
 
 // --- web.go: lockForSession ---
 
@@ -458,6 +467,107 @@ func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
 	want := []hubapi.Source{{ID: "local", Label: "this host", Kind: "local", Online: true}}
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("sources = %#v, want %#v", sources, want)
+	}
+}
+
+// TestCovAPITreeSourcesReportsOfflineSource covers apiTreeSources' truthful
+// Online flag for sources that report themselves offline or online. The local
+// entry stays online.
+func TestCovAPITreeSourcesReportsOfflineSource(t *testing.T) {
+	registry := appsource.NewRegistry()
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-online"}, online: true})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	web.sources = registry
+	sources := web.apiTreeSources()
+	want := []hubapi.Source{
+		{ID: "local", Label: "this host", Kind: "local", Online: true},
+		{ID: "remote-offline", Label: "remote-offline", Kind: "appwire", Online: false},
+		{ID: "remote-online", Label: "remote-online", Kind: "appwire", Online: true},
+	}
+	if !reflect.DeepEqual(sources, want) {
+		t.Fatalf("sources = %#v, want %#v", sources, want)
+	}
+}
+
+// TestNavigationSnapshotOfflineSourceRowsNotLive covers the offline exclusion:
+// a cached remote row from an offline source still contributes to metas (so it
+// stays visible), but is not appended to the live input set. A row from an
+// online source stays live.
+func TestNavigationSnapshotOfflineSourceRowsNotLive(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{
+		{ID: "offline-thread", Source: "remote-offline", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+		{ID: "online-thread", Source: "remote-online", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+	})
+	registry := appsource.NewRegistry()
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-online"}, online: true})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", RemoteThreadCache: cache})
+	web.sources = registry
+
+	snapshot := web.navigationSnapshotInputs(t.Context())
+	metaIDs := make(map[string]bool, len(snapshot.metas))
+	for _, meta := range snapshot.metas {
+		metaIDs[meta.ID] = true
+	}
+	if !metaIDs["remote-offline:offline-thread"] {
+		t.Fatalf("offline row missing from metas: %#v", snapshot.metas)
+	}
+	if !metaIDs["remote-online:online-thread"] {
+		t.Fatalf("online row missing from metas: %#v", snapshot.metas)
+	}
+	liveIDs := make(map[string]bool, len(snapshot.live))
+	for _, entry := range snapshot.live {
+		liveIDs[entry.ThreadID] = true
+	}
+	if liveIDs["offline-thread"] {
+		t.Fatalf("offline source row appeared live: %#v", snapshot.live)
+	}
+	if !liveIDs["online-thread"] {
+		t.Fatalf("online source row missing from live: %#v", snapshot.live)
+	}
+}
+
+// A padded source id must resolve to the registered host instead of missing the
+// registry and fail-opening an offline source's rows as live. Source and
+// decision code normalize with TrimSpace, so this lookup must too; an
+// unregistered id still fails open (round-one disposition).
+func TestSourceOnlineTrimsPaddedRegisteredID(t *testing.T) {
+	registry := appsource.NewRegistry()
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
+	web.sources = registry
+
+	if web.sourceOnline("  remote-offline  ") {
+		t.Fatal("padded offline source reported online")
+	}
+	if web.sourceOnline("remote-offline") {
+		t.Fatal("offline source reported online")
+	}
+	if !web.sourceOnline("unregistered") {
+		t.Fatal("unregistered source stopped failing open")
+	}
+}
+
+// The padded spelling survives into the live projection too: a cached row from
+// an offline source must not appear live just because its Source carries
+// surrounding whitespace.
+func TestNavigationSnapshotPaddedOfflineSourceRowNotLive(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	cache.Store([]appwire.Thread{
+		{ID: "padded-thread", Source: " remote-offline ", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive}},
+	})
+	registry := appsource.NewRegistry()
+	registry.Add(&offlineStubSource{scriptedAppSource: &scriptedAppSource{id: "remote-offline"}, online: false})
+	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", RemoteThreadCache: cache})
+	web.sources = registry
+
+	snapshot := web.navigationSnapshotInputs(t.Context())
+	for _, entry := range snapshot.live {
+		if entry.ThreadID == "padded-thread" {
+			t.Fatalf("padded offline source row appeared live: %#v", snapshot.live)
+		}
 	}
 }
 
