@@ -4,16 +4,11 @@
 // revalidator wiring, boot fan-out, invalidation sequencing, expansion and
 // the convergence wait - is the package's; this file owns the browser
 // bindings and the names the app has always imported.
-import {
-  createNavigationStore,
-  NAVIGATION_INVALIDATION_TIMEOUT_MS,
-  type NavigationStoreState,
-} from "@evener/appwire-client/state/navigation";
+import { createNavigationStore, type NavigationStoreState } from "@evener/appwire-client/state/navigation";
 import { useStore } from "zustand";
 import { railExpansionPersistence } from "./persistence";
 
 export type { NavigationStoreState };
-export { NAVIGATION_INVALIDATION_TIMEOUT_MS };
 
 export const navigationStore = createNavigationStore({ persistence: railExpansionPersistence });
 

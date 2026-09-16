@@ -153,6 +153,7 @@ func stableShellNotificationExcerpt(storePath string, record *jobstore.JobRecord
 func collectDelegateReconcileEvidence(stateDir string, requirements delegateReconcileRequirements) (delegateReconcileEvidence, error) {
 	evidence := delegateReconcileEvidence{
 		evidenceVersion: requirements.evidenceVersion,
+		stopRequestSeq:  requirements.stopRequestSeq,
 		shells:          make(map[string]shellRuntimeLossEvidence),
 		attention:       make(map[string][]string),
 	}

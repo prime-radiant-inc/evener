@@ -17,7 +17,13 @@ import { ActivityPanel } from "../../panes/session/chrome/ActivityPanel";
 import { GoalControl } from "../../panes/session/chrome/GoalControl";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
+import { initActivitySummary } from "../../stores/activitySummary";
 import styles from "../gallery-section.module.css";
+
+// This gallery renders ActivityPanel outside the app shell that wires the
+// activity stores, and its continuation control needs that wiring.
+initActivitySummary();
+
 import { ThemeFlip } from "../ThemeFlip";
 
 const FULL_CAPABILITIES: ThreadCapabilities = {

@@ -655,12 +655,17 @@ export function createNavigationStore({ persistence }: NavigationStoreDeps): Nav
     );
   }
   async function hydrateProject(projectKey: string, epoch: number): Promise<void> {
-    if (epoch !== bootEpoch || store.getState().mode !== "v2") return;
+    // One staleness question, asked identically before and after the read: a
+    // reset or a client replacement during the read leaves this hydration
+    // owed to a store that has moved on, and so does navigation dropping out
+    // of v2 under it.
+    const stale = () => epoch !== bootEpoch || store.getState().mode !== "v2";
+    if (stale()) return;
     const resource = await store
       .getState()
       .loadProject(projectKey)
       .catch(() => null);
-    if (!resource?.data || resource.error || epoch !== bootEpoch) return;
+    if (!resource?.data || resource.error || stale()) return;
     const project = resource.data;
     if (!isNavigationProjectResource(project)) {
       store.setState({ protocolError: new Error(`invalid navigation project ${projectKey}`) });

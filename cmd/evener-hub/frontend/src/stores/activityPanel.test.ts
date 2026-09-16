@@ -2,7 +2,7 @@ import type { ActivityTree } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
-import { activitySummaryStore, resetActivitySummaryStoreForTests } from "./activitySummary";
+import { activitySummaryStore, initActivitySummary, resetActivitySummaryStoreForTests } from "./activitySummary";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
 function tree(revision = 1) {
@@ -24,6 +24,7 @@ function tree(revision = 1) {
 describe("activityPanelStore", () => {
   test("a second branch cannot replace the continuation already in flight", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     resetActivitySummaryStoreForTests();
     const root = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", root, { kind: "ready", tree: tree() });
@@ -40,6 +41,7 @@ describe("activityPanelStore", () => {
 
   test("stable delegate selection survives reconnect and keeps the child transcript target", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     const stableTree = (revision: number, status: string): ActivityTree => {
       const running = status === "running";
       return {
@@ -102,6 +104,7 @@ describe("activityPanelStore", () => {
 
   test("retains disclosure selection and expansion across root refresh", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     activityPanelStore.getState().setExpanded("ref_a", ["session:sess_a"]);
@@ -116,6 +119,7 @@ describe("activityPanelStore", () => {
 
   test("derives a continuation summary from the merged entries", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
@@ -130,6 +134,7 @@ describe("activityPanelStore", () => {
 
   test.each([false, true])("continuation summary preserves a newer root request: %s", (newerRoot) => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     resetActivitySummaryStoreForTests();
     const original = tree();
     const summaryRequest = activitySummaryStore.getState().beginRootFetch("ref_a", 1);
@@ -154,6 +159,7 @@ describe("activityPanelStore", () => {
 
   test("retains a continuation failure and clears it after retry", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
@@ -172,6 +178,7 @@ describe("activityPanelStore", () => {
 
   test("preserves selected and expanded descendants through a graft and consumer remount", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     activityPanelStore.getState().setSelected("ref_a", "session:sess_a");
@@ -186,6 +193,7 @@ describe("activityPanelStore", () => {
 
   test("publishes a root completion after the initiating reader is gone", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     const request = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", request, { kind: "ready", tree: tree() });
     expect(activityPanelStore.getState().entries.get("ref_a")?.load.kind).toBe("ready");
@@ -193,6 +201,7 @@ describe("activityPanelStore", () => {
 
   test("toggleFold flips fold membership per session ref", () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     activityPanelStore.getState().toggleFold("ref_a", "session:s1:inactive-fold");
     expect(activityPanelStore.getState().entries.get("ref_a")?.expandedFoldIDs).toEqual(["session:s1:inactive-fold"]);
     activityPanelStore.getState().toggleFold("ref_a", "session:s1:inactive-fold");
@@ -206,6 +215,7 @@ describe("activityPanelStore", () => {
 
   test("a completion from before eviction cannot publish into a recreated entry", async () => {
     resetActivityPanelStoreForTests();
+    initActivitySummary();
     resetWorkspaceStoreForTests();
     const stale = activityPanelStore.getState().beginFetch("ref_a");
     schedulePanelStoreEviction();
