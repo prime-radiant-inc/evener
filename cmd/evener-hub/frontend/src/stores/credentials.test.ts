@@ -1580,6 +1580,49 @@ describe("host-partitioned instance lists (component 07b)", () => {
     expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual([REMOTE_INSTANCE]);
   });
 
+  // The release above and the read it orphans are ordered rather than racing:
+  // the transition clears the in-flight read's loading flag, the answer that
+  // read was waiting for cannot commit (it belongs to the client that is gone),
+  // and the read every consumer issues next - the pane's provider setup re-runs
+  // on the connection change, and this is that read - is the one that lands. The
+  // ordering that would hurt is the orphaned answer arriving LAST: it must still
+  // be refused rather than overwriting the newer listing or leaving the
+  // partition claiming a load is in flight.
+  test("a released host read cannot outlive the transition that replaced it", async () => {
+    const fake = connectFakeClient();
+    let finishReleased!: (value: HostForwardedResult) => void;
+    fake.on(
+      "evener/host/request",
+      () =>
+        new Promise<HostForwardedResult>((resolve) => {
+          finishReleased = resolve;
+        }),
+    );
+    const released = fetchHost("buildbox");
+    await Promise.resolve();
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(true);
+
+    fake.emitStateChange("reconnecting");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
+
+    // The connection comes back: the transport refuses a call while it is
+    // reconnecting, so the read every consumer issues next happens here.
+    fake.emitReady();
+    const afterReconnect: InstanceListResponse = {
+      instances: [{ ...REMOTE_INSTANCE, name: "after-reconnect" }],
+      availableProviders: [],
+    };
+    fake.on("evener/host/request", () => afterReconnect as unknown as HostForwardedResult);
+    await fetchHost("buildbox");
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterReconnect.instances);
+
+    finishReleased(REMOTE_LIST as unknown as HostForwardedResult);
+    await released;
+
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").instances).toEqual(afterReconnect.instances);
+    expect(hostPartition(hostInstancesStore.getState(), "buildbox").loading).toBe(false);
+  });
+
   // The generation above orders reads across a CONNECTION transition, never
   // between two reads of the SAME host: both overlapping fetchHost calls capture
   // one generation, so the older answer can commit over the newer partition.

@@ -7570,6 +7570,51 @@ test("a remote host's catalog never sweeps the controller's saved model defaults
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
 });
 
+// The same rule in the state an unsettled manifest produces: the settled list
+// is withheld, so hostChoice is a provisional "local" while the draft still
+// names its host - and every catalog this pane reads, the sweep's included, is
+// issued against the DRAFT'S host (round nine's `submittedSource = source`).
+// The controller's stored defaults must survive it exactly as they survive a
+// settled remote target: the sweep's authority is the machine the form is
+// reading, never the withheld fallback.
+test("a revalidating manifest does not hand the controller's catalog the sweep", async () => {
+  const cwd = "/tmp/remote-sweep-revalidate";
+  window.history.pushState({}, "", `/new?dir=${cwd}`);
+  const savedBlob = JSON.stringify({ harness: "evener", model: "openai/gpt-5" });
+  localStorage.setItem(`evener-hub.spawn-defaults.${cwd}`, savedBlob);
+  localStorage.setItem("evener-hub.spawn-defaults.global.model", "openai/gpt-5");
+  seedSources(REMOTE_SOURCES, { loading: true, stale: true });
+  // The host's catalog offers the openai provider but not the saved model, so a
+  // sweep running against it would delete both stored values.
+  const fake = readyClient((f) =>
+    answerRemoteHost(f, {
+      overrides: { "model/list": { data: [{ provider: "openai", model: "gpt-4o", displayName: "openai/gpt-4o" }] } },
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory(cwd);
+  setDraftField(draft, "source", "buildbox");
+  renderSpawn(fake);
+  await settled();
+
+  // The pane's catalog is the host's: the routed model/list answers for it, and
+  // the controller's own list is never asked at all.
+  await waitFor(() =>
+    expect(
+      fake.calls.filter(
+        (call) =>
+          call.method === "evener/host/request" &&
+          (call.params as HostRequestParams).method === "model/list" &&
+          (call.params as HostRequestParams).host === "buildbox",
+      ).length,
+    ).toBeGreaterThan(0),
+  );
+  expect(modelListRequests(fake)).toHaveLength(0);
+  // So the stored layer is exactly as it was stored.
+  expect(localStorage.getItem(`evener-hub.spawn-defaults.${cwd}`)).toBe(savedBlob);
+  expect(localStorage.getItem("evener-hub.spawn-defaults.global.model")).toBe("openai/gpt-5");
+});
+
 // A host change drops the previous host's harness/schema catalogs: they describe
 // the machine that answered, and a failed load for the new host must show an
 // empty catalog rather than the previous host's, which the user could otherwise
@@ -7739,6 +7784,67 @@ test("the draft's host wrapped config notification reloads the catalog while the
   );
 
   await waitFor(() => expect(catalogLoads({ cwd })).toBeGreaterThan(before));
+});
+
+// The other half of the same question, in the state a SETTLED manifest produces
+// when the draft's host is not launchable (offline here; a host removed from
+// the list is the same). hostChoice falls back to "local" and the write-back
+// puts that in the draft, so the machine this pane reads - and the machine it
+// would launch on - is the controller. The wrapper from the host it no longer
+// reads must therefore not move its catalog: the filter is the host that was
+// actually asked, which is what lets the pane recover when the host it DOES
+// read changes (the revalidation test above).
+test("a wrapper from a draft host the offline fallback replaced does not reload the catalog", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/tmp/host-offline-notify");
+  setDraftField(draft, "source", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/tmp/host-offline-notify");
+  renderSpawn(fake);
+  await settled();
+
+  // The offline fallback is written into the draft (round nine), so the pane's
+  // own reads are controller-scoped from here on.
+  await waitFor(() => expect(draft.fields.getState().source).toBe("local"));
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  // Hydration: the controller's catalog has answered for the SETTLED scope (the
+  // scoped load the fallback's write-back triggers). Everything before it is
+  // the mount's own churn, and every consumer after it is a cache hit.
+  const scopedCatalogLoads = () =>
+    fake.calls.filter(
+      (call) => call.method === "model/list" && (call.params as { cwd?: string }).cwd === "/tmp/host-offline-notify",
+    ).length;
+  await waitFor(() => expect(scopedCatalogLoads()).toBeGreaterThan(0));
+
+  const hostLoadsFor = (host: string) =>
+    fake.calls.filter(
+      (call) =>
+        call.method === "evener/host/request" &&
+        (call.params as HostRequestParams).host === host &&
+        (call.params as HostRequestParams).method === "model/list",
+    ).length;
+  const before = { controller: modelListRequests(fake).length, replacedHost: hostLoadsFor("buildbox") };
+  act(() =>
+    fake.emitNotification({
+      method: "evener/host/notification",
+      params: { host: "buildbox", method: "evener/auth/updated", params: {} },
+    }),
+  );
+  // Nothing to await: the claim is that nothing happens. The window is a
+  // tripwire past the pane's 250ms catalog debounce (a generation bump re-runs
+  // the catalog effect and issues a request), not the mechanism.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  });
+
+  // Neither the replaced host's scope nor the controller's catalog moved: the
+  // wrapper describes a machine this pane is not reading.
+  expect(hostLoadsFor("buildbox")).toBe(before.replacedHost);
+  expect(modelListRequests(fake).length).toBe(before.controller);
 });
 
 // The provider editor (ConnectProviderDialog) is controller-scoped: it reads and
