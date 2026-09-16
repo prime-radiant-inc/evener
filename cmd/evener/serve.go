@@ -951,12 +951,36 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		if params.Identity.Generation == "" || params.Identity.Generation != rendezvous.OwnershipFingerprint(entry) {
 			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
 		}
+		// claim_attempted marks the instant between the pre-claim identity check
+		// and the admission fence: the caller's generation has been accepted but
+		// TryClaim has not run. It is an observability beat outside every lock
+		// (retirementObserve is nil in production) so a test can interleave a
+		// thread/clear into exactly the window this closure must still defend.
+		retirementObserve("claim_attempted", getSession().ID())
 		claim, snap, err := retirement.TryClaim(true)
 		if err != nil {
 			return appwire.DaemonRetireResponse{}, err
 		}
 		if claim == nil {
 			return appwire.DaemonRetireResponse{Accepted: false, Lifecycle: server.DaemonLifecycleFromSnapshot(snap)}, nil
+		}
+		// The pre-claim check above and TryClaim are not atomic: a thread/clear
+		// can run to completion between them. It holds its own admission lease
+		// (so TryClaim declines while it is in flight), rewrites rendezvous
+		// ownership to the replacement, swaps the session and re-roots the
+		// controller, then releases. The claim TryClaim just took is therefore
+		// against whatever root is current now, not necessarily the generation
+		// the caller proved. Re-read ownership and abort the uncommitted claim if
+		// it moved, so a stale request can never retire its replacement. The
+		// abort is essential: a claim left in "preparing" wedges the daemon.
+		recheck, ok := rvRegistration.Entry()
+		if !ok {
+			_ = retirement.Abort(claim, "prepare_failed")
+			return appwire.DaemonRetireResponse{}, appwire.Unavailable("daemon rendezvous not registered")
+		}
+		if params.Identity.Generation != rendezvous.OwnershipFingerprint(recheck) {
+			_ = retirement.Abort(claim, "prepare_failed")
+			return appwire.DaemonRetireResponse{}, appwire.Conflict("daemon identity does not match current ownership")
 		}
 		if err := consumeRetirementClaim(ctx, claim); err != nil {
 			// A post-commit teardown failure means the retirement already

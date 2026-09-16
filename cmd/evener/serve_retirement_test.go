@@ -1162,3 +1162,127 @@ func TestServeManualRetirementResponsePrecedesExitCancellation(t *testing.T) {
 		t.Fatalf("released events = %d, want exactly 1 (single exit owner)", n)
 	}
 }
+
+// TestServeRetirementClaimRevalidatesOwnershipAfterClear proves the retirement
+// claim revalidates rendezvous ownership AFTER it is taken. A thread/clear can
+// run entirely inside the window between the pre-claim identity check and
+// retirement.TryClaim: the clear rewrites the rendezvous ownership to the
+// replacement session — changing the ownership fingerprint — and re-roots the
+// controller, so the claim TryClaim then takes owns the REPLACEMENT. Without a
+// post-claim revalidation the stale request retires that replacement under the
+// caller's pre-clear generation.
+//
+// The interleaving is deterministic, not pre-seeded: the manual retire is parked
+// at the claim_attempted beat (after its pre-claim check accepted the pre-clear
+// generation, before TryClaim), a REAL thread/clear is then run to completion,
+// and only then is the retire released. With the revalidation the claim aborts
+// before the consumer and the replacement stays resident; without it the
+// replacement is retired and serve exits.
+func TestServeRetirementClaimRevalidatesOwnershipAfterClear(t *testing.T) {
+	deps, state, args := newClearServeDeps(t)
+	clk := newServeRetireClock()
+	deps.retirementClock = clk
+	rec := newRetireEventRecorder()
+	deps.retirementObserve = rec.observe
+
+	done := runRetireServe(t, deps, state, args)
+	rec.await(t, "root_published")
+	runDir := serveArgValue(args, "--run-dir")
+	entry := awaitRendezvousEntry(t, runDir)
+	awaitRetirementSettled(t, state.srv)
+
+	releaseRetire := rec.gateAt("claim_attempted")
+	defer releaseRetire()
+
+	type retireOutcome struct {
+		resp appwire.DaemonRetireResponse
+		err  error
+	}
+	outcomeCh := make(chan retireOutcome, 1)
+	go func() {
+		out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonRetire,
+			appwire.DaemonRetireParams{Identity: daemonIdentityFor(entry)})
+		outcome := retireOutcome{err: err}
+		if resp, ok := out.(appwire.DaemonRetireResponse); ok {
+			outcome.resp = resp
+		}
+		outcomeCh <- outcome
+	}()
+	// The retire has passed its pre-claim check against the pre-clear entry and
+	// is parked immediately before TryClaim.
+	rec.await(t, "claim_attempted")
+
+	// A real thread/clear runs to completion in that window: it rewrites the
+	// rendezvous ownership to the replacement and re-roots the controller.
+	oldSessionID := entry.SessionID
+	clearErr := make(chan error, 1)
+	go func() {
+		clearErr <- state.srv.clear(context.Background(), appwire.ThreadClearParams{
+			Ref:                "local:" + oldSessionID,
+			ClientMutationID:   "clear-during-retire-claim",
+			ExpectedInstanceID: oldSessionID,
+		})
+	}()
+	if err := <-clearErr; err != nil {
+		t.Fatalf("thread/clear during the retire claim window: %v", err)
+	}
+	replacement := state.session(1)
+	if replacement == nil {
+		t.Fatal("thread/clear did not build a replacement session")
+	}
+	// Ownership now names the replacement. Wait for its startup leases to
+	// settle so the claim below is decided on ownership, not on a busy fence.
+	awaitRetirementSettled(t, state.srv)
+
+	releaseRetire()
+
+	outcome := <-outcomeCh
+	var wire appwire.WireError
+	if !errors.As(outcome.err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("retire whose generation went stale during its claim = %v (resp %+v), want CodeConflict", outcome.err, outcome.resp)
+	}
+	if n := rec.count("claim_consumed"); n != 0 {
+		t.Fatalf("stale retire consumed %d claims, want 0 (the claim must abort before the consumer)", n)
+	}
+	if n := rec.count("released"); n != 0 {
+		t.Fatalf("released events = %d, want 0 (no retirement may run)", n)
+	}
+
+	// The replacement is untouched and the daemon keeps serving it.
+	select {
+	case err := <-done:
+		t.Fatalf("serve exited (%v): the stale request retired its replacement", err)
+	default:
+	}
+	if got := state.srv.GetStatus().SessionID; got != replacement.ID() {
+		t.Fatalf("live session = %q, want the replacement %q", got, replacement.ID())
+	}
+	out, err := dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonStatus, appwire.DaemonStatusParams{})
+	if err != nil {
+		t.Fatalf("status after the refused retire: %v", err)
+	}
+	status, ok := out.(appwire.DaemonStatusResponse)
+	if !ok {
+		t.Fatalf("status result = %T, want DaemonStatusResponse", out)
+	}
+	if status.Lifecycle.Phase != "resident" {
+		t.Fatalf("lifecycle phase = %q, want resident: the stale claim must abort, not wedge", status.Lifecycle.Phase)
+	}
+
+	// The aborted claim left the daemon fully resident: a current generation
+	// still retires it cleanly.
+	current := awaitRendezvousEntry(t, runDir)
+	out, err = dispatchDaemonRPC(state.srv, appwire.MethodEvenerDaemonRetire,
+		appwire.DaemonRetireParams{Identity: daemonIdentityFor(current)})
+	if err != nil {
+		t.Fatalf("retire with the current generation after the refusal: %v", err)
+	}
+	resp, ok := out.(appwire.DaemonRetireResponse)
+	if !ok || !resp.Accepted {
+		t.Fatalf("retire with the current generation = %+v, want accepted", out)
+	}
+	rec.await(t, "released")
+	if err := <-done; err != nil {
+		t.Fatalf("serve exit after the accepted retirement: %v", err)
+	}
+}
