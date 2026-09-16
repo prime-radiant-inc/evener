@@ -163,18 +163,16 @@ const landedMutations = new Map<string, number>();
 // sheets may refresh different instances concurrently, and starting B's
 // refresh must not cancel A's.
 const refreshVersions = new Map<string, number>();
-// refreshGeneration counts landed refresh merges: a read older than one
-// (it started before the refresh landed) merges around the refreshed rows
-// instead of replacing them.
-let refreshGeneration = 0;
 // listEstablished turns true on the first applied full-list answer: it
 // distinguishes "the store never held this name" from "a remove dropped it".
 let listEstablished = false;
 // refreshedInstances counts, per instance, the refreshes that landed since the
-// last full-list apply: a read older than one merges around those rows instead
-// of replacing them, and a COUNT rather than a name is what tells a second
-// refresh apart from the first — a write in flight has to see that the row was
-// refreshed again, not merely that it was refreshed at some point.
+// last full-list apply: a read that started before one merges around those rows
+// instead of replacing them, and a COUNT rather than a name is what tells a
+// refresh that landed during the read apart from one that landed before it —
+// only the former is newer than the read's own answer. Reads and writes
+// snapshot these counts when they start and compare them when their answer
+// lands.
 const refreshedInstances = new Map<string, number>();
 
 // noteLandedMutation records one landed write against the instance it touched.
@@ -251,15 +249,15 @@ async function readListing(self: boolean): Promise<boolean> {
   const client = requireClient();
   requestedList = true;
   const version = ++requestVersion;
-  const generation = refreshGeneration;
   const writes = new Map(landedMutations);
+  const refreshes = new Map(refreshedInstances);
   const mark = () => (self ? { selfRefresh: ++selfRefreshCounter } : {});
   credentialsStore.setState({ loading: true, error: null, ...mark() });
   try {
     const resp = await client.request("evener/instance/list", {});
     if (version !== requestVersion || connectionStore.getState().client !== client) return false;
     listEstablished = true;
-    const instances = mergeNewerRows(resp.instances, generation, writes);
+    const instances = mergeNewerRows(resp.instances, writes, refreshes);
     credentialsStore.setState({ ...listState({ ...resp, instances }), loading: false, ...mark() });
     return true;
   } catch (err) {
@@ -286,15 +284,27 @@ interface MutationReconcile {
 // write's own answer installed, and this answer predates it). A row the
 // answer omits is a row the server no longer has, so nothing is staged back
 // in.
-function mergeNewerRows(instances: InstanceEntry[], generation: number, writes: Map<string, number>): InstanceEntry[] {
+function mergeNewerRows(
+  instances: InstanceEntry[],
+  writes: Map<string, number>,
+  refreshes: Map<string, number>,
+): InstanceEntry[] {
   const written = new Set(
     [...landedMutations].filter(([name, count]) => (writes.get(name) ?? 0) !== count).map(([name]) => name),
   );
-  if (generation === refreshGeneration && written.size === 0) {
+  // Only the instances a refresh landed for DURING this read: one that landed
+  // before the read began describes a row this answer already postdates, so
+  // preserving the store's older copy of it would overwrite the newer one. The
+  // per-instance count is what tells the two apart - the same comparison the
+  // write path makes.
+  const refreshed = new Set(
+    [...refreshedInstances].filter(([name, count]) => (refreshes.get(name) ?? 0) !== count).map(([name]) => name),
+  );
+  if (refreshed.size === 0 && written.size === 0) {
     refreshedInstances.clear();
     return instances;
   }
-  const merged = keepWrittenRows(keepRefreshedModels(instances, new Set(refreshedInstances.keys())), written);
+  const merged = keepWrittenRows(keepRefreshedModels(instances, refreshed), written);
   refreshedInstances.clear();
   return merged;
 }
@@ -458,7 +468,6 @@ export const credentialsStore = createStore<CredentialsStoreState>(() => ({
         const merged = current.map((entry) => (entry.name === name ? { ...entry, models: row.models } : entry));
         if (!known) merged.push({ ...row });
         refreshedInstances.set(name, (refreshedInstances.get(name) ?? 0) + 1);
-        refreshGeneration++;
         credentialsStore.setState({ instances: merged, error: null });
       }
     } finally {
@@ -904,7 +913,6 @@ connectionStore.subscribe((state, previous) => {
     refreshedInstances.clear();
     refreshVersions.clear();
     landedMutations.clear();
-    refreshGeneration = 0;
     // The listing bookkeeping goes with them: a refresh landing before this
     // client's first read is a fresh row to stage, not a removal to preserve.
     listEstablished = false;
@@ -939,7 +947,6 @@ export function resetCredentialsStoreForTests(): void {
   refreshedInstances.clear();
   refreshVersions.clear();
   landedMutations.clear();
-  refreshGeneration = 0;
   listEstablished = false;
   unsubscribeNotifications?.();
   unsubscribeNotifications = undefined;

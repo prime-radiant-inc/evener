@@ -122,10 +122,12 @@ func NewProviderRegistry(load RegistryLoader) *ProviderRegistry {
 func (h *ProviderRegistry) Reload() error {
 	h.reloadMu.Lock()
 	defer h.reloadMu.Unlock()
-	// current is written only here, and reloads are serialized: this read is
-	// stable for the whole call, so the fingerprints below describe the very
+	// The snapshot this reload starts from, read under the holder's own lock:
+	// writers of current hold both locks, so reloadMu alone would exclude them
+	// today - but then this read's safety would rest on every future commit
+	// path remembering reloadMu. The fingerprints below describe the very
 	// snapshots this reload commits.
-	old := h.current
+	old := h.snapshot()
 	oldIDs := instanceIdentities(old)
 	r, _, err := h.load()
 	if err != nil {
@@ -448,11 +450,16 @@ func (h *ProviderRegistry) Generation() uint64 {
 	return h.generation
 }
 
-// Get returns the registry currently held; nil before the first successful load.
-func (h *ProviderRegistry) Get() *registry.Registry {
+// snapshot returns the registry currently held, under the holder's own lock.
+func (h *ProviderRegistry) snapshot() *registry.Registry {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.current
+}
+
+// Get returns the registry currently held; nil before the first successful load.
+func (h *ProviderRegistry) Get() *registry.Registry {
+	return h.snapshot()
 }
 
 // BeginLiveFetchReg atomically pairs instance's fetch token with the
