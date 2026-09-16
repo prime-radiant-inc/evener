@@ -1820,6 +1820,32 @@ describe("ConversationStore", () => {
       ).toEqual(["call-first", "call-later"]);
     });
 
+    // Decision 2: an item's own status is the per-item liveness signal, as the
+    // web reads it (TurnBlock.tsx's isItemLive, `item.status === "inProgress"`).
+    // A settled assistant message stops saying "Writing…" the moment it
+    // settles, whether or not the turn it sits in is still running.
+    it("stops streaming when the assistant item settles inside a running turn", async () => {
+      const { store } = await openRunningTurn([
+        agentMessageItem("item-a", "partial", "inProgress"),
+      ]);
+      expect(rowById(store, "item-a")).toMatchObject({ streaming: true });
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: agentMessageItem("item-a", "all of it", "completed"),
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation?.activeTurnId).toBe("t1");
+      expect(rowById(store, "item-a")).toMatchObject({
+        kind: "assistant",
+        markdown: "all of it",
+        streaming: false,
+      });
+    });
+
     it("marks an assistant item as not streaming on item/completed", async () => {
       const { store } = await openRunningTurn([
         agentMessageItem("item-a", "streaming text", "inProgress"),
@@ -6590,6 +6616,41 @@ describe("ConversationStore", () => {
   // position and keep ownership; otherwise accept authoritative and clear that
   // ID's ownership. If authoritative omits ID, append only genuinely live-owned
   // current item; page IDs still prepend; unowned old drops.
+  // The cut, measured end to end: the transport delivers one wire message per
+  // onmessage event (client.ts:524, handleMessage :760-792), the service does
+  // only synchronous work after awaiting the response (services/conversation.ts
+  // :635-663), and this store does only synchronous work between that await
+  // and its set — so a frame the transport delivers after the response reaches
+  // applyNotification only after the snapshot has committed, and applies on
+  // top of it.
+  describe("a frame delivered after the read response applies on top of it", () => {
+    it("keeps a live frame that lands right after the snapshot commits", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t0", status: "inProgress", items: [agentMessageItem("X", "from the read", "inProgress")] })],
+          evener: evenerWith({ activeTurnId: "t0" }),
+        }),
+      );
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The rehydrate's own commit, then the very next thing that happens: a
+      // delta for the item the snapshot just carried.
+      await store.getState().rehydrate(service, sink);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: { threadId: "thread-1", ref: "ref-1", turnId: "t0", itemId: "X", delta: " and more" },
+      } as AnyNotification);
+
+      expect(rowById(store, "X")).toMatchObject({
+        kind: "assistant",
+        markdown: "from the read and more",
+      });
+    });
+  });
+
   // A read response is ordered at the snapshot cut: every frame this store
   // folded before the response is already reflected in the snapshot that
   // arrives. So the snapshot decides every row it names AND every row it

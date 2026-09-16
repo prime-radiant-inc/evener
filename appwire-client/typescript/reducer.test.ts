@@ -2472,6 +2472,36 @@ test("mergeOlderItemPage merges shared turns and transcript items in position or
   expect(result.olderCursor).toBe("cursor_0");
 });
 
+// The wire's own shape makes the empty list unreachable today —
+// appwire.ThreadItem.Images and OutputImages are `json:",omitempty"`
+// (appwire/types.go:1443,1450) and the producers send nil — so an empty list
+// arrives only once the hub emits one explicitly (a Go change of its own).
+// The client half is pinned here: an explicit [] on the wire is honoured as a
+// value, not folded to "absent".
+test("an explicitly empty images list on the wire is honoured as a value", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "completed",
+            images: [],
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([]);
+});
+
 // An explicitly empty image list is a value the model must be able to hold:
 // "this item has no images any more" is what a live item/completed says when
 // the user's images were removed, and an older page replaying the same item
@@ -4453,12 +4483,18 @@ test("warning with bare-string `warning` and no top-level message renders that s
   expect(item.text).toBe("provider hiccup");
 });
 
+// A warning frame that carries no message anywhere leaves the item's text
+// empty. The frame itself is not a message: it is the routing envelope
+// (threadId, ref) plus whatever shape the producer sent, and a renderer that
+// prints the item's text would show the reader that envelope — which is also
+// what makes the web's "a warning with no title, text or hint renders
+// nothing" case unreachable (WarningItem.test.tsx).
 test.each([
   ["blank string warning", ""],
   ["object warning with no message field", { source: "x" }],
   ["object warning with non-string message", { message: 42 }],
   ["number warning", 42],
-])("warning with no message anywhere (%s) falls back to the raw frame", (_case, warning) => {
+])("warning with no message anywhere (%s) leaves the text empty", (_case, warning) => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -4473,7 +4509,7 @@ test.each([
   model = applyNotification(model, { method: "warning", params }, 1002);
 
   const item = itemAt(turnAt(model, 0), 0);
-  expect(item.text).toBe(JSON.stringify(params));
+  expect(item.text).toBe("");
 });
 
 // Settled tool calls keep their arguments: the live projector's

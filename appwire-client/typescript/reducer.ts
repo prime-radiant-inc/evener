@@ -1619,7 +1619,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: warningMessage(params) || JSON.stringify(params),
+            // No message means no message: the params are the routing
+            // envelope, not prose, and a renderer that prints the item's text
+            // would show the reader that envelope. An empty text is what the
+            // web's warning row treats as "nothing to show".
+            text: warningMessage(params),
             status: "completed",
             warning: { source: params.source, title: params.title, hint: params.hint },
           };
