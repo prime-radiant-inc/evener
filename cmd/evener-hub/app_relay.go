@@ -1517,6 +1517,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			existing := relayedThreads[relayKey]
 			if existing == nil {
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
+				// Label every attach this relay issues with its own key. A source
+				// that keys its subscriptions by remote thread identity uses it to
+				// tell this relay re-attaching from a second relay that reached the
+				// same thread by another address (appsource.WithRelayIdentity).
+				relayCtx = appsource.WithRelayIdentity(relayCtx, relayKey)
 				relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay}
 				relayedThreads[relayKey] = relayHandle
 				stopInitialCancellation = context.AfterFunc(ctx, func() {
