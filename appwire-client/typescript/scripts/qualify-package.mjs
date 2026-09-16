@@ -162,6 +162,8 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
+assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
 assert.equal(client.humanizeState("awaiting", true), "question waiting");
 assert.equal(client.humanizeState("awaiting", false), "your move");
 assert.equal(client.humanizeState("notLoaded", false), "idle");

@@ -439,6 +439,7 @@ before acting on it.
 | A3d | #1209 | **merged** as `f39aa2c83` — `./docContent` published; `readDocFile` took a required `DocFetch`, since widened by C24 to a `DocPort`; browser adapter at `panes/doc/browserDocPort.ts` (named `browserDocFetch.ts` until C24 renamed it), wired at `DocPane.tsx:49` |
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
 | B1b | #1190, #1197 | **done** — landed inside B1 (`27503c07d`); both issues closed |
+| C20 | #1403 | open — `settings/marketplacesPlugins/sourceLabel.ts` → `marketplaceSourceLabel.ts`, renamed because the root already exports watchRows' `sourceLabel`; three web importers and `mobile-native/src/MarketplaceBrowser.tsx` (which had reached into the web tree by relative path) now import it by package name |
 
 **What A3 and A4 actually block — corrected, because three relocations have now
 landed without them.** A3 moves the package directory and A4 rewrites imports to
