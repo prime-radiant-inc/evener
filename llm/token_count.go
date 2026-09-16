@@ -293,6 +293,12 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 			}
 			return anthropicThinkingChars(t)
 		case registry.ProtocolOpenAIResponses:
+			if p.Kind != ContentThinking {
+				// responses/input.go emits the reasoning item for a ContentThinking
+				// part alone, so a redacted part rides as nothing -- blob, id and
+				// summaries included.
+				return 0
+			}
 			return responsesReasoningChars(t)
 		case registry.ProtocolOpenAIChat:
 			return chatReasoningChars(target, p)

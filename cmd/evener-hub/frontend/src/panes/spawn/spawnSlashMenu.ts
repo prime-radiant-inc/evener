@@ -1,4 +1,4 @@
-import { effortLabel, effortOptionLevels, friendlyErrorMessage } from "@evener/appwire-client";
+import { effortLabel, effortOptionLevels, findBuiltinArgument, friendlyErrorMessage } from "@evener/appwire-client";
 import { blocked, isBlocked } from "../../shell/palette/blocked";
 import {
   buildCommands,
@@ -8,7 +8,6 @@ import {
 } from "../../shell/palette/commands";
 import type { ToastKind } from "../../widgets";
 import type { ModelCatalog } from "../../widgets/modelCatalog";
-import { findBuiltinArgument } from "../session/composer/builtinInvocation";
 
 // The pre-session allowlist: the only session builtins the spawn box offers.
 // Turn-gated commands (steer, queue, interrupt, drain-as-steer) have no turn
