@@ -449,12 +449,253 @@ func TestRemoteHubSourceHostCapabilitiesInstanceErrorStillAborts(t *testing.T) {
 	}
 }
 
+// richCapabilityReply scripts the five probe methods with a value in every
+// mutable field the capability snapshot carries, so an isolation case can
+// overwrite one through a returned snapshot and tell a deep copy from a shared
+// slice, map, or pointer.
+func richCapabilityReply() func(method string, params json.RawMessage) scriptedReply {
+	return func(method string, _ json.RawMessage) scriptedReply {
+		switch method {
+		case appwire.MethodEvenerLaunchGetLayer:
+			return scriptedReply{result: launchLayerFixture()}
+		case appwire.MethodModelList:
+			return scriptedReply{result: appwire.ModelListResponse{
+				Data:        []appwire.ModelDescriptor{modelDescriptorFixture("gpt-x")},
+				Diagnostics: []appwire.ModelListDiagnostic{{Message: "model-diag"}},
+				Recent:      []appwire.ModelDescriptor{modelDescriptorFixture("gpt-recent")},
+			}}
+		case appwire.MethodEvenerPluginList:
+			return scriptedReply{result: appwire.PluginListResponse{Plugins: []appwire.PluginEntry{{Plugin: "pl"}}}}
+		case appwire.MethodEvenerAuthList:
+			return scriptedReply{result: appwire.AuthListResponse{Providers: []appwire.AuthStatusResponse{{Provider: "auth", AuthModes: []string{"auth-mode"}}}}}
+		case appwire.MethodEvenerInstanceList:
+			return scriptedReply{result: instanceListFixture()}
+		default:
+			return scriptedReply{result: appwire.EmptyResponse{}}
+		}
+	}
+}
+
+// launchLayerFixture populates every mutable field of the launch layer: the
+// pointer-valued scalars, the string slices, the pointer-to-slice, the MCP
+// specs with their own args, and the env map.
+func launchLayerFixture() appwire.LaunchConfigLayer {
+	enabledPlugins := []string{"enabled-plugin"}
+	return appwire.LaunchConfigLayer{
+		Schema:                     new(1),
+		Model:                      "gpt-x",
+		SandboxNet:                 new(false),
+		MaxRounds:                  new(2),
+		MaxSubagentDepth:           new(3),
+		MaxConcurrentDelegateTurns: new(4),
+		MaxRetainedTerminal:        new(5),
+		NoProjectPrompts:           new(false),
+		NonInteractive:             new(false),
+		AppReplaySize:              new(6),
+		Verbose:                    new(false),
+		APILog:                     new(false),
+		SkillsDirs:                 []string{"skills-dir"},
+		PluginDirs:                 []string{"plugin-dir"},
+		MCPConfigs:                 []string{"mcp-config"},
+		SystemPromptAppend:         []string{"append"},
+		ModelFallbacks:             []string{"fallback"},
+		EnabledPlugins:             &enabledPlugins,
+		MCPs:                       []appwire.MCPServerSpec{{Name: "mcp", Command: "mcp-cmd", Args: []string{"mcp-arg"}}},
+		Env:                        map[string]string{"launch-env": "launch-env-value"},
+	}
+}
+
+// modelDescriptorFixture populates every mutable field of one model row.
+func modelDescriptorFixture(model string) appwire.ModelDescriptor {
+	return appwire.ModelDescriptor{
+		Provider:              "p",
+		Model:                 model,
+		DisplayName:           "display",
+		ContextWindow:         new(1000),
+		MaxInputTokens:        new(2000),
+		SupportsTools:         new(true),
+		SupportsVision:        new(false),
+		MaxOutputTokens:       new(3000),
+		SupportsWebSearch:     new(true),
+		SupportsReasoning:     new(true),
+		InputCostPerMillion:   new(1.5),
+		OutputCostPerMillion:  new(2.5),
+		ReasoningEffortLevels: []string{"low", "high"},
+		Warnings:              []string{"model-warning"},
+	}
+}
+
+// instanceListFixture populates every mutable field of the instance list: both
+// instance entries with their vars, auth modes, warnings, and model inventory,
+// and a provider descriptor whose Setup carries another entry's worth of the
+// same fields.
+func instanceListFixture() appwire.InstanceListResponse {
+	return appwire.InstanceListResponse{
+		Instances: []appwire.InstanceEntry{{
+			Name:      "inst",
+			Vars:      map[string]string{"inst-var": "inst-value"},
+			AuthModes: []string{"inst-mode"},
+			Warnings:  []string{"inst-warning"},
+			Models:    []appwire.InstanceModelEntry{{ID: "inst-model", Disabled: true}},
+		}},
+		AvailableProviders: []appwire.ProviderDescriptor{{
+			ID:        "prov",
+			VarsEnv:   []string{"prov-env"},
+			Vars:      map[string]string{"prov-var": "prov-value"},
+			APIKeyEnv: []string{"prov-api-key"},
+			AuthModes: []string{"prov-mode"},
+			Setup: &appwire.InstanceEntry{
+				Name:      "prov-setup",
+				Vars:      map[string]string{"setup-var": "setup-value"},
+				AuthModes: []string{"setup-mode"},
+				Warnings:  []string{"setup-warning"},
+				Models:    []appwire.InstanceModelEntry{{ID: "setup-model"}},
+			},
+		}},
+		Diagnostics: []string{"inst-diag"},
+	}
+}
+
+// capabilityIsolationCase mutates one mutable field of a returned
+// HostCapabilities through that returned value, then reads the same field back
+// from a later cache-hit snapshot. want is what the fixture put there, so a
+// case fails when the mutation reached the cached probe and passes its fixture
+// guard when the probe never populated the field at all.
+type capabilityIsolationCase struct {
+	name   string
+	mutate func(caps *HostCapabilities)
+	read   func(caps HostCapabilities) any
+	want   any
+}
+
+// scalarIsolationCase covers a scalar or pointer-scalar field: sel returns the
+// address of the field, so the case can overwrite it and read it back.
+func scalarIsolationCase[T comparable](name string, sel func(*HostCapabilities) *T, want, mutated T) capabilityIsolationCase {
+	return capabilityIsolationCase{
+		name:   name,
+		mutate: func(caps *HostCapabilities) { *sel(caps) = mutated },
+		read:   func(caps HostCapabilities) any { return *sel(&caps) },
+		want:   want,
+	}
+}
+
+// sliceIsolationCase covers a slice field through its first element: the clone
+// must duplicate the backing array, not just the slice header.
+func sliceIsolationCase[T any](name string, sel func(*HostCapabilities) []T, want, mutated T) capabilityIsolationCase {
+	return capabilityIsolationCase{
+		name:   name,
+		mutate: func(caps *HostCapabilities) { sel(caps)[0] = mutated },
+		read:   func(caps HostCapabilities) any { return sel(&caps)[0] },
+		want:   want,
+	}
+}
+
+// mapIsolationCase covers a map field through one key.
+func mapIsolationCase[K comparable, V any](name string, sel func(*HostCapabilities) map[K]V, key K, want, mutated V) capabilityIsolationCase {
+	return capabilityIsolationCase{
+		name:   name,
+		mutate: func(caps *HostCapabilities) { sel(caps)[key] = mutated },
+		read:   func(caps HostCapabilities) any { return sel(&caps)[key] },
+		want:   want,
+	}
+}
+
+// capabilityIsolationCases names every mutable field the snapshot's clone must
+// duplicate. A field the clone forgets shows up as that case's mutation
+// reaching the cache-hit snapshot.
+func capabilityIsolationCases() []capabilityIsolationCase {
+	return []capabilityIsolationCase{
+		// The launch layer's pointer-valued scalars.
+		scalarIsolationCase("LaunchGlobal.Schema", func(c *HostCapabilities) *int { return c.LaunchGlobal.Schema }, 1, 99),
+		scalarIsolationCase("LaunchGlobal.SandboxNet", func(c *HostCapabilities) *bool { return c.LaunchGlobal.SandboxNet }, false, true),
+		scalarIsolationCase("LaunchGlobal.MaxRounds", func(c *HostCapabilities) *int { return c.LaunchGlobal.MaxRounds }, 2, 99),
+		scalarIsolationCase("LaunchGlobal.MaxSubagentDepth", func(c *HostCapabilities) *int { return c.LaunchGlobal.MaxSubagentDepth }, 3, 99),
+		scalarIsolationCase("LaunchGlobal.MaxConcurrentDelegateTurns", func(c *HostCapabilities) *int { return c.LaunchGlobal.MaxConcurrentDelegateTurns }, 4, 99),
+		scalarIsolationCase("LaunchGlobal.MaxRetainedTerminal", func(c *HostCapabilities) *int { return c.LaunchGlobal.MaxRetainedTerminal }, 5, 99),
+		scalarIsolationCase("LaunchGlobal.NoProjectPrompts", func(c *HostCapabilities) *bool { return c.LaunchGlobal.NoProjectPrompts }, false, true),
+		scalarIsolationCase("LaunchGlobal.NonInteractive", func(c *HostCapabilities) *bool { return c.LaunchGlobal.NonInteractive }, false, true),
+		scalarIsolationCase("LaunchGlobal.AppReplaySize", func(c *HostCapabilities) *int { return c.LaunchGlobal.AppReplaySize }, 6, 99),
+		scalarIsolationCase("LaunchGlobal.Verbose", func(c *HostCapabilities) *bool { return c.LaunchGlobal.Verbose }, false, true),
+		scalarIsolationCase("LaunchGlobal.APILog", func(c *HostCapabilities) *bool { return c.LaunchGlobal.APILog }, false, true),
+		// ...and its slices, pointer to slice, MCP args, and env map.
+		sliceIsolationCase("LaunchGlobal.SkillsDirs", func(c *HostCapabilities) []string { return c.LaunchGlobal.SkillsDirs }, "skills-dir", "mutated"),
+		sliceIsolationCase("LaunchGlobal.PluginDirs", func(c *HostCapabilities) []string { return c.LaunchGlobal.PluginDirs }, "plugin-dir", "mutated"),
+		sliceIsolationCase("LaunchGlobal.MCPConfigs", func(c *HostCapabilities) []string { return c.LaunchGlobal.MCPConfigs }, "mcp-config", "mutated"),
+		sliceIsolationCase("LaunchGlobal.SystemPromptAppend", func(c *HostCapabilities) []string { return c.LaunchGlobal.SystemPromptAppend }, "append", "mutated"),
+		sliceIsolationCase("LaunchGlobal.ModelFallbacks", func(c *HostCapabilities) []string { return c.LaunchGlobal.ModelFallbacks }, "fallback", "mutated"),
+		sliceIsolationCase("LaunchGlobal.EnabledPlugins", func(c *HostCapabilities) []string { return *c.LaunchGlobal.EnabledPlugins }, "enabled-plugin", "mutated"),
+		scalarIsolationCase("LaunchGlobal.MCPs[0].Command", func(c *HostCapabilities) *string { return &c.LaunchGlobal.MCPs[0].Command }, "mcp-cmd", "mutated"),
+		sliceIsolationCase("LaunchGlobal.MCPs[0].Args", func(c *HostCapabilities) []string { return c.LaunchGlobal.MCPs[0].Args }, "mcp-arg", "mutated"),
+		mapIsolationCase("LaunchGlobal.Env", func(c *HostCapabilities) map[string]string { return c.LaunchGlobal.Env }, "launch-env", "launch-env-value", "mutated"),
+		// The model list: rows, their pointer scalars and slices, diagnostics,
+		// and the recent group.
+		scalarIsolationCase("Models.Data[0].Model", func(c *HostCapabilities) *string { return &c.Models.Data[0].Model }, "gpt-x", "mutated"),
+		scalarIsolationCase("Models.Data[0].ContextWindow", func(c *HostCapabilities) *int { return c.Models.Data[0].ContextWindow }, 1000, 99),
+		scalarIsolationCase("Models.Data[0].MaxInputTokens", func(c *HostCapabilities) *int { return c.Models.Data[0].MaxInputTokens }, 2000, 99),
+		scalarIsolationCase("Models.Data[0].SupportsTools", func(c *HostCapabilities) *bool { return c.Models.Data[0].SupportsTools }, true, false),
+		scalarIsolationCase("Models.Data[0].SupportsVision", func(c *HostCapabilities) *bool { return c.Models.Data[0].SupportsVision }, false, true),
+		scalarIsolationCase("Models.Data[0].MaxOutputTokens", func(c *HostCapabilities) *int { return c.Models.Data[0].MaxOutputTokens }, 3000, 99),
+		scalarIsolationCase("Models.Data[0].SupportsWebSearch", func(c *HostCapabilities) *bool { return c.Models.Data[0].SupportsWebSearch }, true, false),
+		scalarIsolationCase("Models.Data[0].SupportsReasoning", func(c *HostCapabilities) *bool { return c.Models.Data[0].SupportsReasoning }, true, false),
+		scalarIsolationCase("Models.Data[0].InputCostPerMillion", func(c *HostCapabilities) *float64 { return c.Models.Data[0].InputCostPerMillion }, 1.5, 99.0),
+		scalarIsolationCase("Models.Data[0].OutputCostPerMillion", func(c *HostCapabilities) *float64 { return c.Models.Data[0].OutputCostPerMillion }, 2.5, 99.0),
+		sliceIsolationCase("Models.Data[0].ReasoningEffortLevels", func(c *HostCapabilities) []string { return c.Models.Data[0].ReasoningEffortLevels }, "low", "mutated"),
+		sliceIsolationCase("Models.Data[0].Warnings", func(c *HostCapabilities) []string { return c.Models.Data[0].Warnings }, "model-warning", "mutated"),
+		scalarIsolationCase("Models.Diagnostics[0].Message", func(c *HostCapabilities) *string { return &c.Models.Diagnostics[0].Message }, "model-diag", "mutated"),
+		scalarIsolationCase("Models.Recent[0].Model", func(c *HostCapabilities) *string { return &c.Models.Recent[0].Model }, "gpt-recent", "mutated"),
+		scalarIsolationCase("Models.Recent[0].ContextWindow", func(c *HostCapabilities) *int { return c.Models.Recent[0].ContextWindow }, 1000, 99),
+		sliceIsolationCase("Models.Recent[0].Warnings", func(c *HostCapabilities) []string { return c.Models.Recent[0].Warnings }, "model-warning", "mutated"),
+		// Plugins, auth, and the constructor's roots.
+		scalarIsolationCase("Plugins.Plugins[0].Plugin", func(c *HostCapabilities) *string { return &c.Plugins.Plugins[0].Plugin }, "pl", "mutated"),
+		sliceIsolationCase("Auth.Providers[0].AuthModes", func(c *HostCapabilities) []string { return c.Auth.Providers[0].AuthModes }, "auth-mode", "mutated"),
+		scalarIsolationCase("Roots[0]", func(c *HostCapabilities) *string { return &c.Roots[0] }, "/root/a", "/mutated"),
+		// The instance list: both entry kinds, every field they own, and the
+		// Setup entry a provider descriptor points at.
+		scalarIsolationCase("Instances.Instances[0].Name", func(c *HostCapabilities) *string { return &c.Instances.Instances[0].Name }, "inst", "mutated"),
+		mapIsolationCase("Instances.Instances[0].Vars", func(c *HostCapabilities) map[string]string { return c.Instances.Instances[0].Vars }, "inst-var", "inst-value", "mutated"),
+		sliceIsolationCase("Instances.Instances[0].AuthModes", func(c *HostCapabilities) []string { return c.Instances.Instances[0].AuthModes }, "inst-mode", "mutated"),
+		sliceIsolationCase("Instances.Instances[0].Warnings", func(c *HostCapabilities) []string { return c.Instances.Instances[0].Warnings }, "inst-warning", "mutated"),
+		scalarIsolationCase("Instances.Instances[0].Models[0].ID", func(c *HostCapabilities) *string { return &c.Instances.Instances[0].Models[0].ID }, "inst-model", "mutated"),
+		scalarIsolationCase("Instances.AvailableProviders[0].ID", func(c *HostCapabilities) *string { return &c.Instances.AvailableProviders[0].ID }, "prov", "mutated"),
+		sliceIsolationCase("Instances.AvailableProviders[0].VarsEnv", func(c *HostCapabilities) []string { return c.Instances.AvailableProviders[0].VarsEnv }, "prov-env", "mutated"),
+		mapIsolationCase("Instances.AvailableProviders[0].Vars", func(c *HostCapabilities) map[string]string { return c.Instances.AvailableProviders[0].Vars }, "prov-var", "prov-value", "mutated"),
+		sliceIsolationCase("Instances.AvailableProviders[0].APIKeyEnv", func(c *HostCapabilities) []string { return c.Instances.AvailableProviders[0].APIKeyEnv }, "prov-api-key", "mutated"),
+		sliceIsolationCase("Instances.AvailableProviders[0].AuthModes", func(c *HostCapabilities) []string { return c.Instances.AvailableProviders[0].AuthModes }, "prov-mode", "mutated"),
+		mapIsolationCase("Instances.AvailableProviders[0].Setup.Vars", func(c *HostCapabilities) map[string]string {
+			return c.Instances.AvailableProviders[0].Setup.Vars
+		}, "setup-var", "setup-value", "mutated"),
+		sliceIsolationCase("Instances.AvailableProviders[0].Setup.AuthModes", func(c *HostCapabilities) []string {
+			return c.Instances.AvailableProviders[0].Setup.AuthModes
+		}, "setup-mode", "mutated"),
+		sliceIsolationCase("Instances.AvailableProviders[0].Setup.Warnings", func(c *HostCapabilities) []string {
+			return c.Instances.AvailableProviders[0].Setup.Warnings
+		}, "setup-warning", "mutated"),
+		scalarIsolationCase("Instances.AvailableProviders[0].Setup.Models[0].ID", func(c *HostCapabilities) *string {
+			return &c.Instances.AvailableProviders[0].Setup.Models[0].ID
+		}, "setup-model", "mutated"),
+		{
+			// The Setup pointer itself must point at a copy, so writing through
+			// it cannot rewrite the cached entry.
+			name: "Instances.AvailableProviders[0].Setup",
+			mutate: func(c *HostCapabilities) {
+				*c.Instances.AvailableProviders[0].Setup = appwire.InstanceEntry{Name: "mutated"}
+			},
+			read: func(c HostCapabilities) any { return c.Instances.AvailableProviders[0].Setup.Name },
+			want: "prov-setup",
+		},
+		scalarIsolationCase("Instances.Diagnostics[0]", func(c *HostCapabilities) *string { return &c.Instances.Diagnostics[0] }, "inst-diag", "mutated"),
+	}
+}
+
 // TestRemoteHubSourceHostCapabilitiesCacheIsolated pins that the cache hit and
-// the fresh probe hand back slices that do not alias the stored snapshot, so a
+// the fresh probe hand back values that do not alias the stored snapshot, so a
 // caller mutating a returned value cannot corrupt the cached capabilities for
-// every later caller.
+// every later caller. The leading assertions keep the original coarse coverage;
+// capabilityIsolationCases then takes every mutable field of every snapshot
+// type in turn, mutates it through a returned snapshot, and checks the
+// cache-hit snapshot still holds the value the probe read.
 func TestRemoteHubSourceHostCapabilitiesCacheIsolated(t *testing.T) {
-	client, _ := newScriptedClient(t, capabilityReply("gpt-x", "pl"))
+	client, _ := newScriptedClient(t, richCapabilityReply())
 	source := NewRemoteHubSource("host", []string{"/root/a"}, func(context.Context, string) (*appwire.Client, error) {
 		return client, nil
 	})
@@ -483,6 +724,33 @@ func TestRemoteHubSourceHostCapabilitiesCacheIsolated(t *testing.T) {
 	}
 	if !reflect.DeepEqual(second.Roots, []string{"/root/a"}) {
 		t.Fatalf("cached Roots = %v, want [/root/a]: caller mutation reached the cache", second.Roots)
+	}
+
+	for _, tc := range capabilityIsolationCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			// A fresh source per case: one case's mutation cannot mask or fake
+			// another field's failure through a shared cached probe.
+			client, _ := newScriptedClient(t, richCapabilityReply())
+			source := NewRemoteHubSource("host", []string{"/root/a"}, func(context.Context, string) (*appwire.Client, error) {
+				return client, nil
+			})
+			first, err := source.HostCapabilities(t.Context())
+			if err != nil {
+				t.Fatalf("first HostCapabilities: %v", err)
+			}
+			if got := tc.read(first); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("probed %s = %v, want %v: the fixture did not populate the field this case pins", tc.name, got, tc.want)
+			}
+			tc.mutate(&first)
+
+			second, err := source.HostCapabilities(t.Context())
+			if err != nil {
+				t.Fatalf("second HostCapabilities: %v", err)
+			}
+			if got := tc.read(second); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("cached %s = %v, want %v: caller mutation reached the cache", tc.name, got, tc.want)
+			}
+		})
 	}
 }
 

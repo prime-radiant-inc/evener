@@ -156,11 +156,11 @@ func (s *RemoteHubSource) cachedCapabilities(client *appwire.Client) (HostCapabi
 }
 
 // clone returns a deep copy of the snapshot: every slice, map, and pointer
-// scalar a caller could mutate is duplicated, so neither a cache hit nor a
-// freshly published probe shares mutable state with the stored value. Without
-// it a caller editing a returned Models.Data entry, Roots element, or a
-// *LaunchGlobal scalar in place would corrupt the cached probe for every later
-// caller.
+// scalar a caller could mutate is duplicated — down through a provider
+// descriptor's Setup entry — so neither a cache hit nor a freshly published
+// probe shares mutable state with the stored value. Without it a caller editing
+// a returned Models.Data entry, Roots element, or a *LaunchGlobal scalar in
+// place would corrupt the cached probe for every later caller.
 func (c HostCapabilities) clone() HostCapabilities {
 	out := c
 	out.LaunchGlobal = cloneLaunchConfigLayer(c.LaunchGlobal)
@@ -246,19 +246,40 @@ func cloneAuthStatusResponses(in []appwire.AuthStatusResponse) []appwire.AuthSta
 	return out
 }
 
+// cloneInstanceEntry duplicates every mutable field one instance entry owns: its
+// Vars map, AuthModes and Warnings slices, and Models inventory. Both
+// InstanceListResponse.Instances and a provider descriptor's Setup carry an
+// entry, and Setup carries one the caller can write through, so the field list
+// lives here once instead of being repeated per call site with a field left out
+// of one of them.
+//
+// InstanceModelEntry needs no per-row clone: it holds only a string ID and a
+// bool Disabled, so copying the slice is a complete copy of it.
+func cloneInstanceEntry(e appwire.InstanceEntry) appwire.InstanceEntry {
+	out := e
+	out.Vars = maps.Clone(e.Vars)
+	out.AuthModes = slices.Clone(e.AuthModes)
+	out.Warnings = slices.Clone(e.Warnings)
+	out.Models = slices.Clone(e.Models)
+	return out
+}
+
 func cloneInstanceListResponse(in appwire.InstanceListResponse) appwire.InstanceListResponse {
 	out := in
 	out.Instances = slices.Clone(in.Instances)
 	for i := range out.Instances {
-		out.Instances[i].AuthModes = slices.Clone(out.Instances[i].AuthModes)
-		out.Instances[i].Warnings = slices.Clone(out.Instances[i].Warnings)
-		out.Instances[i].Vars = maps.Clone(out.Instances[i].Vars)
+		out.Instances[i] = cloneInstanceEntry(out.Instances[i])
 	}
 	out.AvailableProviders = slices.Clone(in.AvailableProviders)
 	for i := range out.AvailableProviders {
 		out.AvailableProviders[i].VarsEnv = slices.Clone(out.AvailableProviders[i].VarsEnv)
 		out.AvailableProviders[i].Vars = maps.Clone(out.AvailableProviders[i].Vars)
 		out.AvailableProviders[i].APIKeyEnv = slices.Clone(out.AvailableProviders[i].APIKeyEnv)
+		out.AvailableProviders[i].AuthModes = slices.Clone(out.AvailableProviders[i].AuthModes)
+		if setup := out.AvailableProviders[i].Setup; setup != nil {
+			cloned := cloneInstanceEntry(*setup)
+			out.AvailableProviders[i].Setup = &cloned
+		}
 	}
 	out.Diagnostics = slices.Clone(in.Diagnostics)
 	return out
