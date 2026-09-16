@@ -22,6 +22,8 @@ import type { ConversationClientLike } from "../../mobile/src/services/conversat
 import { navigationTree } from "./navigationTree";
 import {
 	createProjectBrowserController,
+	type PageStatus,
+	pageStatus,
 	type ProjectSessionTier,
 } from "./projectBrowser";
 import { Action, Copy, useColors } from "./ui";
@@ -45,9 +47,7 @@ type BrowserRow =
 			key: string;
 			projectKey: string;
 			tier: ProjectSessionTier;
-			loading: boolean;
-			error: string | null;
-			stale: boolean;
+			status: PageStatus;
 	  }
 	| { kind: "empty"; key: string }
 	| { kind: "limited"; key: string };
@@ -138,15 +138,14 @@ export function ProjectSessionsList({
 						depth,
 					});
 				}
-				if (page.loading || page.error || page.stale || page.remaining > 0) {
+				const status = pageStatus(page);
+				if (status) {
 					result.push({
 						kind: "page",
 						key: `page:${project.key}:${tier}`,
 						projectKey: project.key,
 						tier,
-						loading: page.loading,
-						error: page.error,
-						stale: page.stale,
+						status,
 					});
 				}
 			}
@@ -282,9 +281,7 @@ export function ProjectSessionsList({
 						{state.projects.loading && !refreshing ? (
 							<ActivityIndicator accessibilityLabel="Loading more projects" />
 						) : null}
-						{state.projects.stale ? (
-							<Copy muted>Updating…</Copy>
-						) : state.projects.error ? (
+						{state.projects.error ? (
 							<>
 								<Copy muted>Could not load more projects.</Copy>
 								<Action
@@ -296,6 +293,8 @@ export function ProjectSessionsList({
 									Retry
 								</Action>
 							</>
+						) : state.projects.stale ? (
+							<Copy muted>Updating…</Copy>
 						) : null}
 					</View>
 				) : null
@@ -428,11 +427,9 @@ export function ProjectSessionsList({
 				if (item.kind === "page")
 					return (
 						<View style={{ paddingHorizontal: 40, paddingVertical: 8 }}>
-							{item.loading ? (
+							{item.status === "loading" ? (
 								<ActivityIndicator accessibilityLabel="Loading sessions" />
-							) : item.stale ? (
-								<Copy muted>Updating…</Copy>
-							) : item.error ? (
+							) : item.status === "error" ? (
 								<>
 									<Copy muted>Could not load more sessions.</Copy>
 									<Action
@@ -444,6 +441,8 @@ export function ProjectSessionsList({
 										Retry
 									</Action>
 								</>
+							) : item.status === "stale" ? (
+								<Copy muted>Updating…</Copy>
 							) : (
 								<Action
 									tone="quiet"

@@ -12,10 +12,17 @@ export function singleFlight(
 		if (!requested || running || !idle()) return;
 		requested = false;
 		running = true;
-		void run().finally(() => {
+		try {
+			void run().finally(() => {
+				running = false;
+				drain();
+			});
+		} catch (error) {
+			// A run that throws before returning its promise must not leave the
+			// flight marked running, or every later request would be dropped.
 			running = false;
-			drain();
-		});
+			throw error;
+		}
 	};
 	return {
 		drain,

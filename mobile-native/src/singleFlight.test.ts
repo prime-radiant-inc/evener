@@ -37,3 +37,16 @@ it("waits while the owner is busy and runs when drained", () => {
 	flight.drain();
 	expect(runs).toHaveLength(1);
 });
+
+it("recovers from a run that throws synchronously", () => {
+	let calls = 0;
+	const flight = singleFlight(() => {
+		calls++;
+		if (calls === 1) throw new Error("bad run");
+		return Promise.resolve();
+	});
+	expect(() => flight.request()).toThrow("bad run");
+	expect(flight.running).toBe(false);
+	flight.request();
+	expect(calls).toBe(2);
+});

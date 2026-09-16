@@ -38,6 +38,18 @@ export interface ProjectBrowserController {
 }
 
 type Page = NavigationPages<NavigationSessionSummary>;
+export type PageStatus = "loading" | "error" | "stale" | "more";
+/** What a page's boundary row should show. An error keeps its retry even
+ * while the page is stale: a failed automatic re-read leaves both set. */
+export function pageStatus(
+	page: ReturnType<NavigationPages<unknown>["getSnapshot"]>,
+): PageStatus | null {
+	if (page.loading) return "loading";
+	if (page.error) return "error";
+	if (page.stale) return "stale";
+	if (page.remaining > 0) return "more";
+	return null;
+}
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionKey = (row: NavigationSessionSummary) => row.ref;
 
