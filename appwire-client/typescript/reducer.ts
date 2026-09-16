@@ -1199,11 +1199,15 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // The status is authoritative and the transcript's id can be absent
         // while the session is active (a hydrate cut between turns, or the gap
         // after turn/completed at an inline boundary). A failed completion
-        // arriving then is still the session's own failure with no status
-        // frame behind it, so it settles the session idle; a failed completion
-        // for a turn another turn has since superseded (the id names a
-        // different turn) is bookkeeping about the past and leaves the status.
-        // The work-clock anchor goes with the status (the invariant
+        // arriving then is still the session's own failure. Its status frame
+        // follows: the agent's failure exit (agent/session_lifecycle.go
+        // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
+        // "turn_failed", announced as thread/status/changed(idle) with the
+        // capabilities inline, and that frame owns the transition. Settling
+        // idle here is a redundant safety net kept pending #1432. A failed
+        // completion for a turn another turn has since superseded (the id
+        // names a different turn) is bookkeeping about the past and leaves the
+        // status. The work-clock anchor goes with the status (the invariant
         // thread/status/changed keeps below: no live anchor at rest).
         const failedWithoutId =
           params.turn.status === "failed" && model.activeTurnId === undefined && model.status.type === "active";
@@ -1254,12 +1258,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         activeTurnStartedAt: undefined,
         // The status is thread/status/changed's, not this frame's: a completed
         // turn is followed by one (idle at session end, active when the next
-        // turn runs inline), so it is left alone here. The one exception is a
-        // genuine failure: the projector's EventError branch emits this frame
-        // with status "failed" and nothing after it, because the agent returns
-        // the failure before the EventSessionEnd that only the clean completion
-        // and the interrupt reach (kata s8x8). Without this the session reads
-        // active forever, Stop and Steer stay and Send is withheld.
+        // turn runs inline), so it is left alone here. A failed turn gets its
+        // frame too: the agent's failure exit (agent/session_lifecycle.go
+        // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
+        // "turn_failed", announced as thread/status/changed(idle), and that
+        // frame owns the transition. Settling idle here is a redundant safety
+        // net kept pending #1432.
         status: stamp.status === "failed" && model.status.type === "active" ? { type: "idle" } : model.status,
         lastFrameAt: now,
       };

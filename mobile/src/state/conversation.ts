@@ -2831,12 +2831,14 @@ export function createConversationStore() {
             // params.turn.usage is this one turn's totals, not the session's
             // cumulative usage — publish completion state only and leave
             // usage as whatever the last authoritative projection set.
-            // The status stays thread/status/changed's, with one exception:
-            // a genuine failure ends as turn/completed{status: "failed"} with
-            // no status frame behind it (the projector's EventError branch;
-            // the agent returns before EventSessionEnd, kata s8x8), so the
-            // failed active turn settles the session idle here, as the web
-            // reducer does.
+            // The status stays thread/status/changed's. A genuine failure
+            // ends as turn/completed{status: "failed"} and its own status
+            // frame follows: the agent's failure exit
+            // (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0)
+            // emits EventSessionEnd with Reason "turn_failed", announced as
+            // thread/status/changed(idle). Settling the failed active turn
+            // idle here, as the web reducer does, is a redundant safety net
+            // kept pending #1432.
             // The transcript's id is not required: it can be absent while the
             // session is active (a read cut between turns), and the failure is
             // still this session's; a failed completion naming a turn another

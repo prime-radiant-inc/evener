@@ -5876,15 +5876,15 @@ test("a non-active turn/completed settles only the FIRST turn matching a duplica
   spy.mockRestore();
 });
 
-// A genuine turn failure is the one turn end with no status frame behind it:
-// the projector's EventError branch emits turn/completed{status: "failed",
-// error} and nothing else, and the agent's processInputKindWithProvenance
-// returns the failure before the EventSessionEnd that only the clean
-// completion and the interrupt reach (kata s8x8, which the TUI reconciles the
-// same way). Left alone, the model stays active forever: Stop and Steer shown,
-// Send disabled. A completed turn is different: the status frame that follows
-// it (idle at session end, active at an inline boundary) is the authority.
-test("a failed active turn with no status frame behind it settles the session idle", () => {
+// A genuine turn failure ends as turn/completed{status: "failed", error} and
+// is followed by its own status frame: the agent's failure exit
+// (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0) emits
+// EventSessionEnd with Reason "turn_failed", announced as
+// thread/status/changed(idle). The reducer's self-settle on the failed frame
+// is a redundant safety net kept pending #1432; this pins it while it stays.
+// A completed turn is different: the status frame that follows it (idle at
+// session end, active at an inline boundary) is the authority.
+test("a failed active turn settles the session idle ahead of its status frame", () => {
   const initial = hydrateThread(
     {
       thread: testThread({
@@ -5937,8 +5937,9 @@ test("a completed active turn leaves the status to the frame that follows it (in
 
 // The status is authoritative and the transcript's id can be absent while the
 // session is active (a hydrate cut between turns, or the gap after
-// turn/completed at an inline boundary). A failed completion arriving then
-// must still settle the session idle: the projector emits nothing after it.
+// turn/completed at an inline boundary). A failed completion arriving then is
+// still the session's own failure; its status frame follows (kata hen0), and
+// the settle here is the redundant safety net kept pending #1432.
 test("a failed turn/completed with no active turn id still settles an active session idle", () => {
   const initial = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "ref_t", 1000);
   expect(initial.activeTurnId).toBeUndefined();
