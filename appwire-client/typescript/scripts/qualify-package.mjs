@@ -392,6 +392,13 @@ assert.rejects(credentialStore.getState().fetch(), /no client connected/).catch(
   console.error(err);
   process.exit(1);
 });
+Promise.all([
+  assert.rejects(credentialStore.getState().fetch(), /no client connected/),
+  assert.rejects(credentialStore.getState().authStatus("work"), /no client connected/),
+]).catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
 `,
     },
     // The extensions state layer - the marketplaces store, with the plugins
