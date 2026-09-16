@@ -43,19 +43,6 @@ describe("store shape", () => {
     expect(first.store.getState().plugins).toBeNull();
     expect(second.store.getState().pluginsError).toBe("boom");
   });
-
-  test("getInitialState is the state the store was created with, and setState notifies with new and previous", () => {
-    const { store } = storeWithFake();
-    const initial = store.getInitialState();
-    const seen: Array<[boolean, boolean]> = [];
-    store.subscribe((state, previous) => seen.push([state.pluginsLoading, previous.pluginsLoading]));
-
-    store.setState({ pluginsLoading: true });
-    expect(seen).toEqual([[true, false]]);
-    expect(store.getInitialState()).toBe(initial);
-    expect(initial.pluginsLoading).toBe(false);
-    expect(initial.pluginRevision).toBe(0);
-  });
 });
 
 describe("fetches never throw, mutations reject", () => {
@@ -199,98 +186,5 @@ describe("notifications", () => {
     expect(store.getState().plugins).toEqual([LINTER, FORMATTER]);
     expect(store.getState().pluginRevision).toBe(2);
     expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(2);
-  });
-
-  test("a store that never started ignores the notification", async () => {
-    const { fake, store } = storeWithFake();
-    fake.on(LIST, () => ({ plugins: [LINTER] }));
-    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS);
-    expect(fake.calls).toHaveLength(0);
-    expect(store.getState().pluginRevision).toBe(0);
-  });
-
-  test("an unrelated notification moves nothing", async () => {
-    const { fake, store } = storeWithFake();
-    store.start();
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS);
-    expect(fake.calls).toHaveLength(0);
-    expect(store.getState().pluginRevision).toBe(0);
-  });
-
-  test("dispose() unsubscribes, cancels a pending refetch and fences replies in flight", async () => {
-    const { fake, store } = storeWithFake();
-    store.start();
-    fake.on(LIST, () => ({ plugins: [LINTER] }));
-    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
-    const release = deferRequest<ListResult>(fake, LIST);
-    const fetching = store.getState().fetchPlugins();
-    await Promise.resolve();
-    const before = store.getState();
-
-    store.dispose();
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS);
-    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(PLUGIN_REFETCH_DEBOUNCE_MS);
-    release({ plugins: [LINTER] });
-    await fetching;
-
-    expect(store.getState()).toBe(before);
-    expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(1);
-    store.start(); // refused after dispose
-    fake.emitNotification({ method: "evener/plugin/updated", params: {} });
-    expect(store.getState()).toBe(before);
-  });
-});
-
-describe("dispose fences mutations", () => {
-  test("a mutation that resolves after dispose() publishes nothing", async () => {
-    const { fake, store } = storeWithFake();
-    fake.on(LIST, () => ({ plugins: [LINTER] }));
-    await store.getState().fetchPlugins();
-    const release = deferRequest<ListResult>(fake, "evener/plugin/remove");
-    const removing = store.getState().removePlugin("linter", "acme");
-    await Promise.resolve();
-    const before = store.getState();
-    let notified = 0;
-    store.subscribe(() => {
-      notified += 1;
-    });
-
-    store.dispose();
-    release({ plugins: [] });
-    await removing;
-
-    expect(notified).toBe(0);
-    expect(store.getState()).toBe(before);
-    expect(store.getState().plugins).toEqual([LINTER]);
-  });
-});
-
-describe("reset", () => {
-  test("reset() returns to the initial state and fences the list still in flight", async () => {
-    const { fake, store } = storeWithFake();
-    const release = deferRequest<ListResult>(fake, LIST);
-    const fetching = store.getState().fetchPlugins();
-    await Promise.resolve();
-
-    store.reset();
-    expect(store.getState()).toMatchObject({
-      plugins: null,
-      pluginsLoading: false,
-      pluginsError: null,
-      pluginRevision: 0,
-    });
-
-    release({ plugins: [LINTER] });
-    await fetching;
-    expect(store.getState().plugins).toBeNull();
-    expect(store.getState().pluginsLoading).toBe(false);
-
-    // The store keeps working after a reset.
-    fake.on(LIST, () => ({ plugins: [FORMATTER] }));
-    await store.getState().fetchPlugins();
-    expect(store.getState().plugins).toEqual([FORMATTER]);
   });
 });

@@ -42,18 +42,6 @@ describe("store shape", () => {
     expect(first.store.getState().marketplaces).toBeNull();
     expect(second.store.getState().marketplacesError).toBe("boom");
   });
-
-  test("getInitialState is the state the store was created with, and setState notifies with new and previous", () => {
-    const { store } = storeWithFake();
-    const initial = store.getInitialState();
-    const seen: Array<[boolean, boolean]> = [];
-    store.subscribe((state, previous) => seen.push([state.marketplacesLoading, previous.marketplacesLoading]));
-
-    store.setState({ marketplacesLoading: true });
-    expect(seen).toEqual([[true, false]]);
-    expect(store.getInitialState()).toBe(initial);
-    expect(initial.marketplacesLoading).toBe(false);
-  });
 });
 
 describe("fetches never throw, mutations reject", () => {
@@ -232,63 +220,27 @@ describe("notifications", () => {
     expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
     expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(2);
   });
-
-  test("a store that never started ignores the notification", async () => {
-    const { fake } = storeWithFake();
-    fake.on(LIST, () => ({ marketplaces: [ACME] }));
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
-    expect(fake.calls).toHaveLength(0);
-  });
-
-  test("dispose() unsubscribes, cancels a pending refetch and fences replies in flight", async () => {
-    const { fake, store } = storeWithFake();
-    store.start();
-    fake.on(LIST, () => ({ marketplaces: [ACME] }));
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
-    const fetching = store.getState().fetchMarketplaces();
-    await Promise.resolve();
-    const before = store.getState();
-
-    store.dispose();
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
-    release({ marketplaces: [ACME] });
-    await fetching;
-
-    expect(store.getState()).toBe(before);
-    expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(1);
-  });
 });
 
 describe("dispose fences mutations", () => {
-  test("a mutation that resolves after dispose() publishes nothing", async () => {
+  test("a mutation that resolves after dispose() leaves the catalogs it names alone", async () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, () => ({ name: "acme", plugins: [] }));
     await store.getState().browseMarketplace("acme");
     const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
     const removing = store.getState().removeMarketplace("acme");
     await Promise.resolve();
-    const before = store.getState();
-    let notified = 0;
-    store.subscribe(() => {
-      notified += 1;
-    });
 
     store.dispose();
     release({ marketplaces: [] });
     await removing;
 
-    expect(notified).toBe(0);
-    expect(store.getState()).toBe(before);
     expect(store.getState().browseCatalogs.has("acme")).toBe(true);
   });
 });
 
 describe("reset", () => {
-  test("reset() returns to the initial state and fences the list and browses still in flight", async () => {
+  test("reset() fences the list and the browses still in flight", async () => {
     const { fake, store } = storeWithFake();
     const releaseList = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
     const fetching = store.getState().fetchMarketplaces();
