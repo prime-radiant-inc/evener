@@ -85,15 +85,22 @@ it("drops a late response after leaving a hub and detaches its notifications", a
   expect(a.requests).toHaveLength(1);
 });
 it("refetches when auth changes during a read instead of publishing the stale result", async () => {
+  vi.useFakeTimers();
   const { model, io, handlers } = boundary();
   const pending = deferred<InstanceListResponse>();
   let reads = 0;
   io.request = () =>
     ++reads === 1 ? pending.promise : Promise.resolve(listing("updated"));
   model.start();
+  // The change lands while the first read is out; that read's answer is what
+  // the screen would otherwise have shown.
   foreignAuthChange(handlers);
   pending.resolve(listing("stale"));
-  await model.refresh();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(model.getSnapshot().data).toEqual(listing("stale"));
+  // The core's own refetch for the notification, not a caller's refresh, is
+  // what replaces it.
+  await vi.advanceTimersByTimeAsync(300);
   expect(model.getSnapshot().data).toEqual(listing("updated"));
   expect(reads).toBe(2);
   model.dispose();
