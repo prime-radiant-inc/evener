@@ -901,6 +901,15 @@ func AfterResponseWritten(ctx context.Context, fn func()) bool {
 	return true
 }
 
+// RunAfterResponseWritten is AfterResponseWritten for callers that must act
+// exactly once either way: fn runs after the response is written, or right
+// now when there is no transport that will write one.
+func RunAfterResponseWritten(ctx context.Context, fn func()) {
+	if !AfterResponseWritten(ctx, fn) {
+		fn()
+	}
+}
+
 func Subscribe(ctx context.Context, threadID string) bool {
 	conn, ok := ctx.Value(connectionContextKey{}).(*Connection)
 	if !ok || conn == nil {
