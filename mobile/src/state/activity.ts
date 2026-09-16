@@ -1,6 +1,6 @@
 // ActivityStore — Zustand state. Owns the current ActivityView projection
 // (never the raw wire Thread). Exposes ONLY the strict LiveActivityState
-// surface: setLiveView / applyLiveNotification / setLiveCapabilities / reset /
+// surface: setLiveView / applyLiveNotification / reset /
 // generationForTest. No identity-free fail-open API — no setView,
 // applyNotification, or project.
 //

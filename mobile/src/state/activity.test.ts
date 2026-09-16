@@ -1,8 +1,7 @@
 // ActivityStore (Zustand) tests. The store owns the current ActivityView
 // projection (never the raw wire Thread) and exposes ONLY the strict
-// LiveActivityState surface: setLiveView / applyLiveNotification /
-// setLiveCapabilities / reset / generationForTest. No identity-free fail-open
-// API exists.
+// LiveActivityState surface: setLiveView / applyLiveNotification / reset /
+// generationForTest. No identity-free fail-open API exists.
 //
 // Identity safety (CRITICAL): the store tracks an ActivityIdentity
 // { threadId, ref, generation }. setLiveView installs view + identity
@@ -1550,11 +1549,6 @@ describe("ActivityStore", () => {
       expect(store.getState().view?.reasoningEffort).toBe("high");
     });
   });
-
-  // --- I4: setLiveCapabilities narrow strict sink --------------------------
-  // The seam the conversation cap-refresh writer calls independently. Updates
-  // ONLY view.capabilities for the exact current identity + open view; returns
-  // false on stale/missing/wrong identity; preserves tasks/work/usage/reasoning.
 
 
   // --- reset idempotency (I3) ----------------------------------------------

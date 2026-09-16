@@ -1316,7 +1316,7 @@ describe("ConversationService", () => {
     });
   });
 
-  describe("server action-unavailable refreshes capabilities", () => {
+  describe("actionUnavailable is re-thrown", () => {
     it("does NOT auto-refresh on actionUnavailable — store owns the single read", async () => {
       // F2: The service must NOT read capabilities itself on
       // actionUnavailable. Exactly one non-subscribing thread/read occurs,

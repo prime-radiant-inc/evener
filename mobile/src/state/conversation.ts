@@ -669,6 +669,11 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
   ): Promise<void>;
+  // Plan3 host projection: returns a fresh immutable snapshot of the private
+  // truncatedItemIds set. The caller (live-concept projector) uses this to
+  // mark items truncated:true/false without suffix inference. The returned
+  // Set is a copy — mutating it cannot affect the store's internal ownership.
+  getTruncatedItemIds(): ReadonlySet<string>;
   // Task3: store-owned external error publication seam. The dispatcher passes
   // a generic sanitized message plus the exact ref and conversationGeneration
   // it captured when deciding to publish. The store writes the error ONLY when
@@ -681,11 +686,6 @@ export interface LiveConversationState extends ConversationState {
   // service/display/raw IDs are accepted beyond the ref already privately held
   // by the store; the dispatcher is responsible for passing only generic
   // sanitized messages.
-  // Plan3 host projection: returns a fresh immutable snapshot of the private
-  // truncatedItemIds set. The caller (live-concept projector) uses this to
-  // mark items truncated:true/false without suffix inference. The returned
-  // Set is a copy — mutating it cannot affect the store's internal ownership.
-  getTruncatedItemIds(): ReadonlySet<string>;
   publishExternalError(
     message: string,
     expectedRef: string | null,
@@ -1070,7 +1070,7 @@ export function createConversationStore() {
   }
 
   // Verify a captured binding is still current. This applies to scheduled
-  // rereads, capability refreshes, paging, and mutations. If the epoch, ref,
+  // rereads, paging, and mutations. If the epoch, ref,
   // generation, or service/sink object identity changed, suppress the stale
   // request before it can publish into the new binding.
   function isBindingCurrent(binding: RequestBinding): boolean {
@@ -1101,8 +1101,6 @@ export function createConversationStore() {
     });
   }
 
-  // I2: Request a mutation capability refresh through the store-owned drain
-  // scheduler — no direct await bypass. This serializes/coalesces with rereads.
   // Returns the current draft revision — passed to handleMutationError so it
   // can detect post-clear edits (type-then-delete) without exposing the
   // revision in public state.
@@ -1345,7 +1343,7 @@ export function createConversationStore() {
             olderCursor: null,
           });
           // C1: Track the plain-open service as boundService with a null
-          // sink so loadOlder/mutations/cap-refresh validate exact service
+          // sink so loadOlder/mutations validate exact service
           // identity via captureOperationBinding.
           boundService = service as LiveConversationService;
           // Subscribe to notifications for this thread.
@@ -1400,12 +1398,9 @@ export function createConversationStore() {
         let liveHandler: ((notification: AnyNotification) => void) | null =
           null;
         try {
-          // Subscribe before requesting the snapshot so no frame after the
-          // response can be missed. A frame delivered BEFORE the response is
-          // already folded into the snapshot — AppWire orders the thread/read
-          // response at the snapshot cut (see the response-cut note by
-          // applyThreadNotification) — so it is neither replayed nor a reason
-          // to reread; the handler simply is not installed yet.
+          // Subscribe before the read so no frame after its response is missed;
+          // a frame before the response is already in the snapshot (the
+          // response-cut note by applyThreadNotification), so no handler yet.
           unsubscribe = service.subscribeNotifications((notification) => {
             if (!active || gen !== conversationGen) return;
             liveHandler?.(notification);
@@ -1524,24 +1519,14 @@ export function createConversationStore() {
         });
 
         let active = true;
-        let hydrated = false;
-        // A frame delivered before the refresh's response is already folded
-        // into that snapshot (response-cut note by applyThreadNotification);
-        // frames apply once the snapshot has committed.
+        // As in openProjected: no handler until the snapshot has committed (a
+        // frame before the response is already in it — the response-cut note
+        // by applyThreadNotification).
+        let liveHandler: ((notification: AnyNotification) => void) | null =
+          null;
         const unsubscribe = service.subscribeNotifications((notification) => {
-          if (!active || gen !== conversationGen || !hydrated) return;
-          const identity = get().conversation
-            ? {
-                threadId: get().conversation?.threadId ?? "",
-                ref,
-                generation: gen,
-              }
-            : null;
-          if (identity) {
-            const outcome = sink.applyLiveNotification(notification, identity);
-            if (outcome === "rehydrate") requestRehydrate(ref);
-          }
-          get().applyNotification(notification);
+          if (!active || gen !== conversationGen) return;
+          liveHandler?.(notification);
         });
         try {
           await get().rehydrate(service, sink);
@@ -1565,7 +1550,18 @@ export function createConversationStore() {
           }
           suspendedService = null;
           set({ status: "open" });
-          hydrated = true;
+          liveHandler = (notification) => {
+            const conversation = get().conversation;
+            if (conversation) {
+              const outcome = sink.applyLiveNotification(notification, {
+                threadId: conversation.threadId,
+                ref,
+                generation: gen,
+              });
+              if (outcome === "rehydrate") requestRehydrate(ref);
+            }
+            get().applyNotification(notification);
+          };
         } finally {
           if (gen !== conversationGen || get().status === "error") {
             active = false;
@@ -2180,7 +2176,7 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
             service,
             state.ref,
@@ -2258,7 +2254,7 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
             service,
             state.ref,
@@ -2335,7 +2331,7 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
             service,
             state.ref,
@@ -2418,7 +2414,7 @@ export function createConversationStore() {
         } catch (err) {
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
-          await handleMutationError(
+          handleMutationError(
             err,
             service,
             state.ref,
@@ -2933,25 +2929,14 @@ export function createConversationStore() {
   });
 }
 
-// Shared mutation error handler: on actionUnavailable, requests the
-// non-subscribing refreshCapabilities (never open()) through the store-owned
-// drain scheduler (I2 — no direct await bypass) to publish refreshed caps
-// before surfacing the error. On failure, the failed mutation state PERSISTS
-// (not cleared to null). The draft is only restored if the user has not edited
-// since the mutation cleared the draft — detected via draftRevision, so
-// type-then-delete (which produces "" but increments the revision) counts as
-// an edit and prevents restore. F4/F10: uses mutationId (not generation alone)
-// so out-of-order failure cannot overwrite a newer mutation's error.
-// F10: checks active mutation before the capability refresh — a newer
-// mutation may have started.
-// I2: the capability refresh is requested through the store-owned scheduler
-// so it serializes/coalesces with rereads; stale mutation recovery is
-// suppressed by the mutationId guard inside the scheduler effect.
-// Task 2A-Ops-3: after the capability refresh resolves, caps are published
-// only when both generation AND mutation operation ID remain current — a
-// newer same-generation mutation must not receive stale capability
-// publication or stale error state.
-async function handleMutationError(
+// Shared mutation error handler. On failure, the failed mutation state
+// PERSISTS (not cleared to null). The draft is only restored if the user has
+// not edited since the mutation cleared the draft — detected via
+// draftRevision, so type-then-delete (which produces "" but increments the
+// revision) counts as an edit and prevents restore. F4/F10: uses mutationId
+// (not generation alone) so out-of-order failure cannot overwrite a newer
+// mutation's error.
+function handleMutationError(
   err: unknown,
   service: ConversationService,
   ref: string | null,
@@ -2966,7 +2951,7 @@ async function handleMutationError(
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
   requestRehydrate: (ref: string) => void,
-): Promise<void> {
+): void {
   // F10: Check active mutation first. If a newer mutation has already
   // started, this error is stale — bail out.
   if (get().pendingMutation?.mutationId !== mutationId) return;

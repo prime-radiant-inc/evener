@@ -105,6 +105,13 @@ const ALL_TRUE_CAPS: ThreadCapabilities = {
   rename: true,
 };
 
+// The hub refusing a mutation whose capability moved on without a status frame
+// this client saw (F11: a real WireError, matched by identity).
+const refusal = () =>
+  new WireError("action unavailable", -32000, {
+    evenerErrorInfo: "actionUnavailable",
+  }) as Error;
+
 function makeConversation(
   over: Partial<MobileConversation> = {},
 ): MobileConversation {
@@ -710,9 +717,7 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.capabilities.send).toBe(true);
       const readsBefore = service.readProjectionCalls.length;
       // The hub refuses: its capabilities moved on without a status frame we saw.
-      service.sendShouldReject = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      }) as Error;
+      service.sendShouldReject = refusal();
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           evener: { ref: "ref-1", capabilities: { ...ALL_TRUE_CAPS, send: false }, queue: { revision: 0 } },
@@ -1141,7 +1146,7 @@ describe("ConversationStore", () => {
       ctrl.release();
       await ctrl.completed(1);
       await opening;
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      await yieldMicrotask();
       expect(service.readProjectionCalls).toHaveLength(1);
       expect(store.getState().conversation?.status).toEqual({ type: "idle" });
     });
@@ -4183,11 +4188,6 @@ describe("ConversationStore", () => {
   // A refused mutation requests the one coalesced reread; the error never waits
   // on it, and a newer mutation's own outcome is not disturbed by it.
   describe("a refused mutation and the reread scheduler", () => {
-    const refusal = () =>
-      new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      }) as Error;
-
     it("surfaces the error while an earlier reread is still held; the refusal's reread runs after it", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
@@ -4985,76 +4985,6 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Same-key completion waiter invariant (capability keys) ----------------
-  //
-  // The per-key completion promise is only publicly reachable through the
-  // mutation action path (send/steer/queue/interrupt → handleMutationError →
-  // requestCapabilityRefresh → scheduler.request(capKey, ...)). There is no
-  // public API to await the completion of a same-key reread (key "ref-1") —
-  // requestRehydrate returns void (fire-and-forget), not the scheduler
-  // promise. This is an intentional production invariant:
-  //
-  //   requestRehydrate(ref) → scheduler.request(ref, effect) → void
-  //     (return value discarded — no public await of reread completion)
-  //
-  //   requestCapabilityRefresh(service, ref, gen, mutationId) → Promise<void>
-  //     (return value awaited by handleMutationError — the ONLY public
-  //     consumer of a per-key completion promise)
-  //
-  // The call graph confirms this:
-  //   conversation.ts:548  scheduler.request(ref, ...)        [void return]
-  //   conversation.ts:592  return scheduler.request(capKey, ...) [awaited]
-  //   conversation.ts:1565 await requestCapabilityRefresh(...) [the awaiter]
-  //
-  // Same-key completion waiters for capability keys ARE publicly reachable
-  // (via the mutation action's returned promise). Same-key completion waiters
-  // for reread keys are NOT publicly reachable — tests cannot await a
-  // specific reread's completion through the public store API. This invariant
-  // is documented here rather than tested via a test-only API.
-
-  describe("Task 2A-3 invariant: same-key completion waiters for reread keys are not publicly reachable", () => {
-    it("requestRehydrate is fire-and-forget (void) — no public await of reread completion", () => {
-      // requestRehydrate is called from applyNotification (void context) and
-      // from the notification subscription callback (void context). It does
-      // not return the scheduler.request promise. The only way to observe
-      // reread completion is through external side effects (readProjection
-      // call count, state changes) — not through a promise.
-      //
-      // This is a structural invariant of the production call graph, not a
-      // runtime test. We verify it by confirming that applyNotification
-      // returns void (not a promise).
-      const service = new FakeConversationService();
-      service.readProjectionResult = {
-        conversation: makeConversation({ threadId: "thread-1" }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS,
-        },
-        olderCursor: null,
-      };
-      const store = createConversationStore();
-      // We can't await openProjected here (need to keep it sync for the
-      // structural check), so we verify the type: applyNotification returns
-      // void, not Promise<void>.
-      const s = store.getState();
-      expect(typeof s.applyNotification).toBe("function");
-      // The return type of applyNotification is void (not a Promise). Calling
-      // it returns undefined, not a thenable.
-      store.getState().setDraft("test");
-      // applyNotification on a non-open store is a no-op (returns undefined).
-      const result = store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      expect(result).toBeUndefined();
-      // The result is NOT a thenable — confirming void, not Promise<void>.
-      expect(
-        (result as unknown as Record<string, unknown>)?.then,
-      ).toBeUndefined();
-    });
-  });
 
   // --- Fix round 1: I1/I2/I3/I4 — rehydrate/loadOlder ownership, mutation
   // error clear, raw Thread question lifecycle ---
@@ -5137,7 +5067,10 @@ describe("ConversationStore", () => {
   const VALID_ASK_ARGS =
     '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
 
-  function makeReadProjectionResult(thread: Thread): {
+  function makeReadProjectionResult(
+    thread: Thread,
+    capabilities: ThreadCapabilities = ALL_TRUE_CAPS,
+  ): {
     conversation: MobileConversation;
     activity: ActivityView;
     olderCursor: string | null;
@@ -5150,7 +5083,7 @@ describe("ConversationStore", () => {
         tasks: [],
         work: [],
         usage: {},
-        capabilities: ALL_TRUE_CAPS,
+        capabilities,
       },
       olderCursor: null,
     };
@@ -13137,24 +13070,15 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const activityStore = createActivityStore();
-      const realState = activityStore.getState();
-      const sink: LiveActivitySink = {
-        setLiveView: (view, identity) => realState.setLiveView(view, identity),
-        applyLiveNotification: (n, identity) =>
-          realState.applyLiveNotification(n, identity),
-        reset: () => realState.reset(),
-      };
-      const withCaps = (capabilities: ThreadCapabilities) => ({
-        ...makeReadProjectionResult(
+      const sink = activityStore.getState();
+      const withCaps = (capabilities: ThreadCapabilities) =>
+        makeReadProjectionResult(
           makeThread({ evener: { ref: "ref-1", capabilities, queue: { revision: 0 } } }),
-        ),
-        activity: { tasks: [], work: [], usage: {}, capabilities },
-      });
+          capabilities,
+        );
       service.readProjectionResult = withCaps({ ...ALL_TRUE_CAPS });
       await store.getState().openProjected(service, sink, "ref-1");
-      service.sendShouldReject = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      }) as Error;
+      service.sendShouldReject = refusal();
       service.readProjectionResult = withCaps({ ...ALL_TRUE_CAPS, send: false });
       const ctrl = makeControlledRead(service);
       await store.getState().send(service, textInput("x"));
