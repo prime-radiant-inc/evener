@@ -9878,4 +9878,55 @@ describe("review regressions: stopped-session resume admission", () => {
     });
     expect(requests.filter(({ method }) => method === "turn/start")).toEqual([]);
   });
+
+  // A Send to a stopped local session outlives its composer: navigation can
+  // unmount the pane while the resume is still on the wire. refreshThread only
+  // publishes when the ref is still owned, so without a claim held across the
+  // resume the model is gone by the time composerMutationIntent runs and the
+  // durable turn/start carries no expectedInstanceId - the stale-instance
+  // fence silently disappears exactly when a competing resume replaced the
+  // daemon instance.
+  test("review regression: a navigation that unmounts during resume still fences with the resumed instance id", async ({
+    onTestFinished,
+  }) => {
+    const ref = "local:resume-unmount-fence";
+    setMutationStorageForTests(new MutationOutboxIndexedDB());
+    let stopped = true;
+    let releaseResume!: () => void;
+    const resumeGate = new Promise<void>((resolve) => {
+      releaseResume = resolve;
+    });
+    const { client, requests, resumeReceived } = recoveryClientFixture({
+      ref,
+      snapshot: () => stoppedSnapshot(ref, stopped, stopped ? "pre-resume-instance" : "resumed-instance"),
+      resume: async () => {
+        await resumeGate;
+        stopped = false;
+      },
+    });
+    onTestFinished(() => {
+      releaseResume();
+      client.close();
+    });
+    connectionStore.getState().connect(client);
+    await client.connect();
+    await threadsStore.getState().ensureThread(ref);
+    const send = threadsStore
+      .getState()
+      .send(ref, "resumed input")
+      .catch((error: unknown) => error);
+    await resumeReceived;
+    // The pane unmounts while the resume is between its request and its
+    // hydration read, so the resumed destination is no longer owned by a pane.
+    threadsStore.getState().releaseThread(ref);
+    releaseResume();
+    await send;
+    // The resume's own hydration still belongs to this Send: it must publish
+    // the resumed model even though the pane's claim is gone, so the durable
+    // turn/start below carries the resumed instance id as its fence.
+    expect(threadsStore.getState().threads.get(ref)?.instanceId).toBe("resumed-instance");
+    await vi.waitFor(() => expect(requests.filter(({ method }) => method === "turn/start")).toHaveLength(1));
+    const start = requests.find(({ method }) => method === "turn/start");
+    expect(start?.params).toMatchObject({ ref, expectedInstanceId: "resumed-instance" });
+  });
 });

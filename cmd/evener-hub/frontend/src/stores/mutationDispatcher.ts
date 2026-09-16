@@ -33,8 +33,12 @@ export class MutationDispatcher {
   readonly #requestedRuns = new Map<string, number>();
   // "I selected this exact never-attempted turn/start under the normal rules,
   // my markAttempted commit succeeded, and I have not yet crossed my own
-  // transport boundary." Dispatcher-instance state only: never persisted,
-  // never reconstructed on reload, never restored after an unknown receipt.
+  // transport boundary." It is held until the record demonstrably leaves
+  // `submitting` (settled, transferred to recovery, or reclassified), not
+  // merely until transport starts: a retryable transport failure leaves the
+  // record `submitting`, and only this admission lets a later drain reselect
+  // it past an older blocked row. Dispatcher-instance state only: never
+  // persisted, never reconstructed on reload.
   readonly #pretransportAdmissions = new Map<string, Set<string>>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
@@ -138,11 +142,22 @@ export class MutationDispatcher {
       // admission is retained so a later drain still reaches transport with the
       // record's original identity and payload.
       if (this.#getClient(targetRef) !== client) return false;
-      // Consume synchronously immediately before transport, with no await
-      // between. Never restore it after a failure or timeout.
-      this.#retireAdmission(targetRef, current.clientMutationId);
       const outcome = await this.#attempt(client, current);
-      if (outcome === "stop") return false;
+      if (outcome === "stop") {
+        // A retryable stop (transport failure, request timeout, or an
+        // ambiguous receipt) leaves the record `submitting`. Its admission has
+        // to outlive the attempt: only that admission lets a later drain
+        // reselect this record past an older blocked row, and retrying the
+        // same ID/payload is the replay the dispatcher already performs for a
+        // head `submitting` record. A stop that instead reclassified the
+        // record (blockedUnknown) left it behind, so drop the admission then.
+        if ((await this.#storage.getOutbox(current.clientMutationId))?.state !== "submitting")
+          this.#retireAdmission(targetRef, current.clientMutationId);
+        return false;
+      }
+      // The record left `submitting` (settled, moved to recovery, or
+      // reclassified), so its admission has served its purpose.
+      this.#retireAdmission(targetRef, current.clientMutationId);
     }
   }
 

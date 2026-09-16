@@ -4147,3 +4147,44 @@ test("a message carrying an attachment is never read as a command invocation, ev
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
   expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });
+
+// Only a Send can resume a stopped session, so only a Send may defer the
+// skillInput gate past the resume. Queue, Steer and Drain never call
+// resumeSessionForUserIntent, so deferring the gate for them replaced the
+// intended capability refusal with the store-side throw ("skill selections are
+// not supported on this target"), which surfaced as a generic "<verb> failed".
+test.each([
+  { label: "Queue", queue: { revision: 0 }, control: "submit" as const, method: "turn/queue" },
+  { label: "Steer", queue: { revision: 0 }, control: "steer" as const, method: "turn/steer" },
+  { label: "Drain", queue: { revision: 0, depth: 1 }, control: "steer" as const, method: "turn/drainAsSteer" },
+])(
+  "review regression: a staged skill on $label still hears the capability refusal while a resume is pending",
+  async ({ label, queue, control, method }) => {
+    const user = userEvent.setup();
+    const ref = `local:skill-gate-${label.toLowerCase()}`;
+    writeComposerDraft(ref, { text: "skillful action", skillNames: ["pkg:probe"] });
+    const fake = await mountComposer(ref, {
+      status: { type: "active" },
+      evener: {
+        ref,
+        capabilities: { ...FULL_CAPABILITIES, skillInput: false },
+        queue,
+        activeTurnId: "turn_1",
+        resumeRequired: true,
+        mutationStateAuthoritative: false,
+      },
+    });
+    // The recovery obligation is what made resumesOnSend true for every verb,
+    // not just the Send that actually resumes.
+    await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+    expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+
+    await user.click(control === "submit" ? submitButton() : steerButton());
+
+    expect(getToasts().map((toast) => toast.text)).toContain(
+      "Skill selections aren't supported on this session yet; your draft is kept",
+    );
+    expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
+    expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+  },
+);

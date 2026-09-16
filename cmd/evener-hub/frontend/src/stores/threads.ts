@@ -995,15 +995,34 @@ async function withResumedSendDestination<T>(ref: string, submit: (destination: 
     if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
       throw new Error("Stop canceled this pending action; send again when ready.");
   };
-  const destination = await resumeSessionForUserIntent(ref);
-  checkStopped();
-  const distinct = destination !== ref;
-  if (distinct) await threadsStore.getState().ensureThread(destination);
+  // A Send that has to resume can outlive its composer: navigation may unmount
+  // this session while the resume is still on the wire. Hold a lifecycle claim
+  // on the original destination for the whole operation, so refreshThread
+  // still publishes the resumed snapshot (and composerMutationIntent still
+  // reads the resumed instance id) after the pane's own claim is gone. The
+  // predicate is the one resumeSessionForUserIntent applies to an implicit
+  // send, so a non-resuming Send takes no extra claim.
+  const entry = threadsStore.getState();
+  const entryModel = entry.threads.get(ref);
+  const willResume =
+    ref.startsWith("local:") && (entryModel?.status.type === "notLoaded" || entry.restartBlockingObligations.has(ref));
+  if (willResume) await threadsStore.getState().ensureThread(ref);
+  let destination = ref;
+  let claimedDestination = false;
   try {
+    destination = await resumeSessionForUserIntent(ref);
+    checkStopped();
+    if (destination !== ref) {
+      // A replacement destination is a different ref: claim its own lifecycle
+      // so its hydration belongs to this Send as well.
+      await threadsStore.getState().ensureThread(destination);
+      claimedDestination = true;
+    }
     checkStopped();
     return await submit(destination);
   } finally {
-    if (distinct) threadsStore.getState().releaseThread(destination);
+    if (claimedDestination) threadsStore.getState().releaseThread(destination);
+    if (willResume) threadsStore.getState().releaseThread(ref);
   }
 }
 

@@ -835,9 +835,10 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Whether a send to this ref resumes a stopped local session before the store
   // builds its intent: the predicate threads.ts's resumeSessionForUserIntent
   // itself applies (a local ref, and either the notLoaded status or a
-  // restart-blocking obligation already on the session), so this composer
-  // defers the skillInput gate to the store-side check exactly when the
-  // destination whose capabilities will answer is not this snapshot.
+  // restart-blocking obligation already on the session). Only a Send runs that
+  // resume (withResumedSendDestination), so only a Send defers the skillInput
+  // gate to the store-side check; Queue/Steer/Drain read this snapshot's
+  // capabilities directly.
   const resumesOnSend = localNotLoaded || (ref.startsWith("local:") && recoveryRequired);
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
@@ -1223,7 +1224,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // already the check the finding asks for: the gate still refuses a
     // selection the destination cannot accept, it just refuses it after the
     // resume, against the destination that answers for it.
-    if (submittedSkillNames.length > 0 && !skillInputSupported && !resumesOnSend) {
+    if (submittedSkillNames.length > 0 && !skillInputSupported && !(kind === "send" && resumesOnSend)) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
