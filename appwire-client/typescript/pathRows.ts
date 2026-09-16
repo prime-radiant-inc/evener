@@ -1,11 +1,8 @@
 // The path picker's list shape: one flat row array combining Recent projects,
 // the current directory's header, a `../` row, and the directory's own
 // children. Pure (no React, no wire, no imports), so a panel component only
-// maps rows to markup. Shared by the web path field and directory picker
-// (cmd/evener-hub/frontend/src/widgets/pathfield, widgets/directorypicker) and
-// native's hub path field and launch resource row (mobile-native/src/
-// HubPathField.tsx, LaunchResourceRow.tsx), which also lean on the path
-// helpers below (basename, parentOf, childrenPrefix, isDirEntry).
+// maps rows to markup. Shared by the web path field, directory picker and
+// spawn form, and by native's hub path field and launch resource row.
 //
 // Why rows and not nested sections: the panel is an ARIA listbox whose options
 // must be linearly navigable by ArrowUp/Down. A flat array with a `kind`

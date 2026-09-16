@@ -191,21 +191,11 @@ assert.equal(client.parentOf("/home/me"), "/home");
 assert.equal(client.childrenPrefix("/home/me"), "/home/me/");
 assert.equal(client.isDirEntry("/home/me/src/"), true);
 const pathRows = client.buildPathRows({
-  kind: "file",
-  currentDir: "/home/me",
-  entries: ["/home/me/src/", "/home/me/notes.md"],
-  value: "/home/me/notes.md",
-  recents: ["/home/me/proj"],
-  showRecents: true,
+  kind: "file", currentDir: "/home/me", entries: ["/home/me/src/", "/home/me/notes.md"],
+  value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
 });
-assert.deepEqual(
-  pathRows.map((row) => row.kind),
-  ["group", "recent", "group", "parent", "dir", "file"],
-);
-assert.deepEqual(
-  client.pickableRows(pathRows).map((row) => row.path),
-  ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"],
-);
+assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
+assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
