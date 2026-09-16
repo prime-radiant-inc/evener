@@ -51,16 +51,21 @@ func TestVariableThroughOption(t *testing.T) {
 	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
 	_ = optionalSession(t, withConfig(cfg))
 }
-func TestGatedVariableUsedElsewhere(t *testing.T) {
+func TestGatedVariableDerivesAnotherOption(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
-	_ = optionalSession(t, withDir(cfg.StateDir), withConfig(SessionConfig{StateDir: cfg.StateDir}))
+	_ = optionalSession(t, withDir(cfg.StateDir))
+}
+func TestGatedVariableFieldInsideUngatedLiteral(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	cfg := SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}
+	_ = optionalSession(t, withConfig(SessionConfig{StateDir: cfg.StateDir}))
 }
 func TestLiteral(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	_, _ = NewSession(nil, nil, nil, SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 }`,
-			flagged: []string{"TestVariableConfig", "TestVariableThroughOption", "TestGatedVariableUsedElsewhere"},
+			flagged: []string{"TestVariableConfig", "TestVariableThroughOption", "TestGatedVariableDerivesAnotherOption", "TestGatedVariableFieldInsideUngatedLiteral"},
 		},
 		{
 			// Helpers: one gates unconditionally in its own body, one only on
