@@ -234,15 +234,10 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// contract mintRunningTurnID's callers rely on.
 			return "", false, nil
 		}
-		// Hand the claim back on EVERY exit, not just the ones that reach the
-		// drain loop's own release. That release runs after processOneInput
-		// returns, and the entry gate refuses a closed session before it. A
-		// claim stranded there is not recoverable -- the pending steer still
-		// owns the id, so nothing else releases it -- and every later
-		// turn/start is then refused with "turn is already active" for the
-		// life of the session. releaseRunningTurnID compare-and-clears, so on
-		// the ordinary path this is a no-op.
-		defer s.releaseRunningTurnID(queued.StableTurnID)
+		// The claim is handed back by the run itself, on every exit: the
+		// drain loop after each turn, and the entry gate when it refuses a
+		// closed session before the loop (releaseSteeringCarrierClaim). One
+		// owner, so nothing here releases it a second time.
 	}
 	if inputHasContent(queued.Text, queued.Images, queued.SkillNames) || queued.SteeringCarrier {
 		if onRunnable != nil && queued.StableTurnID != "" {
@@ -355,23 +350,28 @@ func claimableSteeringCarrier(snapshot *clientMutationSnapshot, inFlight map[str
 	return "", ""
 }
 
-// carrierSteerStillQueued is the carrier's own question after it drained: is
-// the steer that reserved turnID still pending? An accepted steer's append
-// failed and it is back in the queue; a recorded one is gone from the store.
-func (s *Session) carrierSteerStillQueued(turnID string) bool {
+// carrierSteerUndelivered is the carrier's own question after it drained: is
+// the steer that reserved turnID still waiting to reach the model? Gone from
+// the store, it is incorporated. Still pending and in flight marked recorded,
+// its append landed and only the store's mark is missing -- delivered. Still
+// pending and back in the queue, its append failed -- undelivered.
+func (s *Session) carrierSteerUndelivered(turnID string) bool {
 	if turnID == "" || s.clientMutations == nil {
 		return false
 	}
 	snapshot := s.clientMutations.snapshot()
 	for _, id := range snapshot.SteeringOrder {
 		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.TurnID == turnID {
-			return true
+			s.mu.Lock()
+			recorded := s.steeringInFlight[id]
+			s.mu.Unlock()
+			return !recorded
 		}
 	}
 	return false
 }
 
-// steeringCarrierClaimable reports whether claimSteeringCarrierTurn would take a
+// steeringCarrierClaimable reports whether claimSteeringCarrierInput would take a
 // carrier turn: the rail is open and a steer is ready to use it. Like
 // queueHeadClaimable it is the whole of that decision, so a caller asking
 // whether this session has steering it could actually run asks the question the
@@ -635,6 +635,7 @@ func (s *Session) wakeForPendingSteering() {
 	// that turn. Waking for it would start a turn before the user has said
 	// anything, which is both a turn nobody asked for and a turn that can hold
 	// the session's turn identity when the opening turn/start arrives.
+	s.reconcileRecordedSteering()
 	if !s.hasRunnableUserSteering() {
 		return
 	}

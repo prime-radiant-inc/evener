@@ -108,7 +108,7 @@ func ClientMutationInputIdentities(data []byte, sessionID string) (map[string]st
 // across restarts.
 //
 // An id a pending STEER names is a steering-carrier claim the process died
-// under (claimSteeringCarrierTurn publishes the steer's reserved id before the
+// under (claimSteeringCarrierInput publishes the steer's reserved id before the
 // carrier opens). Nothing re-runs a carrier by its id -- the steer is still
 // pending and the next claim takes it afresh -- so the slot is released like
 // any other orphan (#1342).

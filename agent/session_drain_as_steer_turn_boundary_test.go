@@ -851,3 +851,132 @@ func TestCarrierClaimSkipsASteerInFlight(t *testing.T) {
 		t.Fatalf("claimSteeringCarrierInput = %q ok=%v, want the queued steer behind the in-flight one", carrier.ClientMutationID, ok)
 	}
 }
+
+// TestFailedSteeringSelectionLandsTheSteer: a steer whose skill selection
+// cannot be prepared is recorded as a failure and retired from the store, and
+// its in-flight window ends with it. Left in flight, every later carrier claim
+// would skip a steer that no longer exists -- and skip whatever is queued
+// behind it, since eligibility walks the order.
+func TestFailedSteeringSelectionLandsTheSteer(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-bad-skill",
+		Input:            []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	msg, ok := s.popSteeringHead()
+	if !ok || msg.ClientMutationID != "steer-bad-skill" {
+		t.Fatalf("popSteeringHead took %q (ok=%v), want the steer", msg.ClientMutationID, ok)
+	}
+	if !s.consumeSteeringMessage(msg) {
+		t.Fatal("consumeSteeringMessage reported the drain must stop; the failure record landed and the steer is retired")
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-bad-skill"]; still || snapshot.Journal["steer-bad-skill"].ExecutionState != "failed" {
+		t.Fatalf("the steer reads pending=%v journal=%q, want retired as failed", still, snapshot.Journal["steer-bad-skill"].ExecutionState)
+	}
+	if _, inFlight := s.steeringInFlightSample()["steer-bad-skill"]; inFlight {
+		t.Fatal("the retired steer is still in flight: every later carrier claim skips it, and everything behind it")
+	}
+	if s.hasPendingUserSteering() {
+		t.Fatal("the retired steer is back in the queue")
+	}
+}
+
+// TestFailedSteeringSelectionWhoseRecordFailsStopsTheDrain: when the failure
+// record itself cannot be appended, the steer goes back to the head of the
+// queue and the drain stops there -- carrying on would pop the same steer
+// again inside the turn. The steer lands like any failed append: out of the
+// in-flight set, queued once, for the next drain.
+func TestFailedSteeringSelectionWhoseRecordFailsStopsTheDrain(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	var refusals atomic.Int32
+	s.clientMutationTranscriptAppend = func(turn schema.Turn) error {
+		if turn.Kind == schema.TurnFailure && turn.ClientMutationID == "steer-bad-skill" {
+			refusals.Add(1)
+			return errors.New("injected: no space left on device")
+		}
+		return s.writeTranscriptDurableLocked(turn)
+	}
+	for _, steer := range []appwire.TurnSteerParams{
+		{ClientMutationID: "steer-bad-skill", Input: []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}}},
+		{ClientMutationID: "steer-behind", Input: []appwire.InputItem{{Type: "text", Text: "behind it"}}},
+	} {
+		if _, err := s.AcceptClientMutationSteer(steer); err != nil {
+			t.Fatalf("steer %s: %v", steer.ClientMutationID, err)
+		}
+	}
+	// The turn's acceptance drains the steering queue once.
+	runningStartTurn(t, s, "running-turn", "do the thing")
+
+	if got := refusals.Load(); got != 1 {
+		t.Fatalf("failure records attempted = %d in one drain, want 1: the drain re-popped the steer whose record failed", got)
+	}
+	if _, inFlight := s.steeringInFlightSample()["steer-bad-skill"]; inFlight {
+		t.Fatal("the steer whose failure record did not land is still in flight")
+	}
+	s.mu.Lock()
+	var queued []string
+	for _, entry := range s.steeringQueue {
+		queued = append(queued, entry.ClientMutationID)
+	}
+	s.mu.Unlock()
+	if !slices.Equal(queued, []string{"steer-bad-skill", "steer-behind"}) {
+		t.Fatalf("steering queue = %v after the drain, want both steers queued once, in order", queued)
+	}
+}
+
+// TestCarrierProceedsWhenOnlyTheIncorporationWriteFails (#1389): the
+// carrier's steer is appended to the transcript and only the store's
+// incorporation write is refused. The steer IS delivered -- the model reads
+// it -- so the carrier makes its model request rather than failing a turn
+// whose steer is in the transcript, and the store's record catches up at the
+// input's settle through the steering table.
+func TestCarrierProceedsWhenOnlyTheIncorporationWriteFails(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	s.cfg.testOnly.steeringCarrierClaimed = func(string) {
+		// The first store write after the claim is the incorporation mark.
+		writes := 0
+		s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			writes++
+			if writes == 1 {
+				return errors.New("injected: incorporation write refused")
+			}
+			return nil
+		}
+	}
+
+	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err != nil {
+		t.Fatalf("ProcessInput: %v (the carrier failed a turn whose steer is in the transcript)", err)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
+		t.Fatalf("provider requests = %d, want 2 with the second carrying the steer: it is in the transcript and the model must read it", len(requests))
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["cm-drain-mid-leg"]; still {
+		t.Fatal("the recorded steer is still pending after the input settled: nothing reconciled the failed incorporation write")
+	}
+	if record := snapshot.Journal["cm-drain-mid-leg"]; record.ExecutionState != "incorporated" {
+		t.Fatalf("the recorded steer's journal reads %q, want incorporated", record.ExecutionState)
+	}
+	if _, inFlight := s.steeringInFlightSample()["cm-drain-mid-leg"]; inFlight {
+		t.Fatal("the reconciled steer is still in flight")
+	}
+}

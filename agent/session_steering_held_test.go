@@ -722,11 +722,11 @@ func TestStopParksSteeringPoppedButNotYetIncorporated(t *testing.T) {
 	}
 }
 
-// TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer: a Stop that
+// TestStopOnACarrierParksItsUnrecordedSteerAndTheHoldNamesIt: a Stop that
 // cancels a carrier whose steer was popped but never appended parks that
 // steer -- it is still accepted in the store and the user's next run carries
 // it -- and the hold it arms names that steer, not nothing (#710).
-func TestStopOnASteeringCarrierTurnArmsNoHoldForItsOwnSteer(t *testing.T) {
+func TestStopOnACarrierParksItsUnrecordedSteerAndTheHoldNamesIt(t *testing.T) {
 	sess := newQueuePersistTestSession(t, t.TempDir())
 	defer sess.Close()
 	serveSession(t, sess)

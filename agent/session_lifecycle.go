@@ -971,6 +971,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
+		// A steering carrier's claim is this run's to hand back, and this is
+		// the one exit before the drain loop's release.
+		s.releaseSteeringCarrierClaim(queuedClientMutationFromContext(ctx))
 		return "", errors.New("session is closed")
 	}
 	// Entry gate (spec §5.3): while a question is pending, an autonomous wake —
@@ -1411,6 +1414,9 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			s.emit(events.EventWarning, events.WarningData{Message: "delegate delivery retry at processing boundary failed: " + err.Error()})
 		}
 		goalKicked := s.settleGoalOnIdle()
+		// A steer this input recorded whose store mark the store refused gets
+		// its mark now, through the steering table; nothing when none waits.
+		s.reconcileRecordedSteering()
 		s.armAwaitingAtSettle(strings.TrimSpace(strings.Join(outputs, "\n")) != "", goalKicked)
 		s.mu.Lock()
 		if !s.sessionEndEmitted {
@@ -2520,7 +2526,7 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // turn/steer's (or drain's, or promote's) accept path, and only needs
 // somewhere to land.
 //
-// turnID is the id claimSteeringCarrierTurn reserved and published to
+// turnID is the id claimSteeringCarrierInput reserved and published to
 // ActiveTurnID before this call, and handed to the daemon via onRunnable
 // before the model call starts. It is one of the pending steer mutations' own
 // reserved ids -- not a freshly minted one -- so the id the client was told in
@@ -2551,12 +2557,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
 	s.injectDrainedSteering()
-	if s.carrierSteerStillQueued(turnID) {
-		// The steer this turn exists to carry is still pending: its
-		// transcript append failed and it is back in the queue, accepted. A
-		// model request now would carry nothing, and a clean completion
-		// would let the drain ladder claim the same steer again, and again.
-		// Fail the turn already announced above and end the input.
+	if s.carrierSteerUndelivered(turnID) {
+		// The steer this turn exists to carry is back in the queue: its
+		// transcript append failed. A model request now would carry nothing,
+		// and a clean completion would let the drain ladder claim the same
+		// steer again, and again. Fail the turn already announced above and
+		// end the input. (A steer whose append landed and whose store mark
+		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
 		s.emitTurnFailure(errorDataFromError(err))
 		return err

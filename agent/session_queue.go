@@ -974,6 +974,32 @@ func (s *Session) steeringLanded(clientMutationID string) {
 	s.reflectDurableClientSteering()
 }
 
+// markSteeringRecorded notes that an in-flight steer's transcript append landed
+// and only the store's write did not: delivered, awaiting its mark.
+func (s *Session) markSteeringRecorded(clientMutationID string) {
+	s.mu.Lock()
+	s.steeringInFlight[clientMutationID] = true
+	s.mu.Unlock()
+}
+
+// reconcileRecordedSteering writes the store marks recorded in-flight steers
+// are waiting for, through the steering table (rule 0), and ends their
+// in-flight windows. A no-op, and no store write, when none is waiting.
+func (s *Session) reconcileRecordedSteering() {
+	ids, recorded := s.recordedSteeringAwaitingMark()
+	if len(ids) == 0 || s.clientMutations == nil {
+		return
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		reconcileClientSteering(snapshot, recorded, false)
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("mark recorded steering incorporated: %v; the transcript holds it", err)})
+		return
+	}
+	s.steeringMarked(ids)
+}
+
 // steeringInFlightSample copies the in-flight set under s.mu, for a caller
 // about to decide steering eligibility inside the store's serializer (which
 // must never wait on s.mu).
@@ -1068,8 +1094,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		selectionRecord = skillInputRecordFromQueued(queued)
 		batch, prepareErr := s.prepareSelectedInput(context.Background(), queued, "user_selection")
 		if prepareErr != nil {
-			s.recordFailedSteeringSelection(msg, prepareErr)
-			return true
+			return s.recordFailedSteeringSelection(msg, prepareErr)
 		}
 		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
@@ -1111,12 +1136,11 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			// Recorded, so delivered: the transcript holds the steer and the
 			// model reads it. Only the store's incorporation mark is missing;
 			// the steer stays in flight, marked recorded, so no reflect
-			// re-queues it, and the next Stop or restore finalizes it
-			// (reconcileClientSteering).
+			// re-queues it and no carrier claims it, and the input's settle,
+			// the next wake, a Stop or restore writes the mark through the
+			// steering table (reconcileRecordedSteering).
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; the transcript holds the steer", err)})
-			s.mu.Lock()
-			s.steeringInFlight[msg.ClientMutationID] = true
-			s.mu.Unlock()
+			s.markSteeringRecorded(msg.ClientMutationID)
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
 		}
@@ -1149,7 +1173,12 @@ func queuedInputFromSteering(msg steeringMessage) queuedInput {
 // between the two leaves the pending execution for restore to settle against
 // the already-persisted failure turn. The in-flight turn keeps running and
 // receives none of this steering input.
-func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error) {
+// recordFailedSteeringSelection records a steer whose skill selection could
+// not be prepared as a failure turn and retires it from the store. It reports
+// whether the failure landed: false means the record itself could not be
+// appended, the steer is back in the queue for the next drain, and the caller
+// must stop draining (popping again would take the same steer).
+func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error) bool {
 	input := queuedInputFromSteering(msg)
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(cause.Error()))
 	turn.ClientMutationID = msg.ClientMutationID
@@ -1162,16 +1191,23 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
 		// The prominent record did not persist. Put the steering back so a
-		// later drain retries the failure instead of silently dropping it.
-		s.mu.Lock()
-		s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
-		s.mu.Unlock()
+		// later drain retries the failure instead of silently dropping it: a
+		// client steer lands like any failed append (still accepted in the
+		// store, so the reflect re-queues it at its place in the order);
+		// daemon steering has no store and goes back to the head directly.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
-		return
+		if msg.ClientMutationID != "" {
+			s.steeringLanded(msg.ClientMutationID)
+		} else {
+			s.mu.Lock()
+			s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
+			s.mu.Unlock()
+		}
+		return false
 	}
 	s.emit(events.EventError, errorDataFromError(cause))
 	if msg.ClientMutationID == "" {
-		return
+		return true
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		record, ok := snapshot.Journal[msg.ClientMutationID]
@@ -1187,8 +1223,15 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		removeClientMutationSteeringOrder(snapshot, msg.ClientMutationID)
 		return nil
 	}); err != nil {
+		// The failure is in the transcript and the retirement is not in the
+		// store: recorded, unmarked, and reconciled like an incorporation
+		// write the store refused.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("clear failed steering execution: %v", err)})
+		s.markSteeringRecorded(msg.ClientMutationID)
+		return true
 	}
+	s.steeringLanded(msg.ClientMutationID)
+	return true
 }
 
 // appendSteeringTurn records a daemon steering turn and announces it,
