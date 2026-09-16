@@ -3,6 +3,7 @@ import type {
 	RosterEntry,
 	RosterService,
 } from "../../mobile/src/services/roster";
+import { singleFlight } from "./singleFlight";
 
 export type SearchRosterEntry = RosterEntry & { projectLabel: string };
 
@@ -86,30 +87,20 @@ export class RosterSearch {
 		this.publish({ loading: false });
 	}
 	watch(client: ConversationClientLike) {
-		let active = true,
-			dirty = false,
-			refreshing = false;
-		const refresh = () => {
-			if (!active || !dirty || refreshing || this.state.loading) return;
-			dirty = false;
-			refreshing = true;
-			void this.load().finally(() => {
-				refreshing = false;
-				refresh();
-			});
-		};
+		let active = true;
+		const refreshes = singleFlight(
+			() => this.load(),
+			() => active && !this.state.loading,
+		);
 		// Initial loads and explicit searches may already be in flight when a
 		// notification arrives. Drain the pending refresh when their state settles.
-		const unobserve = this.subscribe(refresh);
+		const unobserve = this.subscribe(refreshes.drain);
 		const unwatch = client.onNotification((notification) => {
-			if (notification.method !== "evener/navigation/invalidated" || !active)
-				return;
-			dirty = true;
-			refresh();
+			if (notification.method === "evener/navigation/invalidated" && active)
+				refreshes.request();
 		});
 		return () => {
 			active = false;
-			dirty = false;
 			unobserve();
 			unwatch();
 			this.cancel();

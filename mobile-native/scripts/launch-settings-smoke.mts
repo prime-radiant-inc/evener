@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
 import WebSocket from "ws";
-import type { WebSocketLike } from "@evener/appwire-client";
+import { LaunchSettings, type WebSocketLike } from "@evener/appwire-client";
 import { createHubClient } from "../src/connection";
-import { LaunchSettings } from "../src/launchSettings";
 
 // Guard this mutation exercise by the owned hub's exact state root.
 const client = createHubClient(
