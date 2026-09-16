@@ -13,10 +13,9 @@
 // entry) - and anything that doesn't match (an unknown "/foo", or a plugin
 // catalog command, which this module never even looks at) falls through to
 // the composer's ordinary send/queue/steer routing untouched.
-import { friendlyErrorMessage } from "../../../protocol/errors";
+import { type BuiltinMatch, findBuiltinArgument, friendlyErrorMessage } from "@evener/appwire-client";
 import { blocked, isBlocked } from "../../../shell/palette/blocked";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
-import { type BuiltinMatch, findBuiltinArgument } from "./builtinInvocation";
 
 // resolveCommandResult runs the matched command exactly the way the palette
 // itself would: an argless command's plain run(), a free-arg command's

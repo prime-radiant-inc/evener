@@ -5,19 +5,19 @@
 //
 // The service does NOT create or own the socket — it wraps an existing
 // AppwireClient (or any structurally compatible client, e.g. FakeClient in
-// tests). It projects the wire Thread to a MobileConversation via projectThread,
-// subscribes to notifications, and enforces ThreadCapabilities before every
-// mutation: a false capability blocks the request entirely, never reaching the
-// wire. A server-reported actionUnavailable triggers a non-subscribing
-// capability re-read so the store's cached capabilities stay fresh.
+// tests). It hydrates the wire Thread through the package (hydrateThread),
+// projects the display rows via projectConversation, subscribes to
+// notifications, and enforces ThreadCapabilities before every mutation: a
+// false capability blocks the request entirely, never reaching the wire. A
+// server-reported actionUnavailable triggers a non-subscribing capability
+// re-read so the store's cached capabilities stay fresh.
 //
 // The service guards its current identity and capabilities with open epochs;
 // the store owns profile/connection/conversation generations and view publication.
 
-import type { AppwireClient } from "../../../appwire-client/typescript/client";
-import { isStaleCursorError } from "../../../appwire-client/typescript/errors";
 import type {
   AnyNotification,
+  AppwireClient,
   InputItem,
   MethodName,
   MethodTypes,
@@ -28,18 +28,22 @@ import type {
   ThreadCapabilities,
   ThreadClearResponse,
   ThreadForkResponse,
-  ThreadItem,
   ThreadReadResponse,
   ThreadTurnsListResponse,
   TurnCancelQueuedResponse,
   TurnDrainAsSteerResponse,
   TurnPromoteQueuedAsSteerResponse,
-} from "../../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
+import {
+  hydrateThread,
+  isStaleCursorError,
+  mergeOlderItemPage,
+} from "@evener/appwire-client";
 import type {
   MobileConversation,
   MobileTimelineItem,
-} from "../conversation/model";
-import { projectThread } from "../conversation/project";
+} from "../conversation/project";
+import { projectConversation, projectTimeline } from "../conversation/project";
 import type { ActivityView } from "./activity";
 import { createActivityService } from "./activity";
 
@@ -66,8 +70,18 @@ export interface ConversationClientLike {
 // when available, falling back to a counter; tests inject a deterministic one.
 export type IdFactory = () => string;
 
+// The conversation's instanceId is the service's own fence value, not
+// hydrateThread's pass-through of the wire field: a daemon-backed read always
+// carries evener.instanceId (appsource/local_daemon.go stamps it with a
+// thread-id fallback), but the hub's past-session read (app_threadread.go)
+// stamps none, and the fork and queue affordances key on the field. One rule,
+// applied here where the fence is computed, so the displayed conversation and
+// the mutations it offers can never disagree about the instance.
+
 export interface ConversationServiceOptions {
   readonly idFactory?: IdFactory;
+  // The clock hydrateThread stamps the model with; tests inject a fixed one.
+  readonly now?: () => number;
 }
 
 export interface ConversationReadProjection {
@@ -122,7 +136,6 @@ export interface ConversationRecoveryActions {
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
   readProjection(ref: string): Promise<ConversationReadProjection>;
-  refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
 }
 
 export interface ConversationModelCatalog {
@@ -459,6 +472,7 @@ export function createConversationService(
   ConversationClearActions &
   ConversationRecoveryActions {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
+  const now = options.now ?? Date.now;
   const activityService = createActivityService();
 
   // Current thread identity and capabilities, set by open() / readProjection().
@@ -477,7 +491,6 @@ export function createConversationService(
   // must not redirect a draft to a replacement session.
   let instanceId: string | null = null;
   let threadId: string | null = null;
-  let capabilityRevision = 0;
   let opening: {
     ref: string;
     threadId: string | null;
@@ -500,8 +513,11 @@ export function createConversationService(
   let openEpoch = 0;
 
   function requireQueueRun(): void {
-    // Promoting or draining also wakes a held queue when the session is idle.
-    if (!capabilities?.steer && !capabilities?.send)
+    // The capability half of a drain or promote: the harness steers (the
+    // daemon converts the entries into steering, which a send-only harness
+    // cannot take). The status half -- a running turn, or a queue a Stop
+    // parked -- is the caller's, through the SDK's sessionControls.
+    if (!capabilities?.steer)
       throw new Error(
         "Running queued messages is unavailable for this session.",
       );
@@ -557,55 +573,6 @@ export function createConversationService(
     }
   }
 
-  // Non-subscribing capability refresh: reads the thread metadata WITHOUT
-  // subscribing or replacing the subscription, and WITHOUT loading all turns.
-  // Returns the refreshed capabilities. This is the only path the store should
-  // use for actionUnavailable recovery — it never disturbs the active
-  // subscription. The cache is published only when, at request START, the
-  // committed ref equaled threadRef AND, after the await, both the lifecycle
-  // epoch and the committed ref remain unchanged (epoch === epochStart and
-  // ref === threadRef). A refresh started while pending or closed (ref=null)
-  // may never activate the pending/failed ref: startRef !== threadRef, so the
-  // cache is left untouched. The requested capabilities are always returned to
-  // the caller (generation-safe store), unless a newer push superseded the read.
-  async function refreshCapabilities(
-    threadRef: string,
-  ): Promise<ThreadCapabilities | null> {
-    const epoch = openEpoch;
-    const requestedRef = threadRef;
-    const startRef = ref;
-    const startCapabilityRevision = capabilityRevision;
-    const response: ThreadReadResponse = await client.request("thread/read", {
-      ref: threadRef,
-      includeTurns: false,
-      subscribe: false,
-    });
-    // Extract+validate capabilities into a plain copy; a malformed response
-    // rejects the refresh and cannot corrupt the current pair.
-    const refreshed = extractCapabilities(response.thread.evener.capabilities);
-    if (
-      startRef === requestedRef &&
-      openEpoch === epoch &&
-      ref === requestedRef &&
-      capabilityRevision === startCapabilityRevision
-    ) {
-      capabilities = refreshed;
-    }
-    return capabilityRevision === startCapabilityRevision ? refreshed : null;
-  }
-
-  // withCapabilityRefresh wraps a mutation: if the server rejects with
-  // actionUnavailable, the service just re-throws — it does NOT auto-refresh
-  // capabilities. Exactly one non-subscribing thread/read occurs, and it is
-  // driven by the store's handleMutationError (F2). The store is the sole
-  // caller of refreshCapabilities; the service never duplicates the read.
-  async function withCapabilityRefresh<T>(
-    _action: string,
-    fn: () => Promise<T>,
-  ): Promise<T> {
-    return fn();
-  }
-
   return {
     async open(threadRef, _cursor) {
       pendingProjection = null;
@@ -627,12 +594,15 @@ export function createConversationService(
       // commit the pair after projection succeeds and the epoch is still
       // current; a stale successful result returns without committing.
       const thread = readWithPushedCapabilities(response.thread, epoch);
-      const conversation = projectThread(thread);
-      const caps = extractCapabilities(thread.evener.capabilities);
       const readInstanceId = nonemptyString(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
+      const conversation = projectConversation({
+        ...hydrateThread({ ...response, thread }, threadRef, now()),
+        instanceId: readInstanceId,
+      });
+      const caps = extractCapabilities(thread.evener.capabilities);
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
         modelScope = readModelScope;
@@ -664,19 +634,23 @@ export function createConversationService(
       pendingProjection = { ref: threadRef, instanceId: pagingInstance, read };
       const response: ThreadReadResponse = await read;
       // Compute ALL response-derived projection work BEFORE committing the
-      // pair — a throw in projectThread or activity projection (or a malformed
-      // response) leaves ref+capabilities null/fail-closed. Only commit the
+      // pair — a throw in hydration, projectConversation or activity
+      // projection (or a malformed response) leaves ref+capabilities
+      // null/fail-closed. Only commit the
       // pair after all projection succeeds and the epoch is still current;
       // a stale successful result returns without committing.
       const thread = readWithPushedCapabilities(response.thread, epoch);
-      const conversation = projectThread(thread);
-      const activity = activityService.projectActivity(thread);
-      const olderCursor = response.olderCursor ?? null;
-      const caps = extractCapabilities(thread.evener.capabilities);
       const readInstanceId = nonemptyString(
         response.thread.evener.instanceId ?? response.thread.id,
         "thread instance id",
       );
+      const conversation = projectConversation({
+        ...hydrateThread({ ...response, thread }, threadRef, now()),
+        instanceId: readInstanceId,
+      });
+      const activity = activityService.projectActivity(thread);
+      const olderCursor = response.olderCursor ?? null;
+      const caps = extractCapabilities(thread.evener.capabilities);
       const readModelScope = { harness: thread.source, cwd: thread.cwd };
       if (openEpoch === epoch) {
         modelScope = readModelScope;
@@ -736,11 +710,9 @@ export function createConversationService(
         // cursor and visible projection are published together.
         throw error;
       }
-      // Project the older turns into mobile items by projecting a minimal
-      // Thread containing just these turns. projectThread handles empty/missing
-      // turns gracefully; we only need the item projection, not the full
-      // conversation metadata.
-      const items = projectOlderTurns(response.data);
+      // Project the older turns into mobile items by hydrating a minimal
+      // Thread containing just these turns; only the display rows are kept.
+      const items = projectOlderTurns(response, threadId);
       return {
         items,
         nextCursor: response.nextCursor,
@@ -753,7 +725,6 @@ export function createConversationService(
       };
     },
 
-    refreshCapabilities,
 
     subscribeNotifications(handler) {
       if (notificationUnsub !== null) {
@@ -775,7 +746,6 @@ export function createConversationService(
               if (committed) capabilities = next;
               if (pending && opening)
                 opening.pushed = { threadId: params.threadId, caps: next };
-              capabilityRevision++;
             } catch {
               return;
             }
@@ -800,14 +770,12 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("send", () =>
-        client.request("turn/start", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-          input,
-        }),
-      );
+      const result = await client.request("turn/start", {
+        ref: threadRef,
+        clientMutationId,
+        expectedInstanceId,
+        input,
+      });
       return decodeMutationResult(
         "send",
         result,
@@ -824,22 +792,20 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("steer", () =>
-        expectedQueueRevision === undefined
-          ? client.request("turn/steer", {
-              ref: threadRef,
-              clientMutationId,
-              expectedInstanceId,
-              input,
-            })
-          : client.request("turn/drainAsSteer", {
-              ref: threadRef,
-              clientMutationId,
-              expectedInstanceId,
-              expectedQueueRevision,
-              input,
-            }),
-      );
+      const result = await (expectedQueueRevision === undefined
+        ? client.request("turn/steer", {
+            ref: threadRef,
+            clientMutationId,
+            expectedInstanceId,
+            input,
+          })
+        : client.request("turn/drainAsSteer", {
+            ref: threadRef,
+            clientMutationId,
+            expectedInstanceId,
+            expectedQueueRevision,
+            input,
+          }));
       return decodeMutationResult(
         expectedQueueRevision === undefined ? "steer" : "drain",
         result,
@@ -856,14 +822,12 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("queue", () =>
-        client.request("turn/queue", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-          input,
-        }),
-      );
+      const result = await client.request("turn/queue", {
+        ref: threadRef,
+        clientMutationId,
+        expectedInstanceId,
+        input,
+      });
       return decodeMutationResult(
         "queue",
         result,
@@ -880,13 +844,11 @@ export function createConversationService(
         "thread instance id",
       );
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("interrupt", () =>
-        client.request("turn/interrupt", {
-          ref: threadRef,
-          clientMutationId,
-          expectedInstanceId,
-        }),
-      );
+      const result = await client.request("turn/interrupt", {
+        ref: threadRef,
+        clientMutationId,
+        expectedInstanceId,
+      });
       return decodeMutationResult(
         "interrupt",
         result,
@@ -898,9 +860,7 @@ export function createConversationService(
     async compact() {
       requireCap("compact", "compact");
       const threadRef = requireRef();
-      await withCapabilityRefresh("compact", () =>
-        client.request("thread/compact/start", { ref: threadRef }),
-      );
+      await client.request("thread/compact/start", { ref: threadRef });
     },
 
     async clear() {
@@ -945,13 +905,16 @@ export function createConversationService(
         );
       const thread = response.thread;
       beginOpen(response.ref);
-      const conversation = projectThread(thread);
-      const activity = activityService.projectActivity(thread);
-      const caps = extractCapabilities(thread.evener.capabilities);
       const replacementInstance = nonemptyString(
         thread.evener.instanceId,
         "replacement instance id",
       );
+      const conversation = projectConversation({
+        ...hydrateThread({ thread }, response.ref, now()),
+        instanceId: replacementInstance,
+      });
+      const activity = activityService.projectActivity(thread);
+      const caps = extractCapabilities(thread.evener.capabilities);
       modelScope = { harness: thread.source, cwd: thread.cwd };
       instanceId = replacementInstance;
       threadId = thread.id;
@@ -969,13 +932,11 @@ export function createConversationService(
         throw new Error("The selected message has no persisted fork position.");
       requireCap("forkFromTurn", "forkFromTurn");
       const parentRef = requireRef();
-      const response = await withCapabilityRefresh("forkFromTurn", () =>
-        client.request("thread/fork", {
-          ref: parentRef,
-          sourceTurnId: String(transcriptEntryIndex),
-          deferInput: true,
-        }),
-      );
+      const response = await client.request("thread/fork", {
+        ref: parentRef,
+        sourceTurnId: String(transcriptEntryIndex),
+        deferInput: true,
+      });
       const childRef = nonemptyString(
         response.thread?.evener?.ref,
         "fork session reference",
@@ -988,13 +949,11 @@ export function createConversationService(
     async forkAside() {
       requireCap("forkFromTurn", "forkAside");
       const parentRef = requireRef();
-      const response = await withCapabilityRefresh("forkAside", () =>
-        client.request("thread/fork", {
-          ref: parentRef,
-          sourceTurnId: "",
-          aside: true,
-        }),
-      );
+      const response = await client.request("thread/fork", {
+        ref: parentRef,
+        sourceTurnId: "",
+        aside: true,
+      });
       const childRef = nonemptyString(
         response.thread?.evener?.ref,
         "aside session reference",
@@ -1007,9 +966,7 @@ export function createConversationService(
     async shutdown() {
       requireCap("shutdown", "shutdown");
       const threadRef = requireRef();
-      await withCapabilityRefresh("shutdown", () =>
-        client.request("thread/shutdown", { ref: threadRef }),
-      );
+      await client.request("thread/shutdown", { ref: threadRef });
     },
 
     async forceStop() {
@@ -1041,42 +998,34 @@ export function createConversationService(
     async changeModel(modelProvider, model) {
       requireCap("changeModel", "changeModel");
       const threadRef = requireRef();
-      await withCapabilityRefresh("changeModel", () =>
-        client.request("thread/model/set", {
-          ref: threadRef,
-          modelProvider,
-          model,
-        }),
-      );
+      await client.request("thread/model/set", {
+        ref: threadRef,
+        modelProvider,
+        model,
+      });
     },
 
     async setVisionModel(visionModel) {
       requireCap("changeVisionModel", "setVisionModel");
       const threadRef = requireRef();
-      await withCapabilityRefresh("setVisionModel", () =>
-        client.request("thread/vision-model/set", {
-          ref: threadRef,
-          visionModel,
-        }),
-      );
+      await client.request("thread/vision-model/set", {
+        ref: threadRef,
+        visionModel,
+      });
     },
 
     async setReasoningEffort(effort) {
       const threadRef = requireRef();
-      await withCapabilityRefresh("setReasoningEffort", () =>
-        client.request("thread/reasoning-effort/set", {
-          ref: threadRef,
-          reasoningEffort: effort,
-        }),
-      );
+      await client.request("thread/reasoning-effort/set", {
+        ref: threadRef,
+        reasoningEffort: effort,
+      });
     },
 
     async setGoal(objective) {
       requireCap("goal", "setGoal");
       const threadRef = requireRef();
-      const result = await withCapabilityRefresh("setGoal", () =>
-        client.request("goal/set", { ref: threadRef, objective }),
-      );
+      const result = await client.request("goal/set", { ref: threadRef, objective });
       const response = exactObject(result, ["started"], "goal result");
       if (typeof response.started !== "boolean") {
         throw new Error("ConversationService: invalid goal acknowledgment");
@@ -1086,24 +1035,20 @@ export function createConversationService(
     async rename(name) {
       requireCap("rename", "rename");
       const threadRef = requireRef();
-      await withCapabilityRefresh("rename", () =>
-        client.request("evener/thread/name/set", { ref: threadRef, name }),
-      );
+      await client.request("evener/thread/name/set", { ref: threadRef, name });
     },
 
     async cancelQueued(index, expectedEntryId, expectedInstanceId) {
       const threadRef = requireQueueInstance(expectedInstanceId);
       const expectedThreadId = nonemptyString(threadId, "thread id");
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("cancelQueued", () =>
-        client.request("turn/cancelQueued", {
-          ref: threadRef,
-          index,
-          clientMutationId,
-          expectedEntryId,
-          expectedInstanceId,
-        }),
-      );
+      const result = await client.request("turn/cancelQueued", {
+        ref: threadRef,
+        index,
+        clientMutationId,
+        expectedEntryId,
+        expectedInstanceId,
+      });
       validateQueueAction(
         "cancel",
         result,
@@ -1120,15 +1065,13 @@ export function createConversationService(
       requireQueueRun();
       const expectedThreadId = nonemptyString(threadId, "thread id");
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("promoteQueuedAsSteer", () =>
-        client.request("turn/promoteQueuedAsSteer", {
-          ref: threadRef,
-          index,
-          expectedEntryId,
-          expectedInstanceId,
-          clientMutationId,
-        }),
-      );
+      const result = await client.request("turn/promoteQueuedAsSteer", {
+        ref: threadRef,
+        index,
+        expectedEntryId,
+        expectedInstanceId,
+        clientMutationId,
+      });
       validateQueueAction(
         "promote",
         result,
@@ -1145,14 +1088,12 @@ export function createConversationService(
       requireQueueRun();
       const expectedThreadId = nonemptyString(threadId, "thread id");
       const clientMutationId = idFactory();
-      const result = await withCapabilityRefresh("drainAsSteer", () =>
-        client.request("turn/drainAsSteer", {
-          ref: threadRef,
-          expectedQueueRevision,
-          expectedInstanceId,
-          clientMutationId,
-        }),
-      );
+      const result = await client.request("turn/drainAsSteer", {
+        ref: threadRef,
+        expectedQueueRevision,
+        expectedInstanceId,
+        clientMutationId,
+      });
       validateQueueAction(
         "drain",
         result,
@@ -1182,27 +1123,35 @@ export function createConversationService(
   };
 }
 
-// Project older Turn[] into mobile timeline items. We build a minimal Thread
-// with just these turns and project it, extracting only the items. This reuses
-// the same projection logic (clustering, forward-compat) as open().
+// Project an older page into mobile timeline items: hydrate an empty Thread
+// under the real thread id (so a replayed image's sha route names this
+// session), merge the page into it with the package's mergeOlderItemPage —
+// the same across-turn merge and tool call/result folding the web applies to
+// a page — and keep only the display rows. The model's ref and clock are
+// placeholders the rows never read. The store still owns the prepend of
+// these rows onto the retained timeline (D23d moves that onto the model).
+// A page never repeats a transcript key: the hub's pager refuses to emit one
+// (internal/appitempaging/page.go validateCandidates), so there is no
+// within-page dedupe to do here.
 function projectOlderTurns(
-  turns: ThreadTurnsListResponse["data"],
+  page: ThreadTurnsListResponse,
+  threadId: string | null,
 ): MobileTimelineItem[] {
-  if (turns.length === 0) return [];
-  const mergedTurns = mergeFragmentTurns(turns);
+  if (page.data.length === 0) return [];
+  const id = threadId ?? "older";
   const thread: Thread = {
-    id: "older",
-    sessionId: "older",
+    id,
+    sessionId: id,
     preview: "",
     ephemeral: false,
     modelProvider: "",
     createdAt: 0,
     updatedAt: 0,
-    status: { type: "ready" },
+    status: { type: "idle" },
     cwd: "",
     cliVersion: "",
     source: "",
-    turns: mergedTurns,
+    turns: [],
     evener: {
       ref: "older",
       capabilities: {
@@ -1223,57 +1172,11 @@ function projectOlderTurns(
       queue: { revision: 0 },
     },
   };
+  const model = mergeOlderItemPage(hydrateThread({ thread }, "older", 0), page);
   // I3: Filter out actionable question rows from historical pages. A pending
   // ask cannot legitimately be older than newer continuation turns, and
   // page-local projection otherwise resurrects settled calls. All other
-  // projected page items/order/dedupe/cursor are preserved — only question
-  // rows are omitted.
-  return projectThread(thread).items.filter((item) => item.kind !== "question");
-}
-
-// A v4 page can overlap at turn boundaries and can carry fragments whose wire
-// ids differ while transcriptKey identifies the same item. Merge by that
-// stable identity before projecting, preserving the newer item's payload and
-// the transcript position used for deterministic ordering.
-function mergeFragmentTurns(
-  turns: ThreadTurnsListResponse["data"],
-): ThreadTurnsListResponse["data"] {
-  const byTurn = new Map<string, (typeof turns)[number]>();
-  for (const turn of turns) {
-    const existing = byTurn.get(turn.id);
-    if (!existing) {
-      byTurn.set(turn.id, {
-        ...turn,
-        items: turn.items ? [...turn.items] : [],
-      });
-      continue;
-    }
-    const items = [...(existing.items ?? []), ...(turn.items ?? [])];
-    byTurn.set(turn.id, {
-      ...existing,
-      ...turn,
-      items: mergeFragmentItems(items),
-    });
-  }
-  return [...byTurn.values()].map((turn) => ({
-    ...turn,
-    items: mergeFragmentItems(turn.items ?? []),
-  }));
-}
-
-function mergeFragmentItems(items: ThreadItem[]): ThreadItem[] {
-  const byIdentity = new Map<string, ThreadItem>();
-  for (const item of items) {
-    const identity = item.transcriptKey ?? item.id;
-    const prior = byIdentity.get(identity);
-    byIdentity.set(identity, prior ? { ...prior, ...item } : item);
-  }
-  return [...byIdentity.values()].sort((left, right) => {
-    const a = left.position;
-    const b = right.position;
-    if (a && b) return a.entry - b.entry || a.item - b.item;
-    if (a) return -1;
-    if (b) return 1;
-    return 0;
-  });
+  // projected page items/order/cursor are preserved — only question rows are
+  // omitted.
+  return projectTimeline(model).filter((item) => item.kind !== "question");
 }

@@ -1,8 +1,8 @@
 // @vitest-environment node
 
+import type { Thread, ThreadCapabilities, ThreadStartResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { expect, test } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadStartResponse } from "../../protocol/types.gen";
 
 import { startThread } from "./startThread";
 
@@ -211,5 +211,33 @@ test("passes the direct optional fields (harness/model/provider/effort/overrides
     model: "gpt-5",
     reasoningEffort: "high",
     launchOverrides: { sandbox: "full" },
+  });
+});
+
+// Component 06b: the host picker threads an explicit launch source. A LOCAL
+// choice stays off the wire entirely so the single-host request is
+// byte-identical to what it was before the picker existed.
+test("omits source for a local (or absent) choice", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("local:r"));
+
+  await startThread(fake, { cwd: "/tmp/p", prompt: "go", source: "local" });
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "go" }],
+  });
+});
+
+test("sets source for a non-local choice", async () => {
+  const fake = new FakeClient("ready");
+  fake.on("thread/start", () => startResponse("buildbox:r"));
+
+  await startThread(fake, { cwd: "/tmp/p", prompt: "go", source: "buildbox" });
+
+  expect(fake.calls[0]?.params).toEqual({
+    cwd: "/tmp/p",
+    input: [{ type: "text", text: "go" }],
+    source: "buildbox",
   });
 });

@@ -1,6 +1,6 @@
+import type { NavigationSessionSummary } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { type ChangeEvent, useEffect, useId, useState } from "react";
-import { errorText } from "../../protocol/errors";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { selectPinSectionSummaries } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
 import { Button, Dialog, Input, Sheet } from "../../widgets";

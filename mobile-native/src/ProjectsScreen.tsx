@@ -21,12 +21,12 @@ import type {
 	ArchiveParams,
 	NavigationProjectSummary,
 	NavigationSessionSummary,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { organizationJournal } from "./nativeOrganization";
 import type { NavigationActionCheckpoint } from "./navigationActionRepository";
 import { NavigationActions } from "./navigationActions";
-import { NavigationPages } from "./navigationPages";
+import { NavigationPages, updating } from "./navigationPages";
 import { revealNavigationRow } from "./navigationReveal";
 import { navigationTree } from "./navigationTree";
 import {
@@ -238,7 +238,6 @@ export function PageList<T>({
 				!focused ||
 				!current.loaded ||
 				current.loading ||
-				current.stale ||
 				(!allowError && current.error) ||
 				current.remaining <= 0
 			)
@@ -262,6 +261,7 @@ export function PageList<T>({
 	useFocusEffect(
 		useCallback(() => {
 			let active = true;
+			if (ready) pages.resume();
 			if (ready && revealRef) {
 				setRevealError(null);
 				setRevealed(null);
@@ -315,24 +315,22 @@ export function PageList<T>({
 					</Action>
 				</View>
 			) : null}
+			{updating(state) ? (
+				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
+					<Copy muted>Updating…</Copy>
+				</View>
+			) : null}
 			{state.error ? (
 				<View style={{ paddingHorizontal: 16, paddingTop: 8 }}>
-					<ErrorMessage message={state.stale ? null : state.error} />
-					{state.stale ? (
-						<Copy muted>
-							Updates are available. Refresh to see the latest list.
-						</Copy>
-					) : null}
-					{state.error ? (
-						<Action
-							disabled={!ready || state.loading}
-							onPress={() => {
-								refreshList();
-							}}
-						>
-							Refresh list
-						</Action>
-					) : null}
+					<ErrorMessage message={state.error} />
+					<Action
+						disabled={!ready || state.loading}
+						onPress={() => {
+							refreshList();
+						}}
+					>
+						Refresh list
+					</Action>
 				</View>
 			) : null}
 			<FlatList
@@ -402,7 +400,7 @@ export function PageList<T>({
 							</View>
 						) : state.remaining > 0 ? (
 							<Action
-								disabled={!ready || !focused || state.loading || state.stale}
+								disabled={!ready || !focused || state.loading}
 								onPress={state.error ? retryMore : loadMore}
 							>
 								{state.error
@@ -441,7 +439,6 @@ export function PageList<T>({
 									disabled={
 										!ready ||
 										state.loading ||
-										state.stale ||
 										!!actionState?.pending ||
 										!!actionState?.uncertain ||
 										!!actionState?.storageUnavailable
@@ -456,15 +453,8 @@ export function PageList<T>({
 											actionState.storageUnavailable
 										)
 											return;
-										const snapshot = pages.getSnapshot();
 										const invoke = (operation: () => void) => {
-											if (
-												current.current === binding &&
-												snapshot === pages.getSnapshot() &&
-												!snapshot.stale &&
-												!snapshot.loading
-											)
-												operation();
+											if (current.current === binding) operation();
 										};
 										Alert.alert(
 											title(item),
@@ -604,6 +594,19 @@ function OrganizationStatus({
 const projectKey = (row: NavigationProjectSummary) => row.key;
 const sessionRef = (row: NavigationSessionSummary) => row.ref;
 
+// A project row this hub owns alone is the only one the source-less archive and
+// favorite requests below can address: a project decision keys on (source, project
+// ID), and an unqualified request is this hub's own decision — so a project whose
+// rows also live on a host (or only on a host) would keep that host's old
+// decision, which is exactly the merged-project gap. The web rail fans one
+// request per owning source out and keeps a durable recovery record for it; this
+// client has neither, so it withdraws the actions instead of half-applying them.
+// The wire spells this hub's own source "local" and omits the field entirely for
+// a controller-only project, which is what the summary reports here.
+function controllerOwnedProject(sources?: readonly string[]): boolean {
+	return (sources ?? []).every((source) => source === "local");
+}
+
 export function ProjectsScreen({
 	route,
 	navigation,
@@ -654,7 +657,7 @@ export function ProjectsScreen({
 					ready={state === "ready"}
 					rowKey={projectKey}
 					organization={(row) =>
-						row.key === "no-project"
+						row.key === "no-project" || !controllerOwnedProject(row.sources)
 							? null
 							: {
 									target: {

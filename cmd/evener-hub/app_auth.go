@@ -58,14 +58,20 @@ type hubAuthController struct {
 	// duplicate caller before the shared probe completes.
 	credentialTestJoined func()
 
-	// credMu serializes an instance rename against every other credential
-	// write. A rename asks which credentials already sit under the new name
-	// and then moves the old instance's onto it; a stored key or OAuth
-	// record written between those two steps is one the check never saw and
-	// the move would overwrite. Writers take the read side — they are
-	// already safe against each other through the credentials store's own
-	// mutex and the OAuth state files. Rename and logout take it exclusively
-	// for their complete check-and-write operations.
+	// credMu serializes the instances controller's providers.toml mutations
+	// against every credential write. A mutation asks which credentials
+	// already sit under a name, or which endpoint it resolves to, and then
+	// rewrites the file and reloads the registry; a stored key or OAuth
+	// record written between those steps is one the check never saw and lands
+	// against an instance the client never reviewed. A reload commits what it
+	// read, so one running across a credential clear would publish a view the
+	// clear had already invalidated. Credential writers take the write side
+	// too - credentialWrite and credentialWriteExclusive hold it across the
+	// store write and the registry reload that follows it, so a reload can
+	// never pair a pre-write registry with a post-write credential - and
+	// Create, Edit (including a rename), Remove, SetDefault and logout hold it
+	// exclusively for their complete check-and-write operations. List is the
+	// read side.
 	credMu sync.RWMutex
 
 	mu          sync.Mutex
@@ -82,17 +88,34 @@ type hubAuthController struct {
 // controller is byte-for-byte identical to before this hook existed.
 var hubAuthControllerSetup func(*hubAuthController)
 
+// hubAuthFlowTTL bounds both sign-in flow maps: a login flow the user never
+// completes and a device flow they never authorize. LoginStart sweeps expired
+// entries as it records a new one, and a completion refuses a flow older than
+// the window and drops it - without that, an abandoned flow and its PKCE
+// verifier would sit in the map for the life of the process. Device codes
+// expire on the provider's side in about this time.
+const hubAuthFlowTTL = 15 * time.Minute
+
 type hubAuthFlow struct {
-	Provider     string
-	State        string
-	CodeVerifier string
-	RedirectURI  string
+	Provider string
+	State    string
+	// EndpointFingerprint is the endpoint the instance resolved to when the
+	// flow was created: the destination the user began signing in for.
+	EndpointFingerprint string
+	CodeVerifier        string
+	RedirectURI         string
+	// StartedAt is when the flow was created, for the same expiry deviceFlows
+	// carry (hubAuthFlowTTL).
+	StartedAt time.Time
 }
 
 type deviceFlow struct {
-	Provider  string
-	Code      authopenai.DeviceCode
-	StartedAt time.Time
+	Provider string
+	Code     authopenai.DeviceCode
+	// EndpointFingerprint is the endpoint the instance resolved to when the
+	// flow was created, as on hubAuthFlow.
+	EndpointFingerprint string
+	StartedAt           time.Time
 }
 
 func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
@@ -181,7 +204,26 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 // instance may still be a curated implicit provider with no credential in
 // this environment; the pane lists those too, so they resolve without one
 // (spec §5.2, §11.3). Anything else is unsupported.
+//
+// The shared side of credMu covers the answer, so a status cannot be generated
+// inside an in-flight credential write's exclusive section: the write and the
+// reload that re-derives the instance set from it are one step, and an answer
+// read between them would pair the credential the write had landed with a
+// registry snapshot that predates it - ActiveSource "none" beside
+// HasStoredFile true. Everything the answer reads (the registry snapshot, the
+// credential store's own mutex, the OAuth state files) is a different lock, so
+// taking credMu here cannot recurse; the listing, which already holds the
+// shared side, calls statusLocked instead.
 func (c *hubAuthController) Status(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
+	return c.statusLocked(params)
+}
+
+// statusLocked is Status's body for a caller that already holds credMu's shared
+// side - the listing, whose one snapshot answers many statuses at once. It must
+// not take credMu itself.
+func (c *hubAuthController) statusLocked(params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
 	r := c.registry()
 	if r == nil {
@@ -244,15 +286,38 @@ func (c *hubAuthController) LoginStart(params appwire.AuthLoginStartParams) (app
 		return appwire.AuthLoginStartResponse{}, err
 	}
 
+	// Captured with the flow: the authorize round trip below is long enough
+	// for an edit to re-point the instance, and this is the only value that
+	// can say which endpoint the user began signing in for. An empty capture is
+	// only ever "no destination to check", a hub with no state root to key
+	// with, or a destination whose fingerprint the hub could not key right now:
+	// the last is one the completion would have no comparison for, so it is
+	// refused here, before a flow is recorded (verifyFlowEndpoint).
+	endpoint := c.endpointFingerprintFor(provider)
+	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
+		return appwire.AuthLoginStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+	}
 	c.mu.Lock()
 	if c.flows == nil {
 		c.flows = map[string]hubAuthFlow{}
 	}
+	// Abandoned flows have no other reaper: a start that was never completed
+	// would otherwise keep its PKCE verifier for the life of the process. The
+	// sweep runs as a new flow is recorded, under the same lock, so the map
+	// holds only live flows plus the one being added.
+	now := c.now()
+	for id, flow := range c.flows {
+		if now.Sub(flow.StartedAt) >= hubAuthFlowTTL {
+			delete(c.flows, id)
+		}
+	}
 	c.flows[state] = hubAuthFlow{
-		Provider:     provider,
-		State:        state,
-		CodeVerifier: verifier,
-		RedirectURI:  redirectURI,
+		Provider:            provider,
+		State:               state,
+		EndpointFingerprint: endpoint,
+		CodeVerifier:        verifier,
+		RedirectURI:         redirectURI,
+		StartedAt:           now,
 	}
 	c.mu.Unlock()
 
@@ -277,6 +342,15 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	}
 	if flow.Provider != provider {
 		return appwire.AuthLoginCompleteResponse{}, appwire.InvalidParams("auth login provider does not match flow")
+	}
+	// The same window deviceFlows expire on: a sign-in started long ago is one
+	// the browser abandoned, and its flow is dropped here rather than left to
+	// the next start's sweep.
+	if c.now().Sub(flow.StartedAt) >= hubAuthFlowTTL {
+		c.mu.Lock()
+		delete(c.flows, flowID)
+		c.mu.Unlock()
+		return appwire.AuthLoginCompleteResponse{}, appwire.Conflict("the sign-in flow expired; start the sign-in again")
 	}
 
 	code, returnedState, err := authopenai.ParseRedirectURL(params.RedirectURL)
@@ -303,13 +377,23 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 		record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. Only the key is threaded into the check below: the flow guard's
+	// empty capture is refused on the destination and the state root it reads,
+	// not on the resolution error.
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	// Asked again inside the lock: the check at the top of this call ran
-	// before the token exchange, which is a browser round trip long, and a
-	// rename holds credMu exclusively while it re-keys providers.toml and
-	// reloads. Only the answer under the lock describes the instance this
-	// record lands under.
+	// before the token exchange, which is a browser round trip long, and an
+	// instance mutation holds credMu exclusively while it rewrites
+	// providers.toml and reloads. Only the answer under the lock describes
+	// the instance, and the endpoint, this record lands under.
 	if err := c.credentialWrite(func() error {
 		if err := c.requiresCodex(provider); err != nil {
+			return err
+		}
+		if err := c.verifyFlowEndpointWithKey(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -320,9 +404,6 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	c.mu.Lock()
 	delete(c.flows, flowID)
 	c.mu.Unlock()
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthLoginCompleteResponse{}, err
-	}
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -338,10 +419,23 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	// same locked write as the removal: a rename holds credMu exclusively
 	// while it re-keys providers.toml and reloads, so a scheme read outside
 	// the lock can aim the clear at a store this name no longer
-	// authenticates from.
+	// authenticates from. The endpoint assertion is checked there too, for the
+	// same reason: the sign-out was confirmed for the row the client listed,
+	// and a name another client has re-pointed since belongs to a different
+	// instance.
+	//
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	codex := false
 	removed := false
 	if err := c.credentialWriteExclusive(func() error {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
 		codex = c.instanceIsCodex(name)
 		if !codex {
 			_, hadFile := c.creds.Get(name)
@@ -376,9 +470,6 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	}); err != nil {
 		return appwire.AuthLogoutResponse{}, err
 	}
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthLogoutResponse{}, err
-	}
 	if !codex {
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
@@ -390,31 +481,79 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 }
 
-// credentialWrite runs one stored-key or OAuth-record write under the read
-// side of credMu, which is what a rename takes exclusively while it checks
-// the destination and moves onto it (see credMu).
+// credentialWriteBetween runs inside a credential write's critical section,
+// after the credential has landed and before the reload that re-derives the
+// instance set from it. A test seam, so the state in between can be held
+// still and a concurrent listing asked what it sees there.
+var credentialWriteBetween = func() {}
+
+// credentialWrite runs one stored-key or OAuth-record write and the registry
+// reload that re-derives the instance set from it as one exclusive critical
+// section of credMu. The two must not be split: a listing that ran between
+// them would pair the credential the write had landed with a registry snapshot
+// that predates it - ActiveSource "none" beside HasStoredFile true - and that
+// incoherence is what credMu exists to prevent. Taking the exclusive side also
+// keeps the section whole against the listings' shared side; writers remain
+// safe against each other through the credentials store's own mutex, they just
+// no longer run in parallel.
+//
+// A reload failure is deliberately not returned, as it never was: the
+// credential is stored either way, so failing the response would report a
+// landed write as lost and have the caller retype one the hub already has. The
+// failure is not lost either: reloadRegistryLocked leaves it on the registry,
+// which is where the pane reads it (Diagnostics) and where instance writes are
+// refused until the file loads (WritesRefused, spec §10).
 func (c *hubAuthController) credentialWrite(write func() error) error {
-	c.credMu.RLock()
-	defer c.credMu.RUnlock()
-	return write()
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+	if err := write(); err != nil {
+		return err
+	}
+	credentialWriteBetween()
+	_ = c.reloadRegistryLocked()
+	return nil
 }
 
 // credentialWriteExclusive keeps a check-and-remove operation together against
-// other controller credential writers.
+// other controller credential writers, and closes with the same reload
+// credentialWrite performs: its callers rely on the instance set being
+// re-derived from the removal before the section ends, exactly as the shared
+// writers do, and its reload failure is not returned either, for the reason
+// credentialWrite states.
 func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
-	return write()
+	if err := write(); err != nil {
+		return err
+	}
+	credentialWriteBetween()
+	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
+	return nil
 }
 
-// reloadRegistry re-derives the instance set after a credential changed: a
-// key that has just been stored can make an implicit instance exist, and
-// clearing one can take it away (spec §5.1).
-func (c *hubAuthController) reloadRegistry() error {
+// reloadRegistryLocked re-derives the instance set after a credential changed:
+// a key that has just been stored can make an implicit instance exist, and
+// clearing one can take it away (spec §5.1). The caller holds credMu.
+//
+// It must not take credMu itself. credentialWrite and credentialWriteExclusive
+// call it while holding their exclusive section, which is what makes a write
+// and the reload that derives the instance set from it one step. A reload is
+// not just a read - it commits what it read - so one that ran across another
+// writer's section could publish a view that section had already invalidated.
+func (c *hubAuthController) reloadRegistryLocked() error {
 	if c.reg == nil {
 		return nil
 	}
 	return c.reg.Reload()
+}
+
+// reloadRegistry is the locked form of reloadRegistryLocked, for callers that
+// changed something outside a credential write. Nobody may call it while
+// holding credMu.
+func (c *hubAuthController) reloadRegistry() error {
+	c.credMu.Lock()
+	defer c.credMu.Unlock()
+	return c.reloadRegistryLocked()
 }
 
 // List is what the credentials pane renders: one row per curated implicit
@@ -422,6 +561,16 @@ func (c *hubAuthController) reloadRegistry() error {
 // where a fresh install signs in or enters its first key — followed by every
 // explicit instance not already listed (spec §11.3).
 func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListResponse, error) {
+	// The shared side of credMu covers the whole listing: a credential write
+	// holds it exclusively from the moment the write lands until the reload
+	// that re-derives the instance set from it has committed, so a listing that
+	// ran inside that section would pair the credential the write had landed
+	// with a registry snapshot that predates it - ActiveSource "none" beside
+	// HasStoredFile true. Everything below (statusLocked, instanceStatus, the
+	// registry snapshot) reads the credential store's own mutex and files,
+	// never credMu, so taking it here cannot recurse.
+	c.credMu.RLock()
+	defer c.credMu.RUnlock()
 	out := appwire.AuthListResponse{}
 	r := c.registry()
 	if r == nil {
@@ -433,7 +582,7 @@ func (c *hubAuthController) List(_ appwire.EmptyParams) (appwire.AuthListRespons
 		if !ok || !registry.BoolValue(p.Implicit) {
 			continue
 		}
-		status, err := c.Status(appwire.AuthStatusParams{Provider: id})
+		status, err := c.statusLocked(appwire.AuthStatusParams{Provider: id})
 		if err != nil {
 			return appwire.AuthListResponse{}, err
 		}
@@ -455,6 +604,12 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	if strings.TrimSpace(params.Value) == "" {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams("value is required")
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	// Both refusals below ask what name authenticates with, and a rename can
 	// change the answer: it holds credMu exclusively while it re-keys
 	// providers.toml and reloads, so only a check inside that lock describes
@@ -472,11 +627,30 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 		if c.instanceUsesGCPADC(name) {
 			return appwire.InvalidParams(name + " authenticates with Google application-default credentials or a stored credential JSON, not an API key: use evener/auth/credentialJson/set")
 		}
+		// An instance that authenticates nothing reads no key either: the
+		// transport sends no credential at all (llm/authenticators.go), so a
+		// stored key would be one nothing reads, reported as a successful
+		// credential save, and left under a name a later edit can point at a
+		// scheme that does read it.
+		if auth, ok := c.instanceAuthScheme(name); ok && auth == registry.AuthNone {
+			return appwire.InvalidParams(name + " authenticates without a credential: it reads no API key, so a stored one would be a credential nothing sends")
+		}
+		// A name that is neither keeps the key where nothing reads it: the pane
+		// only offers this write for a row its listing had, so a name that no
+		// longer resolves is one an instance was removed from since - and the
+		// key would wait under it for whatever instance is authored under that
+		// name next (see Remove). Asking here, under the credential lock, is
+		// what makes the answer describe the state the write lands in: a removal
+		// holds that lock exclusively across its cleanup and its reload, so one
+		// cannot be in flight while the name is checked.
+		if !c.nameIsConnectable(name) {
+			return appwire.InvalidParams(fmt.Sprintf("%q is not a configured provider or instance: nothing reads a key stored under it", name))
+		}
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
 		return c.setCredential(name, params.Value)
 	}); err != nil {
-		return appwire.AuthStatusResponse{}, err
-	}
-	if err := c.reloadRegistry(); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	return c.Status(appwire.AuthStatusParams{Provider: name})
@@ -494,10 +668,22 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 // exactly as it was.
 func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
 	name := normalizeAuthProvider(params.Provider)
-	if err := c.credentialWrite(func() error { return c.clearCredential(name) }); err != nil {
-		return appwire.AuthStatusResponse{}, err
-	}
-	if err := c.reloadRegistry(); err != nil {
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
+	// The endpoint check and the clear are one step, the way the set is: the
+	// clear was confirmed for the row the client listed, and a name another
+	// client has re-pointed since must not have its replacement instance's key
+	// removed.
+	if err := c.credentialWrite(func() error {
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
+		return c.clearCredential(name)
+	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	return c.Status(appwire.AuthStatusParams{Provider: name})
@@ -554,6 +740,17 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	if err := c.requiresCodex(provider); err != nil {
 		return appwire.AuthDeviceStartResponse{}, err
 	}
+	// Captured before the device-code request, which is itself a network round
+	// trip: this is the endpoint the flow starts on. One an edit arrives at
+	// during that request has to fail the completion's comparison rather than
+	// be adopted as the destination the user asked for. As on LoginStart, an
+	// empty capture with a destination to name and a state root that cannot key
+	// it is refused before a device code is requested at all: the poll would
+	// have nothing to compare (verifyFlowEndpoint).
+	endpoint := c.endpointFingerprintFor(provider)
+	if endpoint == "" && c.endpointHasDestination(provider) && c.hasEndpointStateRoot() {
+		return appwire.AuthDeviceStartResponse{}, appwire.Conflict(provider + " cannot be checked against its endpoint: the hub cannot key its endpoint fingerprints right now, so this destination could not be checked when the sign-in completes; review its destination and start the sign-in again")
+	}
 	dc, err := c.requestDeviceCode(ctx, c.client, c.config())
 	if err != nil {
 		if errors.Is(err, authopenai.ErrDeviceCodeNotEnabled) {
@@ -569,7 +766,17 @@ func (c *hubAuthController) DeviceStart(ctx context.Context, params appwire.Auth
 	if c.deviceFlows == nil {
 		c.deviceFlows = map[string]deviceFlow{}
 	}
-	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, StartedAt: c.now()}
+	// Abandoned device flows have no other reaper: expiry is only checked when a
+	// flow is polled, so a start the user never polls would keep its device code
+	// for the life of the process. Sweep under the same lock, as LoginStart does
+	// for c.flows, so the map holds only live flows plus the one being added.
+	now := c.now()
+	for id, flow := range c.deviceFlows {
+		if now.Sub(flow.StartedAt) >= hubAuthFlowTTL {
+			delete(c.deviceFlows, id)
+		}
+	}
+	c.deviceFlows[flowID] = deviceFlow{Provider: provider, Code: dc, EndpointFingerprint: endpoint, StartedAt: now}
 	c.mu.Unlock()
 	return appwire.AuthDeviceStartResponse{
 		Provider:        provider,
@@ -595,7 +802,7 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	if flow.Provider != provider {
 		return appwire.AuthDevicePollResponse{}, appwire.InvalidParams("auth device provider does not match flow")
 	}
-	if c.now().Sub(flow.StartedAt) >= 15*time.Minute {
+	if c.now().Sub(flow.StartedAt) >= hubAuthFlowTTL {
 		c.mu.Lock()
 		delete(c.deviceFlows, flowID)
 		c.mu.Unlock()
@@ -621,10 +828,21 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 		record.AccountID = envvars.FirstNonEmpty(claims.AccountID, record.AccountID)
 		record.WorkspaceID = envvars.FirstNonEmpty(claims.WorkspaceID, record.WorkspaceID)
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. Only the key is threaded into the check below: the flow guard's
+	// empty capture is refused on the destination and the state root it reads,
+	// not on the resolution error.
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
 	// Re-checked under the lock for the same reason LoginComplete re-checks
-	// it: the poll's own exchange is the long step a rename can land in.
+	// it: the poll's own exchange is the long step an instance mutation can
+	// land in.
 	if err := c.credentialWrite(func() error {
 		if err := c.requiresCodex(provider); err != nil {
+			return err
+		}
+		if err := c.verifyFlowEndpointWithKey(provider, flow.EndpointFingerprint, key); err != nil {
 			return err
 		}
 		return c.saveAuth(c.stateDir, provider, record)
@@ -634,9 +852,6 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	c.mu.Lock()
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
-	if err := c.reloadRegistry(); err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
 
 	status, err := c.openAIInstanceStatus(provider)
 	if err != nil {
@@ -696,6 +911,216 @@ func (c *hubAuthController) instanceAuthScheme(name string) (string, bool) {
 	return "", false
 }
 
+// nameIsConnectable reports whether name is something this hub authenticates
+// with: an instance the registry holds or a curated implicit provider it
+// declares, the pair instanceAuthScheme answers for (spec §5.2, §11.3). A
+// credential write asks before it stores a secret, so a name that has stopped
+// meaning anything - an instance removed since the pane listed it - cannot take
+// a key nothing reads and hand it to whatever instance is authored under that
+// name next. Without a registry there is no view to answer from (Status and
+// List call the same configuration unsupported), so the write is not refused
+// on its account.
+func (c *hubAuthController) nameIsConnectable(name string) bool {
+	if c.registry() == nil {
+		return true
+	}
+	_, ok := c.instanceAuthScheme(name)
+	return ok
+}
+
+// endpointInstanceFor resolves name the way every endpoint question reads it:
+// the instance the registry holds under the name, or, for a curated provider
+// with no instance yet, the listing view resolvedInstanceFor builds - the same
+// lookup List serves a setup entry from. The registry snapshot travels back
+// with the instance so the caller's fingerprint and destination questions
+// describe one generation of providers.toml.
+func (c *hubAuthController) endpointInstanceFor(name string) (*registry.Registry, registry.Instance, bool) {
+	r := c.registry()
+	if r == nil {
+		return nil, registry.Instance{}, false
+	}
+	if inst, ok := r.Instance(name); ok {
+		return r, inst, true
+	}
+	// A curated provider with no instance yet - no credential - is still listed,
+	// with a setup entry whose fingerprint is built by resolving the provider.
+	// A client asserts that value, so this answers from the same lookup List
+	// uses; anything else would refuse the first key for every provider that
+	// needs one.
+	p, ok := r.Provider(name)
+	if !ok {
+		return nil, registry.Instance{}, false
+	}
+	inst, ok := resolvedInstanceFor(r, name, p.Hidden)
+	if !ok {
+		return nil, registry.Instance{}, false
+	}
+	return r, inst, true
+}
+
+// endpointFingerprintFor is the destination fingerprint a client was shown for
+// name, asked of the same registry the write lands against and over the same
+// identity a listing row serves (destinationFingerprint). Empty when the name
+// resolves to no destination here, or when the hub has no key to digest with -
+// which is also what a client that asserts nothing sends. The two are different
+// states this one value cannot tell apart; endpointHasDestination answers which
+// one it is for the flow guards that have to (verifyFlowEndpoint, and the
+// start-time refusals in LoginStart and DeviceStart).
+func (c *hubAuthController) endpointFingerprintFor(name string) string {
+	r, inst, ok := c.endpointInstanceFor(name)
+	if !ok {
+		return ""
+	}
+	return destinationFingerprint(c.stateDir, r, inst)
+}
+
+// endpointFingerprintForKey is endpointFingerprintFor over a key the caller
+// already resolved (destinationFingerprintKeyed). The credential writes resolve
+// the key once, before taking credMu, and check their assertion against that
+// key inside the lock: a resolution there can repair the key file (an
+// inter-process lock and a write), and a repair must not run while the
+// credential lock is held - List resolves its listing's key outside the same
+// lock for the same reason. Empty for the same reasons endpointFingerprintFor
+// is, plus a key the hub could not resolve.
+func (c *hubAuthController) endpointFingerprintForKey(name string, key []byte) string {
+	r, inst, ok := c.endpointInstanceFor(name)
+	if !ok {
+		return ""
+	}
+	return destinationFingerprintKeyed(key, r, inst)
+}
+
+// endpointHasDestination reports whether name has a destination this hub must
+// be able to check at all, whether or not it can key a fingerprint for it
+// right now: it resolves to an instance that is not hidden and carries a base
+// URL (destinationInstance). A configured state root that cannot yield its key
+// leaves endpointFingerprintFor empty for exactly the names this answers true
+// for, and a sign-in flow started there would have nothing to compare when it
+// completes - so the flow guards refuse it rather than file the record
+// wherever the instance points by then.
+func (c *hubAuthController) endpointHasDestination(name string) bool {
+	r, inst, ok := c.endpointInstanceFor(name)
+	if !ok {
+		return false
+	}
+	_, ok = destinationInstance(r, inst)
+	return ok
+}
+
+// hasEndpointStateRoot reports whether this hub keeps endpoint fingerprints at
+// all: a state root to key them under. A controller with none has nothing to
+// key with, so there is nothing to refuse (verifyEndpointFingerprint's rule),
+// and an empty capture is the only thing a flow on it can carry; a state root
+// that exists but cannot yield its key is the state the flow guards refuse.
+func (c *hubAuthController) hasEndpointStateRoot() bool { return strings.TrimSpace(c.stateDir) != "" }
+
+// verifyEndpointFingerprint refuses a credential write whose client asserted an
+// endpoint this name no longer resolves to. Callers run it inside the
+// credential lock, which is what makes the check and the write one step: a
+// client's own comparison reads a listing that a concurrent change can outdate,
+// so between its check and this RPC the name can move to an endpoint the user
+// never reviewed - and then the secret would land there.
+//
+// This form resolves the fingerprint key through the same seam List resolves
+// its key with (resolveEndpointFingerprintKey) and delegates to
+// verifyEndpointFingerprintWithKey; the credential writes resolve the key
+// before taking credMu and call that form, so no resolution - and no repair of
+// the key file it can make - runs while that lock is held.
+//
+// An empty assertion is a client that was shown no endpoint. That is nothing to
+// check only while the hub itself has nothing to key with - no state root at
+// all, a bare controller - or can key a fingerprint: a state root that exists
+// but cannot be read or written is exactly the state that serves empty
+// fingerprints to every client, and accepting the assertions that follow would
+// let a concurrent endpoint change receive the credential with no verification
+// at all. There the write fails closed, with a refusal the user can act on.
+func (c *hubAuthController) verifyEndpointFingerprint(name, asserted string) error {
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
+	return c.verifyEndpointFingerprintWithKey(name, asserted, key, keyErr)
+}
+
+// verifyEndpointFingerprintWithKey is verifyEndpointFingerprint over a key the
+// caller resolved before taking its credential lock, with keyErr the reason it
+// has none. The credential writes resolve the key before that lock and call
+// this form, because a resolution here could repair the key file (an
+// inter-process lock and a write) while every listing and credential op waited
+// on credMu. Threading the result in keeps the answer for every case: keyErr is
+// the failed resolution the empty assertion is refused for, and a key the hub
+// could not resolve is the empty current value an assertion is refused against.
+func (c *hubAuthController) verifyEndpointFingerprintWithKey(name, asserted string, key []byte, keyErr error) error {
+	if asserted == "" {
+		if keyErr != nil {
+			return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot key its endpoint fingerprints right now; this destination cannot be verified, so review its destination and enter the credential again")
+		}
+		return nil
+	}
+	current := c.endpointFingerprintForKey(name, key)
+	// A fingerprint the hub cannot match is a refusal, not a bypass: the client
+	// was shown an endpoint, and a hub that can no longer describe where the
+	// name points cannot say the credential would land there. Landing it anyway
+	// would let a deleted key file or an unreachable state root switch the guard
+	// off without a word. A client that asserted nothing is handled above: that
+	// is nothing to check only while the hub can key a fingerprint or has no
+	// state root at all.
+	if current == "" {
+		return appwire.Conflict(name + " cannot be checked against the endpoint this form was opened on: the hub cannot resolve it now, so review its destination and enter the credential again")
+	}
+	if current != asserted {
+		return appwire.Conflict(name + " no longer resolves to the endpoint this form was opened on: review its destination and enter the credential again")
+	}
+	return nil
+}
+
+// verifyFlowEndpoint refuses a sign-in flow whose instance no longer resolves
+// to the endpoint the flow was started for. The flow's own exchange is a
+// browser round trip long, and an edit that re-points base_url keeps the auth
+// scheme the completion re-checks, so the scheme alone cannot say that the
+// record would land where the user signed in.
+//
+// An empty capture means one of two states, and only one of them is refused. A
+// hub with no state root at all has nothing to key with - the rule
+// verifyEndpointFingerprint states for the same bare controller - so an empty
+// capture is the only thing a flow on it can carry, and it is accepted. A hub
+// with a state root that could not yield its key when the flow started has an
+// empty capture for a destination that is real, and the completion has nothing
+// to compare: accepting it would file the record wherever the instance points
+// now, so it is refused (LoginStart and DeviceStart refuse to start that flow
+// in the first place). A hidden or unresolvable name, which has no destination
+// to name, is accepted in either state. An empty current value (the hub has no
+// key now) is refused as before: the hub cannot say the record would land
+// where the flow was started.
+func (c *hubAuthController) verifyFlowEndpoint(name, started string) error {
+	key, _ := resolveEndpointFingerprintKey(c.stateDir)
+	return c.verifyFlowEndpointWithKey(name, started, key)
+}
+
+// verifyFlowEndpointWithKey is verifyFlowEndpoint over a key the caller
+// resolved before taking its credential lock (verifyEndpointFingerprintWithKey
+// states why the resolution must not happen there). The empty capture's refusal
+// reads the destination and the state root rather than the key, so it is
+// untouched; a key the hub could not resolve leaves the empty current value the
+// comparison below refuses, exactly as the resolving wrapper's own resolution
+// produced it.
+func (c *hubAuthController) verifyFlowEndpointWithKey(name, started string, key []byte) error {
+	if started == "" {
+		if c.endpointHasDestination(name) && c.hasEndpointStateRoot() {
+			return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot key its endpoint fingerprints right now, so review its destination and start the sign-in again")
+		}
+		return nil
+	}
+	current := c.endpointFingerprintForKey(name, key)
+	// As verifyEndpointFingerprint reads it: a flow bound to an endpoint the hub
+	// can no longer describe is one whose record nobody can place, so it is
+	// refused rather than filed somewhere the user never signed in for.
+	if current == "" {
+		return appwire.Conflict(name + " cannot be checked against the endpoint this sign-in was started on: the hub cannot resolve it now, so review its destination and start the sign-in again")
+	}
+	if current != started {
+		return appwire.Conflict(name + " no longer resolves to the endpoint this sign-in was started on: review its destination and start the sign-in again")
+	}
+	return nil
+}
+
 // instanceIsCodex reports whether name authenticates through the Codex
 // OAuth flow (spec §9.5): its transport auth is oauth-openai-codex.
 func (c *hubAuthController) instanceIsCodex(name string) bool {
@@ -727,6 +1152,12 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	if err := tokenauth.ValidateCredentialJSON([]byte(value)); err != nil {
 		return appwire.AuthStatusResponse{}, appwire.InvalidParams(fmt.Sprintf("not a Google credential JSON: %v", err))
 	}
+	// The fingerprint key is resolved once, before the credential lock is taken:
+	// resolving it can repair the key file (an inter-process lock and a write),
+	// and a repair under that lock would hold every listing and credential op
+	// behind it. One key for the whole write, so the assertion below is checked
+	// against the key the caller's row was served with.
+	key, keyErr := resolveEndpointFingerprintKey(c.stateDir)
 	if err := c.credentialWrite(func() error {
 		// Asked again inside the lock, because it is the answer at the moment
 		// of the write that matters: a rename holds credMu exclusively while
@@ -737,11 +1168,11 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 		if err := c.requiresGCPADC(name); err != nil {
 			return err
 		}
+		if err := c.verifyEndpointFingerprintWithKey(name, params.ExpectedEndpointFingerprint, key, keyErr); err != nil {
+			return err
+		}
 		return c.setCredential(name, value)
 	}); err != nil {
-		return appwire.AuthStatusResponse{}, err
-	}
-	if err := c.reloadRegistry(); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
 	return c.Status(appwire.AuthStatusParams{Provider: name})

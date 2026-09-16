@@ -77,6 +77,14 @@ func TestAfterResponseWrittenWithoutConnectionReportsFalse(t *testing.T) {
 	}
 }
 
+func TestRunAfterResponseWrittenRunsNowWithoutAConnection(t *testing.T) {
+	ran := false
+	RunAfterResponseWritten(context.Background(), func() { ran = true })
+	if !ran {
+		t.Fatal("callback did not run on a context that carries no connection")
+	}
+}
+
 func TestRunPendingAfterWriteRunsUnwrittenCallbacks(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test", Version: "1", SourceID: "local"})
 	conn := server.NewConnection("conn-1")

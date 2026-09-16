@@ -254,10 +254,11 @@ func hubThreadModelLabel(thread appwire.Thread) string {
 	return ""
 }
 
-func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
-	node := hubNodeFromThread(thread)
-	caps := thread.Evener.Capabilities
-	capabilities := hubSessionCapabilities{
+// hubCapabilitiesFromWire maps the wire's capability set onto the session
+// detail's. Read from the thread snapshot and from the set a
+// thread/status/changed carries inline, so both spell the mapping once.
+func hubCapabilitiesFromWire(caps appwire.ThreadCapabilities, resumeRequired bool) hubSessionCapabilities {
+	return hubSessionCapabilities{
 		Send:              caps.Send,
 		Steer:             caps.Steer,
 		Interrupt:         caps.Interrupt,
@@ -269,8 +270,13 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		ChangeVisionModel: caps.ChangeVisionModel,
 		Queue:             caps.Queue,
 		SharedNotes:       caps.SharedNotes,
-		ResumeRequired:    thread.Evener.ResumeRequired,
+		ResumeRequired:    resumeRequired,
 	}
+}
+
+func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
+	node := hubNodeFromThread(thread)
+	capabilities := hubCapabilitiesFromWire(thread.Evener.Capabilities, thread.Evener.ResumeRequired)
 	if !node.Live {
 		capabilities.Send = false
 		capabilities.Steer = false

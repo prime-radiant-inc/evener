@@ -405,7 +405,9 @@ func composeProviderModel(provider, model string) string {
 }
 
 // composerFooterHints returns the mode-appropriate keyboard hint bar.
-// canSteer controls whether the ctrl+s steer hint is included in queue mode.
+// canSteer is the drain availability (hubModel.sessionCanDrainQueue), not a
+// mode: it adds the ctrl+s steer hint in queue mode and in compose mode, where
+// a queue a Stop parked is drainable while the composer still sends on Enter.
 func composerFooterHints(mode string, width int, canSteer bool) string {
 	switch mode {
 	case "queue":
@@ -435,12 +437,16 @@ func composerFooterHints(mode string, width int, canSteer bool) string {
 			tuiprim.KbdHint("⌘O", "dashboard"),
 		)
 	default: // compose
-		return tuiprim.ActionBarForWidth(width,
-			tuiprim.KbdHint("enter", "send"),
+		hints := []string{tuiprim.KbdHint("enter", "send")}
+		if canSteer {
+			hints = append(hints, tuiprim.KbdHint("ctrl+s", "steer"))
+		}
+		hints = append(hints,
 			tuiprim.KbdHint("shift+enter", "newline"),
 			tuiprim.KbdHint("⌘P", "palette"),
 			tuiprim.KbdHint("esc", "browse"),
 			tuiprim.KbdHint("/help", ""),
 		)
+		return tuiprim.ActionBarForWidth(width, hints...)
 	}
 }

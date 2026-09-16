@@ -226,6 +226,20 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	return notification
 }
 
+// stampResyncTarget names the route a fanned-out daemon-gone resync is being
+// delivered to. The relay publishes that frame with no target so it reaches
+// every route the relay serves (a read-only child alias shares the root's
+// relay session), and each subscriber acts on the ref it names, so each copy
+// names the subscriber's own.
+func stampResyncTarget(notification appwire.Notification, threadID, ref string) appwire.Notification {
+	params, err := json.Marshal(appwire.ThreadResyncParams{ThreadID: threadID, Ref: ref})
+	if err != nil {
+		return notification
+	}
+	notification.Params = params
+	return notification
+}
+
 // stampForkCapability adds the hub-owned action to an existing capability
 // update. Other permissions and fields remain the daemon's current values.
 func stampForkCapability(notification appwire.Notification, allowFork bool) appwire.Notification {
@@ -297,6 +311,35 @@ func threadRelayTarget(source appsource.Source, params appwire.ThreadReadParams)
 		return "", "", appwire.InvalidParams("threadId or ref is required")
 	}
 	return source.ID() + ":" + threadID, threadID, nil
+}
+
+// relayDeliveryTarget resolves the relay key a subscription is registered under,
+// identically for thread/read's relay and the thread/unsubscribe that drops it.
+//
+// A federated source (anything but the local daemon) is addressed by its ref:
+// the ref's suffix is the stable identity that survives an identity replacement,
+// while a caller's bare threadId is the volatile current ID that moves across
+// one. Keying such a read by the caller's threadId registered the relay under
+// "host:<currentID>" while a ref-only thread/unsubscribe resolves
+// "host:<stableRef>", so the downstream entry — and the source-side subscription
+// behind it — was never dropped. The ref therefore wins whenever the request
+// carries one, which is also what the local daemon path achieves through
+// ResolveSubscriptionAdmission. The local daemon keeps threadRelayTarget's
+// threadId preference: its admission already canonicalizes the identities, and
+// its SecondaryKey deliberately names the delivery identity threadRelayTarget
+// resolves.
+func relayDeliveryTarget(source appsource.Source, params appwire.ThreadReadParams) (string, string, error) {
+	if _, local := source.(*appsource.LocalDaemonSource); !local && strings.TrimSpace(params.Ref) != "" {
+		ref, err := appwire.ParseRef(strings.TrimSpace(params.Ref))
+		if err != nil {
+			return "", "", err
+		}
+		if ref.ThreadID == "" {
+			return "", "", appwire.InvalidParams("threadId or ref is required")
+		}
+		return source.ID() + ":" + ref.ThreadID, ref.ThreadID, nil
+	}
+	return threadRelayTarget(source, params)
 }
 
 type relayNotificationRouting int
@@ -538,6 +581,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				delivery   appsource.RelayDelivery
 				routingKey string
 				routing    relayNotificationRouting
+				// served names the routes a retained daemon-gone delivery has
+				// already reached; the replay after a pending route binds
+				// serves only the rest.
+				served map[string]bool
 			}
 			pendingDeliveries := make([]pendingRelayDelivery, 0, hubRelayPendingDeliveryLimit)
 			// routeChangeWait is the wake-up a parked frame waits on.
@@ -606,6 +653,13 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			publishTarget := func(delivery appsource.RelayDelivery, target relayTargetState) {
 				notification := delivery.Notification
+				// The relay's own daemon-gone resync is addressed to every
+				// route; the copy each route gets names that route. Keyed on
+				// the delivery's mark, never on an absent target, which a
+				// malformed daemon frame could share.
+				if delivery.DaemonGone {
+					notification = stampResyncTarget(notification, target.threadID, target.ref)
+				}
 				// The edits only this hub can make to a local daemon's
 				// notification on its way to a browser: the images it can
 				// resolve off disk, and the answer to what a thread can still
@@ -678,10 +732,43 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				}
 				acknowledge(delivery)
 			}
+			routesPending := func() bool {
+				relayMu.Lock()
+				defer relayMu.Unlock()
+				return handle.pendingRoutes != 0 && !handle.stopping
+			}
+			// serveDaemonGone publishes a daemon-gone delivery to every current
+			// route it has not reached yet. It reports whether a route is
+			// still being bound, in which case the delivery stays retained so
+			// that route hears it too once bound: the announcement is
+			// addressed to every subscriber of the daemon, including one whose
+			// subscription is mid-flight.
+			serveDaemonGone := func(pending *pendingRelayDelivery) bool {
+				targets, _ := lookupTargets("", relayNotificationUntargeted)
+				for _, target := range targets {
+					if pending.served[target.relayKey] {
+						continue
+					}
+					// A route published but not yet subscribed to has nobody
+					// to hear this yet; it is served once its read releases.
+					if server.SubscriberCount(target.relayKey) == 0 {
+						continue
+					}
+					pending.served[target.relayKey] = true
+					publishTarget(pending.delivery, target)
+				}
+				return routesPending()
+			}
 			processPending := func() {
 				captureRouteChange()
 				kept := pendingDeliveries[:0]
 				for _, pending := range pendingDeliveries {
+					if pending.delivery.DaemonGone {
+						if serveDaemonGone(&pending) {
+							kept = append(kept, pending)
+						}
+						continue
+					}
 					targets, wait := lookupTargets(pending.routingKey, pending.routing)
 					if wait {
 						kept = append(kept, pending)
@@ -701,6 +788,21 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			}
 			acceptDelivery := func(delivery appsource.RelayDelivery) {
 				captureRouteChange()
+				if delivery.DaemonGone {
+					// Acknowledged as soon as every subscribed route has it: the
+					// relay session needs the acknowledgement only to release the
+					// capture barrier of a read in flight - and a route still
+					// being bound IS such a read, so holding the acknowledgement
+					// for it would wait on itself. The copy kept for that route
+					// is the hub's own.
+					pending := pendingRelayDelivery{delivery: delivery, routing: relayNotificationUntargeted, served: map[string]bool{}}
+					stillPending := serveDaemonGone(&pending)
+					acknowledge(delivery)
+					if stillPending {
+						pendingDeliveries = append(pendingDeliveries, pending)
+					}
+					return
+				}
 				routingKey, routing := relayNotificationRoutingKey(delivery.Notification, handle.canonical.SourceID)
 				if routing == relayNotificationTargeted && hasPendingTarget(routingKey) {
 					pendingDeliveries = append(pendingDeliveries, pendingRelayDelivery{delivery: delivery, routingKey: routingKey, routing: routing})
@@ -1037,7 +1139,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						unregisterPendingStateLocked(handle, state)
 						close(state.done)
 					}
-					resolveRoutesLocked()
+					// The route stays pending past this publication, until the
+					// read releases it (release, below): the appserver installs
+					// the client's subscription only after the read returns, and
+					// a departure announced in between must still reach it.
 					relayMu.Unlock()
 					for _, closeHandle := range closeHandles {
 						closeRelayHandle(closeHandle)
@@ -1359,7 +1464,6 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		if threadID == "" {
 			return nil
 		}
-		relayKey := source.ID() + ":" + threadID
 
 		subscribeParams := params
 		if subscribeParams.Ref == "" {
@@ -1367,6 +1471,41 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		}
 		if subscribeParams.Ref == "" {
 			subscribeParams.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
+		}
+		// Key the downstream registry entry by the same identity thread/unsubscribe
+		// resolves (relayDeliveryTarget), not by thread.ID. A remote source's
+		// stable ref survives an identity replacement while its current Thread.ID
+		// moves, so keying by Thread.ID registers under "host:<currentID>" while a
+		// ref-only unsubscribe resolves "host:<stableRef>": the downstream entry
+		// (and, through it, the remote-side subscription) would never be dropped,
+		// and a replacement could leave a second relay behind. The request's own
+		// address decides the key, so this agrees with the subscription admission
+		// thread/read itself resolved and with the source's own SubscribeThread
+		// routing, which is keyed from the ref.
+		keyParams := params
+		if strings.TrimSpace(keyParams.Ref) == "" && strings.TrimSpace(keyParams.ThreadID) == "" {
+			// An internal caller (turn/start's relay, a recovery that named no
+			// address) has no request identity of its own, so key by the ref
+			// derived from the thread this relay read.
+			keyParams = appwire.ThreadReadParams{Ref: subscribeParams.Ref}
+		}
+		relayKey, _, keyErr := relayDeliveryTarget(source, keyParams)
+		if keyErr != nil {
+			return keyErr
+		}
+
+		// Recovery re-addresses the thread by the authoritative ref the read
+		// named, not by the caller's bare threadId. A source may resolve a bare
+		// threadId in preference to the ref beside it (the remote hub's daemon
+		// edge does), and that ID is the volatile current identity: once an
+		// identity replacement moves it, re-sending it names no thread while the
+		// stable ref still resolves, so every recovery attempt in the stale state
+		// fails. Only the initial request keeps the caller's own addressing; the
+		// first read already named the subscription's authoritative identity.
+		recoveryParams := subscribeParams
+		if thread.Evener.Ref != "" {
+			recoveryParams.Ref = thread.Evener.Ref
+			recoveryParams.ThreadID = ""
 		}
 
 		var relayCtx context.Context
@@ -1378,6 +1517,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			existing := relayedThreads[relayKey]
 			if existing == nil {
 				relayCtx, cancelRelay = context.WithCancel(context.WithoutCancel(ctx))
+				// Label every attach this relay issues with its own key. A source
+				// that keys its subscriptions by remote thread identity uses it to
+				// tell this relay re-attaching from a second relay that reached the
+				// same thread by another address (appsource.WithRelayIdentity).
+				relayCtx = appsource.WithRelayIdentity(relayCtx, relayKey)
 				relayHandle = &hubRelayHandle{ready: make(chan struct{}), cancel: cancelRelay}
 				relayedThreads[relayKey] = relayHandle
 				stopInitialCancellation = context.AfterFunc(ctx, func() {
@@ -1661,7 +1805,7 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						result <- hubRelaySubscriptionResult{err: err}
 						return
 					}
-					notifications, err := subscribeRelayRecovery(relayCtx, source, subscribeParams)
+					notifications, err := subscribeRelayRecovery(relayCtx, source, recoveryParams)
 					if fenceErr := deletionFenceError(cfg, subscribeParams.Ref, threadID, ""); fenceErr != nil {
 						err = fenceErr
 					}
@@ -1721,10 +1865,23 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						hasFirstNotification = true
 					default:
 					}
-					server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
-						ThreadID: threadID,
-						Ref:      subscribeParams.Ref,
-					})
+					// The relay owns the recovery resync, but a source may
+					// generate one itself as the first frame of a new
+					// subscription (the remote hub source hands the relay the
+					// subscribed read's atomic snapshot this way). Emitting the
+					// relay's own resync as well would deliver two resyncs to the
+					// client and force two redundant thread reads. Give the
+					// source's frame precedence: it carries the subscription's
+					// own authoritative identity, which survives a stable-ref
+					// identity replacement that the original subscribeParams may
+					// not name anymore.
+					sourceResynced := hasFirstNotification && firstNotification.Method == appwire.NotifyEvenerThreadResync
+					if !sourceResynced {
+						server.Broadcast(relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+							ThreadID: threadID,
+							Ref:      subscribeParams.Ref,
+						})
+					}
 					if hasFirstNotification {
 						broadcastNotification(firstNotification)
 					} else {

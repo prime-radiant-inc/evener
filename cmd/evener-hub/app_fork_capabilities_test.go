@@ -369,7 +369,7 @@ func TestHubForkCapabilityKeepsDaemonPermissionsAndUnknownFields(t *testing.T) {
 func TestHubForkCapabilityFencesOnlyUnconfirmedTarget(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{PID: os.Getpid(), SessionID: "uncertain", ThreadID: "uncertain"})
-	roster := hubcore.NewRoster(runDir, &fakeProber{shouldFail: true})
+	roster := liveClaimRoster(runDir, &fakeProber{shouldFail: true})
 	roster.Refresh()
 	if roster.OwnershipError() != nil || len(roster.UnconfirmedEntries()) != 1 {
 		t.Fatalf("expected target-specific uncertainty: error=%v entries=%v", roster.OwnershipError(), roster.UnconfirmedEntries())
@@ -634,7 +634,7 @@ func TestHubForkAdmissionRefusesEveryProjectedRecoveryFence(t *testing.T) {
 			runDir := t.TempDir()
 			cfg := hubcore.WebConfig{
 				StateDir: root, Past: past, RunDir: runDir,
-				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+				Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
 				DaemonProcesses: liveClaimController(),
 			}
 			if tc.fence != nil {
@@ -853,6 +853,7 @@ func TestHubForkAdmitsPersistedDelegateOfCrashedParent(t *testing.T) {
 		StartedAt: time.Now().UTC(), // fresh: within the crash-retention window
 	})
 	prober := &crashingSubagentProber{sessionID: parentID, childID: childID}
+	// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
 	roster := hubcore.NewRoster(runDir, prober).SetProcessAlive(func(int) bool { return !prober.stopped.Load() })
 	roster.Refresh()
 	if !roster.IsSubagentActive(childID) {
@@ -966,7 +967,9 @@ func TestHubForkRefusesDelegateThatWentLiveBeforeAdmission(t *testing.T) {
 		Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
 	})
 	prober := &delegateArrivalProber{sessionID: parentID, childID: childID}
-	roster := hubcore.NewRoster(runDir, prober)
+	// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
+	roster := hubcore.NewRoster(runDir, prober).
+		SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 	roster.Refresh()
 	if roster.IsSubagentActive(childID) {
 		t.Fatal("the roster already lists the delegate; this fixture is not stale")
@@ -1033,7 +1036,9 @@ func TestHubForkByStableRefBranchesTheCurrentSession(t *testing.T) {
 			if tc.probeNoName {
 				probed = ""
 			}
-			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: probed, status: appwire.ThreadStatusIdle})
+			// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: probed, status: appwire.ThreadStatusIdle}).
+				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 			roster.Refresh()
 			listed := roster.List()
 			if len(listed) != 1 || listed[0].SessionID != probed || listed[0].Entry.SessionID != currentID {
@@ -1785,7 +1790,7 @@ func TestHubForkReportsDeletionEvenWhenTheRefreshFails(t *testing.T) {
 
 			cfg := hubcore.WebConfig{
 				StateDir: stateDir, RunDir: runDir, DeletionStore: store,
-				Roster: hubcore.NewRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
+				Roster: liveClaimRoster(runDir, &hubcore.StatusProber{}), ResumeLocks: hubcore.NewResumeLocks(),
 			}
 			before, listErr := schema.ListSessionMetas(stateDir)
 			if listErr != nil {
@@ -1848,7 +1853,9 @@ func TestHubForkCapabilityHidesADeletionFencedThread(t *testing.T) {
 					WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
 					Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
 				})
-				roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+				// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
+				roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle}).
+					SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 				roster.Refresh()
 				cfg.Roster = roster
 			}
@@ -2092,7 +2099,9 @@ func TestHubForkLiveStatusFenceAgreesOnBothIdentities(t *testing.T) {
 				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
 				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
 			})
-			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: currentID, flags: flags})
+			// A synthetic claim on this process's own PID: the identity probe must not answer for it, as SetProcessAlive's rule says.
+			roster := hubcore.NewRoster(runDir, recoveryFlagProber{sessionID: currentID, flags: flags}).
+				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 			roster.Refresh()
 			cfg := hubcore.WebConfig{StateDir: stateDir, RunDir: runDir, Roster: roster, DaemonProcesses: liveClaimController()}
 			if got := forkTargetSessionID(cfg, aliasID); got != currentID {
@@ -2147,7 +2156,10 @@ func TestHubForkReportsAResolvedSessionsDeletionEvenWhenTheRefreshFails(t *testi
 				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
 				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
 			})
-			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
+			// A synthetic claim: PID 1001 is nobody's daemon on this host, so the
+			// identity probe must not answer for it, as SetProcessAlive's rule says.
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle}).
+				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 			roster.Refresh()
 			store, err := hubcore.NewDeletionStore(t.TempDir())
 			if err != nil {
@@ -2240,7 +2252,10 @@ func TestHubForkRefusesAClaimItCannotVerify(t *testing.T) {
 				WorkspaceRef: "local:" + aliasID, StateDir: stateDir,
 				Protocol: appwire.ProtocolVersion, StartedAt: time.Now().UTC(),
 			})
-			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle})
+			// A synthetic claim: PID 1001 is nobody's daemon on this host, so the
+			// identity probe must not answer for it, as SetProcessAlive's rule says.
+			roster := hubcore.NewRoster(runDir, fakeProber{sessionID: currentID, status: appwire.ThreadStatusIdle}).
+				SetProcessIdentity(func(rendezvous.Entry) hubcore.ProcessIdentity { return hubcore.ProcessIdentityUnknown })
 			roster.Refresh()
 			var probes []string
 			cfg := hubcore.WebConfig{

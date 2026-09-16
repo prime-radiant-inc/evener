@@ -2,8 +2,8 @@ import type {
   AuthDeviceStartResponse,
   AuthLoginStartResponse,
   AuthStatusResponse,
-} from "../../appwire-client/typescript/types.gen";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+} from "@evener/appwire-client";
+import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 
 interface SignInState {
   phase:
@@ -27,7 +27,11 @@ interface SignInState {
 // is longer than any interval a device flow has reason to ask for.
 const MAX_POLL_SECONDS = 60;
 
-/** One sign-in flow bound to one provider instance on one hub connection. */
+/** One sign-in flow bound to one provider instance on one hub. Its RPCs go
+ * through the credential store it is handed; `connection` is an opaque token
+ * for the hub connection the screen says is usable - null while there is
+ * none, and a new identity when the connection was replaced, which is what
+ * tells an interrupted exchange from a same-connection transition. */
 export class ProviderSignIn {
   private state: SignInState = {
     phase: "idle",
@@ -43,8 +47,9 @@ export class ProviderSignIn {
   private uncertain = false;
   private pendingOperation: "devicePoll" | "completion" | "status" | null =
     null;
+  private connection: object | null = null;
   constructor(
-    private client: ConversationClientLike | null,
+    private readonly store: CredentialInstancesStore,
     private provider: string,
   ) {}
   getSnapshot = () => this.state;
@@ -70,7 +75,7 @@ export class ProviderSignIn {
     this.clearTimer();
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       !this.active ||
       this.state.phase !== "device" ||
       this.state.busy ||
@@ -86,12 +91,15 @@ export class ProviderSignIn {
       void this.poll();
     }, delay * 1000);
   }
-  /** Replace only the transport for the same hub. Dispose when changing hubs. */
-  setConnection(client: ConversationClientLike | null) {
-    if (this.disposed || this.client === client) return;
+  /** The screen's word on the hub connection: null while none is usable, a
+   * fresh token when it was replaced, the same token while it merely
+   * transitions. A change retires whatever exchange was in flight and marks
+   * it uncertain where a write may have landed. Dispose when changing hubs. */
+  setConnection(connection: object | null) {
+    if (this.disposed || this.connection === connection) return;
     this.clearTimer();
     this.generation += 1;
-    this.client = client;
+    this.connection = connection;
     const interruptedWrite =
       this.state.busy &&
       (this.state.phase === "starting" ||
@@ -119,7 +127,7 @@ export class ProviderSignIn {
     else this.clearTimer();
   }
   start = async (): Promise<void> => {
-    if (this.disposed || !this.client || this.state.busy) return;
+    if (this.disposed || !this.connection || this.state.busy) return;
     const generation = ++this.generation;
     this.uncertain = false;
     this.pendingOperation = null;
@@ -133,9 +141,7 @@ export class ProviderSignIn {
       credentialState: "unknown",
     });
     try {
-      const device = await this.client.request("evener/auth/device/start", {
-        provider: this.provider,
-      });
+      const device = await this.store.getState().deviceStart(this.provider);
       if (!this.current(generation)) return;
       if (
         !device ||
@@ -146,9 +152,7 @@ export class ProviderSignIn {
       )
         throw new Error();
       if (device.fallback === true) {
-        const browser = await this.client.request("evener/auth/login/start", {
-          provider: this.provider,
-        });
+        const browser = await this.store.getState().loginStart(this.provider);
         if (!this.current(generation)) return;
         if (
           !browser ||
@@ -190,7 +194,7 @@ export class ProviderSignIn {
   private poll = async (): Promise<void> => {
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       !this.active ||
       this.state.busy ||
       this.state.phase !== "device" ||
@@ -203,10 +207,7 @@ export class ProviderSignIn {
     this.pendingOperation = "devicePoll";
     this.publish({ busy: true, error: null });
     try {
-      const response = await this.client.request("evener/auth/device/poll", {
-        provider: this.provider,
-        flowId,
-      });
+      const response = await this.store.getState().devicePoll(this.provider, flowId);
       if (!this.current(generation)) return;
       this.pendingOperation = null;
       if (response.state === "authorized") {
@@ -251,7 +252,7 @@ export class ProviderSignIn {
   retryPoll = () => {
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       !this.active ||
       this.state.busy ||
       this.state.phase !== "device" ||
@@ -264,7 +265,7 @@ export class ProviderSignIn {
   complete = async (value: string): Promise<void> => {
     if (
       this.disposed ||
-      !this.client ||
+      !this.connection ||
       this.state.busy ||
       this.state.phase !== "browser" ||
       !this.state.browser
@@ -280,11 +281,9 @@ export class ProviderSignIn {
     const flowId = this.state.browser.flowId;
     this.publish({ busy: true, error: null });
     try {
-      const response = await this.client.request("evener/auth/login/complete", {
-        provider: this.provider,
-        flowId,
-        redirectUrl,
-      });
+      const response = await this.store
+        .getState()
+        .loginComplete(this.provider, flowId, redirectUrl);
       if (this.current(generation)) {
         if (!this.validAuthorizedStatus(response.status)) throw new Error();
         this.pendingOperation = null;
@@ -312,15 +311,13 @@ export class ProviderSignIn {
     }
   };
   checkStatus = async (): Promise<void> => {
-    if (this.disposed || !this.client || this.state.busy) return;
+    if (this.disposed || !this.connection || this.state.busy) return;
     const generation = this.generation;
     this.clearTimer();
     this.pendingOperation = "status";
     this.publish({ busy: true, error: null });
     try {
-      const status = await this.client.request("evener/auth/status", {
-        provider: this.provider,
-      });
+      const status = await this.store.getState().authStatus(this.provider);
       if (!this.current(generation) || !this.validStatus(status))
         throw new Error();
       this.pendingOperation = null;

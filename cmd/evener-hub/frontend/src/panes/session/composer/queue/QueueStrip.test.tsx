@@ -1,11 +1,17 @@
+import type {
+  ConnectionState,
+  InputItem,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "@evener/appwire-client";
+import { NO_ACTIVE_TURN } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ConnectionState } from "../../../../protocol/client";
-import { FakeClient } from "../../../../protocol/testing/fakeClient";
-import type { InputItem, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import type { MutationRecoveryKind, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
@@ -13,12 +19,12 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import {
-  flushPendingTurnsProjectionForTests,
   refreshPendingTurnsProjection,
   resetPendingTurnsStoreForTests,
   submitWithPendingTracking,
 } from "./pendingTurnsStore";
 import { QueueStrip } from "./QueueStrip";
+import { flushPendingTurnsProjectionForTests } from "./testing/flushPendingTurnsProjection";
 
 const originalClipboard = navigator.clipboard;
 
@@ -138,6 +144,19 @@ async function seedBlockedUnknown(text: string, input?: InputItem[]): Promise<vo
   await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
   storage.close();
   await refreshPendingTurnsProjection("ref_a");
+}
+
+// applied registers a fake handler for a mutation that answers with an
+// applied receipt, the response every accepted control mutation carries.
+function applied(fake: FakeClient, method: "turn/drainAsSteer" | "turn/promoteQueuedAsSteer"): void {
+  fake.on(method, (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
 }
 
 function renderStrip(props: ReturnType<typeof defaultProps>) {
@@ -728,6 +747,46 @@ describe("promote", () => {
   });
 });
 
+// A press is judged on the session's controls at the moment it lands, not on
+// the render that offered the button. The status frame and the press share one
+// task here (no render between them), so the render-time verdict still says
+// active while the store says awaiting; the handler has to ask the store.
+describe("press-time controls", () => {
+  const QUEUED = { revision: 0, depth: 1, ids: ["q1"], texts: ["hello"], preview: ["hello"] };
+  function foldAwaiting(fake: FakeClient): void {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "awaiting" } },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.status.type).toBe("awaiting");
+  }
+
+  test("drain pressed after an awaiting frame folded in the same task is refused on the live status", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: QUEUED } });
+    applied(fake, "turn/drainAsSteer");
+    renderStrip(defaultProps());
+    const drain = await screen.findByRole("button", { name: /steer queue now/i });
+    foldAwaiting(fake);
+    fireEvent.click(drain);
+    await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
+    expect(fake.calls.filter((c) => c.method === "turn/drainAsSteer")).toHaveLength(0);
+  });
+
+  test("promote pressed after an awaiting frame folded in the same task is refused on the live status", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: QUEUED } });
+    applied(fake, "turn/promoteQueuedAsSteer");
+    renderStrip(defaultProps());
+    const row = (await screen.findAllByRole("listitem"))[0]!;
+    const promote = within(row).getByRole("button", { name: /steer now/i });
+    foldAwaiting(fake);
+    fireEvent.click(promote);
+    await waitFor(() => expect(getToasts().map((t) => t.text)).toContain(NO_ACTIVE_TURN));
+    expect(fake.calls.filter((c) => c.method === "turn/promoteQueuedAsSteer")).toHaveLength(0);
+  });
+});
+
 describe("cancel", () => {
   test("clicking remove calls cancelQueued with the row's index and entry id", async () => {
     const fake = connectFakeClient();
@@ -1219,6 +1278,73 @@ describe("drain-as-steer affordance", () => {
     expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
   });
 
+  // A Stop parks the queue (agent/session_client_mutation.go QueueHeld): the
+  // entries stay, the daemon reports idle with a non-empty queue (a queue that
+  // is not parked upgrades idle to active, session_state.go WireState), and a
+  // drain or promote sent while idle releases it (both are accepted with no
+  // turn in flight and wake a steering carrier). The hub advertises steer as
+  // harness support, so the strip offers both for a parked queue.
+  test("a parked queue on a harness that can steer offers Steer queue now and Steer now, and they dispatch", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      status: { type: "idle" },
+      evener: {
+        ref: "ref_a",
+        capabilities: { ...CAPABILITIES, send: true, queue: false },
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    applied(fake, "turn/drainAsSteer");
+    applied(fake, "turn/promoteQueuedAsSteer");
+    renderStrip(defaultProps({ getComposerText: () => ({ text: "", hasPending: false }) }));
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    const steerNow = screen.getByRole("button", { name: "Steer now" });
+    expect(isDisabled(steerNow)).toBe(false);
+    await act(async () => {
+      fireEvent.click(steerNow);
+    });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/promoteQueuedAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a", index: 0, expectedEntryId: "q1" });
+    });
+
+    const drainButton = screen.getByRole("button", { name: "Steer queue now" });
+    await act(async () => {
+      fireEvent.click(drainButton);
+      await flushPendingTurnsProjectionForTests();
+    });
+    await waitFor(() => {
+      const call = fake.calls.find((c) => c.method === "turn/drainAsSteer");
+      expect(call?.params).toMatchObject({ ref: "ref_a" });
+    });
+  });
+
+  // When the status is what blocks a drain (awaiting with a queue is the ask
+  // boundary; that queue runs next on its own), the strip names the status,
+  // not the capability: sessionControls' reason for drain is the status floor.
+  test("an awaiting session with a queue disables Steer now for the status, not the capability", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", {
+      status: { type: "awaiting" },
+      evener: {
+        ref: "ref_a",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+      },
+    });
+    renderStrip(defaultProps());
+
+    expect(await screen.findByText("queued")).toBeTruthy();
+    const steerNow = screen.getByRole("button", { name: "Steer now" });
+    expect(isDisabled(steerNow)).toBe(true);
+    const wrapper = steerNow.parentElement;
+    if (!wrapper) throw new Error("Steer now has no tooltip wrapper");
+    fireEvent.mouseEnter(wrapper);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(NO_ACTIVE_TURN);
+    expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+  });
+
   test("clicking the drain button drains the composer's current text into the queue as steering", async () => {
     const fake = connectFakeClient();
     await hydrate(fake, "ref_a", {
@@ -1244,6 +1370,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
 
@@ -1253,6 +1381,35 @@ describe("drain-as-steer affordance", () => {
     });
     expect(onDrainSuccess).toHaveBeenCalledTimes(1);
   });
+
+  // The strip's steering affordances share the composer's gate (submitRouting.ts
+  // sessionControls): a harness that advertises no steer draws no "Steer queue
+  // now" and a disabled "Steer now" -- running or parked by Stop -- and nothing
+  // here sends a drain or promote it would answer Unavailable. Edit and remove
+  // stay available: only steering needs the capability.
+  test.each(["active", "idle"])(
+    "a %s session whose harness advertises no steer offers no steering affordance",
+    async (statusType) => {
+      const fake = connectFakeClient();
+      await hydrate(fake, "ref_a", {
+        status: { type: statusType },
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...CAPABILITIES, steer: false },
+          queue: { revision: 0, depth: 1, ids: ["q1"], texts: ["queued"], preview: ["queued"] },
+        },
+      });
+      renderStrip(defaultProps());
+
+      expect(await screen.findByText("queued")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Steer queue now" })).toBeNull();
+      expect(isDisabled(screen.getByRole("button", { name: "Steer now" }))).toBe(true);
+      expect(isDisabled(screen.getByRole("button", { name: "Remove from queue" }))).toBe(false);
+      expect(
+        fake.calls.filter((c) => c.method === "turn/drainAsSteer" || c.method === "turn/promoteQueuedAsSteer"),
+      ).toHaveLength(0);
+    },
+  );
 
   test("a lost drain response never produces a timeout warning or reload instruction", async () => {
     const fake = connectFakeClient();
@@ -1271,6 +1428,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
     expect(getToasts()).toHaveLength(0);
@@ -1306,6 +1465,8 @@ describe("drain-as-steer affordance", () => {
     const drainButton = await screen.findByRole("button", { name: "Steer queue now" });
     await act(async () => {
       fireEvent.click(drainButton);
+      // The lookup stays outside the act scope (a waitFor inside it warns), and
+      // the projection flush inside it is main's own warning fix.
       await flushPendingTurnsProjectionForTests();
     });
 

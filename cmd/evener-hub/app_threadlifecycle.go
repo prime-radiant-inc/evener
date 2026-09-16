@@ -50,13 +50,22 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err := validateAppWireInputItems(params.Input); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
 	}
-	sourceID := launchSourceID(params)
+	sourceID := strings.TrimSpace(params.Source)
+	// Forward the normalized routing value, not the verbatim field the lookup
+	// trimmed: a source must not observe surrounding whitespace the hub already
+	// stripped to resolve it. A harness-routed start leaves Source empty, as the
+	// caller sent it, because the harness is the routing field in that case.
+	forward := params
+	forward.Source = sourceID
+	if sourceID == "" {
+		sourceID = launchSourceID(params)
+	}
 	if sourceID != "" && sourceID != "local" {
 		source, ok := sources.Source(sourceID)
 		if !ok || source == nil {
 			return appwire.ThreadStartResponse{}, appwire.Unavailable("spawn source is not available: " + sourceID)
 		}
-		return source.StartThread(ctx, params)
+		return source.StartThread(ctx, forward)
 	}
 	if cfg.Spawner == nil {
 		return appwire.ThreadStartResponse{}, appwire.Unavailable("spawner not configured")
@@ -467,8 +476,69 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			}
 			cfg.ResumeLocks.RecordResolvedSession(requestedID, sessionID, epoch)
 		}()
+		if requestedID != sessionID {
+			// resumeThreadLocked fences the resolved target and the ref; keep
+			// the original request's deletion fence under the same ownership
+			// locks.
+			if err := deletionFenceError(cfg, "", requestedID, ""); err != nil {
+				return appwire.ThreadResumeResponse{}, err
+			}
+		}
 
 	}
+
+	lockedParams := params
+	lockedParams.Session = sessionID
+	launch := resumeLaunch{active: activeResume, completionOwned: !automatic}
+	launched, launchErr := resumeThreadLockedLaunch(ctx, cfg, sources, lockedParams, &launch)
+	cleanupErr = launch.cleanupErr
+	return launched, launchErr
+}
+
+// resumeThreadLocked runs the discovery-and-spawn half of resumeThread with
+// the caller's per-session ownership serialization already held (the public
+// wrapper's alias locks, or the retirement path's). The resolved ownership
+// target arrives as params.Session; the session is re-derived from params the
+// same way the wrapper resolves it, without re-walking ownership aliases.
+//
+// The retirement path holds no explicit Resume to own: it launches with no
+// active resume lifetime and the configured startup budget, exactly as an
+// automatic resume does.
+func resumeThreadLocked(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return resumeThreadLockedLaunch(ctx, cfg, sources, params, &resumeLaunch{})
+}
+
+// resumeLaunch is the explicit Resume's registered launch lifetime, threaded
+// from the wrapper that registered it to the locked half that launches the
+// child. The launcher writes its cleanup classification back through cleanupErr
+// so the registering wrapper can report it to ActiveResume.Complete, which must
+// run only after every defer has released ownership and the single child waiter
+// has confirmed cleanup.
+type resumeLaunch struct {
+	active          *hubcore.ActiveResume
+	completionOwned bool
+	cleanupErr      error
+}
+
+// resumeThreadLockedLaunch is resumeThreadLocked for a caller that holds a
+// launch lifetime in hand.
+func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadResumeParams, launch *resumeLaunch) (appwire.ThreadResumeResponse, error) {
+	// The request's trace travels in the context, already carrying the resolved
+	// session identity the wrapper stamped. A caller that enters here without
+	// one records nothing: every stage below is nil-safe.
+	trace := threadLifecycleFromContext(ctx)
+	sessionID := strings.TrimSpace(params.Session)
+	if sessionID == "" && params.Ref != "" {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadResumeResponse{}, err
+		}
+		sessionID = ref.ThreadID
+	}
+	if sessionID == "" {
+		return appwire.ThreadResumeResponse{}, appwire.InvalidParams("sessionId or ref is required")
+	}
+	requestedID := sessionID
 
 	if err := deletionFenceError(cfg, params.Ref, requestedID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
@@ -547,14 +617,14 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			return appwire.ThreadResumeResponse{}, appwire.Unavailable("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
 		}
 	}
-	resumeReq.CompletionOwned = !automatic
-	resumeReq.ActiveResume = activeResume
+	resumeReq.CompletionOwned = launch.completionOwned
+	resumeReq.ActiveResume = launch.active
 	resumeDone := trace.stage(ctx, "spawner_resume")
 	entry, err := cfg.Spawner.Resume(ctx, resumeReq)
 	resumeDone(err)
 	if err != nil {
 		if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
-			cleanupErr = cleanup
+			launch.cleanupErr = cleanup
 		}
 		return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeFailureError(ctx, cfg, sessionID, err).Error())
 	}
@@ -713,11 +783,8 @@ func resumeClaimTarget(cfg hubcore.WebConfig, claims []rendezvous.Entry, durable
 	}
 	liveTarget := ""
 	for _, entry := range claims {
-		current := entry.SessionID
-		if current == "" {
-			current = entry.ThreadID
-		}
-		process, err := controller.Open(daemonprocess.Target{PID: entry.PID, SessionID: current, StateDir: entry.StateDir, StartedAt: entry.StartedAt})
+		target := hubcore.DaemonTarget(entry)
+		process, err := controller.Open(target)
 		if errors.Is(err, daemonprocess.ErrExited) {
 			continue
 		}
@@ -727,10 +794,10 @@ func resumeClaimTarget(cfg hubcore.WebConfig, claims []rendezvous.Entry, durable
 		if err := process.Close(); err != nil {
 			return "", fmt.Errorf("close retained daemon ownership: %w", err)
 		}
-		if liveTarget != "" && liveTarget != current {
+		if liveTarget != "" && liveTarget != target.SessionID {
 			return "", errors.New("multiple live daemons claim different current sessions")
 		}
-		liveTarget = current
+		liveTarget = target.SessionID
 	}
 	if liveTarget != "" {
 		if durableTarget != "" && durableTarget != liveTarget {
@@ -1373,12 +1440,7 @@ func forkTargetSessionIDFor(cfg hubcore.WebConfig, threadID string, owner forkTh
 // resumeClaimTarget's conflict branch; that is accepted rather than threaded
 // through, since only a contested alias pays it.
 func forkClaimIsLiveOwner(controller daemonprocess.Controller, entry rendezvous.Entry) (bool, error) {
-	process, err := controller.Open(daemonprocess.Target{
-		PID:       entry.PID,
-		SessionID: cmp.Or(entry.SessionID, entry.ThreadID),
-		StateDir:  entry.StateDir,
-		StartedAt: entry.StartedAt,
-	})
+	process, err := controller.Open(hubcore.DaemonTarget(entry))
 	if errors.Is(err, daemonprocess.ErrExited) {
 		return false, nil
 	}

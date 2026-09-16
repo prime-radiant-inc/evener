@@ -83,7 +83,10 @@ func lifecycleErrorClass(ctx context.Context, err error) string {
 		return "canceled"
 	case errors.Is(err, errRendezvousTimeout), errors.Is(err, context.DeadlineExceeded):
 		return "timeout"
-	case errors.Is(err, fs.ErrNotExist):
+	// A missing executable is not-found in both shapes: a path that does not
+	// exist (fs.ErrNotExist) and a bare name absent from $PATH, which os/exec
+	// reports as exec.ErrNotFound and which does not wrap fs.ErrNotExist.
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, exec.ErrNotFound):
 		return "not_found"
 	case errors.Is(err, fs.ErrPermission):
 		return "permission"

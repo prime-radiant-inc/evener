@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -130,5 +131,85 @@ func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError || !strings.Contains(wire.Message, "favorite store not configured") {
 		t.Fatalf("error=%T %v, want internal favorite-store error", err, err)
+	}
+}
+
+// A non-local favorite source must name a configured host; an unknown source
+// would write a successful but permanently inert favorite row.
+func TestHubFavoriteSetRejectsUnknownSource(t *testing.T) {
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{
+		Favorite:         favorites,
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient: unusedRemoteHostClient,
+	}, nil, nil, nil)
+
+	_, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
+		Kind:      "project",
+		ID:        "p1",
+		Source:    "host-b",
+		Favorited: true,
+	})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams || !strings.Contains(wire.Message, "unknown source") {
+		t.Fatalf("error = %v, want InvalidParams for an unknown source", err)
+	}
+	decisions, err := favorites.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(decisions) != 0 {
+		t.Fatalf("unknown source wrote a favorite: %v", decisions)
+	}
+}
+
+// Two hosts' projects that share an ID keep separate favorites; an explicit
+// "local" source addresses the controller's own project.
+func TestHubFavoriteSetAppWireKeysBySource(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	navigation := newTestNavigationService(t, source)
+	if _, err := navigation.readV2(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}, nil); err != nil {
+		t.Fatal(err)
+	}
+	favorites := hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{
+		Favorite:         favorites,
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}, {Name: "host-b"}},
+		RemoteHostClient: unusedRemoteHostClient,
+	}, nil, navigation, nil)
+
+	for _, host := range []string{"host-a", "host-b"} {
+		if _, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
+			Kind:      "project",
+			ID:        "p1",
+			Source:    host,
+			Favorited: true,
+		}); err != nil {
+			t.Fatalf("favorite on %s: %v", host, err)
+		}
+	}
+	if _, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
+		Kind:      "project",
+		ID:        "p2",
+		Source:    "local",
+		Favorited: true,
+	}); err != nil {
+		t.Fatalf("favorite on local: %v", err)
+	}
+
+	decisions, err := favorites.Favorites()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"host-a", "host-b"} {
+		if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p1", Source: host}] {
+			t.Fatalf("favorite for %s not keyed by source: %v", host, decisions)
+		}
+	}
+	if decisions[hubcore.ArchiveKey{Kind: "project", ID: "p1"}] {
+		t.Fatalf("remote favorite leaked onto the controller key: %v", decisions)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "project", ID: "p2"}] {
+		t.Fatalf(`favorite with source "local" did not normalize to the controller key: %v`, decisions)
 	}
 }

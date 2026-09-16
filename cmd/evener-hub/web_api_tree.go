@@ -126,6 +126,34 @@ func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[h
 	return projects
 }
 
+// projectFavoriteKey is the source-qualified key under which a project favorite
+// is registered in navigationBuildInputs.ProjectFavorite. Controller-local
+// projects keep their bare ID so existing consumers are unaffected; a remote
+// source is prefixed with the host name, so two hosts' projects that share an
+// ID do not collide.
+func projectFavoriteKey(source, id string) string {
+	if source == "" {
+		return id
+	}
+	return source + "\x00" + id
+}
+
+// projectFavoriteForSources reports whether any source that owns the project
+// holds a favorite decision for it. A project with no recorded sources is the
+// controller's own, so it is checked under the bare key.
+func projectFavoriteForSources(favorites map[string]bool, project hubcore.TreeProject) bool {
+	sources := project.Sources
+	if len(sources) == 0 {
+		sources = []string{""}
+	}
+	for _, source := range sources {
+		if favorites[projectFavoriteKey(source, project.Key)] {
+			return true
+		}
+	}
+	return false
+}
+
 // memoTree returns the memoized tree projection retained by mutation handlers
 // that still need it. AppWire navigation reads are owned by NavigationService,
 // whose webNavigationSource captures a fresh source snapshot.
@@ -211,7 +239,7 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 	projectFavoriteByID := make(map[string]bool, len(projectFavorites))
 	for key, favorite := range projectFavorites {
 		if key.Kind == "project" && favorite {
-			projectFavoriteByID[key.ID] = true
+			projectFavoriteByID[projectFavoriteKey(key.Source, key.ID)] = true
 		}
 	}
 	var indexRenameable func([]hubcore.TreeNode)
@@ -265,9 +293,10 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 	var unconfirmedOwnership bool
 	var ownershipErr error
 	if s.cfg.Roster != nil {
-		ownershipErr = s.cfg.Roster.OwnershipError()
-		live = s.cfg.Roster.List()
-		unconfirmedOwnership = len(s.cfg.Roster.UnconfirmedEntries()) > 0
+		roster := s.cfg.Roster.Snapshot()
+		ownershipErr = roster.OwnershipError
+		live = roster.Live
+		unconfirmedOwnership = len(roster.Unconfirmed) > 0
 	}
 	var metas []schema.SessionMeta
 	var pastEntries []hubcore.PastEntry
@@ -315,7 +344,15 @@ func (s *WebServer) navigationSnapshotInputs(ctx context.Context) navigationSnap
 		if entry.Project.ID != "" && identifier.ValidateProjectID(entry.Project.ID) == nil && entry.WorkingDir != "" {
 			addNavigationProjectCandidate(carriedProjectCandidates, entry.WorkingDir, entry.Project)
 		}
-		if appThreadTreeLive(thread) {
+		// An offline source keeps its last-known rows visible in metas, but
+		// they are not live. apiTreeSources below carries each source's Online
+		// flag for the fleet-view UI to derive the offline affordance; that
+		// consumer ships with Component 06b (fleet-view UI), so within this
+		// change an offline source's rows render as ordinary non-live rows
+		// rather than being projected live. An empty Source is treated as online
+		// (server-owned local rows), so only source-identified remote rows can
+		// be excluded.
+		if appThreadTreeLive(thread) && s.sourceOnline(thread.Source) {
 			live = append(live, entry)
 		}
 	}
@@ -647,6 +684,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		Project:   project,
 	}
 	entry.RunningJobs, entry.CompletedJobs = hubcore.SplitNonAgentJobs(diagnosticsJobs(thread.Evener.Diagnostics))
+	entry.Watches = diagnosticsWatches(thread.Evener.Diagnostics)
 	return meta, entry, true
 }
 
@@ -655,6 +693,15 @@ func diagnosticsJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJob
 		return nil
 	}
 	return diagnostics.Jobs
+}
+
+// diagnosticsWatches returns a remote thread's own live-watch rows. A thread
+// with no diagnostics (old daemon, or one that listed nothing) and a
+// diagnostics that omits Watches both yield an empty list — absence is never
+// an error. It delegates to hubcore's shared projection so the local and remote
+// tree code cannot drift.
+func diagnosticsWatches(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerWatchInfo {
+	return hubcore.DiagnosticsWatches(diagnostics)
 }
 
 // appThreadTreeParentSessionID translates the remote thread lineage into the
@@ -721,7 +768,7 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 			ID:     source.ID(),
 			Label:  source.ID(),
 			Kind:   "appwire",
-			Online: true,
+			Online: s.sourceOnline(source.ID()),
 		})
 	}
 	return sources
@@ -1030,7 +1077,12 @@ func favoriteProjectAuthorities(snapshot navigationSnapshot) []hubcore.FavoriteP
 					previous.Quality = mergeFavoriteAuthorityQuality(previous.Quality, quality)
 					claims[key] = previous
 				} else {
-					claims[key] = hubcore.FavoriteProjectAuthority{ID: project.ID, Quality: quality, ClaimKey: claimKey}
+					claims[key] = hubcore.FavoriteProjectAuthority{
+						ID:       project.ID,
+						Quality:  quality,
+						ClaimKey: claimKey,
+						Source:   hubcore.NormalizeDecisionSource(source),
+					}
 				}
 			}
 		}

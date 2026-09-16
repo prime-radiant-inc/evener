@@ -54,8 +54,12 @@ func TestCovDeliverHookUserMessage_Empty(t *testing.T) {
 func TestCovFollowUp_Empty(t *testing.T) {
 	s := &Session{}
 	// Empty message — should not add.
-	s.FollowUp("")
-	s.FollowUp("  ")
+	if err := s.FollowUp(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FollowUp("  "); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.followups) != 0 {
 		t.Fatalf("expected 0 followups, got %d", len(s.followups))
@@ -63,7 +67,9 @@ func TestCovFollowUp_Empty(t *testing.T) {
 	s.mu.Unlock()
 
 	// Non-empty — should add.
-	s.FollowUp("do something")
+	if err := s.FollowUp("do something"); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.followups) != 1 || s.followups[0] != "do something" {
 		t.Fatalf("expected 1 followup 'do something', got %v", s.followups)
@@ -73,7 +79,9 @@ func TestCovFollowUp_Empty(t *testing.T) {
 	s.mu.Lock()
 	s.state = SessionClosed
 	s.mu.Unlock()
-	s.FollowUp("ignored after close")
+	if err := s.FollowUp("ignored after close"); err != nil {
+		t.Fatal(err)
+	}
 	s.mu.Lock()
 	if len(s.followups) != 1 || s.followups[0] != "do something" {
 		t.Fatalf("closed session changed followups: %v", s.followups)

@@ -1,8 +1,8 @@
+import type { LaunchConfigLayer, PluginPreviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
 import {
   PLUGIN_PREVIEW_DEBOUNCE_MS,
   type PluginPreviewLoadState,
@@ -387,5 +387,25 @@ describe("usePluginPreview", () => {
       await flush();
     });
     expect(result.current.state).toEqual({ status: "error", message: "preview failed" });
+  });
+
+  // Component 07b: the plugin preview is host-dependent, so a remote selection
+  // resolves it through evener/host/request on the selected host.
+  test("resolves the preview on the selected remote host through the proxy", async () => {
+    vi.useFakeTimers();
+    const client = new FakeClient();
+    client.on("evener/host/request", (params) => {
+      expect(params).toEqual({ host: "buildbox", method: "evener/plugin/preview", params: { cwd: "/repo" } });
+      return RESPONSE;
+    });
+    const { result } = renderHook(() =>
+      usePluginPreview({ client, cwd: "/repo", host: "buildbox", launchOverrides: {}, pluginRevision: 0 }),
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLUGIN_PREVIEW_DEBOUNCE_MS);
+      await flush();
+    });
+    expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
+    expect(client.calls.map((call) => call.method)).toEqual(["evener/host/request"]);
   });
 });

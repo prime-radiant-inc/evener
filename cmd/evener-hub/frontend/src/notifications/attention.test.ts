@@ -1,7 +1,7 @@
 // @vitest-environment node
 
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { NavigationSessionSummary } from "../protocol/types.gen";
 import { type AttentionEntry, detectFires, levelFromState, snapshotFromNavigation } from "./attention";
 
 function row(

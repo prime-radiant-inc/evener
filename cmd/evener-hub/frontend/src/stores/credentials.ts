@@ -1,221 +1,34 @@
-// credentials.ts is the thin wire-truth gateway for the Providers &
-// credentials settings section: evener/instance/{list,create,edit,remove,
-// setDefault} plus the evener/auth/* RPCs the section's OAuth/API-key/device
-// flows drive. Follows stores/threads.ts's own requireClient()-via-
-// connectionStore pattern (this store has no connect() of its own).
-//
-// Every evener/instance/* mutation's Go handler returns the FULL updated
-// InstanceListResponse (appwire/types.go) - so create/edit/remove/setDefault
-// apply that response directly to `instances`/`availableProviders`/
-// `diagnostics`/`userLayer`/`writesRefused` instead of issuing a separate
-// evener/instance/list refetch, same round-trip the legacy credentials.html's
-// own instanceCreate/instanceEdit/... + refresh() pattern achieves in two
-// calls.
-//
-// Never-echo invariant: no method here stores a secret VALUE anywhere in
-// this store's state - setApiKey/loginComplete/deviceStart/devicePoll return
-// (and this store passes through) only AuthStatusResponse/AuthDeviceStart
-// Response/AuthDevicePollResponse shapes, none of which carry the secret
-// itself (write-only fields on the wire).
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { errorText } from "../protocol/errors";
-import type {
-  AnyNotification,
-  AuthDevicePollResponse,
-  AuthDeviceStartResponse,
-  AuthLoginCompleteResponse,
-  AuthLoginStartResponse,
-  AuthLogoutResponse,
-  AuthStatusResponse,
-  AuthTestResponse,
-  InstanceCreateParams,
-  InstanceEditParams,
-  InstanceEntry,
-  InstanceListResponse,
-  ProviderDescriptor,
-} from "../protocol/types.gen";
-import { connectionStore } from "./connection";
+// credentials.ts is the web's Providers & credentials store: the package's
+// credential instances store core (@evener/appwire-client/state/credentials)
+// wired to connectionStore and stamped with this page's mutation identity.
+// Follows stores/threads.ts's own connectionStore pattern (this store has no
+// connect() of its own): the connection subscription below is what tells the
+// core which client the rows belong to, and the core listens for
+// evener/auth/updated on that client itself.
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("credentials store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
-}
+import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
+import {
+  type CredentialInstancesState,
+  createCredentialInstancesStore,
+} from "@evener/appwire-client/state/credentials";
+import { createStore, useStore } from "zustand";
+import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
+import { hostRequest, isLocalHost } from "./hostRouting";
+import { ownClientId } from "./mutationClientIdentity";
 
-export interface CredentialsStoreState {
-  instances: InstanceEntry[];
-  availableProviders: ProviderDescriptor[];
-  // diagnostics/userLayer/writesRefused mirror InstanceListResponse's own
-  // optional fields (appwire/types.go), normalized here to always-present
-  // values (spec §11.3) so components never need an `?? []`/`?? false`
-  // fallback of their own.
-  diagnostics: string[];
-  userLayer: string;
-  writesRefused: boolean;
-  loading: boolean;
-  error: string | null;
-  fetch(): Promise<void>;
-  create(params: InstanceCreateParams): Promise<void>;
-  // Resolves true when the listing this edit answered with is the one the
-  // store now holds, false when a newer request superseded it. The instance
-  // sheet steers itself on the store's verdict, never on the raw response.
-  edit(params: InstanceEditParams): Promise<boolean>;
-  remove(name: string): Promise<void>;
-  setDefault(name: string): Promise<void>;
-  // Auth mutations return the raw wire response and never touch
-  // instances/availableProviders themselves - the caller (CredentialsSection)
-  // re-fetches on success, matching the legacy's own "close editor +
-  // refresh()" sequencing, and surfaces failures as inline errors/toasts
-  // itself rather than this store swallowing them into an `error` field.
-  setApiKey(provider: string, value: string): Promise<AuthStatusResponse>;
-  setCredentialJson(provider: string, value: string): Promise<AuthStatusResponse>;
-  // clearStoredKey removes only the credentials.toml entry, leaving any
-  // OAuth/ADC/env credential untouched - the counterpart to setApiKey, and
-  // the narrow alternative to logout() for a stray stored key shadowed
-  // behind an active oauth/adc sign-in (issue #713).
-  clearStoredKey(provider: string): Promise<AuthStatusResponse>;
-  logout(provider: string): Promise<AuthLogoutResponse>;
-  loginStart(provider: string): Promise<AuthLoginStartResponse>;
-  loginComplete(provider: string, flowId: string, redirectUrl: string): Promise<AuthLoginCompleteResponse>;
-  deviceStart(provider: string): Promise<AuthDeviceStartResponse>;
-  devicePoll(provider: string, flowId: string): Promise<AuthDevicePollResponse>;
-  testCredentials(provider: string): Promise<AuthTestResponse>;
-}
+export {
+  foreignListingChange,
+  isStaleListingRefusal,
+  StaleListingRefusal,
+  staleListingHeld,
+} from "@evener/appwire-client/state/credentials";
 
-// listState normalizes one instance/list answer into the store's own always-
-// present shape. Every reader of the listing goes through it, so a field
-// added to InstanceListResponse is defaulted in exactly one place.
-type ListState = Pick<
-  CredentialsStoreState,
-  "instances" | "availableProviders" | "diagnostics" | "userLayer" | "writesRefused"
->;
+export type CredentialsStoreState = CredentialInstancesState;
 
-function listState(resp: InstanceListResponse): ListState {
-  return {
-    instances: resp.instances,
-    availableProviders: resp.availableProviders,
-    diagnostics: resp.diagnostics ?? [],
-    userLayer: resp.userLayer ?? "",
-    writesRefused: resp.writesRefused ?? false,
-  };
-}
-
-// emptyListState is the listing state before anything has been fetched, and
-// the state resetCredentialsStoreForTests returns to. A function, not a
-// shared literal: each caller gets its own arrays.
-function emptyListState(): ListState {
-  return { instances: [], availableProviders: [], diagnostics: [], userLayer: "", writesRefused: false };
-}
-
-let requestVersion = 0;
-let requestedList = false;
-
-// Reads and writes share ordering: only the most recently started request
-// can replace the listing, even when responses arrive out of order. Reports
-// whether THIS response is the one that replaced it: a superseded response
-// carries a listing the store discarded, and a caller steering a view on the
-// strength of its own write has to be able to tell the two apart.
-async function applyMutation(request: () => Promise<InstanceListResponse>): Promise<boolean> {
-  const version = ++requestVersion;
-  try {
-    const response = await request();
-    if (version !== requestVersion) return false;
-    credentialsStore.setState({ ...listState(response), loading: false, error: null });
-    return true;
-  } finally {
-    if (version === requestVersion) credentialsStore.setState({ loading: false });
-  }
-}
-
-export const credentialsStore = createStore<CredentialsStoreState>((set) => ({
-  ...emptyListState(),
-  loading: false,
-  error: null,
-
-  async fetch() {
-    const client = requireClient();
-    requestedList = true;
-    const version = ++requestVersion;
-    set({ loading: true, error: null });
-    try {
-      const resp = await client.request("evener/instance/list", {});
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ ...listState(resp), loading: false });
-    } catch (err) {
-      if (version !== requestVersion || connectionStore.getState().client !== client) return;
-      set({ loading: false, error: errorText(err) });
-    }
-  },
-
-  async create(params) {
-    const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/create", params));
-  },
-
-  async edit(params) {
-    const client = requireClient();
-    return applyMutation(() => client.request("evener/instance/edit", params));
-  },
-
-  async remove(name) {
-    const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/remove", { name }));
-  },
-
-  async setDefault(name) {
-    const client = requireClient();
-    await applyMutation(() => client.request("evener/instance/setDefault", { name }));
-  },
-
-  async setApiKey(provider, value) {
-    const client = requireClient();
-    return client.request("evener/auth/apiKey/set", { provider, value });
-  },
-
-  async setCredentialJson(provider, value) {
-    const client = requireClient();
-    return client.request("evener/auth/credentialJson/set", { provider, value });
-  },
-
-  async clearStoredKey(provider) {
-    const client = requireClient();
-    return client.request("evener/auth/apiKey/clear", { provider });
-  },
-
-  async logout(provider) {
-    const client = requireClient();
-    return client.request("evener/auth/logout", { provider });
-  },
-
-  async loginStart(provider) {
-    const client = requireClient();
-    return client.request("evener/auth/login/start", { provider });
-  },
-
-  async loginComplete(provider, flowId, redirectUrl) {
-    const client = requireClient();
-    return client.request("evener/auth/login/complete", { provider, flowId, redirectUrl });
-  },
-
-  async deviceStart(provider) {
-    const client = requireClient();
-    return client.request("evener/auth/device/start", { provider });
-  },
-
-  async devicePoll(provider, flowId) {
-    const client = requireClient();
-    return client.request("evener/auth/device/poll", { provider, flowId });
-  },
-
-  async testCredentials(provider) {
-    const client = requireClient();
-    return client.request("evener/auth/test", { provider });
-  },
-}));
+// The hub echoes ownClientId into the evener/auth/updated broadcast, so this
+// page attributes its own echo by identity rather than provider plus timing.
+export const credentialsStore = createCredentialInstancesStore({ ownClientId });
 
 export function useCredentialsStore(): CredentialsStoreState;
 export function useCredentialsStore<T>(selector: (state: CredentialsStoreState) => T): T;
@@ -226,97 +39,168 @@ export function useCredentialsStore<T>(selector?: (state: CredentialsStoreState)
   return selector ? useStore(credentialsStore, selector) : useStore(credentialsStore);
 }
 
-// --- notification-triggered refetch --------------------------------------
-//
-// evener/auth/updated BroadcastAlls to every connected client after a
-// successful auth mutation (login/logout/apiKey set/an authorized device
-// poll) from ANY of them - InstanceEntry's own activeSource/hasStoredOAuth/
-// hasStoredFile/storedEmail fields are exactly what such a mutation changes,
-// so a browser tab that already loaded the instance list goes stale
-// otherwise. Mirrors stores/extensions.ts's identical
-// wiring, applied here to this store's one wire-truth list. On the wire
-// evener/auth/updated carries {provider, activeSource} (notifyAuthUpdated,
-// cmd/evener-hub/app_rpc.go:764-767), but its generated
-// EvenerAuthUpdatedPayload type is empty ({}) because codegen can't see
-// into Go's untyped map[string]string - and this refetch is
-// payload-agnostic anyway (nothing reads those fields), so a debounced
-// evener/instance/list refetch is the only option, exactly like
-// evener/navigation/invalidated's own "just refetch" contract.
-const REFETCH_DEBOUNCE_MS = 250;
-
-let wiredClient: AppwireClientLike | null = null;
-let unsubscribeNotifications: (() => void) | undefined;
-let refetchTimer: ReturnType<typeof setTimeout> | undefined;
-
-function scheduleRefetch(): void {
-  clearTimeout(refetchTimer);
-  refetchTimer = setTimeout(() => {
-    // fetch()'s own requireClient() throws outside its try/catch, by design
-    // (see this file's own top comment) - a real rejection here would be an
-    // unobserved background call with nothing awaiting it, so a rare
-    // disconnect-during-the-debounce-window race must be swallowed here
-    // rather than surfacing as an unhandled rejection.
-    credentialsStore
-      .getState()
-      .fetch()
-      .catch(() => {});
-  }, REFETCH_DEBOUNCE_MS);
+// Watches connectionStore for the client becoming available and hands every
+// client or connection-state transition to the core - see stores/extensions.ts's
+// identical wiring for the full "why react to the store instead of reading it
+// once" rationale (a mount-order race between this module and AppShell's own
+// connect() effect).
+function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): void {
+  credentialsStore.connectionChanged(state.client, state.state);
 }
 
-function handleNotification(n: AnyNotification): void {
-  if (n.method === "evener/auth/updated") scheduleRefetch();
-}
+connectionStore.subscribe(syncConnection);
+syncConnection(connectionStore.getState());
 
-function attachNotifications(client: AppwireClientLike | null): void {
-  if (client === wiredClient) return; // already wired to this exact client
-  unsubscribeNotifications?.();
-  clearTimeout(refetchTimer);
-  refetchTimer = undefined;
-  wiredClient = client;
-  unsubscribeNotifications = client?.onNotification(handleNotification);
-}
-
-// Watches connectionStore for the client becoming available and attaches
-// this store's own notification handler to it - see stores/extensions.ts's
-// identical wiring for the full "why react to the store instead of reading
-// it once" rationale (a mount-order race between this module and AppShell's
-// own connect() effect).
-connectionStore.subscribe((state, previous) => {
-  if (state.client !== previous.client || state.state !== previous.state) {
-    requestVersion += 1;
-    credentialsStore.setState({ loading: false });
-    clearTimeout(refetchTimer);
-    refetchTimer = undefined;
-  }
-  attachNotifications(state.client);
-  // Once a view has requested credentials, reconnects must restore its list
-  // even if its one-shot mount loader was interrupted.
-  if (
-    requestedList &&
-    state.client &&
-    state.state === "ready" &&
-    (state.client !== previous.client || previous.state !== "ready")
-  ) {
-    void credentialsStore
-      .getState()
-      .fetch()
-      .catch(() => {});
-  }
-});
-const initialClient = connectionStore.getState().client;
-if (initialClient) attachNotifications(initialClient);
-
-// resetCredentialsStoreForTests resets this singleton store's state between
-// tests, including the module-private wiring/debounce bookkeeping above -
+// resetCredentialsStoreForTests resets this singleton store between tests,
 // mirroring resetThreadsStoreForTests/resetTreeStoreForTests. No production
 // code should ever call this.
 export function resetCredentialsStoreForTests(): void {
-  requestVersion += 1;
-  requestedList = false;
-  unsubscribeNotifications?.();
-  unsubscribeNotifications = undefined;
-  wiredClient = null;
-  clearTimeout(refetchTimer);
-  refetchTimer = undefined;
-  credentialsStore.setState({ ...emptyListState(), loading: false, error: null });
+  credentialsStore.resetForTests();
+}
+
+// --- Host-scoped instance listings (component 07b) --------------------------
+
+/** HostInstanceState is one non-controller host's own provider listing: the
+ * same rows the controller's own listing carries, read from THAT host's
+ * registry through evener/host/request, plus that host's own request status. A
+ * remote host's load cannot move the controller's `loading`/`error`, and the
+ * controller's own refetch cannot move a remote host's. */
+export interface HostInstanceState {
+  instances: InstanceEntry[];
+  availableProviders: ProviderDescriptor[];
+  writesRefused: boolean;
+  loading: boolean;
+  error: string | null;
+}
+
+/** The empty partition, a module constant rather than a fresh literal: a host
+ * with no entry yet keeps a stable snapshot identity instead of re-rendering
+ * forever. */
+export const EMPTY_HOST_INSTANCE_STATE: HostInstanceState = Object.freeze({
+  instances: [],
+  availableProviders: [],
+  writesRefused: false,
+  loading: false,
+  error: null,
+});
+
+export interface HostInstancesState {
+  hosts: Record<string, HostInstanceState>;
+  // generation advances on every connection transition. A remote read captures
+  // it before its request and commits only if it is unchanged: an answer that
+  // arrives across a transition belongs to a client that is gone, and the
+  // listing it was refreshing is still the one this page holds. The transition
+  // also releases every partition's in-flight status, so a form reopened after
+  // a reconnect re-reads instead of waiting on an answer that will never be
+  // accepted.
+  generation: number;
+}
+
+/** hostInstancesStore holds one partition per non-controller host. It is a
+ * store of its own rather than part of the package's credential store above:
+ * those fields ARE the controller's rows, and everything that acts on them -
+ * the package store's evener/auth/updated refetch, its writes - must never see
+ * another host's listing. */
+export const hostInstancesStore = createStore<HostInstancesState>(() => ({ hosts: {}, generation: 0 }));
+
+// The controller-scoped store above owns the page's rows; this subscription
+// only ends the remote reads a connection transition orphans.
+let lastConnectionState = connectionStore.getState().state;
+let lastConnectionClient = connectionStore.getState().client;
+connectionStore.subscribe((state) => {
+  if (state.state === lastConnectionState && state.client === lastConnectionClient) return;
+  lastConnectionState = state.state;
+  lastConnectionClient = state.client;
+  hostInstancesStore.setState((previous) => ({
+    generation: previous.generation + 1,
+    hosts: Object.fromEntries(
+      Object.entries(previous.hosts).map(([host, partition]) => [
+        host,
+        partition.loading ? { ...partition, loading: false } : partition,
+      ]),
+    ) as Record<string, HostInstanceState>,
+  }));
+});
+
+/** hostPartition reads one host's own partition, or the empty one before that
+ * host has ever been loaded. */
+export function hostPartition(state: HostInstancesState, host: string): HostInstanceState {
+  return state.hosts[host] ?? EMPTY_HOST_INSTANCE_STATE;
+}
+
+export function useHostInstances(host: string): HostInstanceState {
+  return useStore(hostInstancesStore, (state) => hostPartition(state, host));
+}
+
+/** fetchHost reads `host`'s own instance listing through evener/host/request
+ * (component 07b), so the spawn form's provider setup describes the machine the
+ * launch will use. The controller's host is not a partition - its rows are the
+ * package store's - so this is a no-op for LOCAL_HOST and for an absent host;
+ * callers read the controller's own store for those. */
+export async function fetchHost(host: string): Promise<void> {
+  if (isLocalHost(host)) return;
+  const client = connectionStore.getState().client;
+  if (!client) return;
+  const generation = hostInstancesStore.getState().generation;
+  setHostPartition(host, (previous) => ({ ...previous, loading: true, error: null }));
+  try {
+    const resp = await hostRequest(client, host, "evener/instance/list", {});
+    if (hostInstancesStore.getState().generation !== generation) return;
+    setHostPartition(host, () => ({
+      instances: resp.instances,
+      availableProviders: resp.availableProviders,
+      writesRefused: resp.writesRefused ?? false,
+      loading: false,
+      error: null,
+    }));
+  } catch (err) {
+    if (hostInstancesStore.getState().generation !== generation) return;
+    setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err) }));
+  }
+}
+
+// A credential change made ON a remote host reaches this browser wrapped in
+// evener/host/notification, tagged with the host whose own evener/auth/updated
+// it re-emits (app_host_admin.go's fan-out). That host's partition is what a
+// remote spawn reads, so the wrapped notification refetches it -- debounced,
+// like the controller store's own refresh -- and never the controller's
+// listing.
+const HOST_REFETCH_DEBOUNCE_MS = 250;
+const hostRefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function scheduleHostRefetch(host: string): void {
+  const pending = hostRefetchTimers.get(host);
+  if (pending !== undefined) clearTimeout(pending);
+  hostRefetchTimers.set(
+    host,
+    setTimeout(() => {
+      hostRefetchTimers.delete(host);
+      void fetchHost(host);
+    }, HOST_REFETCH_DEBOUNCE_MS),
+  );
+}
+
+onConnectionNotification((notification) => {
+  if (notification.method !== "evener/host/notification") return;
+  const { host, method } = (notification.params ?? {}) as { host?: string; method?: string };
+  if (!host || isLocalHost(host)) return;
+  // The instance listing is this store's only wire-truth data, so only a
+  // credential change on that host is actionable here. The fan-out also wraps
+  // launch/plugin/agents-doc updates, which this store does not read.
+  if (method !== "evener/auth/updated") return;
+  scheduleHostRefetch(host);
+});
+
+/** resetHostInstancesForTests clears the partitions between tests. No
+ * production code should call this. */
+export function resetHostInstancesForTests(): void {
+  for (const pending of hostRefetchTimers.values()) clearTimeout(pending);
+  hostRefetchTimers.clear();
+  hostInstancesStore.setState({ hosts: {}, generation: 0 });
+}
+
+function setHostPartition(host: string, update: (previous: HostInstanceState) => HostInstanceState): void {
+  hostInstancesStore.setState((state) => ({
+    hosts: { ...state.hosts, [host]: update(hostPartition(state, host)) },
+  }));
 }

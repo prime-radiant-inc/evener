@@ -8,7 +8,7 @@
 // truth for launch config - the daemon's own launch.toml layering is. A blob
 // that the daemon later stops honoring is harmless; the stale-model sweep only
 // prunes model values the hub can PROVE are gone (see modelValidityAgainstList).
-import type { ModelDescriptor } from "../../protocol/types.gen";
+import type { ModelDescriptor } from "@evener/appwire-client";
 
 export const SPAWN_DEFAULTS_PREFIX = "evener-hub.spawn-defaults.";
 // Global scalar keys (distinct from the `.global` blob defaultsKeyFor("")
@@ -117,6 +117,21 @@ export interface SaveDefaultsInput {
   // Whether the chosen harness uses evener models (kind === "evener"). Gates
   // whether the model field is persisted at all (floor §1.9, spawn.js:92-98).
   harnessUsesEvenerModels: boolean;
+  // Whether this submit targets a remote source. A remote launch's cwd and
+  // model belong to the SELECTED HOST, not this controller, so they must not be
+  // written to the global scalar defaults a later LOCAL spawn consults: the
+  // remote cwd would default the next local Spawn to a path that usually does
+  // not exist here, and a host-only model would default the next local launch
+  // to a model this hub may not serve (Component 06b review, round seven). The
+  // per-project blob keyed by that cwd is still written, minus any model of its
+  // OWN (round eight - the cwd key cannot distinguish a local checkout of the
+  // same path from the remote one) while keeping a model already stored there
+  // (round nine - a remote submit must not erase the local project's sticky
+  // choice). Component 07b's round four adds one refinement main's round nine
+  // implies but did not yet do: a remote submit never takes the blob's
+  // removeRaw path either, so an empty remote form cannot delete a local
+  // project's stored layer (see saveDefaults).
+  remoteLaunch?: boolean;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -136,14 +151,46 @@ export function saveDefaults(input: SaveDefaultsInput): void {
   if (harness) blob.harness = harness;
   if (accessMode) blob.access_mode = accessMode;
   if (reasoningEffort) blob.reasoning_effort = reasoningEffort;
-  if (model && input.harnessUsesEvenerModels) blob.model = model;
+  // The blob is keyed by the cwd ALONE, and a cwd does not identify a host: the
+  // same path is often also a local checkout. A model chosen on a remote host
+  // came from THAT host's catalog, so persisting it here would hand it to a
+  // later LOCAL spawn of the same path - a model this hub may not serve, which
+  // the stale-model sweep cannot even recognize as wrong (an unknown provider
+  // is deliberately left untouched). Only the host-specific model value is
+  // dropped; the remote project's harness/access/effort layer is still
+  // remembered (Component 06b review, round eight, refining round seven's
+  // "the blob is still written").
+  if (model && input.harnessUsesEvenerModels && !input.remoteLaunch) blob.model = model;
 
   const key = defaultsKeyFor(input.cwd);
+  // ...and the remote launch must not ERASE a model a previous LOCAL launch
+  // stored for this path either. The write below replaces the whole blob, so
+  // omitting model was not "this submit names no model" - it was "this path has
+  // no model", and a later local spawn of the same cwd silently lost its sticky
+  // choice (round nine). A remote submit therefore carries the existing blob's
+  // model over verbatim: it contributes no model of its own (round eight's
+  // intent, above) while leaving the local one exactly as it found it.
+  if (input.remoteLaunch) {
+    const previous = loadDefaultsBlob(input.cwd).model;
+    if (typeof previous === "string" && previous.trim() !== "") blob.model = previous;
+  }
   if (Object.keys(blob).length > 0) writeRaw(key, JSON.stringify(blob));
-  else removeRaw(key);
+  // A remote submit that contributes no field of its own must not take the
+  // removeRaw path either (component 07b review, round four, adopted onto main's
+  // round-nine rule): an empty blob here means "this remote form named nothing",
+  // not "this path has no stored layer", and the evidence would only ever
+  // describe another machine. The carry-over above keeps the stored model; this
+  // keeps the rest of the layer - and the blob itself - intact.
+  else if (!input.remoteLaunch) removeRaw(key);
 
-  if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
-  if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
+  // Global scalars are controller-wide defaults; a remote launch must not
+  // rewrite them (round seven). The per-project blob above stays keyed by the
+  // submitted cwd, so the remote project's own layer is still remembered
+  // (round eight - only the host-specific model is withheld from it).
+  if (!input.remoteLaunch) {
+    if (model && input.harnessUsesEvenerModels) writeRaw(GLOBAL_MODEL_KEY, model);
+    if (input.cwd.trim() !== "") writeRaw(GLOBAL_WORKING_DIR_KEY, input.cwd);
+  }
 }
 
 export type ModelValidity = "malformed" | "stale" | "unknown" | "valid";

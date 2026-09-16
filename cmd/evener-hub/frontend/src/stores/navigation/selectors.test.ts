@@ -1,14 +1,28 @@
-import { expect, test } from "vitest";
-import { type NormalizedResource, normalizedGraphFromSnapshot } from "./codec";
-import { relativeAge, selectRailModel } from "./selectors";
+import type { NavigationManifest, NavigationSessionSummary, NavigationWatchSummary } from "@evener/appwire-client";
 import {
   isSettledGone,
+  keyID,
+  type NormalizedResource,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
+  normalizedGraphFromSnapshot,
   type ResourceKey,
   type ResourceState,
-} from "./types";
+} from "@evener/appwire-client/state/navigation";
+import { expect, test } from "vitest";
+import {
+  relativeAge,
+  resetSessionWatchesCacheForTests,
+  selectDisplaySources,
+  selectRailModel,
+  selectSessionOmittedArmedWatches,
+  selectSessionOmittedWatches,
+  selectSessionWatches,
+  selectSources,
+  sessionWatchesCacheSizeForTests,
+} from "./selectors";
+import { navigationStore } from "./store";
 
 test.each([
   [
@@ -224,4 +238,252 @@ test("a settled gone tombstone counts, a stale retained one does not", () => {
   expect(isSettledGone(tombstone(true))).toBe(false);
   expect(isSettledGone(undefined)).toBe(false);
   expect(isSettledGone(null)).toBe(false);
+});
+
+function watchesState(
+  title: string,
+  watches: NavigationWatchSummary[],
+  omittedWatches = 0,
+  omittedArmedWatches = 0,
+): ReturnType<typeof navigationStore.getState> {
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const summary = {
+    ref: "local:s",
+    host_id: "local",
+    session_id: "s",
+    title,
+    project: "p",
+    state: "idle",
+    kind: "session",
+    live: true,
+    watches,
+    omitted_watches: omittedWatches,
+    omitted_armed_watches: omittedArmedWatches,
+    children: [],
+  } as unknown as NavigationSessionSummary;
+  const resource: ResourceState = {
+    key: sectionKey,
+    data: { sessions: [summary] },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "tag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  return { ...navigationStore.getState(), resources: new Map([[keyID(sectionKey), resource]]) };
+}
+
+// SessionPanelPane selects its watches through this helper so it re-renders
+// only when its OWN session's watch content changes. That contract is array
+// identity: unrelated navigation churn must return the same reference, and a
+// real change must return a new one.
+test("selectSessionWatches keeps identity across unrelated navigation churn", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  const first = selectSessionWatches("local:s", watchesState("one", [watchRow]));
+  // A different title is navigation churn for an unrelated field: the watches
+  // are the same content, so the result must keep its identity.
+  const second = selectSessionWatches("local:s", watchesState("two", [watchRow]));
+  expect(second).toBe(first);
+
+  const changed = selectSessionWatches("local:s", watchesState("two", [{ ...watchRow, deliveries: 2 }]));
+  expect(changed).not.toBe(first);
+  expect(changed?.[0]?.deliveries).toBe(2);
+});
+
+function refWatchesState(ref: string, watches: NavigationWatchSummary[]): ReturnType<typeof navigationStore.getState> {
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const summary = {
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "p",
+    state: "idle",
+    kind: "session",
+    live: true,
+    watches,
+    children: [],
+  } as unknown as NavigationSessionSummary;
+  const resource: ResourceState = {
+    key: sectionKey,
+    data: { sessions: [summary] },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "tag",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  return { ...navigationStore.getState(), resources: new Map([[keyID(sectionKey), resource]]) };
+}
+
+// A ref that drops out of the session list must not keep a cache entry for the
+// life of the page. Deleting the entry also drops its old array, so the next
+// read recomputes instead of serving a stale identity.
+test("selectSessionOmittedWatches reads the count off the summary and is zero when absent", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(5);
+  expect(selectSessionOmittedWatches("local:s", watchesState("t", [watchRow]))).toBe(0);
+  expect(selectSessionOmittedWatches("local:absent", watchesState("t", [watchRow], 5))).toBe(0);
+});
+
+// The armed subset of the omitted rows is what the rail and the activity panel
+// add to the retained armed count; it must be readable and zero when absent.
+test("selectSessionOmittedArmedWatches reads the armed subset and is zero when absent", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  expect(selectSessionOmittedArmedWatches("local:s", watchesState("t", [watchRow], 5, 3))).toBe(3);
+  expect(selectSessionOmittedArmedWatches("local:s", watchesState("t", [watchRow], 5))).toBe(0);
+  expect(selectSessionOmittedArmedWatches("local:absent", watchesState("t", [watchRow], 5, 3))).toBe(0);
+});
+
+test("selectSessionWatches drops the entry when the session summary vanishes", () => {
+  const ref = "local:cache-vanished";
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  resetSessionWatchesCacheForTests();
+  expect(selectSessionWatches(ref, refWatchesState(ref, [watchRow]))).toEqual([watchRow]);
+  expect(sessionWatchesCacheSizeForTests()).toBe(1);
+
+  expect(selectSessionWatches(ref, refWatchesState("local:cache-elsewhere", [watchRow]))).toBeUndefined();
+  expect(sessionWatchesCacheSizeForTests()).toBe(0);
+});
+
+// The cache is bounded, and Map preserves insertion order, so exceeding the cap
+// evicts the oldest insertion. That only costs a recomputation, never
+// correctness.
+test("selectSessionWatches bounds its cache by evicting the oldest insertion", () => {
+  const watchRow: NavigationWatchSummary = {
+    id: "w",
+    source: "self",
+    deliveries: 1,
+    created_at: "2026-09-12T10:00:00Z",
+    active: true,
+  };
+  resetSessionWatchesCacheForTests();
+  const oldestRef = "local:cache-oldest";
+  const first = selectSessionWatches(oldestRef, refWatchesState(oldestRef, [watchRow]));
+  for (let i = 0; i <= 256; i++) {
+    const ref = `local:cache-cap-${i}`;
+    selectSessionWatches(ref, refWatchesState(ref, [watchRow]));
+  }
+  expect(sessionWatchesCacheSizeForTests()).toBeLessThanOrEqual(256);
+  const reread = selectSessionWatches(oldestRef, refWatchesState(oldestRef, [watchRow]));
+  expect(reread).not.toBe(first);
+});
+
+// selectSources feeds the host picker and the spawn form's launch target, so a
+// retained snapshot must not be read as a launchable host list: on an
+// invalidation or reconnect the resource keeps its previous data while
+// loading/stale - and that data can list a host the fresh manifest has since
+// removed or taken offline. Only a settled manifest may expose sources.
+const manifestData: NavigationManifest = {
+  generation_id: "generation_test",
+  revision: 1,
+  sources: [
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ],
+  attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+};
+function manifestResource(
+  overrides: Partial<ResourceState<NavigationManifest>> = {},
+): ResourceState<NavigationManifest> {
+  return {
+    key: { kind: "manifest" },
+    data: manifestData,
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+    ...overrides,
+  };
+}
+const sourcesOf = (manifest: ResourceState<NavigationManifest> | null) =>
+  selectSources({ manifest } as unknown as Parameters<typeof selectSources>[0]);
+
+test("selectSources exposes a settled manifest's sources and withholds an unsettled one", () => {
+  expect(sourcesOf(manifestResource()).map((source) => source.id)).toEqual(["local", "buildbox"]);
+  // A retained snapshot with no settled authority exposes nothing: loading,
+  // stale (invalidation/reconnect), and errored all read as no sources.
+  for (const overrides of [{ loading: true }, { stale: true }, { error: new Error("read failed") }]) {
+    expect(sourcesOf(manifestResource(overrides))).toEqual([]);
+  }
+  expect(sourcesOf(null)).toEqual([]);
+});
+
+test("selectSources returns the same empty snapshot whenever it withholds sources", () => {
+  // useSyncExternalStore compares snapshots by identity, so every withheld
+  // state must share one stable array rather than allocate a fresh one.
+  const withheld = sourcesOf(manifestResource({ stale: true }));
+  expect(sourcesOf(manifestResource({ loading: true }))).toBe(withheld);
+  expect(sourcesOf(manifestResource({ error: new Error("read failed") }))).toBe(withheld);
+  expect(sourcesOf(null)).toBe(withheld);
+});
+
+// ...and the DISPLAY view beside it, which answers the other question: what does
+// the reader's screen already know about the hosts? Withholding the retained
+// snapshot there hid the host picker and flipped every remote row's offline
+// badge to ONLINE for the length of the refresh (round nine).
+const displaySourcesOf = (manifest: ResourceState<NavigationManifest> | null) =>
+  selectDisplaySources({ manifest } as unknown as Parameters<typeof selectDisplaySources>[0]);
+
+test("selectDisplaySources keeps the last-known sources while the manifest is unsettled", () => {
+  for (const overrides of [{ loading: true }, { stale: true }, { error: new Error("read failed") }]) {
+    expect(displaySourcesOf(manifestResource(overrides)).map((source) => source.id)).toEqual(["local", "buildbox"]);
+  }
+  // Nothing has ever been read: there is no last-known reading to display.
+  expect(displaySourcesOf(manifestResource({ data: null }))).toEqual([]);
+  expect(displaySourcesOf(null)).toEqual([]);
+});
+
+test("selectDisplaySources hands back the store's own array, so snapshots stay identical", () => {
+  // Same useSyncExternalStore contract as selectSources: a fresh array (or a
+  // fresh copy) on every read would re-render the store's subscribers forever.
+  expect(displaySourcesOf(manifestResource())).toBe(manifestData.sources);
+  const retained = displaySourcesOf(manifestResource({ stale: true }));
+  expect(displaySourcesOf(manifestResource({ loading: true }))).toBe(retained);
+});
+
+test("the two views differ exactly where settledness does", () => {
+  // A settled manifest: launch decisions and display agree.
+  const settled = manifestResource();
+  expect(displaySourcesOf(settled)).toBe(sourcesOf(settled));
+  // Unsettled: only the display read keeps describing the hosts.
+  const stale = manifestResource({ stale: true });
+  expect(sourcesOf(stale)).toEqual([]);
+  expect(displaySourcesOf(stale).map((source) => source.id)).toEqual(["local", "buildbox"]);
 });

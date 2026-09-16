@@ -18,7 +18,10 @@
 // rows change height as sessions change state; see SessionRow's own comment for
 // why that trade is deliberate. The one other thing that earns a second line
 // regardless of state is a row's project name, on a session shown flat across
-// projects (Live/Pinned, depth 0) - see SessionRow's showsProject.
+// projects (Live/Pinned, depth 0) - see SessionRow's showsProject. And since
+// watches: a session whose only pending work is an armed watch earns it too, so
+// the count is never invisible on exactly the rows where a watch is the only
+// thing happening (see SessionRow's showsActivity).
 //
 // CLASS.actions (RailRow.module.css) is what makes the "..." trigger (and a
 // project row's "+") quiet: transparent/borderless by default, revealed only
@@ -34,10 +37,22 @@
 // (row hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
+
+import {
+  canReadSharedNotes,
+  humanizeState,
+  watchArmedLabel,
+  watchCadenceLabel,
+  watchDurationLabel,
+  watchGloss,
+  watchTitle,
+} from "@evener/appwire-client";
 import { memo, type ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
+import { selectDisplaySources } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { useThreadsStore } from "../../stores/threads";
+import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
@@ -47,6 +62,7 @@ import { type PinTarget, SessionMenu } from "../sessionMenu/SessionMenu";
 import { isPaneOpen, useWorkspaceStore } from "../workspace";
 import styles from "./RailRow.module.css";
 import {
+  activeWatchCount,
   activeWorkSummary,
   type CompletedJobsFoldRailNode,
   displayState,
@@ -59,10 +75,11 @@ import {
   type RailProject,
   type RailSession,
   type SessionRailNode,
+  type WatchRailNode,
+  watchCountLabel,
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
-import { humanizeState } from "./sessionState";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -81,9 +98,14 @@ const CLASS = {
   activityDanger: requireClass(styles.activityDanger, "RailRow.module.css", "activityDanger"),
   time: requireClass(styles.time, "RailRow.module.css", "time"),
   notStarted: requireClass(styles.notStarted, "RailRow.module.css", "notStarted"),
+  host: requireClass(styles.host, "RailRow.module.css", "host"),
+  hostOffline: requireClass(styles.hostOffline, "RailRow.module.css", "hostOffline"),
   star: requireClass(styles.star, "RailRow.module.css", "star"),
   loadingRow: requireClass(styles.loadingRow, "RailRow.module.css", "loadingRow"),
   overflow: requireClass(styles.overflow, "RailRow.module.css", "overflow"),
+  secondLine: requireClass(styles.secondLine, "RailRow.module.css", "secondLine"),
+  watchCount: requireClass(styles.watchCount, "RailRow.module.css", "watchCount"),
+  watchGlyph: requireClass(styles.watchGlyph, "RailRow.module.css", "watchGlyph"),
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
@@ -216,6 +238,8 @@ export function activityGloss(session: RailSession, activity = activeWorkSummary
   return parts.join(" · ");
 }
 
+export { watchArmedLabel, watchCadenceLabel, watchDurationLabel, watchGloss, watchTitle };
+
 // secondLine is the row's second line in full: activityGloss above, joined
 // with the session's project when the row needs one (kata hxjn). A session
 // row only needs its project named when it is rendered FLAT, mixed in with
@@ -240,7 +264,7 @@ function secondLine(
 }
 
 export interface RailRowActions {
-  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind | "notes"): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -364,6 +388,11 @@ function spawnInProject(project: RailProject): void {
   navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
 }
 
+// The project menu offers delete unconditionally: the request is local-only,
+// and the Rail owns that judgement - onDeleteProjectRequest refuses a project
+// a remote host also owns, with a toast that names the hosts (Rail.test.tsx
+// pins it), so the person gets an explanation instead of an item that is
+// silently missing. The row keeps no ownership verdict of its own.
 function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
@@ -441,7 +470,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
-  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref }));
+  const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.
   const canReadNotes = useThreadsStore((s) => canReadSharedNotes(s.threads.get(ref)));
@@ -477,8 +506,36 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   );
 }
 
+// A row's host reachability, derived from the manifest's sources (Component
+// 06a) keyed by the row's own host_id. This is deliberately NOT part of the
+// row schema and does NOT reuse Dormant: Jesse's standing decision keeps
+// Dormant meaning "never run". Unknown hosts - including the many RailRow
+// tests that render a row with no manifest store state at all - read as
+// ONLINE, so the badge is purely additive and existing rows keep their
+// meaning. The selector returns a primitive, so a fresh inline closure each
+// render is safe for the store's reference-equality check.
+//
+// The DISPLAY view, not the settled one: a badge reports what the rail knows
+// about the host, and a manifest re-read (loading/stale) must not blank the
+// last reading - that flipped every offline badge back to online for the length
+// of the refresh (round nine). A host the fresh manifest has dropped still
+// leaves its rows reading online once the NEW manifest lands, which is the
+// unchanged "unknown host" contract below.
+function useHostOnline(hostId: string): boolean {
+  return useNavigationStore((state) => {
+    const source = selectDisplaySources(state).find((candidate) => candidate.id === hostId);
+    return source ? source.online : true;
+  });
+}
+
 function SessionRow({ node, info, actions }: { node: SessionRailNode; info: TreeRowInfo; actions: RailRowActions }) {
   const { session } = node;
+  // A non-local row names its host on the title line (a LABEL, not a tree
+  // re-layout); reachability comes from the manifest's sources, not from the
+  // row. Dormant keeps its own "never run" meaning - see useHostOnline.
+  const hostId = session.host_id;
+  const showsHost = hostId !== "" && hostId !== "local";
+  const hostOnline = useHostOnline(hostId);
   const needsYouCount = needsYouDescendantCount(session);
   // The state this row PRESENTS (railNodes' displayState): a turn-ended
   // subagent presents as idle, not "your move", because its next input comes
@@ -511,8 +568,29 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
   // above, made for exactly the fact that rule can't otherwise carry.
   const showsProject = info.depth === 0;
   const notStarted = saysNotStarted(session, showsGloss);
-  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs;
-  const gloss = secondLine(session, showsActivity, showsProject, activity);
+  // The session's own armed watches. Not a subtree rollup: the hub keeps each
+  // watch on its receiver's summary, so this is every watch the fold-out below
+  // this row will show - see railNodes' activeWatchCount.
+  const watchCount = activeWatchCount(session);
+  const omittedWatchCount = session.omitted_watches ?? 0;
+  // The retained total the fold-out lists. The summary line reports this
+  // (with the armed count beside it when they differ) so it matches the rows
+  // hanging under the row even when a retained watch is inactive.
+  const retainedWatchCount = (session.watches ?? []).length;
+  // Omitted rows alone still mean the session holds watches the row does not
+  // list, so the line must appear (and say "+N more") even with none retained.
+  const hasWatches = retainedWatchCount > 0 || omittedWatchCount > 0;
+  // A watch is pending work, and it is the one kind that can be the ONLY thing
+  // a session has left to do - so it earns the second line on its own. That is
+  // a deliberate amendment to "a quiet row is one line" (the rule at the top of
+  // this file): without it the count would vanish on exactly the session where
+  // a watch is the only thing happening, which is the case this feature exists
+  // for.
+  const showsActivity = showsGloss || hasWorkingDescendants || hasRunningJobs || hasWatches;
+  // The tinted gloss itself still belongs to a signal row (or to a depth-0
+  // row naming its project). A watch-only quiet row's second line is just its
+  // watch count; glossing "idle" beside the count would be noise, not a gloss.
+  const gloss = secondLine(session, showsGloss, showsProject, activity);
   const showsSecondLine = showsActivity || showsProject;
   // Only a genuine signal row (showsGloss) carries a state to tint - the
   // depth-0-only "just the project name" line (showsProject with no signal)
@@ -547,10 +625,43 @@ function SessionRow({ node, info, actions }: { node: SessionRailNode; info: Tree
             {session.title}
           </span>
           <TrailingChevron info={info} />
+          {/* Host label after the chevron (which hugs the title text), so a
+              remote row says where it lives without pushing the title. The
+              offline marker is visible text, not a color or an aria-only
+              state, and the title carries the same fact for hover. */}
+          {showsHost && (
+            <span
+              data-testid="rail-row-host"
+              className={hostOnline ? CLASS.host : `${CLASS.host} ${CLASS.hostOffline}`}
+              title={hostOnline ? `Host ${hostId}` : `Host ${hostId} is offline`}
+            >
+              {hostId}
+              {!hostOnline && <span data-testid="rail-row-host-offline">{" (offline)"}</span>}
+            </span>
+          )}
         </span>
         {showsSecondLine && (
-          <span data-testid="rail-row-activity" className={activityClass} title={gloss}>
-            {gloss}
+          // The second line: the watch count and/or the tinted activity gloss,
+          // as siblings. The count is its OWN element rather than text inside
+          // the gloss so it keeps neutral ink - the gloss's activityClass
+          // (alive/attention/danger) must not tint a watch, which is pending
+          // work and not one of the four attention hues. It also leads the
+          // line, so it precedes the branch that tails the gloss (the
+          // deliberate ellipsis sacrifice) and can never be what ellipsis eats.
+          <span className={CLASS.secondLine}>
+            {hasWatches && (
+              <span data-testid="rail-row-watches" className={CLASS.watchCount}>
+                {/* The gloss shares the line's separator convention: the count
+                    carries it only when something follows, so a watch-only
+                    line ends with the word, not a dangling "·". */}
+                {`${watchCountLabel(watchCount, retainedWatchCount, omittedWatchCount)}${gloss !== "" ? " ·" : ""}`}
+              </span>
+            )}
+            {gloss !== "" && (
+              <span data-testid="rail-row-activity" className={activityClass} title={gloss}>
+                {gloss}
+              </span>
+            )}
           </span>
         )}
       </span>
@@ -754,6 +865,52 @@ function JobRow({ node }: { node: JobRailNode }) {
   );
 }
 
+// The clock a watch row leads with, DRAWN rather than typed: the app's font
+// ranges stop at U+2215, so a "◷" (or any other clock code point) falls back
+// to a system font - and the rail's accessible name is name-from-content, so a
+// typed glyph would be announced as a stray character rather than as "watch"
+// (see review synthesis §7). aria-hidden because the visually-hidden "Watch:"
+// beside it is the word assistive tech should read.
+//
+// Exported for the session panel's watch rows too: the geometry lives here
+// once, and each caller passes its own module's class and its own test id.
+export function WatchGlyph({ className, testId }: { className: string; testId: string }) {
+  return (
+    <svg data-testid={testId} className={className} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+      <circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M8 4.5V8l2.5 1.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+// A live watch in its receiver session's fold-out. Quieter than a job row by
+// design: pending work is inventory, not attention - neutral ink, no signal
+// dot, no actions menu, nothing to click. The row's accessible name comes from
+// its content, so the drawn clock is aria-hidden and the visually-hidden
+// "Watch:" supplies the word.
+function WatchRow({ node }: { node: WatchRailNode }) {
+  const { watch } = node;
+  return (
+    <span className={CLASS.railRow} data-testid="rail-row-watch" data-watch-id={watch.id}>
+      <span className={CLASS.textCol}>
+        <span className={CLASS.titleLine}>
+          <WatchGlyph className={CLASS.watchGlyph} testId="rail-row-watch-glyph" />
+          <span className={CLASS.srOnly}>Watch:</span>
+          {/* The note ellipsizes, so it carries its own full text as a title
+              tooltip - the same contract every other truncating line here
+              keeps. */}
+          <span className={CLASS.label} title={watchTitle(watch)}>
+            {watchTitle(watch)}
+          </span>
+        </span>
+        <span data-testid="rail-row-watch-status" className={CLASS.activity}>
+          {watchGloss(watch)}
+        </span>
+      </span>
+    </span>
+  );
+}
+
 function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode; info: TreeRowInfo }) {
   return (
     <DisclosureFoldRow label={`Completed jobs (${node.count})`} testId="rail-row-completed-jobs-fold" info={info} />
@@ -763,9 +920,12 @@ function CompletedJobsFoldRow({ node, info }: { node: CompletedJobsFoldRailNode;
 // The "+N older" note for rows the server capped away (hubcore's
 // maxSidebarSessionsPerTier). Its text starts at the same x as every other
 // row's, with no dot or chevron of its own. Project overflow rows activate a
-// bounded fetch for the capped-away tier rows; synthetic child overflow
-// remains an honest non-actionable count.
+// bounded fetch for the capped-away tier rows; a passive row (node.passive,
+// used by the local watch cap whose rows the wire already carried) is an
+// honest count with nothing to fetch, so it gets no click handler and the
+// Tree's own activation is a no-op for it (see Rail's isPassiveRailNode).
 function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo }) {
+  const interactive = node.passive !== true;
   return (
     <span className={CLASS.railRow}>
       {/* The treeitem's Enter handler is the keyboard path; this click makes
@@ -775,8 +935,8 @@ function OverflowRow({ node, info }: { node: OverflowRailNode; info: TreeRowInfo
       <span
         data-testid="rail-row-overflow"
         className={CLASS.overflow}
-        onClick={info.activate}
-      >{`+${node.count} older`}</span>
+        onClick={interactive ? info.activate : undefined}
+      >{`+${node.count} ${node.suffix ?? "older"}`}</span>
     </span>
   );
 }
@@ -806,8 +966,8 @@ function railRowPropsEqual(previous: RailRowProps, next: RailRowProps): boolean 
   const nextProject = next.node.project;
   // Keep this list in lockstep with ProjectRow, projectMenuItems, and
   // spawnInProject. Descendant/page fields are Tree recursion inputs, not row
-  // presentation or action inputs, so they deliberately do not cross this
-  // memo boundary.
+  // presentation or action inputs, so they deliberately do not cross this memo
+  // boundary.
   return (
     previous.node.id === next.node.id &&
     previous.node.displayName === next.node.displayName &&
@@ -830,6 +990,8 @@ export const RailRow = memo(function RailRow({ node, info, actions, resourceErro
       return LoadingRow();
     case "job":
       return <JobRow node={node} />;
+    case "watch":
+      return <WatchRow node={node} />;
     case "inactiveFold":
       return <InactiveFoldRow node={node} info={info} />;
     case "completedJobsFold":

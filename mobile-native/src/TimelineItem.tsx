@@ -1,11 +1,8 @@
+import { scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, View } from "react-native";
-import {
-	scopedDisclosureId,
-	toggleDisclosure,
-	isDisclosureOpen as useDisclosureOpen,
-} from "../../cmd/evener-hub/frontend/src/widgets/disclosure/disclosureStore";
 import { MarkdownResponse } from "./MarkdownResponse";
+import { toggleDisclosure, useDisclosureOpen } from "./nativeDisclosure";
 import { TranscriptImages } from "./TranscriptImages";
 import {
 	isCriticalNotice,
@@ -182,7 +179,7 @@ export function TimelineItem({
 		case "question":
 			content = (
 				<>
-					{item.batch.questions.map((question) => (
+					{item.questions.map((question) => (
 						<View key={question.key} style={{ gap: 8 }}>
 							<Copy>{question.header}</Copy>
 							<Copy>{question.question}</Copy>

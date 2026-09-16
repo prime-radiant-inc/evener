@@ -688,7 +688,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 
 		preResult := s.hookRunner.RunPreToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range preResult.ModelContext {
-			s.deliverHookContext(m)
+			if err := s.deliverHookContext(m); err != nil {
+				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true}
+			}
 		}
 		for _, m := range preResult.UserMessages {
 			s.deliverHookUserMessage(m)
@@ -878,7 +880,9 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 		hi.ToolResponse = res.FullOutput // official field
 		postResult := s.hookRunner.RunPostToolUse(s.apiLogContext(ctx), hi)
 		for _, m := range postResult.ModelContext {
-			s.deliverHookContext(m)
+			if err := s.deliverHookContext(m); err != nil {
+				return tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: err.Error(), FullOutput: err.Error(), IsError: true}
+			}
 		}
 		for _, m := range postResult.UserMessages {
 			s.deliverHookUserMessage(m)
@@ -1182,7 +1186,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 	}
 	if err := s.appendTurnAfterTranscriptWrite(
 		persistedTurn,
-		func() error { return s.writeTranscriptDurableLocked(persistedTurn) },
+		func() error { return s.writeTranscriptSyncedLocked(persistedTurn) },
 		func() { s.history = append(s.history, liveTurn) },
 	); err != nil {
 		abortDelegateToolCallDeliveryCommits(commits)

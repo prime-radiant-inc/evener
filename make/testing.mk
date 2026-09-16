@@ -22,35 +22,47 @@ test-web: web-preflight
 # The script runs every guard so one missing browser or failing case does not
 # hide the remaining guard's verdict; exit status is the first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, transcriptscrollguard) plus the full-stack
-##   `web-skillguard` (TestSkillComposerBrowser behind the `browserguard`
-##   tag) that jsdom cannot evaluate.
+## shellguard, spawnguard, transcriptscrollguard, retirementguard) plus the
+##   full-stack `web-skillguard` (TestSkillComposerBrowser behind the
+##   `browserguard` tag) that jsdom cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
-##   reducer/tree, the real Spawn staging/breakpoint path, and the real
-##   transcript scroll/jump-to-latest path; the skill guard additionally
+##   reducer/tree, the real Spawn staging/breakpoint path, the real transcript
+##   scroll/jump-to-latest path, and the real selected-thread recovery contract
+##   when its daemon retires and is replaced; the skill guard additionally
 ##   drives the production composer through a REAL hub and two REAL
 ##   `evener serve` daemons with only the LLM provider scripted.
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
 ## requires: Chrome/Chromium; each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari
-##   runner. The skill guard also needs the Go toolchain and the built
-##   frontend (built automatically when dist is missing).
+##   runner. retirementguard also needs the Go toolchain: its npm script runs
+##   the isolated TestRetirementBrowser fixture, which starts the Hub and
+##   drives the guard against it. The skill guard also needs the Go toolchain
+##   and the built frontend (built automatically when dist is missing).
 ## fails-when: Any guard error, Vite failure, cleanup failure, or missing
 ##   Chrome/Chromium is nonzero.
 test-web-browser: web-preflight
 	@scripts/web/test-web-browser.sh
 
+# check:scripts is separate from check because they answer different questions
+# with different resolvers. `tsc --noEmit` reads tsconfig.check.json and proves
+# the types line up; check:scripts asks Node's own resolver, through tsx, the
+# only thing that reads tsconfig.json, whether the hand-run scripts/*.mts tools
+# can still load their module graph. The scripts run under no gate, so nothing
+# noticed when they stopped resolving.
 ## The native iPhone app and its shared session core gate.
-## proves: Metro bundles the real iOS entry point, and the native and
+## proves: Metro bundles the real iOS entry point, the native and
 ##   shared-session Vitest suites plus strict native TypeScript compilation
-##   pass against the checked-in Expo/React Native sources.
+##   pass against the checked-in Expo/React Native sources, and the hand-run
+##   scripts/*.mts tools still resolve their module graph under tsx.
 ## trigger: Native CI; local pre-merge when native or shared mobile sources change.
 ## requires: Node 22.13+ and an already-installed mobile-native dependency tree;
-##   does not contact a hub or provider.
-## fails-when: Bundling, native tests, shared-session tests or native
-##   typechecking fail.
+##   does not contact a hub or provider - script resolution is checked without
+##   loading anything, since every one of those scripts opens a socket the
+##   moment its body runs.
+## fails-when: Bundling, native tests, shared-session tests, native
+##   typechecking, or script module resolution fail.
 test-native: test-native-bundle
-	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check
+	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
 
 # The only gate that runs Metro. Vitest resolves through Vite and `tsc` through
 # TypeScript's own resolver; neither reads metro.config.js, so a resolver

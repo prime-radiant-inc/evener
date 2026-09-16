@@ -10,7 +10,7 @@ func fuzzScenarioFavoriteStoreSetAndDelete(t *testing.T) {
 	dir := t.TempDir()
 	fav := NewFavoriteStore(filepath.Join(dir, "index.db"))
 	now := time.Unix(1_700_000_000, 0)
-	if err := fav.Set("session", "01A", true, now); err != nil {
+	if err := fav.Set("", "session", "01A", true, now); err != nil {
 		t.Fatal(err)
 	}
 	got, err := fav.Favorites()
@@ -20,7 +20,7 @@ func fuzzScenarioFavoriteStoreSetAndDelete(t *testing.T) {
 	if !got[ArchiveKey{Kind: "session", ID: "01A"}] {
 		t.Fatalf("favorite not persisted: %v", got)
 	}
-	if err := fav.Delete("session", "01A"); err != nil {
+	if err := fav.Delete("", "session", "01A"); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = fav.Favorites()
@@ -33,10 +33,10 @@ func TestFavoriteStoreUpdatesAndHidesUnfavoritedDecisions(t *testing.T) {
 	fav := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
 	now := time.Unix(1_700_000_000, 0)
 	key := ArchiveKey{Kind: "session", ID: "top"}
-	if err := fav.Set(key.Kind, key.ID, true, now); err != nil {
+	if err := fav.Set("", key.Kind, key.ID, true, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := fav.Set(key.Kind, key.ID, false, now.Add(time.Minute)); err != nil {
+	if err := fav.Set("", key.Kind, key.ID, false, now.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := fav.Favorites()
@@ -46,7 +46,7 @@ func TestFavoriteStoreUpdatesAndHidesUnfavoritedDecisions(t *testing.T) {
 	if got[key] {
 		t.Fatalf("unfavorited decision should not be returned: %v", got)
 	}
-	if err := fav.Set(key.Kind, key.ID, true, now.Add(2*time.Minute)); err != nil {
+	if err := fav.Set("", key.Kind, key.ID, true, now.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	got, err = fav.Favorites()

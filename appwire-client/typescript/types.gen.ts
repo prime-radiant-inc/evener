@@ -30,6 +30,7 @@ export interface ArchiveParams {
   id: string;
   workingDir?: string;
   archived: boolean;
+  source?: string;
 }
 
 export interface ArchiveResponse {
@@ -59,21 +60,28 @@ export interface AttentionSummary {
 
 export interface AuthApiKeyClearParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthCredentialJsonSetParams {
   provider: string;
   value: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollParams {
   provider: string;
   flowId: string;
+  originClientId?: string;
 }
 
 export interface AuthDevicePollResponse {
@@ -102,6 +110,7 @@ export interface AuthLoginCompleteParams {
   provider: string;
   flowId: string;
   redirectUrl: string;
+  originClientId?: string;
 }
 
 export interface AuthLoginCompleteResponse {
@@ -120,6 +129,8 @@ export interface AuthLoginStartResponse {
 
 export interface AuthLogoutParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
+  originClientId?: string;
 }
 
 export interface AuthLogoutResponse {
@@ -152,6 +163,7 @@ export interface AuthStatusResponse {
 
 export interface AuthTestParams {
   provider: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface AuthTestResponse {
@@ -180,6 +192,64 @@ export interface CommandDescriptor {
 
 export interface CommandListResponse {
   commands: CommandDescriptor[];
+}
+
+export interface DaemonBlocker {
+  category: string;
+  sessionId?: string;
+  delegateId?: string;
+}
+
+export interface DaemonIdentity {
+  ref: string;
+  pid: number;
+  startedAt: string;
+  generation: string;
+}
+
+export interface DaemonLifecycle {
+  phase: string;
+  timeoutMillis: number;
+  eligibleSince?: string;
+  deadline?: string;
+  blockers: DaemonBlocker[];
+  failure?: string;
+}
+
+export interface DaemonListParams {
+}
+
+export interface DaemonListResponse {
+  defaultTimeoutMillis: number;
+  daemons: DaemonResident[];
+}
+
+export interface DaemonResident {
+  identity: DaemonIdentity;
+  name: string;
+  protocol: string;
+  compatibility: string;
+  archived: boolean;
+  probeState: string;
+  lifecycle?: DaemonLifecycle;
+  canRetire: boolean;
+  canForceStop: boolean;
+}
+
+export interface DaemonRetireParams {
+  identity: DaemonIdentity;
+}
+
+export interface DaemonRetireResponse {
+  accepted: boolean;
+  lifecycle: DaemonLifecycle;
+}
+
+export interface DaemonStatusParams {
+}
+
+export interface DaemonStatusResponse {
+  lifecycle: DaemonLifecycle;
 }
 
 export interface DeletionSkip {
@@ -212,6 +282,7 @@ export interface EmptyResponse {
 export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
+  originClientId?: string;
 }
 
 export interface EvenerDelegateInfo {
@@ -279,6 +350,7 @@ export interface EvenerDiagnostics {
   hookEvents?: EvenerHookEventStatus[];
   jobs?: EvenerJobInfo[];
   delegates?: EvenerDelegateInfo[];
+  watches?: EvenerWatchInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
   delegateDiagnostics?: string[];
@@ -437,10 +509,36 @@ export interface EvenerUsage {
   totalTokens?: number;
 }
 
+export interface EvenerWatchCadence {
+  kind: string;
+  seconds?: number;
+  derivedNextFireAt?: string;
+  every?: number;
+  filter?: string;
+}
+
+export interface EvenerWatchInfo {
+  id: string;
+  source: string;
+  target?: string;
+  sendTo?: string;
+  note?: string;
+  cadence?: EvenerWatchCadence[];
+  outputMatch?: string;
+  events?: string[];
+  wildcardEvents?: boolean;
+  deliveries: number;
+  deliveryTimes?: string[];
+  createdAt: string;
+  active: boolean;
+  endReason?: string;
+}
+
 export interface FavoriteSetParams {
   kind: string;
   id: string;
   favorited: boolean;
+  source?: string;
 }
 
 export interface FavoriteSetResponse {
@@ -517,6 +615,21 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HostForwardedResult {
+}
+
+export interface HostNotificationParams {
+  host: string;
+  method: string;
+  params?: unknown;
+}
+
+export interface HostRequestParams {
+  host: string;
+  method: string;
+  params?: unknown;
+}
+
 export interface InitializeParams {
   protocolVersion: string;
   clientInfo: ClientInfo;
@@ -577,6 +690,7 @@ export interface InstanceEntry {
   surface?: string;
   auth: string;
   baseUrl?: string;
+  endpointFingerprint?: string;
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
@@ -592,6 +706,7 @@ export interface InstanceEntry {
   storedEmail?: string;
   credentialRequired: boolean;
   warnings?: string[];
+  models?: InstanceModelEntry[];
 }
 
 export interface InstanceListResponse {
@@ -602,12 +717,28 @@ export interface InstanceListResponse {
   writesRefused?: boolean;
 }
 
+export interface InstanceModelEntry {
+  id: string;
+  disabled?: boolean;
+}
+
+export interface InstanceRefreshModelsParams {
+  name: string;
+}
+
 export interface InstanceRemoveParams {
   name: string;
+  expectedEndpointFingerprint?: string;
 }
 
 export interface InstanceSetDefaultParams {
   name: string;
+}
+
+export interface InstanceSetModelDisabledParams {
+  name: string;
+  model: string;
+  disabled: boolean;
 }
 
 export interface ItemLifecycleParams {
@@ -1144,6 +1275,7 @@ export interface NavigationProjectSummary {
   worktrees?: number;
   is_archived?: boolean;
   favorite?: boolean;
+  sources?: string[];
   session_count: number;
 }
 
@@ -1225,8 +1357,11 @@ export interface NavigationSessionSummary {
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
+  omitted_watches?: number;
+  omitted_armed_watches?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
+  watches?: NavigationWatchSummary[];
   children: NavigationSessionSummary[];
 }
 
@@ -1239,6 +1374,31 @@ export interface NavigationSnapshot {
 export interface NavigationTier {
   sessions: NavigationSessionSummary[];
   remaining: number;
+}
+
+export interface NavigationWatchCadence {
+  kind: string;
+  seconds?: number;
+  derived_next_fire_at?: string;
+  every?: number;
+  filter?: string;
+}
+
+export interface NavigationWatchSummary {
+  id: string;
+  source: string;
+  target?: string;
+  send_to?: string;
+  note?: string;
+  cadence?: NavigationWatchCadence[];
+  output_match?: string;
+  events?: string[];
+  wildcard_events?: boolean;
+  deliveries: number;
+  delivery_times?: string[];
+  created_at: string;
+  active: boolean;
+  end_reason?: string;
 }
 
 export interface NotesHumanSetParams {
@@ -1404,6 +1564,7 @@ export interface PluginSetAutoUpgradeParams {
 export interface ProjectDeleteParams {
   key: string;
   workingDir: string;
+  source?: string;
 }
 
 export interface ProjectDeleteResponse {
@@ -1434,6 +1595,8 @@ export interface ProviderDescriptor {
   vars?: Record<string, string>;
   apiKeyEnv?: string[];
   implicit: boolean;
+  authModes?: string[];
+  setup?: InstanceEntry;
 }
 
 export interface QueueState {
@@ -1576,6 +1739,7 @@ export interface SettingsHubOverview {
   spawnTimeout?: string;
   bearerTokenAge?: string;
   pastIndex?: SettingsPastIndexOverview;
+  daemonIdleTimeoutMillis: number;
 }
 
 export interface SettingsMCPOverview {
@@ -1723,6 +1887,7 @@ export interface ThreadCompactStartParams {
 
 export interface ThreadForceStopParams {
   ref: string;
+  expectedDaemon?: DaemonIdentity;
 }
 
 export interface ThreadForkParams {
@@ -1887,6 +2052,7 @@ export interface ThreadShutdownParams {
 
 export interface ThreadStartParams {
   harness?: string;
+  source?: string;
   cwd: string;
   input?: InputItem[];
   modelProvider?: string;
@@ -2269,6 +2435,9 @@ export const METHOD_NAMES = [
   "evener/tasks/list",
   "evener/jobs/list",
   "evener/jobs/output",
+  "evener/daemon/list",
+  "evener/daemon/retire",
+  "evener/daemon/status",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -2313,6 +2482,8 @@ export const METHOD_NAMES = [
   "evener/instance/edit",
   "evener/instance/remove",
   "evener/instance/setDefault",
+  "evener/instance/setModelDisabled",
+  "evener/instance/refreshModels",
   "evener/plugin/checkNow",
   "evener/plugin/preview",
   "evener/marketplace/list",
@@ -2338,6 +2509,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/get",
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
+  "evener/host/request",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -2382,6 +2554,7 @@ export const NOTIFICATION_NAMES = [
   "evener/settings/transcriptDisplay/changed",
   "evener/settings/keybindings/changed",
   "evener/settings/agentsDoc/changed",
+  "evener/host/notification",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2464,6 +2637,9 @@ export interface MethodTypes {
   "evener/tasks/list": { params: TaskListParams; result: TaskListResponse };
   "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
   "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
+  "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
+  "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
+  "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
@@ -2508,6 +2684,8 @@ export interface MethodTypes {
   "evener/instance/edit": { params: InstanceEditParams; result: InstanceListResponse };
   "evener/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
+  "evener/instance/setModelDisabled": { params: InstanceSetModelDisabledParams; result: InstanceListResponse };
+  "evener/instance/refreshModels": { params: InstanceRefreshModelsParams; result: InstanceListResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
   "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };
@@ -2533,6 +2711,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/get": { params: EmptyParams; result: AgentsDocResponse };
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
+  "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
 }
 
 export interface NotificationTypes {
@@ -2575,6 +2754,7 @@ export interface NotificationTypes {
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
   "evener/settings/keybindings/changed": KeybindingsOverrides;
   "evener/settings/agentsDoc/changed": AgentsDocResponse;
+  "evener/host/notification": HostNotificationParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

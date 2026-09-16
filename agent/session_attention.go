@@ -253,8 +253,12 @@ func appendColdDelegateAttentionMessageDurablyWithOpen(path, expectedSessionID, 
 	turn.Timestamp = now.UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(turn); err != nil {
-		return false, err
+	// AppendSynced is the durability owner's door: it records AND syncs, or
+	// errors. A read-back would find a retained (recorded but unsynced) line
+	// and wrongly call it durable, so this side of delegate attention asks the
+	// writer, through AppendSynced, rather than the file.
+	if err := writer.AppendSynced(turn); err != nil {
+		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	verified, err := readDelegateAttentionFold(path, expectedSessionID)
 	if err != nil {
@@ -397,8 +401,10 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	turn.Timestamp = s.sclock().Now().UTC()
 	turn.AttentionID = attentionID
 	turn.StableTurnID = newQueueEntryID()
-	if err := writer.AppendDurable(turn); err != nil {
-		return false, err
+	// AppendSynced records AND syncs, or errors; a retained (recorded but
+	// unsynced) line the read-back would find is not durable.
+	if err := writer.AppendSynced(turn); err != nil {
+		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	if err := s.retainDelegateAttentionTurn(turn); err != nil {
 		return false, err
@@ -771,6 +777,25 @@ func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	return out
 }
 
+// beginAttentionCallback retains local ownership even when the process
+// controller is attached after this callback starts. Source receipt consumption
+// and retry-generation resets do not settle an outstanding unlocked callback.
+func (s *Session) beginAttentionCallback() (func(), error) {
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		return nil, err
+	}
+	s.attentionMu.Lock()
+	s.attentionCallbacks++
+	s.attentionMu.Unlock()
+	return func() {
+		s.attentionMu.Lock()
+		s.attentionCallbacks--
+		s.attentionMu.Unlock()
+		release()
+	}, nil
+}
+
 func (s *Session) scheduleRootAttentionRetryLocked() {
 	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
 		return
@@ -783,6 +808,25 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	generation := s.rootAttentionRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		release, err := s.beginAttentionCallback()
+		if err != nil {
+			// Admission was refused for this one-shot firing (a real TryClaim
+			// preparing window). Do not consume the only firing: clear the
+			// armed flag and synchronously re-arm under the owner lock so the
+			// backoff chain survives the refusal and a later firing still
+			// wakes the retained source. Only a still-current generation owns
+			// the armed flag: a superseded one was invalidated by
+			// resetRootAttentionRetryLocked or a newer schedule, and re-arming
+			// it would resurrect a stale wake the owner already settled.
+			s.attentionMu.Lock()
+			if s.rootAttentionRetry.generation == generation {
+				s.rootAttentionRetry.active = false
+				s.scheduleRootAttentionRetryLocked()
+			}
+			s.attentionMu.Unlock()
+			return
+		}
+		defer release()
 		s.attentionMu.Lock()
 		if s.rootAttentionRetry.generation != generation {
 			s.attentionMu.Unlock()
@@ -1205,8 +1249,8 @@ func (s *Session) stabilizeAttentionForStop(attentionID string) error {
 		disposition = delegateAttentionDiscarded
 	}
 	if !resolved {
-		if err := reopened.AppendDurable(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
-			return err
+		if err := reopened.AppendSynced(delegateAttentionResolutionTurn(attentionID, disposition)); err != nil {
+			return fmt.Errorf("attention %q was not durably stabilized: %w", attentionID, err)
 		}
 	} else if err := reopened.EstablishDurability(); err != nil {
 		return err
@@ -1239,8 +1283,8 @@ func appendDelegateAttentionResolutions(writer *transcript.Writer, fold delegate
 		if previous, resolved := fold.resolutions[attentionID]; resolved && previous == disposition && fold.resumeGenerations[attentionID] == resumeGeneration {
 			continue
 		}
-		if err := writer.AppendDurable(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
-			return err
+		if err := writer.AppendSynced(delegateAttentionResolutionTurnForGeneration(attentionID, disposition, resumeGeneration)); err != nil {
+			return fmt.Errorf("attention %q resolution was not durably appended: %w", attentionID, err)
 		}
 		fold.resolutions[attentionID] = disposition
 		fold.resumeGenerations[attentionID] = resumeGeneration

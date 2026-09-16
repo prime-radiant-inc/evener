@@ -1,5 +1,5 @@
+import { DOC_FILE_MAX_BYTES } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { DOC_FILE_MAX_BYTES } from "../../protocol/docContent";
 import { filenameOf, formatDocBytes, isMarkdownPath } from "./docFile";
 
 describe("filenameOf", () => {

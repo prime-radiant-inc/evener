@@ -1,5 +1,5 @@
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { RawItemView } from "./RawItemView";
 import { type ItemRenderProps, ignoringTurn, itemRendererFor, registerItemRenderer } from "./types";
 

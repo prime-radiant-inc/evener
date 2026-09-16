@@ -15,7 +15,8 @@
 // than a thrown error, so a caller can render "nothing to show" without an error
 // path of its own - the same contract the Spawn pane's branch chip has always
 // had (floor §1.7).
-import type { AppwireClientLike } from "../protocol/clientLike";
+import type { AppwireClientLike } from "@evener/appwire-client";
+import { hostRequest } from "../stores/hostRouting";
 
 export interface GitLocation {
   // Branch name, or a detached-HEAD short SHA, or "" when unknown.
@@ -30,21 +31,37 @@ export interface GitLocation {
 // to show" result in the app.
 const EMPTY: GitLocation = Object.freeze({ branch: "", originUrl: "" });
 
-async function requestGitHead(client: AppwireClientLike, cwd: string, includeOrigin: boolean): Promise<GitLocation> {
+async function requestGitHead(
+  client: AppwireClientLike,
+  cwd: string,
+  includeOrigin: boolean,
+  host: string,
+): Promise<GitLocation> {
   if (cwd.trim() === "") return EMPTY;
   try {
     const params = includeOrigin ? { cwd, includeOrigin: true } : { cwd };
-    const data = await client.request("evener/git/head", params);
+    // Host scoping (component 07b): a remote working directory's HEAD is read
+    // on that host through evener/host/request, never on the controller's own
+    // filesystem; "local" keeps the plain call.
+    const data = await hostRequest(client, host, "evener/git/head", params);
     return { branch: data.head, originUrl: data.originUrl ?? "" };
   } catch {
     return EMPTY;
   }
 }
 
-export async function resolveHeadBranch(client: AppwireClientLike, cwd: string): Promise<string> {
-  return (await requestGitHead(client, cwd, false)).branch;
+export async function resolveHeadBranch(
+  client: AppwireClientLike,
+  cwd: string,
+  host: string = "local",
+): Promise<string> {
+  return (await requestGitHead(client, cwd, false, host)).branch;
 }
 
 export async function resolveGitLocation(client: AppwireClientLike, cwd: string): Promise<GitLocation> {
-  return requestGitHead(client, cwd, true);
+  // The session composer's location line reads a SESSION's directory, and the
+  // session surfaces are not host-scoped yet, so this keeps the controller's
+  // own call (a tracked follow-up, not a regression: the composer never had a
+  // remote host to pass).
+  return requestGitHead(client, cwd, true, "local");
 }

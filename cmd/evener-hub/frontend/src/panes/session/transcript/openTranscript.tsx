@@ -1,4 +1,4 @@
-import type { NavigationSessionLocation } from "../../../protocol/types.gen";
+import type { NavigationSessionLocation } from "@evener/appwire-client";
 import * as paneActions from "../../../shell/paneActions";
 import { openTopLevelSession } from "../../../shell/sessionPlacement";
 import { recordTranscriptOpenOrigin, workspaceStore } from "../../../shell/workspace";

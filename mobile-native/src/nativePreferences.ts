@@ -1,22 +1,20 @@
-import type {
-	AnyNotification,
-	FeatureSet,
-	KeybindingsOverrides,
-	KeybindingsRule,
-} from "../../appwire-client/typescript/types.gen";
-import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import {
+	type AnyNotification,
+	createKeybindingsStore,
+	type FeatureSet,
 	fromWireConfig,
+	type KeybindingDraftStorage,
+	type KeybindingsOverrides,
+	type KeybindingsRule,
+	type KeybindingsStore,
+	type KeybindingsStoreState,
+	type KeybindingsSupport,
+	keybindingsSupport,
 	normalizeConfig,
 	toWireConfig,
-} from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+	type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	type KeybindingDraftCheckpoint,
-	KeybindingDraftRepository,
-	type KeybindingDraftStorage,
-	keybindingRules,
-} from "./keybindingDraftRepository";
 import {
 	type TranscriptDraftCheckpoint,
 	TranscriptDraftRepository,
@@ -27,10 +25,8 @@ type NativeFeatures = Pick<
 	FeatureSet,
 	"keybindingsSettings" | "transcriptDisplaySettings"
 >;
-type Support = "unknown" | "supported" | "unsupported";
-
 export interface PreferenceState<T> {
-	support: Support;
+	support: KeybindingsSupport;
 	loading: boolean;
 	saving: boolean;
 	confirmed: T | null;
@@ -41,8 +37,14 @@ export interface PreferenceState<T> {
 	storageUnavailable: boolean;
 }
 
+/** The confirmed payload as the shared store holds it: its rule list is the
+ * store's own (identity-stable until the next applied payload), read-only. */
+export type ConfirmedKeybindings = Omit<KeybindingsOverrides, "rules"> & {
+	rules: readonly KeybindingsRule[];
+};
+
 export interface NativePreferencesSnapshot {
-	keybindings: PreferenceState<KeybindingsOverrides>;
+	keybindings: PreferenceState<ConfirmedKeybindings>;
 	transcriptMobile: PreferenceState<{
 		revision: number;
 		config: TranscriptDisplayConfigV1;
@@ -67,33 +69,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isRevision(value: unknown): value is number {
 	return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isRule(value: unknown): value is KeybindingsRule {
-	return (
-		isRecord(value) &&
-		typeof value.action === "string" &&
-		(value.chord === null || typeof value.chord === "string")
-	);
-}
-
-function decodeKeybindings(value: unknown): KeybindingsOverrides {
-	if (
-		!isRecord(value) ||
-		value.version !== 1 ||
-		!isRevision(value.revision) ||
-		!Array.isArray(value.rules) ||
-		!value.rules.every(isRule)
-	)
-		throw new Error("Hub returned invalid keybinding settings.");
-	if (value.loadError !== undefined && typeof value.loadError !== "string")
-		throw new Error("Hub returned invalid keybinding settings.");
-	return {
-		version: 1,
-		revision: value.revision,
-		rules: keybindingRules(value.rules),
-		...(value.loadError === undefined ? {} : { loadError: value.loadError }),
-	};
 }
 
 function decodeTranscript(value: unknown) {
@@ -122,29 +97,56 @@ function decodeTranscriptPatch(value: unknown): {
 	return { revision: value.revision, config };
 }
 
-function errorText(error: unknown): string {
-	return error instanceof Error &&
-		error.message === "Hub returned invalid keybinding settings."
-		? error.message
-		: "The hub request could not be confirmed.";
+const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
+
+const KEYBINDINGS_LOAD_ERROR_MESSAGE =
+	"The hub could not load its saved shortcuts. Repair the hub settings file before editing.";
+
+function hubErrorMessage(state: KeybindingsStoreState): string | null {
+	if (state.loadError !== null) return KEYBINDINGS_LOAD_ERROR_MESSAGE;
+	return state.hubError === null ? null : HUB_UNCONFIRMED_MESSAGE;
+}
+
+// The keybinding domain is a projection of the shared store's state: the
+// confirmed payload is the store's revision and raw rules (the rule array is
+// the store's own, a fresh one per applied payload and identity-stable
+// otherwise, which the shortcut screen's preview memo keys on), and a
+// hub-sourced failure surfaces as fixed copy (a raw client error may carry a
+// token or a path) while the draft port's own messages pass through. An
+// unconfirmed write is the `writeUncertain` fact, rendered as its own notice.
+function keybindingsDomain(
+	state: KeybindingsStoreState,
+): PreferenceState<ConfirmedKeybindings> {
+	return {
+		support: state.hubSupport,
+		loading: state.hubLoading,
+		saving: state.saving,
+		confirmed: state.loaded
+			? {
+					version: 1,
+					revision: state.revision,
+					rules: state.rawOverrides,
+					...(state.loadError === null ? {} : { loadError: state.loadError }),
+				}
+			: null,
+		draft: state.draft,
+		error: state.draftError ?? hubErrorMessage(state),
+		conflict: state.draftConflict,
+		writeUncertain: state.writeUncertain,
+		storageUnavailable: state.storageUnavailable,
+	};
 }
 
 export class NativePreferences {
-	private state: NativePreferencesSnapshot = {
-		keybindings: initialDomain<KeybindingsOverrides>(),
-		transcriptMobile: initialDomain<{
-			revision: number;
-			config: TranscriptDisplayConfigV1;
-		}>(),
-	};
+	private state: NativePreferencesSnapshot;
 	private readonly listeners = new Set<() => void>();
 	private readonly client: ConversationClientLike;
 	private readonly unsubscribe: () => void;
+	private readonly keybindings: KeybindingsStore;
+	private readonly unsubscribeKeybindings: () => void;
 	private generation = 0;
-	private keybindingWriteEpoch = 0;
 	private disposed = false;
 	private readonly transcriptDrafts?: TranscriptDraftRepository;
-	private readonly keybindingDrafts?: KeybindingDraftRepository;
 
 	constructor(
 		client: ConversationClientLike,
@@ -153,31 +155,35 @@ export class NativePreferences {
 		keybindingStorage?: KeybindingDraftStorage,
 	) {
 		this.client = client;
-		this.keybindingDrafts = keybindingStorage
-			? new KeybindingDraftRepository(keybindingStorage)
-			: undefined;
 		this.transcriptDrafts = transcriptStorage
 			? new TranscriptDraftRepository(transcriptStorage)
 			: undefined;
+		// One store per model, like one model per ready connection: the
+		// features are the handshake's, so support is final and the one ready
+		// generation lasts until dispose.
+		this.keybindings = createKeybindingsStore({
+			client,
+			drafts: keybindingStorage,
+		});
+		this.keybindings.setSupport(keybindingsSupport(features));
+		this.keybindings.beginReadyGeneration();
 		this.state = {
-			keybindings: {
-				...this.state.keybindings,
-				support:
-					features.keybindingsSettings === true ? "supported" : "unsupported",
-			},
+			keybindings: keybindingsDomain(this.keybindings.getState()),
 			transcriptMobile: {
-				...this.state.transcriptMobile,
+				...initialDomain(),
 				support:
 					features.transcriptDisplaySettings === true
 						? "supported"
 						: "unsupported",
 			},
 		};
+		this.unsubscribeKeybindings = this.keybindings.subscribe((state) =>
+			this.publish({ keybindings: keybindingsDomain(state) }),
+		);
 		this.unsubscribe = client.onNotification((notification) =>
 			this.onNotification(notification),
 		);
 		if (this.transcriptDrafts) this.restoreTranscriptDraft();
-		if (this.keybindingDrafts) this.restoreKeybindingDraft();
 	}
 
 	getSnapshot = (): NativePreferencesSnapshot => this.state;
@@ -195,38 +201,6 @@ export class NativePreferences {
 
 	private onNotification(notification: AnyNotification): void {
 		if (this.disposed) return;
-		if (
-			notification.method === "evener/settings/keybindings/changed" &&
-			this.state.keybindings.support === "supported"
-		) {
-			try {
-				const value = decodeKeybindings(notification.params);
-				const current = this.state.keybindings.confirmed;
-				if (current && value.revision < current.revision) return;
-				const draft = this.state.keybindings.draft;
-				this.publish({
-					keybindings: {
-						...this.state.keybindings,
-						confirmed: value,
-						draft,
-						error:
-							draft || this.state.keybindings.storageUnavailable
-								? this.state.keybindings.error
-								: null,
-						conflict: draft ? value.revision !== draft.revision : false,
-						writeUncertain: this.state.keybindings.writeUncertain,
-					},
-				});
-			} catch {
-				this.publish({
-					keybindings: {
-						...this.state.keybindings,
-						error:
-							"Keybinding settings changed. Refresh to inspect the current value.",
-					},
-				});
-			}
-		}
 		if (
 			notification.method === "evener/settings/transcriptDisplay/changed" &&
 			this.state.transcriptMobile.support === "supported"
@@ -268,75 +242,15 @@ export class NativePreferences {
 		const generation = ++this.generation;
 		if (this.state.transcriptMobile.storageUnavailable)
 			this.restoreTranscriptDraft();
-		const reads: Promise<void>[] = [];
-		if (this.state.keybindings.storageUnavailable)
-			this.restoreKeybindingDraft();
-		if (
-			this.state.keybindings.support === "supported" &&
-			!this.state.keybindings.storageUnavailable
-		)
-			reads.push(this.refreshKeybindings(generation));
+		const reads: Promise<void>[] = [
+			this.keybindings.getState().refreshOverrides(),
+		];
 		if (
 			this.state.transcriptMobile.support === "supported" &&
 			!this.state.transcriptMobile.storageUnavailable
 		)
 			reads.push(this.refreshTranscript(generation));
 		await Promise.all(reads);
-	}
-
-	private async refreshKeybindings(generation: number): Promise<void> {
-		const writeEpoch = this.keybindingWriteEpoch;
-		this.publish({
-			keybindings: { ...this.state.keybindings, loading: true, error: null },
-		});
-		try {
-			const value = decodeKeybindings(
-				await this.client.request("evener/settings/keybindings/get", {}),
-			);
-			if (generation !== this.generation || this.disposed) return;
-			const domain = this.state.keybindings;
-			if (writeEpoch !== this.keybindingWriteEpoch) {
-				this.publish({ keybindings: { ...domain, loading: false } });
-				return;
-			}
-			if (
-				domain.saving ||
-				(!value.loadError &&
-					(domain.confirmed?.revision ?? -1) > value.revision)
-			) {
-				this.publish({ keybindings: { ...domain, loading: false } });
-				return;
-			}
-			const draft = domain.draft;
-			if (draft && domain.writeUncertain && !value.loadError)
-				this.persistKeybindingDraft({
-					baseRevision: draft.revision,
-					rules: draft.rules,
-					writeUncertain: false,
-				});
-			this.publish({
-				keybindings: {
-					...this.state.keybindings,
-					loading: false,
-					confirmed: value,
-					draft,
-					conflict: draft ? value.revision !== draft.revision : false,
-					writeUncertain: value.loadError ? domain.writeUncertain : false,
-					error: value.loadError
-						? "The hub could not load its saved shortcuts. Repair the hub settings file before editing."
-						: null,
-				},
-			});
-		} catch (error) {
-			if (generation === this.generation && !this.disposed)
-				this.publish({
-					keybindings: {
-						...this.state.keybindings,
-						loading: false,
-						error: errorText(error),
-					},
-				});
-		}
 	}
 
 	private async refreshTranscript(generation: number): Promise<void> {
@@ -386,218 +300,30 @@ export class NativePreferences {
 					transcriptMobile: {
 						...this.state.transcriptMobile,
 						loading: false,
-						error: errorText(error),
+						error: HUB_UNCONFIRMED_MESSAGE,
 					},
 				});
 		}
 	}
 
-	private assertKeybindingsEditable(): KeybindingsOverrides {
-		const domain = this.state.keybindings;
-		if (
-			this.disposed ||
-			domain.saving ||
-			domain.storageUnavailable ||
-			domain.writeUncertain ||
-			domain.support !== "supported" ||
-			!domain.confirmed ||
-			domain.confirmed.loadError
-		)
-			throw new Error("Hub keybinding settings are unavailable.");
-		return domain.confirmed;
-	}
-
+	// The draft editor is the shared store's; these stay async so a refused
+	// edit rejects the way the screen awaits it.
 	async editKeybindings(rules: readonly KeybindingsRule[]): Promise<void> {
-		const current = this.assertKeybindingsEditable();
-		const checked = keybindingRules(rules);
-		const revision = this.state.keybindings.draft?.revision ?? current.revision;
-		this.persistKeybindingDraft({
-			baseRevision: revision,
-			rules: checked,
-			writeUncertain: false,
-		});
-		this.publish({
-			keybindings: {
-				...this.state.keybindings,
-				draft: { version: 1, revision, rules: checked },
-				conflict: revision !== current.revision,
-				error: null,
-			},
-		});
+		this.keybindings.getState().editDraft(rules);
 	}
 
 	async saveKeybindings(
 		rules?: readonly KeybindingsRule[],
 	): Promise<KeybindingsOverrides> {
-		const current = this.assertKeybindingsEditable();
-		const existing = this.state.keybindings.draft;
-		if (this.state.keybindings.conflict)
-			throw new Error(
-				"Review the current shortcuts before saving your changes.",
-			);
-		const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
-		const revision = existing?.revision ?? current.revision;
-		// This durable intent must exist before the request can leave the device.
-		const checkpoint = this.persistKeybindingDraft({
-			baseRevision: revision,
-			rules: checked,
-			writeUncertain: true,
-		});
-		this.keybindingWriteEpoch += 1;
-		this.publish({
-			keybindings: {
-				...this.state.keybindings,
-				saving: true,
-				draft: { version: 1, revision, rules: checked },
-				error: null,
-			},
-		});
-		let value: KeybindingsOverrides;
-		try {
-			if (this.disposed) throw new Error("Shortcut save was cancelled.");
-			value = decodeKeybindings(
-				await this.client.request("evener/settings/keybindings/patch", {
-					expectedRevision: revision,
-					config: { version: 1, rules: checked },
-				}),
-			);
-			if (value.loadError || value.revision < revision)
-				throw new Error("Hub returned invalid keybinding settings.");
-		} catch (error) {
-			this.publish({
-				keybindings: {
-					...this.state.keybindings,
-					saving: false,
-					error: errorText(error),
-					conflict: true,
-					writeUncertain: true,
-				},
-			});
-			throw error;
-		}
-		const latest = this.state.keybindings.confirmed;
-		const conflict =
-			!this.disposed && !!latest && latest.revision > value.revision;
-		let storageError: string | null = null;
-		try {
-			if (conflict)
-				this.persistKeybindingDraft({ ...checkpoint, writeUncertain: false });
-			else this.keybindingDrafts?.removeIf(checkpoint);
-		} catch {
-			storageError =
-				"The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
-		}
-		this.publish({
-			keybindings: {
-				...this.state.keybindings,
-				saving: false,
-				confirmed: conflict ? latest : value,
-				draft: conflict || storageError ? this.state.keybindings.draft : null,
-				conflict,
-				writeUncertain: false,
-				storageUnavailable: storageError !== null,
-				error: storageError,
-			},
-		});
-		return value;
+		return this.keybindings.getState().saveDraft(rules);
 	}
 
 	async discardKeybindingsDraft(): Promise<void> {
-		this.assertKeybindingsEditable();
-		try {
-			const checkpoint = this.keybindingDrafts?.load();
-			if (checkpoint) this.keybindingDrafts?.removeIf(checkpoint);
-		} catch {
-			this.publish({
-				keybindings: { ...this.state.keybindings, storageUnavailable: true },
-			});
-			throw new Error("Could not discard the shortcut draft locally.");
-		}
-		this.publish({
-			keybindings: {
-				...this.state.keybindings,
-				draft: null,
-				conflict: false,
-				error: null,
-			},
-		});
+		this.keybindings.getState().discardDraft();
 	}
 
 	async rebaseKeybindingsDraft(reviewedRevision: number): Promise<void> {
-		const current = this.assertKeybindingsEditable();
-		const draft = this.state.keybindings.draft;
-		if (
-			!draft ||
-			this.state.keybindings.loading ||
-			current.revision !== reviewedRevision
-		)
-			throw new Error("Shortcuts changed again. Review the current values.");
-		this.persistKeybindingDraft({
-			baseRevision: current.revision,
-			rules: draft.rules,
-			writeUncertain: false,
-		});
-		this.publish({
-			keybindings: {
-				...this.state.keybindings,
-				draft: { ...draft, revision: current.revision },
-				conflict: false,
-				error: null,
-			},
-		});
-	}
-
-	private persistKeybindingDraft(
-		input: Omit<KeybindingDraftCheckpoint, "id">,
-	): KeybindingDraftCheckpoint {
-		try {
-			const checkpoint = {
-				...input,
-				id: this.keybindingDrafts?.createId() ?? "memory",
-			};
-			this.keybindingDrafts?.save(checkpoint);
-			return checkpoint;
-		} catch {
-			this.publish({
-				keybindings: { ...this.state.keybindings, storageUnavailable: true },
-			});
-			throw new Error("Could not save the shortcut draft locally.");
-		}
-	}
-
-	private restoreKeybindingDraft(): void {
-		try {
-			const checkpoint = this.keybindingDrafts?.load();
-			this.publish({
-				keybindings: {
-					...this.state.keybindings,
-					draft: checkpoint
-						? {
-								version: 1,
-								revision: checkpoint.baseRevision,
-								rules: checkpoint.rules,
-							}
-						: null,
-					writeUncertain: checkpoint?.writeUncertain ?? false,
-					storageUnavailable: false,
-					error: null,
-					conflict:
-						!!checkpoint &&
-						!!this.state.keybindings.confirmed &&
-						checkpoint.baseRevision !==
-							this.state.keybindings.confirmed.revision,
-				},
-			});
-		} catch {
-			this.publish({
-				keybindings: {
-					...this.state.keybindings,
-					storageUnavailable: true,
-					error:
-						"Could not restore the saved shortcut draft. Check current shortcuts to retry.",
-				},
-			});
-		}
+		this.keybindings.getState().rebaseDraft(reviewedRevision);
 	}
 
 	async saveTranscript(
@@ -665,7 +391,7 @@ export class NativePreferences {
 				transcriptMobile: {
 					...this.state.transcriptMobile,
 					saving: false,
-					error: errorText(error),
+					error: HUB_UNCONFIRMED_MESSAGE,
 					conflict: true,
 					writeUncertain: true,
 				},
@@ -834,6 +560,8 @@ export class NativePreferences {
 		this.disposed = true;
 		this.generation += 1;
 		this.unsubscribe();
+		this.unsubscribeKeybindings();
+		this.keybindings.dispose();
 		this.listeners.clear();
 	}
 }

@@ -10,6 +10,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+  type AppwireClient,
+  type LaunchConfigLayer,
   type PluginSelectionState,
   pluginSelectionIssues,
   selectAllPlugins,
@@ -17,10 +19,8 @@ import {
   selectNoPlugins,
   setPluginSelected,
   withPluginSelection,
-} from "../../cmd/evener-hub/frontend/src/panes/spawn/pluginSelectionState";
+} from "@evener/appwire-client";
 import { usePluginPreview } from "../../cmd/evener-hub/frontend/src/panes/spawn/usePluginPreview";
-import type { AppwireClient } from "../../appwire-client/typescript/client";
-import type { LaunchConfigLayer } from "../../appwire-client/typescript/types.gen";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function CreationPlugins({

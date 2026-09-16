@@ -8,9 +8,10 @@ import (
 )
 
 // A client holds ThreadCapabilities as a snapshot from its last thread/read,
-// and three of them — Send, Steer, Queue — are defined by whether a turn is in
-// flight. So a client that read the thread while it was idle holds
-// steer=false/queue=false, and nothing on the wire ever corrects that: the
+// and two of them — Send, Queue — are defined by whether a turn is in flight
+// (Steer advertises harness support alone; the client applies the status). So
+// a client that read the thread while it was idle holds queue=false, and
+// nothing on the wire ever corrects that: the
 // composer then renders a session it KNOWS is active (it has the status change
 // and the turn) with no Steer, no Stop, and a dead Send, until a reload
 // (kata 06t8). A status transition is exactly the moment those flip, so the
@@ -19,7 +20,7 @@ import (
 func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetQueueFunc(func(string) error { return nil })
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
@@ -53,8 +54,11 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	if idle.Capabilities == nil {
 		t.Fatal("idle thread/status/changed carried no capabilities, want the set that goes with no turn")
 	}
-	if idle.Capabilities.Steer || idle.Capabilities.Queue {
-		t.Fatalf("idle capabilities = %+v, want steer/queue false with no turn in flight", *idle.Capabilities)
+	if idle.Capabilities.Queue {
+		t.Fatalf("idle capabilities = %+v, want queue false with no turn in flight", *idle.Capabilities)
+	}
+	if !idle.Capabilities.Steer {
+		t.Fatalf("idle capabilities = %+v, want steer true: it advertises harness support, and a queue parked by Stop is released by a drain or promote sent while idle", *idle.Capabilities)
 	}
 	if !idle.Capabilities.Send {
 		t.Fatal("idle capabilities Send = false, want true with no turn in flight")
@@ -75,7 +79,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetQueueFunc(func(string) error { return nil })
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})

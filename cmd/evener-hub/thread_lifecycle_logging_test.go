@@ -77,6 +77,32 @@ func TestThreadLifecycleLoggingLaunchFailure(t *testing.T) {
 	}
 }
 
+// The production fallback launches the bare name "evener" and lets exec.Command
+// search $PATH: HubSpawner.EvenerBinary defaults to "" and spawnDaemon and
+// resumeDaemon then run exec.Command("evener", ...). A bare name missing from
+// $PATH fails as *exec.Error wrapping exec.ErrNotFound, which is not
+// fs.ErrNotExist — so the test above does not cover it: its path carries a
+// separator and fails as *fs.PathError. Both must record not_found.
+func TestThreadLifecycleLoggingLaunchFailureBareName(t *testing.T) {
+	t.Parallel()
+	// A bare name with no separator that no $PATH entry can resolve, which is
+	// the shape os/exec's own lookup failure takes.
+	const absentBinary = "evener-bare-name-absent-from-path"
+	dir := t.TempDir()
+	sessionID := hubtest.SessionID(t)
+	var hubLog bytes.Buffer
+	_, err := resumeDaemon(context.Background(), absentBinary, dir, hubcore.ResumeRequest{SessionID: sessionID}, 0, &hubLog)
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("launch fixture: got %v, want bare-name lookup failure", err)
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("launch fixture: %v wraps fs.ErrNotExist, so it is not the uncovered case", err)
+	}
+	records := assertThreadLifecycleRecords(t, hubLog.String())
+	assertThreadLifecycleOutcome(t, records, "launch", "error", "not_found")
+	assertThreadLifecycleOutcome(t, records, "daemon", "error", "not_found")
+}
+
 // Lifecycle fields are bounded metadata tokens, never free-form prose. Parse
 // the emitted records rather than pinning timestamps or an entire log snapshot.
 func threadLifecycleLogRecords(t *testing.T, output string) []map[string]string {
@@ -536,6 +562,7 @@ func TestThreadLifecycleLoggingConcreteErrorPrecedesContext(t *testing.T) {
 				{"nil", nil, "none", "success", "-1"},
 				{"permission", fmt.Errorf("%s: %w", secret, fs.ErrPermission), "permission", "error", "-1"},
 				{"not_found", fmt.Errorf("%s: %w", secret, fs.ErrNotExist), "not_found", "error", "-1"},
+				{"exec_not_found", fmt.Errorf("%s: %w", secret, &exec.Error{Name: "evener", Err: exec.ErrNotFound}), "not_found", "error", "-1"},
 				{"process_exit", fmt.Errorf("%s: %w", secret, exitErr), "process_exit", "error", "23"},
 				{"explicit_cancel", fmt.Errorf("%s: %w", secret, context.Canceled), "canceled", "canceled", "-1"},
 				{"explicit_deadline", fmt.Errorf("%s: %w", secret, context.DeadlineExceeded), "timeout", "error", "-1"},

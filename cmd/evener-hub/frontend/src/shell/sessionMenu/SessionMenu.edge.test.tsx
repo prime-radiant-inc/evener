@@ -4,10 +4,10 @@
 // - onClose handler for delete dialog (line 229)
 // - Rename confirm button disabled with empty input (line 184)
 
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 

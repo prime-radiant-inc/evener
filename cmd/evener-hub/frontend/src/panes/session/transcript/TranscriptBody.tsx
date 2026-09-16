@@ -1,9 +1,9 @@
+import type { ThreadModel, TurnModel } from "@evener/appwire-client";
+import { configFingerprint, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import type { ReactNode, RefObject } from "react";
 import { useMemo, useRef } from "react";
 import { useStore } from "zustand";
-import type { ThreadModel, TurnModel } from "../../../protocol/model";
 import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
-import { configFingerprint, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import {
   type ProjectedEntry,
   type ProjectedTurn,
@@ -358,9 +358,8 @@ export function TranscriptBody({
         surface,
         sessionRef,
         disclosureScope,
-        entities,
       }),
-    [itemRenderFingerprint, entities],
+    [itemRenderFingerprint],
   );
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const viewRegistration = useTranscriptViewRegistration({
@@ -501,7 +500,7 @@ export function TranscriptBody({
         </>
       );
     }
-    content = <div className={styles.transcript}>{transcriptContent}</div>;
+    content = <div className={styles.transcriptBody}>{transcriptContent}</div>;
   }
 
   return (

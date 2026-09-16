@@ -12,7 +12,7 @@
 // channel; attention.ts for the pure transition detection; leader.ts for the
 // Web-Locks-only election.
 
-import type { NavigationSessionSummary } from "../protocol/types.gen";
+import type { NavigationSessionSummary } from "@evener/appwire-client";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { selectLiveRows, selectNeedsYouRows } from "../stores/navigation/selectors";

@@ -30,13 +30,8 @@ import {
 	View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { buildComposerInput } from "../../appwire-client/typescript/composerInput";
-import type { AskBatch } from "../../appwire-client/typescript/reconcileBatches";
-import {
-	parseSlashToken,
-	spliceSlashCommand,
-} from "../../appwire-client/typescript/slashCompletion";
-import { humanizeState } from "../../cmd/evener-hub/frontend/src/shell/rail/sessionState";
+import { buildComposerInput, humanizeState, parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
+import type { AskBatch } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -51,9 +46,11 @@ import { useConnection } from "./ConnectionProvider";
 import {
 	CommandArgumentError,
 	composerCommand,
+	composerCommandAvailable,
 	isLocalComposerCommand,
 	submitComposerCommand,
 } from "./composerCommand";
+import { canComposeFor, conversationControls } from "./conversationControls";
 import { steerComposer } from "./composerSteering";
 import type { HubProfile } from "./connection";
 import { goalObjective, submitGoalCommand } from "./goalCommand";
@@ -1085,7 +1082,7 @@ export function ConversationScreen({
 				? new ApprovalControls(
 						client,
 						route.params.ref,
-						() => store.getState().conversation?.pendingApprovals ?? [],
+						() => store.getState().conversation?.pendingEscalations ?? [],
 						() =>
 							connectionReady.current &&
 							navigation.isFocused() &&
@@ -1116,7 +1113,7 @@ export function ConversationScreen({
 	const hasConversation = snapshot.conversation !== null;
 	const deletionAvailable =
 		!!localSessionId(route.params.ref) &&
-		snapshot.conversation?.status === "notLoaded";
+		snapshot.conversation?.status.type === "notLoaded";
 	const openSessionDestination = useCallback(
 		(destination: SessionDestination) => {
 			setSessionMenuOpen(false);
@@ -1124,12 +1121,12 @@ export function ConversationScreen({
 			const current = store.getState().conversation;
 			if (!current) return;
 			if (destination === "delete") {
-				if (!localSessionId(route.params.ref) || current.status !== "notLoaded")
+				if (!localSessionId(route.params.ref) || current.status.type !== "notLoaded")
 					return;
 				navigation.navigate("SessionDeletion", {
 					hubId: route.params.hubId,
 					ref: route.params.ref,
-					title: current.name ?? route.params.title,
+					title: current.name || route.params.title,
 				});
 				return;
 			}
@@ -1149,7 +1146,7 @@ export function ConversationScreen({
 			const context = {
 				hubId: route.params.hubId,
 				ref: route.params.ref,
-				threadId: current.id,
+				threadId: current.threadId,
 				hubName: activeProfile?.name ?? "Hub",
 				client,
 			};
@@ -1453,14 +1450,14 @@ export function ConversationScreen({
 		!pending &&
 		!settingsPending;
 	const questions = batches.flatMap((batch) => batch.questions);
+	// What this conversation may be asked to do now (conversationControls.ts):
+	// every affordance and submission below reads it, never a raw capability.
+	const permitted = conversation ? conversationControls(conversation) : null;
 	const canCompose =
 		(!conversation ||
 			(!conversation.resumeRequired &&
-				conversation.status !== "restartRequired")) &&
-		(!conversation ||
-			(["send", "steer", "queue", "goal"] as const).some(
-				(action) => conversation.capabilities[action],
-			));
+				conversation.status.type !== "restartRequired")) &&
+		(!conversation || canComposeFor(conversation));
 	const slashToken =
 		composerSelection.start === composerSelection.end &&
 		draft.record.draft !== completionClosedAt
@@ -1476,13 +1473,16 @@ export function ConversationScreen({
 	);
 	async function applyCommand(clear = false) {
 		const action = clear ? "goal" : command?.command.id;
-		const capability = clear ? "goal" : command?.command.capability;
 		if (
 			!service ||
 			!ready ||
 			!action ||
 			commandBusy.current ||
-			(capability != null && !conversation?.capabilities[capability]) ||
+			(clear
+				? !conversation?.capabilities.goal
+				: !command ||
+					!conversation ||
+					!composerCommandAvailable(command.command, conversation)) ||
 			draft.submitting ||
 			unconfirmedSend !== null ||
 			imageState.busy ||
@@ -1592,7 +1592,7 @@ export function ConversationScreen({
 										: {
 												hubId: route.params.hubId,
 												ref: route.params.ref,
-												threadId: current.id,
+												threadId: current.threadId,
 												hasTasks: current.tasks != null,
 												hubName: activeProfile?.name ?? "Hub",
 												client,
@@ -1666,7 +1666,7 @@ export function ConversationScreen({
 			current.conversation?.instanceId !== bindingInstance ||
 			controls?.getSnapshot().pending != null ||
 			current.pendingMutation?.status === "pending" ||
-			!current.conversation?.capabilities.send ||
+			!(current.conversation && conversationControls(current.conversation).send) ||
 			text === null ||
 			!questionBatches.getSnapshot().includes(batch)
 		)
@@ -1719,7 +1719,7 @@ export function ConversationScreen({
 			if (kind !== "interrupt") {
 				const submit = (
 					kind === "steer" &&
-					(store.getState().conversation?.queue.depth ?? 0) > 0
+					(store.getState().conversation?.queue?.depth ?? 0) > 0
 						? document.submitWithQueue
 						: document.submit
 				).bind(document);
@@ -1746,12 +1746,12 @@ export function ConversationScreen({
 		kinds.map((kind) =>
 			canCompose &&
 			questions.length === 0 &&
-			conversation?.capabilities[kind] ? (
+			conversation &&
+			permitted?.[kind] ? (
 				<Action
 					key={kind}
 					tone={
-						kind === "send" ||
-						(kind === "steer" && !conversation.capabilities.send)
+						kind === "send" || (kind === "steer" && !permitted.send)
 							? "primary"
 							: "quiet"
 					}
@@ -1764,7 +1764,7 @@ export function ConversationScreen({
 						imageState.busy ||
 						(!draft.record.draft.trim() &&
 							!draft.record.images?.length &&
-							!(kind === "steer" && conversation.queue.depth > 0))
+							!(kind === "steer" && (conversation.queue?.depth ?? 0) > 0))
 					}
 					onPress={() => {
 						void mutate(kind);
@@ -1777,7 +1777,7 @@ export function ConversationScreen({
 
 	const settingsOwnRow =
 		fontScale > 1.4 ||
-		!!conversation?.activeTurnId ||
+		conversation?.status.type === "active" ||
 		draft.submitting ||
 		commandPending ||
 		!connected ||
@@ -1873,7 +1873,7 @@ export function ConversationScreen({
 		>
 			{sessionMenuOpen ? (
 				<SessionMenu
-					title={conversation?.name ?? route.params.title}
+					title={conversation?.name || route.params.title}
 					hubName={activeProfile?.name ?? "Hub"}
 					connected={connected}
 					deletionAvailable={deletionAvailable}
@@ -1893,7 +1893,7 @@ export function ConversationScreen({
 					hubName={activeProfile?.name ?? "Hub"}
 					ready={
 						ready &&
-						!!conversation?.capabilities.send &&
+						!!permitted?.send &&
 						draft.loaded &&
 						!draft.error &&
 						unconfirmedSend === null &&
@@ -1911,7 +1911,7 @@ export function ConversationScreen({
 			))}
 			{approvalsOpen && conversation && approvalControls ? (
 				<ApprovalSheet
-					approvals={conversation.pendingApprovals}
+					approvals={conversation.pendingEscalations}
 					controls={approvalControls}
 					hubName={activeProfile?.name ?? "Hub"}
 					close={() => setApprovalsOpen(false)}
@@ -1938,7 +1938,7 @@ export function ConversationScreen({
 					key={`${route.params.hubId}:${route.params.ref}`}
 					client={client ?? taskContext.client}
 					sessionRef={route.params.ref}
-					threadId={conversation?.id ?? taskContext.threadId}
+					threadId={conversation?.threadId ?? taskContext.threadId}
 					hasTasks={
 						conversation ? conversation.tasks != null : taskContext.hasTasks
 					}
@@ -1954,7 +1954,7 @@ export function ConversationScreen({
 					key={`${route.params.hubId}:${route.params.ref}`}
 					client={client ?? activityContext.client}
 					sessionRef={route.params.ref}
-					threadId={conversation?.id ?? activityContext.threadId}
+					threadId={conversation?.threadId ?? activityContext.threadId}
 					connected={connected}
 					hubName={activityContext.hubName}
 					close={() => setActivityContext(null)}
@@ -1994,6 +1994,7 @@ export function ConversationScreen({
 			{queueOpen && conversation && service ? (
 				<QueueSheet
 					conversation={conversation}
+					latest={() => store.getState().conversation}
 					service={service}
 					ready={ready}
 					refresh={async () => {
@@ -2026,7 +2027,7 @@ export function ConversationScreen({
 							data={timelineRows}
 							ListFooterComponent={
 								presentation.usage ? (
-									<TranscriptUsage usage={presentation.usage} />
+									<TranscriptUsage {...presentation.usage} />
 								) : null
 							}
 							CellRendererComponent={readerCellRenderer}
@@ -2180,10 +2181,10 @@ export function ConversationScreen({
 									<ErrorMessage message={draft.error} />
 									{unconfirmedDelivery()}
 									{connected &&
-									conversation &&
-									!conversation.capabilities.send &&
-									!conversation.capabilities.steer &&
-									!conversation.capabilities.queue ? (
+									permitted &&
+									!permitted.send &&
+									!permitted.steer &&
+									!permitted.queue ? (
 										<Copy muted>Sending is unavailable for this session.</Copy>
 									) : null}
 									{snapshot.olderCursor ? (
@@ -2304,7 +2305,7 @@ export function ConversationScreen({
 								maxHeight={Math.min(160, viewportHeight * 0.32)}
 								client={client}
 								sessionRef={route.params.ref}
-								capabilities={conversation.capabilities}
+								session={conversation}
 								query={slashToken.query}
 								close={() => setCompletionClosedAt(draft.record.draft)}
 								choose={(item) => {
@@ -2350,7 +2351,7 @@ export function ConversationScreen({
 									{`${questions.length} ${questions.length === 1 ? "question" : "questions"} to answer`}
 								</Action>
 							) : null}
-							{conversation?.pendingApprovals.length ? (
+							{conversation?.pendingEscalations.length ? (
 								<Action
 									disabled={!ready || !approvalControls}
 									expanded={approvalsOpen}
@@ -2358,13 +2359,13 @@ export function ConversationScreen({
 										Keyboard.dismiss();
 										setApprovalsOpen(true);
 									}}
-								>{`${conversation.pendingApprovals.length} ${conversation.pendingApprovals.length === 1 ? "approval" : "approvals"} needed`}</Action>
+								>{`${conversation.pendingEscalations.length} ${conversation.pendingEscalations.length === 1 ? "approval" : "approvals"} needed`}</Action>
 							) : null}
-							{conversation?.queue.depth || conversation?.goal ? (
+							{conversation?.queue?.depth || conversation?.goal ? (
 								<View
 									style={{ flexDirection: "row", flexWrap: "wrap", gap: 4 }}
 								>
-									{conversation.queue.depth ? (
+									{conversation.queue?.depth ? (
 										<Action
 											tone="quiet"
 											expanded={queueOpen}
@@ -2373,7 +2374,7 @@ export function ConversationScreen({
 												setQueueOpen(true);
 											}}
 										>
-											{`${conversation.queue.depth} queued`}
+											{`${conversation.queue?.depth} queued`}
 										</Action>
 									) : null}
 									{conversation.goal ? (
@@ -2478,8 +2479,8 @@ export function ConversationScreen({
 											(command.command.id === "goal" &&
 												!goalCommand &&
 												!conversation?.goal) ||
-											(command.command.capability != null &&
-												!conversation?.capabilities[command.command.capability])
+											!conversation ||
+											!composerCommandAvailable(command.command, conversation)
 										}
 										onPress={() => void applyCommand()}
 									>
@@ -2538,7 +2539,7 @@ export function ConversationScreen({
 												: "Review error"}
 									</Action>
 								) : null}
-								{conversation?.capabilities.interrupt ? (
+								{permitted?.stop ? (
 									<Action
 										tone="quiet"
 										disabled={!ready}

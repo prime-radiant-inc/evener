@@ -32,7 +32,7 @@ import (
 // The one variable the table answers is OLLAMA_HOST, whose instance needs no
 // credential and is therefore always visible; it points at a closed port so
 // its listing fails instantly instead of reaching a real daemon.
-func launchCheckGateway(t *testing.T, status int, body string) {
+func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/models") {
@@ -47,12 +47,8 @@ func launchCheckGateway(t *testing.T, status int, body string) {
 
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "providers.toml")
-	if err := os.WriteFile(cfgPath, []byte(`
-[providers.gw]
-base     = "openai-compatible"
-base_url = "`+srv.URL+`/v1"
-api_key  = "test-key"
-`), 0o600); err != nil {
+	cfg := "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key  = \"test-key\"\n" + strings.Join(gwExtra, "")
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	stateRoot := t.TempDir()

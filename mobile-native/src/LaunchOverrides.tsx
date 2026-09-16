@@ -1,12 +1,11 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Pressable, TextInput, View } from "react-native";
-import { inactivePromptDependent } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/launchShared/schema";
-import { perLaunchEvenerOptions } from "../../cmd/evener-hub/frontend/src/panes/spawn/schema";
+import { inactivePromptDependent, perLaunchEvenerOptions } from "@evener/appwire-client";
 import type {
   LaunchConfigLayer,
   LaunchConfigResolved,
   LaunchOption,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
 import { scalarKinds } from "./launchScalar";

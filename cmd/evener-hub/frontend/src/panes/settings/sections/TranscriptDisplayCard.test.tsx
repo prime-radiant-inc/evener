@@ -1,15 +1,11 @@
+import type { ThreadModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig, shippedDefault, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
-import {
-  makeTranscriptDisplayConfig,
-  shippedDefault,
-  type TranscriptDisplayConfigV1,
-} from "../../../transcriptDisplay/config";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { TranscriptDisplayCard } from "./TranscriptDisplayCard";

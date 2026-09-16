@@ -1,18 +1,19 @@
 import {
   activityDelegateState,
+  delegateModel,
   type EntityView,
   entityOpenTarget,
-  humanizeInterval,
-  humanizeSeconds,
+  formatByteCount,
+  formatClockTime,
+  formatElapsed,
+  isActivityFailure,
   parseConditionText,
+  plainQuoteLine,
   sourceLabel,
+  stableDelegateDisplayStatus,
 } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import { isActivityFailure } from "../../../protocol/activityData";
-import { formatClockTime, formatElapsed, plainQuoteLine } from "../../../protocol/displayFormat";
-import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
-import { formatByteCount } from "../../../protocol/toolCallText";
-import { useTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
+import { useEntityViews } from "../../../transcriptDisplay/entityViews";
 import { HoverCard } from "../../../widgets/hovercard";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { OpenButton } from "../../../widgets/openbutton";
@@ -20,7 +21,7 @@ import { formatQuietAge, formatUsagePair } from "../chrome/activityFormat";
 import styles from "./entityref.module.css";
 import { openTranscript } from "./openTranscript";
 import { classifyJobStatus } from "./tools/subagentModuleStore";
-import { watchEventLabel } from "./watchEventLabel";
+import { watchTriggerPhrases } from "./watchConditionPhrase";
 
 export interface EntityRefProps {
   view?: EntityView;
@@ -129,7 +130,7 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
     status = activityDelegateState(delegate).status;
     mandateSource = delegate.mandate ?? delegate.task ?? delegate.description;
     agent = delegate.agentType;
-    model = delegate.resolvedModel ?? delegate.model ?? delegate.requestedModel;
+    model = delegateModel(delegate).model;
     durationMs = delegate.durationMs;
     runningForMs = delegate.runningForMs;
     quietForMs = delegate.quietForMs;
@@ -138,7 +139,7 @@ function DelegateCard({ view, live }: { view: Extract<EntityView, { kind: "deleg
     status = stableDelegateDisplayStatus(stable) ?? "unknown";
     mandateSource = stable.task ?? stable.description;
     agent = stable.agentType;
-    model = stable.resolvedModel ?? stable.model ?? stable.requestedModel;
+    model = delegateModel(stable).model;
     durationMs = stable.durationMs;
     runningForMs = stable.runningForMs;
     quietForMs = stable.quietForMs;
@@ -181,26 +182,11 @@ interface WatchConditionContent {
 function watchConditionContent(condition: string | undefined, note: string | undefined): WatchConditionContent {
   if (!condition) return { note };
   const parsed = parseConditionText(condition, note);
-  const clauses: string[] = [];
-  if (parsed.outputMatch) clauses.push(`output matching “${parsed.outputMatch}”`);
-  if (parsed.afterSeconds !== undefined) clauses.push(`fires ${humanizeSeconds(parsed.afterSeconds)}`);
-  if (parsed.repeatSeconds !== undefined) clauses.push(`fires ${humanizeInterval(parsed.repeatSeconds)}`);
-  if (parsed.progressIntervalMS !== undefined) {
-    clauses.push(`heartbeat ${humanizeInterval(parsed.progressIntervalMS / 1000)}`);
-  }
-  if (parsed.events.length > 0) {
-    const names = parsed.events.map(watchEventLabel).join(", ");
-    const every = parsed.every === undefined ? "" : ` every ${parsed.every}`;
-    const wildcardEvery = parsed.every === undefined ? "" : ` (every ${parsed.every})`;
-    clauses.push(
-      parsed.events.length === 1 && parsed.events[0] === "*" ? `${names}${wildcardEvery}` : `events ${names}${every}`,
-    );
-  }
-  if (parsed.filterToolName || parsed.filterStatus) {
-    clauses.push(
-      `tool calls${parsed.filterToolName ? ` on ${parsed.filterToolName}` : ""}${parsed.filterStatus ? ` with ${parsed.filterStatus}` : ""}`,
-    );
-  }
+  // The trigger wording comes from the shared composer, so this card and the
+  // watch list word the same condition identically: a pattern reads as “ready”
+  // here exactly as it does in a list row, and the wildcard as "any event".
+  const { timer, bits } = watchTriggerPhrases(parsed);
+  const clauses = timer ? [timer, ...bits] : bits;
   return {
     note: note ?? parsed.note,
     summary: clauses.length > 0 ? clauses.join(" · ") : undefined,
@@ -247,8 +233,8 @@ function EntityCard({ view }: { view: EntityView }) {
 }
 
 export function EntityRef({ view, id, display, triggerOnly, embedded }: EntityRefProps) {
-  const context = useTranscriptRenderContext();
-  const resolved = view ?? context.entities?.get(id);
+  const entities = useEntityViews();
+  const resolved = view ?? entities?.get(id);
   const text = display ?? id;
   if (!resolved) return <span>{text}</span>;
 

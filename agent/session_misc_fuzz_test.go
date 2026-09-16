@@ -278,7 +278,9 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 			if prompt, ok := goalSession.currentGoalContinuation(); !ok || strings.TrimSpace(prompt) == "" {
 				t.Fatalf("active continuation=(%q,%v)", prompt, ok)
 			}
-			goalSession.ClearGoal()
+			if err := goalSession.ClearGoal(); err != nil {
+				t.Error(err)
+			}
 			if _, _, ok := goalSession.GoalStatus(); ok {
 				t.Fatal("cleared goal remained visible")
 			}

@@ -1,6 +1,8 @@
-import { act, useEffect, useMemo } from "react";
+import type { ThreadModel } from "@evener/appwire-client";
+import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
   MutationOptimisticRecord,
   MutationOutboxRecord,
@@ -142,43 +144,6 @@ export async function settlePendingTurnsProjectionForTests(): Promise<number> {
   return outstanding.length;
 }
 
-// The repeat loop every test wants, hoisted here because four test files had
-// carried a byte-identical copy of it: run rounds until one of them finds
-// nothing outstanding. The bound is a tripwire for a livelock - it throws
-// rather than letting a test pass on a half-settled projection.
-//
-// What it can settle is exactly what registers with trackProjectionWork, so a
-// round that found nothing is proof that nothing is left only while every
-// durable path registers before it can be observed. Every path in THIS file
-// does: the last one that did not was submitWithPendingTracking, which
-// registered nothing until its own work had already finished, and a flush
-// starting in that window declared the projection settled with a send still in
-// flight (kata 3p22).
-//
-// That is a claim about this file, not about every caller. The round below
-// snapshots synchronously, in the same tick as the call, so a caller that
-// starts durable work which only registers a microtask later is invisible to
-// it - but only if that same caller flushes without yielding first. Composer's
-// queueRecoveryPersistence chains that way and every one of its call sites
-// yields, which is why it was measured unreachable rather than fixed: zero
-// occurrences in 1422 test executions under load (kata 5meh, closed as an
-// audit).
-//
-// So the hazard is the pattern, not that instance. A new path that registers
-// late reopens it as a load-sensitive false green rather than a failure.
-// pendingTurnsStore's "a flush cannot settle while a submit is still in
-// flight" pins the property for the paths here.
-export async function flushPendingTurnsProjectionForTests(): Promise<void> {
-  for (let round = 0; round < 10; round += 1) {
-    let awaited = 0;
-    await act(async () => {
-      awaited = await settlePendingTurnsProjectionForTests();
-    });
-    if (awaited === 0) return;
-  }
-  throw new Error("pending-turns projection never settled");
-}
-
 export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
 }
@@ -188,7 +153,11 @@ function recordSubmittedHere(snapshot: {
   optimistic: MutationOptimisticRecord[];
 }): void {
   const known = pendingTurnsStore.getState().submittedHere;
+  // The outbox is shared per origin: another tab's records read back out of it
+  // are visible here but are not this client's submissions, and claiming them
+  // would reroute this tab's composer behind their sends.
   const discovered = [...snapshot.outbox, ...snapshot.optimistic]
+    .filter((record) => isOwnMutationRecord(record))
     .map((record) => record.clientMutationId)
     .filter((id) => !known.has(id));
   if (discovered.length === 0) return;
@@ -372,6 +341,23 @@ const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
 
+// The one projection of the pending entries a ref shows, over a snapshot of
+// the store's records and the thread's model.
+function projectPendingEntries(
+  ref: string,
+  method: PendingMethod | undefined,
+  state: Pick<PendingTurnsStoreState, "outbox" | "optimistic" | "submittedHere">,
+  model: ThreadModel | undefined,
+): PendingTurnEntry[] {
+  const matches = reconcilePendingEntries(
+    ref,
+    [...state.outbox.values(), ...state.optimistic.values()],
+    model,
+    state.submittedHere,
+  ).filter((entry) => method === undefined || entry.method === method);
+  return matches.length > 0 ? matches : NO_ENTRIES;
+}
+
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
   const optimistic = useStore(pendingTurnsStore, (state) => state.optimistic);
@@ -380,15 +366,17 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
-  return useMemo(() => {
-    const matches = reconcilePendingEntries(
-      ref,
-      [...outbox.values(), ...optimistic.values()],
-      model,
-      submittedHere,
-    ).filter((entry) => method === undefined || entry.method === method);
-    return matches.length > 0 ? matches : NO_ENTRIES;
-  }, [outbox, optimistic, submittedHere, model, ref, method]);
+  return useMemo(
+    () => projectPendingEntries(ref, method, { outbox, optimistic, submittedHere }, model),
+    [outbox, optimistic, submittedHere, model, ref, method],
+  );
+}
+
+// The same projection read from the stores as they are now, not as a component
+// rendered them: for the press handlers that re-derive their verdict at the
+// press (stores/liveControls.ts is the rule; this is its pending-send input).
+export function pendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
+  return projectPendingEntries(ref, method, pendingTurnsStore.getState(), threadsStore.getState().threads.get(ref));
 }
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {

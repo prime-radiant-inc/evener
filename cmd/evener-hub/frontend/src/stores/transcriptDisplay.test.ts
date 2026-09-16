@@ -1,12 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import {
-  type CapturedTranscriptView,
-  registerTranscriptView,
-  resetTranscriptViewRegistryForTests,
-} from "../panes/session/transcript/flow/transcriptViewRegistry";
-import { WireError } from "../protocol/errors";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { TranscriptDisplayPatchResponse } from "../protocol/types.gen";
+import type { TranscriptDisplayPatchResponse } from "@evener/appwire-client";
 import {
   encodeLocalConfig,
   makeTranscriptDisplayConfig,
@@ -15,7 +7,15 @@ import {
   shippedMobileConfig,
   type TranscriptDisplayConfigV1,
   toWireConfig,
-} from "../transcriptDisplay/config";
+  WireError,
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  type CapturedTranscriptView,
+  registerTranscriptView,
+  resetTranscriptViewRegistryForTests,
+} from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { connectionStore } from "./connection";
 import {
   initTranscriptDisplay,

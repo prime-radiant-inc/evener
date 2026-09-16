@@ -1,6 +1,7 @@
+import { createKeybindingsRegistry, type KeybindingsRegistry } from "@evener/appwire-client";
+import { parseKeybinding } from "tinykeys";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createKeybindingDispatcher, type KeybindingDispatcher } from "./dispatcher";
-import { createKeybindingsRegistry, type KeybindingsRegistry } from "./registry";
 
 // jsdom resolves tinykeys' "$mod" to "Control" on every host, so every Mod
 // chord in this file is pressed with ctrlKey and the tests stay
@@ -29,7 +30,7 @@ describe("dispatcher", () => {
   });
 
   function setup(options: { isModalOpen?: (event: KeyboardEvent) => boolean } = {}) {
-    registry = createKeybindingsRegistry();
+    registry = createKeybindingsRegistry(parseKeybinding);
     dispatcher = createKeybindingDispatcher({ registry, ...options });
     detach = dispatcher.attach(window);
     return registry.getState();
@@ -285,7 +286,7 @@ describe("dispatcher", () => {
 
 describe("default editable-target detection", () => {
   test.each(["input", "textarea", "select"])("treats <%s> as editable", (tagName) => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const dispatcher = createKeybindingDispatcher({ registry });
     const detach = dispatcher.attach(window);
     const run = vi.fn();
@@ -301,7 +302,7 @@ describe("default editable-target detection", () => {
   });
 
   test("treats a contenteditable element as editable", () => {
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const dispatcher = createKeybindingDispatcher({ registry });
     const detach = dispatcher.attach(window);
     const run = vi.fn();
@@ -324,7 +325,7 @@ describe("default editable-target detection", () => {
     // The nearest contenteditable ancestor's VALUE decides: an explicitly
     // non-editable control nested in an editor must not suppress bindings
     // (e.g. Ctrl+B inside a toolbar embedded in a rich-text editor).
-    const registry = createKeybindingsRegistry();
+    const registry = createKeybindingsRegistry(parseKeybinding);
     const dispatcher = createKeybindingDispatcher({ registry });
     const detach = dispatcher.attach(window);
     const run = vi.fn();

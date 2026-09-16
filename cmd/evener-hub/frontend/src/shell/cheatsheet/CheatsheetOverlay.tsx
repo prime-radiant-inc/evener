@@ -19,13 +19,17 @@
 // is ever registered on a touch viewport and the trigger chords stay inert
 // there (RailHost's rail.toggle no-registration pattern).
 
+import {
+  ACTION_DISPLAY_ROWS,
+  ACTIONS,
+  CHEATSHEET_SCOPE,
+  chordDisplayKeys,
+  displayBindingsFor,
+  serializeChord,
+} from "@evener/appwire-client";
 import { Fragment, useEffect } from "react";
 import { useStore } from "zustand";
-import { ACTIONS } from "../../keybindings/actions";
-import { chordDisplayKeys, serializeChord } from "../../keybindings/chord";
-import { CHEATSHEET_SCOPE } from "../../keybindings/defaults";
-import { ACTION_DISPLAY_ROWS, displayBindingsFor } from "../../keybindings/display";
-import { keybindingsRegistry } from "../../keybindings/registry";
+import { keybindingsRegistry } from "../../keybindings/appRegistry";
 import { Dialog, KeyHint } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { installKeybindings } from "../installKeybindings";

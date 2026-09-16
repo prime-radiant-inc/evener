@@ -1,0 +1,16 @@
+// Harness/model helpers for the spawn form. "Evener-model harness" = the one
+// whose models the model chip + sticky-default + stale-model logic apply to
+// (kind "evener"); other harnesses (for example, kind "external") carry the
+// model through unmanaged. The generic HarnessDescriptor kind remains opaque.
+import type { HarnessDescriptor } from "./types.gen";
+
+export function harnessUsesEvenerModels(harnessId: string, harnesses: HarnessDescriptor[]): boolean {
+  // The default (unset) harness is evener.
+  if (harnessId === "" || harnessId === "evener") return true;
+  const found = harnesses.find((h) => h.id === harnessId);
+  return found ? found.kind === "evener" : false;
+}
+
+export function harnessSupportsPluginSelection(harnessId: string, harnesses: HarnessDescriptor[]): boolean {
+  return harnessUsesEvenerModels(harnessId, harnesses);
+}

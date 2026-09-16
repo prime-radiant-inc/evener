@@ -58,6 +58,15 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	}
 	restoreRoot := strings.TrimSpace(meta.WorktreeRestoreRoot)
 	target := filepath.Clean(path)
+	// The persisted parked environment's identity, so the restore target the
+	// session re-creates below carries the same binding it had before the crash
+	// (plan 648/654). Empty when the root had no parked role recorded.
+	parkedBindingID := ""
+	if pool := s.retainedScratch.Load(); pool != nil {
+		if consumer, ok := pool.consumers[s.id]; ok {
+			parkedBindingID = consumer.WorktreeRestoreBindingID
+		}
+	}
 
 	// Every environment the session leaves this function on is a clone of local,
 	// and a clone owns nothing of its original: the scratch local already
@@ -68,10 +77,28 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// through swapEnvAndRefresh (see the doc comment above), which makes the
 	// same move for every later enter and exit. worktreeRestoreEnv is not the
 	// session's environment, so it adopts nothing until an exit swaps onto it.
-	reroot := func(dir string) *execenv.LocalExecutionEnvironment {
+	reroot := func(dir string) (*execenv.LocalExecutionEnvironment, error) {
 		next := local.WithWorkingDirectory(dir)
+		// Fail closed on the re-root exactly as a worktree switch does
+		// (enterWorktree): WithWorkingDirectory hands back the child with BOTH
+		// Sandbox and Wrapper nil plus a sticky refusal when the host cannot
+		// re-anchor the policy to dir, so returning that child for publication
+		// would run the restored session with unconfined file and command tools.
+		// A refused re-root returns no environment, which leaves the session on
+		// its prior, still-confined env.
+		if err := next.SandboxReRootError(); err != nil {
+			return nil, fmt.Errorf("sandbox re-root refused for %s: %w", dir, err)
+		}
 		next.AdoptSessionScratch(local)
-		return next
+		// The scratch (and so the logical environment) follows the session onto
+		// the clone, so its opaque binding identity must follow too: without it
+		// the resumed environment owns a lease the manifest cannot attribute and
+		// the next swap stages nothing, releasing that lease with no transition
+		// persisted (plan 648/654).
+		if err := s.inheritScratchRetentionBinding(next, local); err != nil {
+			return next, fmt.Errorf("could not carry scratch binding identity into %s: %w", dir, err)
+		}
+		return next, nil
 	}
 
 	// notice lands the env at the persisted restore root (when one was
@@ -80,8 +107,17 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	// the restore root... with a notice").
 	notice := func(reason string) {
 		if restoreRoot != "" {
-			s.env = reroot(restoreRoot)
-			reason += "; resuming at " + restoreRoot
+			next, err := reroot(restoreRoot)
+			// A refused re-root hands back no environment: the session stays on
+			// its prior, confined env rather than landing at the restore root
+			// unconfined, and the notice must not claim it landed there.
+			if next != nil {
+				s.env = next
+				reason += "; resuming at " + restoreRoot
+			}
+			if err != nil {
+				s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: err.Error()})
+			}
 		}
 		// Buffered, not emitted directly: this runs before initSessionState
 		// (both via NewSession and RestoreSessionFromMetaWithConfig), strictly
@@ -189,11 +225,31 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 
 	// Re-enter: root the env in the worktree directly. No swapEnvAndRefresh
 	// here — see the doc comment above.
-	s.env = reroot(target)
+	reentered, err := reroot(target)
+	if err != nil {
+		return err
+	}
+	s.env = reentered
 	s.worktreeCurrentPath = target
 	s.worktreeCurrentManaged = meta.WorktreeManaged
 	if restoreRoot != "" {
-		s.worktreeRestoreEnv = local.WithWorkingDirectory(restoreRoot)
+		// This parked environment is the third WithWorkingDirectory child built
+		// here, and exitWorktree swaps the session straight onto it without a
+		// refusal check of its own. Publishing one whose re-root the host refused
+		// would therefore leave the session unconfined the moment it left the
+		// worktree, so the refusal omits it: exit and remove both require a
+		// restore env and refuse safely without one.
+		parked := local.WithWorkingDirectory(restoreRoot)
+		if err := parked.SandboxReRootError(); err != nil {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: fmt.Sprintf(
+				"could not prepare a confined restore environment at %s (%v); leaving the worktree stays unavailable rather than running unconfined",
+				restoreRoot, err)})
+		} else {
+			if err := s.assignRetainedScratchBinding(parked, parkedBindingID); err != nil {
+				return fmt.Errorf("restore scratch binding identity for %s: %w", restoreRoot, err)
+			}
+			s.worktreeRestoreEnv = parked
+		}
 	}
 	return nil
 }

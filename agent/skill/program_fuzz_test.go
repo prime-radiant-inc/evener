@@ -202,14 +202,38 @@ func FuzzSkillDiscoveryProgram(f *testing.F) {
 			t.Fatal("cloneSkillMetaMap exposed the original map")
 		}
 
-		cachedDir, cachedSkills := embeddedSkillsCache.dir, embeddedSkillsCache.skills
-		embeddedSkillsCache.dir = filepath.Join(root, "missing-cache")
-		embeddedSkillsCache.skills = nil
-		t.Setenv("TMPDIR", filepath.Join(root, "missing-tmp"))
-		if _, err := EmbeddedSkills(); err == nil {
-			t.Fatal("EmbeddedSkills temp-directory failure did not propagate")
+		// A publish failure must be reported rather than hand back a stale or
+		// empty cache: point the materializer at a base that cannot be used.
+		// The restore is registered as cleanup so a t.Fatal above cannot leave
+		// the globals pointing at this case's temporary directory.
+		savedBase := embeddedSkillsBaseDir
+		saved := saveEmbeddedSkillsCache()
+		t.Cleanup(func() {
+			restoreEmbeddedSkillsCache(saved)
+			embeddedSkillsBaseDir = savedBase
+		})
+		embeddedSkillsBaseDir = func() (string, error) { return filepath.Join(root, "missing-base"), nil }
+		embeddedSkillsCache.mu.Lock()
+		if embeddedSkillsCache.lease != nil {
+			_ = embeddedSkillsCache.lease.Release()
 		}
-		embeddedSkillsCache.dir, embeddedSkillsCache.skills = cachedDir, cachedSkills
+		embeddedSkillsCache.dir = ""
+		embeddedSkillsCache.digest = ""
+		embeddedSkillsCache.skills = nil
+		embeddedSkillsCache.verified = false
+		embeddedSkillsCache.lease = nil
+		embeddedSkillsCache.leasedDir = ""
+		_, cacheErr := ensureEmbeddedSkillsLocked()
+		embeddedSkillsCache.mu.Unlock()
+		if cacheErr == nil {
+			t.Fatal("shared-cache publish failure was not reported")
+		}
+		// The bundled skills survive the failure: resolution serves the
+		// process-lifetime extraction instead of nothing.
+		processSkills, err := EmbeddedSkills()
+		if err != nil || len(processSkills) == 0 {
+			t.Fatalf("EmbeddedSkills publish failure = %d entries, %v", len(processSkills), err)
+		}
 
 		skillProgramAssertExtractionFailures(t)
 	})

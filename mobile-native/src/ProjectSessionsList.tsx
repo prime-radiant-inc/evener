@@ -17,8 +17,9 @@ import {
 import type {
 	NavigationProjectSummary,
 	NavigationSessionSummary,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import { type PageStatus, pageStatus } from "./navigationPages";
 import { navigationTree } from "./navigationTree";
 import {
 	createProjectBrowserController,
@@ -45,9 +46,7 @@ type BrowserRow =
 			key: string;
 			projectKey: string;
 			tier: ProjectSessionTier;
-			loading: boolean;
-			error: string | null;
-			stale: boolean;
+			status: PageStatus;
 	  }
 	| { kind: "empty"; key: string }
 	| { kind: "limited"; key: string };
@@ -93,7 +92,11 @@ export function ProjectSessionsList({
 			connection.current.needsRefresh = connection.current.initialized;
 			return;
 		}
-		if (!focused) return;
+		if (!focused) {
+			browser.pause();
+			return;
+		}
+		browser.resume();
 		if (!connection.current.initialized) {
 			connection.current.initialized = true;
 			void browser.initialLoad();
@@ -116,7 +119,6 @@ export function ProjectSessionsList({
 			});
 			if (!group?.expanded) continue;
 			const seen = new Set<string>();
-			let staleNoticeAdded = false;
 			for (const tier of ["current", "recent"] as const) {
 				const page = group[tier];
 				for (const { item, depth } of navigationTree(
@@ -135,31 +137,14 @@ export function ProjectSessionsList({
 						depth,
 					});
 				}
-				if (
-					page.loading ||
-					(page.error && !page.stale) ||
-					(page.remaining > 0 && !page.stale)
-				) {
+				const status = pageStatus(page);
+				if (status) {
 					result.push({
 						kind: "page",
 						key: `page:${project.key}:${tier}`,
 						projectKey: project.key,
 						tier,
-						loading: page.loading,
-						error: page.error,
-						stale: false,
-					});
-				}
-				if (page.stale && !staleNoticeAdded) {
-					staleNoticeAdded = true;
-					result.push({
-						kind: "page",
-						key: `page:${project.key}:stale`,
-						projectKey: project.key,
-						tier,
-						loading: false,
-						error: null,
-						stale: true,
+						status,
 					});
 				}
 			}
@@ -295,19 +280,7 @@ export function ProjectSessionsList({
 						{state.projects.loading && !refreshing ? (
 							<ActivityIndicator accessibilityLabel="Loading more projects" />
 						) : null}
-						{state.projects.stale ? (
-							<>
-								<Copy muted>Projects have changed.</Copy>
-								<Action
-									disabled={!ready || state.projects.loading}
-									onPress={() => {
-										void refresh();
-									}}
-								>
-									Refresh projects
-								</Action>
-							</>
-						) : state.projects.error ? (
+						{state.projects.error ? (
 							<>
 								<Copy muted>Could not load more projects.</Copy>
 								<Action
@@ -319,6 +292,8 @@ export function ProjectSessionsList({
 									Retry
 								</Action>
 							</>
+						) : state.projects.stale ? (
+							<Copy muted>Updating…</Copy>
 						) : null}
 					</View>
 				) : null
@@ -451,21 +426,9 @@ export function ProjectSessionsList({
 				if (item.kind === "page")
 					return (
 						<View style={{ paddingHorizontal: 40, paddingVertical: 8 }}>
-							{item.loading ? (
+							{item.status === "loading" ? (
 								<ActivityIndicator accessibilityLabel="Loading sessions" />
-							) : item.stale ? (
-								<>
-									<Copy muted>This project has updates.</Copy>
-									<Action
-										disabled={!ready}
-										onPress={() => {
-											void refresh();
-										}}
-									>
-										Refresh
-									</Action>
-								</>
-							) : item.error ? (
+							) : item.status === "error" ? (
 								<>
 									<Copy muted>Could not load more sessions.</Copy>
 									<Action
@@ -477,6 +440,8 @@ export function ProjectSessionsList({
 										Retry
 									</Action>
 								</>
+							) : item.status === "stale" ? (
+								<Copy muted>Updating…</Copy>
 							) : (
 								<Action
 									tone="quiet"

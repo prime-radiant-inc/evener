@@ -39,7 +39,7 @@ func seedTranscriptServerPath(t *testing.T, pairs int) (*Server, string) {
 	writeTranscriptPairs(t, path, pairs)
 	srv := NewServer(ServerConfig{})
 	installTranscriptIdentity(t, srv, "th_1", path)
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetCancelFunc(func() {})
 	return srv, path
 }

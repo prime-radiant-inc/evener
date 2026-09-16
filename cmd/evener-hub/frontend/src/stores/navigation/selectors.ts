@@ -1,18 +1,17 @@
-import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
-import { navigationStore } from "./store";
+import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "@evener/appwire-client";
 import {
   canonicalResourceKey,
   isNavigationUnavailable,
   keyID,
+  type NormalizedResource,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
   nextNavigationOffset,
   type ResourceKey,
   type ResourceState,
-} from "./types";
-
-export { nextNavigationOffset } from "./types";
+} from "@evener/appwire-client/state/navigation";
+import { navigationStore } from "./store";
 
 /** Relative display age for a session's updated_at, mirroring the rail's
  * long-standing row contract (now/m/h/d). Computed at adapter time like the
@@ -35,6 +34,43 @@ function normalizedRootCount(resource: ResourceState, slot: string): number | un
   return normalized.graph.containers.get(navigationRootContainerKey(resource.key, slot))?.children.length ?? 0;
 }
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
+/** The manifest's configured launch sources (Component 06a). Empty until the
+ * manifest loads, so a consumer can render across-host affordances only when a
+ * remote host actually exists - the single-host UI stays untouched. */
+const NO_SOURCES: Source[] = [];
+export function selectSources(state = navigationStore.getState()): Source[] {
+  // A stable empty array, NOT a fresh `[]`: this selector is read through
+  // useSyncExternalStore, whose snapshot identity must not change on every
+  // call or the store's subscribers re-render forever.
+  //
+  // Only a SETTLED manifest may name launch sources. A resource keeps its last
+  // snapshot while loading, re-validating (`stale`), or after a failed read,
+  // and for an invalidation/reconnect that snapshot can list a host the fresh
+  // manifest has since removed or taken offline. Exposing it would let a
+  // consumer treat an outdated host as launchable - the picker would offer it
+  // and the form could submit to it - instead of falling back to local. This
+  // mirrors the store's settledness contract for normalized reads
+  // (`settledPresence` also refuses a stale resource). A consumer that must not
+  // lose a persisted choice while the manifest is in flight (the spawn draft)
+  // retains its own value rather than reading this empty list as a fallback.
+  const manifest = state.manifest;
+  if (!manifest || manifest.loading || manifest.stale || manifest.error) return NO_SOURCES;
+  return manifest.data?.sources ?? NO_SOURCES;
+}
+/** The same manifest sources, for DISPLAY only: the last-known list, whether
+ * or not the read that produced it is still authoritative. A resource keeps its
+ * last snapshot while loading, re-validating (`stale`), or after a failed read,
+ * and a display consumer that withheld it would make the host picker disappear
+ * and every remote row's offline badge flip to ONLINE for the length of the
+ * refresh - the retained list is the best available description of what the
+ * reader is looking at (Component 06b review, round nine).
+ *
+ * Only display reads this. Which host a launch may actually use is decided by
+ * selectSources' settled list, so a host the fresh manifest has since removed
+ * is never launchable merely because the UI still shows it. */
+export function selectDisplaySources(state = navigationStore.getState()): Source[] {
+  return state.manifest?.data?.sources ?? NO_SOURCES;
+}
 export const selectResource = (key: ResourceKey) => {
   const resourceKey = canonicalResourceKey(key);
   return (s: ReturnType<typeof navigationStore.getState>) => s.resources.get(keyID(resourceKey));
@@ -235,8 +271,86 @@ export function selectSessionSummary(ref: string, state = navigationStore.getSta
 }
 export const findSessionNode = selectSessionSummary;
 
+type SessionWatchesCacheEntry = Readonly<{ key: string; watches: NavigationSessionSummary["watches"] }>;
+// One entry per session ref, holding the LAST result's content key and the
+// exact array reference returned for it. A selector consumer comparing with
+// Object.is (zustand's default) therefore re-renders only when the rendered
+// content actually changes; a navigation update that rebuilds an unrelated
+// session's summary leaves this session's array reference intact.
+//
+// The cache is bounded so a long-lived page cannot accumulate one entry per
+// distinct session ref it has ever seen. The limit is well above a session
+// list, and Map preserves insertion order, so exceeding it evicts the oldest
+// insertion. Eviction only costs a recomputation (the next read misses and
+// stores a fresh array); it never changes correctness, because the content key
+// still decides what is returned.
+const sessionWatchesCache = new Map<string, SessionWatchesCacheEntry>();
+const sessionWatchesCacheLimit = 256;
+
+/** Test-only: the number of cached session-watch entries. App code never calls
+ * this. */
+export function sessionWatchesCacheSizeForTests(): number {
+  return sessionWatchesCache.size;
+}
+
+/** Test-only: drop every cached session-watch entry. App code never calls
+ * this. */
+export function resetSessionWatchesCacheForTests(): void {
+  sessionWatchesCache.clear();
+}
+
+/** The watches on `ref`'s session summary, or undefined when the session is not
+ * currently materialized. The returned array keeps its identity while its JSON
+ * content is unchanged, so a narrow subscription does not fire on unrelated
+ * navigation churn. */
+export function selectSessionWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): NavigationSessionSummary["watches"] {
+  const summary = selectSessionSummary(ref, state);
+  if (summary === null) {
+    sessionWatchesCache.delete(ref);
+    return undefined;
+  }
+  const watches = summary.watches;
+  const key = watches === undefined ? "" : JSON.stringify(watches);
+  const cached = sessionWatchesCache.get(ref);
+  if (cached && cached.key === key) return cached.watches;
+  sessionWatchesCache.set(ref, { key, watches });
+  while (sessionWatchesCache.size > sessionWatchesCacheLimit) {
+    const oldest = sessionWatchesCache.keys().next().value;
+    if (oldest === undefined) break;
+    sessionWatchesCache.delete(oldest);
+  }
+  return watches;
+}
+
+/** The exact number of live-watch rows the hub omitted from `ref`'s summary
+ * (over the per-session cap, unrepresentable, or shed by the byte fitter). Zero
+ * when the session is not materialized or carries no count. The Activity panel
+ * header reads this so it never silently undercounts. */
+export function selectSessionOmittedWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): number {
+  const summary = selectSessionSummary(ref, state);
+  return summary?.omitted_watches ?? 0;
+}
+
+/** The armed subset of the rows `selectSessionOmittedWatches` counts. A session
+ * whose armed watches exceed the hub's per-session cap retains only the first
+ * of them, so the retained list alone cannot state the true armed total; the
+ * rail and the Activity panel add this to the armed rows they can see. Zero
+ * when the session is not materialized or carries no count. */
+export function selectSessionOmittedArmedWatches(
+  ref: string,
+  state: ReturnType<typeof navigationStore.getState> = navigationStore.getState(),
+): number {
+  const summary = selectSessionSummary(ref, state);
+  return summary?.omitted_armed_watches ?? 0;
+}
+
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
-import type { NormalizedResource } from "./codec";
 
 type NormalizedSessionCacheEntry = Readonly<{
   childContainer: object | undefined;

@@ -126,7 +126,7 @@ func TestMaybeCompact_CallsOnCompactionTurn(t *testing.T) {
 	// Use assistant text (not tool results) so observation masking can't reduce pressure.
 	// Need >80% of 500 = 400 tokens.
 	history := []schema.Turn{{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug")}}
-	for estimateTokens(history) < 425 {
+	for cm.estimateTokens(history) < 425 {
 		history = append(history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("analysis ", 50))},
 		)

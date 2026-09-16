@@ -5,18 +5,20 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
-import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
+import { SUMMARY_ENTITY_JOB, summaryEntityView } from "./entityView.testFixture";
 import { ToolCallItem } from "./ToolCallItem";
 import { statedIntentOf, ToolRow } from "./ToolRow";
 import { registerToolRenderer, toolRendererFor } from "./toolRenderers";
+import { textAround } from "./transcriptTestUtils";
 // The failure-glyph and exit-code tests below drive the REAL shell descriptor
 // (its failed()/detail() hooks are the whole point of A2), so this file has to
 // register it - without this import "shell" resolves to DEFAULT_DESCRIPTOR and
@@ -400,9 +402,11 @@ test("a clean call with nothing to open leads with its summary - no chevron, no 
 
 // The chevron rides INLINE at the end of the headline text (see ToolRow.tsx's
 // grammar): inside the intent when there is one, otherwise inside the
-// summary. It is never a flex item of the row, so nothing can justify it a
-// column of whitespace away from the words it opens.
-test("the chevron rides inline at the end of the intent text when an intent exists", () => {
+// summary. On the intent line it is further GLUED to the intent's final word
+// inside an atomic .intentTail unit, so a line that fills exactly moves word
+// and glyph together - the arrow can never wrap to a line by itself (the
+// layoutguard case toolrow-chevron-nowrap pins the geometry).
+test("the chevron rides inline at the end of the intent text, glued to its final word", () => {
   registerToolRenderer({ match: "trg_chev_inline", summary: () => "Ran ls", body: () => <div>more</div> });
   render(
     <ToolCallItem
@@ -411,7 +415,13 @@ test("the chevron rides inline at the end of the intent text when an intent exis
       live={false}
     />,
   );
-  expect(screen.getByTestId("tool-row-intent").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  const intent = screen.getByTestId("tool-row-intent");
+  const chevron = screen.getByTestId("tool-row-chevron");
+  // The intent's last element child is the tail unit, the unit's last element
+  // child is the chevron, and the unit's text is the intent's final word.
+  expect(intent.lastElementChild?.lastElementChild).toBe(chevron);
+  expect(intent.textContent).toBe("List the directory");
+  expect(intent.lastElementChild?.textContent).toBe("directory");
 });
 
 test("the chevron rides inline at the end of the summary when there is no intent", () => {
@@ -809,9 +819,44 @@ test("trailingAfter on an expanded row splits the full summary around the contro
   // still there, once each, in order around it.
   expect(screen.queryByTestId("tool-row-summary-head")).toBe(null);
   const trailingEl = screen.getByTestId("tool-row-trailing");
-  expect(trailingEl.previousSibling?.textContent).toBe("Read src/a.ts");
-  expect(trailingEl.nextSibling?.textContent).toBe(" · lines 1-3");
-  expect((trailingEl.previousSibling?.textContent ?? "") + (trailingEl.nextSibling?.textContent ?? "")).toBe(summary);
+  const [before, after] = textAround(trailingEl);
+  expect(before).toBe("Read src/a.ts");
+  expect(after).toBe(" · lines 1-3");
+  expect(before + after).toBe(summary);
+});
+
+// The binary read: the summary ends at the file path - no "· lines" meta -
+// so the control lands at the END of the text, where it would strand
+// exactly like a plain end-of-line control. The path's final word and the
+// control are therefore ONE unit (ToolRow's anchorSplit[1] === "" arm).
+test("trailingAfter equal to the whole summary (binary read) glues the path's final word and the control in one unit", () => {
+  const summary = "Read cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsx";
+  render(
+    <ToolRow
+      summary={summary}
+      intent="Check the source"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+      trailingAfter={summary}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const unit = summaryEl.lastElementChild;
+  // No text lost, none doubled: the head before the unit plus the unit's
+  // contents reconstruct the line exactly, and nothing renders after the
+  // unit. A spaceless repo path is the final word whole, so the head is
+  // just "Read " (splitTrailingWord hands the whitespace to the head).
+  expect(unit?.previousSibling?.textContent).toBe("Read ");
+  expect(unit?.textContent).toBe("cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsxOpen beside");
+  expect(unit?.nextSibling).toBe(null);
+  // The control rides INSIDE the unit, right after the path's final word.
+  expect(unit?.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(true);
+  const [before, after] = textAround(screen.getByTestId("tool-row-trailing"));
+  expect(before).toBe("cmd/evener-hub/frontend/src/widgets/sheet/sheet.test.tsx");
+  expect(after).toBe("");
 });
 
 test("a trailingAfter anchor NOT present at all in the summary falls back to the end placement", () => {
@@ -938,8 +983,9 @@ test("the complete prefix anchors correctly even when the bare target text recur
     />,
   );
   const trailingEl = screen.getByTestId("tool-row-trailing");
-  expect(trailingEl.previousSibling?.textContent).toBe("Read lines");
-  expect(trailingEl.nextSibling?.textContent).toBe(" · lines 1-25");
+  const [before, after] = textAround(trailingEl);
+  expect(before).toBe("Read lines");
+  expect(after).toBe(" · lines 1-25");
 });
 
 // Associativity rhythm (Jesse's review call): the gap between a rationale
@@ -1734,4 +1780,208 @@ test("a body chevron sharing the intent line is raised above the overlay trigger
   // Without its own layer the absolute overlay swallows the body trigger's
   // clicks and toggles the wrong disclosure (roborev).
   expect(css).toMatch(/\.row\[data-intent-trailing="true"\]\s*>\s*\.bodyTrigger\s*\{[^}]*z-index:\s*var\(--z-raised\)/);
+});
+
+// --- entity cards on ids inside the summary --------------------------------
+//
+// A tool summary is a plain string, but a job_/dlg_/watch_ id inside it is a
+// real ENTITY: the row renders it as the same card trigger the transcript's
+// prose uses (EntityRef), so the id resolves to a hover card. Two consequences
+// follow. The id is never clipped (a clipped id with an ellipsis inside it is
+// not even detectable as an id, so no card could ever attach), and the
+// collapsed head/tail clamp must split AROUND the id - never through it - so
+// the id always renders as ONE node, not two text runs.
+
+// The same provider renderTools uses, plus an entity index so EntityRef can
+// resolve the ids the summary names.
+function renderWithEntities(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider
+      config={toolsConfig}
+      surface="readOnly"
+      disclosureScope="trg:tools"
+      entities={summaryEntityView()}
+    >
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
+test("a detected entity id in a collapsed summary is ONE card trigger, never split across the clamp spans", () => {
+  const summary = `Checked ${SUMMARY_ENTITY_JOB} · running`;
+  renderWithEntities(
+    <ToolRow
+      summary={summary}
+      intent="Checking the build job"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  // Never clipped: a clipped id could not resolve to a card at all.
+  expect(summaryEl.textContent).not.toContain("…");
+  // The id is one card trigger, and it lives wholly in ONE of the two clamp
+  // spans (the deliberate long-summary cut would otherwise land inside it).
+  const trigger = screen.getByTestId("entity-trigger");
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  const head = screen.getByTestId("tool-row-summary-head");
+  const tail = screen.getByTestId("tool-row-summary-tail");
+  expect(head.contains(trigger) !== tail.contains(trigger)).toBe(true);
+  // Every character of the summary still renders exactly once.
+  expect((head.textContent ?? "") + (tail.textContent ?? "")).toBe(summary);
+});
+
+test("a collapsed summary's entity trigger opens the existing entity card", () => {
+  vi.useFakeTimers();
+  try {
+    renderWithEntities(
+      <ToolRow
+        summary={`Checked ${SUMMARY_ENTITY_JOB} · running`}
+        intent="Checking the build job"
+        failed={false}
+        expandable
+        expanded={false}
+        onToggle={() => {}}
+      />,
+    );
+    fireEvent.focus(screen.getByTestId("entity-trigger"));
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    const card = screen.getByRole("tooltip");
+    expect(card.textContent).toContain("Job");
+    expect(card.textContent).toContain("Compile the frontend");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("an expanded summary renders a detected entity id as one card trigger, not two text runs", () => {
+  const summary = `Read job log ${SUMMARY_ENTITY_JOB} · all 1 turns`;
+  renderWithEntities(
+    <ToolRow summary={summary} intent="Reading the job log" failed={false} expandable expanded onToggle={() => {}} />,
+  );
+  expect(screen.queryByTestId("tool-row-summary-head")).toBeNull();
+  const trigger = screen.getByTestId("entity-trigger");
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
+});
+
+test("the inline trailing anchor still lands immediately after the entity id it opens", () => {
+  const anchor = `Sent a message to delegate ${SUMMARY_ENTITY_JOB}`;
+  const summary = `${anchor} · running`;
+  renderWithEntities(
+    <ToolRow
+      summary={summary}
+      intent="Messaging the delegate"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button" aria-label="Open transcript" />}
+      trailingAfter={anchor}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const trigger = screen.getByTestId("entity-trigger");
+  const trailing = screen.getByTestId("tool-row-trailing");
+  // The id renders whole and the control rides AFTER it (between the id and the
+  // status meta), the anchor contract delegate_send's own control uses.
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(trigger.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Composed text is still exactly the summary (the control is icon-only).
+  expect(summaryEl.textContent).toBe(summary);
+});
+
+// The TailUnit entity-last arm (roborev r4): when the final segment of a
+// glyph-bearing line is a whole entity id, the unit wraps the id and the
+// glyphs TOGETHER - an id is already the atom, so no word split - and the
+// pair can never strand apart across a wrap. No live descriptor produces an
+// entity-final summary WITH glyphs yet (job_watch's "Cleared <id>" rows are
+// summary-only and carry none), but the arm is the row grammar's contract:
+// the two tests below pin it for the surfaces that grow into it.
+
+test("an expanded two-level summary ending in an entity id glues the body chevron to the id in one tail unit", () => {
+  const summary = `Watching ${SUMMARY_ENTITY_JOB}`;
+  renderWithEntities(
+    <ToolRow
+      summary={summary}
+      intent="Watching the build job"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      summaryOpen
+      onToggleSummary={() => {}}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const trigger = screen.getByTestId("entity-trigger");
+  const chevron = screen.getByTestId("tool-row-body-chevron");
+  // The line's last element child is the tail unit, and the unit carries BOTH
+  // the entity card trigger and the body chevron.
+  const unit = summaryEl.lastElementChild;
+  expect(unit?.contains(trigger)).toBe(true);
+  expect(unit?.contains(chevron)).toBe(true);
+  expect(unit?.lastElementChild).toBe(chevron);
+  // The id rides whole and alone in the unit: an id is the atom, and every
+  // character of the summary still renders exactly once on the line.
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(unit?.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(summaryEl.textContent).toBe(summary);
+});
+
+test("an expanded summary whose anchor ends at an entity id glues the trailing control to the id in one tail unit", () => {
+  // The anchor is the WHOLE summary (a binary-read-like shape): the control
+  // rides at the text's end, so it must strand together with the id exactly
+  // like the chevron does on the plain variant.
+  const summary = `Sent a message to delegate ${SUMMARY_ENTITY_JOB}`;
+  renderWithEntities(
+    <ToolRow
+      summary={summary}
+      intent="Messaging the delegate"
+      failed={false}
+      expandable
+      expanded
+      onToggle={() => {}}
+      trailing={<button type="button" aria-label="Open transcript" />}
+      trailingAfter={summary}
+    />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const trigger = screen.getByTestId("entity-trigger");
+  const trailing = screen.getByTestId("tool-row-trailing");
+  // The tail unit is the summary line's last element child and carries BOTH
+  // the id and the control, id first.
+  const unit = summaryEl.lastElementChild;
+  expect(unit?.contains(trigger)).toBe(true);
+  expect(unit?.contains(trailing)).toBe(true);
+  expect(unit?.lastElementChild).toBe(trailing);
+  expect(trigger.compareDocumentPosition(trailing) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // The id rides whole, and every character of the summary renders exactly
+  // once (the control is icon-only).
+  expect(trigger.textContent).toBe(SUMMARY_ENTITY_JOB);
+  expect(summaryEl.textContent).toBe(summary);
+});
+
+// The grammar-level pin for ToolRow's summarySegments URL protection - the
+// full rationale lives on that function. Red-first evidence: this failed
+// with a null anchor before the fix.
+test("a summaryLink URL embedding an entity id renders whole as one link, never split by id detection", () => {
+  const url = `https://internal.example/jobs/${SUMMARY_ENTITY_JOB}/log`;
+  const summary = `Fetched ${url} · 200`;
+  renderWithEntities(
+    <ToolRow summary={summary} summaryLink={url} failed={false} expandable={false} expanded={false} />,
+  );
+  const summaryEl = screen.getByTestId("tool-row-summary");
+  const anchor = summaryEl.querySelector("a");
+  // The whole URL is one link over exactly the URL text...
+  expect(anchor?.getAttribute("href")).toBe(url);
+  expect(anchor?.textContent).toBe(url);
+  // ...no id-shaped fragment of it became a card trigger mid-URL...
+  expect(summaryEl.querySelector('[data-testid="entity-trigger"]')).toBeNull();
+  // ...and every character of the summary still renders exactly once.
+  expect(summaryEl.textContent).toBe(summary);
 });

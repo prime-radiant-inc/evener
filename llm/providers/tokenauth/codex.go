@@ -34,6 +34,9 @@ type Codex struct {
 	// It must be the same state root the registry was loaded with: the registry's
 	// oauth gate is a file-existence check under its own state root, so a mismatch
 	// here would let Apply resolve credentials the registry never saw.
+	// A Codex value must never be mutated after registration: concurrent
+	// requests bind their own scope (see ScopedCodex) instead of
+	// rewriting this shared one.
 	StateDir string
 	// Credentials is the token seam; nil means a shared authopenai.Service.
 	Credentials func(ctx context.Context, stateDir, instance string) (authopenai.RuntimeCredentials, error)
@@ -197,6 +200,24 @@ func (c *Codex) accountID(instance string) string {
 	}
 	c.accounts[instance] = id
 	return id
+}
+
+// ScopedCodex returns a Codex bound to stateDir that shares nothing
+// mutable with the registered shared instance: concurrent requests for
+// different state roots each use their own value instead of racing a
+// read of DefaultCodex while another goroutine rewrites it. The
+// Credentials seam is inherited from DefaultCodex, so scopes honor the
+// same test seams as the shared instance. Caches start empty on the
+// scope — they are keyed by record contents, safe to rebuild.
+func ScopedCodex(stateDir string) *Codex {
+	return DefaultCodex.ScopedFrom(stateDir)
+}
+
+// ScopedFrom is ScopedCodex with an explicit receiver for tests that
+// set seams on a non-shared Codex: the scope inherits the receiver's
+// Credentials seam instead of DefaultCodex's.
+func (c *Codex) ScopedFrom(stateDir string) *Codex {
+	return &Codex{StateDir: stateDir, Credentials: c.Credentials}
 }
 
 func userAgent() string {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -25,6 +26,10 @@ type queuedClientMutationIdentity struct {
 	ClientMutationID string
 	StableTurnID     string
 	QueueEntryID     string
+	// SteeringCarrier marks the synthetic entry claimSteeringCarrierInput
+	// builds for pending user steering: ClientMutationID is the steer's,
+	// StableTurnID the id it reserved, and there is no content of its own.
+	SteeringCarrier bool
 }
 
 func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.Context {
@@ -32,6 +37,7 @@ func withQueuedClientMutation(ctx context.Context, queued queuedInput) context.C
 		ClientMutationID: queued.ClientMutationID,
 		StableTurnID:     queued.StableTurnID,
 		QueueEntryID:     queued.ID,
+		SteeringCarrier:  queued.SteeringCarrier,
 	})
 }
 
@@ -133,6 +139,12 @@ func (s *Session) finishTurnOwnedSteering() {
 }
 
 func (s *Session) trySteerTurnOwnedMessage(entry steeringMessage, owner *struct{ _ byte }) bool {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("input admission failed: %v", admissionErr)})
+		return false
+	}
+	defer release()
 	entry.turnOwner = owner
 	s.mu.Lock()
 	if s.closingOrClosedLocked() || !inputHasContent(entry.Text, entry.Images, entry.SkillNames) {
@@ -170,26 +182,29 @@ func cloneTaskCompletionSteeringData(data *events.TaskCompletionSteeringData) *e
 
 // Steer queues a text-only message to inject after the current tool round
 // completes.
-func (s *Session) Steer(msg string) {
-	_ = s.trySteer(msg)
+func (s *Session) Steer(msg string) error {
+	_, err := s.trySteer(msg)
+	return err
 }
 
 // SteerKind queues a text-only steering message naming what it is
 // (events.SteeringKind*). Prefer it over Steer at every daemon injection site:
 // the kind is what a reader's label is built from, and only the site knows it.
-func (s *Session) SteerKind(msg, kind string) {
-	_ = s.trySteerEnqueue(msg, nil, nil, "", kind)
+func (s *Session) SteerKind(msg, kind string) error {
+	_, err := s.trySteerEnqueue(msg, nil, nil, "", kind)
+	return err
 }
 
 // SteerTaskCompletion queues tasks-done steering with its blocking delegate
 // dependencies available as typed data as well as rendered model context.
-func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) {
+func (s *Session) SteerTaskCompletion(msg string, blockingDelegateIDs []string) error {
 	completion := taskCompletionSteeringData(blockingDelegateIDs)
-	_ = s.trySteerMessage(steeringMessage{
+	_, err := s.trySteerMessage(steeringMessage{
 		Text:           msg,
 		Kind:           events.SteeringKindTasksDone,
 		TaskCompletion: &completion,
 	})
+	return err
 }
 
 // routeSystemNotification delivers a daemon-authored system notification to
@@ -220,7 +235,7 @@ func (s *Session) enqueueSystemNotification(message string) bool {
 	return s.trySteerWithProvenanceAndNotify(message, nil, events.SteeringKindNotification)
 }
 
-func (s *Session) trySteer(msg string) bool {
+func (s *Session) trySteer(msg string) (bool, error) {
 	return s.trySteerWithImages(msg, nil)
 }
 
@@ -228,52 +243,57 @@ func (s *Session) trySteer(msg string) bool {
 // watch provenance that produced it (nil for human/system-authored steering).
 // kind names what was injected (events.SteeringKind*), "" when the caller did
 // not say.
-func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal, kind string) {
-	_ = s.trySteerWithProvenance(msg, p, kind)
+func (s *Session) SteerWithProvenance(msg string, p *provenance.Causal, kind string) error {
+	_, err := s.trySteerWithProvenance(msg, p, kind)
+	return err
 }
 
 // SteerWithImages queues a steering message that carries optional image
 // attachments alongside the text. The combined message is appended to
 // session history as a TurnSteering with text + ContentImage parts when
 // the steering queue is drained (kata t5j6).
-func (s *Session) SteerWithImages(msg string, images []ImageAttachment) {
-	_ = s.trySteerWithImages(msg, images)
+func (s *Session) SteerWithImages(msg string, images []ImageAttachment) error {
+	_, err := s.trySteerWithImages(msg, images)
+	return err
 }
 
 // SteerFromUser queues a text-only steering message sent by the human user
 // mid-turn (the UI steer action). Unlike daemon/system nudges queued via
 // Steer, it is marked Source "user" so UIs render it as a user message
 // rather than a system steering divider (issue #24).
-func (s *Session) SteerFromUser(msg string) {
-	s.SteerFromUserWithImages(msg, nil)
+func (s *Session) SteerFromUser(msg string) error {
+	return s.SteerFromUserWithImages(msg, nil)
 }
 
 // SteerFromUserWithImages is SteerFromUser with optional image attachments,
 // mirroring SteerWithImages for the human-sent path.
-func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) {
+func (s *Session) SteerFromUserWithImages(msg string, images []ImageAttachment) error {
 	if strings.TrimSpace(msg) == "" && len(images) == 0 {
-		return
+		return nil
 	}
 	_, err := s.clientMutationSteer(appwire.TurnSteerParams{
 		Ref:              s.ID(),
 		ClientMutationID: "legacy_" + newQueueEntryID(),
 		Input:            clientMutationInput(msg, images, nil),
 	})
-	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist client steering failed: %v", err)})
-	}
+	return err
 }
 
-func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) bool {
+func (s *Session) trySteerWithImages(msg string, images []ImageAttachment) (bool, error) {
 	return s.trySteerWithImagesAndProvenance(msg, images, nil, "")
 }
 
-func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal, kind string) bool {
+func (s *Session) trySteerWithProvenance(msg string, p *provenance.Causal, kind string) (bool, error) {
 	return s.trySteerWithImagesAndProvenance(msg, nil, p, kind)
 }
 
 func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Causal, kind string) bool {
-	if !s.trySteerWithProvenance(msg, p, kind) {
+	ok, err := s.trySteerWithProvenance(msg, p, kind)
+	if err != nil {
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+		return false
+	}
+	if !ok {
 		return false
 	}
 	s.notify()
@@ -285,6 +305,11 @@ func (s *Session) trySteerWithProvenanceAndNotify(msg string, p *provenance.Caus
 // the queue persistence lock and Session lock across that one write keeps the
 // entry invisible to the running root until a crash can recover it.
 func (s *Session) enqueueDelegateCallerSteeringDurably(msg string, p *provenance.Causal) error {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return err
+	}
+	defer release()
 	if strings.TrimSpace(msg) == "" {
 		return errors.New("invalid_request: message is required")
 	}
@@ -314,7 +339,7 @@ func (s *Session) enqueueDelegateCallerSteeringDurably(msg string, p *provenance
 	return nil
 }
 
-func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal, kind string) bool {
+func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAttachment, p *provenance.Causal, kind string) (bool, error) {
 	return s.trySteerEnqueue(msg, images, p, "", kind)
 }
 
@@ -322,7 +347,7 @@ func (s *Session) trySteerWithImagesAndProvenance(msg string, images []ImageAtta
 // steering provenance marker stored on the entry (events.SteeringSourceUser
 // for human-sent steering, "" for daemon/system steering). kind names what the
 // daemon injected (events.SteeringKind*), "" when the caller did not say.
-func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string, kind string) bool {
+func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *provenance.Causal, source string, kind string) (bool, error) {
 	entry := steeringMessage{Text: msg, Provenance: provenance.Clone(p), Source: source, Kind: kind}
 	if len(images) > 0 {
 		entry.Images = append([]ImageAttachment(nil), images...)
@@ -330,15 +355,16 @@ func (s *Session) trySteerEnqueue(msg string, images []ImageAttachment, p *prove
 	return s.trySteerMessage(entry)
 }
 
-func (s *Session) trySteerMessage(entry steeringMessage) bool {
+func (s *Session) trySteerMessage(entry steeringMessage) (bool, error) {
 	return s.trySteerMessageUnlessSuperseded(entry, ungatedFoldRevision)
 }
 
 // steerKindForFold is SteerKind for a fold flush's last-write-wins steering
 // (the task-list and transcript reminders): the steering is refused, at the
 // moment it would be enqueued, once a newer fold has published.
-func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) {
-	_ = s.trySteerMessageUnlessSuperseded(steeringMessage{Text: msg, Kind: kind}, publishedRevision)
+func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) error {
+	_, err := s.trySteerMessageUnlessSuperseded(steeringMessage{Text: msg, Kind: kind}, publishedRevision)
+	return err
 }
 
 // trySteerMessageUnlessSuperseded enqueues entry unless publishedRevision
@@ -348,19 +374,24 @@ func (s *Session) steerKindForFold(msg, kind string, publishedRevision int) {
 // queue, so a newer publication cannot slip in between the check and the
 // enqueue: a stale fold's steering is refused rather than landing after
 // the newer fold's own.
-func (s *Session) trySteerMessageUnlessSuperseded(entry steeringMessage, publishedRevision int) bool {
+func (s *Session) trySteerMessageUnlessSuperseded(entry steeringMessage, publishedRevision int) (bool, error) {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return false
+		return false, nil
 	}
 	if !inputHasContent(entry.Text, entry.Images, entry.SkillNames) {
 		s.mu.Unlock()
-		return false
+		return false, nil
 	}
 	if publishedRevision != ungatedFoldRevision && publishedRevision < s.newestPublishedFoldRevision {
 		s.mu.Unlock()
-		return false
+		return false, nil
 	}
 	s.steeringQueue = append(s.steeringQueue, entry)
 	s.mu.Unlock()
@@ -369,7 +400,7 @@ func (s *Session) trySteerMessageUnlessSuperseded(entry steeringMessage, publish
 	if entry.Source != events.SteeringSourceUser {
 		s.persistQueuesSnapshot()
 	}
-	return true
+	return true, nil
 }
 
 // wrapHookContext frames hook-provided model context as a system reminder so the
@@ -381,11 +412,11 @@ func wrapHookContext(text string) string {
 
 // deliverHookContext enqueues hook model-context as a steering turn (survives to
 // the next model turn for Stop/SubagentStop).
-func (s *Session) deliverHookContext(text string) {
+func (s *Session) deliverHookContext(text string) error {
 	if strings.TrimSpace(text) == "" {
-		return
+		return nil
 	}
-	s.SteerKind(wrapHookContext(text), events.SteeringKindHookContext)
+	return s.SteerKind(wrapHookContext(text), events.SteeringKindHookContext)
 }
 
 // deliverHookUserMessage surfaces a hook's user-visible message via the
@@ -399,16 +430,22 @@ func (s *Session) deliverHookUserMessage(text string) {
 }
 
 // FollowUp queues a message to process after the current input completes.
-func (s *Session) FollowUp(msg string) {
+func (s *Session) FollowUp(msg string) error {
+	release, err := s.beginRetirementMutation("input")
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closingOrClosedLocked() {
-		return
+		return nil
 	}
 	if strings.TrimSpace(msg) == "" {
-		return
+		return nil
 	}
 	s.followups = append(s.followups, msg)
+	return nil
 }
 
 // queuedInput is one entry on the per-session input queue. Text and Images
@@ -429,6 +466,11 @@ type queuedInput struct {
 	// from the recorded sources at actual consumption.
 	SkillNames []string           `json:"skill_names,omitempty"`
 	Provenance *provenance.Causal `json:"provenance,omitempty"`
+	// SteeringCarrier marks the entry claimSteeringCarrierInput synthesizes
+	// to run pending user steering as a turn of its own: never queued, never
+	// persisted, and carrying no content -- the steering it exists for is
+	// drained at the turn's acceptance like any queued message's.
+	SteeringCarrier bool `json:"-"`
 }
 
 // queueEntrySeq guarantees queue-entry id uniqueness by construction,
@@ -459,6 +501,11 @@ func (s *Session) Enqueue(ctx context.Context, text string) error {
 // an idle session should call ProcessInput directly. Returns an error if
 // the session is closed or both text and images are empty.
 func (s *Session) EnqueueWithImages(ctx context.Context, text string, images []ImageAttachment) error {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -494,6 +541,11 @@ func (s *Session) DrainAsSteer(ctx context.Context) error {
 // event lock. This is the atomic force-steer path used by clients that submit
 // a composer payload together with the drain request.
 func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images []ImageAttachment) error {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -540,6 +592,11 @@ func (s *Session) DrainAsSteerWithInput(ctx context.Context, text string, images
 // flight, index is out of range, or the id mismatches, so a failed promote
 // never silently loses or swaps the follow-up.
 func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedID string) error {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -578,6 +635,11 @@ func (s *Session) PromoteQueuedAsSteer(ctx context.Context, index int, expectedI
 // or the id mismatches, so a failed cancel never silently removes the wrong
 // follow-up.
 func (s *Session) CancelQueued(ctx context.Context, index int, expectedID string) (string, int, error) {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		return "", 0, admissionErr
+	}
+	defer release()
 	if err := ctx.Err(); err != nil {
 		return "", 0, err
 	}
@@ -677,6 +739,12 @@ func queuedEntryPreviewLine(entry queuedInput) string {
 // popQueueHead removes and returns the next queued entry. Returns a zero
 // value when the queue is empty.
 func (s *Session) popQueueHead() queuedInput {
+	release, admissionErr := s.beginRetirementMutation("input")
+	if admissionErr != nil {
+		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("input admission failed: %v", admissionErr)})
+		return queuedInput{}
+	}
+	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("open client mutation store: %v", err)})
 		return queuedInput{}
@@ -916,12 +984,19 @@ func (s *Session) drainSteering() []steeringMessage {
 	return out
 }
 
-// popSteeringHead removes and returns the next steering message, persisting the
-// shrunk queue before returning. The second result is false when the queue is
-// empty. It mirrors popQueueHead (input queue): injectDrainedSteering consumes
-// the steering batch one message at a time so the persisted queue shrinks as
-// each message is durably recorded, bounding a mid-drain crash's loss to the
-// single in-flight message rather than the whole batch.
+// popSteeringHead removes and returns the next steering message. The second
+// result is false when the queue is empty. Daemon steering persists the shrunk
+// queue before returning, mirroring popQueueHead (input queue):
+// injectDrainedSteering consumes the steering batch one message at a time so
+// the persisted queue shrinks as each message is durably recorded, bounding a
+// mid-drain crash's loss to the single in-flight message rather than the whole
+// batch.
+//
+// A client steer writes nothing here: the store keeps it accepted until its
+// transcript append lands and consumeSteeringMessage finalizes it, so the
+// transcript is the only record of whether it was delivered. Between the pop
+// and that finalization the steer is in flight (steeringInFlight), which is
+// what keeps reflectDurableClientSteering from putting it back in the queue.
 func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
@@ -932,30 +1007,117 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	}
 	entry := s.steeringQueue[0]
 	s.steeringQueue = s.steeringQueue[1:]
-	s.mu.Unlock()
 	if entry.ClientMutationID != "" {
-		if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-			pending, ok := snapshot.PendingExecutions[entry.ClientMutationID]
-			if !ok {
-				return fmt.Errorf("client steering %q is not pending", entry.ClientMutationID)
-			}
-			pending.ExecutionState = "claimed"
-			snapshot.PendingExecutions[entry.ClientMutationID] = pending
-			record := snapshot.Journal[entry.ClientMutationID]
-			record.ExecutionState = "claimed"
-			snapshot.Journal[entry.ClientMutationID] = record
-			return nil
-		}); err != nil {
-			s.mu.Lock()
-			s.steeringQueue = append([]steeringMessage{entry}, s.steeringQueue...)
-			s.mu.Unlock()
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim client steering failed: %v", err)})
-			return steeringMessage{}, false
+		if s.steeringInFlight == nil {
+			s.steeringInFlight = map[string]string{}
 		}
+		s.steeringInFlight[entry.ClientMutationID] = ""
+		s.mu.Unlock()
 		return entry, true
 	}
+	s.mu.Unlock()
 	s.persistQueuesSnapshot()
 	return entry, true
+}
+
+// steeringLanded ends a client steer's in-flight window: it is either
+// incorporated (gone from the store) or, when its append failed, still
+// accepted there, and the reflect that follows puts an accepted steer back in
+// the queue at its place in the order.
+func (s *Session) steeringLanded(clientMutationID string) {
+	s.mu.Lock()
+	delete(s.steeringInFlight, clientMutationID)
+	s.mu.Unlock()
+	s.reflectDurableClientSteering()
+}
+
+// markSteeringRecorded notes that an in-flight steer's transcript append landed
+// and only the store's write did not: recorded, awaiting its mark, which is
+// the terminal state the transcript entry stands for ("incorporated" for a
+// steering turn, "failed" for a selection failure).
+func (s *Session) markSteeringRecorded(clientMutationID, terminalState string) {
+	s.mu.Lock()
+	s.steeringInFlight[clientMutationID] = terminalState
+	s.mu.Unlock()
+}
+
+// reconcileRecordedSteering writes the store marks recorded in-flight steers
+// are waiting for, through the steering table (rule 0), and ends their
+// in-flight windows. A no-op, and no store write, when none is waiting.
+func (s *Session) reconcileRecordedSteering() {
+	ids, recorded := s.recordedSteeringAwaitingMark()
+	if len(ids) == 0 || s.clientMutations == nil {
+		return
+	}
+	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+		reconcileClientSteering(snapshot, recorded, false)
+		return nil
+	}); err != nil {
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("mark recorded steering incorporated: %v; the transcript holds it", err)})
+		return
+	}
+	s.steeringMarked(ids)
+}
+
+// parkSteering records a failed attempt at running pending user steering (see
+// Session.steeringParked); the next wake sender unparks.
+func (s *Session) parkSteering() {
+	s.mu.Lock()
+	s.steeringParked = true
+	s.mu.Unlock()
+}
+
+// unparkSteering clears Session.steeringParked: an attempt at running user
+// steering succeeded (whatever turn made it), so the park is over.
+func (s *Session) unparkSteering() {
+	s.mu.Lock()
+	s.steeringParked = false
+	s.mu.Unlock()
+}
+
+// steeringParkedNow reports whether user steering is parked: a failed attempt
+// left Session.steeringParked set and the steer is still queued. Every
+// autonomous path -- the drain ladder's notification and goal rungs, the
+// deferred continuation, the settle's goal kick, the entry gate for a
+// daemon-started notification or continuation -- asks this and stands down.
+func (s *Session) steeringParkedNow() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.steeringParked && s.hasPendingUserSteeringLocked()
+}
+
+// steeringInFlightSample copies the in-flight set under s.mu, for a caller
+// about to decide steering eligibility inside the store's serializer (which
+// must never wait on s.mu).
+func (s *Session) steeringInFlightSample() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return maps.Clone(s.steeringInFlight)
+}
+
+// steeringMarked ends the in-flight window of steers a Stop's finalization
+// just marked incorporated (recordedSteeringAwaitingMark's sample).
+func (s *Session) steeringMarked(ids []string) {
+	for _, id := range ids {
+		s.steeringLanded(id)
+	}
+}
+
+// recordedSteeringAwaitingMark samples, under s.mu, the in-flight steers whose
+// transcript append landed but whose incorporation write the store refused,
+// and returns the question over that sample for reconcileClientSteering.
+// Taken before a store mutate, never inside one.
+func (s *Session) recordedSteeringAwaitingMark() (ids []string, recorded func(string) string) {
+	states := map[string]string{}
+	s.mu.Lock()
+	for id, state := range s.steeringInFlight {
+		if state != "" {
+			states[id] = state
+			ids = append(ids, id)
+		}
+	}
+	s.mu.Unlock()
+	return ids, func(id string) string { return states[id] }
 }
 
 // injectDrainedSteering drains any pending steering messages at a turn
@@ -983,15 +1145,43 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 // swept into this batch without its provenance. See
 // TestQueuePersist_DrainSteering_CrashLosesAtMostInFlightItem for the pinned
 // behavior.
-func (s *Session) injectDrainedSteering() {
+//
+// It reports whether this pass delivered anything: at least one steering turn
+// is now in the transcript that no model request has read. A pass that only
+// retired failed selections, or drained nothing, delivered nothing.
+func (s *Session) injectDrainedSteering() (delivered bool) {
 	for range s.peekSteeringForTurn() {
 		msg, ok := s.popSteeringHead()
 		if !ok {
 			break
 		}
-		s.consumeSteeringMessage(msg)
+		switch s.consumeSteeringMessage(msg) {
+		case steeringAppendFailed:
+			// The failed steer is back at the head of the queue; popping again
+			// would take the same steer and fail the same way inside this
+			// turn. The next external wake owns the next attempt, for this
+			// steer and for everything queued behind it.
+			return delivered
+		case steeringDelivered:
+			delivered = true
+		}
 	}
+	return delivered
 }
+
+// steeringConsumption is what consumeSteeringMessage did with one message.
+type steeringConsumption int
+
+const (
+	// steeringAppendFailed: the transcript refused the append; a client steer
+	// is back in the queue, accepted, and the drain must stop here.
+	steeringAppendFailed steeringConsumption = iota
+	// steeringDelivered: a steering turn is in the transcript.
+	steeringDelivered
+	// steeringRetired: the steer's skill selection could not be prepared; the
+	// failure is recorded and the steer retired. Nothing reached the model.
+	steeringRetired
+)
 
 // consumeSteeringMessage durably records one drained steering message as a
 // steering turn (history + transcript) and emits the steering-injected
@@ -999,7 +1189,7 @@ func (s *Session) injectDrainedSteering() {
 // drive the exact per-message consumption step the production loop uses,
 // rather than reimplementing it, when pinning the crash-window behavior
 // documented above.
-func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
+func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumption {
 	// A skill-bearing steering message is prepared at actual consumption, as
 	// one atomic group tied to the steering's durable identity. A failed
 	// preparation delivers NONE of the steering input to the in-flight turn --
@@ -1012,8 +1202,10 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 		selectionRecord = skillInputRecordFromQueued(queued)
 		batch, prepareErr := s.prepareSelectedInput(context.Background(), queued, "user_selection")
 		if prepareErr != nil {
-			s.recordFailedSteeringSelection(msg, prepareErr)
-			return true
+			if !s.recordFailedSteeringSelection(msg, prepareErr) {
+				return steeringAppendFailed
+			}
+			return steeringRetired
 		}
 		recordPreparedSelection(selectionRecord, batch)
 		selectionBatch = batch
@@ -1040,23 +1232,40 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() error { return s.appendClientMutationTranscriptLocked(t) },
 			func() { s.history = append(s.history, t) },
 		); err != nil {
-			_ = s.returnClaimedSteering(msg.ClientMutationID)
-			s.reflectDurableClientSteering()
+			// The steer did not land. The store never left accepted, so ending
+			// its in-flight window puts it back in the queue, parked runnable:
+			// hasRunnableUserSteering keeps the session from resting, and the
+			// next external wake -- attach, or any accepted client mutation --
+			// carries it. Nothing here re-arms a wake: a write that keeps
+			// failing without poisoning the writer (ENOSPC before a byte
+			// lands) would otherwise loop failed carrier turns with no pause,
+			// and a paced retry is not this design's answer.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
-			return false
+			s.steeringLanded(msg.ClientMutationID)
+			s.parkSteering()
+			return steeringAppendFailed
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v", err)})
-			return true
+			// Recorded, so delivered: the transcript holds the steer and the
+			// model reads it. Only the store's incorporation mark is missing;
+			// the steer stays in flight, marked recorded, so no reflect
+			// re-queues it and no carrier claims it, and the input's settle,
+			// the next wake, a Stop or restore writes the mark through the
+			// steering table (reconcileRecordedSteering).
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; the transcript holds the steer", err)})
+			s.markSteeringRecorded(msg.ClientMutationID, "incorporated")
+		} else {
+			s.steeringLanded(msg.ClientMutationID)
 		}
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
-		return true
+		s.unparkSteering()
+		return steeringDelivered
 	}
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
-	return true
+	return steeringDelivered
 }
 
 // queuedInputFromSteering projects a steering message into the queuedInput
@@ -1078,7 +1287,12 @@ func queuedInputFromSteering(msg steeringMessage) queuedInput {
 // between the two leaves the pending execution for restore to settle against
 // the already-persisted failure turn. The in-flight turn keeps running and
 // receives none of this steering input.
-func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error) {
+// recordFailedSteeringSelection records a steer whose skill selection could
+// not be prepared as a failure turn and retires it from the store. It reports
+// whether the failure landed: false means the record itself could not be
+// appended, the steer is back in the queue for the next drain, and the caller
+// must stop draining (popping again would take the same steer).
+func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error) bool {
 	input := queuedInputFromSteering(msg)
 	turn := schema.NewTurn(schema.TurnFailure, llm.System(cause.Error()))
 	turn.ClientMutationID = msg.ClientMutationID
@@ -1091,16 +1305,24 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		func() { s.history = append(s.history, turn) },
 	); err != nil {
 		// The prominent record did not persist. Put the steering back so a
-		// later drain retries the failure instead of silently dropping it.
-		s.mu.Lock()
-		s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
-		s.mu.Unlock()
+		// later drain retries the failure instead of silently dropping it: a
+		// client steer lands like any failed append (still accepted in the
+		// store, so the reflect re-queues it at its place in the order);
+		// daemon steering has no store and goes back to the head directly.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("persist failed steering selection: %v", err)})
-		return
+		if msg.ClientMutationID != "" {
+			s.steeringLanded(msg.ClientMutationID)
+			s.parkSteering()
+		} else {
+			s.mu.Lock()
+			s.steeringQueue = append([]steeringMessage{msg}, s.steeringQueue...)
+			s.mu.Unlock()
+		}
+		return false
 	}
 	s.emit(events.EventError, errorDataFromError(cause))
 	if msg.ClientMutationID == "" {
-		return
+		return true
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		record, ok := snapshot.Journal[msg.ClientMutationID]
@@ -1116,23 +1338,16 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		removeClientMutationSteeringOrder(snapshot, msg.ClientMutationID)
 		return nil
 	}); err != nil {
+		// The failure is in the transcript and the retirement is not in the
+		// store: recorded, unmarked, and reconciled like an incorporation
+		// write the store refused.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("clear failed steering execution: %v", err)})
+		s.markSteeringRecorded(msg.ClientMutationID, "failed")
+		return true
 	}
-}
-
-func (s *Session) returnClaimedSteering(clientMutationID string) error {
-	return s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
-		pending, ok := snapshot.PendingExecutions[clientMutationID]
-		if !ok {
-			return nil
-		}
-		pending.ExecutionState = "accepted"
-		snapshot.PendingExecutions[clientMutationID] = pending
-		record := snapshot.Journal[clientMutationID]
-		record.ExecutionState = "accepted"
-		snapshot.Journal[clientMutationID] = record
-		return nil
-	})
+	s.steeringLanded(msg.ClientMutationID)
+	s.unparkSteering()
+	return true
 }
 
 // appendSteeringTurn records a daemon steering turn and announces it,
@@ -1157,13 +1372,12 @@ func (s *Session) activeTurnOwner() string {
 	return s.clientMutations.snapshot().ActiveTurnID
 }
 
-// appendSteeringTurnDurably is appendSteeringTurn's durable counterpart for
-// the one direct-append site that must fsync before continuing: job
-// notifications, where the durable write is what lets a crash mid-delivery
-// re-token the notification instead of dropping it (spec §4.3). Returns the
-// write error, so the caller can requeue rather than emit SteeringInjectedData
-// for a turn that never made it to disk. The durable write happens before the
-// in-memory history append, preserving the crash-window ordering.
+// appendSteeringTurnDurably records a daemon steering turn through the synced
+// door for the current active-turn owner: job notifications commit their
+// delivery (markJobNotificationsDelivered) on the strength of this record, so
+// it must be durable, not merely recorded, before that commit (spec §4.3). It
+// therefore refuses a pre-attach held turn; its production caller
+// (acceptNotificationInput) always runs after attach.
 func (s *Session) appendSteeringTurnDurably(text, kind string) error {
 	return s.appendSteeringTurnDurablyForOwner(text, kind, s.activeTurnOwner())
 }
@@ -1178,7 +1392,7 @@ func (s *Session) appendSteeringTurnDurablyForOwner(text, kind, owningTurnID str
 	t.OwningTurnID = owningTurnID
 	err := s.appendTurnAfterTranscriptWrite(
 		t,
-		func() error { return s.writeTranscriptDurableLocked(t) },
+		func() error { return s.writeTranscriptSyncedLocked(t) },
 		func() { s.history = append(s.history, t) },
 	)
 	if err != nil {
@@ -1193,6 +1407,18 @@ func (s *Session) hasPendingSteering() bool {
 	return len(s.steeringQueue) > 0
 }
 
+// hasRunnableUserSteering reports whether user steering is pending that the
+// daemon will run on its own: a wake carries it, or the next turn drains it.
+// A steer parked by a Stop (SteeringHeld) is not that -- it waits on the user
+// (issue #174) -- so it counts neither as work to wake for nor as autonomy
+// that keeps the session from resting awaiting.
+func (s *Session) hasRunnableUserSteering() bool {
+	if s.clientMutations != nil && s.clientMutations.steeringHeld() {
+		return false
+	}
+	return s.hasPendingUserSteering()
+}
+
 // hasPendingUserSteering reports whether any queued steering came from the
 // human rather than the daemon. Only that kind justifies starting a turn to
 // carry it: daemon-authored steering -- the current-task reminder, hook
@@ -1202,6 +1428,12 @@ func (s *Session) hasPendingSteering() bool {
 func (s *Session) hasPendingUserSteering() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.hasPendingUserSteeringLocked()
+}
+
+// hasPendingUserSteeringLocked is hasPendingUserSteering for a caller holding
+// s.mu.
+func (s *Session) hasPendingUserSteeringLocked() bool {
 	for _, msg := range s.steeringQueue {
 		if msg.Source == events.SteeringSourceUser {
 			return true

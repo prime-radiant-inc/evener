@@ -11,6 +11,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { sectionDrafts } from "./nativeOrganization";
+import { updating } from "./navigationPages";
+import { pinSectionAsShown } from "./pinNavigation";
 import type { PinSectionDraft } from "./pinSectionDrafts";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -42,6 +44,7 @@ export function PinSectionEditorScreen({
 		}
 	});
 	const selected = proposal.owner === repository ? proposal : null;
+	const [changedUnderAlert, setChangedUnderAlert] = useState(false);
 	useEffect(() => {
 		if (proposal.owner === repository) return;
 		try {
@@ -51,15 +54,20 @@ export function PinSectionEditorScreen({
 		}
 	}, [repository, proposal.owner]);
 	const section = pin.observed?.section;
-	const fresh =
+	// Editing stays open while the catalog re-reads itself; only the labels
+	// wait for it.
+	const settled =
 		pin.confirmed &&
 		pin.ready &&
-		!pin.page?.loading &&
-		!pin.page?.stale &&
 		!pin.action?.pending &&
 		!pin.action?.uncertain;
+	const fresh = settled && !pin.page?.stale;
+	const message = changedUnderAlert
+		? "This section changed while you were deciding. Check it and delete again."
+		: (selected?.error ?? pin.action?.error ?? pin.page?.error ?? null);
+	const isUpdating = !!pin.page && updating({ ...pin.page, error: message });
 	const blocked =
-		!fresh ||
+		!settled ||
 		!section ||
 		!selected ||
 		!!selected.error ||
@@ -117,7 +125,7 @@ export function PinSectionEditorScreen({
 	}
 	function confirmDelete() {
 		if (blocked || !section) return;
-		const version = pin.pages?.getResourceVersion();
+		setChangedUnderAlert(false);
 		Alert.alert(
 			`Delete ${section.name}?`,
 			`This removes the pinned section and unpins its ${section.count} ${section.count === 1 ? "session" : "sessions"}. Sessions and their history are kept.`,
@@ -127,18 +135,11 @@ export function PinSectionEditorScreen({
 					text: "Delete section",
 					style: "destructive",
 					onPress: () => {
-						const current = pin.pages?.getResourceVersion(),
-							state = pin.pages?.getSnapshot();
-						if (
-							!pin.isCurrent() ||
-							state?.stale ||
-							state?.loading ||
-							!version ||
-							current?.generationId !== version.generationId ||
-							current.revision !== version.revision
-						)
-							return;
-						void execute(true);
+						// The catalog re-reads itself while the alert is up; delete only
+						// the section as it was shown.
+						if (pinSectionAsShown(pin.pages?.getSnapshot().rows ?? [], section))
+							void execute(true);
+						else setChangedUnderAlert(true);
 					},
 				},
 			],
@@ -166,12 +167,11 @@ export function PinSectionEditorScreen({
 					>
 						<Copy>{section?.name ?? title}</Copy>
 						<Copy muted>{pin.activeProfile?.name ?? "Hub"}</Copy>
-						<ErrorMessage
-							message={
-								selected?.error ?? pin.action?.error ?? pin.page?.error ?? null
-							}
-						/>
-						{!pin.ready || !fresh || selected?.error ? (
+						<ErrorMessage message={message} />
+						{!pin.ready ||
+						pin.action?.uncertain ||
+						pin.page?.error ||
+						selected?.error ? (
 							<Action
 								disabled={!!pin.action?.pending || !!pin.page?.loading}
 								onPress={refresh}
@@ -181,6 +181,8 @@ export function PinSectionEditorScreen({
 						) : null}
 						{pin.action?.pending ? (
 							<Copy muted>Checking the section…</Copy>
+						) : isUpdating ? (
+							<Copy muted>Updating…</Copy>
 						) : null}
 						{pin.confirmed && !section ? (
 							<Copy>This section no longer exists. Its sessions are kept.</Copy>
@@ -219,7 +221,7 @@ export function PinSectionEditorScreen({
 							{selected?.draft ? (
 								<Action
 									tone="quiet"
-									disabled={!fresh}
+									disabled={!settled}
 									onPress={() => {
 										if (selected.draft) clear(selected.draft);
 									}}

@@ -1,7 +1,7 @@
+import type { AppwireClientLike, LaunchConfigLayer, PluginPreviewResponse } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AppwireClientLike } from "../../protocol/clientLike";
-import { errorText } from "../../protocol/errors";
-import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
+import { hostRequest } from "../../stores/hostRouting";
 
 export const PLUGIN_PREVIEW_DEBOUNCE_MS = 250;
 
@@ -13,6 +13,9 @@ export type PluginPreviewLoadState =
 export interface UsePluginPreviewArgs {
   client: AppwireClientLike;
   cwd: string;
+  // The selected host (component 07b): the preview is resolved by the host's
+  // own hub through evener/host/request; "local" keeps the plain call.
+  host?: string;
   launchOverrides: LaunchConfigLayer;
   pluginRevision: number;
   enabled?: boolean;
@@ -22,7 +25,7 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
   state: PluginPreviewLoadState;
   retry(): void;
 } {
-  const { client, cwd, launchOverrides, pluginRevision, enabled = true } = args;
+  const { client, cwd, host = "local", launchOverrides, pluginRevision, enabled = true } = args;
   const [retryRevision, setRetryRevision] = useState(0);
   const [result, setResult] = useState<{
     client: AppwireClientLike;
@@ -32,13 +35,14 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
   const lastResponse = useRef<{
     client: AppwireClientLike;
     cwd: string;
+    host: string;
     logicalKey: string;
     response: PluginPreviewResponse;
   } | null>(null);
   const launchOverridesRef = useRef(launchOverrides);
   launchOverridesRef.current = launchOverrides;
   const serializedOverrides = JSON.stringify(launchOverrides);
-  const logicalKey = `${cwd}\u0000${serializedOverrides}\u0000${pluginRevision}`;
+  const logicalKey = `${host}\u0000${cwd}\u0000${serializedOverrides}\u0000${pluginRevision}`;
   const requestKey = `${logicalKey}\u0000${retryRevision}`;
 
   const retry = useCallback(() => setRetryRevision((revision) => revision + 1), []);
@@ -58,7 +62,7 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
     // no authority to reuse the stale list.
     const cached = lastResponse.current;
     setState(
-      cached?.client === client && cached.cwd === cwd
+      cached?.client === client && cached.cwd === cwd && cached.host === host
         ? { status: "loading", response: cached.response }
         : { status: "loading" },
     );
@@ -66,10 +70,10 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
     const timer = setTimeout(() => {
       const currentOverrides = launchOverridesRef.current;
       const params = Object.keys(currentOverrides).length > 0 ? { cwd, launchOverrides: currentOverrides } : { cwd };
-      void client.request("evener/plugin/preview", params).then(
+      void hostRequest(client, host, "evener/plugin/preview", params).then(
         (response) => {
           if (active) {
-            lastResponse.current = { client, cwd, logicalKey, response };
+            lastResponse.current = { client, cwd, host, logicalKey, response };
             setState({ status: "ready", response });
           }
         },
@@ -90,7 +94,7 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
       active = false;
       clearTimeout(timer);
     };
-  }, [client, cwd, enabled, logicalKey, requestKey]);
+  }, [client, cwd, host, enabled, logicalKey, requestKey]);
 
   // Effects reset state after consumers have already rendered. Never expose
   // another request's ready/error state during that first render: Spawn may
@@ -99,7 +103,7 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
   const state: PluginPreviewLoadState =
     enabled && result?.client === client && result.requestKey === requestKey
       ? result.state
-      : enabled && cached?.client === client && cached.cwd === cwd
+      : enabled && cached?.client === client && cached.cwd === cwd && cached.host === host
         ? { status: "loading", response: cached.response }
         : { status: "loading" };
   return { state, retry };

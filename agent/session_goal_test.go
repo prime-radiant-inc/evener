@@ -91,7 +91,11 @@ func TestGoalUpdatedEventSetClearAndContinuation(t *testing.T) {
 	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
 	assertNoGoalUpdated(t, sess)
 
-	sess.ClearGoal()
+	if err := sess.ClearGoal(); err != nil {
+
+		t.Error(err)
+
+	}
 	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
 	assertNoGoalUpdated(t, sess)
 }
@@ -369,7 +373,11 @@ func TestClearGoalRemovesGoal(t *testing.T) {
 		t.Fatal("precondition: goal should be set")
 	}
 
-	sess.ClearGoal()
+	if err := sess.ClearGoal(); err != nil {
+
+		t.Error(err)
+
+	}
 	if _, ok := sess.getOrCreateGoalStore().Snapshot(); ok {
 		t.Fatal("ClearGoal should remove the goal")
 	}

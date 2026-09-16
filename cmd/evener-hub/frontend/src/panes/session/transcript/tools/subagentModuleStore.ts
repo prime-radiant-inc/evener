@@ -1,11 +1,9 @@
 // Per-delegate presentation state shared by the tool row and its card.
 
+import type { EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
+import { parseArgs, parseJSONObject, stableDelegateDisplayStatus, str } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { ItemModel } from "../../../../protocol/model";
-import { stableDelegateDisplayStatus } from "../../../../protocol/stableDelegate";
-import { parseArgs, parseJSONObject, str } from "../../../../protocol/toolCallText";
-import type { EvenerDelegateInfo } from "../../../../protocol/types.gen";
 
 export type SubagentRowKind = "running" | "done" | "stopped" | "failed" | "unknown";
 

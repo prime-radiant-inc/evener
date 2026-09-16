@@ -552,7 +552,7 @@ func TestNewSessionAutomaticallyDiscoversUserSkill(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestConfiguredSkillDirShadowsAutomaticUserSkill(t *testing.T) {
 		t.Fatalf("WriteFile configured skill: %v", err)
 	}
 
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{SkillsDirs: []string{extraDir}})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{SkillsDirs: []string{extraDir}, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestProjectSkillShadowsAutomaticUserSkill(t *testing.T) {
 		t.Fatalf("WriteFile user skill: %v", err)
 	}
 
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(project), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestSkillCatalogPortableFilteredStartup(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -693,7 +693,7 @@ func TestSkillCatalogInspectionCopiesFullMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{plug}})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{plug}, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +771,7 @@ func TestSkillCatalogPluginStartupMetadataOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(first, "hooks", "hooks.json"), []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{PluginDirs: []string{first, second}})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{PluginDirs: []string{first, second}, testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -806,7 +806,7 @@ func TestSkillCatalogStatusCopiesNonStringKeyMetadata(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("---\nname: numeric\ndescription: fixture\nmetadata:\n  1:\n    - ORIGINAL\n    - true: [ORIGINAL]\n---\nBODY\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	sess, err := NewSession(llm.NewClient(), newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{testOnly: testConfig{skipGitSnapshot: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

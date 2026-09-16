@@ -1,13 +1,13 @@
 import type {
 	NavigationReadParams,
 	NavigationSessionLocation,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
 	materializeNavigationResource,
 	normalizedGraphFromSnapshot,
-} from "../../cmd/evener-hub/frontend/src/stores/navigation/codec";
-import type { ResourceKey } from "../../cmd/evener-hub/frontend/src/stores/navigation/types";
+	type ResourceKey,
+} from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import type { NavigationPages } from "./navigationPages";
 
@@ -117,7 +117,8 @@ export async function revealNavigationRow<T>(
 			);
 		if (state.error || state.stale)
 			throw new Error(
-				state.error || "This list changed. Refresh to locate the session.",
+				state.error ||
+					"The list changed while locating the session. Locate again.",
 			);
 		const path = pathTo(state.rows, ref, key, children);
 		if (path) return path;

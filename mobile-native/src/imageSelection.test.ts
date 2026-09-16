@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
-import { MAX_ATTACHMENT_BYTES } from "../../cmd/evener-hub/frontend/src/panes/session/composer/attachments/limits";
+import { MAX_ATTACHMENT_BYTES } from "@evener/appwire-client";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { ImageSelection, type PickedImage } from "./imageSelection";

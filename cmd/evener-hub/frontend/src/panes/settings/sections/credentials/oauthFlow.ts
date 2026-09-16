@@ -1,3 +1,4 @@
+import { openInNewTab } from "../../../../shell/openInNewTab";
 import { credentialsStore } from "../../../../stores/credentials";
 
 export type OAuthEditor =
@@ -28,6 +29,6 @@ export async function startOAuthFlow(name: string, isCurrent: () => boolean = ()
 
   const login = await credentialsStore.getState().loginStart(name);
   if (!isCurrent()) return null;
-  window.open(login.url, "_blank", "noopener");
+  openInNewTab(login.url);
   return { kind: "oauth-redirect", name, flowId: login.flowId, authUrl: login.url };
 }

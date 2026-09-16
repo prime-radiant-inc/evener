@@ -9,26 +9,32 @@
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
 
-import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
-import type { ThreadModel } from "../../protocol/model";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
-import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
+import type { CommandDescriptor, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  effortLabel,
+  effortOptionLevels,
+  NO_ACTIVE_TURN,
+  slashCommandInvocation,
+  visibleCatalogCommands,
+} from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { controlsFor } from "../../stores/liveControls";
 import { selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
-import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
 import { commandScore } from "./commandScore";
-import { focusedModel, hasActiveTurn, type OnPage, type PaletteContext } from "./paletteContext";
+import { focusedModel, type OnPage, type PaletteContext } from "./paletteContext";
 import { readRecentCommandIds } from "./recentCommands";
 
 // A command is either global (no session needed) or session-scoped (a session
@@ -122,6 +128,11 @@ export interface Command {
   // the read-only /copy-id, /tasks, /status, /project touch no session state
   // at all), so the command is always offered once a session is focused.
   capability?: keyof ThreadCapabilities;
+  // A finer availability rule than the capability flag, for commands whose
+  // action also depends on the session's state: the reason the command cannot
+  // run against this model, or undefined when it can. scopeCommand reads it
+  // for the menu and runWhenAvailable for the run, so the two never disagree.
+  available?(model: ThreadModel): string | undefined;
   // stayOpen commands (/search, /help) never close and never record recency.
   stayOpen?: boolean;
   args?: CommandArgs;
@@ -143,6 +154,32 @@ export interface ScopedCommand extends Command {
 // (mid-turn /clear) as much as it is for a cold or foreign-source one.
 export const UNAVAILABLE_REASON = "not available right now";
 
+// The session's controls (stores/liveControls.ts controlsFor, the web's one
+// derivation) as the palette's availability rules: each returns the reason
+// the action is refused, or undefined.
+const stopAvailable = (model: ThreadModel) => controlsFor(model).reason.stop;
+const steerAvailable = (model: ThreadModel) => controlsFor(model).reason.steer;
+const queueAvailable = (model: ThreadModel) => controlsFor(model).reason.queue;
+// The palette's drain is argless (it submits no text of its own), so its rule
+// is drainQueue: the drain rule plus a queue to drain.
+const drainQueueAvailable = (model: ThreadModel) => controlsFor(model).reason.drainQueue;
+
+// runWhenAvailable is the shared run guard for commands with an `available`
+// rule: it refuses with the command's own reason -- the status floor message,
+// or the shared capability sentence -- and otherwise runs against the focused ref.
+function runWhenAvailable(
+  ctx: PaletteRunContext,
+  id: string,
+  available: (model: ThreadModel) => string | undefined,
+  run: (ref: string) => CommandResult,
+): CommandResult {
+  const model = focusedModel(ctx.sessionRef);
+  if (!ctx.sessionRef || !model) return blocked(`${id} failed: ${NO_ACTIVE_TURN}`);
+  const reason = available(model);
+  if (reason !== undefined) return blocked(reason === NO_ACTIVE_TURN ? `${id} failed: ${reason}` : reason);
+  return run(ctx.sessionRef);
+}
+
 // splitModelId reconstructs a ModelDescriptor {provider, model} from the
 // "provider/model" id the /model enum item carries. A provider never contains
 // "/", so splitting on the FIRST "/" preserves a model id that itself has
@@ -160,7 +197,7 @@ export function splitModelId(id: string): { provider: string; model: string } {
 // now owns Details/Tasks/Activity at every width, so those triggers never
 // render and the mobile path was a guaranteed no-op. Like the rail adapter,
 // both commands now toggle the workspace pane on ALL viewports.
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails" | "sessionNotes"): void {
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -348,17 +385,12 @@ export function buildCommands(): Command[] {
       keywords: ["cancel", "stop"],
       scope: "session",
       capability: "interrupt",
-      // No hasActiveTurn gate, for the same reason /model has no busy gate
-      // below: only the daemon knows. turn/interrupt names no turn (appwire v3)
-      // and its precondition is the session's own quiescence, so answering "is
-      // a turn in flight" here can only refuse a Stop the daemon would have
-      // taken. activeTurnId is missing in states the wire really reaches -- a
-      // session holding queued work reports active with no turn running (kata
-      // vewa/5gdv).
-      run: (ctx) => {
-        if (!ctx.sessionRef) return blocked("interrupt failed: no session");
-        return threadsStore.getState().interrupt(ctx.sessionRef);
-      },
+      // Stop's rule is sessionControls' (the status, never activeTurnId: a
+      // session holding queued work reports active with no turn running, kata
+      // vewa/5gdv, and the id is cleared between turn/completed and
+      // turn/started of an inline turn boundary).
+      available: stopAvailable,
+      run: (ctx) => runWhenAvailable(ctx, "interrupt", stopAvailable, (ref) => threadsStore.getState().interrupt(ref)),
     },
     {
       id: "clear",
@@ -502,14 +534,12 @@ export function buildCommands(): Command[] {
       keywords: [],
       scope: "session",
       capability: "steer",
+      available: steerAvailable,
       args: {
         kind: "free",
         placeholder: "steer text…",
-        run: (ctx, text) => {
-          const model = focusedModel(ctx.sessionRef);
-          if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("steer failed: no active turn");
-          return threadsStore.getState().steer(ctx.sessionRef, text);
-        },
+        run: (ctx, text) =>
+          runWhenAvailable(ctx, "steer", steerAvailable, (ref) => threadsStore.getState().steer(ref, text)),
       },
     },
     {
@@ -519,14 +549,12 @@ export function buildCommands(): Command[] {
       keywords: ["enqueue"],
       scope: "session",
       capability: "queue",
+      available: queueAvailable,
       args: {
         kind: "free",
         placeholder: "queue text…",
-        run: (ctx, text) => {
-          const model = focusedModel(ctx.sessionRef);
-          if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("queue failed: no active turn");
-          return threadsStore.getState().queue(ctx.sessionRef, text);
-        },
+        run: (ctx, text) =>
+          runWhenAvailable(ctx, "queue", queueAvailable, (ref) => threadsStore.getState().queue(ref, text)),
       },
     },
     {
@@ -554,11 +582,9 @@ export function buildCommands(): Command[] {
       keywords: ["force-steer", "drain"],
       scope: "session",
       capability: "steer",
-      run: (ctx) => {
-        const model = focusedModel(ctx.sessionRef);
-        if (!ctx.sessionRef || !model || !hasActiveTurn(model)) return blocked("drain failed: no active turn");
-        return threadsStore.getState().drainAsSteer(ctx.sessionRef, "");
-      },
+      available: drainQueueAvailable,
+      run: (ctx) =>
+        runWhenAvailable(ctx, "drain", drainQueueAvailable, (ref) => threadsStore.getState().drainAsSteer(ref, "")),
     },
 
     // --- session: read-only, no capability to gate on ---
@@ -598,7 +624,18 @@ export function buildCommands(): Command[] {
       capability: "sharedNotes",
       run: (ctx) => {
         if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
-        toggleSessionPane(ctx, "sessionNotes");
+        if (!ctx.sessionRef) return;
+        // The notes bar lives inside the session pane: with a details or
+        // tasks pane focused, that pane may not even be mounted, and a
+        // notes-state change alone would look like a no-op. Focus (or open)
+        // the session pane first - but only when the notes are about to
+        // EXPAND: closing from a companion pane must not yank the user's
+        // focus away. The focus request waits for the panel to mount and
+        // take it, so a freshly opened pane still lands focus.
+        if (!topNotesStore.getState().isExpanded(ctx.sessionRef)) {
+          workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+        }
+        topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
       },
     },
     {
@@ -705,7 +742,15 @@ function scopeCommand(command: Command, model: ThreadModel | undefined): ScopedC
   if (capability === "sharedNotes" && !canReadSharedNotes(model)) {
     return { ...command, unavailableReason: UNAVAILABLE_REASON };
   }
-  if (!capability || !model || model.capabilities[capability]) return command;
+  if (!model) return command;
+  // A command with its own rule (Command.available, from sessionControls) is
+  // decided by it alone, so the menu's available set equals what
+  // runWhenAvailable accepts; the raw capability flag is read only for the
+  // commands whose action the hub gates on nothing but that flag.
+  if (command.available) {
+    return command.available(model) === undefined ? command : { ...command, unavailableReason: UNAVAILABLE_REASON };
+  }
+  if (!capability || model.capabilities[capability]) return command;
   return { ...command, unavailableReason: UNAVAILABLE_REASON };
 }
 

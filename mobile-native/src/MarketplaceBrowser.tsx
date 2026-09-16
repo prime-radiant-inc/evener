@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -18,16 +12,24 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { sourceLabel } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/marketplacesPlugins/sourceLabel";
+import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
   MarketplaceAddParams,
   PluginRefParams,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
+import { createMarketplacesStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import type { InstalledPlugins } from "./installedPlugins";
-import { Marketplaces } from "./marketplaces";
+import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+// The marketplaces store keeps each failed request's own text; this screen
+// shows the same copy for every failure, as the web's section translates its
+// at render.
+const MARKETPLACES_FAILED =
+  "Could not load marketplaces. Try again when connected.";
+const CATALOG_FAILED = "Could not load this catalog. Try again when connected.";
 
 export function MarketplaceBrowser({
   client,
@@ -41,35 +43,62 @@ export function MarketplaceBrowser({
   onOpenPlugin(target: PluginRefParams): void;
 }) {
   const colors = useColors();
-  const model = useMemo(() => new Marketplaces(client), [client]);
-  const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+  const model = useMemo(() => createMarketplacesStore(client), [client]);
+  const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(
     installed.subscribe,
     installed.getSnapshot,
   );
+  const [selected, setSelected] = useState<string | null>(null);
+  const [mutating, setMutating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const revision = useRef(0);
-  const previousSelection = useRef<string | null>(null);
   useEffect(() => {
     model.start();
+    void model.getState().fetchMarketplaces();
     return () => {
       revision.current += 1;
       model.dispose();
     };
   }, [model]);
-  useEffect(() => {
-    if (previousSelection.current === state.selected) return;
-    previousSelection.current = state.selected;
+  // A new selection starts clean: the filter and the last action's error
+  // belong to the marketplace they were typed against.
+  function select(name: string | null) {
     revision.current += 1;
+    setSelected(name);
     setError(null);
     setQuery("");
-  }, [state.selected]);
-  const busy = state.busy || plugins.busy;
+  }
+  // The selected catalog is read from the store's cache. A mutation here or a
+  // change from another client retires the entry, and an empty slot is this
+  // view's cue to request it again - the web's expanded node does the same.
+  const catalog = selected ? state.browseCatalogs.get(selected) : undefined;
+  const loaded = catalog?.status === "loaded" ? catalog : undefined;
+  const browseTarget = catalogToBrowse(
+    selected,
+    state.marketplaces,
+    state.browseCatalogs,
+  );
+  useEffect(() => {
+    if (browseTarget) void state.browseMarketplace(browseTarget);
+  }, [browseTarget, state.browseMarketplace]);
+  // A marketplace removed here or by another client leaves the list; its
+  // selection goes with it.
+  useEffect(() => {
+    if (
+      selected &&
+      state.marketplaces &&
+      !state.marketplaces.some((item) => item.name === selected)
+    )
+      setSelected(null);
+  }, [selected, state.marketplaces]);
+  const busy = mutating || plugins.busy;
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
+    setMutating(true);
     try {
       await action();
     } catch {
@@ -77,10 +106,12 @@ export function MarketplaceBrowser({
         setError(
           "Could not confirm the change. Refresh and check its status before trying again.",
         );
+    } finally {
+      setMutating(false);
     }
   }
   const marketplace = state.marketplaces?.find(
-    (item) => item.name === state.selected,
+    (item) => item.name === selected,
   );
   function remove() {
     if (!marketplace || busy) return;
@@ -92,48 +123,43 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current === version) void act(() => model.remove(name));
+          if (revision.current === version)
+            void act(() => state.removeMarketplace(name));
         },
       },
     ]);
   }
   const needle = query.trim().toLowerCase();
-  const catalog = (state.catalog?.plugins ?? []).filter((item) =>
+  const catalogPlugins = (loaded?.plugins ?? []).filter((item) =>
     `${item.name} ${item.description ?? ""}`.toLowerCase().includes(needle),
   );
+  const listError = state.marketplacesError === null ? null : MARKETPLACES_FAILED;
+  const catalogError = catalog?.status === "error" ? CATALOG_FAILED : null;
+  const browsing = catalog?.status === "loading";
   const header = (
     <View style={{ gap: 8, paddingBottom: 12 }}>
       <Copy muted>{hubName}</Copy>
-      <ErrorMessage message={error || state.listError} />
-      {state.listError && (
+      <ErrorMessage message={error || listError} />
+      {listError && (
         <Action
           onPress={() => {
-            void model.refresh();
+            void state.fetchMarketplaces();
           }}
         >
           Retry marketplaces
         </Action>
       )}
-      {state.selected ? (
+      {selected ? (
         <>
-          <Action
-            onPress={() => {
-              void model.select(null);
-            }}
-          >
-            All marketplaces
-          </Action>
-          <Copy>{state.selected}</Copy>
-          {marketplace && <Copy muted>{sourceLabel(marketplace.source)}</Copy>}
-          {state.catalog?.description && (
-            <Copy>{state.catalog.description}</Copy>
-          )}
+          <Action onPress={() => select(null)}>All marketplaces</Action>
+          <Copy>{selected}</Copy>
+          {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
+          {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
             <Action
               disabled={busy}
               onPress={() => {
-                if (state.selected)
-                  void act(() => model.refreshSource(state.selected as string));
+                void act(() => state.refreshMarketplace(selected));
               }}
             >
               Refresh source
@@ -155,11 +181,11 @@ export function MarketplaceBrowser({
               { color: colors.text, borderColor: colors.border },
             ]}
           />
-          <ErrorMessage message={state.catalogError || plugins.error} />
-          {state.catalogError && (
+          <ErrorMessage message={catalogError || plugins.error} />
+          {catalogError && (
             <Action
               onPress={() => {
-                void model.browse();
+                void state.reloadCatalog(selected);
               }}
             >
               Retry catalog
@@ -187,21 +213,21 @@ export function MarketplaceBrowser({
   );
   return (
     <>
-      {state.selected ? (
+      {selected ? (
         <FlatList
-          data={catalog}
+          data={catalogPlugins}
           keyExtractor={(item) => item.name}
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
           ListHeaderComponent={header}
-          refreshing={state.browsing}
+          refreshing={browsing}
           onRefresh={() => {
-            void model.browse();
+            void state.reloadCatalog(selected);
           }}
           ListEmptyComponent={
-            state.browsing ? (
+            browsing ? (
               <ActivityIndicator accessibilityLabel="Loading marketplace catalog" />
-            ) : state.catalog ? (
+            ) : loaded ? (
               <Copy muted>
                 {needle
                   ? "No matching plugins."
@@ -210,10 +236,7 @@ export function MarketplaceBrowser({
             ) : null
           }
           renderItem={({ item }) => {
-            const target = {
-              plugin: item.name,
-              marketplace: state.selected as string,
-            };
+            const target = { plugin: item.name, marketplace: selected };
             const existing = plugins.plugins?.some(
               (value) =>
                 value.plugin === target.plugin &&
@@ -251,12 +274,12 @@ export function MarketplaceBrowser({
           keyExtractor={(item) => item.name}
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
           ListHeaderComponent={header}
-          refreshing={state.loading}
+          refreshing={state.marketplacesLoading}
           onRefresh={() => {
-            void model.refresh();
+            void state.fetchMarketplaces();
           }}
           ListEmptyComponent={
-            state.loading ? (
+            state.marketplacesLoading ? (
               <ActivityIndicator accessibilityLabel="Loading marketplaces" />
             ) : state.marketplaces ? (
               <Copy muted>No marketplaces on this hub.</Copy>
@@ -266,9 +289,7 @@ export function MarketplaceBrowser({
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`Browse ${item.name}`}
-              onPress={() => {
-                void model.select(item.name);
-              }}
+              onPress={() => select(item.name)}
               style={({ pressed }) => ({
                 minHeight: 56,
                 paddingVertical: 9,
@@ -279,7 +300,7 @@ export function MarketplaceBrowser({
             >
               <Copy>{item.name}</Copy>
               <Copy muted numberOfLines={2}>
-                {sourceLabel(item.source)}
+                {marketplaceSourceLabel(item.source)}
               </Copy>
             </Pressable>
           )}
@@ -290,7 +311,7 @@ export function MarketplaceBrowser({
           client={client}
           hubName={hubName}
           onClose={() => setAdding(false)}
-          onAdd={model.add}
+          onAdd={state.addMarketplace}
         />
       )}
     </>

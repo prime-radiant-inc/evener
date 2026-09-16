@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -52,16 +53,20 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	if s.cm == nil {
 		return nil
 	}
-	cw := s.cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := s.cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return nil
 	}
 
-	pressure := func() float64 {
-		return s.cm.EstimatePressure(*history, sysPromptChars)
-	}
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureFromSnapshot), so a concurrent SetProfile cannot
+	// decide a layer by one model and describe it by another.
+	pressure := func() (float64, *provider.Profile) { return s.cm.pressureWithProfile(history, sysPromptChars) }
 
-	p := pressure()
+	p, prof := pressure()
 	compacted := false
 
 	if p >= s.cm.ObservationMaskThreshold {
@@ -75,9 +80,9 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 	// minimal "[tool: OK]" markers. Much more aggressive than compact's Layer 1
 	// which generates readable summaries.
 	if p >= s.cm.ObservationMaskThreshold {
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		aggressiveMaskObservations(*history, s.cm.PreserveRecentTurns)
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "aggressive_obs_mask",
 			TurnsBefore:     len(*history),
@@ -86,15 +91,15 @@ func (s *ObsMaskStrategy) ManageContext(ctx context.Context, history *[]schema.T
 			EstTokensAfter:  after,
 		})
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 2: Deterministic checkpoint as fallback if masking wasn't enough.
 	if p >= s.cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := s.cm.estimateTokensFor(prof, *history)
 		*history = checkpoint(*history, s.cm.PreserveRecentTurns, s.cm.metaFor(ctx), s.cm.resultToolName())
-		after := estimateTokens(*history)
+		after := s.cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,

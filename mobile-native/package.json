@@ -54,6 +54,7 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "check": "tsc --noEmit --project tsconfig.check.json",
+    "check:scripts": "tsx scripts/check-script-imports.mts",
     "test": "vitest run",
     "test:shared": "vitest run --root .. --config mobile-native/vitest.config.mts mobile/src",
     "postinstall": "patch-package --error-on-fail"

@@ -69,8 +69,6 @@ export function PinAssignmentScreen({
 	const blocked =
 		!available ||
 		!page?.loaded ||
-		page.loading ||
-		page.stale ||
 		!!selected?.error ||
 		!actions ||
 		action?.pending ||

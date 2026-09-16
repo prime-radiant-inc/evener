@@ -1,10 +1,10 @@
 // The advanced launch-config panel (floor §1.11): renders the schema-driven,
 // per-launch options as design-system controls, collects them into
-// launchOverrides via schema.ts's collectAdvancedOverrides, validates path-kind
+// launchOverrides via the package's collectAdvancedOverrides, validates path-kind
 // inputs live, and previews the fully resolved config. Collapsed by default and
 // wire-free (the parent injects validatePath/resolveConfig/loadCatalog closures
 // over the appwire client). The pure collect/precedence logic is fully in
-// schema.ts.
+// the package's spawnSchema module.
 //
 // Every model-valued field here renders the SAME searchable ModelCatalog
 // picker as the top-level Model field - the modelPicker kind (model,
@@ -13,19 +13,31 @@
 // remember and type exactly. Every browsable path-valued field (the path and
 // pathList kinds) renders the shared PathField the same way, for the same
 // reason.
+
+import {
+  type AdvancedFieldValue,
+  type AdvancedValues,
+  asEnvEntries,
+  asMcpList,
+  asStringList,
+  collectAdvancedOverrides,
+  inheritedItems,
+  type LaunchConfigLayer,
+  type LaunchConfigResolved,
+  type LaunchOption,
+  type MCPServerSpec,
+  type PathValidation,
+  schemaPathKind,
+  validatePathListAdd,
+} from "@evener/appwire-client";
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
-import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
 import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets/modelCatalog";
 import { ModelCatalog } from "../../widgets/modelCatalog";
 import type { PathFieldKind } from "../../widgets/pathfield";
 import { PathField } from "../../widgets/pathfield";
-import { asEnvEntries, asMcpList, asStringList, inheritedItems } from "../settings/sections/launchShared/inherited";
-import { type PathValidation, validatePathListAdd } from "../settings/sections/launchShared/pathListAdd";
-import { schemaPathKind } from "../settings/sections/launchShared/schema";
 import styles from "./advancedOptions.module.css";
-import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
 
 const BOOLEAN_DEFAULT = "(default)";
 
