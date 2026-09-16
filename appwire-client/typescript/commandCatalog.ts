@@ -129,9 +129,10 @@ async function readCatalog(client: CommandCatalogClient): Promise<CommandDescrip
   return response.commands ?? [];
 }
 
-// One load at a time: `read` returns the state a successful load publishes
-// (with the error cleared) or throws, and the throw is published as `failure`
-// with the cause, over whatever state the store already had. A refresh during
+// One load at a time: a refresh clears the last failure while it loads, then
+// `read` returns the state a successful load publishes or throws, and the
+// throw is published as `failure` with the cause, over whatever state the
+// store already had. A refresh during
 // a load marks it superseded - its result is dropped and the loop runs once
 // more - so a stale response never lands over a newer request's, and a
 // disposed loop publishes nothing.
@@ -150,7 +151,7 @@ function refreshLoop<S extends { loading: boolean; error: string | null }>(
       return inFlight;
     }
     inFlight = (async () => {
-      set({ loading: true } as Partial<S>);
+      set({ loading: true, error: null } as Partial<S>);
       do {
         dirty = false;
         let next: Partial<S>;

@@ -177,6 +177,28 @@ describe("createSessionCommandCatalog", () => {
     expect(catalog.getState().items).toHaveLength(3);
   });
 
+  test("a retry after a failure clears the error for as long as it loads", async () => {
+    const { client, io } = sessionBoundary();
+    const catalog = createSessionCommandCatalog(client, "local:test");
+    io.read = async () => {
+      throw new Error("offline");
+    };
+    await catalog.refresh();
+    expect(catalog.getState().error).toBeTruthy();
+    let complete!: (value: unknown) => void;
+    io.read = (method) =>
+      method === "evener/command/list"
+        ? Promise.resolve({ commands: [] })
+        : new Promise((resolve) => {
+            complete = resolve;
+          });
+    const retry = catalog.refresh();
+    expect(catalog.getState()).toMatchObject({ loading: true, error: null });
+    complete({ thread: { evener: { ref: "local:test" } } });
+    await retry;
+    expect(catalog.getState()).toMatchObject({ items: [], loading: false, error: null });
+  });
+
   test("does not publish catalog responses after its owner leaves", async () => {
     const { client, io } = sessionBoundary();
     const catalog = createSessionCommandCatalog(client, "local:test");
