@@ -867,18 +867,19 @@ export function createConversationStore() {
   // entry; if it changed during the await, the rehydrate is stale with
   // respect to the error owner and must not clear or overwrite error.
   let errorOwnerRev = 0;
-  // Live writes accepted while a rehydrate's read is in flight, replayed onto
-  // the snapshot that read returns so live state is newer than the snapshot
-  // by construction (the web's replayHydrationNotifications). Owned by the
-  // current rehydrate token: reset to [] when a rehydrate enters, read and
-  // dropped at its commit, cleared on every conversation transition beside
-  // trailingReread. Null while no rehydrate is in flight, so a write costs
-  // nothing to record then. A thread-level notification replays through
-  // reducer.applyNotification; a capability refresh replays as the write it
-  // made. Item-level notifications still merge through liveOwnedRevs below
-  // until D23c routes them here too.
-  type LiveWrite = (conversation: MobileConversation) => MobileConversation;
-  let rehydrateReplay: LiveWrite[] | null = null;
+  // The reread's snapshot is authoritative over every thread-level write that
+  // preceded its response. AppWire orders a thread/read response at the
+  // snapshot cut and delivers frames in producer order on the one socket
+  // (docs/superpowers/plans/2026-07-28-appwire-retry-safe-mutations-and-atomic-
+  // rejoin.md:19, 372-373), so a frame this store applied while the read was
+  // in flight is already folded into the snapshot that arrives, and a frame
+  // that arrives after the response lands on top of it through the normal
+  // path. Nothing awaits between the response and the commit (the service's
+  // readProjection and rehydrate below each await the read alone), so there
+  // is no window to buffer for; the web's applyHydrationResponseCut drops its
+  // buffer at the same point for the same reason. Item-level notifications
+  // still merge through liveOwnedRevs below until D23c routes them here too.
+  //
   // The package reducer over the conversation. Every reducer case spreads the
   // model it was given, so the display rows (and anything else native keeps
   // on the conversation) survive untouched.
@@ -887,47 +888,6 @@ export function createConversationStore() {
     n: AnyNotification,
   ): MobileConversation {
     return applyNotification(conversation, n, Date.now()) as MobileConversation;
-  }
-  // Whether a rehydrate snapshot already carries what a buffered frame would
-  // append to the model — the turn a turn/started opens, or the steering item
-  // an evener/steering/injected adds (by clientMutationId when the frame has
-  // one, else by kind, text and start time). The protocol orders the read
-  // response at the snapshot cut, so a frame buffered before the response is
-  // already in it: for a field write the replay is then a no-op, but for an
-  // append it would add a second copy (and turn/started would take the
-  // reducer's duplicate-turn path, a false invariant report that replaces the
-  // snapshot's turn with the sparse start frame). This is the identity form
-  // of that cut rule for the frames where a replay is not idempotent.
-  function snapshotReflects(model: MobileConversation, n: AnyNotification): boolean {
-    switch (n.method) {
-      case "turn/started":
-        return model.turns.some((turn) => turn.id === n.params.turn.id);
-      case "evener/steering/injected": {
-        const { clientMutationId, kind, text, startedAt } = n.params;
-        const startedAtISO =
-          startedAt === undefined ? undefined : new Date(startedAt).toISOString();
-        return model.turns.some((turn) =>
-          turn.items.some(
-            (item) =>
-              item.type === "steering" &&
-              (clientMutationId
-                ? item.clientMutationId === clientMutationId
-                : item.steeringKind === kind &&
-                  item.text === (text ?? "") &&
-                  item.startedAt === startedAtISO),
-          ),
-        );
-      }
-      default:
-        return false;
-    }
-  }
-  // The write a frame replays onto a rehydrate snapshot.
-  function replayedWrite(n: AnyNotification): LiveWrite {
-    return (conversation) =>
-      snapshotReflects(conversation, n)
-        ? conversation
-        : applyThreadNotification(conversation, n);
   }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are
@@ -1226,12 +1186,13 @@ export function createConversationStore() {
               ? boundSink.setLiveCapabilities(refreshed, identity)
               : true;
           if (!sinkAccepted) return;
-          const publish: LiveWrite = (conversation) => ({
-            ...conversation,
-            capabilities: { ...refreshed },
+          // A plain publish. If a reread is in flight, the snapshot it
+          // returns is authoritative and supersedes this like any write that
+          // preceded the response cut; a refresh that lands after the commit
+          // writes on top of the snapshot.
+          storeSet?.({
+            conversation: { ...currentConv, capabilities: { ...refreshed } },
           });
-          if (rehydrateReplay !== null) rehydrateReplay.push(publish);
-          storeSet?.({ conversation: publish(currentConv) });
         }
       }
     });
@@ -1445,7 +1406,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        rehydrateReplay = null;
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
@@ -1514,7 +1474,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        rehydrateReplay = null;
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
@@ -1639,7 +1598,6 @@ export function createConversationStore() {
         bindingEpoch += 1;
         loadOlderToken += 1;
         trailingReread = null;
-        rehydrateReplay = null;
         boundService = null;
         boundSink = null;
         set({
@@ -1666,7 +1624,6 @@ export function createConversationStore() {
         bindingEpoch += 1;
         loadOlderToken += 1;
         trailingReread = null;
-        rehydrateReplay = null;
         activitySink = sink;
         boundService = service;
         boundSink = sink;
@@ -1830,9 +1787,6 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
-        // Every thread-level live write from here to commit replays onto the
-        // snapshot.
-        rehydrateReplay = [];
         // Fix round 1: Capture live-owner revision at entry. If an item's
         // liveOwnedRevs revision advanced past this after entry, the live
         // notification updated the item after the rehydrate's readProjection
@@ -1860,10 +1814,6 @@ export function createConversationStore() {
           if (token !== rehydrateToken) {
             return;
           }
-          // This rehydrate owns the buffer from here: take the live writes
-          // that raced the read and stop collecting.
-          const replay = rehydrateReplay ?? [];
-          rehydrateReplay = null;
           const currentSnapshot = get();
           const mutationOwnerChanged = entryMutationRev !== mutationOwnerRev;
           // R1: If mutation owner changed, do not publish predating projection.
@@ -2065,11 +2015,11 @@ export function createConversationStore() {
             supersededFrozen,
           );
           const committedItems = truncateAndRecord(rehydrateCapped);
-          // The snapshot, with every thread-level live write accepted while
-          // it was in flight replayed on top; the rows are the live/page
-          // merge above.
+          // The snapshot's thread-level fields are authoritative (see the
+          // response-cut note by applyThreadNotification); the rows are the
+          // live/page merge above.
           const committedConversation: MobileConversation = {
-            ...replay.reduce((model, write) => write(model), conversation),
+            ...conversation,
             items: committedItems,
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
@@ -2109,9 +2059,6 @@ export function createConversationStore() {
             set(commitBase);
           }
         } catch (err) {
-          // The read failed; nothing to replay onto, and a newer rehydrate
-          // owns the buffer if one started.
-          if (token === rehydrateToken) rehydrateReplay = null;
           // R1: failure may set error only if error/page/mutation owners all
           // remain unchanged. Check binding epoch, generation, token, page
           // owner, mutation-owner revision, and error-owner revision.
@@ -2649,7 +2596,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        rehydrateReplay = null;
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
@@ -3053,11 +2999,9 @@ export function createConversationStore() {
             }
             // Everything else about this thread is the package reducer's. It
             // reads the ThreadModel half of the conversation and leaves the
-            // display rows alone; while a rehydrate's read is in flight the
-            // write is also queued to replay onto that read's snapshot.
+            // display rows alone.
             const applied = applyThreadNotification(conv, n);
             if (applied === conv) break;
-            if (rehydrateReplay !== null) rehydrateReplay.push(replayedWrite(n));
             set({ conversation: applied });
             break;
           }
@@ -3076,7 +3020,6 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
-        rehydrateReplay = null;
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();

@@ -7511,10 +7511,13 @@ describe("ConversationStore", () => {
     });
   });
 
-  // A live write accepted while a reread is in flight is newer than the
-  // snapshot that reread returns, whichever thread-level field it touched.
-  // The snapshot is replayed onto (the web's replayHydrationNotifications),
-  // so no field can be rolled back by a reread that raced it.
+  // The reread's snapshot is authoritative over every thread-level frame that
+  // preceded its response: AppWire orders the response at the snapshot cut,
+  // so such a frame is already folded into the snapshot (docs/superpowers/
+  // plans/2026-07-28-appwire-retry-safe-mutations-and-atomic-rejoin.md:19,
+  // 372-373). These fixtures hand the store a snapshot that does NOT reflect
+  // the frame — an ordering the protocol excludes — to pin that the store
+  // does not second-guess the snapshot: no replay, no per-field ownership.
   async function rereadRacing(
     liveWrite: (store: ReturnType<typeof createConversationStore>) => void,
     snapshot: Thread,
@@ -7546,7 +7549,7 @@ describe("ConversationStore", () => {
     ...over,
   });
 
-  describe("a capability publication during a reread wins over the snapshot", () => {
+  describe("the reread's snapshot is authoritative over pre-response capability writes", () => {
     it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
       const conv = (
         await rereadRacing(
@@ -7558,28 +7561,30 @@ describe("ConversationStore", () => {
       expect(conv?.capabilities.send).toBe(false);
     });
 
-    it("concurrent newer cap refresh wins — rehydrate preserves current caps", async () => {
-      // The snapshot carries send=false; the publication that raced it also
-      // turned queue off, and that newer set is what the commit shows.
-      const conv = (await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method: "thread/status/changed",
-            params: {
-              ...target,
-              status: { type: "ready" },
-              capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
-            },
-          } as AnyNotification),
-        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
-        makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
-      )).getState().conversation;
+    it("a capability publication that preceded the response yields to the snapshot", async () => {
+      // The publication turned queue off before the response arrived; the
+      // snapshot (queue on, send off) is the newer truth and is what commits.
+      const conv = (
+        await rereadRacing(
+          (store) =>
+            store.getState().applyNotification({
+              method: "thread/status/changed",
+              params: {
+                ...target,
+                status: { type: "ready" },
+                capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
+              },
+            } as AnyNotification),
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: false } }) }),
+          makeThread({ evener: evenerWith({ capabilities: { ...ALL_TRUE_CAPS, send: true } }) }),
+        )
+      ).getState().conversation;
       expect(conv?.capabilities.send).toBe(false);
-      expect(conv?.capabilities.queue).toBe(false);
+      expect(conv?.capabilities.queue).toBe(true);
     });
   });
 
-  describe("live writes during a reread replay onto the snapshot", () => {
+  describe("the reread's snapshot is authoritative over frames that preceded it", () => {
     const liveEscalation = {
       ...target,
       escalationId: "esc-live",
@@ -7597,31 +7602,31 @@ describe("ConversationStore", () => {
       expected: unknown;
     }>([
       {
-        name: "a status change over the snapshot's status",
+        name: "a status change",
         method: "thread/status/changed",
         params: { status: { type: "active" } },
         snapshot: makeThread({ status: { type: "idle" } }),
         read: (conv) => conv.status,
-        expected: { type: "active" },
+        expected: { type: "idle" },
       },
       {
-        name: "a queue change over the snapshot's queue",
+        name: "a queue change",
         method: "thread/queueChanged",
         params: { queue: { revision: 4, depth: 1, texts: ["later"] } },
         snapshot: makeThread(),
         read: (conv) => conv.queue,
-        expected: { revision: 4, depth: 1, texts: ["later"] },
+        expected: { revision: 0 },
       },
       {
-        name: "a rename over the snapshot's name",
+        name: "a rename",
         method: "evener/thread/name/changed",
-        params: { name: "renamed live" },
+        params: { name: "renamed before the response" },
         snapshot: makeThread({ name: "snapshot name" }),
         read: (conv) => conv.name,
-        expected: "renamed live",
+        expected: "snapshot name",
       },
       {
-        name: "a model change over the snapshot's model",
+        name: "a model change",
         method: "thread/model/changed",
         params: {
           modelProvider: "openai/gpt-x",
@@ -7631,79 +7636,113 @@ describe("ConversationStore", () => {
         },
         snapshot: makeThread({ modelProvider: "anthropic" }),
         read: (conv) => [conv.modelProvider, conv.reasoningEffortLevels],
-        expected: ["openai/gpt-x", ["low", "high"]],
+        expected: ["anthropic", []],
       },
       {
-        name: "a goal update over the snapshot's goal",
+        name: "a goal update",
         method: "evener/goal/updated",
-        params: { goal: { objective: "live", status: "active", iterations: 2 } },
+        params: { goal: { objective: "before the response", status: "active", iterations: 2 } },
         snapshot: makeThread({
-          evener: evenerWith({ goal: { objective: "stale", status: "active", iterations: 1 } }),
+          evener: evenerWith({ goal: { objective: "snapshot", status: "active", iterations: 1 } }),
         }),
         read: (conv) => conv.goal,
-        expected: { objective: "live", status: "active", iterations: 2 },
+        expected: { objective: "snapshot", status: "active", iterations: 1 },
       },
       {
-        name: "a task update over the snapshot's tasks",
+        name: "a task update",
         method: "evener/task/updated",
         params: { total: 3, done: 2 },
         snapshot: makeThread({ evener: evenerWith({ tasks: { total: 3, done: 1 } }) }),
         read: (conv) => conv.tasks,
-        expected: { total: 3, done: 2 },
+        expected: { total: 3, done: 1 },
       },
       {
-        name: "a started turn over the snapshot's idle turn state",
+        name: "a started turn",
         method: "turn/started",
-        params: { turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
+        params: { turn: { id: "t-before", itemsView: "default", status: "inProgress" } },
         snapshot: makeThread(),
-        read: (conv) => conv.activeTurnId,
-        expected: "t-live",
+        read: (conv) => [conv.activeTurnId, conv.turns.length],
+        expected: [undefined, 0],
       },
       {
-        name: "an approval requested live over a snapshot without it",
+        name: "an approval request",
         method: "evener/sandbox/escalation/requested",
         params: liveEscalation,
         snapshot: makeThread(),
         read: (conv) => conv.pendingEscalations,
-        expected: [liveEscalation],
+        expected: [],
       },
-    ])("keeps $name", async ({ method, params, snapshot, read, expected }) => {
-      const conv = (await rereadRacing(
-        (store) =>
-          store.getState().applyNotification({
-            method,
-            params: { ...target, ...params },
-          } as AnyNotification),
-        snapshot,
-      )).getState().conversation;
+    ])("commits the snapshot over $name that preceded the response", async ({ method, params, snapshot, read, expected }) => {
+      const conv = (
+        await rereadRacing(
+          (store) =>
+            store.getState().applyNotification({
+              method,
+              params: { ...target, ...params },
+            } as AnyNotification),
+          snapshot,
+        )
+      ).getState().conversation;
       if (!conv) throw new Error("conversation gone");
       expect(read(conv)).toEqual(expected);
     });
 
-    // The common race: the turn that started during the read is already in
-    // the snapshot the read returns. Replaying its start must not re-enter
-    // the reducer's duplicate-turn path, which reports an invariant violation
-    // and replaces the snapshot's turn (items and all) with the sparse frame.
+    // The ordering the protocol does allow: a frame delivered after the
+    // response lands on top of the committed snapshot.
+    it("applies a frame that arrives after the response on top of the snapshot", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ status: { type: "idle" }, name: "snapshot name" }),
+      );
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: target,
+      } as AnyNotification);
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { ...target, status: { type: "active" } },
+      } as AnyNotification);
+      expect(store.getState().conversation).toMatchObject({
+        name: "snapshot name",
+        status: { type: "active" },
+      });
+    });
+
+    // Two fences on the same rule for the frames where a second application
+    // would not be idempotent: a turn the snapshot already carries keeps its
+    // items and raises no duplicate-turn report, and a steering the snapshot
+    // already carries is not appended twice, so the next live steering takes
+    // the next index.
     it("does not replay a started turn the snapshot already carries", async () => {
       const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
       try {
-        const conv = (await rereadRacing(
-          (store) =>
-            store.getState().applyNotification({
-              method: "turn/started",
-              params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
-            } as AnyNotification),
-          makeThread({
-            turns: [
-              makeTurn({
-                id: "t-live",
-                status: "inProgress",
-                items: [userMessageItem("u-live", "started during the read")],
-              }),
-            ],
-            evener: evenerWith({ activeTurnId: "t-live" }),
-          }),
-        )).getState().conversation;
+        const conv = (
+          await rereadRacing(
+            (store) =>
+              store.getState().applyNotification({
+                method: "turn/started",
+                params: { ...target, turn: { id: "t-live", itemsView: "default", status: "inProgress" } },
+              } as AnyNotification),
+            makeThread({
+              turns: [
+                makeTurn({
+                  id: "t-live",
+                  status: "inProgress",
+                  items: [userMessageItem("u-live", "started during the read")],
+                }),
+              ],
+              evener: evenerWith({ activeTurnId: "t-live" }),
+            }),
+          )
+        ).getState().conversation;
         expect(conv?.activeTurnId).toBe("t-live");
         expect(conv?.turns.map((turn) => [turn.id, turn.items.length])).toEqual([["t-live", 1]]);
         expect(consoleError).not.toHaveBeenCalled();
@@ -7712,10 +7751,6 @@ describe("ConversationStore", () => {
       }
     });
 
-    // Same race for an append-style frame: the steering the server injected
-    // during the read is already an item of the snapshot's turn. Replaying it
-    // would append a second copy, and the next live steering would take an
-    // inflated per-turn index.
     it("does not replay a steering injection the snapshot already carries", async () => {
       const steer = { text: "go left", kind: "user", source: "user", startedAt: 1000 };
       const activeTurn = (items: ThreadItem[]) =>
@@ -7756,10 +7791,10 @@ describe("ConversationStore", () => {
       ]);
     });
 
-    // The buffer belongs to the conversation the reread was for: closing it
-    // drops the buffer, and frames for the next conversation neither collect
-    // for the dead read nor land when that read finally returns.
-    it("drops the buffer when the conversation closes under an in-flight reread", async () => {
+    // A reread belongs to the conversation it was for: closing that
+    // conversation and opening another must leave the next conversation's
+    // frames applied and the dead read's snapshot never committed.
+    it("never commits a dead read's snapshot after the conversation closes", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(makeThread());
       const store = createConversationStore();
