@@ -42,31 +42,42 @@ export function parse(file, text) {
 // `export type * from "./types.gen"` -- Thread and every other generated
 // protocol type -- is in the surface, and a value reachable only through a
 // value star is too. The rewriter's export collector follows the same stars;
-// this one keeps the value/type split the qualification needs. Memoised per
-// file, and the entry is set before recursing so a re-export cycle terminates.
+// this one keeps the value/type split the qualification needs. A generic type
+// also records its type-parameter count under the name it is exported as, so
+// the qualification can name it with arguments. Memoised per file, and the
+// entry is set before recursing so a re-export cycle terminates.
 const PACKAGE_SOURCE_EXTENSIONS = [".ts", ".tsx"];
 function moduleSurface(file, readFile, cache) {
   const cached = cache.get(file);
   if (cached) return cached;
-  const surface = { values: new Set(), types: new Set() };
+  const surface = { values: new Set(), types: new Set(), typeParameters: new Map() };
   cache.set(file, surface);
   const source = parseSource(ts, file, readFile(file));
   for (const statement of source.statements) {
     if (ts.isExportDeclaration(statement)) {
       const clause = statement.exportClause;
+      const target =
+        statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)
+          ? resolveSourceFile(file, statement.moduleSpecifier.text, PACKAGE_SOURCE_EXTENSIONS)
+          : undefined;
+      const inner = target ? moduleSurface(target, readFile, cache) : undefined;
       if (clause && ts.isNamedExports(clause)) {
         for (const element of clause.elements) {
-          (statement.isTypeOnly || element.isTypeOnly ? surface.types : surface.values).add(element.name.text);
+          const name = element.name.text;
+          if (statement.isTypeOnly || element.isTypeOnly) {
+            surface.types.add(name);
+            const arity = inner?.typeParameters.get(element.propertyName?.text ?? name);
+            if (arity) surface.typeParameters.set(name, arity);
+          } else {
+            surface.values.add(name);
+          }
         }
       } else if (clause && ts.isNamespaceExport(clause)) {
         surface.values.add(clause.name.text);
-      } else if (statement.moduleSpecifier && ts.isStringLiteralLike(statement.moduleSpecifier)) {
-        const target = resolveSourceFile(file, statement.moduleSpecifier.text, PACKAGE_SOURCE_EXTENSIONS);
-        if (target) {
-          const inner = moduleSurface(target, readFile, cache);
-          for (const name of inner.types) surface.types.add(name);
-          if (!statement.isTypeOnly) for (const name of inner.values) surface.values.add(name);
-        }
+      } else if (inner) {
+        for (const name of inner.types) surface.types.add(name);
+        for (const [name, arity] of inner.typeParameters) surface.typeParameters.set(name, arity);
+        if (!statement.isTypeOnly) for (const name of inner.values) surface.values.add(name);
       }
       continue;
     }
@@ -74,6 +85,8 @@ function moduleSurface(file, readFile, cache) {
     if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
     if (ts.isTypeAliasDeclaration(statement) || ts.isInterfaceDeclaration(statement)) {
       if (statement.name) surface.types.add(statement.name.text);
+      if (statement.typeParameters?.length)
+        surface.typeParameters.set(statement.name.text, statement.typeParameters.length);
     } else if (ts.isVariableStatement(statement)) {
       for (const declaration of statement.declarationList.declarations) {
         if (ts.isIdentifier(declaration.name)) surface.values.add(declaration.name.text);
@@ -90,8 +103,8 @@ function moduleSurface(file, readFile, cache) {
 // what the entry point exposes: an export added anywhere the root re-exports is
 // qualified without editing anything here.
 export function rootSurface(indexFile, readFile = (file) => readFileSync(file, "utf8")) {
-  const { values, types } = moduleSurface(indexFile, readFile, new Map());
-  return { values: [...values].sort(), types: [...types].sort() };
+  const { values, types, typeParameters } = moduleSurface(indexFile, readFile, new Map());
+  return { values: [...values].sort(), types: [...types].sort(), typeParameters: Object.fromEntries(typeParameters) };
 }
 
 // The runtime values a source file takes from each of this package's published

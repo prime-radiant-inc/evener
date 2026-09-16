@@ -1,8 +1,9 @@
 import {
+  buildComposerInput,
   findBuiltinArgument,
   matchBuiltinInvocation,
-} from "../../cmd/evener-hub/frontend/src/panes/session/composer/builtinInvocation";
-import { buildComposerInput, mergeSlashCommands } from "@evener/appwire-client";
+  mergeSlashCommands,
+} from "@evener/appwire-client";
 import type { ThreadClearResponse } from "@evener/appwire-client";
 import {
   effortLabel,

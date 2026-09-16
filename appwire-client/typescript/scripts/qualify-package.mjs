@@ -45,7 +45,11 @@ async function qualify() {
   // the qualification surface cannot drift from what the entry point exports;
   // an export added there is qualified without editing this file. The smoke
   // CALLS below stay hand-written -- they are behaviour probes, not a surface.
-  const { values: rootValues, types: rootTypes } = rootSurface(join(packageDir, "index.ts"));
+  const {
+    values: rootValues,
+    types: rootTypes,
+    typeParameters: rootTypeParameters,
+  } = rootSurface(join(packageDir, "index.ts"));
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
@@ -196,6 +200,9 @@ const pathRows = client.buildPathRows({
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
 assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.equal(client.findBuiltinArgument([{ id: "anthropic/claude-x", label: "Claude X" }], " claude x ")?.id, "anthropic/claude-x");
+assert.deepEqual(client.matchBuiltinInvocation("/goal fix it", [{ id: "goal", args: { kind: "free" } }]), { command: { id: "goal", args: { kind: "free" } }, argsText: "fix it" });
+assert.equal(client.matchBuiltinInvocation("/compact now", [{ id: "compact" }]), null);
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
@@ -206,6 +213,7 @@ assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/m
     ".": {
       values: rootValues,
       types: rootTypes,
+      typeParameters: rootTypeParameters,
       // A typed construction for the specifiers that offer one, so the
       // declaration checks prove more than that the names resolve.
       esmTypeUses: `const client: AppwireClient = new AppwireClient({ url: "ws://127.0.0.1:1/rpc" });
@@ -274,6 +282,13 @@ assert.equal(typeof client.readDocFile, "function");
   }
   for (const module of shippedModules)
     assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
+  // A generic type only resolves with its arguments supplied; `any` satisfies
+  // any constraint, and the tuple below asks nothing more than that each name
+  // is a type the specifier publishes.
+  const typeReference = (surface, name) => {
+    const arity = surface.typeParameters?.[name] ?? 0;
+    return arity ? `${name}<${Array(arity).fill("any").join(", ")}>` : name;
+  };
   // One ESM declaration consumer, one CommonJS declaration consumer and one
   // runtime presence check in each module form, per published specifier.
   const declarationConsumers = [];
@@ -304,7 +319,7 @@ import type {
 ${surface.types.map((name) => `  ${name},`).join("\n")}
 } from "${moduleSpecifier}";
 ${surface.esmTypeUses ?? ""}
-declare const shipped: [${surface.types.join(", ")}]; void shipped;
+declare const shipped: [${surface.types.map((name) => typeReference(surface, name)).join(", ")}]; void shipped;
 ${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
     );
@@ -312,7 +327,7 @@ ${surface.values.map((name) => `void ${name};`).join("\n")}
       join(consumerDir, commonjsConsumer),
       `import client = require("${moduleSpecifier}");
 ${surface.cjsTypeUses ?? ""}
-declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+declare const shipped: [${surface.types.map((name) => `client.${typeReference(surface, name)}`).join(", ")}]; void shipped;
 ${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
     );

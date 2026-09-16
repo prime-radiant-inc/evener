@@ -27,23 +27,34 @@ test("rootSurface follows value and type star re-exports so the surface cannot d
         'export { doThing } from "./named";',
         'export type { Foo } from "./named";',
         'export { mix, type OnlyType } from "./named";',
+        'export type { Pair as Duo } from "./named";',
         'export type * from "./types.gen";',
         'export * from "./widgets";',
         "",
       ].join("\n"),
     );
-    writeFileSync(path.join(root, "named.ts"), "export function doThing() {}\nexport type Foo = number;\n");
+    writeFileSync(
+      path.join(root, "named.ts"),
+      "export function doThing() {}\nexport type Foo = number;\nexport interface Pair<A, B> {\n  a: A;\n  b: B;\n}\n",
+    );
     writeFileSync(
       path.join(root, "types.gen.ts"),
       "export interface Thread {\n  id: string;\n}\nexport const METHOD_NAMES = [];\n",
     );
-    writeFileSync(path.join(root, "widgets.ts"), "export const Widget = 1;\nexport type WidgetProps = object;\n");
-    const { values, types } = rootSurface(path.join(root, "index.ts"));
+    writeFileSync(
+      path.join(root, "widgets.ts"),
+      "export const Widget = 1;\nexport type WidgetProps = object;\nexport type Box<T> = { value: T };\n",
+    );
+    const { values, types, typeParameters } = rootSurface(path.join(root, "index.ts"));
     // Thread is reachable only through `export type *`, Widget only through the
     // value star, and an inline `type OnlyType` is a type. METHOD_NAMES is a
     // value under a TYPE star, so it is neither a type nor a re-exported value.
-    expect(types).toEqual(["Foo", "OnlyType", "Thread", "WidgetProps"]);
+    expect(types).toEqual(["Box", "Duo", "Foo", "OnlyType", "Thread", "WidgetProps"]);
     expect(values).toEqual(["Widget", "doThing", "mix"].sort());
+    // A generic type needs type arguments wherever the qualification names it,
+    // so the surface carries each type's parameter count under its EXPORTED
+    // name - through a renaming re-export and a star alike.
+    expect(typeParameters).toEqual({ Box: 1, Duo: 2 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
