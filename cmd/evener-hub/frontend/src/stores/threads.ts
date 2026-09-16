@@ -159,13 +159,7 @@ export interface ThreadsStoreState {
   // request. It is gated: a non-empty selection requires the target's
   // advertised capabilities.skillInput to be true, and a refusal throws
   // before anything durable is written (composerMutationIntent's own gate).
-  send(
-    ref: string,
-    text: string,
-    attachments?: InputAttachment[],
-    skillNames?: readonly string[],
-    onDestination?: (ref: string) => void,
-  ): Promise<void>;
+  send(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
   steer(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
   queue(ref: string, text: string, attachments?: InputAttachment[], skillNames?: readonly string[]): Promise<void>;
   interrupt(ref: string): Promise<void>;
@@ -916,114 +910,23 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
   return { outbox, optimistic, recovery };
 }
 
-// A resume already on the wire is serialized, not merely deduped: the client
-// holds ONE resumePending guard until resumeThread settles, so the entry has
-// to outlive a Stop (which only bumps the generation, refusing side effects)
-// and be waited on by the next resume. Dropping it would let a fresh Send
-// start a second resumeThread while the first is pending, which the client
-// rejects with "A session resume is already pending".
-interface PendingUserIntentResume {
-  generation: number;
-  promise: Promise<string>;
-}
-const userIntentResumes = new Map<string, PendingUserIntentResume>();
 const userIntentStopGenerations = new Map<string, number>();
 
 function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, (userIntentStopGenerations.get(ref) ?? 0) + 1);
 }
 
-// Called only by a fresh user Send, explicit Retry, or the recovery action.
-// Passive reads and background outbox discovery must never start a daemon.
-// Keep this above the client API so concurrent user actions share both its
-// connection refresh and the subsequent authoritative hydration.
-export async function resumeSessionForUserIntent(ref: string, explicitRecovery = false): Promise<string> {
-  // Captured at entry, not after a wait: a Stop that lands while this call is
-  // queued behind a canceled resume still cancels it.
+// The explicit Resume action is the one user intent that still starts a daemon
+// directly. A Stop acknowledged while its reconnect or post-resume hydration is
+// in flight must cancel it: the action passes this fence to the client's
+// beforeRequest hook (so no resume RPC is sent) and to refreshThread's
+// beforePublish hook (so a stale read does not publish over the newer Stop).
+export function resumeStopFence(ref: string): () => void {
   const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
-  const checkStopped = () => {
+  return () => {
     if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
       throw new Error("Stop canceled this pending action; send again when ready.");
   };
-  for (;;) {
-    const existing = userIntentResumes.get(ref);
-    if (existing) {
-      // A resume from an older generation is already canceled - its own
-      // checkStopped refused every side effect - but the client still holds
-      // resumePending for it. Wait for it to settle and clear its own slot
-      // before starting the next resume, which the guard requires.
-      if (existing.generation === stopGeneration) return existing.promise;
-      await existing.promise.catch(() => {});
-      checkStopped();
-      continue;
-    }
-    const state = threadsStore.getState();
-    const model = state.threads.get(ref);
-    // Only implicit Send/Retry recovery is restricted to stopped local sessions.
-    // The explicit Resume action continues to support every ref the hub accepts.
-    if (
-      !explicitRecovery &&
-      (!ref.startsWith("local:") || (model?.status.type !== "notLoaded" && !state.restartBlockingObligations.has(ref)))
-    )
-      return ref;
-    if (model?.status.type === "restartRequired")
-      throw new Error("Stop the incompatible daemon before sending; your draft is kept.");
-    const client = requireClient();
-    const resume = (async () => {
-      // The guard runs after the reconnect settles and immediately before the
-      // resume RPC, so a Stop that lands during that reconnect sends nothing.
-      const { thread } = await client.resumeThread(ref, { beforeRequest: checkStopped });
-      checkStopped();
-      const resumedRef = thread.evener.ref;
-      await threadsStore.getState().refreshThread(resumedRef, checkStopped);
-      checkStopped();
-      return resumedRef;
-    })().finally(() => {
-      if (userIntentResumes.get(ref)?.promise === resume) userIntentResumes.delete(ref);
-    });
-    userIntentResumes.set(ref, { generation: stopGeneration, promise: resume });
-    return resume;
-  }
-}
-
-// A fresh intent may follow a replacement ref; an uncertain Retry never does.
-// Hold that destination's model until the durable handoff pins it, or release
-// it on failure. ensureThread undoes its own claim if hydration rejects.
-async function withResumedSendDestination<T>(ref: string, submit: (destination: string) => Promise<T>): Promise<T> {
-  const stopGeneration = userIntentStopGenerations.get(ref) ?? 0;
-  const checkStopped = () => {
-    if ((userIntentStopGenerations.get(ref) ?? 0) !== stopGeneration)
-      throw new Error("Stop canceled this pending action; send again when ready.");
-  };
-  // A Send that has to resume can outlive its composer: navigation may unmount
-  // this session while the resume is still on the wire. Hold a lifecycle claim
-  // on the original destination for the whole operation, so refreshThread
-  // still publishes the resumed snapshot (and composerMutationIntent still
-  // reads the resumed instance id) after the pane's own claim is gone. The
-  // predicate is the one resumeSessionForUserIntent applies to an implicit
-  // send, so a non-resuming Send takes no extra claim.
-  const entry = threadsStore.getState();
-  const entryModel = entry.threads.get(ref);
-  const willResume =
-    ref.startsWith("local:") && (entryModel?.status.type === "notLoaded" || entry.restartBlockingObligations.has(ref));
-  if (willResume) await threadsStore.getState().ensureThread(ref);
-  let destination = ref;
-  let claimedDestination = false;
-  try {
-    destination = await resumeSessionForUserIntent(ref);
-    checkStopped();
-    if (destination !== ref) {
-      // A replacement destination is a different ref: claim its own lifecycle
-      // so its hydration belongs to this Send as well.
-      await threadsStore.getState().ensureThread(destination);
-      claimedDestination = true;
-    }
-    checkStopped();
-    return await submit(destination);
-  } finally {
-    if (claimedDestination) threadsStore.getState().releaseThread(destination);
-    if (willResume) threadsStore.getState().releaseThread(ref);
-  }
 }
 
 export async function retryBlockedMutation(
@@ -1048,26 +951,9 @@ export async function retryBlockedMutation(
   // neither resume a session nor retry another kind of mutation.
   if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
   if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
-  // Keep the resume helper's own answer: which ref is actually live is what
-  // separates "this record's ref cannot carry the retry" from the generic
-  // "could not retry" outcome the caller renders.
-  const resumedElsewhere = mode === "user" && (await resumeSessionForUserIntent(record.targetRef)) !== record.targetRef;
-  if (checkStopped()) return false;
-  // Recovery may reveal a replacement instance. Never retarget an uncertain
-  // request: reconciliation and journal replay retain its original ID/payload,
-  // including the old instance fence, which the daemon may explicitly reject.
-  // But when the session is live somewhere else, refusing to retry at the
-  // original ref is a specific outcome - the original delivery is still
-  // uncertain - not a plain retry failure. Report it as such and leave the
-  // record, its payload and its identity exactly as they are.
-  const refusal = (): boolean => {
-    if (resumedElsewhere)
-      throw new Error("Resumed in another instance; the original message's delivery is still uncertain.");
-    return false;
-  };
-  if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return refusal();
+  if (!threadsStore.getState().mutationAuthorityRefs.has(record.targetRef)) return false;
   const status = threadsStore.getState().threads.get(record.targetRef)?.status.type;
-  if (!status || status === "restartRequired" || status === "notLoaded") return refusal();
+  if (!status || status === "restartRequired" || status === "notLoaded") return false;
   if (
     pendingMutationReconciliations.has(record.targetRef) ||
     pendingThreadHydrations.has(record.targetRef) ||
@@ -1131,16 +1017,13 @@ export async function resendRecoveryMutation(
 ): Promise<MutationOutboxRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const submit = async (destination: string) => {
-    const intent = composerMutationIntent(destination, route, text, attachments, skillNames);
-    const record = await runtime.storage.resendRecovery(clientMutationId, intent);
-    if (!record) return undefined;
-    pinnedMutationRefs.add(destination);
-    notifyMutationPersistence([destination], { record, recoveryId: clientMutationId });
-    handleDiscoveredMutations(runtime, [destination]);
-    return record;
-  };
-  return route === "send" ? withResumedSendDestination(targetRef, submit) : submit(targetRef);
+  const intent = composerMutationIntent(targetRef, route, text, attachments, skillNames);
+  const record = await runtime.storage.resendRecovery(clientMutationId, intent);
+  if (!record) return undefined;
+  pinnedMutationRefs.add(targetRef);
+  notifyMutationPersistence([targetRef], { record, recoveryId: clientMutationId });
+  handleDiscoveredMutations(runtime, [targetRef]);
+  return record;
 }
 
 export function setMutationStorageForTests(storage: MutationOutboxIndexedDB): void {
@@ -2905,11 +2788,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     putThreadModel(ref, mergeOlderItemPage(current, resp));
   },
 
-  async send(ref, text, attachments, skillNames, onDestination) {
-    const record = await withResumedSendDestination(ref, (destination) =>
-      enqueueMutationIntent(composerMutationIntent(destination, "send", text, attachments, skillNames)),
-    );
-    onDestination?.(record.targetRef);
+  async send(ref, text, attachments, skillNames) {
+    await enqueueMutationIntent(composerMutationIntent(ref, "send", text, attachments, skillNames));
   },
 
   async steer(ref, text, attachments, skillNames) {
@@ -3256,7 +3136,6 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // test's first rewireClient() call never fires a stale unwire closure from
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
-  userIntentResumes.clear();
   userIntentStopGenerations.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();

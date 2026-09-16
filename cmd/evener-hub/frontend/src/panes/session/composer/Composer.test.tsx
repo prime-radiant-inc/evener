@@ -4148,17 +4148,17 @@ test("a message carrying an attachment is never read as a command invocation, ev
   expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });
 
-// Only a Send can resume a stopped session, so only a Send may defer the
-// skillInput gate past the resume. Queue, Steer and Drain never call
-// resumeSessionForUserIntent, so deferring the gate for them replaced the
-// intended capability refusal with the store-side throw ("skill selections are
-// not supported on this target"), which surfaced as a generic "<verb> failed".
+// The skillInput gate reads this snapshot's capabilities unconditionally, so
+// Queue, Steer and Drain refuse a staged selection on a target that never
+// advertised the capability rather than deferring to the store-side throw
+// ("skill selections are not supported on this target"), which surfaced as a
+// generic "<verb> failed".
 test.each([
   { label: "Queue", queue: { revision: 0 }, control: "submit" as const, method: "turn/queue" },
   { label: "Steer", queue: { revision: 0 }, control: "steer" as const, method: "turn/steer" },
   { label: "Drain", queue: { revision: 0, depth: 1 }, control: "steer" as const, method: "turn/drainAsSteer" },
 ])(
-  "review regression: a staged skill on $label still hears the capability refusal while a resume is pending",
+  "a staged skill on $label hears the capability refusal on a recovery-fenced session",
   async ({ label, queue, control, method }) => {
     const user = userEvent.setup();
     const ref = `local:skill-gate-${label.toLowerCase()}`;
@@ -4174,8 +4174,7 @@ test.each([
         mutationStateAuthoritative: false,
       },
     });
-    // The recovery obligation is what made resumesOnSend true for every verb,
-    // not just the Send that actually resumes.
+    // The recovery fence does not defer the gate for any verb.
     await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
     expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 

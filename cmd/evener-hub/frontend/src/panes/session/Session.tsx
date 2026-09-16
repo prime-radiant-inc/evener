@@ -32,7 +32,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { resumeSessionForUserIntent, threadsStore, useThreadsStore } from "../../stores/threads";
+import { resumeStopFence, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
@@ -128,7 +128,12 @@ function RestartRequiredNotice({
       if (resumeRequired) {
         const { client, state } = connectionStore.getState();
         if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        refreshedRef = await resumeSessionForUserIntent(sessionRef, true);
+        const stopFence = resumeStopFence(sessionRef);
+        const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopFence });
+        stopFence();
+        refreshedRef = thread.evener.ref;
+        await threadsStore.getState().refreshThread(refreshedRef, stopFence);
+        stopFence();
         if (refreshedRef !== sessionRef) {
           const url = paneToURL("session", { ref: refreshedRef });
           if (url !== null) navigate(url, { replace: true });
@@ -147,7 +152,7 @@ function RestartRequiredNotice({
       {ownerRef
         ? "This session is retained by its owning session. Its uncertain messages cannot be checked here until the owner releases it."
         : resumeRequired
-          ? "Send a message or retry an uncertain message to resume this session."
+          ? "Resume this session before continuing. Any uncertain messages will be checked before sending."
           : "Session restart required. Stop the older daemon, then refresh this session. Stopping interrupts active work."}
       {ownerRef && <a href={paneToURL("session", { ref: ownerRef }) ?? undefined}>Open owning session</a>}
       <Button disabled={refreshing} onClick={() => void refresh()}>

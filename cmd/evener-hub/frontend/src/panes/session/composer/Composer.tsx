@@ -50,7 +50,6 @@ import {
 } from "react";
 import type { PaletteRunContext, ScopedCommand } from "../../../shell/palette/commands";
 import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
-import { navigate, paneToURL } from "../../../shell/routing";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { useMountAutofocus } from "../../../shell/useMountAutofocus";
 import { workspaceStore } from "../../../shell/workspace";
@@ -260,7 +259,6 @@ export function Composer({ ref, focused }: ComposerProps) {
   const recoveryReplacementEpochRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
-  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const actionPending = busyAction !== null || submitting || mutationWriteStalled;
   const mountedRef = useRef(false);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
@@ -831,15 +829,11 @@ export function Composer({ ref, focused }: ComposerProps) {
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
   const localNotLoaded = ref.startsWith("local:") && model.status.type === "notLoaded";
+  // A stopped local session keeps its follow-up card and draft usable: the
+  // recovery notice and the explicit Resume action live below it, and sending
+  // still works because the daemon resumes the session on turn/start. So the
+  // card's Send is available even though this snapshot advertises send=false.
   const canResumeOnSend = localNotLoaded && recoveryRequired;
-  // Whether a send to this ref resumes a stopped local session before the store
-  // builds its intent: the predicate threads.ts's resumeSessionForUserIntent
-  // itself applies (a local ref, and either the notLoaded status or a
-  // restart-blocking obligation already on the session). Only a Send runs that
-  // resume (withResumedSendDestination), so only a Send defers the skillInput
-  // gate to the store-side check; Queue/Steer/Drain read this snapshot's
-  // capabilities directly.
-  const resumesOnSend = localNotLoaded || (ref.startsWith("local:") && recoveryRequired);
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -1195,7 +1189,6 @@ export function Composer({ ref, focused }: ComposerProps) {
   // it takes. Before this reconciliation, both sides pushed a toast for the
   // SAME failure; this is the fix, not a pre-existing split.
   async function submitAction(kind: "send" | "queue" | "steer" | "drain"): Promise<void> {
-    const submittedResume = kind === "send" && localNotLoaded;
     const submittedText = textRef.current;
     const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
@@ -1204,31 +1197,14 @@ export function Composer({ ref, focused }: ComposerProps) {
     const payload = attachments.toInputAttachments();
     const submittedRecoveryId = activeRecoveryIdRef.current;
     let wonRecoveryResend = true;
-    let destination = ref;
-    const onDestination = (resumedRef: string) => {
-      destination = resumedRef;
-    };
     // The UI-side half of the skillInput gate (threads.ts's composerMutationIntent
     // is the store-side half, and Task 12 gates the hub's forwarding too): a
     // target that never advertised the capability keeps the draft and hears
     // why, instead of minting durable intent the wire would refuse.
-    //
-    // Except when this send RESUMES the session first: the saved snapshot of a
-    // stopped session is the previous daemon's answer and does not advertise
-    // skillInput (ThreadCapabilities.skillInput is omitempty, and the capability
-    // belongs to the live daemon - server/appwire_runtime.go's
-    // appCapabilitiesLocked), so reading it here refused the draft before the
-    // very resume Send exists for could run. threads.ts's
-    // resumeSessionForUserIntent hydrates the resumed destination before
-    // composerMutationIntent reads ITS capabilities, so the store-side half is
-    // already the check the finding asks for: the gate still refuses a
-    // selection the destination cannot accept, it just refuses it after the
-    // resume, against the destination that answers for it.
-    if (submittedSkillNames.length > 0 && !skillInputSupported && !(kind === "send" && resumesOnSend)) {
+    if (submittedSkillNames.length > 0 && !skillInputSupported) {
       toasts.push("error", "Skill selections aren't supported on this session yet; your draft is kept");
       return;
     }
-    setSubmissionError(null);
     setBusyAction(kind === "send" || kind === "queue" ? "submit" : "steer");
     try {
       await submitWithPendingTracking(
@@ -1241,9 +1217,7 @@ export function Composer({ ref, focused }: ComposerProps) {
           recoveryId: submittedRecoveryId ?? undefined,
           onFailure: (err) => {
             const label = kind === "send" ? "Send" : kind === "queue" ? "Queue" : kind === "steer" ? "Steer" : "Drain";
-            const message = sessionActionError(`${label} failed`, err);
-            if (submittedResume && mountedRef.current) setSubmissionError(message);
-            else toasts.push("error", message);
+            toasts.push("error", sessionActionError(`${label} failed`, err));
           },
         },
         async () => {
@@ -1256,12 +1230,10 @@ export function Composer({ ref, focused }: ComposerProps) {
               submittedText,
               payload,
               submittedSkillNames,
-              onDestination,
             );
             return;
           }
-          if (kind === "send")
-            return threadsStore.getState().send(ref, submittedText, payload, submittedSkillNames, onDestination);
+          if (kind === "send") return threadsStore.getState().send(ref, submittedText, payload, submittedSkillNames);
           if (kind === "queue") return threadsStore.getState().queue(ref, submittedText, payload, submittedSkillNames);
           if (kind === "steer") return threadsStore.getState().steer(ref, submittedText, payload, submittedSkillNames);
           return threadsStore.getState().drainAsSteer(ref, submittedText, payload, submittedSkillNames);
@@ -1271,13 +1243,9 @@ export function Composer({ ref, focused }: ComposerProps) {
       if (!wonRecoveryResend) toasts.push("info", "This message was already sent in another tab.");
       clearIfUnchanged(submittedText, submittedRevision, submittedDraftRevision, submittedSkillNames);
       clearSubmittedAttachments(submittedAttachments);
-      if (wonRecoveryResend && destination !== ref) {
-        const url = paneToURL("session", { ref: destination });
-        if (url !== null) navigate(url, { replace: true });
-      }
     } catch {
-      // Resume or the local durable write failed. Keep the submitted draft;
-      // only successful durable handoff above can clear it.
+      // The local durable write failed. The submitted composer payload stays
+      // untouched and no network request was eligible to start.
     } finally {
       if (mountedRef.current) setBusyAction(null);
     }
@@ -1526,8 +1494,6 @@ export function Composer({ ref, focused }: ComposerProps) {
 
   return (
     <div className={CLASS.composer}>
-      {busyAction === "submit" && localNotLoaded && <div role="status">Resuming session…</div>}
-      {submissionError && <div role="alert">{submissionError}</div>}
       {mutationWriteStalled && (
         <div className={CLASS.storageStatus} role="status" aria-label="Message storage">
           Browser storage has stalled. A message update is still pending; keep this tab open while Evener waits for

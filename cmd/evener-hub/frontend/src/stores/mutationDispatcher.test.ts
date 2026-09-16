@@ -53,18 +53,6 @@ function clearIntent(targetRef = "ref-a"): MutationIntent {
   };
 }
 
-function startIntent(targetRef = "ref-a", text = "hello"): MutationIntent {
-  const input = [{ type: "text", text }];
-  return {
-    targetRef,
-    threadId: "thread-a",
-    method: "turn/start",
-    payload: { ref: targetRef, expectedInstanceId: "instance-a", input },
-    attachments: [],
-    optimisticDisplay: { method: "turn/start", input },
-  };
-}
-
 function drainIntent(targetRef = "ref-a", text = "steer this"): MutationIntent {
   const input = [{ type: "text", text }];
   return {
@@ -696,54 +684,6 @@ describe("MutationDispatcher", () => {
     expect(await outbox.listOutbox("ref-a")).toEqual([]);
     const optimistic = await outbox.listOptimistic("ref-a");
     expect(optimistic.map((record) => record.clientMutationId).sort()).toEqual(["drain-a", "late-queue-a"]);
-    outbox.close();
-  });
-
-  // A fresh Send B admitted past an older blocked Send A must stay dispatchable
-  // after its own attempt ends retryably. B is not the head record, so the
-  // "later ready/discovery event starts the next attempt" contract only holds
-  // while the admission that let it bypass A survives. Retiring that admission
-  // before transport stranded B: it stayed submitting/attempted with no
-  // admission, and every later drain rejected it (next.attempted === false is
-  // false and the admission set no longer holds B).
-  test("review regression: a fresh Send's retryable failure stays dispatchable behind an older blocked Send", async () => {
-    const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "fresh-retryable", ["older", "fresh"]);
-    const older = await outbox.enqueueIntent(startIntent("ref-a", "older uncertain"));
-    await outbox.markAttempted(older.clientMutationId);
-    await outbox.markUnknown(older.clientMutationId, "blockedUnknown");
-    const fresh = await outbox.enqueueIntent(startIntent("ref-a", "fresh independent"));
-    let failFresh = true;
-    const client = new FakeClient("ready");
-    client.on("turn/start", (params) => {
-      if (params.clientMutationId === fresh.clientMutationId && failFresh) {
-        failFresh = false;
-        throw new RequestTimeoutError("response lost");
-      }
-      return {
-        turn: { id: "new-turn", status: "inProgress", itemsView: "full" },
-        receipt: receipt(params.clientMutationId),
-      };
-    });
-    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
-    const freshStarts = () =>
-      client.calls
-        .filter(
-          (call) =>
-            call.method === "turn/start" &&
-            (call.params as { clientMutationId?: string }).clientMutationId === fresh.clientMutationId,
-        )
-        .map((call) => call.params as Record<string, unknown>);
-
-    await dispatcher.dispatchTargets(["ref-a"]);
-    expect(await outbox.getOutbox(fresh.clientMutationId)).toMatchObject({ state: "submitting", attempted: true });
-    expect(freshStarts()).toEqual([fresh.payload]);
-
-    // The later ready/discovery event that starts the next attempt.
-    await dispatcher.dispatchTargets(["ref-a"]);
-
-    expect(freshStarts()).toEqual([fresh.payload, fresh.payload]);
-    expect(await outbox.getOutbox(fresh.clientMutationId)).toBeUndefined();
     outbox.close();
   });
 });
