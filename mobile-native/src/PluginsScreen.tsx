@@ -28,6 +28,7 @@ import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
 } from "./MarketplaceBrowser";
+import { createPluginMutationGate } from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -66,7 +67,10 @@ function Plugins({
   const model = useMemo(() => createPluginsStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
-  const [busy, setBusy] = useState(false);
+  // One plugin mutation at a time, across this list AND the browser: switching
+  // tabs unmounts whichever one started it, so the gate lives here, above both.
+  const gate = useMemo(createPluginMutationGate, [client]);
+  const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<PluginRefParams | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -107,17 +111,14 @@ function Plugins({
     const version = editorVersion.current;
     setActionError(null);
     setNotice(null);
-    setBusy(true);
     try {
-      await action();
-      if (version === editorVersion.current && success) setNotice(success);
+      const ran = await gate.run(action);
+      if (ran && version === editorVersion.current && success) setNotice(success);
     } catch {
       if (version === editorVersion.current)
         setActionError(
           "Could not confirm the change. Check this plugin’s status before trying again.",
         );
-    } finally {
-      setBusy(false);
     }
   }
   function remove() {
@@ -166,6 +167,7 @@ function Plugins({
           client={client}
           hubName={hubName}
           installed={model}
+          gate={gate}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
