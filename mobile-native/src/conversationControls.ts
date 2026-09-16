@@ -46,10 +46,13 @@ export type QueueAction = "cancel" | "promote" | "drainAll";
  * proceed. Read at press time against the live conversation, not the one the
  * sheet rendered with: a status that flipped in between (awaiting, idle with
  * the queue gone) is caught here with the control's own reason. Cancel neither
- * steers nor drains, so the steering controls never refuse it.
+ * steers nor drains, so the steering controls never refuse it. Drain-all sends
+ * the queue and nothing else, so its control is drainQueue (the drain rule
+ * plus a queue to drain); a promote names one row and keeps the drain's.
  */
 export function queueActionRefusal(conversation: ControlsSource, action: QueueAction): string | null {
   if (action === "cancel") return null;
   const controls = conversationControls(conversation);
-  return controls.drain ? null : (controls.reason.drain ?? "Steer is not available for this session");
+  const control = action === "drainAll" ? "drainQueue" : "drain";
+  return controls[control] ? null : (controls.reason[control] ?? "Steer is not available for this session");
 }

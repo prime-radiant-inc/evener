@@ -65,6 +65,16 @@ it("refuses a queue action pressed after the status flipped, with the control's 
   }
 });
 
+// Drain-all sends the queue and nothing else, so with the queue emptied between
+// the render and the press there is nothing to drain: refused at the boundary
+// with the queue reason, not offered to the daemon to refuse.
+it("refuses a drain-all on an emptied queue with the queue reason", () => {
+  expect(queueActionRefusal(conversation("active", 0), "drainAll")).toBe("queue is empty");
+  expect(queueActionRefusal(conversation("active", 1), "drainAll")).toBeNull();
+  // A promote names one row; its rule stays the drain's.
+  expect(queueActionRefusal(conversation("active", 0), "promote")).toBeNull();
+});
+
 // Cancel takes a message out of the queue; it neither steers nor drains, so
 // the steering controls have nothing to say about it.
 it("never refuses a cancel on the drain control", () => {
