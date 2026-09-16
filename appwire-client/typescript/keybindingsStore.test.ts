@@ -372,7 +372,7 @@ describe("a retired payload fences every reply still in flight", () => {
     ],
   ];
 
-  const writePaths: [string, string, (store: KeybindingsStore) => Promise<unknown>][] = [
+  const writePaths: [string, typeof getMethod | typeof patchMethod, (store: KeybindingsStore) => Promise<unknown>][] = [
     ["patchOverrides", patchMethod, (store) => store.getState().patchOverrides([applied])],
     ["saveDraft", patchMethod, (store) => store.getState().saveDraft([applied])],
     ["refreshFor", getMethod, (store) => store.getState().refreshOverrides()],
