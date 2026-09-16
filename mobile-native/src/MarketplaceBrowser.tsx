@@ -18,11 +18,11 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { sourceLabel } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/marketplacesPlugins/sourceLabel";
+import { marketplaceSourceLabel } from "@evener/appwire-client";
 import type {
   MarketplaceAddParams,
   PluginRefParams,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { HubPathField } from "./HubPathField";
 import type { InstalledPlugins } from "./installedPlugins";
@@ -124,7 +124,7 @@ export function MarketplaceBrowser({
             All marketplaces
           </Action>
           <Copy>{state.selected}</Copy>
-          {marketplace && <Copy muted>{sourceLabel(marketplace.source)}</Copy>}
+          {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
           {state.catalog?.description && (
             <Copy>{state.catalog.description}</Copy>
           )}
@@ -279,7 +279,7 @@ export function MarketplaceBrowser({
             >
               <Copy>{item.name}</Copy>
               <Copy muted numberOfLines={2}>
-                {sourceLabel(item.source)}
+                {marketplaceSourceLabel(item.source)}
               </Copy>
             </Pressable>
           )}

@@ -1,13 +1,6 @@
 // Descriptors for job_* and delegate_send follow-up calls.
-import type { ItemModel } from "../../../../protocol/model";
-import {
-  clip,
-  clipJobID,
-  parseArgs,
-  parseJSONObject,
-  str,
-  trailingBracketFooter,
-} from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { clip, parseArgs, parseJSONObject, str, trailingBracketFooter } from "@evener/appwire-client";
 import { CopyButton } from "../../../../widgets";
 import { EntityRef } from "../EntityRef";
 import { UserMessageView } from "../messages/UserMessageItem";
@@ -113,7 +106,7 @@ registerToolRenderer({
     const parsedOutput = parseJSONObject(item.output);
     const jobId = jobControlTarget(item);
     const status = parsedOutput ? str(parsedOutput, "status") : undefined;
-    return status ? `Checked ${clipJobID(jobId)} · ${status}` : `Checked ${clipJobID(jobId)}`;
+    return status ? `Checked ${jobId} · ${status}` : `Checked ${jobId}`;
   },
   body: DelegateStatusBody,
 });
@@ -139,7 +132,7 @@ registerToolRenderer({
     const args = parseArgs(item.argumentsJSON);
     const jobId = str(args, "target") ?? str(args, "job_id") ?? "";
     const footer = trailingBracketFooter(item.output ?? "");
-    return footer ? `Stopped ${clipJobID(jobId)} · ${footer}` : `Stopped ${clipJobID(jobId)}`;
+    return footer ? `Stopped ${jobId} · ${footer}` : `Stopped ${jobId}`;
   },
   body: HeadClippedOutputBody,
 });
@@ -294,7 +287,7 @@ function delegateSendSummary(item: ItemModel): string {
 
 function delegateSendBase(item: ItemModel): string {
   const args = parseArgs(item.argumentsJSON);
-  const target = clip(delegateSendTarget(args), ID_CLIP);
+  const target = delegateSendTarget(args);
   return target === "" ? "Sent a message to a delegate" : `Sent a message to delegate ${target}`;
 }
 

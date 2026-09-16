@@ -1,6 +1,14 @@
+import type { AuthTestResponse } from "@evener/appwire-client";
+import {
+  activeSourceLabel,
+  ENDPOINT_CHANGED_TEST_MESSAGE,
+  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
+  fingerprintUnavailable,
+  friendlyErrorMessage,
+  isEndpointConflict,
+  safeCredentialTestResult,
+} from "@evener/appwire-client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { friendlyErrorMessage } from "../../../../protocol/errors";
-import type { AuthTestResponse } from "../../../../protocol/types.gen";
 import { connectionStore } from "../../../../stores/connection";
 import { credentialsStore, useCredentialsStore } from "../../../../stores/credentials";
 import { Button, Dialog, Skeleton, useToasts } from "../../../../widgets";
@@ -8,14 +16,6 @@ import { requireClass } from "../../../../widgets/internal/requireClass";
 import { useConnectedEffect } from "../useConnectedEffect";
 import styles from "./ConnectProviderDialog.module.css";
 import { CredentialsSection } from "./CredentialsSection";
-import {
-  activeSourceLabel,
-  ENDPOINT_CHANGED_TEST_MESSAGE,
-  FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
-  fingerprintUnavailable,
-  isEndpointConflict,
-  safeCredentialTestResult,
-} from "./credentialLabels";
 import { AddInstanceDialog, ApiKeyDialog, CredentialJsonDialog } from "./instanceDialogs";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
 import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";

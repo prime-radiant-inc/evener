@@ -1,6 +1,7 @@
 // @vitest-environment node
+
+import type { MarketplaceEntry } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { MarketplaceEntry } from "../../../../protocol/types.gen";
 import {
   MARKETPLACE_SOURCE_OPTIONS,
   marketplaceDraftFor,

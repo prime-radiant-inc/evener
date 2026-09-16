@@ -1,17 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { NavigationSessionLocation, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type {
-  NavigationSessionLocation,
-  Thread,
-  ThreadCapabilities,
-  ThreadReadResponse,
-} from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
@@ -23,9 +18,10 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
-import { SessionPanelPane } from "../../sessionPanels/SessionPanelPane";
+import { topNotesStore } from "../../../stores/topNotes";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
+import { TopNotesPanel } from "./TopNotesPanel";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -159,6 +155,7 @@ beforeEach(() => {
   resetActivitySummaryStoreForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
+  topNotesStore.getState().resetForTests();
 });
 
 afterEach(() => {
@@ -322,22 +319,8 @@ test.each(["desktop", "mobile"] as const)(
       await user.click(screen.getByRole("button", { name: "Session actions" }));
       const opener = screen.queryByRole("menuitem", { name: "Notes" });
       expect.soft(opener).toBeNull();
-      // If the forbidden opener exists, follow it to its real destination so
-      // failure also establishes the user-visible blank-pane consequence.
       if (opener) await user.click(opener);
-      if (viewport === "mobile") {
-        expect(screen.queryByTestId("shared-notes-section")).toBeNull();
-        expect(screen.queryByRole("dialog", { name: "Session notes" })).toBeNull();
-      } else {
-        const pane = workspaceStore.getState().panes.find((entry) => entry.type === "sessionNotes");
-        if (pane) {
-          const { container } = render(
-            <SessionPanelPane kind="notes" params={{ ref: "ref_no_notes" }} paneId={pane.id} focused />,
-          );
-          expect(container.querySelector(`[data-pane-id="${pane.id}"]`)?.childElementCount).toBe(0);
-        }
-        expect(pane).toBeUndefined();
-      }
+      expect(topNotesStore.getState().isExpanded("ref_no_notes")).toBe(false);
     } finally {
       restoreViewport();
     }
@@ -374,10 +357,13 @@ test.each([
     render(<SessionChrome ref="ref_notes" placement={status === "notLoaded" ? "menu" : "composer"} />);
     await user.click(screen.getByRole("button", { name: "Session actions" }));
     await user.click(screen.getByRole("menuitem", { name: "Notes" }));
-    const pane = workspaceStore.getState().panes.find((entry) => entry.type === "sessionNotes");
-    expect(pane).toBeDefined();
-    if (!pane) throw new Error("Notes navigation did not create its workspace pane");
-    render(<SessionPanelPane kind="notes" params={{ ref: "ref_notes" }} paneId={pane.id} focused />);
+    expect(topNotesStore.getState().isExpanded("ref_notes")).toBe(true);
+    // Menu invocation requests editor focus too, matching the palette /notes
+    // instead of leaving keyboard and mouse openers inconsistent.
+    expect(topNotesStore.getState().hasPendingFocus("ref_notes")).toBe(true);
+
+    const model = threadsStore.getState().threads.get("ref_notes")!;
+    render(<TopNotesPanel sessionRef="ref_notes" model={model} />);
 
     expect(screen.getByTestId("shared-notes-agent").textContent).toBe("agent read sentinel");
     expect(screen.getByRole("link", { name: "reference sentinel" }).getAttribute("href")).toBe(

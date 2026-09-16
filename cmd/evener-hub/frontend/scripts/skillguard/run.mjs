@@ -104,7 +104,7 @@ const STEERED_TURN_INPUT_TIMEOUT_MS = envMillis("SKILLGUARD_STEERED_TURN_TIMEOUT
 // it releases. Overridable for triage.
 const TURN_IDLE_SETTLE_MS = envMillis("SKILLGUARD_TURN_IDLE_SETTLE_MS", 3_000);
 
-// The retry budget for a baseline read (turnIds, replyBaseline). A baseline is
+// The retry budget for the turn-id baseline read (turnIds). A baseline is
 // captured immediately before the release that would dispatch the leg it
 // proves, so it is normally one round trip; under load a poll can reject while
 // the page is busy, and a rejected read must be retried rather than read as
@@ -1453,6 +1453,7 @@ class Driver {
         label: `${label} click to take effect (attempt ${attempt}/${attempts})`,
       }).catch(() => false);
       if (landed) return;
+      if (attempt < attempts) console.error(`skillguard: ${label}: click ${attempt} had no observed effect; re-clicking`);
     }
     const diagnosis = await evaluate(
       this.send,
@@ -1461,36 +1462,31 @@ class Driver {
     throw new Error(`${label} click never took effect: ${diagnosis}`);
   }
 
-  // Every scripted turn replies with the SAME sentinel, and the transcript
-  // VIRTUALIZES its rows — older reply rows unmount as new ones render, so
-  // counting occurrences in body.innerText is a moving window that can never
-  // observe a turn that completed. Instead, snapshot WHICH turn-block ids
-  // already carry the reply and wait for a turn-block that carries it and was
-  // NOT in that snapshot. The baseline must be captured BEFORE the
-  // submit/release that triggers the reply.
-  //
-  // Like turnIds, this is a BASELINE: a read that failed is not an empty one.
-  // `[]` here claims "no turn carried a reply", so an earlier reply would
-  // satisfy waitForReply -- a false pass over the very completion the wait
-  // exists to prove. The read is retried (see readTurnIdBaseline): the same
-  // single CDP hiccup that must not fail turnIds must not fail this one
-  // either, and the budget keeps a read that never comes back a loud failure.
-  async replyBaseline(text = REPLY_TEXT) {
-    const exprSource = `(() => [...document.querySelectorAll("[data-testid='turn-block']")]
-        .filter((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}))
-        .map((el) => el.getAttribute("data-turn-id")))()`;
-    return this.readTurnIdBaseline(exprSource, `replyBaseline(${JSON.stringify(text)})`);
+  // turnTextsExpr evaluates to one session's mounted transcript text per turn:
+  // the pane's turn-blocks that share a data-turn-id, concatenated, because a
+  // turn can render as several segments (TranscriptBody's turnRow). Scoped to
+  // the pane because turn ids are session-local and two sessions are mounted.
+  // Only the rows near the end are mounted, and which ones changes with the
+  // footer's height, so a wait must ask about a turn's own content, never
+  // about which rows exist.
+  turnTextsExpr(ref) {
+    return `(() => { const byTurn = new Map();
+      const pane = ${this.paneScopeExpr(ref)};
+      for (const el of pane ? pane.querySelectorAll("[data-testid='turn-block']") : []) {
+        const id = el.getAttribute("data-turn-id");
+        byTurn.set(id, (byTurn.get(id) ?? "") + (el.textContent ?? ""));
+      }
+      return [...byTurn.values()]; })()`;
   }
 
-  async waitForReply(text, baselineIds, { timeoutMs = 25000 } = {}) {
-    if (!Array.isArray(baselineIds)) {
-      throw new Error("waitForReply needs a replyBaseline() captured before the triggering submit/release");
-    }
+  // Every scripted turn replies with the SAME sentinel, so a reply is only
+  // evidence of THIS turn when it sits in the turn that carries the submitted
+  // prose; a baseline of mounted reply rows cannot tell a new reply from an
+  // older row mounting back in.
+  async waitForReply(ref, prose, { timeoutMs = 25000 } = {}) {
     await this.waitPage(
-      `(() => { const baseline = new Set(${JSON.stringify(baselineIds)});
-        return [...document.querySelectorAll("[data-testid='turn-block']")]
-          .some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)}) && !baseline.has(el.getAttribute("data-turn-id"))) ? true : null; })()`,
-      { timeoutMs, label: `a further reply "${text}" (${baselineIds.length} earlier reply turns)` },
+      `(() => ${this.turnTextsExpr(ref)}.some((text) => text.includes(${JSON.stringify(prose)}) && text.includes(${JSON.stringify(REPLY_TEXT)})) ? true : null)()`,
+      { timeoutMs, label: `the reply to ${JSON.stringify(prose)} in ${ref}` },
     );
   }
 
@@ -1538,13 +1534,13 @@ class Driver {
   // that pane for the same reason the continuation wait is: the scripted text
   // is identical across panes by construction, so a document-wide sweep can be
   // satisfied by a turn in the other mounted session while the session under
-  // test has rendered nothing.
+  // test has rendered nothing. It reads the pane's turns the way every other
+  // transcript wait does (turnTextsExpr): one turn's segments are concatenated,
+  // so a text the virtualized transcript split across two rows still matches.
   async waitForTranscriptInput(text, { timeoutMs = STEERED_TURN_INPUT_TIMEOUT_MS, ref = this.sessionA } = {}) {
     try {
       await this.waitPage(
-        `(() => { const pane = ${this.paneScopeExpr(ref)};
-          if (!pane) return null;
-          return [...pane.querySelectorAll("[data-testid='turn-block']")].some((el) => (el.textContent ?? "").includes(${JSON.stringify(text)})) ? true : null; })()`,
+        `(() => ${this.turnTextsExpr(ref)}.some((turn) => turn.includes(${JSON.stringify(text)})) ? true : null)()`,
         { timeoutMs, label: `input ${JSON.stringify(text)} visible in the transcript` },
       );
     } catch (error) {
@@ -1610,7 +1606,6 @@ async function runScenarios(driver) {
   // durable-evidence assertions that cannot race live in the transcript's
   // skill_state record and the transport scenario's stalled-transport
   // capture; a record the driver did catch must still carry prose and skill.
-  const canonicalBaseline = await driver.replyBaseline();
   // Turn-end barrier: instant here (the session has never run a turn), kept
   // so every turn/start submit in the choreography is barriered by
   // construction (see waitForTurnIdle).
@@ -1621,7 +1616,7 @@ async function runScenarios(driver) {
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("submitted-canonical", { ref: driver.sessionA, prose: PROSE.canonical });
   driver.milestone("draft-after-commit", await evaluate(driver.send, driver.draftStorageExpr()));
-  await driver.waitForReply(REPLY_TEXT, canonicalBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.canonical);
 
   // ---- scenario: draft thread-switch / remount ----
   await driver.focusComposer(driver.sessionA);
@@ -1723,11 +1718,10 @@ async function runScenarios(driver) {
   driver.milestone("drain-committed", {
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
-  const drainBaseline = await driver.replyBaseline();
   // The turns already rendered while the drain's continuation leg is still
   // undispatched: waitForContinuationReply requires the continuation to land in
   // a turn that is NOT one of these -- read from session A's own pane, the
-  // session this scenario drives (both reads below are pane-scoped).
+  // session this scenario drives (every read below is pane-scoped).
   const drainTurns = await driver.turnIds(driver.sessionA);
   driver.control("release");
   // The reply wait below returns on the HELD leg's reply, which arrives while
@@ -1736,7 +1730,7 @@ async function runScenarios(driver) {
   // only then dispatches the continuation leg. Wait for that leg's own reply
   // (the drained text's turn carrying the scripted answer) so the turn is
   // provably over before the next hold is armed — no fixed settling gap.
-  await driver.waitForReply(REPLY_TEXT, drainBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.queueTurn);
   await driver.waitForContinuationReply(PROSE.queue2, drainTurns, { ref: driver.sessionA });
   driver.milestone("drain-released", {});
 }
@@ -1779,7 +1773,6 @@ async function runScenariosPart2(driver) {
   await driver.clickSteer(driver.sessionA, draft(PROSE.steer));
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("steered", { prose: PROSE.steer });
-  const steerBaseline = await driver.replyBaseline();
   // Same baseline as the drain: the held turn is on screen while the interrupt
   // leg is still undispatched (see waitForContinuationReply).
   const steerTurns = await driver.turnIds(driver.sessionA);
@@ -1788,7 +1781,7 @@ async function runScenariosPart2(driver) {
   // first, and the interrupt leg the daemon dispatches after it is the one the
   // next hold could steal. Its own reply in the transcript is the end-of-turn
   // proof, independent of how long the dispatch takes.
-  await driver.waitForReply(REPLY_TEXT, steerBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.steerTurn);
   await driver.waitForContinuationReply(PROSE.steer, steerTurns, { ref: driver.sessionA });
   driver.milestone("steer-released", {});
 
@@ -1823,14 +1816,13 @@ async function runScenariosPart2(driver) {
   check(attachState.tiles === 1, `attachment tile lost across chip edits: ${JSON.stringify(attachState)}`);
   check(attachState.text.includes("[image 1]"), `attachment anchor missing: ${JSON.stringify(attachState.text)}`);
   driver.milestone("attachment-preserved", attachState);
-  const attachBaseline = await driver.replyBaseline();
   await driver.clickSubmit(driver.sessionA, draft(attachState.text, { chips: attachState.chips, tiles: attachState.tiles }));
   await driver.waitForComposerCleared(driver.sessionA);
   driver.milestone("attachment-submitted", {
     prose: PROSE.attachment,
     durable: await evaluate(driver.send, driver.durableRecordsExpr()),
   });
-  await driver.waitForReply(REPLY_TEXT, attachBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.attachment);
 
   // ---- scenario: capability loss ----
   await driver.openSession(driver.sessionB);
@@ -1919,10 +1911,9 @@ async function runScenariosPart2(driver) {
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.fail);
   await driver.selectSkillChip(driver.sessionA);
-  const retryBaseline = await driver.replyBaseline();
   await driver.clickSubmit(driver.sessionA, draft(PROSE.fail));
   await driver.waitForComposerCleared(driver.sessionA);
-  await driver.waitForReply(REPLY_TEXT, retryBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.fail);
   driver.milestone("fail-retried", { prose: PROSE.fail });
 
   // ---- scenario: delayed accepted-send vs newer chip edit ----
@@ -1951,9 +1942,8 @@ async function runScenariosPart2(driver) {
   check(editedState.text.includes(PROSE.delayExtra), `newer draft lost the typed edit: ${JSON.stringify(editedState)}`);
   driver.milestone("delay-edited", editedState);
   await driver.removeSkillChip(driver.sessionA);
-  const delayBaseline = await driver.replyBaseline();
   driver.control("release");
-  await driver.waitForReply(REPLY_TEXT, delayBaseline);
+  await driver.waitForReply(driver.sessionA, PROSE.delay);
   const keptState = await driver.composerState(driver.sessionA);
   check(keptState.text.includes(PROSE.delayExtra), `delayed commit clobbered the newer draft: ${JSON.stringify(keptState)}`);
   check(keptState.chips.length === 0, `delayed commit restored the removed chip: ${JSON.stringify(keptState)}`);
@@ -1966,7 +1956,6 @@ async function runScenariosPart2(driver) {
   // Turn-end barrier: the offline submit must persist as a turn/start
   // mutation, so the delayed-send turn must be fully over.
   await driver.waitForTurnIdle(driver.sessionA);
-  const netBaseline = await driver.replyBaseline();
   await driver.send("Network.emulateNetworkConditions", { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await driver.focusComposer(driver.sessionA);
   await driver.typeText(driver.sessionA, PROSE.transport);
@@ -1990,7 +1979,7 @@ async function runScenariosPart2(driver) {
   // Connectivity restored: the outbox retries (the window's online event and
   // the heartbeat's reconnect both wake it) and the same durable mutation is
   // delivered exactly once.
-  await driver.waitForReply(REPLY_TEXT, netBaseline, { timeoutMs: 45000 });
+  await driver.waitForReply(driver.sessionA, PROSE.transport, { timeoutMs: 45000 });
   const onlineDurable = await evaluate(driver.send, driver.durableRecordsExpr());
   driver.milestone("net-restored", { durable: onlineDurable });
 }

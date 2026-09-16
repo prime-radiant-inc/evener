@@ -16,11 +16,12 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { inactivePromptDependent } from "../../cmd/evener-hub/frontend/src/panes/settings/sections/launchShared/schema";
+import { inactivePromptDependent } from "@evener/appwire-client";
 import type {
   LaunchConfigLayer,
+  LaunchConfigLayerName,
   LaunchOption,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { LaunchFieldEditor } from "./LaunchFieldEditor";
@@ -70,7 +71,7 @@ function LaunchDefaults({
   navigation,
 }: {
   cwd: string;
-  layer: "global" | "project";
+  layer: LaunchConfigLayerName;
   client: ConversationClientLike | null;
   retry(): void;
   hubName: string;

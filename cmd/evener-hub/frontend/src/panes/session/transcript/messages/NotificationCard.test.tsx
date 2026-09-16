@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel } from "@evener/appwire-client";
+import { buildEntityView } from "@evener/appwire-client";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { afterEach, beforeAll, expect, test } from "vitest";
+import { afterEach, beforeAll, expect, test, vi } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { navigationStore } from "../../../../stores/navigation/store";
 import { keyID } from "../../../../stores/navigation/types";
@@ -71,6 +73,98 @@ const toolsConfig = makeTranscriptDisplayConfig({ kind: "preset", level: "tools"
 function renderTools(node: ReactElement) {
   return render(
     <TranscriptRenderProvider config={toolsConfig} surface="readOnly" disclosureScope="nc:tools">
+      {node}
+    </TranscriptRenderProvider>,
+  );
+}
+
+// The session's entity map, built the way useEntityView builds it: the shell
+// job from the retained tree, the watch its job_watch item folds to, and the
+// live delegate record. A notification's identity fields name these entities,
+// so they resolve to cards through this map.
+const ENTITY_JOB = "job_02wMz5TxvEMoJEDTDGOTil_000000000123";
+const ENTITY_WATCH = "watch_034KEfjYFbfoUaPeHJcLXY";
+const ENTITY_DELEGATE = "dlg_034HQ2kSDXfKFq1mm3idL1";
+
+function notificationEntities() {
+  const job: ActivityJob = {
+    jobId: ENTITY_JOB,
+    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
+    ownerRef: "local:s",
+    type: "shell",
+    status: "completed",
+    outcome: "success",
+    terminal: true,
+    background: false,
+    hasOutput: true,
+    description: "Compile the frontend",
+    command: "npm run build",
+    startedAt: "2026-09-13T20:00:00Z",
+    endedAt: "2026-09-13T20:00:01Z",
+    exitCode: 0,
+    outputBytes: 12,
+  };
+  const tree: ActivityTree = {
+    revision: 1,
+    root: {
+      kind: "session",
+      sessionId: "02wMz5TxvEMoJEDTDGOTil",
+      ref: "local:s",
+      label: "root",
+      aggregate: "completed",
+      counts: { active: 0, failed: 0, completed: 1, complete: true },
+      entries: [{ kind: "shell", job }],
+      branch: {},
+    },
+  };
+  const watch: ItemModel = {
+    id: "watch-item",
+    turnId: "turn_1",
+    position: { entry: 1, item: 1 },
+    type: "commandExecution",
+    text: "",
+    toolName: "job_watch",
+    argumentsJSON: JSON.stringify({ operation: "inspect", watch_id: ENTITY_WATCH }),
+    output: "",
+    raw: {
+      watch_id: ENTITY_WATCH,
+      watching: true,
+      source: ENTITY_JOB,
+      condition: "output_match: ready",
+      deliveries: 2,
+    },
+    status: "completed",
+  };
+  const delegate: EvenerDelegateInfo = {
+    delegateId: ENTITY_DELEGATE,
+    ownerSessionId: "02wMz5TxvEMoJEDTDGOTil",
+    rootSessionId: "02wMz5TxvEMoJEDTDGOTil",
+    childSessionId: "child",
+    transcriptRef: "local:child",
+    type: "delegate",
+    lifecycle: "running",
+    phase: "running",
+    status: "running",
+    resumable: true,
+    needsAttention: false,
+    projectionRevision: 1,
+    task: "Review the first line",
+  };
+  return buildEntityView({
+    sessionRef: "local:s",
+    tree,
+    delegates: [delegate],
+    turns: [{ id: "turn_1", status: "completed", items: [watch] }],
+    stale: false,
+    ended: false,
+  });
+}
+
+// The activity-level default (the config the plain renders above use, where
+// the card auto-expands so its fields are visible) plus the entity map.
+function renderWithEntities(node: ReactElement) {
+  return render(
+    <TranscriptRenderProvider surface="readOnly" disclosureScope="nc:entities" entities={notificationEntities()}>
       {node}
     </TranscriptRenderProvider>,
   );
@@ -531,6 +625,86 @@ test("a job card still renders its echo metadata (watch suppression is scoped to
   );
   expect(screen.getByTestId("notification-field-job-id").textContent).toContain("job_42");
   expect(screen.getByTestId("notification-field-status").textContent).toContain("completed");
+});
+
+// The identity fields name real entities, so each id is the transcript's
+// shared card trigger rather than plain text - and it must genuinely RESOLVE:
+// EntityRef falls back to a bare span whenever the map cannot answer, which
+// would look identical to a text-only assertion while rendering no card.
+test("a delegate card's delegate and job identity fields are entity card triggers", () => {
+  renderWithEntities(
+    <NotificationCard
+      notification={notif({
+        type: "delegate",
+        title: "Delegate completed",
+        delegateId: ENTITY_DELEGATE,
+        jobId: ENTITY_JOB,
+        jobType: "delegate",
+        rawText: `<delegate-notification delegate_id="${ENTITY_DELEGATE}">done</delegate-notification>`,
+      })}
+    />,
+  );
+
+  const delegateField = screen.getByTestId("notification-field-delegate-id");
+  expect(delegateField.textContent).toContain("Delegate id");
+  expect(within(delegateField).getByTestId("entity-trigger").textContent).toBe(ENTITY_DELEGATE);
+  expect(within(screen.getByTestId("notification-field-job-id")).getByTestId("entity-trigger").textContent).toBe(
+    ENTITY_JOB,
+  );
+});
+
+test("a watch card's watch and job identity fields are entity card triggers", () => {
+  renderWithEntities(
+    <NotificationCard
+      notification={notif({
+        type: "watch",
+        title: `Output matched on ${ENTITY_JOB}`,
+        tone: "neutral",
+        jobId: ENTITY_JOB,
+        watchId: ENTITY_WATCH,
+        prose: `Matched output_match: ready on ${ENTITY_JOB}.`,
+        rawText: `<job-notification job_id="${ENTITY_JOB}" event="watch" job_type="watch" status="watch" reason="output_match: ready" output_bytes="0" watch_id="${ENTITY_WATCH}">Matched.</job-notification>`,
+      })}
+    />,
+  );
+
+  expect(within(screen.getByTestId("notification-field-watch-id")).getByTestId("entity-trigger").textContent).toBe(
+    ENTITY_WATCH,
+  );
+  expect(within(screen.getByTestId("notification-field-job-id")).getByTestId("entity-trigger").textContent).toBe(
+    ENTITY_JOB,
+  );
+});
+
+test("an identity field's trigger opens the entity card", () => {
+  vi.useFakeTimers();
+  try {
+    renderWithEntities(<NotificationCard notification={notif({ jobId: ENTITY_JOB, jobType: "shell" })} />);
+
+    fireEvent.focus(within(screen.getByTestId("notification-field-job-id")).getByTestId("entity-trigger"));
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+
+    const card = screen.getByRole("tooltip");
+    expect(card.textContent).toContain("Job");
+    expect(card.textContent).toContain("Compile the frontend");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The other half of the contract: an id the session's map cannot answer for
+// keeps reading as an ordinary value, with no dead trigger and no open control.
+test("an id the entity map cannot resolve keeps rendering as plain text", () => {
+  renderWithEntities(
+    <NotificationCard notification={notif({ jobId: "job_02wMz5TxvEMoJEDTDGOTil_000000000999", jobType: "shell" })} />,
+  );
+
+  const field = screen.getByTestId("notification-field-job-id");
+  expect(field.textContent).toContain("job_02wMz5TxvEMoJEDTDGOTil_000000000999");
+  expect(within(field).queryByTestId("entity-trigger")).toBeNull();
+  expect(within(field).queryByRole("button")).toBeNull();
 });
 
 test("a job-targeted watch card names the watched job id and nothing else (RoboRev PR #954, review 3)", () => {

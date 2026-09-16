@@ -9,21 +9,25 @@
 // open) for an idle-guarded action or a Conflict, or as a useToasts() toast
 // for a fire-and-report action - never a silent swallow.
 
-import { slashCommandInvocation, visibleCatalogCommands } from "../../protocol/catalogCommands";
-import type { ThreadModel } from "../../protocol/model";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
-import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
+import type { CommandDescriptor, ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import {
+  canReadSharedNotes,
+  effortLabel,
+  effortOptionLevels,
+  slashCommandInvocation,
+  visibleCatalogCommands,
+} from "@evener/appwire-client";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { selectNeedsYouRows } from "../../stores/navigation/selectors";
 import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
-import { effortLabel, effortOptionLevels } from "../reasoningEffort";
 import { navigate } from "../routing";
 import { workspaceStore } from "../workspace";
 import { blocked } from "./blocked";
@@ -160,7 +164,7 @@ export function splitModelId(id: string): { provider: string; model: string } {
 // now owns Details/Tasks/Activity at every width, so those triggers never
 // render and the mobile path was a guaranteed no-op. Like the rail adapter,
 // both commands now toggle the workspace pane on ALL viewports.
-function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails" | "sessionNotes"): void {
+function toggleSessionPane(ctx: PaletteRunContext, type: "sessionTasks" | "sessionDetails"): void {
   if (ctx.sessionRef) workspaceStore.getState().togglePane(type, { ref: ctx.sessionRef });
 }
 
@@ -598,7 +602,18 @@ export function buildCommands(): Command[] {
       capability: "sharedNotes",
       run: (ctx) => {
         if (!canReadSharedNotes(focusedModel(ctx.sessionRef))) return blocked(UNAVAILABLE_REASON);
-        toggleSessionPane(ctx, "sessionNotes");
+        if (!ctx.sessionRef) return;
+        // The notes bar lives inside the session pane: with a details or
+        // tasks pane focused, that pane may not even be mounted, and a
+        // notes-state change alone would look like a no-op. Focus (or open)
+        // the session pane first - but only when the notes are about to
+        // EXPAND: closing from a companion pane must not yank the user's
+        // focus away. The focus request waits for the panel to mount and
+        // take it, so a freshly opened pane still lands focus.
+        if (!topNotesStore.getState().isExpanded(ctx.sessionRef)) {
+          workspaceStore.getState().openPane("session", { ref: ctx.sessionRef });
+        }
+        topNotesStore.getState().toggleAndFocus(ctx.sessionRef);
       },
     },
     {

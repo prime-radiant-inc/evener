@@ -1,13 +1,12 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import type { NavigationWatchSummary, ThreadModel } from "@evener/appwire-client";
 import {
   type ActivityCounts,
   type ActivityTree as ActivityTreeData,
   activityNodeID,
+  errorText,
   parseActivityTree,
-} from "../../../protocol/activityData";
-import { errorText } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
@@ -15,8 +14,10 @@ import {
   useActivitySummaryStore,
 } from "../../../stores/activitySummary";
 import { threadsStore } from "../../../stores/threads";
+import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { useEntityView } from "../transcript/useEntityView";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
 import styles from "./activitypanel.module.css";
 import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
@@ -24,7 +25,6 @@ import { refreshActivityRoot, useActivityRefresh } from "./useActivityRefresh";
 export interface ActivityPanelProps {
   sessionRef: string;
   model: ThreadModel;
-  now: number;
   // The session's live watches, absent-able: an old daemon omits the list.
   watches?: NavigationWatchSummary[];
   // Rows the hub omitted from `watches`; the Watches header reports "+N more".
@@ -48,8 +48,6 @@ export interface ActivityPanelBodyProps {
   watches?: NavigationWatchSummary[];
   omittedWatches?: number;
   omittedArmedWatches?: number;
-  // The panel's ticking clock, used by the watch durations and timeline.
-  now?: number;
 }
 
 export interface ActivityPanelHandle {
@@ -112,13 +110,12 @@ function triggerLabel(counts: ActivityCounts | undefined): string {
 }
 
 /** Shared activity reader body used by the mobile Sheet and desktop pane. */
-export function ActivityPanelBody({
+export const ActivityPanelBody = memo(function ActivityPanelBody({
   sessionRef,
   model,
   watches,
   omittedWatches,
   omittedArmedWatches,
-  now,
 }: ActivityPanelBodyProps) {
   const toasts = useToasts();
   const treeRef = useRef<ActivityTreeHandle>(null);
@@ -126,6 +123,10 @@ export function ActivityPanelBody({
   const bodyGenerationRef = useRef(0);
   const currentSessionRef = useRef(sessionRef);
   const entry = useActivityPanelStore((state) => state.entries.get(sessionRef)) ?? EMPTY_ACTIVITY_PANEL_ENTRY;
+  // The same builder the transcript uses, over the same session: the detail
+  // strips open in this panel (the delegate line names its delegate id), and
+  // the panel is the owner that has both the session ref and the model.
+  const entities = useEntityView(sessionRef, model);
   currentSessionRef.current = sessionRef;
 
   useEffect(() => {
@@ -216,7 +217,6 @@ export function ActivityPanelBody({
             watches={watches}
             omittedWatches={omittedWatches}
             omittedArmedWatches={omittedArmedWatches}
-            now={now}
             expandedFoldIDs={entry.expandedFoldIDs}
             onToggleFold={(foldID) => activityPanelStore.getState().toggleFold(sessionRef, foldID)}
             continuationFailures={entry.continuationFailures}
@@ -349,14 +349,16 @@ export function ActivityPanelBody({
     );
   }
 
-  return renderBody();
-}
+  // The one owner of the session's entity map in the chrome republishes it to
+  // every EntityRef below (the detail strips' delegate lines) through the
+  // dedicated entity-views context, instead of threading it down the tree.
+  return <EntityViewsProvider entities={entities}>{renderBody()}</EntityViewsProvider>;
+});
 
 export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>(function ActivityPanel(
   {
     sessionRef,
     model,
-    now,
     watches,
     omittedWatches,
     omittedArmedWatches,
@@ -397,7 +399,6 @@ export const ActivityPanel = forwardRef<ActivityPanelHandle, ActivityPanelProps>
           <ActivityPanelBody
             sessionRef={sessionRef}
             model={model}
-            now={now}
             watches={watches}
             omittedWatches={omittedWatches}
             omittedArmedWatches={omittedArmedWatches}

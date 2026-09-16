@@ -906,7 +906,8 @@ func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
 		ResumeLocks:   hubcore.NewResumeLocks(),
 		Past:          past,
 	}
-	server := newHubAppServer(cfg, newHubSourceRegistry(cfg))
+	sources := newHubSourceRegistry(cfg)
+	server := newHubAppServer(cfg, sources)
 	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
 	if err != nil {
 		t.Fatal(err)
@@ -958,7 +959,8 @@ func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
 		Spawner:       spawner,
 	}
 
-	_, err = hubThreadResume(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: ref})
+	sources := newHubSourceRegistry(cfg)
+	_, err = hubThreadResume(context.Background(), cfg, sources, appwire.ThreadResumeParams{Ref: ref})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("deleting resume error = %T %v, want WireError", err, err)
@@ -1913,9 +1915,10 @@ func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
 }
 
 func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
-	runDir := t.TempDir()
 	base := time.Now().UTC()
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	// Nothing answers at these endpoints, so the entries are seeded into a
+	// roster rather than left for the rendezvous directory's probe to reject.
+	older := rendezvous.Entry{
 		PID:       101,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
@@ -1923,8 +1926,8 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		ThreadID:  "02wMz5Txv2enqVTitaig6F",
 		SessionID: "02wMz5Txv2enqVTitaig6F",
 		StartedAt: base.Add(-time.Hour),
-	})
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	}
+	newer := rendezvous.Entry{
 		PID:       102,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:2/rpc",
@@ -1932,9 +1935,13 @@ func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
 		ThreadID:  "02wMz5Txv47YP64RR3B9YJ",
 		SessionID: "02wMz5Txv47YP64RR3B9YJ",
 		StartedAt: base,
-	})
+	}
+	roster := hubcore.NewRosterWithEntries(
+		hubcore.LiveEntry{Entry: older, SessionID: older.SessionID},
+		hubcore.LiveEntry{Entry: newer, SessionID: newer.SessionID},
+	)
 
-	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: hubcore.NewPastIndex("")})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)
 	defer client.Close()
@@ -2114,7 +2121,6 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	if err := os.MkdirAll(stateDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runDir := t.TempDir()
 	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	liveUpdated := base
 	pastUpdated := base.Add(-time.Hour)
@@ -2136,7 +2142,9 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	// Nothing answers at this endpoint, so the live entry is seeded into a
+	// roster rather than left for the rendezvous directory's probe to reject.
+	live := rendezvous.Entry{
 		PID:       501,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:501/rpc",
@@ -2144,12 +2152,12 @@ func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
 		ThreadID:  "02wMz5Txv9yYdSRJat13MZ",
 		SessionID: "02wMz5Txv9yYdSRJat13MZ",
 		StartedAt: liveStarted,
-	})
+	}
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+	sources := newHubSourceRegistry(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: live, SessionID: live.SessionID})})
 
 	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
 	if err != nil {
@@ -7263,16 +7271,41 @@ func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, 
 		if got.Method != appwire.NotifyEvenerThreadResync {
 			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
 		}
-		var params appwire.ThreadResyncParams
-		if err := json.Unmarshal(got.Params, &params); err != nil {
-			t.Fatalf("unmarshal thread resync: %v", err)
-		}
-		want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
-		if params != want {
-			t.Fatalf("thread resync params=%+v, want %+v", params, want)
-		}
+		expectResyncParams(t, got, wantThreadID, wantRef)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for thread resync after relay recovery")
+	}
+}
+
+// awaitRelayResync is expectRelayResync for a client that also receives other
+// traffic (navigation invalidations, status frames): those are skipped, and
+// the resync may take as long as timeout to arrive.
+func awaitRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		select {
+		case got := <-notifications:
+			if got.Method != appwire.NotifyEvenerThreadResync {
+				continue
+			}
+			expectResyncParams(t, got, wantThreadID, wantRef)
+			return
+		case <-deadline:
+			t.Fatalf("no thread resync for %s within %v", wantRef, timeout)
+		}
+	}
+}
+
+func expectResyncParams(t *testing.T, got appwire.Notification, wantThreadID, wantRef string) {
+	t.Helper()
+	var params appwire.ThreadResyncParams
+	if err := json.Unmarshal(got.Params, &params); err != nil {
+		t.Fatalf("unmarshal thread resync: %v", err)
+	}
+	want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
+	if params != want {
+		t.Fatalf("thread resync params=%+v, want %+v", params, want)
 	}
 }
 
@@ -9474,12 +9507,21 @@ func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
 }
 
 func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
+	// The stand-in answers the hub's resume read and, with no roster in this
+	// hub, the rendezvous directory's identity probe (thread/list and a bare
+	// thread/read naming the root) that lists it in the first place. Like a
+	// real daemon it carries one id as both thread and session id: the probe
+	// lists it by session id, and the resume reads it by thread id.
+	resumed := appwire.Thread{ID: "th_resumed", SessionID: "th_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}
 	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{resumed}}, nil
+	})
 	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		if params.Ref != "local:th_resumed" {
+		if params.Ref != "" && params.Ref != "local:th_resumed" {
 			t.Fatalf("ref=%q", params.Ref)
 		}
-		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}}, nil
+		return appwire.ThreadReadResponse{Thread: resumed}, nil
 	})
 	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
 	defer daemonHTTP.Close()
@@ -9491,12 +9533,14 @@ func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
 				t.Fatalf("resume session=%q", req.SessionID)
 			}
 			entry := rendezvous.Entry{
-				PID:       105,
+				// The probe, not this PID, decides whether the entry is
+				// listed; it still has to be a live process.
+				PID:       os.Getpid(),
 				Protocol:  appwire.ProtocolVersion,
 				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
 				SourceID:  "local",
 				ThreadID:  "th_resumed",
-				SessionID: "sess_resumed",
+				SessionID: "th_resumed",
 			}
 			writeRendezvous(t, runDir, entry)
 			return entry, nil
@@ -9647,7 +9691,7 @@ func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method 
 	runDir := t.TempDir()
 	entry := rendezvous.Entry{PID: os.Getpid(), Protocol: appwire.ProtocolVersion, Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http"), SourceID: "local", ThreadID: sessionID, SessionID: sessionID}
 	writeRendezvous(t, runDir, entry)
-	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster := liveClaimRoster(runDir, &hubcore.StatusProber{})
 	roster.Refresh()
 	if !roster.HasConfirmedEntry(entry) {
 		t.Fatal("owner not confirmed")
@@ -11621,8 +11665,22 @@ func newTestCredentialsStore(t *testing.T) *credentials.Store {
 // onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
 // runMain's composed evener/tree/changed wiring in main.go) before the server
 // starts serving requests.
+// rosterOverRunDir is the roster a test hub gets when it names a rendezvous
+// directory and no roster: the production shape (main.go wires one over the
+// run dir with the status prober), refreshed once so the files already there
+// are listed. A test that adds daemons later refreshes it again.
+func rosterOverRunDir(t *testing.T, runDir string) *hubcore.Roster {
+	t.Helper()
+	roster := hubcore.NewRoster(runDir, &hubcore.StatusProber{})
+	roster.Refresh()
+	return roster
+}
+
 func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
 	t.Helper()
+	if cfg.Roster == nil && cfg.RunDir != "" {
+		cfg.Roster = rosterOverRunDir(t, cfg.RunDir)
+	}
 	// An unset root falls back to a HOME/XDG-derived default, which under this
 	// package's TestMain is the one throwaway root every test in the binary
 	// shares, so two parallel tests that both leave a root unset read each
@@ -11988,6 +12046,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerInstanceEdit,
 		appwire.MethodEvenerInstanceRemove,
 		appwire.MethodEvenerInstanceSetDefault,
+		appwire.MethodEvenerInstanceSetModelDisabled,
+		appwire.MethodEvenerInstanceRefreshModels,
 		appwire.MethodEvenerLaunchResolve,
 		appwire.MethodEvenerLaunchSchema,
 		appwire.MethodEvenerLaunchGetLayer,

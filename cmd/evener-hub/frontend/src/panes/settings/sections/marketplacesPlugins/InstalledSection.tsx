@@ -4,8 +4,9 @@
 // the PluginDetailSheet that opens when a row is selected, so the list
 // stays a single-tap-target-per-row on both desktop and mobile. The
 // client-side filter matches plugin name OR marketplace, case-insensitively.
+
+import type { PluginEntry } from "@evener/appwire-client";
 import { useId, useState } from "react";
-import type { PluginEntry } from "../../../../protocol/types.gen";
 import { useExtensionsStore } from "../../../../stores/extensions";
 import { type CadenceState, Chevron, Chip, Input, StatusDot } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";

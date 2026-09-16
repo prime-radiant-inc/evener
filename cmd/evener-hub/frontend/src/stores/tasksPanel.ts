@@ -1,6 +1,6 @@
+import type { TaskRow } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import type { TaskRow } from "../panes/session/chrome/taskData";
 import { registerPanelStoreEvictor } from "./panelStoreEviction";
 
 export interface PanelLoadFailure {

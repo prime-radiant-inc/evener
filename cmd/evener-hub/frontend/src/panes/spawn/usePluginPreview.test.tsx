@@ -1,8 +1,8 @@
+import type { LaunchConfigLayer, PluginPreviewResponse } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, renderHook } from "@testing-library/react";
 import { useLayoutEffect } from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
 import {
   PLUGIN_PREVIEW_DEBOUNCE_MS,
   type PluginPreviewLoadState,

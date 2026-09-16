@@ -23,7 +23,7 @@ func TestEstimateUsage_NoPriorMeasurement(t *testing.T) {
 	}
 	const sysPromptChars = 4_000
 
-	want := estimateTokens(history) + sysPromptChars/4
+	want := cm.estimateTokens(history) + sysPromptChars/4
 	m := cm.EstimateUsage(history, sysPromptChars)
 	if m.Window != window {
 		t.Errorf("Window = %d, want %d", m.Window, window)

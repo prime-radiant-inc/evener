@@ -1,5 +1,5 @@
 // This project ships no @types/node (see the note atop
-// src/protocol/reducer.test.ts) and this task may not add it, so
+// appwire-client/typescript/reducer.test.ts) and this task may not add it, so
 // TypeScript has zero declarations for Node's builtin modules. This file
 // hand-declares the exact, minimal surface token-contract.test.ts uses to
 // walk and read the src/ tree from disk at test time (vitest runs on real

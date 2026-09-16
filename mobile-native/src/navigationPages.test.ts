@@ -4,7 +4,7 @@ import type {
 	NavigationInvalidatedPayload,
 	NavigationReadParams,
 	NavigationReadResponse,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import { wireV2 } from "../../cmd/evener-hub/frontend/src/stores/navigation/testing";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NavigationPages } from "./navigationPages";
@@ -418,7 +418,7 @@ it("applies delta removals and container order before publishing refreshed rows"
 	const { pages, requests } = boundary();
 	const original = response(["a", "b"]);
 	const graph =
-		original.data as import("../../appwire-client/typescript/types.gen").NavigationSnapshot;
+		original.data as import("@evener/appwire-client").NavigationSnapshot;
 	const first = pages.refresh();
 	requests[0].resolve(original);
 	await first;

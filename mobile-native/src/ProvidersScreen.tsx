@@ -24,7 +24,7 @@ import {
   credentialLayers,
   groupByProvider,
   styleInfoText,
-} from "../../cmd/evener-hub/frontend/src/panes/settings/sections/credentials/credentialLabels";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ProviderEditor } from "./ProviderEditor";

@@ -63,6 +63,13 @@ export default defineConfig({
       // one fails loudly here rather than resolving to a second copy.
       "@testing-library/react": path.join(__dirname, "node_modules", "@testing-library", "react"),
       react: path.join(__dirname, "node_modules", "react"),
+      // The package has its own node_modules once `npm ci --prefix
+      // appwire-client/typescript` has run for `make test-api-package`, and
+      // typescript is one of its devDependencies - so locally this alias looks
+      // redundant and CI's web job, which installs only this app, fails
+      // without it. scripts/package-test-files.mjs now holds every bare
+      // specifier in the package's test graph against the keys of this block.
+      typescript: path.join(__dirname, "node_modules", "typescript"),
     },
   },
   server: {
@@ -81,7 +88,17 @@ export default defineConfig({
       // second entry is the one addition, the shared install's real path.
       // In a normal (non-symlinked) checkout this resolves to the same
       // directory already covered by the first entry, so it's a no-op there.
-      allow: [searchForWorkspaceRoot(__dirname), fs.realpathSync(path.join(__dirname, "node_modules")), appwirePackageDir],
+      // The hub's recorded wire fixtures (cmd/evener-hub/testdata) are the
+      // last entry: the package's testing/hubWireFixtures.ts loads
+      // authwire/responses.json through a `?raw` import, and Vitest's jsdom
+      // suites transform that import through this server, which denies any
+      // file outside the allow list.
+      allow: [
+        searchForWorkspaceRoot(__dirname),
+        fs.realpathSync(path.join(__dirname, "node_modules")),
+        appwirePackageDir,
+        path.join(__dirname, "..", "testdata"),
+      ],
     },
     proxy: {
       // changeOrigin + an explicit Origin header: the hub's same-origin

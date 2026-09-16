@@ -1,8 +1,9 @@
 import type {
   LaunchConfigLayer,
+  LaunchConfigLayerName,
   LaunchConfigResolved,
   LaunchOption,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 function equal(a: unknown, b: unknown): boolean {
@@ -53,7 +54,7 @@ export class LaunchSettings {
   constructor(
     private client: ConversationClientLike | null,
     readonly cwd: string,
-    readonly layer: "global" | "project",
+    readonly layer: LaunchConfigLayerName,
   ) {}
   getSnapshot = () => this.state;
   subscribe = (listener: () => void) => {

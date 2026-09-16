@@ -13,7 +13,7 @@
 // item.raw (registry.go marshals it straight into ToolState; appprojector
 // and apptranscript carry it onto ThreadItem.raw unchanged; reducer.ts's
 // wireItemToModel keeps it as item.raw verbatim), and taskData.ts's
-// parseTaskState narrows it - reusing chrome/taskData.ts's
+// parseTaskState narrows it - reusing the AppWire package's
 // parseTaskListData, since it's the same agent/task/task_store.go Task[]
 // shape the tasks side panel already parses from a different wire path. An
 // update row's label prefers the matched task's description there
@@ -34,11 +34,10 @@
 // the 2026-07-15 plan trimmed those from the legacy card deliberately (a
 // changes-only card, not a full-plan disclosure; the sidebar remains the
 // full-plan view), not because the data is unavailable.
-import type { ItemModel } from "../../../../protocol/model";
-import { parseArgs, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { parseArgs, str, taskAggregateLabel } from "@evener/appwire-client";
 import { Meter } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
-import { taskAggregateLabel } from "../../chrome/taskData";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";
 import { TaskCheck, type TaskTouch } from "./taskCheck";

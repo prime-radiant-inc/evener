@@ -13,9 +13,10 @@
 //     open (a live update while the user is looking at the list - the
 //     aggregate object reference only changes when the reducer's own
 //     evener/task/updated case actually re-assigns it, so this never
-//     refires on an unrelated model update). taskData.ts's
-//     parseTaskListData (pinned wire-true against agent/task/task_store.go's
-//     real Task shape) owns interpreting the raw `unknown` response.
+//     refires on an unrelated model update). The package's
+//     parseTaskListData (taskListData.ts, pinned wire-true against
+//     agent/task/task_store.go's real Task shape) owns interpreting the raw
+//     `unknown` response.
 //
 // Failure handling: a source-backed thread may reject the wire call outright
 // (appwire.Unavailable, "actionUnavailable" - verified against
@@ -68,20 +69,30 @@
 // neither a live daemon nor a past-index record exists for the thread, so
 // nothing - not Try again, not closing and re-opening, not reloading the
 // whole app - can make the next attempt succeed.
+
+import type { ThreadModel } from "@evener/appwire-client";
+import {
+  absoluteTime,
+  errorText,
+  groupTasks,
+  isActionUnavailable,
+  isThreadNotFound,
+  parseTaskListData,
+  relativeTime,
+  sessionActionError,
+  sessionActionHeadline,
+  type TaskRow,
+  type TaskStatus,
+  taskAggregateLabel,
+} from "@evener/appwire-client";
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { errorText, sessionActionError, sessionActionHeadline } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { isActionUnavailable, isThreadNotFound } from "../../../protocol/sessionErrors";
 import { EMPTY_TASKS_PANEL_ENTRY, tasksPanelStore, useTasksPanelStore } from "../../../stores/tasksPanel";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, type ChipTone, EmptyState, Markdown, Sheet, useToasts } from "../../../widgets";
 import { Disclosure } from "../../../widgets/disclosure";
 import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { parseTaskListData, type TaskRow, type TaskStatus, taskAggregateLabel } from "./taskData";
-import { groupTasks } from "./taskGroups";
 import styles from "./taskspanel.module.css";
-import { absoluteTime, relativeTime } from "./taskTime";
 
 export interface TasksPanelProps {
   sessionRef: string;

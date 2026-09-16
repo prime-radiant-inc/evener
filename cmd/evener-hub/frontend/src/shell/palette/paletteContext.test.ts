@@ -1,7 +1,7 @@
 // @vitest-environment node
 
+import type { ThreadModel } from "@evener/appwire-client";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ThreadModel } from "../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { buildPaletteContext, hasActiveTurn } from "./paletteContext";
 
@@ -21,7 +21,7 @@ test("buildPaletteContext reads the focused session pane's ref and page", () => 
   expect(buildPaletteContext()).toEqual({ sessionRef: "local:abc", onPage: "session" });
 });
 
-test.each(["sessionTasks", "sessionActivity", "sessionDetails", "sessionNotes"])(
+test.each(["sessionTasks", "sessionActivity", "sessionDetails"])(
   "buildPaletteContext derives session scope from focused %s pane",
   (type) => {
     focus(type, { ref: "local:panel" });

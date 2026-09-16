@@ -37,21 +37,20 @@
 // (row hover, treeitem focus, open-menu, and the <900px touch fallback that
 // keeps the actions visible beside the occupant - in flow, not stacked -
 // with no hover to reveal them).
-import { memo, type ReactNode } from "react";
-import type { SessionPanelKind } from "../../panes/sessionPanels";
-import { canReadSharedNotes } from "../../protocol/sharedNotesAvailability";
-// The watch vocabulary lives in shell/watchText.ts so the session panel's pure
-// row model can import it without pulling this React module (and every widget
-// stylesheet) into its own graph. Re-exported here so the rail's existing
-// callers and tests keep their import path.
+
 import {
+  canReadSharedNotes,
+  humanizeState,
   watchArmedLabel,
   watchCadenceLabel,
   watchDurationLabel,
   watchGloss,
   watchTitle,
-} from "../../protocol/watchText";
+} from "@evener/appwire-client";
+import { memo, type ReactNode } from "react";
+import type { SessionPanelKind } from "../../panes/sessionPanels";
 import { useThreadsStore } from "../../stores/threads";
+import { useTopNotesExpanded } from "../../stores/topNotes";
 import { Badge, Cadence, type CadenceState, Chevron, IconButton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { Menu, type MenuItem } from "../../widgets/menu";
@@ -79,7 +78,6 @@ import {
 } from "./railNodes";
 import { useRailRenderObserver } from "./railRenderObserver";
 import { isTopLevelSession } from "./sessionKind";
-import { humanizeState } from "./sessionState";
 
 export { isTopLevelSession } from "./sessionKind";
 
@@ -262,7 +260,7 @@ function secondLine(
 }
 
 export interface RailRowActions {
-  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind | "notes"): void;
   onRenameSession(session: RailSession, name: string): Promise<void>;
   onShutdownSession(session: RailSession): Promise<void>;
   onForceStopSession(session: RailSession): Promise<void>;
@@ -463,7 +461,7 @@ function SessionMenuRow({ session, actions }: { session: RailSession; actions: R
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref }));
-  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref }));
+  const notesOpen = useTopNotesExpanded(ref);
   // Navigation summaries do not carry notes capability. Observe only an
   // already-hydrated snapshot; opening the session owns any needed fetch.
   const canReadNotes = useThreadsStore((s) => canReadSharedNotes(s.threads.get(ref)));

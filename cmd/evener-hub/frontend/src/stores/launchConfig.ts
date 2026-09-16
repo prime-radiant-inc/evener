@@ -1,6 +1,6 @@
 // launchConfig.ts is the thin wire-truth gateway for every settings surface
-// built on the schema-driven launch-config engine (launchShared/) plus the
-// hand-rolled in-repo trust flow: evener/launch/{schema,getLayer,setLayer,
+// built on the schema-driven launch-config engine (the package's launchSchema
+// rendered by launchShared/) plus the hand-rolled in-repo trust flow: evener/launch/{schema,getLayer,setLayer,
 // resolve,trustRepo} and evener/path/validate. Follows stores/threads.ts's own
 // requireClient()-via-connectionStore pattern (no connect() of its own).
 //
@@ -12,15 +12,17 @@
 // deliberately UNCACHED: each is read-your-writes sensitive (a getLayer
 // right after a setLayer must see the just-saved value) and varies by
 // cwd+layer, so there is no single value to memoize the way schema's is.
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
+
 import type {
+  AppwireClientLike,
   LaunchConfigLayer,
+  LaunchConfigLayerName,
   LaunchConfigResolved,
   LaunchOptionSchemaResponse,
   PathValidateResponse,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { connectionStore } from "./connection";
 
 function requireClient(): AppwireClientLike {
@@ -32,8 +34,6 @@ function requireClient(): AppwireClientLike {
   }
   return client;
 }
-
-export type LaunchConfigLayerName = "global" | "project";
 
 export interface LaunchConfigStoreState {
   schema(): Promise<LaunchOptionSchemaResponse>;

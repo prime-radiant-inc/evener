@@ -1,6 +1,5 @@
-import { canonicalSkillNames } from "../../../../protocol/composerInput";
-import type { ThreadModel } from "../../../../protocol/model";
-import type { InputItem, PendingMutation } from "../../../../protocol/types.gen";
+import type { InputItem, PendingMutation, ThreadModel } from "@evener/appwire-client";
+import { canonicalSkillNames } from "@evener/appwire-client";
 import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "../../../../stores/mutationOutbox";
 

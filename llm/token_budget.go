@@ -21,7 +21,7 @@ type TokenBudget struct {
 // ApplyTokenBudget constrains a shaped request to every known input, output,
 // and total-context limit. Unknown and non-positive limits add no constraint.
 func ApplyTokenBudget(req Request, res registry.Resolved) (Request, TokenBudget, error) {
-	input := max(0, EstimateInputTokens(req).Tokens, req.InputTokensEstimate, req.FullHistoryInputTokensEstimate)
+	input := max(0, EstimateInputTokensForResolved(res, req).Tokens, req.InputTokensEstimate, req.FullHistoryInputTokensEstimate)
 	safety := tokenSafetyReserve(res.Caps)
 	input = saturatingTokenAdd(input, safety)
 

@@ -1,10 +1,9 @@
+import type { ThreadCapabilities, ThreadModel } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../protocol/model";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
@@ -1173,6 +1172,63 @@ test("restores a previously-saved layout on boot instead of falling back to welc
   const tabs = document.querySelectorAll(".dv-tab");
   expect(tabs).toHaveLength(3);
   expect(Array.from(tabs).map((t) => t.textContent)).toEqual(["Doc ref_a", "Doc ref_b", "Doc ref_c"]);
+});
+
+// A layout saved by a build that still shipped a pane type this one no
+// longer registers (the removed sessionNotes) must not wipe the workspace -
+// and the skipped panel must leave the live dockview api in the same restore:
+// the commit between restoreLayout and DockHost's reconciliation renders
+// every api panel through paneFor(), which throws for an unregistered type
+// and drops the workspace into DockChunkBoundary's error state. The
+// FakeDockviewApi doubles in workspace.test.ts assert the store-level skip
+// but cannot see that render path; this test round-trips a REAL save, poisons
+// one panel, and boots.
+test("a saved layout with a retired pane type restores the surviving panes without crashing", async () => {
+  workspaceStore.getState().openPane("doc", { ref: "ref_a" });
+  workspaceStore.getState().openPane("doc", { ref: "ref_b" });
+  const { unmount } = render(<DockHost />);
+  await screen.findByText(/doc pane: ref_b/);
+
+  vi.useFakeTimers();
+  act(() => {
+    workspaceStore.getState().openPane("doc", { ref: "ref_c" }); // one more change to trigger a save
+  });
+  await Promise.resolve();
+  advance(500);
+  const saved = localStorage.getItem(LAYOUT_KEY);
+  expect(saved).not.toBeNull();
+  vi.useRealTimers();
+  unmount();
+
+  // Poison the MAIN pane with the retired type - the exact hazard: a live,
+  // active tab dockview would mount before any reconciliation could remove
+  // it.
+  const layout = JSON.parse(saved!) as { panels: Record<string, { params?: unknown }> };
+  const poisoned = JSON.stringify({
+    ...layout,
+    panels: {
+      ...layout.panels,
+      pane_doc_1: {
+        ...layout.panels.pane_doc_1,
+        params: { paneType: "sessionNotes", paneParams: { ref: "local:poisoned" } },
+      },
+    },
+  });
+  localStorage.setItem(LAYOUT_KEY, poisoned);
+  resetWorkspaceStoreForTests(); // fresh boot, nothing opened yet
+
+  render(<DockHost />);
+
+  // The survivors render, the poisoned panel is gone from the store and
+  // the DOM (VISIBLE tabs only: elements survive inside a hidden header, and
+  // after recovery the survivors' group must keep its tabs and close
+  // controls reachable - the store's recovered "main" sits physically in
+  // the old secondary group), and the workspace never fell to its
+  // chunk-boundary error state.
+  expect(await screen.findByText(/doc pane: ref_c/)).toBeTruthy();
+  expect(visibleTabTexts()).toEqual(["Doc ref_b", "Doc ref_c"]);
+  expect(workspaceStore.getState().panes.map((p) => p.id)).toEqual(["pane_doc_2", "pane_doc_3"]);
+  expect(screen.queryByText("Couldn't load the workspace")).toBeNull();
 });
 
 test("restores a routed primary through replacement before reopening captured secondary routes", async () => {

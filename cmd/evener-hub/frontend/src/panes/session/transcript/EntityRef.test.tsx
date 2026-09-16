@@ -1,9 +1,7 @@
+import type { ActivityJob, ActivityTree, EvenerDelegateInfo, ItemModel, TurnModel } from "@evener/appwire-client";
 import { buildEntityView, type EntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
-import type { ActivityJob, ActivityTree } from "../../../protocol/activityData";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
-import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { navigationStore } from "../../../stores/navigation/store";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";

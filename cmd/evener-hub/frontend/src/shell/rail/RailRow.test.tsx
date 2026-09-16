@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { NavigationWatchSummary } from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import { hydrateThread } from "../../protocol/reducer";
-import type { NavigationWatchSummary } from "../../protocol/types.gen";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { selectRailModel } from "../../stores/navigation/selectors";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -20,6 +20,7 @@ import {
   type ResourceState,
 } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import { Tree, type TreeRowInfo } from "../../widgets/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -120,6 +121,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetNavigationStoreForTests();
   resetThreadsStoreForTests();
+  topNotesStore.getState().resetForTests();
   seedPinCatalogForPicker();
 });
 
@@ -296,7 +298,8 @@ test("rail Notes follows its hydrated capability from unknown to false to suppor
     { state: "ended", live: false },
     actions({
       onOpenSessionPane: (target, pane) => {
-        workspaceStore.getState().togglePane(sessionPanelPaneType(pane), { ref: target.ref });
+        if (pane === "notes") topNotesStore.getState().toggle(target.ref);
+        else workspaceStore.getState().togglePane(sessionPanelPaneType(pane), { ref: target.ref });
       },
     }),
   );
@@ -322,9 +325,7 @@ test("rail Notes follows its hydrated capability from unknown to false to suppor
     });
   });
   await user.click(screen.getByRole("menuitem", { name: "Notes" }));
-  expect(workspaceStore.getState().panes).toEqual(
-    expect.arrayContaining([expect.objectContaining({ type: "sessionNotes", params: { ref: session.ref } })]),
-  );
+  expect(topNotesStore.getState().isExpanded(session.ref)).toBe(true);
 });
 
 function normalizedRailResource(
@@ -1733,7 +1734,11 @@ describe("session row", () => {
       onOpenSessionPane: (target, pane) => {
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: target.ref });
-        workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
+        if (pane === "notes") {
+          topNotesStore.getState().toggle(target.ref);
+        } else {
+          workspace.openPane(sessionPanelPaneType(pane), { ref: target.ref });
+        }
       },
     });
     renderRow({}, acts);

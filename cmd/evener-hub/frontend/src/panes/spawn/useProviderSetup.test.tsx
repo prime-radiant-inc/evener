@@ -1,7 +1,7 @@
+import type { InstanceEntry } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { InstanceEntry } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 import { credentialsStore, resetCredentialsStoreForTests } from "../../stores/credentials";
 import { useProviderSetup } from "./useProviderSetup";

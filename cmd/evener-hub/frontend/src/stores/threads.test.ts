@@ -1,4 +1,33 @@
 import "fake-indexeddb/auto";
+import type {
+  AnyNotification,
+  ConnectionState,
+  MethodName,
+  MethodTypes,
+  ModelListResponse,
+  NotesHumanSetResponse,
+  QueueState,
+  Thread,
+  ThreadCapabilities,
+  ThreadClearResponse,
+  ThreadModel,
+  ThreadReadResponse,
+  ThreadStatus,
+  ThreadTurnsListResponse,
+  TurnQueueResponse,
+  TurnStartResponse,
+} from "@evener/appwire-client";
+import {
+  applyNotification,
+  ClientNotReadyError,
+  errorKind,
+  hydrateThread,
+  notificationTargetsThread,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
+import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -9,28 +38,7 @@ import {
   upsertSubagentRow,
   useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
-import type { ConnectionState } from "../protocol/client";
-import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
-import type { ThreadModel } from "../protocol/model";
-import { applyNotification, hydrateThread, notificationTargetsThread } from "../protocol/reducer";
-import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
-import { mulberry32 } from "../protocol/testing/tokenFlood";
-import type {
-  AnyNotification,
-  MethodName,
-  MethodTypes,
-  ModelListResponse,
-  NotesHumanSetResponse,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadClearResponse,
-  ThreadReadResponse,
-  ThreadStatus,
-  ThreadTurnsListResponse,
-  TurnQueueResponse,
-  TurnStartResponse,
-} from "../protocol/types.gen";
+import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -341,6 +349,7 @@ function runScheduledHydrationRetry(index = 0): void {
 beforeEach(async () => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetSubagentModuleStoreForTests();
   scheduledHydrationRetries = [];
   restoreHydrationRetryScheduler = installHydrationRetrySchedulerForTests((attempt, retry) => {
@@ -4655,6 +4664,15 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       const indexedDB = new IDBFactory();
       setMutationStorageForTests(new MutationOutboxIndexedDB({ indexedDB }));
       const fake = connectFakeClient();
+      // A mounted draft consumer implies its session pane in production;
+      // holding the ref keeps the acknowledged draft from the pane-store
+      // eviction sweep this acknowledgment now schedules.
+      act(() => {
+        workspaceStore.setState({
+          panes: [{ id: "p_retry", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+          focusedPaneId: "p_retry",
+        });
+      });
       const snapshot = (humanNote: string) =>
         readResponse("ref_a", {
           evener: { ref: "ref_a", capabilities: CAPABILITIES, humanNote, queue: { revision: 0 } },
@@ -4753,6 +4771,14 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     });
     const record = await threadsStore.getState().setHumanNote("ref_a", "raw draft");
     syncHumanNote("ref_a", "A");
+    // The mounted draft consumer implies a session pane in production; hold
+    // the ref so the acknowledgment's eviction sweep keeps the record.
+    act(() => {
+      workspaceStore.setState({
+        panes: [{ id: "p_rejoin", type: "session", params: { ref: "ref_a" }, slot: "main" }],
+        focusedPaneId: "p_rejoin",
+      });
+    });
     const { result } = renderHook(() => useHumanNoteDraft("ref_a"));
     await waitFor(() => expect(result.current?.submitted?.id).toBe(record.clientMutationId));
     const canonical = " \n\tcanonical\u00a0e\u0301🙂  ";

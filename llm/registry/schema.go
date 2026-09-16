@@ -141,12 +141,13 @@ type modelSchema struct {
 	Protocol string            `toml:"protocol"`
 	Surface  string            `toml:"surface"`
 	Headers  map[string]string `toml:"headers"`
+	Disabled *bool             `toml:"disabled"`
 	transportSchema
 	Caps
 }
 
 func (ms modelSchema) model(id string) Model {
-	m := Model{ID: id, WireID: ms.WireID, AliasOf: ms.AliasOf, Family: ms.Family, Protocol: ms.Protocol, Surface: ms.Surface, Headers: ms.Headers, Caps: ms.Caps}
+	m := Model{ID: id, WireID: ms.WireID, AliasOf: ms.AliasOf, Family: ms.Family, Protocol: ms.Protocol, Surface: ms.Surface, Headers: ms.Headers, Disabled: ms.Disabled, Caps: ms.Caps}
 	if !ms.isZero() {
 		t := ms.transport()
 		m.Transport = &t

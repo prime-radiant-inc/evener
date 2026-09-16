@@ -16,9 +16,10 @@
 // destructive action confirms" constraint) is layered outside
 // CollectionEditor's own immediate-fire onRemove, keyed on a `pending` path
 // exactly like every other confirm-gated row in this settings cluster.
+
+import type { LaunchConfigLayer } from "@evener/appwire-client";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useId, useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
-import type { LaunchConfigLayer } from "../../../protocol/types.gen";
 import { directoryActions, extensionsStore, useExtensionsStore } from "../../../stores/extensions";
 import {
   Button,

@@ -6,15 +6,13 @@ import {
   useWindowDimensions,
   View,
 } from "react-native";
-import { absoluteTime } from "../../cmd/evener-hub/frontend/src/panes/session/chrome/taskTime";
-import {
-  formatElapsed,
-  splitMandate,
-} from "../../appwire-client/typescript/displayFormat";
+import { absoluteTime } from "@evener/appwire-client";
 import {
   type ActivityDelegate,
   activityDelegateDiagnostics,
-} from "../../appwire-client/typescript/activityData";
+  formatElapsed,
+  splitMandate,
+} from "@evener/appwire-client";
 import {
   delegateModel,
   delegatePacket,

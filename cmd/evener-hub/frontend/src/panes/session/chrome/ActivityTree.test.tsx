@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ActivityTree as ActivityTreeData } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
 import * as sessionPlacementModule from "../../../shell/sessionPlacement";
 import * as openTranscriptModule from "../transcript/openTranscript";
 import { ActivityTree } from "./ActivityTree";
+import { detailLineByText } from "./detailLine.testFixture";
 
 // vi.spyOn, not vi.mock: ActivityPanel.test.tsx statically imports ActivityTree
 // (this file's own subject) without ever mocking this module, so under a
@@ -162,6 +163,14 @@ const FOLD_ID = "session:sess_root:inactive-fold";
 // The fold row's accessible name matches its visible text: the failed count
 // is part of the aria-label whenever failedCount > 0.
 const FOLD_NAME = "2 inactive · 1 failed";
+
+// metaText reads a row's right-hand cluster alone, so an assertion pins the
+// meta grammar instead of the whole row (name, glyph, and open button text).
+function metaText(row: HTMLElement): string {
+  const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
+  if (!meta) throw new Error("row has no meta cluster");
+  return meta.textContent ?? "";
+}
 
 function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -399,7 +408,7 @@ describe("ActivityTree", () => {
       }),
     );
 
-    expect(screen.getByText(/delegate dlg_stable/i)).toBeTruthy();
+    expect(detailLineByText("Delegate dlg_stable · send · stop · status")).toBeTruthy();
     expect(screen.getByText(/watch enabled/i)).toBeTruthy();
     expect(screen.getByText(/observer armed/i)).toBeTruthy();
   });
@@ -510,7 +519,7 @@ describe("ActivityTree", () => {
 
     const shellRow = screen.getByRole("treeitem", { name: "run tests" });
     expect(within(shellRow).getByText("$")).toBeTruthy();
-    expect(shellRow.textContent).toContain("— · 12s");
+    expect(metaText(shellRow)).toBe("running · 12s");
 
     const delegateRow = screen.getByRole("treeitem", { name: "Inspect the repo" });
     expect(within(delegateRow).getByText("⌘")).toBeTruthy();
@@ -518,6 +527,59 @@ describe("ActivityTree", () => {
 
     // One row per live entry plus the fold row: sessions never become rows.
     expect(screen.getAllByRole("treeitem")).toHaveLength(3);
+  });
+
+  // #1388: a live row with no usage opens its meta on its status, and both row
+  // kinds read the same - see liveMetaSegments in ActivityTree.tsx.
+  test("a live row with no usage opens its meta on status, matching across row kinds", () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+    const noUsageTree: ActivityTreeData = {
+      revision: 1,
+      root: {
+        ...TREE.root,
+        entries: [
+          {
+            kind: "shell",
+            job: shellJob({
+              jobId: "job_no_usage",
+              description: "quiet job",
+              status: "running",
+              lastOutputAt: "2026-08-05T15:00:00Z",
+            }),
+          },
+          {
+            kind: "delegate",
+            delegate: {
+              delegateId: "dlg_no_usage",
+              ownerSessionId: "sess_root",
+              rootSessionId: "sess_root",
+              childSessionId: "sess_child",
+              childRef: "ref_child",
+              transcriptRef: "ref_child",
+              type: "delegate",
+              lifecycle: "active",
+              phase: "running",
+              status: "running",
+              projectionRevision: 1,
+              terminal: false,
+              resumable: true,
+              mandate: "Quiet delegate",
+              runStartedAt: "2026-08-05T15:00:00Z",
+              latestActivityAt: "2026-08-05T15:00:00Z",
+              branch: {},
+            },
+          },
+        ],
+      },
+    };
+    render(<ActivityTree tree={noUsageTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
+
+    const jobMeta = metaText(screen.getByRole("treeitem", { name: "quiet job" }));
+    const delegateMeta = metaText(screen.getByRole("treeitem", { name: "Quiet delegate" }));
+
+    expect(jobMeta).toBe("running · 12s");
+    expect(delegateMeta).toBe("running · 12s");
   });
 
   test("terminal entries hide behind a fold row; clicking it toggles the fold only", async () => {
@@ -979,7 +1041,9 @@ describe("ActivityTree", () => {
     render(<ActivityTree tree={sparseTree} expandedFoldIDs={[]} onToggleFold={vi.fn()} />);
 
     const row = screen.getByRole("treeitem", { name: "sess_old_child" });
-    expect(row.textContent).toContain("— · running");
+    // No usage to show, so the same status-first meta a live job row renders
+    // (#1388) - not a placeholder dash.
+    expect(metaText(row)).toBe("running");
     expect(row.textContent).not.toContain("12s");
     expect(row.textContent).not.toContain("↑");
     expect(row.textContent).not.toContain("↓");

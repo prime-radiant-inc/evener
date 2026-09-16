@@ -13,17 +13,27 @@
 // remember and type exactly. Every browsable path-valued field (the path and
 // pathList kinds) renders the shared PathField the same way, for the same
 // reason.
+
+import {
+  asEnvEntries,
+  asMcpList,
+  asStringList,
+  inheritedItems,
+  type LaunchConfigLayer,
+  type LaunchConfigResolved,
+  type LaunchOption,
+  type MCPServerSpec,
+  type PathValidation,
+  schemaPathKind,
+  validatePathListAdd,
+} from "@evener/appwire-client";
 import { type Dispatch, type ReactNode, type SetStateAction, useId, useRef, useState } from "react";
-import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSpec } from "../../protocol/types.gen";
 import { Button, CollectionEditor, FormRow, Input, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog as ModelCatalogEnvelope } from "../../widgets/modelCatalog";
 import { ModelCatalog } from "../../widgets/modelCatalog";
 import type { PathFieldKind } from "../../widgets/pathfield";
 import { PathField } from "../../widgets/pathfield";
-import { asEnvEntries, asMcpList, asStringList, inheritedItems } from "../settings/sections/launchShared/inherited";
-import { type PathValidation, validatePathListAdd } from "../settings/sections/launchShared/pathListAdd";
-import { schemaPathKind } from "../settings/sections/launchShared/schema";
 import styles from "./advancedOptions.module.css";
 import { type AdvancedFieldValue, type AdvancedValues, collectAdvancedOverrides } from "./schema";
 

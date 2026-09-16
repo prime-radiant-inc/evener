@@ -1,5 +1,5 @@
+import { docImageURL } from "@evener/appwire-client";
 import { afterEach, expect, test, vi } from "vitest";
-import { docImageURL } from "../../protocol/docContent";
 import { browserDocPort } from "./browserDocPort";
 
 afterEach(() => {

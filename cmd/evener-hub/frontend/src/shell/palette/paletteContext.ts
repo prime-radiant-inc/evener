@@ -6,7 +6,7 @@
 // which commands exist (scope), which of them the hub will carry out
 // (capabilities), and whether a turn is in flight to act on.
 
-import type { ThreadModel } from "../../protocol/model";
+import type { ThreadModel } from "@evener/appwire-client";
 import { threadsStore } from "../../stores/threads";
 import { workspaceStore } from "../workspace";
 
@@ -31,7 +31,6 @@ function onPageForType(type: string): OnPage {
     case "sessionTasks":
     case "sessionActivity":
     case "sessionDetails":
-    case "sessionNotes":
       return "session";
     case "spawn":
       return "spawn";

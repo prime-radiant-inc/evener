@@ -1,6 +1,6 @@
+import type { ItemModel, TurnModel } from "@evener/appwire-client";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
-import type { ItemModel, TurnModel } from "../../../../protocol/model";
 import { ToolCallItem } from "../ToolCallItem";
 import "./taskCard"; // registers the real "task_list" descriptor
 

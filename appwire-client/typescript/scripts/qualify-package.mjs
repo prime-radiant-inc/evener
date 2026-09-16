@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocketServer } from "ws";
+import { consumerPackageUsage, rootSurface } from "./consumer-value-imports.mjs";
 import { runInstalledDiscoveryContracts } from "./discovery-contracts.mjs";
 
 const packageDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -40,144 +41,11 @@ async function qualify() {
     .map((file) => file.slice(0, -3));
   assert(shippedModules.includes("index"), "tsconfig.build.json must compile index.ts - it is the package root entry");
   assert(shippedModules.length > 1, "tsconfig.build.json lists no modules to qualify");
-  // Every runtime export of the package root. The root's generated consumer
-  // programs are built from this one list, so an export the entry point stops
-  // providing fails here instead of in somebody's consumer. Whether each
-  // shipped MODULE is reachable at all is the reachability check below.
-  const rootValues = [
-    "AppwireClient",
-    "APPWIRE_PROTOCOL_VERSION",
-    "ConnectionClosedError",
-    "RequestTimeoutError",
-    "WireError",
-    "ClientNotReadyError",
-    "GENERIC_ERROR_MESSAGE",
-    "HUB_UNREACHABLE_MESSAGE",
-    "errorKind",
-    "errorText",
-    "friendlyErrorMessage",
-    "friendlyLaunchErrorMessage",
-    "isHubLaunchError",
-    "isStaleCursorError",
-    "mutationErrorData",
-    "sessionActionError",
-    "sessionActionHeadline",
-    "rpcURLFromLocation",
-    "composeAskAnswers",
-    "parseAskUserQuestions",
-    "answeredAskUserSuffix",
-    "liveAskQuestions",
-    "reconcileBatches",
-    "translateAttachmentMarkers",
-    "buildInput",
-    "buildComposerInput",
-    "METHOD_NAMES",
-    "NOTIFICATION_NAMES",
-    "STEERING_KINDS",
-    "THREAD_ITEM_EVENT_KINDS",
-    "isFailedJobOutcome",
-    "isFailedDelegateOutcome",
-    "isActivityFailure",
-    "isTurnContainer",
-    "parseActivityTree",
-    "activityNodeID",
-    "activityDelegateBranch",
-    "activityDelegateDiagnostics",
-    "delegateHasActiveWork",
-    "defaultExpandedIDs",
-    "reconcileActivityState",
-    "ActivityList",
-    "fenceRootSession",
-    "graftContinuationTree",
-    "foldRowID",
-    "jobIsFailed",
-    "activityDelegateState",
-    "buildActivityRows",
-    "hasItemFailure",
-    "hasErrorText",
-    "hasFailureStatus",
-    "isNonZeroExit",
-    "isInProgressStatus",
-    "parseJobLogTail",
-    "SYSTEM_PRELUDE_TURN_ID",
-    "pendingTextJoined",
-    "imageSessionRouteForSession",
-    "hydrateThread",
-    "collectAuthoritativeMutationIds",
-    "prependOlderTurns",
-    "mergeOlderItemPage",
-    "resolvePendingEscalation",
-    "notificationRoutingKey",
-    "notificationTargetsThread",
-    "applyNotification",
-    "deriveSendQueueAvailability",
-    "isActionUnavailable",
-    "isThreadNotFound",
-    "stableDelegateDisplayStatus",
-    "canReadSharedNotes",
-    "DOC_FILE_MAX_BYTES",
-    "DocFileError",
-    "docFileRawURL",
-    "docImageURL",
-    "decideSubmitRoute",
-    "decideSteerRoute",
-    "isTurnActive",
-    "formatTokenCount",
-    "formatDurationMs",
-    "formatCharCount",
-    "formatClockTime",
-    "formatClockTimeSeconds",
-    "formatElapsed",
-    "firstLine",
-    "splitMandate",
-    "plainQuoteLine",
-    "clip",
-    "clipJobID",
-    "tailSlice",
-    "tailFold",
-    "formatToolDuration",
-    "formatByteCount",
-    "lineCount",
-    "parseArgs",
-    "parseJSONObject",
-    "trailingBracketFooter",
-    "str",
-    "slashCommandInvocation",
-    "visibleCatalogCommands",
-    "evaluateSlashLabel",
-    "filterSlashMenuItems",
-    "mergeSlashCommands",
-    "parseSlashToken",
-    "spliceSlashCommand",
-  ];
-  // One exported type per shipped module that declares any, so the declaration
-  // check covers each module's packed .d.ts and not just its runtime half.
-  const rootTypes = [
-    "AppwireClientOptions",
-    "AppwireClientLike",
-    "WebSocketLike",
-    "AskAnswerItem",
-    "AskUserQuestion",
-    "AskQuestionRef",
-    "AskBatch",
-    "MarkerAttachment",
-    "InputAttachment",
-    "ActivityNodeLike",
-    "ActivityTree",
-    "ActivityState",
-    "ActivityRow",
-    "ItemFailureSignals",
-    "JobLogTail",
-    "ThreadModel",
-    "NotificationRoutingKey",
-    "SendQueueAvailability",
-    "StableDelegateState",
-    "DocFileContent",
-    "SubmitRoute",
-    "SteerRoute",
-    "SlashToken",
-    "SlashMenuItem",
-  ];
+  // The root's runtime values and exported types, derived from index.ts so
+  // the qualification surface cannot drift from what the entry point exports;
+  // an export added there is qualified without editing this file. The smoke
+  // CALLS below stay hand-written -- they are behaviour probes, not a surface.
+  const { values: rootValues, types: rootTypes } = rootSurface(join(packageDir, "index.ts"));
   // One call per shipped module, with a trivial input. Importing alone would
   // pass for a module that needs a browser global at load time; calling proves
   // each module actually evaluates and runs inside a bare Node consumer.
@@ -196,6 +64,8 @@ assert.equal(askBatches[0].id, "batch1");
 assert.equal(askBatches[0].questions[0].key, "ask1:0");
 const askReply = { id: "u1", turnId: "t1", type: "userMessage", text: '[answers]\\n1. [DB] \u2192 "SQLite"' };
 assert.equal(client.answeredAskUserSuffix({ turns: [{ items: [askItem, askReply] }] }, askItem), ' \u2014 answered: "SQLite"');
+assert.equal(client.rejectionReason({ type: "image/png", size: client.MAX_ATTACHMENT_BYTES + 1, name: "big.png" }, 0), "big.png (maximum 8 MB)");
+assert.deepEqual(client.stripMarker(client.insertMarker("go", 0, 0, client.markerText(1)).value, 9, 1), { value: "go", cursor: 0 });
 assert.equal(client.translateAttachmentMarkers("[image 1]go", [{ marker: 1, name: "shot.png" }]), "(attached image 1: shot.png)go");
 assert.deepEqual(client.buildInput("hi"), [{ type: "text", text: "hi" }]);
 assert.deepEqual(client.buildComposerInput("[image 1]go", [{ marker: 1, mediaType: "image/png", data: "AA", name: "shot.png" }]), [
@@ -294,6 +164,70 @@ assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: true } }),
 assert.equal(client.canReadSharedNotes({ capabilities: { sharedNotes: false } }), false);
 assert.equal(client.canReadSharedNotes({ capabilities: {} }), false);
 assert.equal(client.canReadSharedNotes(undefined), false);
+assert.equal(client.marketplaceSourceLabel({ kind: "github", repo: "acme/plugins" }), "github: acme/plugins");
+assert.equal(client.marketplaceSourceLabel({ kind: "git-subdir", url: "https://example.com/x.git", path: "sub" }), "https://example.com/x.git (sub)");
+assert.equal(client.humanizeState("awaiting", true), "question waiting");
+assert.equal(client.humanizeState("awaiting", false), "your move");
+assert.equal(client.humanizeState("notLoaded", false), "idle");
+const catalogEntry = { provider: "openai", model: "gpt-5", displayName: "GPT-5", supportsTools: true, contextWindow: 200000 };
+const catalogOptions = client.toCatalogOptions([catalogEntry]);
+assert.equal(catalogOptions[0].qualified, "openai/gpt-5");
+assert.equal(client.filterCatalog(catalogOptions, "anthropic").length, 0);
+assert.equal(client.withGroupHeads(catalogOptions)[0].groupHead, "openai");
+assert.deepEqual(client.capabilityLabels(catalogEntry), ["tools"]);
+assert.equal(client.formatCost(catalogEntry), null);
+assert.equal(client.contextWindowLabel(catalogEntry), "200k");
+assert.equal(client.rowMeta(catalogEntry, true), "openai \u00b7 tools \u00b7 200k");
+assert.equal(client.unavailableLine({ provider: "anthropic", message: "no credentials" }), "anthropic \u2014 no credentials");
+const pickerRows = client.buildPickerRows({ models: [catalogEntry], recent: [] }, "");
+assert.deepEqual(pickerRows.map((row) => row.kind), ["group", "model"]);
+assert.equal(client.pickableModelRows(pickerRows).length, 1);
+assert.deepEqual(client.buildPickerRows(null, ""), []);
+assert.equal(client.effortLabel("none", ["none", "high"]), "none (off)");
+assert.deepEqual(client.effortOptionLevels(["low", "high"], "medium"), ["", "low", "high", "medium"]);
+assert.deepEqual(client.sessionEffortLevels(undefined, true), ["minimal", "low", "medium", "high"]);
+const envInstance = {
+  name: "openai", providerId: "openai", protocol: "openai-chat", auth: "bearer", implicit: true, isDefault: false,
+  activeSource: "env:OPENAI_API_KEY", hasStoredFile: true, hasStoredOAuth: false, credentialRequired: true,
+};
+assert.equal(client.activeSourceLabel(envInstance), "Configured via environment variable (OPENAI_API_KEY)");
+assert.deepEqual(client.credentialLayers(envInstance).map((layer) => layer.source), ["env:OPENAI_API_KEY", "store"]);
+assert.equal(client.keylessByDesign({ ...envInstance, activeSource: "none", credentialRequired: false }), true);
+assert.equal(client.unconfiguredLabel({ ...envInstance, activeSource: "none" }), "Not configured");
+assert.equal(client.styleInfoText({ ...envInstance, baseUrl: "https://api.example" }), "openai-chat · base https://api.example");
+assert.deepEqual(client.groupByProvider([envInstance]).map((group) => group.providerId), ["openai"]);
+assert.equal(client.safeCredentialTestResult("openai", { status: "bogus" }).status, "endpoint_failure");
+assert.equal(client.safeCredentialTestMessage("success"), "Credentials verified.");
+assert.equal(client.isEndpointConflict(new Error("conflict")), false);
+assert.equal(client.fingerprintUnavailable({ ...envInstance, baseUrl: "https://api.example" }), true);
+assert.equal(typeof client.ENDPOINT_CHANGED_TEST_MESSAGE, "string");
+assert.equal(client.basename("/home/me/proj/"), "proj");
+assert.equal(client.parentOf("/home/me"), "/home");
+assert.equal(client.childrenPrefix("/home/me"), "/home/me/");
+assert.equal(client.isDirEntry("/home/me/src/"), true);
+const pathRows = client.buildPathRows({
+  kind: "file", currentDir: "/home/me", entries: ["/home/me/src/", "/home/me/notes.md"],
+  value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
+});
+assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
+assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.equal(client.parseTaskListData(null), null);
+assert.deepEqual(client.parseTaskListData([]), []);
+const taskRows = client.parseTaskListData([
+  { id: 1, type: "implement", description: "a", prompt: "", status: "done" },
+  { id: 2, type: "verify", description: "b", prompt: "", status: "open" },
+]);
+assert.deepEqual(taskRows.map((row) => row.id), [1, 2]);
+assert.equal(client.taskAggregateLabel({ total: 2, done: 1 }), "1 of 2 tasks left");
+assert.deepEqual(client.groupTasks(taskRows).settled.map((row) => row.id), [1]);
+assert.equal(client.relativeTime("2026-08-09T12:00:00Z", new Date("2026-08-09T12:37:00Z")), "37m ago");
+assert.equal(client.absoluteTime("not-a-date"), "not-a-date");
+const launchOption = { field: "skillsDirs", wireField: "skillsDirs", label: "Skill directories", group: "Resources", kind: "pathList" };
+assert.deepEqual(client.collectConfig([launchOption], client.buildFormState([launchOption], { skillsDirs: ["/opt/skills"] })), { skillsDirs: ["/opt/skills"] });
+assert.deepEqual(client.inheritedItems(["/a", "/b"], ["/a"], (item) => item, client.asStringList), ["/b"]);
+client.validatePathListAdd(launchOption, ["/opt/skills"], "/opt/skills", async () => ({ valid: true })).then((outcome) => assert.deepEqual(outcome, { ok: false, error: "Already added." }));
+assert.equal(client.findBuiltinArgument([{ id: "anthropic/claude-x", label: "Claude X" }], " claude x ")?.id, "anthropic/claude-x");
+assert.equal(client.matchBuiltinInvocation("/goal fix it", [{ id: "goal", args: { kind: "free" } }])?.argsText, "fix it");
 `;
   // The qualification manifest: every specifier package.json publishes, and the
   // names the package promises at each one. A subpath with no entry here is not
@@ -373,7 +307,11 @@ assert.equal(typeof client.readDocFile, "function");
   for (const module of shippedModules)
     assert(reachableModules.has(module), `shipped module unreachable from every published specifier: ${module}`);
   // One ESM declaration consumer, one CommonJS declaration consumer and one
-  // runtime presence check in each module form, per published specifier.
+  // runtime presence check in each module form, per published specifier. Each
+  // type is named only as an `import type` specifier, the one position that
+  // does not instantiate it, so a generic type qualifies without anyone
+  // supplying its arguments (an import alias cannot name an `export type`
+  // re-export, and a tuple of bare names cannot name a generic).
   const declarationConsumers = [];
   const runtimeConsumers = [];
   const consumerNames = new Set();
@@ -402,7 +340,6 @@ import type {
 ${surface.types.map((name) => `  ${name},`).join("\n")}
 } from "${moduleSpecifier}";
 ${surface.esmTypeUses ?? ""}
-declare const shipped: [${surface.types.join(", ")}]; void shipped;
 ${surface.values.map((name) => `void ${name};`).join("\n")}
 `,
     );
@@ -410,7 +347,9 @@ ${surface.values.map((name) => `void ${name};`).join("\n")}
       join(consumerDir, commonjsConsumer),
       `import client = require("${moduleSpecifier}");
 ${surface.cjsTypeUses ?? ""}
-declare const shipped: [${surface.types.map((name) => `client.${name}`).join(", ")}]; void shipped;
+import type {
+${surface.types.map((name) => `  ${name},`).join("\n")}
+} from "${moduleSpecifier}";
 ${surface.values.map((name) => `void client.${name};`).join("\n")}
 `,
     );
@@ -443,6 +382,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     consumerDir,
   );
   for (const consumer of runtimeConsumers) run(process.execPath, [join(consumerDir, consumer)], consumerDir);
+  runConsumerResolveCheck();
   const listing = run("tar", ["-tzf", tarball], consumerDir);
   for (const expected of [
     ...shippedModules.flatMap((module) => [`package/dist/${module}.js`, `package/dist/${module}.d.ts`]),
@@ -592,6 +532,32 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     await new Promise((resolveClose) => server.close(resolveClose));
   }
   console.log(`qualified ${packed.name}@${packed.version}: installed imports, declarations and read-only example`);
+}
+
+// Every app tree imports this package by name but declares no dependency on
+// it: each resolves the name through a repo alias onto TypeScript source, so
+// `make test-web` and `make test-native` can be green while the installed
+// tarball is missing an export. This answers that question in the one place it
+// can be answered - a real consumer with the tarball in node_modules. The
+// program is generated from what the apps actually import, read off their
+// graph, so there is no fixture to fall behind: a specifier with values is
+// imported by name, one used only as a whole module is imported for effect.
+function runConsumerResolveCheck() {
+  const programFile = "resolve-imports.mjs";
+  const usage = consumerPackageUsage(resolve(packageDir, "..", ".."));
+  // Each name is aliased under its specifier's index: docImageURL is a value of
+  // both the root and ./docContent, and importing it twice under one name would
+  // not compile.
+  const program = `${[...usage]
+    .map(([specifier, entry], index) => {
+      if (entry.values.length === 0) return `import "${specifier}";`;
+      const locals = entry.values.map((name) => `v${index}_${name}`);
+      const imported = entry.values.map((name, at) => `${name} as ${locals[at]}`);
+      return `import { ${imported.join(", ")} } from "${specifier}";\nvoid [${locals.join(", ")}];`;
+    })
+    .join("\n")}\n`;
+  writeFileSync(join(consumerDir, programFile), program);
+  run(process.execPath, [join(consumerDir, programFile)], consumerDir);
 }
 
 try {

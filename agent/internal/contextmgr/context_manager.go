@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // CompactionMeta holds session-level metadata injected into compaction summaries.
@@ -319,6 +320,22 @@ func (cm *Manager) RecordInputTokens(tokens int, historyLen int) {
 	cm.historyLenAtMeasure = historyLen
 }
 
+// RecordInputTokensFor records an API measurement only when the manager still
+// holds the profile that produced it. A SetProfile that lands while a request is
+// in flight already invalidated the measurement that request belonged to, so
+// writing it afterwards would attribute one model's count to another -- and the
+// estimator reads the target, so the count would be wrong under the new rules too.
+func (cm *Manager) RecordInputTokensFor(profile *provider.Profile, tokens int, historyLen int) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if !sameProfileTarget(cm.profile, profile) {
+		return false
+	}
+	cm.lastInputTokens = tokens
+	cm.historyLenAtMeasure = historyLen
+	return true
+}
+
 // SetProfile replaces the provider profile so that ContextWindowSize() and
 // other profile-derived values stay current after a model change. An exact
 // token count belongs only to the instance, model, and protocol that produced
@@ -337,7 +354,20 @@ func sameProfileTarget(a, b *provider.Profile) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.ID() == b.ID() && a.Model() == b.Model() && a.Protocol() == b.Protocol()
+	if a.ID() != b.ID() || a.Model() != b.Model() || a.Protocol() != b.Protocol() {
+		return false
+	}
+	// The estimator reads more of the row than its identity (see
+	// EstimatorTargetsEquivalent), so every field it reads has to match before a
+	// measurement may survive: the count was taken under the old rules.
+	return sameEstimatorTarget(a.Resolved(), b.Resolved())
+}
+
+// sameEstimatorTarget compares the resolved fields the token estimator reads. The
+// rules belong to the estimator, so the comparison lives with them
+// (llm.EstimatorTargetsEquivalent) and this only names what it is for here.
+func sameEstimatorTarget(a, b registry.Resolved) bool {
+	return llm.EstimatorTargetsEquivalent(a, b)
 }
 
 // currentProfile returns the active profile under cm.mu so reads do not race
@@ -363,19 +393,65 @@ func (cm *Manager) Pressure(history []schema.Turn, sysPromptChars int) float64 {
 
 // estimatePressure calculates what fraction of the context window is in use.
 // Uses actual API-reported token counts when available, falling back to char/4.
+// One profile snapshot covers the window, the measurement, and the estimate, so
+// a model switch (SetProfile) cannot pair one model's window with another's
+// tokens.
 func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) float64 {
-	cw := cm.currentProfile().ContextWindowSize()
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, history, sysPromptChars)
+}
+
+// pressureWithProfile reads pressure and the profile it was measured against from
+// ONE snapshot, so a compaction layer's decision and that layer's before/after
+// diagnostics describe one model even if SetProfile lands in between.
+func (cm *Manager) pressureWithProfile(history *[]schema.Turn, sysPromptChars int) (float64, *provider.Profile) {
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	return cm.pressureFromSnapshot(prof, lastTokens, measuredLen, *history, sysPromptChars), prof
+}
+
+// pressureFromSnapshot is estimatePressure's core for callers that already hold a
+// (profile, measurement) snapshot. The compaction phases read pressure and their
+// before/after diagnostics from one snapshot apiece, so a concurrent SetProfile
+// cannot decide a layer by one model and describe it by another.
+func (cm *Manager) pressureFromSnapshot(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) float64 {
+	cw := contextWindowOf(prof)
 	if cw <= 0 {
 		return 0
 	}
+	return float64(cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)) / float64(cw)
+}
 
+// contextWindowOf returns the profile's context window, or 0 when the manager
+// has no profile. A Manager built without one (NewManager(nil, ...), as the
+// session-log strategy tests do) has no window to read, and the readers below
+// report "unknown" for that rather than crashing.
+func contextWindowOf(prof *provider.Profile) int {
+	if prof == nil {
+		return 0
+	}
+	return prof.ContextWindowSize()
+}
+
+// resolvedTargetOf returns the profile's resolved registry row, or the zero row
+// when there is no profile: the estimator then falls back to the names the turns
+// carry, exactly as the targetless estimator did before the profile-aware
+// accounting.
+func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
+	if prof == nil {
+		return registry.Resolved{}
+	}
+	return prof.Resolved()
+}
+
+// profileSnapshot reads the active profile together with the API measurement
+// that belongs to it, in one critical section. SetProfile swaps the profile and
+// clears the measurement in one section of the same lock, so reading them in
+// separate sections could pair one model's window with another model's cleared
+// measurement.
+func (cm *Manager) profileSnapshot() (*provider.Profile, int, int) {
 	cm.mu.Lock()
-	lastTokens := cm.lastInputTokens
-	measuredLen := cm.historyLenAtMeasure
-	cm.mu.Unlock()
-
-	totalTokens := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
-	return float64(totalTokens) / float64(cw)
+	defer cm.mu.Unlock()
+	return cm.profile, cm.lastInputTokens, cm.historyLenAtMeasure
 }
 
 // estimateUsedTokens is the pure token-accounting core shared by estimatePressure
@@ -384,14 +460,22 @@ func (cm *Manager) estimatePressure(history []schema.Turn, sysPromptChars int) f
 // When a measurement is available and still applies (lastTokens > 0 and the
 // measured length is within the current history), it uses the measurement as a
 // baseline and estimates only the turns appended since; otherwise it falls back to
-// the char/4 heuristic over the whole history plus the system prompt.
-func estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
+// the char/4 heuristic over the whole history plus the system prompt. It takes a
+// fresh profile snapshot for callers that hold none.
+func (cm *Manager) estimateUsedTokens(lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
+	return cm.estimateUsedTokensFor(cm.currentProfile(), lastTokens, measuredLen, history, sysPromptChars)
+}
+
+// estimateUsedTokensFor is the snapshot-taking core: the caller passes the same
+// profile it read the window from, so a model switch mid-computation cannot
+// combine one model's window with another model's accounting.
+func (cm *Manager) estimateUsedTokensFor(prof *provider.Profile, lastTokens, measuredLen int, history []schema.Turn, sysPromptChars int) int {
 	if lastTokens > 0 && measuredLen <= len(history) {
 		// Use the known token count as baseline, then estimate only new turns.
-		return lastTokens + estimateTokens(history[measuredLen:])
+		return lastTokens + cm.estimateTokensFor(prof, history[measuredLen:])
 	}
 	// Fall back to char/4 for everything.
-	return estimateTokens(history) + sysPromptChars/4
+	return cm.estimateTokensFor(prof, history) + sysPromptChars/4
 }
 
 // EstimatePressure returns the estimated fraction of context window in use.
@@ -400,18 +484,16 @@ func (cm *Manager) EstimatePressure(history []schema.Turn, sysPromptChars int) f
 }
 
 // EstimateUsage returns the estimated used, total, and remaining context tokens.
+// Like estimatePressure, one profile snapshot covers the window, the
+// measurement, and the estimate.
 func (cm *Manager) EstimateUsage(history []schema.Turn, sysPromptChars int) schema.ContextMetrics {
-	cw := cm.currentProfile().ContextWindowSize()
+	prof, lastTokens, measuredLen := cm.profileSnapshot()
+	cw := contextWindowOf(prof)
 	if cw <= 0 {
 		return schema.ContextMetrics{}
 	}
 
-	cm.mu.Lock()
-	lastTokens := cm.lastInputTokens
-	measuredLen := cm.historyLenAtMeasure
-	cm.mu.Unlock()
-
-	used := estimateUsedTokens(lastTokens, measuredLen, history, sysPromptChars)
+	used := cm.estimateUsedTokensFor(prof, lastTokens, measuredLen, history, sysPromptChars)
 	remaining := max(cw-used, 0)
 	return schema.ContextMetrics{Used: used, Window: cw, Remaining: remaining}
 }
@@ -438,7 +520,18 @@ func ApplyThresholdScale(cm *Manager, scale float64) {
 }
 
 // estimateTokens estimates token count for turns using the char/4 heuristic.
-func estimateTokens(turns []schema.Turn) int {
+// The manager's profile knows the target's protocol and reasoning capabilities,
+// so thinking text is billed exactly for the adapters that replay it: history
+// accounting that kept it at zero let compaction defer past the window an
+// oversized request would cross. It takes a fresh profile snapshot for callers
+// that hold none.
+func (cm *Manager) estimateTokens(turns []schema.Turn) int {
+	return cm.estimateTokensFor(cm.currentProfile(), turns)
+}
+
+// estimateTokensFor is the snapshot-taking estimator: the caller passes the
+// same profile whose window its reading used.
+func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn) int {
 	messages := make([]llm.Message, 0, len(turns))
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
@@ -446,7 +539,7 @@ func estimateTokens(turns []schema.Turn) int {
 		}
 		messages = append(messages, t.Message)
 	}
-	return llm.EstimateMessagesInputTokens(messages).Tokens
+	return llm.EstimateMessagesInputTokensForResolved(resolvedTargetOf(prof), messages).Tokens
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {
@@ -500,16 +593,20 @@ func (cm *Manager) MaybeCompact(
 	sysPromptChars int,
 	emitFn func(events.EventKind, events.EventData),
 ) {
-	cw := cm.currentProfile().ContextWindowSize()
-	if cw <= 0 {
+	// One profile snapshot covers the window check and every diagnostic below:
+	// a model switch landing mid-compaction would otherwise bill one layer's
+	// numbers by another model's thinking rule and image family.
+	prof, _, _ := cm.profileSnapshot()
+	if cw := contextWindowOf(prof); cw <= 0 {
 		return
 	}
 
-	pressure := func() float64 {
-		return cm.estimatePressure(*history, sysPromptChars)
-	}
+	// Each phase reads pressure and its before/after diagnostics from ONE
+	// snapshot (see pressureWithProfile), so a concurrent SetProfile cannot decide
+	// a layer by one model and describe it by another.
+	pressure := func() (float64, *provider.Profile) { return cm.pressureWithProfile(history, sysPromptChars) }
 
-	p := pressure()
+	p, prof := pressure()
 	compacted := false
 
 	// Invalidate API token measurement before running any layer so that
@@ -526,9 +623,9 @@ func (cm *Manager) MaybeCompact(
 	// Layer 1: Deterministic checkpoint at ≥80%.
 	if p >= cm.CheckpointThreshold {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := cm.estimateTokensFor(prof, *history)
 		*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-		after := estimateTokens(*history)
+		after := cm.estimateTokensFor(prof, *history)
 		emitFn(events.EventContextCompaction, events.ContextCompactionData{
 			Layer:           "checkpoint",
 			TurnsBefore:     turnsBefore,
@@ -540,13 +637,13 @@ func (cm *Manager) MaybeCompact(
 			cm.handleCompactionTurn(ctx, (*history)[0])
 		}
 		compacted = true
-		p = pressure()
+		p, prof = pressure()
 	}
 
 	// Layer 2: LLM summarization at ≥90%.
 	if p >= cm.SummarizeThreshold && cm.client != nil {
 		turnsBefore := len(*history)
-		before := estimateTokens(*history)
+		before := cm.estimateTokensFor(prof, *history)
 		result, err := cm.summarizeWithLLM(ctx, *history, cm.PreserveRecentTurns)
 		if err != nil {
 			// On error, emit warning but continue with current history.
@@ -555,7 +652,7 @@ func (cm *Manager) MaybeCompact(
 			})
 		} else {
 			*history = result
-			after := estimateTokens(*history)
+			after := cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,
@@ -595,11 +692,15 @@ func (cm *Manager) ForceCompact(
 	cm.historyLenAtMeasure = 0
 	cm.mu.Unlock()
 
+	// One profile snapshot covers every diagnostic below, for the same reason as
+	// MaybeCompact: the readings describe one model's rules, not two half-read.
+	prof, _, _ := cm.profileSnapshot()
+
 	// Layer 1: Deterministic checkpoint.
 	turnsBefore := len(*history)
-	before := estimateTokens(*history)
+	before := cm.estimateTokensFor(prof, *history)
 	*history = checkpoint(*history, cm.PreserveRecentTurns, cm.metaFor(ctx), cm.resultToolName())
-	after := estimateTokens(*history)
+	after := cm.estimateTokensFor(prof, *history)
 	emitFn(events.EventContextCompaction, events.ContextCompactionData{
 		Layer:           "checkpoint",
 		TurnsBefore:     turnsBefore,
@@ -614,7 +715,7 @@ func (cm *Manager) ForceCompact(
 	// Layer 2: LLM summarization (only if client is available).
 	if cm.client != nil {
 		turnsBefore = len(*history)
-		before = estimateTokens(*history)
+		before = cm.estimateTokensFor(prof, *history)
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
 		canSummarize := attentionTransparentTurnCount(*history) > cm.PreserveRecentTurns &&
@@ -627,7 +728,7 @@ func (cm *Manager) ForceCompact(
 		} else {
 			summarized = canSummarize && len(result) > 0 && result[0].Kind == schema.TurnSummary
 			*history = result
-			after := estimateTokens(*history)
+			after := cm.estimateTokensFor(prof, *history)
 			emitFn(events.EventContextCompaction, events.ContextCompactionData{
 				Layer:           "summarize",
 				TurnsBefore:     turnsBefore,

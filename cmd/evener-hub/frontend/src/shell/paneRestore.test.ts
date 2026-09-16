@@ -6,11 +6,13 @@
 // the first time a producer imports their opener (openDoc.ts / paneActions.ts).
 // A layout persisted with one of those panes open would, on the next page
 // load, reach DockHost's boot-time restoreLayout() BEFORE any such producer
-// ran, find the pane type unregistered, and - because readPanelParams() throws
-// on an unregistered type and restoreLayout()'s catch clears the whole api -
-// discard the user's ENTIRE saved workspace, not just the one pane
-// (workspace.ts:123-129,208-230; the sibling case is workspace.test.ts's
-// "valid PaneTypeId but isn't registered" test, which proves the discard).
+// ran and find the pane type unregistered - restoreLayout now SKIPS such a
+// panel (removing its orphaned dockview panel from the live api
+// synchronously, including on this double) rather than discarding the
+// layout, but a skipped pane is still a pane the user lost
+// (workspace.ts:readPanelParams; the sibling
+// partial-recovery cases are workspace.test.ts's "skips a panel whose
+// paneType..." tests, which prove the skip).
 //
 // Importing AppShell here runs exactly those boot-time side-effect
 // registrations - the same module evaluation production performs - and the
@@ -19,9 +21,11 @@
 //
 // Mutation net: deleting either `import "../panes/doc"` or
 // `import "../panes/transcript"` from AppShell.tsx leaves that pane type
-// unregistered at boot, so restoreLayout discards the layout - and this test's
-// restoreLayout()===true / cleared===false / both-panes-present assertions all
-// fail. (Verified both ways during the wave-8 fix round.)
+// unregistered at boot, so restoreLayout skips it and this test's
+// both-panes-present assertions fail (restoreLayout()===true /
+// cleared===false still hold - the skip, including its synchronous
+// removePanel, is graceful on this double, which is exactly why the
+// pane-presence assertions are the ones that must carry the net).
 import type { DockviewApi } from "dockview-core";
 import { beforeEach, describe, expect, test } from "vitest";
 import { paneFor } from "./paneRegistry";
@@ -29,10 +33,10 @@ import { registerDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from
 import "./AppShell"; // side effect: the boot-time pane-type registrations under test
 
 // A minimal DockviewApi double covering only what workspace.ts touches
-// (fromJSON/panels/activePanel/clear) - the same unit-test seam as
-// workspace.test.ts, duplicated here per this project's no-shared-test-utils
-// convention (see AppShell.test.tsx's own MemoryStorage note on why helpers
-// are duplicated rather than shared).
+// (fromJSON/panels/activePanel/removePanel/clear) - the same unit-test seam
+// as workspace.test.ts, duplicated here per this project's no-shared-test-
+// utils convention (see AppShell.test.tsx's own MemoryStorage note on why
+// helpers are duplicated rather than shared).
 class FakeDockviewApi {
   panels: Array<{ id: string; params: unknown }> = [];
   activePanel: { id: string } | undefined = undefined;
@@ -52,6 +56,11 @@ class FakeDockviewApi {
     this.cleared = true;
     this.panels = [];
     this.activePanel = undefined;
+  }
+
+  removePanel(panel: { id: string }): void {
+    this.panels = this.panels.filter((p) => p.id !== panel.id);
+    if (this.activePanel?.id === panel.id) this.activePanel = undefined;
   }
 }
 

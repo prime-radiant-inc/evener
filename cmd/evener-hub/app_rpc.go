@@ -18,66 +18,75 @@ import (
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
-	"primeradiant.com/evener/rendezvous"
 )
 
+// newHubSourceRegistry builds the hub's sources over cfg.Roster. The hub always
+// wires a roster (main.go). Without one there is no local source at all, so a
+// lookup of a local ref fails as "source not found" rather than finding a
+// source that lists nothing.
 func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 	registry := appsource.NewRegistry()
-	registry.Add(appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
-		if cfg.Roster != nil {
-			live := cfg.Roster.List()
-			entries := make([]appsource.LocalDaemonEntry, 0, len(live))
-			for _, item := range live {
-				if item.Crashed {
-					continue
-				}
-				entry := appsource.LocalDaemonEntry{
-					Entry:         item.Entry,
-					SessionID:     item.SessionID,
-					Status:        item.Status,
-					PendingAsk:    item.PendingAsk,
-					RunningJobs:   item.RunningJobs,
-					CompletedJobs: item.CompletedJobs,
-					Watches:       item.Watches,
-				}
-				entries = append(entries, entry)
-				// In-process descendants are addressed as their own AppWire
-				// threads, but are served by their owner's daemon endpoint.
-				for _, childID := range item.RunningSubagentIDs {
-					child := entry
-					child.OwnerSessionID = entry.SessionID
-					child.SessionID = childID
-					// The alias carries the child's OWN watches, sampled by
-					// the prober into ChildWatches. Inheriting the root
-					// entry's Watches would put the root's rows on the
-					// child row (and, for a read-only alias, they were
-					// suppressed anyway), losing the child's own.
-					child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
-					// The child's own projected status when the daemon carries
-					// it — inheriting the parent's status would render a
-					// settled delegate as working (or vice versa). "" (old
-					// daemon) keeps the inherited status, the pre-states
-					// behavior.
-					if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
-						child.Status = childState
-					}
-					child.ReadOnlyAlias = true
-					entries = append(entries, child)
-				}
-			}
-			return entries
-		}
-		if cfg.RunDir == "" {
-			return nil
-		}
-		raw, _ := rendezvous.List(cfg.RunDir)
-		entries := make([]appsource.LocalDaemonEntry, 0, len(raw))
-		for _, entry := range raw {
-			entries = append(entries, appsource.LocalDaemonEntry{Entry: entry})
-		}
-		return entries
-	}, http.DefaultClient))
+	roster := cfg.Roster
+	if roster == nil {
+		return registry
+	}
+	local := appsource.NewLocalDaemonSourceWithEntries("local", func() []appsource.LocalDaemonEntry {
+		return localDaemonEntriesFromRoster(roster.List())
+	}, http.DefaultClient)
+	// A daemon that leaves for good is announced by the roster, the one place
+	// that sees its process or its file go; the relay tells that daemon's
+	// subscribers to re-read.
+	// The roster's resolved session id is passed along: a legacy entry names
+	// no session of its own, and its relay session is keyed by the resolved one.
+	roster.SetOnSessionGone(func(gone hubcore.LiveEntry) { local.AnnounceDaemonGone(gone.Entry, gone.SessionID) })
+	registry.Add(local)
 	return registry
+}
+
+// localDaemonEntriesFromRoster is the local source's view of a roster's live
+// entries: crashed ones skipped, in-process descendants addressed as their own
+// AppWire threads served by their owner's endpoint.
+func localDaemonEntriesFromRoster(live []hubcore.LiveEntry) []appsource.LocalDaemonEntry {
+	entries := make([]appsource.LocalDaemonEntry, 0, len(live))
+	for _, item := range live {
+		if item.Crashed {
+			continue
+		}
+		entry := appsource.LocalDaemonEntry{
+			Entry:         item.Entry,
+			SessionID:     item.SessionID,
+			Status:        item.Status,
+			PendingAsk:    item.PendingAsk,
+			RunningJobs:   item.RunningJobs,
+			CompletedJobs: item.CompletedJobs,
+			Watches:       item.Watches,
+		}
+		entries = append(entries, entry)
+		// In-process descendants are addressed as their own AppWire
+		// threads, but are served by their owner's daemon endpoint.
+		for _, childID := range item.RunningSubagentIDs {
+			child := entry
+			child.OwnerSessionID = entry.SessionID
+			child.SessionID = childID
+			// The alias carries the child's OWN watches, sampled by
+			// the prober into ChildWatches. Inheriting the root
+			// entry's Watches would put the root's rows on the
+			// child row (and, for a read-only alias, they were
+			// suppressed anyway), losing the child's own.
+			child.Watches = appwire.CloneEvenerWatches(item.ChildWatches[childID])
+			// The child's own projected status when the daemon carries
+			// it — inheriting the parent's status would render a
+			// settled delegate as working (or vice versa). "" (old
+			// daemon) keeps the inherited status, the pre-states
+			// behavior.
+			if childState := strings.TrimSpace(item.RunningSubagentStates[childID]); childState != "" {
+				child.Status = childState
+			}
+			child.ReadOnlyAlias = true
+			entries = append(entries, child)
+		}
+	}
+	return entries
 }
 
 var (
@@ -1014,6 +1023,21 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
+		if err := instancesController.SetModelDisabled(params); err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		notifyInstanceUpdated(server)
+		return instancesController.List(), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+		resp, err := instancesController.RefreshModels(ctx, params)
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
+		notifyInstanceUpdated(server)
+		return resp, nil
 	})
 }
 

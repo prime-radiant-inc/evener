@@ -12,8 +12,9 @@
 // nor the draft while dirty is someone else's write, and flips `stale` -
 // this client's own save lands with content equal to the draft, so it never
 // reads as stale.
+
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
-import { friendlyErrorMessage } from "../../../protocol/errors";
 import { agentsDocStore, useAgentsDocStore } from "../../../stores/agentsDoc";
 import { Button, Skeleton, Textarea, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

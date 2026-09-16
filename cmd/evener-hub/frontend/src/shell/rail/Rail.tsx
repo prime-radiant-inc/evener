@@ -1,3 +1,11 @@
+import type {
+  NavigationCatalogs,
+  NavigationProjectPage,
+  NavigationProjectResource,
+  NavigationProjectSummary,
+  NavigationSessionSummary,
+} from "@evener/appwire-client";
+import { canReadSharedNotes, errorText } from "@evener/appwire-client";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -11,14 +19,6 @@ import {
   useState,
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import { errorText } from "../../protocol/errors";
-import type {
-  NavigationCatalogs,
-  NavigationProjectPage,
-  NavigationProjectResource,
-  NavigationProjectSummary,
-  NavigationSessionSummary,
-} from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
 import {
   nextNavigationOffset,
@@ -39,6 +39,7 @@ import {
   type ResourceState,
 } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
+import { topNotesStore } from "../../stores/topNotes";
 import {
   Badge,
   Button,
@@ -1232,9 +1233,22 @@ function NavigationRail({
   const rowActions = useMemo<RailRowActions>(
     () => ({
       onOpenSessionPane: (session, pane) => {
+        // A menu rendered while the session still had the notes capability
+        // can be clicked before React processes the revocation, so the notes
+        // action rechecks the capability - the same guard SessionChrome's
+        // own Notes entry applies. Without it a stale click leaves expanded
+        // and focus state for a panel that cannot render.
+        if (pane === "notes" && !canReadSharedNotes(threadsStore.getState().threads.get(session.ref))) return;
         const workspace = workspaceStore.getState();
         workspace.openPane("session", { ref: session.ref });
-        workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+        if (pane === "notes") {
+          // Idempotent open, like the sibling branches below: the rail
+          // navigates, it does not toggle - closing notes belongs to the
+          // panel's own header and the palette's Toggle command.
+          topNotesStore.getState().openAndFocus(session.ref);
+        } else {
+          workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
+        }
       },
       onRenameSession: (session, name) =>
         runAction(

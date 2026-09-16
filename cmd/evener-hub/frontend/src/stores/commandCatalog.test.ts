@@ -1,5 +1,5 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { FakeClient } from "../protocol/testing/fakeClient";
 import { useCommandCatalog } from "./commandCatalog";
 import { connectionStore } from "./connection";
 

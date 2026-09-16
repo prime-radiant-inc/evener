@@ -4,7 +4,7 @@ import type {
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionSummary,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
 import type { NavigationResponse, ResourceKey } from "./types";
 import { navigationOwnedContainerKey, navigationRootContainerKey, navigationViewScope } from "./types";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({

@@ -22,10 +22,10 @@
 // composer is where you act on this session"; the command palette only
 // hands off to it - design-system.md §9) - so GoalControl below is the
 // goal chip + clear popover only.
+
+import type { NavigationSessionLocation } from "@evener/appwire-client";
+import { canReadSharedNotes, sessionActionError } from "@evener/appwire-client";
 import { useRef, useState } from "react";
-import { sessionActionError } from "../../../protocol/errors";
-import { canReadSharedNotes } from "../../../protocol/sharedNotesAvailability";
-import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
@@ -39,6 +39,7 @@ import { buildShutdownConvergence } from "../../../stores/navigation/shutdownCon
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
+import { topNotesStore, useTopNotesExpanded } from "../../../stores/topNotes";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
@@ -47,7 +48,6 @@ import { TranscriptDetailControl } from "../transcript/TranscriptDetailControl";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
-import { NotesPanel, type NotesPanelHandle } from "./NotesPanel";
 import { StatusRow } from "./StatusRow";
 import styles from "./sessionchrome.module.css";
 import { TasksPanel, type TasksPanelHandle } from "./TasksPanel";
@@ -99,7 +99,7 @@ export function SessionChrome({
   const detailsOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionDetails", { ref: sessionRef }));
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
-  const notesOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionNotes", { ref: sessionRef }));
+  const notesOpen = useTopNotesExpanded(sessionRef);
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
@@ -149,7 +149,6 @@ export function SessionChrome({
   const detailsRef = useRef<DetailsPanelHandle>(null);
   const tasksRef = useRef<TasksPanelHandle>(null);
   const activityRef = useRef<ActivityPanelHandle>(null);
-  const notesRef = useRef<NotesPanelHandle>(null);
   if (!model) return null;
 
   // The ONE hidden ActivityPanel every shape below shares. `discoverWhenHidden`
@@ -160,7 +159,6 @@ export function SessionChrome({
       ref={activityRef}
       sessionRef={sessionRef}
       model={model}
-      now={now}
       watches={fallbackSession?.watches}
       omittedWatches={fallbackSession?.omitted_watches}
       omittedArmedWatches={fallbackSession?.omitted_armed_watches}
@@ -204,8 +202,7 @@ export function SessionChrome({
   };
   const openNotes = () => {
     if (!canReadSharedNotes(threadsStore.getState().threads.get(sessionRef))) return;
-    if (isMobile) notesRef.current?.open();
-    else workspaceStore.getState().togglePane("sessionNotes", { ref: sessionRef });
+    topNotesStore.getState().toggleAndFocus(sessionRef);
   };
   const activityLabel = activitySummary?.counts?.complete ? `Activity · ${activitySummary.counts.active}` : "Activity";
 
@@ -329,7 +326,6 @@ export function SessionChrome({
           <DetailsPanel ref={detailsRef} model={model} now={now} hideTrigger />
           {!onOpenTasks && <TasksPanel ref={tasksRef} sessionRef={sessionRef} model={model} hideTrigger />}
           {hiddenActivityPanel}
-          <NotesPanel ref={notesRef} sessionRef={sessionRef} model={model} hideTrigger />
           <SessionMenu
             sessionRef={sessionRef}
             title={model.name}

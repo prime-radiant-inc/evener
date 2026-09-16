@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 )
 
 type errorReader struct{ err error }
@@ -56,9 +58,7 @@ func checkLoadOrCreateAuthToken_PersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Errorf("mode = %o, want 600", info.Mode().Perm())
-	}
+	hubtest.AssertFileMode0600(t, info, "the auth token")
 	b, err := LoadOrCreateAuthToken(root)
 	if err != nil {
 		t.Fatalf("LoadOrCreateAuthToken reload: %v", err)

@@ -3,14 +3,14 @@
 // (marketplacesPlugins/index.tsx) - see MarketplacesSection's own comment
 // for why (its Refresh action needs to read this component's expansion
 // state).
+
+import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "@evener/appwire-client";
+import { errorText, marketplaceSourceLabel } from "@evener/appwire-client";
 import { type Dispatch, type SetStateAction, useEffect, useRef, useState } from "react";
-import { errorText } from "../../../../protocol/errors";
-import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../../../protocol/types.gen";
 import { extensionsStore, type MarketplaceCatalogEntry, useExtensionsStore } from "../../../../stores/extensions";
 import { Button, Chevron, ConfirmDialog, Input, Loader, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./marketplacesPlugins.module.css";
-import { sourceLabel } from "./sourceLabel";
 
 const CLASS = {
   section: requireClass(styles.section, "marketplacesPlugins.module.css", "section"),
@@ -215,7 +215,7 @@ export function BrowseSection({ expandedMarketplaces, setExpandedMarketplaces }:
             <p>{`Install "${pendingInstall.plugin}" from ${pendingInstall.marketplace}? It will run in every new session once installed.`}</p>
             {(() => {
               const source = findMarketplace(pendingInstall.marketplace)?.source;
-              return source && <p className={CLASS.rowMeta}>{`Source: ${sourceLabel(source)}`}</p>;
+              return source && <p className={CLASS.rowMeta}>{`Source: ${marketplaceSourceLabel(source)}`}</p>;
             })()}
           </>
         )}

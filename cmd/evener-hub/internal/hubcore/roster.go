@@ -77,7 +77,11 @@ type ProbeResult struct {
 	CompletedJobs         []appwire.EvenerJobInfo
 	Watches               []appwire.EvenerWatchInfo
 	ChildWatches          map[string][]appwire.EvenerWatchInfo
-	OK                    bool
+	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
+	// talk to (restart required). Such an answer names no session of its own,
+	// so it does not vouch for the entry's PID the way a bound answer does.
+	ProtocolMismatch bool
+	OK               bool
 }
 
 // Prober is implemented by liveness-checking strategies.
@@ -183,10 +187,11 @@ type Roster struct {
 	ownershipRefreshRunning bool
 	queuedOwnershipRefresh  *rosterRefreshBatch
 
-	// procAlive reports whether a daemon PID is still running. A failed AppWire
-	// probe to a live process means the daemon is busy, not gone, so its session
-	// is kept; injectable for tests.
-	procAlive func(pid int) bool
+	// procIdentity is what the host says about the process a rendezvous
+	// entry names: gone or verifiably another process (NotOwner, the crashed
+	// path), the daemon itself, or nothing it can vouch for. Consulted only
+	// when the probe did not answer for the entry's own session.
+	procIdentity func(rendezvous.Entry) ProcessIdentity
 
 	// watchReadyFn is called by Watch immediately after the fsnotify watcher has
 	// been registered on runDir. Nil in production; injected by tests to
@@ -209,6 +214,11 @@ type Roster struct {
 	// past-index re-read (PastIndex.RefreshOne) instead of waiting for the
 	// next full rebuild.
 	onStatusChange func(sessionID string)
+	// onSessionGone, when set via SetOnSessionGone, is fired by Refresh for a
+	// session that left the listing for good: its daemon's process is gone
+	// (the crashed path) or its rendezvous file is (a clean exit). Never for
+	// a claim parked unresolved - that daemon may still be there.
+	onSessionGone func(gone LiveEntry)
 }
 
 // NewRoster returns a Roster that scans runDir on demand.
@@ -222,7 +232,7 @@ func NewRoster(runDir string, prober Prober) *Roster {
 		bySess:            make(map[string]LiveEntry),
 		byPID:             make(map[int]LiveEntry),
 		entryPublishedGen: make(map[int]uint64),
-		procAlive:         processAlive,
+		procIdentity:      processIdentity,
 		newWatcher: func() (rosterWatcher, error) {
 			w, err := fsnotify.NewWatcher()
 			return fsnotifyWatcher{w}, err
@@ -239,10 +249,51 @@ func (r *Roster) SetFs(fs afero.Fs) *Roster {
 	return r
 }
 
-// SetProcessAlive overrides the process-liveness probe. Tests with synthetic
-// rendezvous claims must not depend on whether their PIDs exist on the host.
-func (r *Roster) SetProcessAlive(probe func(int) bool) *Roster {
-	r.procAlive = probe
+// SetProcessAlive overrides process liveness alone: a PID the probe calls dead
+// is NotOwner, one it calls alive is Unknown. Tests with synthetic rendezvous
+// claims must not depend on whether their PIDs exist on the host.
+func (r *Roster) SetProcessAlive(alive func(pid int) bool) *Roster {
+	return r.SetProcessIdentity(func(entry rendezvous.Entry) ProcessIdentity {
+		if !alive(entry.PID) {
+			return ProcessNotOwner
+		}
+		return ProcessIdentityUnknown
+	})
+}
+
+// ProcessIdentity is what the host can say about the process behind a
+// rendezvous entry whose daemon stopped answering.
+//
+// Why the roster asks. A daemon that crashed leaves its rendezvous file, and
+// the kernel may hand its PID to anything. To liveness (signal 0) that reuse
+// looks exactly like a busy daemon missing one probe, so a confirmed entry
+// would stay listed for as long as the unrelated process lived, its relay
+// would keep dialling a dead endpoint, and the session's subscribers would
+// never be told the daemon is gone. The probe tells the two apart through the
+// same verifier force-stop binds to (daemonprocess.Identify): only positive
+// evidence - the process is gone, or its owner or earliest possible start
+// cannot be the daemon's - counts against the entry; a busy daemon that is
+// still itself, an entry without the fields verification needs, and a host
+// that cannot inspect all keep the route exactly as liveness alone would.
+type ProcessIdentity int
+
+const (
+	// ProcessIdentityUnknown: the host cannot verify ownership (platform
+	// without generation-bound process inspection, or an entry from a daemon
+	// that recorded no state directory or start time). Liveness alone decides,
+	// as it always has.
+	ProcessIdentityUnknown ProcessIdentity = iota
+	// ProcessOwnsEntry: the live process is the daemon that wrote the entry.
+	ProcessOwnsEntry
+	// ProcessNotOwner: the PID is alive but belongs to something else, or the
+	// daemon has exited.
+	ProcessNotOwner
+)
+
+// SetProcessIdentity overrides the process-identity probe, for the same reason
+// SetProcessAlive exists.
+func (r *Roster) SetProcessIdentity(probe func(rendezvous.Entry) ProcessIdentity) *Roster {
+	r.procIdentity = probe
 	return r
 }
 
@@ -272,6 +323,13 @@ func (r *Roster) SetOnChange(fn func()) { r.onChange = fn }
 // Refresh, whenever that session's Status transitions between two
 // consecutive snapshots. Nil disables the hook.
 func (r *Roster) SetOnStatusChange(fn func(sessionID string)) { r.onStatusChange = fn }
+
+// SetOnSessionGone registers a callback fired by Refresh, once, for each
+// session whose daemon has left for good. The relay uses it to tell that
+// session's subscribers to re-read: the daemon's own close frame is not
+// guaranteed to reach them (it may be revoked with the connection), and
+// nothing else would.
+func (r *Roster) SetOnSessionGone(fn func(gone LiveEntry)) { r.onSessionGone = fn }
 
 func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 	ids := make([]string, 0, len(bySess))
@@ -487,8 +545,21 @@ func (r *Roster) refresh() error {
 	}
 	for _, res := range results {
 		e := res.entry
+		// An answering probe is bound to the entry's session (StatusProber)
+		// and vouches for it; a protocol-mismatch answer names no session and
+		// vouches for nothing. Otherwise the process behind the PID is asked
+		// once per entry per refresh (see ProcessIdentity for why): gone or
+		// verifiably another process takes the crashed path, never the
+		// unconfirmed one. A roster without a prober asks nothing.
+		identity := ProcessIdentityUnknown
+		if r.prober != nil && (!res.OK || res.ProtocolMismatch) {
+			identity = r.procIdentity(e)
+		}
+		if identity == ProcessNotOwner {
+			res.OK = false
+		}
 		if !res.OK {
-			alive := r.procAlive(e.PID)
+			alive := identity != ProcessNotOwner
 			if alive {
 				for _, claim := range previousUnconfirmed {
 					if claim.PID == e.PID {
@@ -499,6 +570,14 @@ func (r *Roster) refresh() error {
 			// A transient probe miss preserves a route only while the complete
 			// rendezvous identity is unchanged. PID liveness cannot confirm a
 			// replacement's ownership of either the old or the new session.
+			//
+			// Nor can it tell a busy daemon from a PID the kernel reused after
+			// the daemon crashed: both miss the probe, both answer signal 0,
+			// and the crashed daemon's file is byte-identical. The identity
+			// verdict taken above folds into `alive`, so a PID verified not
+			// to be the daemon's never reaches this branch: it takes the
+			// crashed path below and leaves the listing, which is what lets
+			// the relay announce the daemon gone.
 			if prev, had := prevByPID[e.PID]; had && alive {
 				if !sameDaemonIdentity(prev.Entry, e) {
 					retainUnconfirmed(prev.Entry)
@@ -573,7 +652,6 @@ func (r *Roster) refresh() error {
 		byPID[e.PID] = live
 	}
 
-	fp := rosterFingerprint(bySess)
 	r.mu.Lock()
 	if generation < r.publishedGen {
 		r.mu.Unlock()
@@ -603,37 +681,109 @@ func (r *Roster) refresh() error {
 				bySess[live.SessionID] = live
 			}
 		}
-		fp = rosterFingerprint(bySess)
 	}
 	r.publishedGen = generation
-	prevBySess := r.bySess
-	r.bySess = bySess
-	r.byPID = byPID
-	ownershipChanged := r.ownershipErr != nil || !slices.Equal(r.unconfirmed, unconfirmed)
+	ownershipCleared := r.ownershipErr != nil
 	r.ownershipErr = nil
-	r.unconfirmed = unconfirmed
-	changed := fp != r.fingerprint || ownershipChanged
-	r.fingerprint = fp
-	statusChanges := make([]string, 0)
+	publication := r.publishListingLocked(bySess, byPID, unconfirmed)
+	publication.changed = publication.changed || ownershipCleared
+	r.mu.Unlock()
+	publication.fire()
+	return nil
+}
+
+// listingPublication is one swap of the listing and what it owes the hooks:
+// which sessions changed status, which left, and whether anything observable
+// moved at all.
+type listingPublication struct {
+	changed        bool
+	statusChanges  []string
+	gone           []LiveEntry
+	onStatusChange func(sessionID string)
+	onSessionGone  func(gone LiveEntry)
+	onChange       func()
+}
+
+// publishListingLocked replaces the listing and accounts for it against the
+// publication immediately before, under r.mu (the caller holds it, and fires
+// the result after unlocking). It is the one place a session can leave the
+// listing, however the publication came about - a full refresh or a single
+// spawned daemon's confirmation - so a departure is announced from here and
+// nowhere else, and measured against the state actually being replaced:
+// two publications that overlapped each snapshot the same earlier state, and
+// would otherwise both announce one session gone.
+func (r *Roster) publishListingLocked(bySess map[string]LiveEntry, byPID map[int]LiveEntry, unconfirmed []rendezvous.Entry) listingPublication {
+	prevBySess, prevUnconfirmed := r.bySess, r.unconfirmed
+	fp := rosterFingerprint(bySess)
+	publication := listingPublication{
+		changed:        fp != r.fingerprint || !slices.Equal(prevUnconfirmed, unconfirmed),
+		gone:           sessionsGone(prevBySess, prevUnconfirmed, bySess, unconfirmed),
+		onStatusChange: r.onStatusChange,
+		onSessionGone:  r.onSessionGone,
+		onChange:       r.onChange,
+	}
 	for id, cur := range bySess {
 		if prev, had := prevBySess[id]; had && prev.Status != cur.Status {
-			statusChanges = append(statusChanges, id)
+			publication.statusChanges = append(publication.statusChanges, id)
 		}
 	}
-	sort.Strings(statusChanges)
-	onStatusChange := r.onStatusChange
-	onChange := r.onChange
-	r.mu.Unlock()
+	sort.Strings(publication.statusChanges)
+	r.bySess, r.byPID, r.unconfirmed, r.fingerprint = bySess, byPID, unconfirmed, fp
+	return publication
+}
 
-	if onStatusChange != nil {
-		for _, id := range statusChanges {
-			onStatusChange(id)
+// fire runs the hooks a publication owes, outside the lock.
+func (p listingPublication) fire() {
+	if p.onStatusChange != nil {
+		for _, id := range p.statusChanges {
+			p.onStatusChange(id)
 		}
 	}
-	if changed && onChange != nil {
-		onChange()
+	if p.onSessionGone != nil {
+		for _, entry := range p.gone {
+			p.onSessionGone(entry)
+		}
 	}
-	return nil
+	if p.changed && p.onChange != nil {
+		p.onChange()
+	}
+}
+
+// sessionsGone is every session the previous publication still held - listed
+// live, or parked as an unresolved claim - that this one holds as neither:
+// crashed (its process gone) or absent (its file gone). A session whose claim
+// is parked unresolved now is not gone - a probe was missed while its process
+// answers - and a session already crashed was announced when it crashed.
+func sessionsGone(prev map[string]LiveEntry, prevUnconfirmed []rendezvous.Entry, cur map[string]LiveEntry, unconfirmed []rendezvous.Entry) []LiveEntry {
+	named := func(claims []rendezvous.Entry, id string) bool {
+		return slices.ContainsFunc(claims, func(claim rendezvous.Entry) bool {
+			return claim.SessionID == id || claim.ThreadID == id
+		})
+	}
+	held := map[string]LiveEntry{}
+	for id, was := range prev {
+		if !was.Crashed {
+			held[id] = was
+		}
+	}
+	for _, claim := range prevUnconfirmed {
+		id := envvars.FirstNonEmpty(claim.SessionID, claim.ThreadID)
+		if _, ok := held[id]; id != "" && !ok {
+			held[id] = LiveEntry{Entry: claim, SessionID: id}
+		}
+	}
+	var gone []LiveEntry
+	for id, was := range held {
+		if now, listed := cur[id]; listed && !now.Crashed {
+			continue
+		}
+		if named(unconfirmed, id) {
+			continue
+		}
+		gone = append(gone, cloneLiveEntry(was))
+	}
+	sort.Slice(gone, func(i, j int) bool { return gone[i].SessionID < gone[j].SessionID })
+	return gone
 }
 
 // OwnershipError reports an incomplete full scan. Individual daemon
@@ -729,6 +879,26 @@ func (r *Roster) refreshOwnership() {
 func (r *Roster) List() []LiveEntry {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.listLocked()
+}
+
+// RosterSnapshot is one publication's answer to the questions a navigation
+// read asks together, taken under one lock so the three cannot describe
+// different moments.
+type RosterSnapshot struct {
+	OwnershipError error
+	Live           []LiveEntry
+	Unconfirmed    []rendezvous.Entry
+}
+
+// Snapshot is OwnershipError, List and UnconfirmedEntries from one publication.
+func (r *Roster) Snapshot() RosterSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return RosterSnapshot{OwnershipError: r.ownershipErr, Live: r.listLocked(), Unconfirmed: slices.Clone(r.unconfirmed)}
+}
+
+func (r *Roster) listLocked() []LiveEntry {
 	bySession := make(map[string]LiveEntry, len(r.byPID))
 	out := make([]LiveEntry, 0, len(r.byPID))
 	for _, e := range r.byPID {
@@ -1059,9 +1229,10 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
 		}
 		return nil
 	}
-	previous, hadPrevious := r.bySess[live.SessionID]
 	bySess, byPID := maps.Clone(r.bySess), maps.Clone(r.byPID)
 	if old, ok := byPID[entry.PID]; ok && bySess[old.SessionID].PID == entry.PID {
+		// A prior session on the same PID leaves the listing here, and
+		// publishListingLocked announces it exactly as a refresh would.
 		delete(bySess, old.SessionID)
 	}
 	bySess[live.SessionID], byPID[entry.PID] = live, live
@@ -1071,18 +1242,9 @@ func (r *Roster) publishConfirmedEntry(entry rendezvous.Entry, result ProbeResul
 			unconfirmed = append(unconfirmed, claim)
 		}
 	}
-	fp := rosterFingerprint(bySess)
-	changed := fp != r.fingerprint || !slices.Equal(unconfirmed, r.unconfirmed)
-	r.bySess, r.byPID, r.unconfirmed = bySess, byPID, unconfirmed
+	publication := r.publishListingLocked(bySess, byPID, unconfirmed)
 	r.entryPublishedGen[entry.PID] = generation
-	r.fingerprint = fp
-	onChange, onStatusChange := r.onChange, r.onStatusChange
 	r.mu.Unlock()
-	if hadPrevious && previous.Status != live.Status && onStatusChange != nil {
-		onStatusChange(live.SessionID)
-	}
-	if changed && onChange != nil {
-		onChange()
-	}
+	publication.fire()
 	return nil
 }

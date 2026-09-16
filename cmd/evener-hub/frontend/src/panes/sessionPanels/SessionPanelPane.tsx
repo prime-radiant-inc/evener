@@ -1,5 +1,5 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { useEffect } from "react";
-import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { connectionStore } from "../../stores/connection";
 import {
@@ -12,7 +12,6 @@ import { threadsStore, useThreadsStore } from "../../stores/threads";
 import { EmptyState, PaneScaffold } from "../../widgets";
 import { ActivityPanelBody } from "../session/chrome/ActivityPanel";
 import { DetailsPanelBody } from "../session/chrome/DetailsPanel";
-import { NotesPanelBody } from "../session/chrome/NotesPanel";
 import { TasksPanelBody } from "../session/chrome/TasksPanel";
 import { NOW_TICK_MS, useNowTick } from "../session/liveness";
 import { type SessionPanelKind, type SessionPanelParams, sessionPanelTitle } from "./index";
@@ -90,8 +89,6 @@ export function SessionPanelPane({ params, paneId, focused, kind }: SessionPanel
         omittedWatches={omittedWatches}
         omittedArmedWatches={omittedArmedWatches}
       />
-    ) : kind === "notes" ? (
-      <NotesPanelBody sessionRef={ref} model={model} />
     ) : (
       <DetailsPaneBody sessionRef={ref} model={model} />
     );

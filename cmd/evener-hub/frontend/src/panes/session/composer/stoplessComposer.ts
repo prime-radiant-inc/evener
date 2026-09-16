@@ -16,8 +16,7 @@
 // status it disagrees with: the reducer has exactly two writers, so a captured
 // sighting names the culprit rather than reopening the search.
 
-import type { CapabilitySource } from "../../../protocol/model";
-import type { ThreadCapabilities } from "../../../protocol/types.gen";
+import type { CapabilitySource, ThreadCapabilities } from "@evener/appwire-client";
 
 export interface StoplessSighting {
   ref: string;

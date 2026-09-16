@@ -1,4 +1,4 @@
-import type { LaunchConfigLayer, PluginPreviewResponse, PluginSelectionError } from "../../protocol/types.gen";
+import type { LaunchConfigLayer, PluginPreviewResponse, PluginSelectionError } from "@evener/appwire-client";
 
 export type PluginSelectionState = { mode: "default" } | { mode: "explicit"; names: string[] };
 

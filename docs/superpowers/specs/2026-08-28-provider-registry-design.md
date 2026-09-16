@@ -185,6 +185,7 @@ type Model struct {
     Caps      Caps
     Status    string     // "", "beta", "deprecated"
     Hidden    bool       // recomputed after merge (§6.1 row rules); cleared when any layer, or a same-provider alias import, supplies a protocol or transport for the row
+    Disabled  *bool      // user opt-out (§10): a row the config layer disabled is hidden from every listing and fails Resolve; nil = no layer set it, last writer wins
 }
 
 type Transport struct {
@@ -971,6 +972,24 @@ matched row's own entry per layer, the live facts after layer 3), followed
 by the derivations of §7.4. No substring or longest-prefix matching
 anywhere.
 
+A row the config layer disabled (`disabled = true` on the exact row or a
+matching glob, §10) fails `Resolve` with `ErrModelDisabled`, which every
+listing already drops as a resolve error: `Client.Models`, `launch-check
+--models`, the `model/list` RPC, and the session startup snapshot all omit
+it, and `FindModel` skips it. Aliases stay in lockstep with their target:
+disabling a target disables aliases resolving through it, and an alias's
+own exact-row or glob flags never apply — the flag lives on the target
+row alone. Toggling an alias writes through to its target
+(`Registry.AliasTarget`), and a region-prefixed or dated-suffix spelling
+of an alias id routes the same way (§7.2's steps 3-4 land on the alias
+row); a dangling alias, a glob id, and a cross-provider target are
+refusals. The sheet inventory lists no alias rows, so every toggle maps
+one-to-one onto the row it writes.
+`default_model`/`cheap_model` naming a disabled model get no
+special validation; they fail at use with the same error. There is no
+grandfathering: a session whose model is disabled afterwards errors on next
+use and recovers by switching models.
+
 ### 7.3 Unknown models
 
 A model id that matches nothing is still resolvable: `Resolved.Model` is
@@ -1718,9 +1737,17 @@ by its snake_case name (`context_window`, `effort_values`,
 `reasoning_controls`, `thinking_format`, `fields`, …) at the instance level
 → `Provider.Caps`, and inside `[providers.X.models."<id or glob>"]` →
 `Model.Caps`, where `alias_of`, `wire_id`, `family`, `protocol`, `surface`,
-`headers`, and the transport keys are also accepted. A top-level
+`headers`, `disabled`, and the transport keys are also accepted. A top-level
 `[models."<glob>"]` table is accepted in the curated overlay and in
 `providers.toml` alike.
+
+`disabled = true` on `[providers.X.models."<id or glob>"]` opts the row out:
+it vanishes from every listing and fails `Resolve` with `ErrModelDisabled`
+(§7.2). Exact rows beat matching globs and `disabled = false` re-enables,
+so a glob kill plus exact exceptions composes; later layers beat earlier
+ones, so user config always wins. The hub's `evener/instance/setModelDisabled`
+writes the explicit bool on the exact row — authoring the row when the model
+exists only as a curated entry — so the choice survives catalog refreshes.
 
 Rules, enforced at load with errors that name the instance and key:
 
@@ -1823,7 +1850,8 @@ Ollama host helpers in `envvars` stay.
 
 - `list [--provider X] [--all]` — resolved rows with protocol, surface,
   context, output cap, cost, effort ladder, warnings. Hidden providers,
-  hidden rows, and rows without `tool_call` only with `--all`.
+  hidden rows, and rows without `tool_call` only with `--all`. Disabled
+  rows are skipped by default and shown flagged `disabled` under `--all`.
 - `inspect <ref>` — the full `Resolved` record with provenance per field,
   the pruned-field list the protocol would apply, and the request skeleton
   (endpoint, auth scheme, headers with secrets masked). Works without a
@@ -1866,7 +1894,15 @@ credential-inheritance stop does not fire on an untouched URL; remove is
 refused). The appwire types
 change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIStyle` and gains `Base`, `Protocol`, `Surface`, `Vars`, `Auth`,
-`Implicit`; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,
+`Implicit`, and `Models` — the instance's known models (exact catalog rows
+plus cached live ids) with their effective disabled state
+(`InstanceModels`), which the sheet renders as one toggle per row driving
+`evener/instance/setModelDisabled`. The hub prefetches every instance's
+live listing at startup and every few minutes after, so the sheet reads
+cached inventory; a Refresh button drives `evener/instance/refreshModels`
+for one instance on demand. Toggling a live-only id authors an
+exact config row, which precedes live lookup, so the exception takes
+effect; its existing `BaseURL`, `IsDefault`, `HasStoredOAuth`,
 `HasStoredFile`, `StoredEmail`, `CredentialRequired`, `ActiveSource`,
 `AuthModes`, and `EnvVar` stay, with `AuthModes` derived from
 `Transport.Auth` and `EnvVar` carrying the variable that actually resolved
