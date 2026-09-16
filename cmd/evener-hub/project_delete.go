@@ -98,6 +98,19 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if params.Key == "" || params.WorkingDir == "" {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key and workingDir are required")
 	}
+	// Deletion is local-only: v1 has no remote deletion, and this handler only
+	// ever removes the controller's own sessions. A request that names a host is
+	// refused before any resolution or removal — a remote row must never be
+	// answered with a controller-local delete, and a remote project that merely
+	// shares an ID or path with a local one must not take the local project's
+	// sessions with it. "local" (and an absent field) is the controller's own
+	// source, the same normalization archive and favorite use.
+	if source := hubcore.NormalizeDecisionSource(params.Source); source != "" {
+		if err := validateDecisionSource(s.cfg, source); err != nil {
+			return appwire.ProjectDeleteResponse{}, err
+		}
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("project delete is local-only; " + source + " is not this hub")
+	}
 	if params.Key == "no-project" {
 		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("no-project is not a local project")
 	}

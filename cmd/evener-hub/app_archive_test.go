@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
@@ -344,5 +345,117 @@ func TestHubArchiveSetAppWireRejectsSessionSource(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "source is not supported for session archive") {
 		t.Fatalf("error = %q, want the session-source message", err)
+	}
+}
+
+// A "local:thread" ref addresses the controller's own row. Both spellings must
+// land on the single key the local rows and every stored local decision use, so
+// a client that sends the canonical ref neither misses the row nor splits the
+// decision into a second inert key.
+func TestHubArchiveSetAppWireNormalizesLocalSessionRef(t *testing.T) {
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:      store,
+		HubStateRoot: t.TempDir(),
+		Past:         hubcore.NewPastIndex(""),
+	})
+
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "  local:session-1  ",
+		Archived: true,
+	}); err != nil {
+		t.Fatalf("archive local session by ref: %v", err)
+	}
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: "session-1"}] {
+		t.Fatalf("local ref did not normalize onto the bare session key: %v", decisions)
+	}
+	if decisions[hubcore.ArchiveKey{Kind: "session", ID: "local:session-1"}] {
+		t.Fatalf("local ref was stored under a spelling no local row is read by: %v", decisions)
+	}
+
+	// The bare spelling unarchives the row the ref spelling archived.
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "session-1",
+		Archived: false,
+	}); err != nil {
+		t.Fatalf("unarchive bare session id: %v", err)
+	}
+	decisions, err = store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decisions[hubcore.ArchiveKey{Kind: "session", ID: "session-1"}] {
+		t.Fatalf("bare-ID unarchive did not clear the decision the ref set: %v", decisions)
+	}
+}
+
+// A remote session's tree row carries its canonical ref as the node ID, and the
+// Live tier filters on exactly that identity. Archiving the ref must therefore
+// clear the host's row: the bare session ID the rail sends today is the local
+// identity and reaches no remote row.
+func TestHubArchiveSetAppWireArchivesRemoteSessionByRef(t *testing.T) {
+	cache := &hubcore.RemoteThreadCache{}
+	projectID := identifier.ProjectFromCanonicalPath("/srv/remote/project").ID
+	// A current timestamp keeps the row in the Current tier: an age-based
+	// auto-archive would clear it from the Live tier for reasons of its own.
+	now := time.Now().Unix()
+	cache.StoreSnapshotData(hubcore.RemoteThreadSnapshot{
+		Threads: []appwire.Thread{{
+			ID:          "t1",
+			SessionID:   "t1",
+			Source:      "host-a",
+			CWD:         "/srv/remote/project",
+			ProjectID:   projectID,
+			ProjectPath: "/srv/remote/project",
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Status:      appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener:      appwire.EvenerThread{Ref: "host-a:t1"},
+		}},
+	})
+	store := hubcore.NewArchiveStore(filepath.Join(t.TempDir(), "archive.db"))
+	web := NewWebServer(hubcore.WebConfig{
+		Archive:           store,
+		RemoteThreadCache: cache,
+		HubStateRoot:      t.TempDir(),
+		Past:              hubcore.NewPastIndex(""),
+		RemoteHosts:       []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient:  unusedRemoteHostClient,
+	})
+	liveTree := func(t *testing.T) hubcore.Tree {
+		t.Helper()
+		metas, live, projects := web.navigationTreeInputs(context.Background())
+		decisions, err := store.Decisions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return hubcore.BuildTreeWithProjects(metas, live, decisions, projects)
+	}
+
+	if live := liveTree(t).Live; len(live) != 1 || live[0].ID != "host-a:t1" {
+		t.Fatalf("live = %#v, want host-a's remote row before the archive", live)
+	}
+	if _, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "host-a:t1",
+		Archived: true,
+	}); err != nil {
+		t.Fatalf("archive remote session by ref: %v", err)
+	}
+	decisions, err := store.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: "host-a:t1"}] {
+		t.Fatalf("remote session decision not keyed by its ref: %v", decisions)
+	}
+	if live := liveTree(t).Live; len(live) != 0 {
+		t.Fatalf("live = %#v, want the archived remote row cleared from the Live tier", live)
 	}
 }

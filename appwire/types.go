@@ -409,6 +409,13 @@ type ArchiveResponse struct {
 type ProjectDeleteParams struct {
 	Key        string `json:"key"`
 	WorkingDir string `json:"workingDir"`
+	// Source names the registered source (host) that owns the project row.
+	// Deletion is local-only in v1: empty and "local" both address the
+	// controller's own projects, and any other source is refused before
+	// anything is resolved or removed, so a remote row's delete can never be
+	// answered with a controller-local removal of a project that merely shares
+	// its ID or path.
+	Source string `json:"source,omitempty"`
 }
 
 // ProjectDeleteSkip records one session that a project deletion could not own

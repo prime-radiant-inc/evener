@@ -16,6 +16,7 @@ import (
 	_ "modernc.org/sqlite"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -52,6 +53,93 @@ func TestProjectDeleteRejectsRecomputedIDMismatchAndNoProject(t *testing.T) {
 			var wireErr appwire.WireError
 			if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
 				t.Fatalf("error = %v, want AppWire invalid params", err)
+			}
+		})
+	}
+}
+
+// Project deletion is local-only: a request that names a host is refused before
+// anything is resolved or removed, so a remote row can never be answered with a
+// controller-local deletion — including when a remote project shares the local
+// project's ID and path. "local" and an absent source still address the
+// controller's own project.
+func TestProjectDeleteRefusesNonLocalSource(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "project-delete-0123456789")
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	dbPath := filepath.Join(root, "index.db")
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	archive := hubcore.NewArchiveStore(dbPath)
+	seedProjectDeleteDecisions(t, archive, hubcore.NewFavoriteStore(dbPath), project.ID, webTestSessionID)
+	web := NewWebServer(hubcore.WebConfig{
+		Past:             past,
+		Roster:           hubcore.NewRosterWithEntries(),
+		Archive:          archive,
+		RemoteHosts:      []hostreg.Host{{Name: "host-a"}},
+		RemoteHostClient: unusedRemoteHostClient,
+	})
+
+	for name, tc := range map[string]struct {
+		params appwire.ProjectDeleteParams
+		want   string
+	}{
+		// A configured host is a source this hub cannot delete from...
+		"configured": {appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath, Source: "host-a"}, "local-only"},
+		// ... an unconfigured one is unknown, never silently a local delete.
+		"unknown": {appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath, Source: "host-b"}, "unknown source"},
+		// The refusal precedes resolution: the target is never even inspected.
+		"unresolvable": {appwire.ProjectDeleteParams{Key: "not-a-project", WorkingDir: "/nonexistent", Source: "host-a"}, "local-only"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := dispatchProjectDelete(t, web, tc.params)
+			var wireErr appwire.WireError
+			if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+				t.Fatalf("error = %v, want an AppWire InvalidParams refusal", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %q, want %q in the refusal", err, tc.want)
+			}
+		})
+	}
+
+	// The refused requests removed nothing and scrubbed no decision.
+	for _, suffix := range []string{".transcript.jsonl", ".log.jsonl"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+suffix)); err != nil {
+			t.Fatalf("refused delete removed %s: %v", suffix, err)
+		}
+	}
+	decisions, err := archive.Decisions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !decisions[hubcore.ArchiveKey{Kind: "session", ID: webTestSessionID}] ||
+		!decisions[hubcore.ArchiveKey{Kind: "project", ID: project.ID}] {
+		t.Fatalf("refused delete scrubbed decisions: %v", decisions)
+	}
+
+	// A local or absent source is the controller's own: the request passes the
+	// gate and fails on the target instead, so local deletion is unchanged.
+	for name, source := range map[string]string{"empty": "", "local": "local", "padded": "  local  "} {
+		t.Run("local-"+name, func(t *testing.T) {
+			_, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+				Key: "not-a-project", WorkingDir: "/nonexistent", Source: source,
+			})
+			if err == nil {
+				t.Fatal("want a target validation error for a nonexistent project")
+			}
+			if strings.Contains(err.Error(), "local-only") {
+				t.Fatalf("local source %q was refused as remote: %v", source, err)
 			}
 		})
 	}

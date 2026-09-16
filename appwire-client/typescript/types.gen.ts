@@ -1490,6 +1490,7 @@ export interface PluginSetAutoUpgradeParams {
 export interface ProjectDeleteParams {
   key: string;
   workingDir: string;
+  source?: string;
 }
 
 export interface ProjectDeleteResponse {

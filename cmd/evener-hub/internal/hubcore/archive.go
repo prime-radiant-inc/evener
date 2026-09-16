@@ -11,6 +11,8 @@ import (
 
 	"github.com/spf13/afero"
 	_ "modernc.org/sqlite" // registers the "sqlite" driver for database/sql
+
+	"primeradiant.com/evener/appwire"
 )
 
 // ArchiveKey identifies an archivable entity: a session by ID or a project by
@@ -35,6 +37,25 @@ func NormalizeDecisionSource(source string) string {
 		return ""
 	}
 	return source
+}
+
+// NormalizeDecisionSessionID maps a wire-provided session identity to the
+// decision store key that row is read under. A remote session's canonical ref
+// ("host-a:thread") is exactly the identity the tree gives that host's row, so
+// it is kept, trimmed and re-spelled canonically. The controller's own rows are
+// keyed by their bare session ID — every stored local decision predates the ref
+// spelling — so a "local:thread" ref normalizes to that bare ID instead of
+// creating a second key no read path consults, and a bare ID is already it.
+func NormalizeDecisionSessionID(id string) string {
+	id = strings.TrimSpace(id)
+	ref, err := appwire.ParseRef(id)
+	if err != nil {
+		return id
+	}
+	if NormalizeDecisionSource(ref.SourceID) == "" {
+		return ref.ThreadID
+	}
+	return ref.String()
 }
 
 // ArchiveStore persists explicit user archive/unarchive decisions in index.db.
