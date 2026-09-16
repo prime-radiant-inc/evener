@@ -1,7 +1,7 @@
+import type { AgentsDocResponse, AnyNotification } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { beforeEach, describe, expect, test } from "vitest";
-import { WireError } from "../protocol/errors";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { AgentsDocResponse, AnyNotification } from "../protocol/types.gen";
 import { agentsDocStore, resetAgentsDocStoreForTests } from "./agentsDoc";
 import { connectionStore } from "./connection";
 

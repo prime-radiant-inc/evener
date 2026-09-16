@@ -45,6 +45,8 @@
     "toolCallText.ts",
     "catalogCommands.ts",
     "slashCompletion.ts",
-    "sharedNotesAvailability.ts"
+    "sharedNotesAvailability.ts",
+    "railSessionState.ts",
+    "reasoningEffort.ts"
   ]
 }

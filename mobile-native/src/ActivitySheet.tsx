@@ -14,12 +14,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import { ActivityList } from "../../appwire-client/typescript/activityList";
-import {
-  type ActivityRow,
-  buildActivityRows,
-} from "../../appwire-client/typescript/activityRows";
-import { stableDelegateDisplayStatus } from "../../appwire-client/typescript/stableDelegate";
+import { ActivityList, type ActivityRow, buildActivityRows, stableDelegateDisplayStatus } from "@evener/appwire-client";
 import { parseAnsiLines } from "../../cmd/evener-hub/frontend/src/widgets/codeblock/ansi";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { ActivityDelegateDetails } from "./ActivityDelegateDetails";

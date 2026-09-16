@@ -3,9 +3,8 @@
 // deletion use the typed AppWire client. No optimistic UI: callers await the
 // response's exact navigation targets before removing their overlay.
 
-import type { AppwireClientLike } from "../../protocol/clientLike";
-import { WireError } from "../../protocol/errors";
 import type {
+  AppwireClientLike,
   FavoriteSetResponse,
   NavigationMutation,
   PinSectionDeleteResponse,
@@ -14,7 +13,8 @@ import type {
   SessionDeleteResponse,
   SessionPinAssignResponse,
   SessionPinUnpinResponse,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { connectionStore } from "../../stores/connection";
 import type { NavigationPinSectionSummary } from "../../stores/navigation/selectors";
 

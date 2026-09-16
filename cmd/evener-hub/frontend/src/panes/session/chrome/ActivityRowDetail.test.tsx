@@ -1,9 +1,8 @@
+import type { ActivityDelegate, ActivityJob, ActivitySessionNode, EvenerDelegateInfo } from "@evener/appwire-client";
 import { type ActivityDelegateRow, type ActivityJobRow, buildEntityView } from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ActivityDelegate, ActivityJob, ActivitySessionNode } from "../../../protocol/activityData";
-import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { EntityViewsProvider } from "../../../transcriptDisplay/entityViews";

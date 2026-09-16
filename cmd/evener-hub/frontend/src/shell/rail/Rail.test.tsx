@@ -1,17 +1,17 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
-import type { ReactElement } from "react";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   NavigationInvalidatedPayload,
   NavigationManifest,
   NavigationProjectResource,
   NavigationSessionSummary,
   NavigationSnapshot,
-} from "../../protocol/types.gen";
+} from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { act, cleanup, fireEvent, render as renderUI, screen, waitFor, within } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { connectionStore } from "../../stores/connection";
 import { type NormalizedResource, normalizedGraphFromSnapshot } from "../../stores/navigation/codec";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";

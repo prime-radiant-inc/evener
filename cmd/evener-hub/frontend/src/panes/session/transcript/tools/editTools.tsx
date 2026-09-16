@@ -16,8 +16,8 @@
 // patchRenderer rendered from state.args.patch through the same
 // classifier it uses for real diffs.
 
-import type { ItemModel } from "../../../../protocol/model";
-import { parseArgs, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { parseArgs, str } from "@evener/appwire-client";
 import { DiffBlock } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";

@@ -1,5 +1,5 @@
 import { ActivityIndicator, FlatList, View } from "react-native";
-import type { NavigationPinSectionDescriptor } from "../../appwire-client/typescript/types.gen";
+import type { NavigationPinSectionDescriptor } from "@evener/appwire-client";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function PinCatalogList({

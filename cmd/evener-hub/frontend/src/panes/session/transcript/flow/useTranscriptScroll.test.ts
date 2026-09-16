@@ -1,8 +1,7 @@
+import type { ItemModel, ThreadCapabilities, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { createRef } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../../protocol/model";
-import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";

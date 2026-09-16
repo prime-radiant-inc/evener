@@ -6,7 +6,7 @@
 // fires on the FIRST agentMessage after each userMessage. Computed once per
 // transcript model at the Session level for the same reason: a TurnBlock
 // renders one turn in isolation and cannot see this relation across turns.
-import type { TurnModel } from "../../../protocol/model";
+import type { TurnModel } from "@evener/appwire-client";
 
 export function exchangeClosersFor(turns: TurnModel[]): ReadonlySet<string> {
   const closers = new Set<string>();

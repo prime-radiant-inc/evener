@@ -1,4 +1,4 @@
-import type { EvenerDelegateInfo, ThreadItem, ThreadReadResponse } from "../../protocol/types.gen";
+import type { EvenerDelegateInfo, ThreadItem, ThreadReadResponse } from "@evener/appwire-client";
 
 export const PARENT = "local:editorial-parent";
 export const CHILD = "local:editorial-child";

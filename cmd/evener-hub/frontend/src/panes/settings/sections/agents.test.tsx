@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { SettingsOverviewResponse } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { SettingsOverviewResponse } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { AgentsSection } from "./agents";
 import type { SettingsOverviewStore } from "./overviewSeam";

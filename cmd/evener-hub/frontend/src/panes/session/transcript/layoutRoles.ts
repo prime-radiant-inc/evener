@@ -19,7 +19,7 @@
 //
 // Transcript chrome (TurnSeparator, SeenDivider, TurnFailureEndCap) is not
 // items and stays outside this map entirely; TurnBlock renders it directly.
-import type { ItemModel } from "../../../protocol/model";
+import type { ItemModel } from "@evener/appwire-client";
 
 export type RowRole = "speaker" | "run";
 

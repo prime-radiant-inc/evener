@@ -47,7 +47,7 @@ func TestRosterReportsRestartRequiredAfterProtocolUpgrade(t *testing.T) {
 		Protocol: "evener-appwire-v3", Endpoint: "ws" + strings.TrimPrefix(peer.URL, "http") + "/rpc",
 	})
 	roster := NewRoster(dir, &StatusProber{client: peer.Client()})
-	roster.procAlive = func(int) bool { return true }
+	roster.SetProcessAlive(func(int) bool { return true })
 	roster.Refresh()
 	entry, ok := roster.Find("session-upgrade")
 	if !ok {

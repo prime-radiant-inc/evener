@@ -4,7 +4,7 @@ import type {
 	ModelListResponse,
 	Thread,
 	ThreadClearResponse,
-} from "../../appwire-client/typescript/types.gen";
+} from "@evener/appwire-client";
 import {
 	type ConversationClientLike,
 	createConversationService,

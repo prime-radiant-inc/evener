@@ -1,4 +1,4 @@
-import type { ModelDescriptor } from "../../appwire-client/typescript/types.gen";
+import type { ModelDescriptor } from "@evener/appwire-client";
 
 // A picker entry is one selectable model and the registry notes that belong
 // under it. The label is built here so the list, its selection, and its

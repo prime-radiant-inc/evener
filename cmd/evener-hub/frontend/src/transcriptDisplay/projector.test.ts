@@ -1,5 +1,5 @@
+import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import type { ItemModel, ThreadModel, TurnModel } from "../protocol/model";
 import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./config";
 import { projectThread } from "./projector";
 

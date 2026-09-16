@@ -1,9 +1,9 @@
-import { WireError } from "../../appwire-client/typescript/errors";
-import type { ModelListResponse } from "../../appwire-client/typescript/types.gen";
+import { WireError } from "@evener/appwire-client";
+import type { ModelListResponse } from "@evener/appwire-client";
 import {
 	effortOptionLevels,
 	sessionEffortLevels,
-} from "../../cmd/evener-hub/frontend/src/shell/reasoningEffort";
+} from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/model";
 import type {
 	ConversationModelCatalog,

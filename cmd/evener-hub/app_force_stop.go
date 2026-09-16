@@ -37,11 +37,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if controller == nil {
 		controller = daemonprocess.NewController()
 	}
-	sessionID := entry.SessionID
-	if sessionID == "" {
-		sessionID = entry.ThreadID
-	}
-	target := daemonprocess.Target{PID: entry.PID, SessionID: sessionID, StateDir: entry.StateDir, StartedAt: entry.StartedAt}
+	target := hubcore.DaemonTarget(entry)
 	process, err := controller.Open(target)
 	exited := errors.Is(err, daemonprocess.ErrExited)
 	if err != nil && !exited {
@@ -55,7 +51,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			log.Printf("force stop process handle cleanup: %v", err)
 		}
 	}()
-	if exited && recoveryTarget != "" && sessionID != recoveryTarget {
+	if exited && recoveryTarget != "" && target.SessionID != recoveryTarget {
 		return appwire.Unavailable("exited daemon claim does not match session recovery authority")
 	}
 	// Descendants share the stopped process, but keep independent transcript
@@ -74,7 +70,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		if entry.StateDir == "" {
 			return nil
 		}
-		ids, err := agent.SessionOwnedDelegateIDs(scanCtx, entry.StateDir, sessionID)
+		ids, err := agent.SessionOwnedDelegateIDs(scanCtx, entry.StateDir, target.SessionID)
 		if err != nil {
 			return appwire.Unavailable(fmt.Sprintf("read daemon delegates: %v", err))
 		}
@@ -143,7 +139,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		// it would overwrite, even when the requested alias still names it.
 		for _, alias := range aliases {
 			authority := cfg.ResumeLocks.RecoveryState(alias).ResumeSessionID
-			if authority != "" && authority != sessionID {
+			if authority != "" && authority != target.SessionID {
 				return appwire.Unavailable("exited daemon claim conflicts with alias recovery authority")
 			}
 		}
@@ -153,11 +149,11 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	// Commit recovery authority before the signal can take effect. Interrupted
 	// signaling conservatively retains the explicit-Resume requirement.
-	if err := cfg.ResumeLocks.PersistForceStop(aliases, sessionID); err != nil {
+	if err := cfg.ResumeLocks.PersistForceStop(aliases, target.SessionID); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist session recovery: %v", err))
 	}
 	if exited {
-		if err := cfg.ResumeLocks.ConfirmForceStop(sessionID); err != nil {
+		if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
 			return appwire.Unavailable(fmt.Sprintf("persist confirmed daemon exit: %v", err))
 		}
 		refreshAfterForceStop(ctx, cfg)
@@ -178,7 +174,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err := fenceDescendants(scanCtx); err != nil {
 		return err
 	}
-	if err := cfg.ResumeLocks.ConfirmForceStop(sessionID); err != nil {
+	if err := cfg.ResumeLocks.ConfirmForceStop(target.SessionID); err != nil {
 		return appwire.Unavailable(fmt.Sprintf("persist confirmed daemon exit: %v", err))
 	}
 	refreshAfterForceStop(ctx, cfg)
@@ -244,11 +240,7 @@ func forceStopEntry(runDir, sessionID string, controller daemonprocess.Controlle
 			if !overlaps(entry) {
 				return false
 			}
-			id := entry.SessionID
-			if id == "" {
-				id = entry.ThreadID
-			}
-			process, err := controller.Open(daemonprocess.Target{PID: entry.PID, SessionID: id, StateDir: entry.StateDir, StartedAt: entry.StartedAt})
+			process, err := controller.Open(hubcore.DaemonTarget(entry))
 			if err == nil {
 				_ = process.Close()
 			}

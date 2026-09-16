@@ -1,3 +1,11 @@
+import type {
+  NavigationCatalogs,
+  NavigationProjectPage,
+  NavigationProjectResource,
+  NavigationProjectSummary,
+  NavigationSessionSummary,
+} from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import {
   type ChangeEvent,
   type CSSProperties,
@@ -11,14 +19,6 @@ import {
   useState,
 } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import { errorText } from "../../protocol/errors";
-import type {
-  NavigationCatalogs,
-  NavigationProjectPage,
-  NavigationProjectResource,
-  NavigationProjectSummary,
-  NavigationSessionSummary,
-} from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
 import {
   nextNavigationOffset,

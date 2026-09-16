@@ -14,9 +14,8 @@
 //     reference material, not a status: they live in the details sheet.
 //   - raw ↑/↓ token counts. The details sheet carries the exact figures.
 
-import { sessionActionError } from "../../../protocol/errors";
-import type { ThreadModel } from "../../../protocol/model";
-import { effortLabel, effortOptionLevels, sessionEffortLevels } from "../../../shell/reasoningEffort";
+import type { ThreadModel } from "@evener/appwire-client";
+import { effortLabel, effortOptionLevels, sessionActionError, sessionEffortLevels } from "@evener/appwire-client";
 import { threadsStore } from "../../../stores/threads";
 import { Chevron, Meter, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";

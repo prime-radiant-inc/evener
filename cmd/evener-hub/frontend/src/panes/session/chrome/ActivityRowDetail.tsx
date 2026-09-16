@@ -8,19 +8,20 @@
 // strip renders in the session CHROME - outside the transcript subtree that
 // provides the same map - and the delegate line names a real entity.
 
+import type { NavigationWatchSummary } from "@evener/appwire-client";
 import {
   type ActivityDelegateRow,
   type ActivityJobRow,
   type ActivityWatchRow,
+  activityDelegateDiagnostics,
   activityDelegateState,
+  formatClockTime,
+  splitMandate,
   watchDeliveryInstants,
   watchFacts,
   watchIsScheduled,
 } from "@evener/appwire-client";
 import { Fragment, type JSX, useEffect, useMemo, useState } from "react";
-import { activityDelegateDiagnostics } from "../../../protocol/activityData";
-import { formatClockTime, splitMandate } from "../../../protocol/displayFormat";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
 import { threadsStore } from "../../../stores/threads";
 import { parseAnsiLines } from "../../../widgets/codeblock/ansi";

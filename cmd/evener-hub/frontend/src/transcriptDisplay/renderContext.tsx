@@ -1,6 +1,5 @@
-import type { EntityView } from "@evener/appwire-client";
+import type { EntityView, ThreadModel } from "@evener/appwire-client";
 import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
-import type { ThreadModel } from "../protocol/model";
 import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import {
   type ContentVector,
