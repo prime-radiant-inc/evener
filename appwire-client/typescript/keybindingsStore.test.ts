@@ -489,13 +489,11 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
           .getState()
           .bindings.find((b) => b.id === ACTIONS.paletteOpen);
         if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
-        registry
-          .getState()
-          .registerBinding({
-            id: "foreign.squatter",
-            actionId: "foreign",
-            chord: serializeChord(paletteDefault.chord),
-          });
+        registry.getState().registerBinding({
+          id: "foreign.squatter",
+          actionId: "foreign",
+          chord: serializeChord(paletteDefault.chord),
+        });
       },
       rejects: true,
       after: { writeUncertain: false, stored: null, hubError: true },
