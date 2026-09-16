@@ -33,6 +33,7 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
+  fromEnvironment,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
@@ -478,7 +479,7 @@ export function InstanceSheet({
   // The danger zone is Clear + Clear stored key + Remove under a divider; an
   // implicit instance with nothing stored offers none of them, and a divider
   // over nothing reads as a rendering bug.
-  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !instance.implicit);
+  const showDangerZone = instance !== undefined && (showClear || showClearStoredKey || !fromEnvironment(instance));
   const layers = instance === undefined ? [] : credentialLayers(instance);
   const unconfigured = instance === undefined ? null : unconfiguredLabel(instance);
   // The sheet's per-model toggles read the registry's own inventory. The
@@ -496,6 +497,16 @@ export function InstanceSheet({
   // on what counts as a rename, and an emptied Name is not one.
   const renaming =
     initial !== null && draft !== null && draft.name.trim() !== "" && draft.name.trim() !== initial.name.trim();
+  // The note under Name. A rename always leaves the old name behind in launch
+  // config and past sessions; on an environment-backed instance it also leaves
+  // the instance itself, because the variable that makes it exist is not the
+  // row's to move, so the rename authors a second instance beside it.
+  const nameHelp =
+    instance !== undefined && renaming
+      ? fromEnvironment(instance)
+        ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. Launch config and past sessions that reference "${instance.name}" keep the old name.`
+        : `Launch config and past sessions that reference "${instance.name}" keep the old name.`
+      : undefined;
 
   return (
     <Sheet
@@ -517,7 +528,7 @@ export function InstanceSheet({
           <div className={CLASS.headingRow}>
             <StatusDot state={layers.length > 0 || keylessByDesign(instance) ? "idle" : "ended"} />
             {instance.isDefault && <Chip>★ default</Chip>}
-            {instance.implicit && <Chip>from environment</Chip>}
+            {fromEnvironment(instance) && <Chip>from environment</Chip>}
           </div>
           {draft !== null && (
             <form
@@ -528,22 +539,12 @@ export function InstanceSheet({
                 void handleSave();
               }}
             >
-              <FormRow
-                label="Name"
-                htmlFor={`${ids}-name`}
-                help={
-                  instance.implicit
-                    ? "This instance comes from the environment and cannot be renamed."
-                    : renaming
-                      ? `Launch config and past sessions that reference "${instance.name}" keep the old name.`
-                      : undefined
-                }
-              >
+              <FormRow label="Name" htmlFor={`${ids}-name`} help={nameHelp}>
                 <Input
                   id={`${ids}-name`}
                   value={draft.name}
                   onChange={(event) => update({ name: event.target.value })}
-                  disabled={busy || instance.implicit}
+                  disabled={busy}
                 />
               </FormRow>
               <div className={CLASS.metaRow}>
@@ -721,7 +722,7 @@ export function InstanceSheet({
                     </Button>
                   </div>
                 )}
-                {!instance.implicit && (
+                {!fromEnvironment(instance) && (
                   <div className={CLASS.fullRow}>
                     <Button variant="danger" onClick={onRemove} disabled={busy || writesRefused}>
                       Remove

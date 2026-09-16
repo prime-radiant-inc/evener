@@ -110,11 +110,32 @@ describe("visibility", () => {
   });
 
   // The sheet is the whole screen on mobile and the only place Remove would
-  // have been, so the badge explaining an implicit instance has to be here
-  // too - not only on the row behind it.
-  test("an implicit instance is badged 'from environment'", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+  // have been, so the badge explaining an environment-backed instance has to
+  // be here too - not only on the row behind it.
+  test("an environment-backed instance is badged 'from environment'", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(screen.getByText("from environment")).toBeTruthy();
+  });
+
+  test("an implicit instance credentialed through the UI carries no badge", () => {
+    renderSheet(
+      instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
+  });
+
+  test("a signed-in Codex account carries no badge", () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(screen.queryByText("from environment")).toBeNull();
   });
 
   test("a non-implicit instance carries no such badge", () => {
@@ -260,13 +281,30 @@ describe("actions are conditionally rendered", () => {
     expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
-  // Removing an implicit instance is refused server-side (spec §11.3), so
-  // the sheet must not even offer the button; the form stays, since editing
-  // an implicit instance writes a shadow rather than changing it.
-  test("an implicit instance offers the form but no Remove", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
+  // Removing an environment-backed instance is refused server-side: the
+  // variable that makes it exist would put it straight back. The form stays,
+  // since editing it writes a shadow rather than changing the instance.
+  test("an environment-backed instance offers the form but no Remove", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(screen.getByLabelText("Base URL")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
+  });
+
+  // The account a user adds through the UI is theirs to remove: the credential
+  // is a file under the instance name (auth/<name>.json, credentials.toml), so
+  // removing the instance is exactly how the account goes away.
+  test("an implicit instance credentialed through the UI offers Remove", () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   // The danger zone is Clear + Remove under a divider; an implicit instance
@@ -277,11 +315,13 @@ describe("actions are conditionally rendered", () => {
     expect(document.querySelectorAll("hr").length).toBe(0);
   });
 
-  test("the danger-zone divider stays when Clear alone is offered", () => {
+  test("the danger-zone divider stays for a stored-key instance, which offers Clear and Remove", () => {
     renderSheet(
       instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "store", hasStoredFile: true }),
     );
     expect(document.querySelectorAll("hr").length).toBe(1);
+    expect(screen.getByRole("button", { name: "Clear" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
   });
 
   test("the danger-zone divider stays when Clear stored key alone is offered", () => {
@@ -716,10 +756,35 @@ describe("the form", () => {
     expect(disabledStates()).toEqual(actions.map(() => false));
   });
 
-  test("an implicit instance's Name is disabled with the environment note", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }));
-    expect(field("Name").disabled).toBe(true);
-    expect(screen.getByText(/comes from the environment/)).toBeTruthy();
+  // The Name field is editable on every instance. A rename always authors an
+  // entry under the new name; on an environment-backed instance the old row
+  // stays too, because the variable or record that makes it exist is not part
+  // of the rename, so the note under the field says that instead of promising
+  // a rename that cannot happen.
+  test("an environment-backed instance's Name is editable, and the note says the old row stays", async () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
+    expect(field("Name").disabled).toBe(false);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/leaves this one in place/)).toBeTruthy();
+  });
+
+  test("a UI-credentialed instance's Name is editable with the ordinary rename note", async () => {
+    renderSheet(
+      instance({
+        name: "openai-codex",
+        providerId: "openai-codex",
+        auth: "oauth-openai-codex",
+        implicit: true,
+        activeSource: "oauth",
+        hasStoredOAuth: true,
+      }),
+    );
+    expect(field("Name").disabled).toBe(false);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "-2");
+    expect(screen.getByText(/keep the old name/)).toBeTruthy();
+    expect(screen.queryByText(/leaves this one in place/)).toBeNull();
   });
 
   test("changing the name shows the rename note", async () => {

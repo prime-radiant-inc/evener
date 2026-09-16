@@ -100,6 +100,7 @@ export {
   FINGERPRINT_UNAVAILABLE_ERROR,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
+  fromEnvironment,
   groupByProvider,
   isEndpointConflict,
   keylessByDesign,

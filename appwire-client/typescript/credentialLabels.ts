@@ -98,6 +98,24 @@ export function keylessByDesign(instance: InstanceEntry): boolean {
   return instance.activeSource === "none" && !instance.credentialRequired;
 }
 
+// fromEnvironment answers whether an instance owes its existence to the
+// host's environment rather than to a credential the user filed through the
+// UI. `implicit` alone does not: a curated provider is implicit whenever no
+// providers.toml entry shadows it (registry spec §5.1), and that includes the
+// Codex account a user signs in to and a key they store for a curated
+// provider. Those credentials are files under the instance name
+// (auth/<name>.json, credentials.toml), so the instance is the user's own -
+// they can rename it and remove it like any authored one, and calling it
+// "from environment" would name a source it never read. What stays
+// environment-owned is a credential the host supplies (an API key variable,
+// the gcloud ADC file) and a keyless local default such as Ollama: there the
+// instance comes back with the host, and nothing the user does to the row
+// takes it away.
+export function fromEnvironment(instance: InstanceEntry): boolean {
+  if (!instance.implicit) return false;
+  return instance.activeSource !== "store" && instance.activeSource !== "oauth";
+}
+
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered
 // display when credentialLayers(instance) is empty - just activeSourceLabel
 // for the "none" case, which already covers required vs. optional vs.

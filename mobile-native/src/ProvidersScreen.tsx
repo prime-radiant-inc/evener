@@ -22,6 +22,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import {
   activeSourceLabel,
   credentialLayers,
+  fromEnvironment,
   groupByProvider,
   styleInfoText,
 } from "@evener/appwire-client";
@@ -313,7 +314,7 @@ function Providers({
                     {instance.isDefault && (
                       <Copy>Default provider instance</Copy>
                     )}
-                    {instance.implicit && <Copy muted>From environment</Copy>}
+                    {fromEnvironment(instance) && <Copy muted>From environment</Copy>}
                     <Copy>{activeSourceLabel(instance)}</Copy>
                     {credentialLayers(instance)
                       .filter((layer) => !layer.effective)
@@ -468,7 +469,7 @@ function Providers({
                             Clear credentials
                           </Action>
                         )}
-                        {!instance.implicit && (
+                        {!fromEnvironment(instance) && (
                           <Action
                             disabled={state.busy || state.data?.writesRefused}
                             onPress={() =>
