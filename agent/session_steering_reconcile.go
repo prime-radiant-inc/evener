@@ -9,12 +9,15 @@ import "slices"
 // append landed; the transcript is the only record of delivery, so there is
 // nothing here to return or re-arm. What the rules do:
 //
-//	0  a steer the transcript holds is finalized: its append landed and only
-//	   the store's incorporation write did not (a process that died in
-//	   between, at restore; a store that refused the write, in this process).
-//	   recorded answers from the loaded transcript at restore and from the
-//	   in-flight set (recordedSteeringAwaitingMark) at a Stop -- never a
-//	   history scan inside the store's serializer.
+//	0  a steer the transcript holds is retired to the terminal state its
+//	   entry stands for -- "incorporated" for a steering turn, "failed" for
+//	   a skill selection that could not be prepared: its append landed and
+//	   only the store's write did not (a process that died in between, at
+//	   restore; a store that refused the write, in this process). recorded
+//	   answers that state, or "" for a steer the transcript does not hold,
+//	   from the loaded transcript at restore and from the in-flight set
+//	   (recordedSteeringAwaitingMark) otherwise -- never a history scan
+//	   inside the store's serializer.
 //	1  an order entry with no pending execution is dropped: a remnant of a
 //	   finalization that retired the steer (every retiring path nils the
 //	   journal payload, so there is no input to rebuild it from). Left, it
@@ -32,12 +35,12 @@ import "slices"
 // The active-turn slot is not this function's: a carrier claim the process
 // died under is released at load by forgetRunningTurnNoOneOwns, and in this
 // process by the claimant's own deferred release.
-func reconcileClientSteering(snapshot *clientMutationSnapshot, recorded func(clientMutationID string) bool, stopping bool) {
+func reconcileClientSteering(snapshot *clientMutationSnapshot, recorded func(clientMutationID string) string, stopping bool) {
 	for _, id := range slices.Clone(snapshot.SteeringOrder) {
 		if _, ok := snapshot.PendingExecutions[id]; !ok {
 			removeClientMutationSteeringOrder(snapshot, id)
-		} else if recorded(id) {
-			finalizeSteeringInSnapshot(snapshot, id)
+		} else if state := recorded(id); state != "" {
+			finalizeSteeringInSnapshot(snapshot, id, state)
 		}
 	}
 	pending := snapshotHasPendingUserSteering(snapshot)

@@ -336,7 +336,7 @@ func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
 // is appending, or one whose append landed and whose incorporation write the
 // store refused, is accepted in the store and absent from the queue. A carrier
 // claimed for it would drain nothing of its own, so it is not eligible.
-func claimableSteeringCarrier(snapshot *clientMutationSnapshot, inFlight map[string]bool) (clientMutationID, turnID string) {
+func claimableSteeringCarrier(snapshot *clientMutationSnapshot, inFlight map[string]string) (clientMutationID, turnID string) {
 	for _, id := range snapshot.SteeringOrder {
 		pending, exists := snapshot.PendingExecutions[id]
 		if !exists || pending.ExecutionState != "accepted" || pending.TurnID == "" {
@@ -350,25 +350,38 @@ func claimableSteeringCarrier(snapshot *clientMutationSnapshot, inFlight map[str
 	return "", ""
 }
 
-// carrierSteerUndelivered is the carrier's own question after it drained: is
-// the steer that reserved turnID still waiting to reach the model? Gone from
-// the store, it is incorporated. Still pending and in flight marked recorded,
-// its append landed and only the store's mark is missing -- delivered. Still
-// pending and back in the queue, its append failed -- undelivered.
-func (s *Session) carrierSteerUndelivered(turnID string) bool {
-	if turnID == "" || s.clientMutations == nil {
-		return false
+// carrierSteerOutcome is the carrier's own question after it drained: what
+// became of the steer it was claimed for?
+type carrierSteerOutcome int
+
+const (
+	// carrierSteerDelivered: the transcript holds the steering turn -- the
+	// store marked it, or the mark is the only thing missing -- and the model
+	// reads it on this turn's request.
+	carrierSteerDelivered carrierSteerOutcome = iota
+	// carrierSteerUndelivered: the append failed and the steer is back in the
+	// queue, accepted.
+	carrierSteerUndelivered
+	// carrierSteerFailed: the steer's skill selection could not be prepared;
+	// the failure is recorded and announced, and there is nothing to carry.
+	carrierSteerFailed
+)
+
+func (s *Session) carrierSteerOutcome(identity queuedClientMutationIdentity) carrierSteerOutcome {
+	if identity.ClientMutationID == "" || s.clientMutations == nil {
+		return carrierSteerDelivered
 	}
 	snapshot := s.clientMutations.snapshot()
-	for _, id := range snapshot.SteeringOrder {
-		if pending, ok := snapshot.PendingExecutions[id]; ok && pending.TurnID == turnID {
-			s.mu.Lock()
-			recorded := s.steeringInFlight[id]
-			s.mu.Unlock()
-			return !recorded
-		}
+	s.mu.Lock()
+	recorded, inFlight := s.steeringInFlight[identity.ClientMutationID]
+	s.mu.Unlock()
+	if recorded == "failed" || snapshot.Journal[identity.ClientMutationID].ExecutionState == "failed" {
+		return carrierSteerFailed
 	}
-	return false
+	if _, pending := snapshot.PendingExecutions[identity.ClientMutationID]; pending && (!inFlight || recorded == "") {
+		return carrierSteerUndelivered
+	}
+	return carrierSteerDelivered
 }
 
 // steeringCarrierClaimable reports whether claimSteeringCarrierInput would take a
@@ -376,7 +389,7 @@ func (s *Session) carrierSteerUndelivered(turnID string) bool {
 // queueHeadClaimable it is the whole of that decision, so a caller asking
 // whether this session has steering it could actually run asks the question the
 // claim asks.
-func steeringCarrierClaimable(snapshot *clientMutationSnapshot, inFlight map[string]bool) bool {
+func steeringCarrierClaimable(snapshot *clientMutationSnapshot, inFlight map[string]string) bool {
 	_, turnID := claimableSteeringCarrier(snapshot, inFlight)
 	return steeringCarrierRailOpen(snapshot) && turnID != ""
 }
@@ -1176,9 +1189,19 @@ func clientSteeringFromSnapshot(snapshot clientMutationSnapshot) []steeringMessa
 func (s *Session) restoreDurableClientMutationQueues() {
 	incorporated := make(map[string]string, len(s.restoredClientMutationTurns))
 	maps.Copy(incorporated, s.restoredClientMutationTurns)
+	// steeringOutcome is the terminal state the transcript's entry for a steer
+	// stands for: a steering turn was incorporated, a failure turn is a skill
+	// selection that could not be prepared.
+	steeringOutcome := map[string]string{}
 	for _, turn := range s.history {
 		if turn.ClientMutationID != "" {
 			incorporated[turn.ClientMutationID] = turn.StableTurnID
+			switch turn.Kind {
+			case schema.TurnSteering:
+				steeringOutcome[turn.ClientMutationID] = "incorporated"
+			case schema.TurnFailure:
+				steeringOutcome[turn.ClientMutationID] = "failed"
+			}
 		}
 	}
 	if err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
@@ -1246,9 +1269,11 @@ func (s *Session) restoreDurableClientMutationQueues() {
 		// the finalization can retire the last steer a Stop parked) is released
 		// by rule H; release only, never arm, since restore is not a Stop
 		// (TestRestoredSteeringWakesWhenTheDaemonAttaches).
-		reconcileClientSteering(snapshot, func(id string) bool {
-			stableTurnID, ok := incorporated[id]
-			return ok && stableTurnID == snapshot.PendingExecutions[id].TurnID
+		reconcileClientSteering(snapshot, func(id string) string {
+			if stableTurnID, ok := incorporated[id]; !ok || stableTurnID != snapshot.PendingExecutions[id].TurnID {
+				return ""
+			}
+			return steeringOutcome[id]
 		}, false)
 		snapshot.QueueRevision++
 		return nil
@@ -1460,18 +1485,20 @@ func (s *Session) finalizeIncorporatedSteering(clientMutationID string) error {
 		if pending.Method == clientMutationMethodQueue {
 			return fmt.Errorf("queued input %q cannot finalize at transcript append", clientMutationID)
 		}
-		finalizeSteeringInSnapshot(snapshot, clientMutationID)
+		finalizeSteeringInSnapshot(snapshot, clientMutationID, "incorporated")
 		return nil
 	})
 }
 
-// finalizeSteeringInSnapshot is finalizeIncorporatedSteering's write, shared
-// with restore, which finalizes from the transcript the steers a dead process
-// recorded but never marked.
-func finalizeSteeringInSnapshot(snapshot *clientMutationSnapshot, clientMutationID string) {
+// finalizeSteeringInSnapshot retires a steer the transcript holds to its
+// terminal state -- "incorporated" for a steering turn, "failed" for a
+// recorded selection failure. finalizeIncorporatedSteering's write, shared
+// with the steering table, which marks from the transcript the steers whose
+// own write the store refused or a dead process never made.
+func finalizeSteeringInSnapshot(snapshot *clientMutationSnapshot, clientMutationID, terminalState string) {
 	record := snapshot.Journal[clientMutationID]
 	record.OperationState = clientMutationOperationTerminal
-	record.ExecutionState = "incorporated"
+	record.ExecutionState = terminalState
 	record.ProjectionState = appwire.MutationProjectionReflected
 	record.Payload = nil
 	snapshot.Journal[clientMutationID] = record

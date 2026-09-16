@@ -952,9 +952,9 @@ func (s *Session) popSteeringHead() (steeringMessage, bool) {
 	s.steeringQueue = s.steeringQueue[1:]
 	if entry.ClientMutationID != "" {
 		if s.steeringInFlight == nil {
-			s.steeringInFlight = map[string]bool{}
+			s.steeringInFlight = map[string]string{}
 		}
-		s.steeringInFlight[entry.ClientMutationID] = false
+		s.steeringInFlight[entry.ClientMutationID] = ""
 		s.mu.Unlock()
 		return entry, true
 	}
@@ -975,10 +975,12 @@ func (s *Session) steeringLanded(clientMutationID string) {
 }
 
 // markSteeringRecorded notes that an in-flight steer's transcript append landed
-// and only the store's write did not: delivered, awaiting its mark.
-func (s *Session) markSteeringRecorded(clientMutationID string) {
+// and only the store's write did not: recorded, awaiting its mark, which is
+// the terminal state the transcript entry stands for ("incorporated" for a
+// steering turn, "failed" for a selection failure).
+func (s *Session) markSteeringRecorded(clientMutationID, terminalState string) {
 	s.mu.Lock()
-	s.steeringInFlight[clientMutationID] = true
+	s.steeringInFlight[clientMutationID] = terminalState
 	s.mu.Unlock()
 }
 
@@ -1003,7 +1005,7 @@ func (s *Session) reconcileRecordedSteering() {
 // steeringInFlightSample copies the in-flight set under s.mu, for a caller
 // about to decide steering eligibility inside the store's serializer (which
 // must never wait on s.mu).
-func (s *Session) steeringInFlightSample() map[string]bool {
+func (s *Session) steeringInFlightSample() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return maps.Clone(s.steeringInFlight)
@@ -1021,17 +1023,17 @@ func (s *Session) steeringMarked(ids []string) {
 // transcript append landed but whose incorporation write the store refused,
 // and returns the question over that sample for reconcileClientSteering.
 // Taken before a store mutate, never inside one.
-func (s *Session) recordedSteeringAwaitingMark() (ids []string, recorded func(string) bool) {
-	set := map[string]struct{}{}
+func (s *Session) recordedSteeringAwaitingMark() (ids []string, recorded func(string) string) {
+	states := map[string]string{}
 	s.mu.Lock()
-	for id, landed := range s.steeringInFlight {
-		if landed {
-			set[id] = struct{}{}
+	for id, state := range s.steeringInFlight {
+		if state != "" {
+			states[id] = state
 			ids = append(ids, id)
 		}
 	}
 	s.mu.Unlock()
-	return ids, func(id string) bool { _, ok := set[id]; return ok }
+	return ids, func(id string) string { return states[id] }
 }
 
 // injectDrainedSteering drains any pending steering messages at a turn
@@ -1068,8 +1070,8 @@ func (s *Session) injectDrainedSteering() {
 		if !s.consumeSteeringMessage(msg) {
 			// The failed steer is back at the head of the queue; popping again
 			// would take the same steer and fail the same way inside this
-			// turn. The wake consumeSteeringMessage armed owns the next
-			// attempt, for this steer and for everything queued behind it.
+			// turn. The next external wake owns the next attempt, for this
+			// steer and for everything queued behind it.
 			break
 		}
 	}
@@ -1122,14 +1124,15 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			func() { s.history = append(s.history, t) },
 		); err != nil {
 			// The steer did not land. The store never left accepted, so ending
-			// its in-flight window puts it back in the queue, and the same
-			// wake its acceptance armed is armed again: the daemon runs the
-			// pending input once this input ends, so a transient write
-			// failure costs one failed turn, not a wait for an unrelated
-			// action or a restart.
+			// its in-flight window puts it back in the queue, parked runnable:
+			// hasRunnableUserSteering keeps the session from resting, and the
+			// next external wake -- attach, or any accepted client mutation --
+			// carries it. Nothing here re-arms a wake: a write that keeps
+			// failing without poisoning the writer (ENOSPC before a byte
+			// lands) would otherwise loop failed carrier turns with no pause,
+			// and a paced retry is not this design's answer.
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 			s.steeringLanded(msg.ClientMutationID)
-			s.wakeForPendingSteering()
 			return false
 		}
 		if err := s.finalizeIncorporatedSteering(msg.ClientMutationID); err != nil {
@@ -1140,7 +1143,7 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) bool {
 			// the next wake, a Stop or restore writes the mark through the
 			// steering table (reconcileRecordedSteering).
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("steering incorporation failed: %v; the transcript holds the steer", err)})
-			s.markSteeringRecorded(msg.ClientMutationID)
+			s.markSteeringRecorded(msg.ClientMutationID, "incorporated")
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
 		}
@@ -1227,7 +1230,7 @@ func (s *Session) recordFailedSteeringSelection(msg steeringMessage, cause error
 		// store: recorded, unmarked, and reconciled like an incorporation
 		// write the store refused.
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("clear failed steering execution: %v", err)})
-		s.markSteeringRecorded(msg.ClientMutationID)
+		s.markSteeringRecorded(msg.ClientMutationID, "failed")
 		return true
 	}
 	s.steeringLanded(msg.ClientMutationID)

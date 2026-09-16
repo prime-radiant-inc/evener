@@ -177,7 +177,7 @@ func refuseSteerAppends(s *Session, clientMutationID string) *steerAppendRefusal
 
 // countingUserInputWake installs the daemon's pending-input wake seam and
 // returns a channel that receives one value per wake.
-func countingUserInputWake(s *Session) <-chan struct{} {
+func countingUserInputWake(s *Session) chan struct{} {
 	wakes := make(chan struct{}, 64)
 	s.SetPendingUserInputWakeFunc(func() {
 		select {
@@ -285,17 +285,16 @@ func TestDrainAsSteerKeepsTheTurnOpenUntilItsSteeringLegRuns(t *testing.T) {
 // is the failure policy, the same as a queued message whose append fails:
 // the carrier's announced turn fails without a model request, the input ends
 // with that error and the session idle, the steer stays accepted in the
-// queue, the failure re-arms the pending-input wake, and the run that wake
-// provokes -- not this input -- carries it. Nothing is lost and nothing is
-// retried in a loop.
+// queue, parked runnable, and the next external wake -- not this input, and
+// not a wake of the failure's own -- carries it. Nothing is lost and nothing
+// is retried in a loop.
 func TestSteeringCarrierAppendFailureFailsTheTurnAndTheNextRunCarriesTheSteer(t *testing.T) {
 	adapter := newHeldLegAdapter()
 	s := newTestSessionForEnvctx(t, withAdapter(adapter))
 	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
 	wakes := countingUserInputWake(s)
 	// The disk fills the moment the carrier is claimed. The wakes before this
-	// point are the drain's own acceptance-time wake; only what the failure
-	// arms is under test.
+	// point are the drain's own acceptance-time wake.
 	s.cfg.testOnly.steeringCarrierClaimed = func(string) {
 		drainWakes(wakes)
 		refusal.refuse.Store(true)
@@ -331,15 +330,16 @@ func TestSteeringCarrierAppendFailureFailsTheTurnAndTheNextRunCarriesTheSteer(t 
 	}
 	select {
 	case <-wakes:
+		t.Fatal("the failed append armed a wake of its own: with a disk that stays full that is a loop of failed carrier turns")
 	default:
-		t.Fatal("the failed append armed no wake: the steer waits for an unrelated action or a restart")
 	}
 
-	// The disk has room again, and the daemon answers the wake by running the
-	// pending input.
+	// The disk has room again, and the next external wake -- the attach-time
+	// wake here -- carries the steer.
 	refusal.refuse.Store(false)
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
-		t.Fatalf("the wake's run after the failed carrier: ran=%v err=%v, want it to carry the steer", ran, err)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
 	}
 	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
 		t.Fatalf("the wake made %d request(s) in total and did not carry %q", len(requests), "second pass")
@@ -978,5 +978,292 @@ func TestCarrierProceedsWhenOnlyTheIncorporationWriteFails(t *testing.T) {
 	}
 	if _, inFlight := s.steeringInFlightSample()["cm-drain-mid-leg"]; inFlight {
 		t.Fatal("the reconciled steer is still in flight")
+	}
+}
+
+// runPendingInputOnEachWake is the daemon's serial input loop in miniature:
+// each wake already delivered runs the pending input once, up to limit runs,
+// and reports how many ran. It never waits: a wake the run under test did not
+// arm is not answered.
+func runPendingInputOnEachWake(t *testing.T, s *Session, wakes <-chan struct{}, limit int) (runs int) {
+	t.Helper()
+	for runs < limit {
+		select {
+		case <-wakes:
+		default:
+			return runs
+		}
+		runs++
+		if _, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil && !strings.Contains(err.Error(), "stays queued") {
+			t.Fatalf("ProcessPendingUserInput on wake %d: %v", runs, err)
+		}
+	}
+	return runs
+}
+
+// externalWake is the attach-time wake, the one external trigger a parked
+// steer waits for: re-registering the pending-input wake fires it when
+// runnable user steering is pending.
+func externalWake(s *Session, wakes chan struct{}) {
+	s.SetPendingUserInputWakeFunc(func() {
+		select {
+		case wakes <- struct{}{}:
+		default:
+		}
+	})
+}
+
+// TestPersistentSteeringAppendFailureRunsOneCarrierPerExternalWake (round 11,
+// M1): a steering append that fails without poisoning the writer -- ENOSPC
+// before a byte lands, so the rollback succeeds -- and keeps failing. If the
+// failure re-arms the wake itself, the daemon answers every wake with a
+// carrier that fails again: an unbounded loop of failed turns with no pause.
+// The contract: one carrier attempt per external wake; the failed drain parks
+// the steer, runnable, and the next external wake -- attach, or any accepted
+// client mutation -- carries it once the disk has room.
+func TestPersistentSteeringAppendFailureRunsOneCarrierPerExternalWake(t *testing.T) {
+	adapter := newHeldLegAdapter()
+	s := newTestSessionForEnvctx(t, withAdapter(adapter))
+	refusal := refuseSteerAppends(s, "cm-drain-mid-leg")
+	refusal.refuse.Store(true)
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	// The wakes before the claim are the drain's own acceptance-time wake.
+	s.cfg.testOnly.steeringCarrierClaimed = func(string) { drainWakes(wakes) }
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+
+	_, done := drainMidHeldLeg(context.Background(), t, s, adapter)
+	close(adapter.release)
+	if err := awaitInput(t, done); err == nil || !strings.Contains(err.Error(), "stays queued") {
+		t.Fatalf("ProcessInput returned %v, want the carrier's failure", err)
+	}
+	// The daemon answers whatever the failure armed, bounded so a loop shows
+	// as a count rather than a hang.
+	runs := runPendingInputOnEachWake(t, s, wakes, 5)
+	if runs != 0 || refusal.refusals.Load() != 1 {
+		t.Fatalf("after the failed carrier: wake-driven runs=%d append attempts=%d, want 0 and 1: a failure that re-arms its own wake loops failed turns for as long as the disk is full", runs, refusal.refusals.Load())
+	}
+	if !s.hasPendingUserSteering() || s.State() != SessionIdle {
+		t.Fatalf("queued=%v state=%q, want the steer parked runnable on an idle session", s.hasPendingUserSteering(), s.State())
+	}
+
+	// The disk has room again, and the next external wake carries the steer.
+	refusal.refuse.Store(false)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	if requests := adapter.Requests(); len(requests) != 2 || !requestContainsText(requests[1], "second pass") {
+		t.Fatalf("provider requests = %d after the external wake, want 2 with the steer carried", len(requests))
+	}
+	if _, still := s.clientMutations.snapshot().PendingExecutions["cm-drain-mid-leg"]; still {
+		t.Fatal("the steer is still pending after it was carried")
+	}
+}
+
+// TestFailedSelectionRecordParksTheSteerUntilTheNextExternalWake (round 11,
+// M2): a steer whose skill selection fails and whose failure record cannot be
+// appended goes back to the queue when the carrier exits; nothing is armed by
+// the failure (the same contract as M1), the steer is runnable, and the next
+// external wake records the failure and retires it.
+func TestFailedSelectionRecordParksTheSteerUntilTheNextExternalWake(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	seen := recordEvents(s)
+	defer func() {
+		if t.Failed() {
+			for _, ev := range seen() {
+				switch ev.Kind {
+				case events.EventWarning, events.EventError, events.EventTurnStarted, events.EventSteeringInjected, events.EventSessionEnd:
+					t.Logf("event %v: %+v", ev.Kind, ev.Data)
+				}
+			}
+		}
+	}()
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	var refuse atomic.Bool
+	refuse.Store(true)
+	var refusals atomic.Int32
+	s.clientMutationTranscriptAppend = func(turn schema.Turn) error {
+		if refuse.Load() && turn.Kind == schema.TurnFailure && turn.ClientMutationID == "steer-bad-skill" {
+			refusals.Add(1)
+			return errors.New("injected: no space left on device")
+		}
+		return s.writeTranscriptDurableLocked(turn)
+	}
+	wakes := make(chan struct{}, 64)
+	externalWake(s, wakes)
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-bad-skill",
+		Input:            []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	// The acceptance woke; the daemon runs the carrier, which fails.
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 || refusals.Load() != 1 {
+		t.Fatalf("runs=%d failure records attempted=%d after the acceptance wake, want 1 and 1", runs, refusals.Load())
+	}
+	if state := s.clientMutations.snapshot().PendingExecutions["steer-bad-skill"].ExecutionState; state != "accepted" || !s.hasPendingUserSteering() {
+		t.Fatalf("state=%q queued=%v after the carrier exited, want accepted and queued", state, s.hasPendingUserSteering())
+	}
+	if _, inFlight := s.steeringInFlightSample()["steer-bad-skill"]; inFlight {
+		t.Fatal("the steer is still in flight after the carrier exited")
+	}
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 0 {
+		t.Fatalf("the failure armed %d wake(s); want none (one attempt per external wake)", runs)
+	}
+
+	// The disk has room again; the next external wake records the failure.
+	refuse.Store(false)
+	externalWake(s, wakes)
+	if runs := runPendingInputOnEachWake(t, s, wakes, 5); runs != 1 {
+		t.Fatalf("external wake runs = %d, want 1", runs)
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-bad-skill"]; still || snapshot.Journal["steer-bad-skill"].ExecutionState != "failed" {
+		t.Fatalf("pending=%v journal=%q after the external wake, want retired as failed", still, snapshot.Journal["steer-bad-skill"].ExecutionState)
+	}
+}
+
+// TestFailedRecordedSteerMarkRetriesAtTheNextWake (round 11, M3): a recorded
+// steer whose incorporation mark the store refuses stays in flight, out of
+// the queue; when the mark's retry fails too, the next wake retries it again
+// -- and never re-queues a steer the transcript already holds.
+func TestFailedRecordedSteerMarkRetriesAtTheNextWake(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	runningStartTurn(t, s, "running-turn", "do the thing")
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-recorded",
+		Input:            []appwire.InputItem{{Type: "text", Text: "recorded"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	recordSteerWithFailedIncorporation(t, s, "steer-recorded")
+
+	// The mark's first retry, at a wake, is refused too.
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		return errors.New("injected: store still refusing")
+	}
+	s.wakeForPendingSteering()
+	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if state := s.clientMutations.snapshot().PendingExecutions["steer-recorded"].ExecutionState; state != "accepted" {
+		t.Fatalf("state=%q after the refused retry, want still accepted (unmarked)", state)
+	}
+	if recorded, inFlight := s.steeringInFlightSample()["steer-recorded"]; !inFlight || recorded != "incorporated" {
+		t.Fatalf("inFlight=%v recorded=%q after the refused retry, want in flight and recorded as incorporated", inFlight, recorded)
+	}
+	if s.hasPendingUserSteering() {
+		t.Fatal("the recorded steer was re-queued: it would be delivered a second time")
+	}
+
+	// The next wake -- here the acceptance of another steer -- retries the mark.
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-next",
+		Input:            []appwire.InputItem{{Type: "text", Text: "next"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-recorded"]; still || snapshot.Journal["steer-recorded"].ExecutionState != "incorporated" {
+		t.Fatalf("pending=%v journal=%q after the next wake, want marked incorporated", still, snapshot.Journal["steer-recorded"].ExecutionState)
+	}
+	if _, inFlight := s.steeringInFlightSample()["steer-recorded"]; inFlight {
+		t.Fatal("the marked steer is still in flight")
+	}
+}
+
+// recordFailedSelectionWithFailedRetirement takes the head steer, whose skill
+// selection cannot be prepared, and consumes it with a store that refuses the
+// retirement write: the failure turn is in the transcript, the store keeps the
+// steer accepted, and it is in flight marked recorded.
+func recordFailedSelectionWithFailedRetirement(t *testing.T, s *Session, clientMutationID string) {
+	t.Helper()
+	msg, ok := s.popSteeringHead()
+	if !ok || msg.ClientMutationID != clientMutationID {
+		t.Fatalf("popSteeringHead took %q (ok=%v), want %q", msg.ClientMutationID, ok, clientMutationID)
+	}
+	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		return errors.New("injected: retirement write refused")
+	}
+	recorded := s.consumeSteeringMessage(msg)
+	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
+	if !recorded {
+		t.Fatal("consumeSteeringMessage reported the failure record did not land; this test wants it recorded")
+	}
+	if state := s.clientMutations.snapshot().PendingExecutions[clientMutationID].ExecutionState; state != "accepted" {
+		t.Fatalf("the steer reads %q, want accepted: the fault did not land on the retirement write", state)
+	}
+}
+
+// TestRecordedSelectionFailureIsMarkedFailedNotIncorporated (round 11, M4):
+// a skill-selection failure whose retirement write the store refused is
+// recorded as a failure turn; the mark the store catches up with must be the
+// failure's terminal state, not "incorporated".
+func TestRecordedSelectionFailureIsMarkedFailedNotIncorporated(t *testing.T) {
+	s := newQueuePersistTestSession(t, t.TempDir())
+	defer s.Close()
+	serveSession(t, s)
+	if err := s.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-bad-skill",
+		Input:            []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	recordFailedSelectionWithFailedRetirement(t, s, "steer-bad-skill")
+
+	// The next wake -- the acceptance of another steer -- writes the mark.
+	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-next",
+		Input:            []appwire.InputItem{{Type: "text", Text: "next"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	snapshot := s.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-bad-skill"]; still {
+		t.Fatal("the recorded failure is still pending after the next wake")
+	}
+	if got := snapshot.Journal["steer-bad-skill"].ExecutionState; got != "failed" {
+		t.Fatalf("the recorded selection failure's journal reads %q after the mark, want failed", got)
+	}
+}
+
+// TestRestoreMarksARecordedSelectionFailureFailed (round 11, M4 at restore):
+// the same failure, with the process dying before the retirement write.
+func TestRestoreMarksARecordedSelectionFailureFailed(t *testing.T) {
+	dir := t.TempDir()
+	crashed := newQueuePersistTestSession(t, dir)
+	id := crashed.ID()
+	serveSession(t, crashed)
+	if err := crashed.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-bad-skill",
+		Input:            []appwire.InputItem{{Type: "skill", Name: "no-such-skill"}},
+	}); err != nil {
+		t.Fatalf("steer: %v", err)
+	}
+	recordFailedSelectionWithFailedRetirement(t, crashed, "steer-bad-skill")
+	crashed.Close()
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	snapshot := restored.clientMutations.snapshot()
+	if _, still := snapshot.PendingExecutions["steer-bad-skill"]; still || restored.hasPendingUserSteering() {
+		t.Fatalf("pending=%v queued=%v after restore, want the recorded failure retired", still, restored.hasPendingUserSteering())
+	}
+	if got := snapshot.Journal["steer-bad-skill"].ExecutionState; got != "failed" {
+		t.Fatalf("the recorded selection failure's journal reads %q after restore, want failed", got)
 	}
 }

@@ -27,13 +27,14 @@ func TestReconcileClientSteeringTable(t *testing.T) {
 		}
 		return s
 	}
-	recorded := func(string) bool { return true }
-	unrecorded := func(string) bool { return false }
+	recorded := func(string) string { return "incorporated" }
+	recordedFailed := func(string) string { return "failed" }
+	unrecorded := func(string) string { return "" }
 	cases := []struct {
 		row      string
 		pending  bool
 		held     bool
-		recorded func(string) bool
+		recorded func(string) string
 		stopping bool
 		// wantPending is whether the steer is still a pending execution after;
 		// wantInOrder whether the order still names it; wantHeld the hold.
@@ -42,6 +43,7 @@ func TestReconcileClientSteeringTable(t *testing.T) {
 		wantHeld    bool
 	}{
 		{"0 accepted, recorded: finalized (the append landed, the mark did not)", true, false, recorded, false, false, false, false},
+		{"0 accepted, recorded as a selection failure: retired as failed", true, false, recordedFailed, false, false, false, false},
 		{"0 accepted, recorded, Stop: finalized, not parked", true, false, recorded, true, false, false, false},
 		{"0 accepted, recorded, held, last steer: finalized and the hold released (H)", true, true, recorded, true, false, false, false},
 		{"1 absent: stale order entry dropped", false, false, unrecorded, false, false, false, false},
@@ -66,8 +68,8 @@ func TestReconcileClientSteeringTable(t *testing.T) {
 					inOrder, pending, snapshot.SteeringHeld, tc.wantInOrder, tc.wantPending, tc.wantHeld)
 			}
 			if tc.pending && !tc.wantPending {
-				if snapshot.Journal[id].ExecutionState != "incorporated" || snapshot.Journal[id].OperationState != clientMutationOperationTerminal {
-					t.Fatalf("finalized steer's journal = %q/%q, want terminal/incorporated", snapshot.Journal[id].OperationState, snapshot.Journal[id].ExecutionState)
+				if snapshot.Journal[id].ExecutionState != tc.recorded(id) || snapshot.Journal[id].OperationState != clientMutationOperationTerminal {
+					t.Fatalf("retired steer's journal = %q/%q, want terminal/%s", snapshot.Journal[id].OperationState, snapshot.Journal[id].ExecutionState, tc.recorded(id))
 				}
 			}
 		})

@@ -2208,7 +2208,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 		// Queued input with no content of its own: the steering it carries is
 		// drained the way every accepted input drains it, and there is no
 		// user turn to record, count or announce.
-		return s.acceptSteeringCarrierInput(ctx, queuedIdentity.StableTurnID)
+		return s.acceptSteeringCarrierInput(ctx, queuedIdentity)
 	}
 	// A new top-level input starts a fresh causal context: replace active
 	// provenance with the input's provenance, or empty provenance for ordinary
@@ -2527,21 +2527,23 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 // turn/steer's (or drain's, or promote's) accept path, and only needs
 // somewhere to land.
 //
-// turnID is the id claimSteeringCarrierInput reserved and published to
-// ActiveTurnID before this call, and handed to the daemon via onRunnable
-// before the model call starts. It is one of the pending steer mutations' own
-// reserved ids -- not a freshly minted one -- so the id the client was told in
-// its Applied receipt is the id that actually runs, which is what lets an
-// interrupt's fence match the turn it cancels.
+// identity is the steer's: its client mutation id, and the turn id
+// claimSteeringCarrierInput reserved and published to ActiveTurnID before this
+// call, handed to the daemon via onRunnable before the model call starts. It
+// is the pending steer's own reserved id -- not a freshly minted one -- so the
+// id the client was told in its Applied receipt is the id that actually runs,
+// which is what lets an interrupt's fence match the turn it cancels.
 //
-// It returns errSteeringCarrierStoodDown when nothing is left to deliver -- a
-// race with a turn that drained the steering first between the wake deciding
-// to run and this call -- so processOneInput stands down without opening a
-// turn that carries nothing, and any other error when the steer's append
-// failed: the turn is failed and the input ends, the same policy a queued
-// message whose append fails gets (acceptUserInput), with the steer still
-// accepted for the next wake to carry.
-func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string) error {
+// It returns errSteeringCarrierStoodDown when there is nothing for a model
+// request to carry -- a race with a turn that drained the steering first, or
+// a steer whose skill selection could not be prepared, whose failure the drain
+// recorded and announced -- so processOneInput stands down, and any other
+// error when the steer's append failed: the turn is failed and the input
+// ends, the same policy a queued message whose append fails gets
+// (acceptUserInput), with the steer still accepted, parked runnable, for the
+// next external wake to carry.
+func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queuedClientMutationIdentity) error {
+	turnID := identity.StableTurnID
 	if !s.hasPendingUserSteering() {
 		s.finishNotificationNoop()
 		return errSteeringCarrierStoodDown
@@ -2558,7 +2560,8 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
 	s.injectDrainedSteering()
-	if s.carrierSteerUndelivered(turnID) {
+	switch s.carrierSteerOutcome(identity) {
+	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
 		// transcript append failed. A model request now would carry nothing,
 		// and a clean completion would let the drain ladder claim the same
@@ -2568,6 +2571,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, turnID string)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
 		s.emitTurnFailure(errorDataFromError(err))
 		return err
+	case carrierSteerFailed:
+		// The drain recorded the selection failure and announced it on this
+		// turn (recordFailedSteeringSelection's error event); the steer is
+		// retired and a model request would carry nothing. Stand down; the
+		// input settles like any other.
+		s.finishProcessingAtBoundary(ctx, SessionIdle)
+		return errSteeringCarrierStoodDown
 	}
 	return nil
 }

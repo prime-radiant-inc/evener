@@ -697,7 +697,7 @@ func interruptResponseFromRecord(
 // carrier claim it landed on before the carrier drained it or an append that
 // failed under it, is still accepted in the store and waits for the user's
 // next run. Steering entries are never retired here.
-func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string, recorded func(string) bool) error {
+func finalizeClientMutationInterrupt(snapshot *clientMutationSnapshot, threadID string, recorded func(string) string) error {
 	fence := snapshot.InterruptFence
 	if fence == nil {
 		return nil

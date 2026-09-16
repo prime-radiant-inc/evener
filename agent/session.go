@@ -419,10 +419,12 @@ type Session struct {
 	// (consumeSteeringMessage finalizes it after the transcript append lands).
 	// The store keeps such a steer accepted until then, so
 	// reflectDurableClientSteering must not put it back in the queue. The value
-	// is true once the transcript append landed and only the store's
-	// incorporation write failed: delivered, and finalized by the next Stop
-	// or restore (reconcileClientSteering). Guarded by mu.
-	steeringInFlight map[string]bool
+	// is "" while the append is in flight, and the steer's terminal state --
+	// "incorporated", or "failed" for a skill selection that could not be
+	// prepared -- once the transcript holds it and only the store's write
+	// failed: recorded, and marked by reconcileRecordedSteering at the input's
+	// settle, the next wake, a Stop or restore. Guarded by mu.
+	steeringInFlight map[string]string
 	visionTurnOwners []*struct{ _ byte }
 	followups        []string
 
