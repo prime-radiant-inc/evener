@@ -15,6 +15,67 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// TestServerLifetimeCanceledByShutdown pins the round-eight lifecycle handle:
+// Lifetime() is the server's shutdown signal for a background consumer that
+// outlives connections, and Shutdown is what fires it. It stays open until
+// then, so binding a consumer to it is additive — a server nobody shuts down
+// behaves exactly as it did when consumers used context.Background().
+func TestServerLifetimeCanceledByShutdown(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "evener-hub", SourceID: "local"})
+	lifetime := server.Lifetime()
+	if lifetime == nil {
+		t.Fatal("Lifetime() = nil, want the server's lifetime context")
+	}
+	select {
+	case <-lifetime.Done():
+		t.Fatal("Lifetime() was canceled before Shutdown")
+	default:
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	select {
+	case <-lifetime.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Lifetime() was not canceled by Shutdown")
+	}
+	if !errors.Is(lifetime.Err(), context.Canceled) {
+		t.Fatalf("Lifetime().Err() = %v, want context.Canceled", lifetime.Err())
+	}
+
+	// Two shutdowns are legitimate (the appwire-trace drain path and an
+	// embedder's own shutdown can both run); the second must stay a no-op.
+	if err := server.Shutdown(ctx); err != nil {
+		t.Fatalf("second Shutdown: %v", err)
+	}
+}
+
+// TestServerLifetimeCanceledWhenShutdownGivesUp pins that the handle fires when
+// shutdown *begins*, not when it drains: with a WebSocket handler still live
+// and an already-expired caller context, Shutdown returns early, and a
+// background consumer must still be told to stop.
+func TestServerLifetimeCanceledWhenShutdownGivesUp(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "evener-hub", SourceID: "local"})
+	if !server.beginWebSocket() {
+		t.Fatal("beginWebSocket refused on a fresh server")
+	}
+	defer server.endWebSocket()
+
+	expired, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := server.Shutdown(expired); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Shutdown(expired) = %v, want context.Canceled", err)
+	}
+	select {
+	case <-server.Lifetime().Done():
+	default:
+		t.Fatal("Shutdown returning early on an expired context left the lifetime handle open")
+	}
+}
+
 func TestConnectionRequiresInitialize(t *testing.T) {
 	server := NewServer(ServerConfig{
 		ServerName: "evener-hub",
