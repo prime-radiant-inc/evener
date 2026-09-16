@@ -12,6 +12,7 @@ import {
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   nextNavigationOffset,
+  projectNodeExpansionKey,
   type ResourceKey,
   type ResourceState,
 } from "@evener/appwire-client/state/navigation";
@@ -78,7 +79,7 @@ import styles from "./Rail.module.css";
 import { RAIL_WIDTH_PROPERTY, RailResizeHandle } from "./RailResizeHandle";
 import { RailRow, type RailRowActions } from "./RailRow";
 import dialogStyles from "./railDialog.module.css";
-import { loadExpansion, projectNodeExpansionKey, saveExpansion } from "./railExpansion";
+import { loadExpansion, saveExpansion } from "./railExpansion";
 import { GearIcon, SearchIcon, SidebarIcon } from "./railIcons";
 import {
   archivedCount,
@@ -849,18 +850,24 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
 // for the tree rows that call it and for tierEligible (attention.go), which is
 // handed the bare LiveEntry.SessionID. A LOCAL row's two ids are the bare
 // session ID instead (tree.go builds local nodes with ID: m.ID; the local
-// entries in web_api_tree.go carry SessionID: past.Meta.ID), so a "local:<id>"
-// key is one no reader ever consults: archive decisions reach the read model
-// through archiveDecisions() verbatim (web_api_tree.go's memoTreeWithAuthority
-// and navigation_service.go's Capture), with no alias expansion - unlike
-// favorites, which pass through ClassifyFavoriteDecisions.
+// entries in web_api_tree.go carry SessionID: past.Meta.ID), and archive
+// decisions reach the read model through archiveDecisions() verbatim
+// (web_api_tree.go's memoTreeWithAuthority and navigation_service.go's
+// Capture), with no alias expansion - unlike favorites, which pass through
+// ClassifyFavoriteDecisions.
 //
-// Round ten sent the wire ref for every row, which left a local archive stored
-// under "local:<id>" and therefore inert: the optimistic hideSession overlay
-// keyed by that same ref removed the row, so the archive looked applied until
-// the next read put the session back in its tier. The ref is also what the
-// overlay matches on (railPending.ts), which is why only the mutation identity
-// changes here.
+// The write side normalizes, so those two spellings are ONE stored key rather
+// than a consulted one and an inert one: app_archive.go runs the wire id
+// through hubcore.NormalizeDecisionSessionID (internal/hubcore/archive.go),
+// which collapses a "local:<id>" ref to exactly the bare session ID the read
+// path above consults and keeps a host-qualified ref as sent. A "local:<id>"
+// archive therefore neither lands on a second key nor goes unread; sending the
+// bare id is this side matching the reader's own identity, not a correction of
+// a key the server would otherwise store verbatim.
+//
+// Round ten sent the wire ref for every row: the optimistic hideSession overlay
+// matches on that ref (railPending.ts), while the mutation's identity is the
+// reader's key, which is why only the mutation identity changes here.
 export function archiveSessionIdentity(session: NavigationSessionSummary): string {
   return session.host_id === "local" ? session.session_id : session.ref;
 }
@@ -1347,10 +1354,12 @@ function NavigationRail({
         return runAction(
           // The identity the decision is read back under, host for host - see
           // archiveSessionIdentity. Component 06a's round six was right that a
-          // remote row's host-qualified ref is that identity, but the server
-          // stores whatever it is handed (app_archive.go's archiveSet) and no
-          // reader expands "local:<id>", so a local row must send its bare
-          // session_id rather than the wire ref (round eleven).
+          // remote row's host-qualified ref is that identity; a local row sends
+          // its bare session_id, the identity the read model consults, rather
+          // than the wire ref (round eleven). The server would normalize either
+          // spelling to that same key (app_archive.go runs the id through
+          // hubcore.NormalizeDecisionSessionID), so this is the reader's own
+          // identity being sent, not a workaround for an inert key.
           () => setArchived("session", archiveSessionIdentity(session), archiving),
           "Couldn't update archive state",
           archiving ? { kind: "hideSession", ref: session.ref } : undefined,

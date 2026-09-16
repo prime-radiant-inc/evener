@@ -27,7 +27,13 @@
   background: var(--field);
 }
 
-.control:disabled {
+/* A refusal has to look refused. aria-disabled is the switch's refusal that
+   KEEPS the keyboard where the click put it, unlike the native attribute (a
+   control the click itself disables cannot hold focus: Chrome drops it to
+   <body>, and the surface has to put it back somewhere else, scrolling there).
+   The two selectors share one declaration block, so the look cannot drift. */
+.control:disabled,
+.control[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.5;
 }
@@ -92,9 +98,11 @@
 }
 
 /* the label is a <span>, not a form control, so it has no native :disabled
- * of its own - matched from the preceding native .control disabled state;
- * .track is nested and no longer the sibling selector owner. */
-.control:disabled ~ .label {
+ * of its own - matched from the preceding .control refusal state (native
+ * disabled or aria-disabled); .track is nested and no longer the sibling
+ * selector owner. */
+.control:disabled ~ .label,
+.control[aria-disabled="true"] ~ .label {
   cursor: not-allowed;
   opacity: 0.5;
 }
