@@ -11,12 +11,12 @@
 // state - exactly what a disconnected client should show. Nothing here fakes
 // that response.
 
+import type { Thread, ThreadCapabilities } from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
 import { ActivityPanel } from "../../panes/session/chrome/ActivityPanel";
 import { GoalControl } from "../../panes/session/chrome/GoalControl";
 import { StatusRow } from "../../panes/session/chrome/StatusRow";
 import { TasksPanel } from "../../panes/session/chrome/TasksPanel";
-import { hydrateThread } from "../../protocol/reducer";
-import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 

@@ -1,7 +1,7 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, test, vi } from "vitest";
-import { FakeClient } from "../../protocol/testing/fakeClient";
 import { chromeStore, resetChromeStoreForTests } from "../../shell/chromeStore";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";

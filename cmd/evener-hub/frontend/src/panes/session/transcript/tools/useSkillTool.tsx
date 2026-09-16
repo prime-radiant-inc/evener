@@ -8,8 +8,8 @@
 // still applies cleanly here since it keys off the same signal (blank
 // text), not the tool_state field legacy actually read.
 
-import type { ItemModel } from "../../../../protocol/model";
-import { parseArgs, str } from "../../../../protocol/toolCallText";
+import type { ItemModel } from "@evener/appwire-client";
+import { parseArgs, str } from "@evener/appwire-client";
 import { Markdown } from "../../../../widgets";
 import type { ToolRenderProps } from "../toolRenderers";
 import { registerToolRenderer } from "../toolRenderers";

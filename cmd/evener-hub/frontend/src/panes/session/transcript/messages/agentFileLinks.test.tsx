@@ -1,7 +1,7 @@
+import type { ThreadModel } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import { afterEach, expect, test } from "vitest";
-import type { ThreadModel } from "../../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
 import { TranscriptRenderProvider } from "../../../../transcriptDisplay/renderContext";
 import "../../../doc";

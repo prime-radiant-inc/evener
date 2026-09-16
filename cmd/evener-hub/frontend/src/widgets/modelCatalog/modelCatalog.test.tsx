@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { WireError } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { WireError } from "../../protocol/errors";
 // ModelCatalog is both the component (value) and the envelope interface (type);
 // a single import brings in both meanings via declaration merging.
 import { ModelCatalog, type ModelCatalogEntry, ModelCatalogPanel } from "./index";

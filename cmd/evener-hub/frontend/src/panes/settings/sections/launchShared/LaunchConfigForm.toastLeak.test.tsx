@@ -19,10 +19,11 @@
 // `shell/rail/Rail.test.tsx` already follow — so test 1's stranded toast is
 // cleared before test 2 renders. This test now guards that cleanup: drop the
 // reset and test 2 goes RED again (it sees the leaked + its own toast = 2).
+
+import type { LaunchOption, PathValidateResponse } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, test } from "vitest";
-import type { LaunchOption, PathValidateResponse } from "../../../../protocol/types.gen";
 import { Toast } from "../../../../widgets";
 import { resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { LaunchConfigForm } from "./LaunchConfigForm";

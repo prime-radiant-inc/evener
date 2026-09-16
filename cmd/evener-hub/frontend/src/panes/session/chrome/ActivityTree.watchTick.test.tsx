@@ -5,14 +5,13 @@
 // pins the subscription boundary by counting calls into the row-only and
 // detail-only formatters on a tick.
 
+import type { ActivityTree as ActivityTreeData, NavigationWatchSummary } from "@evener/appwire-client";
 // The row and detail components import their formatters from the package root,
 // so the spies have to name the same module: a spy hung on the protocol/ shim
 // would sit on a different module object and never see a call.
 import * as activityRows from "@evener/appwire-client";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import type { ActivityTree as ActivityTreeData } from "../../../protocol/activityData";
-import type { NavigationWatchSummary } from "../../../protocol/types.gen";
 import { ActivityTree } from "./ActivityTree";
 
 const NOW = Date.parse("2026-08-05T15:00:12.000Z");

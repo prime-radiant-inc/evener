@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 import {
   parseSlashToken,
   spliceSlashCommand,
-} from "../../appwire-client/typescript/slashCompletion";
+} from "@evener/appwire-client";
 import { builtinComposerItems, composerCommand } from "./composerCommand";
 
 it.each([

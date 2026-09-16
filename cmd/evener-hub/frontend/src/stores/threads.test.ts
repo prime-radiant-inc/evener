@@ -1,4 +1,33 @@
 import "fake-indexeddb/auto";
+import type {
+  AnyNotification,
+  ConnectionState,
+  MethodName,
+  MethodTypes,
+  ModelListResponse,
+  NotesHumanSetResponse,
+  QueueState,
+  Thread,
+  ThreadCapabilities,
+  ThreadClearResponse,
+  ThreadModel,
+  ThreadReadResponse,
+  ThreadStatus,
+  ThreadTurnsListResponse,
+  TurnQueueResponse,
+  TurnStartResponse,
+} from "@evener/appwire-client";
+import {
+  applyNotification,
+  ClientNotReadyError,
+  errorKind,
+  hydrateThread,
+  notificationTargetsThread,
+  RequestTimeoutError,
+  WireError,
+} from "@evener/appwire-client";
+import { FakeClient, type RequestHandler } from "@evener/appwire-client/testing/fakeClient";
+import { mulberry32 } from "@evener/appwire-client/testing/tokenFlood";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -9,28 +38,6 @@ import {
   upsertSubagentRow,
   useSubagentRow,
 } from "../panes/session/transcript/tools/subagentModuleStore";
-import type { ConnectionState } from "../protocol/client";
-import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "../protocol/errors";
-import type { ThreadModel } from "../protocol/model";
-import { applyNotification, hydrateThread, notificationTargetsThread } from "../protocol/reducer";
-import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
-import { mulberry32 } from "../protocol/testing/tokenFlood";
-import type {
-  AnyNotification,
-  MethodName,
-  MethodTypes,
-  ModelListResponse,
-  NotesHumanSetResponse,
-  QueueState,
-  Thread,
-  ThreadCapabilities,
-  ThreadClearResponse,
-  ThreadReadResponse,
-  ThreadStatus,
-  ThreadTurnsListResponse,
-  TurnQueueResponse,
-  TurnStartResponse,
-} from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";

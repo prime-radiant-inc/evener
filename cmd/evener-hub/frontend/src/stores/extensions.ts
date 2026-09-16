@@ -17,12 +17,10 @@
 //     call useToasts() itself; the section components (which DO run inside
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
-import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
-import type { AppwireClientLike } from "../protocol/clientLike";
-import { errorText } from "../protocol/errors";
+
 import type {
   AnyNotification,
+  AppwireClientLike,
   LaunchConfigLayer,
   MarketplaceAddParams,
   MarketplaceCatalogPlugin,
@@ -30,7 +28,10 @@ import type {
   MarketplaceEntry,
   PathValidateResponse,
   PluginEntry,
-} from "../protocol/types.gen";
+} from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
+import { useStore } from "zustand";
+import { createStore } from "zustand/vanilla";
 import { connectionStore } from "./connection";
 
 // One cached browse result per marketplace name - permanent until an

@@ -21,8 +21,9 @@
 // - never images from a different item elsewhere in the transcript. That's
 // already how the Previous/Next buttons group images; the arrow keys use the
 // exact same step() below, not a new grouping.
+
+import type { ItemImage } from "@evener/appwire-client";
 import { useCallback, useEffect, useState } from "react";
-import type { ItemImage } from "../../../../protocol/model";
 import { Button, Dialog } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import styles from "./imagegallery.module.css";

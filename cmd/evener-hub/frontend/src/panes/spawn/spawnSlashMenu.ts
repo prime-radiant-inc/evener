@@ -1,4 +1,4 @@
-import { friendlyErrorMessage } from "../../protocol/errors";
+import { friendlyErrorMessage } from "@evener/appwire-client";
 import { blocked, isBlocked } from "../../shell/palette/blocked";
 import {
   buildCommands,

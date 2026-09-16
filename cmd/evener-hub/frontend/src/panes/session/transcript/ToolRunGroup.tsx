@@ -11,7 +11,7 @@
 // gives the whole run ONE anchor that lists its members, so a run is one position in the scroll
 // coordinator's list whether it is open or closed rather than a set of
 // anchors that appear and vanish with a click.
-import type { ThreadModel, TurnModel } from "../../../protocol/model";
+import type { ThreadModel, TurnModel } from "@evener/appwire-client";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,

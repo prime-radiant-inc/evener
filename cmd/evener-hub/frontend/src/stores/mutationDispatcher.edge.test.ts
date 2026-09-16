@@ -5,11 +5,11 @@
 // - rejectionReason with evenerErrorInfo fallback (line 196)
 // - rejectionReason fallback to mutationOutcome (line 198)
 
+import type { MutationReceipt, TurnQueueResponse } from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, test } from "vitest";
-import { WireError } from "../protocol/errors";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { MutationReceipt, TurnQueueResponse } from "../protocol/types.gen";
 import { MutationDispatcher } from "./mutationDispatcher";
 import type { MutationIntent } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";

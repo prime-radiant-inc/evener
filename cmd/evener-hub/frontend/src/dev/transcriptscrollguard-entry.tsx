@@ -23,10 +23,11 @@
 // for them), then the pill is clicked and the landing must settle at the
 // true bottom, with the pill cleared by the landing's own native scroll
 // event.
+
+import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, Turn } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { createRoot } from "react-dom/client";
 import Session from "../panes/session/Session";
-import { FakeClient } from "../protocol/testing/fakeClient";
-import type { AnyNotification, Thread, ThreadCapabilities, ThreadReadResponse, Turn } from "../protocol/types.gen";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
