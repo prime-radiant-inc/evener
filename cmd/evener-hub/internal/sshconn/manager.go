@@ -336,9 +336,10 @@ type Manager struct {
 	announced map[string]*Channel
 	locks     map[string]*sync.Mutex
 	chans     map[string]*Channel
-	// devDeployed records hosts this Manager has installed its own identity-less
-	// dev build on, so the deploy happens at most once per process rather than on
-	// every reconnect.
+	// devDeployed records hosts this Manager has installed its own
+	// identity-less build on — "dev", or a dirty "<sha>-dirty" build whose
+	// version cannot prove the code matches (see isUnverifiableVersion) — so the
+	// deploy happens at most once per process rather than on every reconnect.
 	devDeployed map[string]bool
 	// resolvedTargets records, per host, the executable path this Manager
 	// resolved for the host — a deploy target, or a discovered install — so it
@@ -370,6 +371,19 @@ type hubIdentity struct {
 // comparison its caller already makes.
 func (h hubIdentity) sameProcessAs(other hubIdentity) bool {
 	return !h.startedAt.IsZero() && h.startedAt.Equal(other.startedAt)
+}
+
+// differentProcessFrom reports whether h is PROVABLY a different process from
+// other: both start times must be known, and must differ. It is the strict
+// counterpart of sameProcessAs for the one caller that must decide whether a
+// recorded restart actually produced a replacement. sameProcessAs is false both
+// when the processes differ and when either identity is unknown (a health body
+// without started_at), so using it to settle a pending restart would let an old
+// hub with the expected version and no start timestamp clear the marker and be
+// attached to. An unknown identity on either side proves nothing and is treated
+// as unresolved: the restart stays pending and is retried.
+func (h hubIdentity) differentProcessFrom(other hubIdentity) bool {
+	return !h.startedAt.IsZero() && !other.startedAt.IsZero() && !h.startedAt.Equal(other.startedAt)
 }
 
 // pendingRestartState is a restart command recorded before it ran, together with
@@ -870,13 +884,17 @@ func (m *Manager) ensureOnce(ctx context.Context, host hostreg.Host, explicit bo
 	probeCtx, cancelProbe := context.WithTimeout(ctx, m.opts.attemptLimit())
 	running, runningKnown := m.probeRunningHub(probeCtx, host)
 	cancelProbe()
-	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected && !running.sameProcessAs(pending.replaced) {
+	if pending := m.pendingRestart(host.Name); runningKnown && running.version == expected && running.differentProcessFrom(pending.replaced) {
 		// A hub already serving exactly the expected build — and provably not the
 		// process the recorded restart meant to replace — resolves whatever an
 		// earlier restart left outstanding; do not launch a second hub over it.
 		// Version equality alone is not that proof: two unstamped builds both
 		// report "dev", so a restart that never took would otherwise be cleared on
-		// the old process's answer and the next Ensure would attach to it.
+		// the old process's answer and the next Ensure would attach to it. A start
+		// time that is missing on either side is not proof either: an old hub
+		// whose health body carries no started_at would otherwise clear the
+		// pending marker on the same answer, so the identity must be known on BOTH
+		// sides and must differ before the marker is cleared (differentProcessFrom).
 		m.clearPendingRestart(host.Name)
 	}
 
@@ -1083,12 +1101,15 @@ func (m *Manager) deployRequired(name string, facts Preflight, expected string) 
 	deployNeeded := versionDiffers || !protocolOK || !flagsOK
 
 	// "dev" is not an identity: an unstamped controller and an unstamped host
-	// both report it, so equality cannot prove they are the same code. When a
+	// both report it, so equality cannot prove they are the same code. The same
+	// is true of a dirty version, which names a commit plus an uncommitted-changes
+	// marker rather than the code that was compiled: a different dirty checkout at
+	// the controller's commit reports the identical "<sha>-dirty" version. When a
 	// deploy is configured the controller installs its own build once per Manager
 	// and then trusts the host for this process's lifetime; with no deploy
 	// configured there is nothing to install and the literal comparison stands.
 	deployPossible := m.canDeploy()
-	devUnverified := isDevVersion(expected) && deployPossible && !m.isDevDeployed(name)
+	devUnverified := isUnverifiableVersion(expected) && deployPossible && !m.isDevDeployed(name)
 
 	// A deploy is only a decision when there is something to deploy. With no
 	// BuildSource/BuildBinary configured, attempting one fails at
@@ -1697,6 +1718,24 @@ func (m *Manager) clearChannel(name string) {
 // builds cannot be told apart by it.
 func isDevVersion(v string) bool {
 	return v == "" || v == "dev"
+}
+
+// isDirtyVersion reports whether v carries buildinfo's dirty marker. The
+// "-dirty" suffix names the commit a checkout started from, not the code that
+// was compiled: two dirty checkouts at the same commit can carry different
+// uncommitted changes and still report the same version, so equality on it
+// proves nothing about the binaries matching.
+func isDirtyVersion(v string) bool {
+	return strings.HasSuffix(strings.TrimSpace(v), "-dirty")
+}
+
+// isUnverifiableVersion reports whether v cannot prove two builds are the same
+// code. An empty version and "dev" are identity-less by construction; a dirty
+// version is a commit plus a marker rather than a content identity, so a host
+// reporting the controller's own "<sha>-dirty" may be running a different dirty
+// checkout of that commit.
+func isUnverifiableVersion(v string) bool {
+	return isDevVersion(v) || isDirtyVersion(v)
 }
 
 // canBuild reports whether the primary cross-compile + push path is available: a

@@ -244,13 +244,18 @@ func (m *Manager) preflight(ctx context.Context, host hostreg.Host) (Preflight, 
 	}
 	lc, err := m.probeLaunchCheck(ctx, probeHost)
 	if err != nil {
-		if m.canDeploy() && errors.Is(err, errExecutableMissing) {
+		if errors.Is(err, errExecutableMissing) {
 			// The executable is absent from the non-interactive PATH, but the
 			// binary may still exist at the installer's default location
 			// deployTarget falls back to. Probe it before recording the contract
 			// as unknown, so a host that already runs the controller's build at
 			// ~/.local/bin/evener is recognized instead of being re-deployed on
-			// every reconnect.
+			// every reconnect. This runs whether or not a deploy is configured:
+			// discovering an already-installed binary is the same probe either
+			// way, and gating it on canDeploy made a controller with no build
+			// source (or an unpublishable installer ref) fail to attach to a
+			// perfectly good host whose binary is simply off the non-interactive
+			// PATH. Only the deploy decision below is gated on canDeploy.
 			if p, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
 				probeHost.EvenerPath = p
 				if lc2, err2 := m.probeLaunchCheck(ctx, probeHost); err2 == nil {

@@ -211,7 +211,7 @@ func cannedRun(overrides map[string][]byte) func(context.Context, []string, io.R
 			// without deploying, restarting, or taking the first-attach
 			// bootstrap start. Tests that need "nothing answered" use their own
 			// runFn or a health override.
-			return []byte(`{"version":"dev"}`), nil
+			return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}

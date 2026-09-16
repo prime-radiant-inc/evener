@@ -71,12 +71,17 @@ func TestRound10PushVerifiesByteCount(t *testing.T) {
 // a temp file and only then run, so a truncated or dropped stream cannot
 // half-execute.
 func TestInstallerScriptChecksTheWriteBeforeExecuting(t *testing.T) {
-	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin")
+	const size = 1234
+	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin", size)
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
 		t.Fatalf("installerCommand still pipes the script into sh, masking a failed write: %q", got)
 	}
-	if !strings.Contains(got, "cat > \"$tmp\" && env ") {
-		t.Fatalf("installerCommand does not check the script write before executing the installer: %q", got)
+	// Round twelve adds the byte count to the handoff check: the script runs only
+	// when the streamed file is exactly as long as the embedded copy, so a
+	// truncated stream (which ssh reports as a clean EOF, leaving `cat` at exit 0)
+	// cannot half-execute.
+	if !strings.Contains(got, "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = 1234 ] && env ") {
+		t.Fatalf("installerCommand does not check the script write's byte count before executing the installer: %q", got)
 	}
 	if !strings.Contains(got, "EVENER_INSTALL_VERSION=v1.2.3") {
 		t.Fatalf("installerCommand lost the pinned ref: %q", got)
@@ -186,7 +191,7 @@ func TestRound10ResolvedTargetAvoidsRedeploy(t *testing.T) {
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}

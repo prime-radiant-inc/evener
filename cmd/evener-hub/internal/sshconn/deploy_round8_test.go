@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // TestRound8PushDeployReturnsResolvedTarget pins the round-eight High that the
@@ -104,7 +105,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -175,10 +176,10 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 	if target != link {
 		t.Fatalf("run target = %q, want the user-facing symlink path %q (not the canonical %q)", target, link, canonical)
 	}
-	if !strings.Contains(installerJoined, "BINDIR="+shellQuote("/home/dev/.local/bin")) {
+	if !strings.Contains(installerJoined, "BINDIR="+shellquote.RemoteWord("/home/dev/.local/bin")) {
 		t.Fatalf("installer BINDIR is not the symlink's directory: %q", installerJoined)
 	}
-	if !strings.Contains(installerJoined, "EVENER_SHARE_BINDIR="+shellQuote("/home/dev/.local/share/evener/bin")) {
+	if !strings.Contains(installerJoined, "EVENER_SHARE_BINDIR="+shellquote.RemoteWord("/home/dev/.local/share/evener/bin")) {
 		t.Fatalf("installer EVENER_SHARE_BINDIR is wrong: %q", installerJoined)
 	}
 	if strings.Contains(installerJoined, "share/evener/bin/share/evener") {

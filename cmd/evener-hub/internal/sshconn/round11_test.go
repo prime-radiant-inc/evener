@@ -232,7 +232,7 @@ func TestRound11PreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 			case strings.Contains(joined, "[ -f ") && strings.Contains(joined, ".local/bin/evener"):
 				return []byte(resolved + "\n"), nil
 			case strings.Contains(joined, "api/health"):
-				return []byte(`{"version":"newsha"}`), nil
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
 			}
@@ -325,7 +325,7 @@ func TestRound11FreshHostWithoutLsofIsProvisioned(t *testing.T) {
 				if !launched {
 					return nil, errors.New("curl: (7) Failed to connect")
 				}
-				return []byte(`{"version":"newsha"}`), nil
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			default:
 				return nil, fmt.Errorf("unexpected remote command: %v", argv)
 			}

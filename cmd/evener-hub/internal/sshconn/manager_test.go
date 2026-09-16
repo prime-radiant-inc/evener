@@ -262,7 +262,9 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 				}
 				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
-			func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
@@ -319,7 +321,9 @@ func TestEnsureProtocolRefusedByRunReachesTheDeployPath(t *testing.T) {
 				}
 				return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
-			func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "newsha",
@@ -348,7 +352,9 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 			func(int) ([]byte, error) {
 				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":[]}`), nil
 			},
-			func(int) ([]byte, error) { return []byte(`{"version":"dev"}`), nil },
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "dev",
@@ -379,7 +385,9 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 				}
 				return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
 			},
-			func(int) ([]byte, error) { return []byte(`{"version":"dev"}`), nil },
+			func(int) ([]byte, error) {
+				return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+			},
 		)
 		m := newTestManager(t, testRegistry(t, host), fr, Options{
 			controllerVersionOverride: "dev",

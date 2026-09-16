@@ -10,12 +10,14 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // TestBuildLdflagsStampsControllerBuildinfo proves the deployed binary is
@@ -192,8 +194,12 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installerDirs(default): %v", err)
 	}
-	if bindir != "" || share != "" || target != "/home/dev/.local/bin/evener" {
-		t.Fatalf("installerDirs(default) = (%q,%q,%q), want (\",\",\"/home/dev/.local/bin/evener\")", bindir, share, target)
+	// Round twelve: the installer default is passed explicitly rather than left to
+	// install.sh's own PREFIX/BINDIR defaults, so an inherited PREFIX in the remote
+	// shell environment cannot install the binary somewhere the manager will never
+	// probe, record, or relaunch while reporting success.
+	if bindir != "/home/dev/.local/bin" || share != "/home/dev/.local/share/evener/bin" || target != "/home/dev/.local/bin/evener" {
+		t.Fatalf("installerDirs(default) = (%q,%q,%q), want (/home/dev/.local/bin,/home/dev/.local/share/evener/bin,/home/dev/.local/bin/evener)", bindir, share, target)
 	}
 
 	if _, _, _, err := installerDirs(hostreg.Host{Name: "alpha"}, Preflight{}); !errors.Is(err, ErrDeploy) {
@@ -205,12 +211,16 @@ func TestInstallerDirsInstallToTheRunTarget(t *testing.T) {
 // the ref is pinned (never `latest`), and a custom run target passes BINDIR and
 // EVENER_SHARE_BINDIR so the symlink lands at evener_path.
 func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
-	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin")
+	const size = 77
+	got := installerCommand("v1.2.3", "/opt/evener/bin", "/opt/evener/share/evener/bin", size)
 	// The script is written to a temp file and the write's status checked before it
 	// runs; a `cat … | sh` pipeline would report sh's status and hide a failed
-	// write, and any fetch here would be a mutable installer.
-	if !strings.Contains(got, "cat > \"$tmp\" && env ") {
-		t.Fatalf("installerCommand does not check the script write before executing the installer: %q", got)
+	// write, and any fetch here would be a mutable installer. The write's byte
+	// count is checked too (round twelve): a dropped stream reaches `cat` as a
+	// clean EOF, so the length is what proves the whole script arrived.
+	wantCheck := "cat > \"$tmp\" && v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = 77 ] && env "
+	if !strings.Contains(got, wantCheck) {
+		t.Fatalf("installerCommand does not check the script write (and its byte count) before executing the installer: %q", got)
 	}
 	if strings.Contains(got, "| env ") || strings.Contains(got, "| sh") {
 		t.Fatalf("installerCommand still pipes the script into sh: %q", got)
@@ -222,7 +232,7 @@ func TestInstallerCommandPinsRefAndDirs(t *testing.T) {
 	if !strings.HasSuffix(got, want) {
 		t.Fatalf("installerCommand = %q, want suffix %q", got, want)
 	}
-	got = installerCommand("snapshot", "", "")
+	got = installerCommand("snapshot", "", "", size)
 	if !strings.Contains(got, "EVENER_INSTALL_VERSION=snapshot") || strings.Contains(got, "BINDIR") {
 		t.Fatalf("installerCommand(default) = %q, want snapshot ref and no BINDIR override", got)
 	}
@@ -267,7 +277,7 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 		case strings.Contains(joined, "systemctl restart"):
@@ -293,9 +303,10 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 			t.Fatalf("passed the Git SHA as a release tag: %v", argv)
 		}
 		// The push path is identified by its own markers: the installer also writes
-		// the streamed script with `cat > "$tmp"`, so only the byte-count check and
-		// the chmod prove a cross-compile ran.
-		if strings.Contains(joined, "chmod +x") || strings.Contains(joined, "wc -c") {
+		// the streamed script with `cat > "$tmp"` and, since round twelve, checks its
+		// byte count the same way, so neither of those proves a cross-compile ran.
+		// The chmod and the mv into the install path do.
+		if strings.Contains(joined, "chmod +x") || strings.Contains(joined, "mv \"$tmp\"") {
 			t.Fatalf("cross-compiled despite the installer fallback: %v", argv)
 		}
 	}
@@ -339,7 +350,7 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 		case strings.Contains(joined, "systemctl restart"):
@@ -360,8 +371,18 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		joined := strings.Join(argv, " ")
 		if strings.Contains(joined, "EVENER_INSTALL_VERSION=snapshot") {
 			installerRan = true
-			if strings.Contains(joined, "BINDIR") {
-				t.Fatalf("empty evener_path passed a BINDIR override: %v", argv)
+			// Round twelve: the default install location is passed explicitly, so an
+			// inherited PREFIX/BINDIR in the remote shell environment cannot install
+			// the binary somewhere the manager will never probe or relaunch.
+			for _, want := range []string{"BINDIR=/home/dev/.local/bin", "EVENER_SHARE_BINDIR=/home/dev/.local/share/evener/bin"} {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("installer did not pin the default install layout (%s): %v", want, argv)
+				}
+			}
+			// The streamed script's length is verified on the host before it runs
+			// (round twelve), and the length is the embedded copy's, not a constant.
+			if want := "[ \"$v\" = " + strconv.Itoa(len(installerScript)) + " ]"; !strings.Contains(joined, want) {
+				t.Fatalf("installer does not verify the streamed script's byte count (%s): %v", want, argv)
 			}
 		}
 	}
@@ -448,7 +469,7 @@ func TestDeployQuotesRemotePaths(t *testing.T) {
 	if _, err := m.deploy(context.Background(), host, Preflight{OS: "linux", Arch: "amd64"}); err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellQuote(dir)) {
+	if dir := path.Dir(target); !strings.Contains(testDirRemote, "test -d "+shellquote.RemoteWord(dir)) {
 		t.Fatalf("test -d does not quote the path with a space: %q", testDirRemote)
 	}
 	wantPush := pushBinaryRemote(target, 1)
@@ -495,7 +516,7 @@ func TestDeployResolvesSymlinkTarget(t *testing.T) {
 	if !strings.Contains(pushRemote, pushBinaryRemote(realPath, 1)) {
 		t.Fatalf("push does not install onto the symlink's real file %q: %q", realPath, pushRemote)
 	}
-	if strings.Contains(pushRemote, shellQuote(link)) {
+	if strings.Contains(pushRemote, shellquote.RemoteWord(link)) {
 		t.Fatalf("push replaces the symlink %q instead of its target: %q", link, pushRemote)
 	}
 }
@@ -570,7 +591,7 @@ func TestResolveDeployCommandIsPortableAcrossReadlinkVariants(t *testing.T) {
 
 	// The pre-fix command must fail under the same shim: this is the darwin
 	// failure the resolver replaces.
-	if _, stderr, err := run("readlink -f " + shellQuote(link2)); err == nil {
+	if _, stderr, err := run("readlink -f " + shellquote.RemoteWord(link2)); err == nil {
 		t.Fatal("legacy `readlink -f` unexpectedly succeeded under the BSD-style readlink shim")
 	} else if !strings.Contains(stderr, "illegal option") {
 		t.Fatalf("legacy command failed for an unexpected reason: %s", stderr)
@@ -1162,7 +1183,7 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -1228,7 +1249,7 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 	if target != "/usr/local/bin/evener" {
 		t.Fatalf("run target = %q, want the existing hub's executable /usr/local/bin/evener", target)
 	}
-	if !strings.Contains(installerJoined, "BINDIR="+shellQuote("/usr/local/bin")) {
+	if !strings.Contains(installerJoined, "BINDIR="+shellquote.RemoteWord("/usr/local/bin")) {
 		t.Fatalf("installer did not target the existing install dir: %q", installerJoined)
 	}
 }

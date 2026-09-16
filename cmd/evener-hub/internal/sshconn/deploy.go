@@ -16,6 +16,7 @@ import (
 
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // buildinfoPkg is the import path whose ldflags the controller stamps into the
@@ -335,7 +336,7 @@ func (m *Manager) deployPush(ctx context.Context, host hostreg.Host, facts Prefl
 func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Preflight) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		dir := path.Dir(p)
-		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+shellQuote(dir)), nil)
+		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "test -d "+shellquote.RemoteWord(dir)), nil)
 		if err != nil {
 			return "", fmt.Errorf("%w: host %q evener_path directory %q does not exist: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
 		}
@@ -361,7 +362,7 @@ func (m *Manager) deployTarget(ctx context.Context, host hostreg.Host, facts Pre
 		}
 		p = path.Join(home, ".local", "bin", "evener")
 		dir := path.Dir(p)
-		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "mkdir -p "+shellQuote(dir)), nil); err != nil {
+		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "mkdir -p "+shellquote.RemoteWord(dir)), nil); err != nil {
 			return "", fmt.Errorf("%w: host %q create install directory %q: %w: %s", ErrDeploy, host.Name, dir, err, tail(out))
 		}
 	}
@@ -440,7 +441,7 @@ evener_resolve `
 // resolveDeployCommand builds the remote command that prints the real path p
 // names.
 func resolveDeployCommand(p string) string {
-	return resolvePathScript + shellQuote(p)
+	return resolvePathScript + shellquote.RemoteWord(p)
 }
 
 // resolveDeployTarget resolves p to the real file it names, so the atomic mv
@@ -496,7 +497,7 @@ func (m *Manager) resolveDeployOrCreateTarget(ctx context.Context, host hostreg.
 // exist, so it only ever enables creating a genuinely new file under an existing
 // directory.
 func createTargetCommand(p string) string {
-	q := shellQuote(p)
+	q := shellquote.RemoteWord(p)
 	return "p=" + q + "; if [ -e \"$p\" ] || [ -L \"$p\" ]; then exit 1; fi; " +
 		"d=$(cd -P \"$(dirname \"$p\")\" 2>/dev/null && pwd) || exit 1; " +
 		"printf '%s\\n' \"$d/${p##*/}\""
@@ -518,10 +519,10 @@ func createTargetCommand(p string) string {
 // binary over a working one. size is the staged file's length, compared against
 // the remote temp file before the rename.
 func pushBinaryRemote(target string, size int64) string {
-	tmp := "tmp=$(mktemp " + shellQuote(target+deployTempSuffix+"XXXXXX") + ") || exit 1"
+	tmp := "tmp=$(mktemp " + shellquote.RemoteWord(target+deployTempSuffix+"XXXXXX") + ") || exit 1"
 	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
 	verify := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.FormatInt(size, 10) + " ]"
-	return tmp + "; " + cleanup + "; cat > \"$tmp\" && " + verify + " && chmod +x \"$tmp\" && mv \"$tmp\" " + shellQuote(target)
+	return tmp + "; " + cleanup + "; cat > \"$tmp\" && " + verify + " && chmod +x \"$tmp\" && mv \"$tmp\" " + shellquote.RemoteWord(target)
 }
 
 // pushBinary streams data to target over an ssh `cat`, verifies the streamed
@@ -600,6 +601,16 @@ func installerRefFor(channel, releaseTag, dirty string) (string, error) {
 // configured path. When evener_path is empty the installer's own default
 // `~/.local/bin/evener` IS the run target, returned so the manager records and
 // uses it rather than assuming a separate `command -v evener` result.
+//
+// The default case passes those two directories explicitly instead of leaving
+// the installer to compute them from HOME. install.sh honors inherited PREFIX,
+// BINDIR, and EVENER_SHARE_BINDIR (install.sh:7-18), and non-interactive ssh
+// still carries whatever the server's environment or the ssh user's login setup
+// exports; an inherited PREFIX (say /usr/local) would install the binary
+// somewhere the manager never probes, records, or relaunches, while the deploy
+// reported success. BINDIR and EVENER_SHARE_BINDIR fully determine where
+// install.sh writes (PREFIX is only their fallback), so passing the resolved
+// defaults pins the layout to the run target this function returns.
 func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, runTarget string, err error) {
 	p := strings.TrimSpace(host.EvenerPath)
 	if p == "" {
@@ -607,7 +618,9 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 		if home == "" {
 			return "", "", "", fmt.Errorf("%w: host %q has no evener_path and preflight found no HOME to resolve the installer's default ~/.local/bin/evener; set evener_path", ErrDeploy, host.Name)
 		}
-		return "", "", path.Join(home, ".local", "bin", "evener"), nil
+		bindir = path.Join(home, ".local", "bin")
+		shareBindir = path.Join(home, ".local", "share", "evener", "bin")
+		return bindir, shareBindir, path.Join(bindir, "evener"), nil
 	}
 	base := path.Base(p)
 	if base != "evener" && base != "evener-dev" {
@@ -624,23 +637,28 @@ func installerDirs(host hostreg.Host, facts Preflight) (bindir, shareBindir, run
 // installerScript), so the host fetches nothing to execute: its only network
 // use is install.sh's own archive and checksums.txt download. The installer runs
 // with the variables passed to `env` (not to sh), and every value is
-// shell-quoted.
+// rendered as one shell word by internal/shellquote.
 //
 // It writes the script to a temp file and runs it only after that write
-// succeeds, rather than feeding it straight to an interpreter: a dropped or
-// truncated ssh stream must not execute half a script, and a pipeline returns
-// the LAST command's status, so `cat … | sh` would report sh's status and hide
-// the write failure. Round ten's property — check the handoff before executing —
-// is preserved; round eleven replaces the download whose status it checked with
-// the embedded copy.
-func installerCommand(ref, bindir, shareBindir string) string {
-	env := "EVENER_INSTALL_VERSION=" + shellQuote(ref)
+// succeeds AND the file's byte count matches the embedded script's length,
+// rather than feeding it straight to an interpreter: a dropped or truncated ssh
+// stream must not execute half a script, and ssh reports a dropped stream as a
+// successful EOF, so `cat` alone exits 0 on a partial transfer. The count is the
+// same check pushBinaryRemote makes — the two handoffs a host executes from a
+// stream must fail closed identically. A pipeline returns the LAST command's
+// status, so `cat … | sh` would report sh's status and hide the write failure
+// entirely. Round ten's property — check the handoff before executing — is
+// preserved; round eleven replaces the download whose status it checked with the
+// embedded copy, and round twelve adds the byte count that catch makes possible.
+func installerCommand(ref, bindir, shareBindir string, size int) string {
+	env := "EVENER_INSTALL_VERSION=" + shellquote.RemoteWord(ref)
 	if bindir != "" {
-		env += " BINDIR=" + shellQuote(bindir) + " EVENER_SHARE_BINDIR=" + shellQuote(shareBindir)
+		env += " BINDIR=" + shellquote.RemoteWord(bindir) + " EVENER_SHARE_BINDIR=" + shellquote.RemoteWord(shareBindir)
 	}
 	tmp := "tmp=$(mktemp \"${TMPDIR:-/tmp}/evener-install.XXXXXX\") || exit 1"
 	cleanup := "trap 'rm -f \"$tmp\"' EXIT"
-	return tmp + "; " + cleanup + "; cat > \"$tmp\" && env " + env + " sh \"$tmp\""
+	verify := "v=$(wc -c < \"$tmp\" | tr -d '[:space:]') && [ \"$v\" = " + strconv.Itoa(size) + " ]"
+	return tmp + "; " + cleanup + "; cat > \"$tmp\" && " + verify + " && env " + env + " sh \"$tmp\""
 }
 
 // deployInstaller is the fallback deploy path for a controller with no build
@@ -671,7 +689,7 @@ func (m *Manager) deployInstaller(ctx context.Context, host hostreg.Host, facts 
 	if err != nil {
 		return "", err
 	}
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir)), bytes.NewReader(installerScript))
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, installerCommand(ref, bindir, shareBindir, len(installerScript))), bytes.NewReader(installerScript))
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q installer (%s): %w: %s", ErrDeploy, host.Name, ref, err, tail(out))
 	}

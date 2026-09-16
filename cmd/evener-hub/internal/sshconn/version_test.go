@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 func TestDetectSupervisorTable(t *testing.T) {
@@ -160,7 +161,7 @@ func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	fr := &fakeRunner{
 		runFn: cannedRun(map[string][]byte{
 			"launch-check": []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`),
-			"api/health":   []byte(`{"version":"newsha"}`),
+			"api/health":   []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
 	}
@@ -234,7 +235,7 @@ func TestEnsureVersionDiffersDeploysRestartsThenAttaches(t *testing.T) {
 				record("restart")
 				return nil, nil
 			case strings.Contains(joined, "api/health"):
-				return []byte(`{"version":"newsha"}`), nil
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			case strings.Contains(joined, "cat >"):
 				record("push")
 				if stdin != nil {
@@ -368,7 +369,7 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 			case strings.Contains(joined, "systemctl restart"):
 				return nil, nil
 			case strings.Contains(joined, "api/health"):
-				return []byte(`{"version":"newsha"}`), nil
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			case strings.Contains(joined, "cat >"):
 				if stdin != nil {
 					_, _ = io.ReadAll(stdin)
@@ -429,7 +430,9 @@ func TestRestartBareRecoversPidArgvAndLog(t *testing.T) {
 			return []byte("COMMAND  PID USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n" +
 				"evener  4242 dev     1w   REG    1,2      1  2 /home/dev/evener-hub.log\n" +
 				"evener  4242 dev     2w   REG    1,2      1  2 /home/dev/evener-hub.log\n"), nil
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -493,7 +496,9 @@ func TestRestartBarePSInvocationSuppressesHeader(t *testing.T) {
 			return []byte("/opt/evener/bin/evener hub -addr 0.0.0.0:9180\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -547,7 +552,9 @@ func TestRestartBareStripsLeadingPSHeader(t *testing.T) {
 			return []byte("COMMAND\n" + clean + "\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -597,7 +604,9 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 			return []byte("COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n" +
 				"evener 4242 dev 1w REG 1,2 1 2 " + logPath + "\n" +
 				"evener 4242 dev 2w REG 1,2 1 2 " + logPath + "\n"), nil
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -629,7 +638,7 @@ func TestRestartBareQuotesRecoveredLogPath(t *testing.T) {
 	if remote == "" {
 		t.Fatalf("no relaunch recorded in %v", relaunchArgv)
 	}
-	if !strings.Contains(remote, ">>"+shellQuote(logPath)) {
+	if !strings.Contains(remote, ">>"+shellquote.RemoteWord(logPath)) {
 		t.Fatalf("relaunch does not quote the recovered log path: %q", remote)
 	}
 }
@@ -756,7 +765,7 @@ func supervisorRestartRunner(restartErr error, health func(probe int) ([]byte, e
 func TestRestartHubRejectsStaleVersion(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr, _ := supervisorRestartRunner(nil, func(int) ([]byte, error) {
-		return []byte(`{"version":"oldsha"}`), nil
+		return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	})
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
@@ -779,7 +788,7 @@ func TestRestartHubSurfacesFailedRestartCommand(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	restartErr := errors.New("exit status 1")
 	fr, _ := supervisorRestartRunner(restartErr, func(int) ([]byte, error) {
-		return []byte(`{"version":"newsha"}`), nil
+		return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	})
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
@@ -803,9 +812,9 @@ func TestRestartHubWaitsForOldHubToHandOver(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr, probes := supervisorRestartRunner(nil, func(probe int) ([]byte, error) {
 		if probe < 2 {
-			return []byte(`{"version":"oldsha"}`), nil
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		}
-		return []byte(`{"version":"newsha"}`), nil
+		return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	})
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
@@ -843,14 +852,16 @@ func TestHostAddrDrivesRestartAndHealthProbes(t *testing.T) {
 			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9999\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
 		case strings.Contains(joined, "nohup"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
 			healthRemote = joined
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9999"}`), nil
 		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
@@ -881,7 +892,7 @@ func TestWaitHealthyQuotesPort(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", Addr: "127.0.0.1:9180;id"}
 	fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 		if strings.Contains(strings.Join(argv, " "), "/api/health") {
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180;id"}`), nil
 		}
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
 	}}
@@ -933,7 +944,7 @@ func TestRestartBareRefusesForeignProcessOnHubPort(t *testing.T) {
 		t.Fatalf("error does not name the refused process: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("refused process was still killed: %v", argv)
 		}
 	}
@@ -969,7 +980,7 @@ func TestRestartBareRefusesCompoundCommandLine(t *testing.T) {
 		t.Fatalf("err = %v, want ErrRestart for an untokenizable command line", err)
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("untokenizable process was still killed: %v", argv)
 		}
 	}
@@ -1042,7 +1053,7 @@ func TestRestartBareRefusesSamePortDifferentHost(t *testing.T) {
 		t.Fatalf("error does not name both endpoints: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("a hub on a different address was killed: %v", argv)
 		}
 	}
@@ -1081,7 +1092,7 @@ func TestRestartBareRefusesDefaultAddrAtNonDefaultEndpoint(t *testing.T) {
 		t.Fatalf("error does not name both the hub default and the configured endpoint: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("a hub at the default address was killed for a non-default endpoint: %v", argv)
 		}
 	}
@@ -1110,7 +1121,9 @@ func TestRestartBareInspectsListenerAddress(t *testing.T) {
 			return []byte("n127.0.0.2:9180\n"), nil
 		case strings.Contains(joined, "lsof -p 4242 -a -d 1,2"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -1173,7 +1186,7 @@ func TestRestartBareListenerAddressBeatsRecoveredAddr(t *testing.T) {
 		t.Fatalf("error does not name the listener and the configured endpoint: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("a listener bound elsewhere was killed: %v", argv)
 		}
 	}
@@ -1432,7 +1445,7 @@ func TestRestartHubLaunchdKickstartStatusIsAdvisory(t *testing.T) {
 			return []byte("kickstart: job failed"), kickErr
 		case strings.Contains(joined, "api/health"):
 			probes++
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
@@ -1469,7 +1482,7 @@ func TestRestartHubLaunchdKickstartFailureSurfacesWhenHealthFails(t *testing.T) 
 		case strings.Contains(joined, "launchctl kickstart"):
 			return []byte("kickstart: job failed"), kickErr
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"oldsha"}`), nil
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
@@ -1506,7 +1519,7 @@ func TestWaitHealthyUsesTheConfiguredHostAddr(t *testing.T) {
 		joined := strings.Join(argv, " ")
 		if strings.Contains(joined, "/api/health") {
 			remote = joined
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.2:9180"}`), nil
 		}
 		return nil, fmt.Errorf("unexpected remote command: %v", argv)
 	}}
@@ -1590,9 +1603,9 @@ func TestEnsureRestartsWhenTheRunningHubVersionDiffers(t *testing.T) {
 				healthProbes++
 				if healthProbes == 1 {
 					// The stale hub a previously failed restart left serving.
-					return []byte(`{"version":"oldsha"}`), nil
+					return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 				}
-				return []byte(`{"version":"newsha"}`), nil
+				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			case strings.Contains(strings.Join(argv, " "), "command -v evener"):
 				return []byte("/opt/evener/bin/evener\n"), nil
 			case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
@@ -1671,7 +1684,7 @@ func TestFirstAttachBootstrapsStoppedHost(t *testing.T) {
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -1727,7 +1740,7 @@ func TestFirstAttachBootstrapAdHocLaunch(t *testing.T) {
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil // no evener hub unit; the ad hoc path
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -1820,7 +1833,7 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"oldsha"}`), nil
+			return []byte(`{"version":"oldsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "list-units"):
 			return []byte("evener-hub.service loaded inactive dead Evener Hub\n"), nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -1894,7 +1907,7 @@ func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
 			if launches == 0 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -1980,7 +1993,7 @@ func TestDeployThenExplicitAttachStartsDormantUnit(t *testing.T) {
 			if startCmd == "" {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -2079,42 +2092,61 @@ func TestReconnectDeployDoesNotStartAStoppedHub(t *testing.T) {
 // TestParseHubHealthRejectsBodyWithoutVersion pins the honest known/unknown
 // rule: JSON that decodes but carries no version is not a hub with an empty
 // version, and reading it as one would fire a restart against some unrelated
-// listener that merely speaks JSON. It also pins that the process start time is
-// carried when present, since restart verification keys off it.
+// listener that merely speaks JSON. Round twelve extends the rule to the fields
+// that make a body hub identity rather than a version string: the hub REST
+// contract version and the address the hub actually bound must both match what
+// this controller expects, so an unrelated service — or a hub serving a
+// different endpoint — answering with the expected version is not treated as
+// authoritative. It also pins that the process start time is carried when
+// present, since restart verification keys off it.
 func TestParseHubHealthRejectsBodyWithoutVersion(t *testing.T) {
+	const addr = "127.0.0.1:9180"
+	const goodBody = `{"status":"ok","version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180","started_at":"2026-01-02T03:04:05.5Z"}`
 	cases := []struct {
 		name string
 		in   string
 		want string
 		ok   bool
 	}{
-		{"hub body", `{"status":"ok","version":"newsha","started_at":"2026-01-02T03:04:05.5Z"}`, "newsha", true},
+		{"hub body", goodBody, "newsha", true},
 		{"empty object", `{}`, "", false},
 		{"status only", `{"status":"ok"}`, "", false},
 		{"null", `null`, "", false},
 		{"not json", `<html>nope</html>`, "", false},
+		{"version only", `{"version":"newsha"}`, "", false},
+		{"no mobile api version", `{"version":"newsha","hub_addr":"127.0.0.1:9180"}`, "", false},
+		{"wrong mobile api version", `{"version":"newsha","mobile_api_version":2,"hub_addr":"127.0.0.1:9180"}`, "", false},
+		{"no hub addr", `{"version":"newsha","mobile_api_version":1}`, "", false},
+		{"other endpoint", `{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.2:9180"}`, "", false},
+		{"other port", `{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9999"}`, "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := parseHubHealth([]byte(tc.in))
+			got, ok := parseHubHealth([]byte(tc.in), addr)
 			if got.version != tc.want || ok != tc.ok {
 				t.Fatalf("parseHubHealth(%q) = (%q,%v), want (%q,%v)", tc.in, got.version, ok, tc.want, tc.ok)
 			}
 		})
 	}
 
-	got, ok := parseHubHealth([]byte(`{"version":"newsha","started_at":"2026-01-02T03:04:05.5Z"}`))
+	got, ok := parseHubHealth([]byte(goodBody), addr)
 	if !ok || got.startedAt.IsZero() {
 		t.Fatalf("parseHubHealth dropped the process start time: (%v,%v)", got, ok)
 	}
 	// A body without started_at yields a zero time, which sameProcessAs never
 	// reads as a match.
-	got, ok = parseHubHealth([]byte(`{"version":"newsha"}`))
+	got, ok = parseHubHealth([]byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), addr)
 	if !ok || !got.startedAt.IsZero() {
 		t.Fatalf("parseHubHealth invented a start time: (%v,%v)", got, ok)
 	}
 	if got.sameProcessAs(hubIdentity{version: "newsha"}) {
 		t.Fatal("two zero start times were read as the same process")
+	}
+	// The address comparison uses the same wildcard-to-loopback normalization the
+	// probe's URL does: a hub bound to the wildcard is the endpoint the controller
+	// reaches on loopback.
+	if _, ok := parseHubHealth([]byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"0.0.0.0:9180"}`), addr); !ok {
+		t.Fatal("a wildcard-bound hub reporting loopback was rejected")
 	}
 }
 
@@ -2129,7 +2161,9 @@ func TestEnsureDevBuildDeploysOncePerManager(t *testing.T) {
 		func(int) ([]byte, error) {
 			return []byte(`{"protocol":"evener-appwire-v5","version":"dev","launch_flags":["api-log"]}`), nil
 		},
-		func(int) ([]byte, error) { return []byte(`{"version":"dev"}`), nil },
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"dev","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
 	)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
@@ -2197,7 +2231,9 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killCalls++
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -2213,7 +2249,7 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 			if relaunches < 2 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "cat >"):
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
@@ -2279,7 +2315,9 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 			return []byte(noListenerMarker + "\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
@@ -2315,7 +2353,7 @@ func TestRestartBarePrefersNullDelimitedArgv(t *testing.T) {
 	if !found {
 		t.Fatalf("relaunch did not preserve the exact argv %v: %v", exactArgv, relaunchArgv)
 	}
-	if !strings.Contains(want, shellQuote("/opt/my hub.toml")) {
+	if !strings.Contains(want, shellquote.RemoteWord("/opt/my hub.toml")) {
 		t.Fatalf("relaunch lost the argument boundary: %q", want)
 	}
 }
@@ -2355,7 +2393,7 @@ func TestRestartBareRefusesAmbiguousSplitValue(t *testing.T) {
 		t.Fatalf("error does not explain the ambiguity: %v", err)
 	}
 	for _, argv := range fr.recordedRuns() {
-		if strings.Contains(strings.Join(argv, " "), "kill 4242") {
+		if strings.Contains(strings.Join(argv, " "), "kill -- 4242") {
 			t.Fatalf("ambiguous process was still killed: %v", argv)
 		}
 	}
@@ -2414,7 +2452,9 @@ func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
 			}
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
-		func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
 	)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
@@ -2476,7 +2516,7 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 			if restarts < 2 {
 				return nil, errors.New("curl: (7) Failed to connect")
 			}
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "cat >"):
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
@@ -2619,7 +2659,7 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 			return []byte("Failed to restart evener-hub.service: Interactive authentication required.\n"), errors.New("exit status 1")
 		case strings.Contains(joined, "api/health"):
 			// The same old process keeps serving: same version, same start time.
-			return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z"}`), nil
+			return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(joined, "cat >"):
 			if stdin != nil {
 				_, _ = io.ReadAll(stdin)
@@ -2664,13 +2704,13 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 func TestWaitHealthyRejectsThePreRestartProcess(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: func(_ context.Context, _ []string, _ io.Reader) ([]byte, error) {
-		return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z"}`), nil
+		return []byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 	}}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "dev",
 		sleep:                     func(context.Context, time.Duration) error { return nil },
 	})
-	replaced, ok := parseHubHealth([]byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z"}`))
+	replaced, ok := parseHubHealth([]byte(`{"version":"dev","started_at":"2026-01-01T00:00:00Z","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), defaultHubAddr)
 	if !ok {
 		t.Fatal("parseHubHealth rejected a valid body")
 	}
@@ -2707,7 +2747,9 @@ func TestRestartBareRecordsRelaunchBeforePortClearFails(t *testing.T) {
 			return []byte("/opt/evener/bin/evener hub -addr 127.0.0.1:9180\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			return nil, nil
 		case strings.Contains(joined, "nohup"):
 			relaunches++
@@ -2854,7 +2896,9 @@ func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 			}
 			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
-		func(int) ([]byte, error) { return []byte(`{"version":"newsha"}`), nil },
+		func(int) ([]byte, error) {
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
+		},
 	)
 	m := newTestManager(t, testRegistry(t, host), fr, Options{
 		controllerVersionOverride: "newsha",
@@ -2960,7 +3004,7 @@ func TestRestartHubStartsAnInactiveSupervisorWhenThePortIsFree(t *testing.T) {
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
@@ -3007,7 +3051,9 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 			return []byte(noListenerMarker + "\n"), nil
 		case strings.Contains(joined, "lsof -p 4242"):
 			return nil, errors.New("exit status 1")
-		case strings.Contains(joined, "kill 4242"):
+		case strings.Contains(joined, "kill -s 0 -- 4242"):
+			return []byte(pidGoneMarker + "\n"), nil
+		case strings.Contains(joined, "kill -- 4242"):
 			killed = true
 			return nil, nil
 		case strings.Contains(joined, "systemctl restart"):
@@ -3016,7 +3062,7 @@ func TestRestartHubPrefersAnAdHocHubOverAnInactiveSupervisor(t *testing.T) {
 		case strings.Contains(joined, "nohup"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
-			return []byte(`{"version":"newsha"}`), nil
+			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 		case strings.Contains(strings.Join(argv, " "), "command -v evener"):
 			return []byte("/opt/evener/bin/evener\n"), nil
 		case strings.Contains(strings.Join(argv, " "), "evener_resolve"):
@@ -3083,7 +3129,7 @@ func TestRestartBareFailsClosedOnUnusableProcArgv(t *testing.T) {
 		if strings.Contains(joined, "-ww -o ") {
 			t.Fatalf("fell back to lossy ps despite a readable /proc: %v", argv)
 		}
-		if strings.Contains(joined, "kill 4242") {
+		if strings.Contains(joined, "kill -- 4242") {
 			t.Fatalf("the process was killed before its argv could be recovered: %v", argv)
 		}
 	}

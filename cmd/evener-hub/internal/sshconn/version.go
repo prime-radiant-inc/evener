@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/internal/shellquote"
 )
 
 // defaultHubAddr is the host hub's default loopback listen address
@@ -213,9 +214,9 @@ func (s supervisor) restartRemote(uid string) (string, bool) {
 		}
 		return "launchctl kickstart -k gui/" + uid + "/" + s.label, true
 	case supervisorSystemd:
-		return "systemctl restart " + shellQuote(s.label), true
+		return "systemctl restart " + shellquote.RemoteWord(s.label), true
 	case supervisorSystemdUser:
-		return "systemctl --user restart " + shellQuote(s.label), true
+		return "systemctl --user restart " + shellquote.RemoteWord(s.label), true
 	default:
 		return "", false
 	}
@@ -233,9 +234,9 @@ func (s supervisor) startRemote(uid string) (string, bool) {
 		}
 		return "launchctl kickstart -k gui/" + uid + "/" + s.label, true
 	case supervisorSystemd:
-		return "systemctl start " + shellQuote(s.label), true
+		return "systemctl start " + shellquote.RemoteWord(s.label), true
 	case supervisorSystemdUser:
-		return "systemctl --user start " + shellQuote(s.label), true
+		return "systemctl --user start " + shellquote.RemoteWord(s.label), true
 	default:
 		return "", false
 	}
@@ -252,6 +253,23 @@ func isNumericUID(s string) bool {
 		}
 	}
 	return true
+}
+
+// numericPID validates a host-derived pid before it is interpolated into a
+// remote command. A pid comes from the host's listener probe, so it is
+// host-controlled data: every downstream use — `kill`, `lsof -p`, `ps -p`, and
+// the `/proc/<pid>/...` path — must only ever see a bare run of digits. A line
+// like `-9` would be read as an option and a `/` or `;` as a path fragment or a
+// command separator, which is exactly the injection the quoting rule cannot
+// catch (a quoted `-9` is still an option, and a quoted path is still a path).
+// probeListeners refuses a non-numeric line at the parse boundary; this is the
+// structural guard at each seam that renders one, so a future caller cannot
+// reintroduce the hole by bypassing the probe.
+func numericPID(pid string) (string, error) {
+	if !isNumericUID(pid) {
+		return "", fmt.Errorf("%w: host-derived pid %q is not a numeric pid; refusing to build a remote command around it", ErrRestart, pid)
+	}
+	return pid, nil
 }
 
 // isBareSafeLabel reports whether a supervisor label can be passed as one
@@ -687,16 +705,21 @@ func (m *Manager) restartBare(ctx context.Context, host hostreg.Host, replaced h
 // proved to be the hub this host is configured for: it recovers the log
 // destination, stops the old process, and relaunches the recovered argv detached.
 func (m *Manager) stopAndRelaunch(ctx context.Context, host hostreg.Host, port, pid string, argv []string, replaced hubIdentity) error {
+	pid, err := numericPID(pid)
+	if err != nil {
+		return err
+	}
 	logPath := ""
-	if lout, lerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -p "+shellQuote(pid)+" -a -d 1,2"), nil); lerr == nil {
+	if lout, lerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "lsof -p "+pid+" -a -d 1,2"), nil); lerr == nil {
 		logPath, _ = parseLogPath(lout)
 	}
 
 	relaunch := relaunchCommand(argv, logPath)
 	// Stop the old hub and wait for its port to clear before starting a new
 	// one; relaunching into the gap races hub.lock (docs/evener-hub-remote-
-	// operations.md:363-377).
-	kout, kerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill "+shellQuote(pid)), nil)
+	// operations.md:363-377). The pid is validated, and `kill --` documents at
+	// the command itself that the argument can only ever be a pid.
+	kout, kerr := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "kill -- "+pid), nil)
 	if kerr != nil {
 		return fmt.Errorf("%w: host %q could not stop hub pid %s: %w: %s", ErrRestart, host.Name, pid, kerr, tail(kout))
 	}
@@ -707,6 +730,13 @@ func (m *Manager) stopAndRelaunch(ctx context.Context, host hostreg.Host, port, 
 	// listener on the port, and nothing for the next Ensure to recover.
 	m.setPendingRestart(host.Name, relaunch, replaced)
 	if err := m.waitPortClear(ctx, host, port); err != nil {
+		return err
+	}
+	// The port clearing is not the same as the old hub being gone: the hub closes
+	// its listener at the start of its graceful shutdown and keeps hub.lock while
+	// it drains, so the replacement could still race the lock. Wait for the
+	// process itself to exit, which is what releases the lock.
+	if err := m.waitProcessExit(ctx, host, pid); err != nil {
 		return err
 	}
 
@@ -755,8 +785,8 @@ const listenerPresentMarker = "__sshconn_listener_present__"
 // a nonzero exit. A tier whose parser cannot run (no awk, an unreadable file)
 // fails closed instead of falling through to "free".
 func listenerProbeRemote(port string) string {
-	colonPort := shellQuote(":" + port)
-	return `p=` + shellQuote(port) + `
+	colonPort := shellquote.RemoteWord(":" + port)
+	return `p=` + shellquote.RemoteWord(port) + `
 if command -v lsof >/dev/null 2>&1; then
 	lsof -ti ` + colonPort + ` -sTCP:LISTEN; s=$?; if [ $s -eq 1 ]; then echo ` + noListenerMarker + `; exit 0; fi; exit $s
 fi
@@ -800,6 +830,13 @@ type listenerProbe struct {
 // probeListeners reports the listeners on port. A probe that could not run (a
 // transport failure, no probe tool at all, an unreadable TCP table) is an error,
 // so the caller never mistakes it for a free or held port.
+//
+// Every line that is not one of the markers must be a numeric pid: those pids
+// flow into `kill`, `lsof -p`, `ps -p`, and `/proc/<pid>/cmdline`, where a
+// leading dash is an option and a slash or semicolon is a path fragment or a
+// command separator rather than a digit. A non-numeric line is therefore refused
+// here, at the parse boundary, instead of being quoted and used; quoting alone
+// cannot make `-9` or `/etc/passwd` safe in those positions.
 func (m *Manager) probeListeners(ctx context.Context, host hostreg.Host, port string) (listenerProbe, error) {
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, listenerProbeRemote(port)), nil)
 	if err != nil {
@@ -815,6 +852,9 @@ func (m *Manager) probeListeners(ctx context.Context, host hostreg.Host, port st
 			lp.present = true
 			continue
 		}
+		if !isNumericUID(line) {
+			return listenerProbe{}, fmt.Errorf("%w: host %q listener probe on :%s reported a non-numeric pid %q; refusing to use it", ErrRestart, host.Name, port, line)
+		}
 		lp.pids = append(lp.pids, line)
 	}
 	return lp, nil
@@ -829,11 +869,14 @@ func (m *Manager) probeListeners(ctx context.Context, host hostreg.Host, port st
 // success, and a tier that cannot run (no awk, no probe tool) exits nonzero, so
 // a raced listener is never a transport failure and a missing probe is never
 // read as "no address".
+//
+// pid is validated by the caller (numericPID) before it is rendered here: `lsof
+// -p` and the awk `pid=` filter both take it as a bare word, where a leading
+// dash would be an option.
 func listenerAddrRemote(pid, port string) string {
-	q := shellQuote(":" + port)
-	p := shellQuote(pid)
-	return "if command -v lsof >/dev/null 2>&1; then lsof -nP -p " + p + " -a -iTCP" + q + " -sTCP:LISTEN -F n; s=$?; if [ $s -eq 1 ]; then exit 0; fi; exit $s; fi; " +
-		"if command -v ss >/dev/null 2>&1; then ss -ltnp 2>/dev/null | awk -v port=" + q + " -v pid=" + p + " '$1 == \"LISTEN\" && index($4, port) == length($4) - length(port) + 1 && $0 ~ (\"pid=\" pid \"[^0-9]\") { print \"n\" $4 }'; exit $?; fi; " +
+	q := shellquote.RemoteWord(":" + port)
+	return "if command -v lsof >/dev/null 2>&1; then lsof -nP -p " + pid + " -a -iTCP" + q + " -sTCP:LISTEN -F n; s=$?; if [ $s -eq 1 ]; then exit 0; fi; exit $s; fi; " +
+		"if command -v ss >/dev/null 2>&1; then ss -ltnp 2>/dev/null | awk -v port=" + q + " -v pid=" + pid + " '$1 == \"LISTEN\" && index($4, port) == length($4) - length(port) + 1 && $0 ~ (\"pid=\" pid \"[^0-9]\") { print \"n\" $4 }'; exit $?; fi; " +
 		"echo 'sshconn: no listener address probe is available on this host (neither lsof nor ss); install lsof' >&2; exit 1"
 }
 
@@ -841,6 +884,10 @@ func listenerAddrRemote(pid, port string) string {
 // slice means the probe matched no socket (the process may have exited), which
 // the caller reads as "not proved to own the endpoint".
 func (m *Manager) hubListenerAddrs(ctx context.Context, host hostreg.Host, pid, port string) ([]string, error) {
+	pid, err := numericPID(pid)
+	if err != nil {
+		return nil, err
+	}
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, listenerAddrRemote(pid, port)), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: host %q could not inspect listener %s on :%s: %w: %s", ErrRestart, host.Name, pid, port, err, tail(out))
@@ -927,6 +974,59 @@ func (m *Manager) waitPortClear(ctx context.Context, host hostreg.Host, port str
 	return fmt.Errorf("%w: host %q hub port :%s still held after kill", ErrRestart, host.Name, port)
 }
 
+// pidAliveMarker and pidGoneMarker are the process-exit probe's answers. Like
+// the port probe's markers they make "the process is gone" (a zero exit carrying
+// pidGoneMarker) distinguishable from a probe that could not run at all (a
+// nonzero exit), which must never be read as an exited process.
+const (
+	pidAliveMarker = "__sshconn_pid_alive__"
+	pidGoneMarker  = "__sshconn_pid_gone__"
+)
+
+// processAliveRemote builds the remote command that reports whether pid still
+// exists. `kill -s 0` sends no signal: it only performs the existence and
+// permission check. The `--` is the second, structural guard on the argument —
+// pid must already be validated by numericPID, but the command makes it
+// impossible for even a future caller's bad value to be read as an option.
+func processAliveRemote(pid string) string {
+	return "if kill -s 0 -- " + pid + " 2>/dev/null; then echo " + pidAliveMarker +
+		"; else echo " + pidGoneMarker + "; fi"
+}
+
+// waitProcessExit blocks until the old hub process has actually exited, or the
+// bound is exhausted. Waiting only for the hub port to clear is not enough: the
+// hub closes its listener at the START of a graceful shutdown and holds hub.lock
+// for the whole drain, so a replacement launched the moment the port frees can
+// immediately fail to acquire the lock and exit, leaving the host with no hub at
+// all. The kernel releases the lock when the process exits, so the process's
+// exit — not the listener's disappearance — is the condition the relaunch can
+// rely on.
+//
+// The probe's answer is read from the markers, not the exit status: a failed Run
+// is a transport failure and is surfaced rather than mistaken for an exit.
+func (m *Manager) waitProcessExit(ctx context.Context, host hostreg.Host, pid string) error {
+	remote := processAliveRemote(pid)
+	for range restartStopAttempts {
+		out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil)
+		if err != nil {
+			return fmt.Errorf("%w: host %q could not check whether hub pid %s exited: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
+		}
+		switch strings.TrimSpace(string(out)) {
+		case pidAliveMarker:
+			// Still draining; wait and re-check.
+		case pidGoneMarker:
+			return nil
+		default:
+			return fmt.Errorf("%w: host %q pid %s process probe answered %q, which is neither %q nor %q; refusing to read an unusable answer as an exited process",
+				ErrRestart, host.Name, pid, tail(out), pidAliveMarker, pidGoneMarker)
+		}
+		if err := m.opts.waitSleep(ctx, restartStopInterval); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("%w: host %q hub pid %s is still running after kill", ErrRestart, host.Name, pid)
+}
+
 // portCleared reports whether the host has no listener on the hub port. The
 // probe's result distinguishes a genuinely free port from a probe that could
 // not run, which the caller must not treat as cleared; a listener no tool could
@@ -952,7 +1052,7 @@ func (m *Manager) portCleared(ctx context.Context, host hostreg.Host, port strin
 // the timeouts bound a listener that accepts but never answers.
 func hubHealthRemote(addr string) string {
 	return "curl -q --noproxy '*' -fsS --connect-timeout " + healthCurlConnectTimeout +
-		" --max-time " + healthCurlMaxTime + " " + shellQuote("http://"+loopbackAddr(addr)+"/api/health")
+		" --max-time " + healthCurlMaxTime + " " + shellquote.RemoteWord("http://"+loopbackAddr(addr)+"/api/health")
 }
 
 // probeRunningHub asks the host hub's /api/health once and returns the identity
@@ -961,11 +1061,12 @@ func hubHealthRemote(addr string) string {
 // is "no running hub to judge" rather than an error: ensureOnce must not invent a
 // restart from an unanswerable probe.
 func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubIdentity, bool) {
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubHealthRemote(m.hostAddr(host))), nil)
+	addr := m.hostAddr(host)
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubHealthRemote(addr)), nil)
 	if err != nil {
 		return hubIdentity{}, false
 	}
-	return parseHubHealth(out)
+	return parseHubHealth(out, addr)
 }
 
 // waitHealthy polls the host hub's /api/health until the response reports
@@ -980,11 +1081,12 @@ func (m *Manager) probeRunningHub(ctx context.Context, host hostreg.Host) (hubId
 // took look like success.
 func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVersion string, replaced hubIdentity) error {
 	port := hubPort(m.hostAddr(host))
-	remote := hubHealthRemote(m.hostAddr(host))
+	addr := m.hostAddr(host)
+	remote := hubHealthRemote(addr)
 	var last hubIdentity
 	for range restartHealthAttempts {
 		if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, remote), nil); err == nil {
-			if got, ok := parseHubHealth(out); ok {
+			if got, ok := parseHubHealth(out, addr); ok {
 				if got.version == expectedVersion && !got.sameProcessAs(replaced) {
 					return nil
 				}
@@ -1013,9 +1115,28 @@ func (m *Manager) waitHealthy(ctx context.Context, host hostreg.Host, expectedVe
 // version, and reading it as one would invent a restart against a non-hub
 // process. The start time is carried when the body provides one; it is what
 // distinguishes a genuinely new process from the one a restart replaced.
-func parseHubHealth(out []byte) (hubIdentity, bool) {
+//
+// A version alone is not enough to call a response authoritative. Any unrelated
+// service that answers on the hub's loopback port with the expected version —
+// a stale hub from another install, a proxy, a test server — would otherwise
+// read as the host's hub: version auto-match would skip recovery, the restart
+// verification would accept it, and attach would hand it the hub auth token.
+// Two stable hub-specific fields must agree as well:
+//
+//   - mobile_api_version, the hub's REST contract version (hubapi), which an
+//     unrelated JSON responder does not carry at all;
+//   - hub_addr, the address the hub actually bound, which must be the endpoint
+//     this controller configured (normalized the same way the probe's URL is,
+//     so a wildcard bind still matches the loopback address it is reached on).
+func parseHubHealth(out []byte, addr string) (hubIdentity, bool) {
 	var resp hubapi.HealthResponse
 	if err := json.Unmarshal(out, &resp); err != nil || resp.Version == "" {
+		return hubIdentity{}, false
+	}
+	if resp.MobileAPIVersion != hubapi.MobileAPIVersion {
+		return hubIdentity{}, false
+	}
+	if loopbackAddr(resp.HubAddr) != loopbackAddr(addr) {
 		return hubIdentity{}, false
 	}
 	return hubIdentity{version: resp.Version, startedAt: resp.StartedAt}, true
@@ -1053,6 +1174,10 @@ func (m *Manager) recoverHubArgv(ctx context.Context, host hostreg.Host, pid str
 // controller's build over that same file; the restart path uses recoverHubArgv,
 // which keeps the identity check.
 func (m *Manager) recoverHubArgvRaw(ctx context.Context, host hostreg.Host, pid string) ([]string, error) {
+	pid, err := numericPID(pid)
+	if err != nil {
+		return nil, err
+	}
 	if out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, hubArgvRemote(pid)), nil); err == nil && len(out) > 0 {
 		argv, ok := splitNullArgv(out)
 		if !ok {
@@ -1069,7 +1194,7 @@ func (m *Manager) recoverHubArgvRaw(ctx context.Context, host hostreg.Host, pid 
 	// recovered command line is the process's argv, not the header followed by
 	// it. Real GNU/BSD ps emit the header without the trailing `=`, which is what
 	// made the old invocation relaunch as `nohup COMMAND`.
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+shellQuote(pid)+" -ww -o command="), nil)
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "ps -p "+pid+" -ww -o command="), nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: host %q ps pid %s: %w: %s", ErrRestart, host.Name, pid, err, tail(out))
 	}
@@ -1166,7 +1291,7 @@ func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, 
 	if strings.Contains(exe, "/") {
 		return exe, nil
 	}
-	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v "+shellQuote(exe)), nil)
+	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v "+shellquote.RemoteWord(exe)), nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve hub executable %q on PATH: %w: %s", ErrRestart, host.Name, exe, err, tail(out))
 	}
@@ -1225,9 +1350,11 @@ func (m *Manager) resolveRemotePath(ctx context.Context, host hostreg.Host, p st
 // hubArgvRemote builds the remote command that prints pid's argv NUL-separated.
 // It prints nothing and exits 0 when the host has no readable
 // /proc/<pid>/cmdline, so the caller falls back to ps instead of reading an
-// error as an empty argv.
+// error as an empty argv. pid is validated by the caller (numericPID), which is
+// what makes `/proc/<pid>/cmdline` a path to a process rather than a
+// host-chosen path to cat.
 func hubArgvRemote(pid string) string {
-	p := shellQuote("/proc/" + pid + "/cmdline")
+	p := "/proc/" + pid + "/cmdline"
 	return "if [ -r " + p + " ]; then cat " + p + "; fi"
 }
 
@@ -1403,11 +1530,11 @@ func hubAddrFlag(argv []string) (string, bool) {
 func relaunchCommand(argv []string, logPath string) string {
 	words := make([]string, len(argv))
 	for i, a := range argv {
-		words[i] = shellQuote(a)
+		words[i] = shellquote.RemoteWord(a)
 	}
 	cmd := strings.Join(words, " ")
 	if logPath != "" {
-		return "nohup " + cmd + " >>" + shellQuote(logPath) + " 2>&1 </dev/null &"
+		return "nohup " + cmd + " >>" + shellquote.RemoteWord(logPath) + " 2>&1 </dev/null &"
 	}
 	return "nohup " + cmd + " </dev/null >/dev/null 2>&1 &"
 }

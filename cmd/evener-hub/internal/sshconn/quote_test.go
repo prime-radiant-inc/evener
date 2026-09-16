@@ -3,9 +3,17 @@ package sshconn
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/internal/shellquote"
 )
 
-func TestShellQuote(t *testing.T) {
+// TestRemoteShellWordRendering pins the word sshconn puts into every remote
+// command string it builds. It renders through internal/shellquote (there is one
+// allow-list for the package, shared with the bridge's argv), and these cases
+// are kept here because they were originally the local helper's contract: the
+// tilde spelling a remote login shell must still expand, a hostile value
+// arriving fully quoted, and the empty string as one empty word.
+func TestRemoteShellWordRendering(t *testing.T) {
 	cases := []struct {
 		in   string
 		want string
@@ -26,8 +34,8 @@ func TestShellQuote(t *testing.T) {
 		{"a\nb", "'a\nb'"},
 	}
 	for _, tc := range cases {
-		if got := shellQuote(tc.in); got != tc.want {
-			t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := shellquote.RemoteWord(tc.in); got != tc.want {
+			t.Errorf("shellquote.RemoteWord(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
