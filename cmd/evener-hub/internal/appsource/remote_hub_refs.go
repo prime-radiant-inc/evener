@@ -94,7 +94,54 @@ func (s *RemoteHubSource) fromRemoteThread(thread appwire.Thread) (appwire.Threa
 		}
 		thread.Evener.ParentRef = parent
 	}
+	s.fromRemoteDiagnosticRefs(thread.Evener.Diagnostics)
 	return thread, nil
+}
+
+// fromRemoteDiagnosticRefs rewrites the nested transcript references the remote
+// hub put on a thread's diagnostics.
+//
+// Delegate refs are session refs in the remote hub's own "local:<session>"
+// namespace (agent/delegate_tree_start.go stamps encodeRef("", childSessionID)),
+// so an untranslated one collides with the controller's local source exactly
+// like Evener.Ref does: a client following it reads a controller-local session,
+// or fails, instead of the remote child. They are moved into this source's
+// namespace.
+//
+// Shell-job refs are "job:<id>" (agent.jobTranscriptRef names a job record in a
+// daemon-internal namespace, not a source-qualified thread ref), and a
+// project-scoped "proj:<project>:<session>" ref names a remote daemon object the
+// controller cannot address by source. Neither can collide with a controller
+// source the way "local:" does, so both pass through byte-for-byte: refusing
+// them would fail every remote read that carries a background shell job. A
+// client that tries to follow one still fails loudly at lookup ("source not
+// found: job"/"proj") rather than reaching the wrong host.
+func (s *RemoteHubSource) fromRemoteDiagnosticRefs(diagnostics *appwire.EvenerDiagnostics) {
+	if diagnostics == nil {
+		return
+	}
+	for index := range diagnostics.Delegates {
+		diagnostics.Delegates[index].TranscriptRef = s.fromRemoteNestedRef(diagnostics.Delegates[index].TranscriptRef)
+	}
+	for index := range diagnostics.Jobs {
+		diagnostics.Jobs[index].TranscriptRef = s.fromRemoteNestedRef(diagnostics.Jobs[index].TranscriptRef)
+	}
+}
+
+// fromRemoteNestedRef translates a nested diagnostic ref that names the remote
+// hub's own thread namespace and leaves every other ref byte-for-byte unchanged.
+// Only "local:" is remappable ("local:<thread>" becomes "<host>:<thread>"); a
+// ref in any other namespace is passed through because the controller has no
+// mapping for it and must not refuse a whole response over it.
+func (s *RemoteHubSource) fromRemoteNestedRef(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	ref, err := appwire.ParseRef(raw)
+	if err != nil || ref.SourceID != remoteHubNamespace {
+		return raw
+	}
+	return appwire.Ref{SourceID: s.id, ThreadID: ref.ThreadID}.String()
 }
 
 // translateOut applies outbound ref translation to whichever response type

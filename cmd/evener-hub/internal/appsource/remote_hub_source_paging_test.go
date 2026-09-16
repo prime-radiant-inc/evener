@@ -501,22 +501,31 @@ func TestRemoteItemPagingCacheEvictsLeastRecentlyCommitted(t *testing.T) {
 	}
 }
 
-// A forward append that does not abut the retained newest leaves unobserved
-// positions between the two windows. Unioning them would retain a holed window,
-// and a later page that reaches the beginning of the transcript would mark that
-// hole complete, silently dropping the items inside it. The source must rotate
-// the incarnation instead, so the pre-append boundary fails closed as stale.
-func TestRemoteHubSourceRejectsGappedForwardAppend(t *testing.T) {
+// A forward page that shares no position with the retained window and cannot
+// prove it abuts its newest item is not a rewrite: the source keeps the
+// incarnation, so a cursor minted before the append stays live, and it records
+// the span the page may have skipped instead of rotating. What must never happen
+// is a local answer that spans the unobserved middle: once the remote cursor is
+// exhausted, a complete window serves only the contiguous prefix below the
+// oldest recorded span, a boundary above it fails closed as stale, and a boundary
+// below it is still answered locally.
+//
+// This replaces the round-eight answer, TestRemoteHubSourceRejectsGappedForwardAppend,
+// which rotated the incarnation and failed the pre-append boundary stale. That
+// rule assumed the observed page could only be contiguous if it resumed at
+// Entry+1 of the retained newest, but entry ordinals skip for logical groups with
+// no visible items (TestEmptyLogicalGroupReservesOrdinalInFullAndIndexedProjections),
+// so it staled live cursors on ordinary appends.
+func TestRemoteHubSourceRecordsUnobservedForwardSpanWithoutRotating(t *testing.T) {
 	source, calls := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
 		var remote appwire.ThreadTurnsListParams
 		if err := json.Unmarshal(params, &remote); err != nil {
 			t.Errorf("decode turns params: %v", err)
 		}
-		if remote.Cursor != "" {
-			// The replay that used to close the hole and flip the window complete.
-			return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3, 4)}
+		if remote.Cursor == "" {
+			return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)}
 		}
-		return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)}
+		return scriptedReply{result: itemPageWithKeyedEntries("", 1, 2, 3, 4)}
 	})
 
 	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
@@ -535,7 +544,8 @@ func TestRemoteHubSourceRejectsGappedForwardAppend(t *testing.T) {
 
 	// The transcript grows past the retained window: a fresh read returns a much
 	// newer tail that shares no position with the retained window and does not
-	// abut its newest item (entry 10).
+	// resume at the successor of its newest item (entry 40 does not succeed entry
+	// 10, and an empty logical group between them cannot be ruled out either).
 	grown, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
 		Thread:      appwire.Thread{Turns: itemPageWithKeyedEntries("", 40, 41, 42, 43, 44, 45, 46, 47, 48, 49).Data},
 		OlderCursor: remoteItemCursor(t, 40),
@@ -543,30 +553,139 @@ func TestRemoteHubSourceRejectsGappedForwardAppend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("grown read: %v", err)
 	}
-	if grown.Identity == first.Identity {
-		t.Fatalf("gapped append kept identity %+v, want a fresh incarnation", grown.Identity)
+	if grown.Identity != first.Identity {
+		t.Fatalf("disjoint append rotated the identity: got %+v, want the retained %+v", grown.Identity, first.Identity)
+	}
+	if _, err := appitempaging.DecodeCursor(replay, grown.Identity); err != nil {
+		t.Fatalf("a cursor minted before the append no longer decodes: %v", err)
 	}
 
-	// Replaying the pre-append boundary must fail closed rather than serve a page
-	// whose completeness omits the unobserved middle.
-	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+	// The pre-append boundary stays live and is answered through the remote cursor,
+	// whose authority covers the span the retained window never observed.
+	served, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
 		Ref: "host:t1", ItemsView: "fragment", Cursor: replay,
+	})
+	if err != nil {
+		t.Fatalf("replayed boundary: %v", err)
+	}
+	if got := served.Candidates.Candidates; len(got) != 4 || got[0].Position.Entry != 1 {
+		t.Fatalf("replayed candidates = %+v, want the remote's page [1,2,3,4]", got)
+	}
+	if !served.Exhausted {
+		t.Fatalf("replayed page = %+v, want exhaustion", served)
+	}
+	var forwarded appwire.ThreadTurnsListParams
+	if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodThreadTurnsList), &forwarded); err != nil {
+		t.Fatalf("decode replayed params: %v", err)
+	}
+	if forwarded.Cursor == "" {
+		t.Fatal("the replayed boundary was answered locally from a gapped window instead of through the remote cursor")
+	}
+
+	// The remote cursor is exhausted now and the window still holds no proof of
+	// the middle, so a boundary above the unobserved span must fail closed rather
+	// than be served from a window that silently omits it.
+	aboveSpan, err := appitempaging.EncodeCursor(first.Identity, appwire.ThreadItemPosition{Entry: 45})
+	if err != nil {
+		t.Fatalf("encode boundary above the span: %v", err)
+	}
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: aboveSpan,
 	}); err == nil {
-		t.Fatal("replayed boundary was served from a gapped retained window")
+		t.Fatal("a boundary above the unobserved span was served from the gapped window")
 	} else {
 		requireInverseStale(t, err)
 	}
-	for _, call := range calls() {
-		if call.method != appwire.MethodThreadTurnsList {
-			continue
-		}
+
+	// A boundary below the span is still served locally from the contiguous
+	// prefix, so the retained window keeps answering every boundary it can prove.
+	belowSpan, err := appitempaging.EncodeCursor(first.Identity, appwire.ThreadItemPosition{Entry: 8})
+	if err != nil {
+		t.Fatalf("encode boundary below the span: %v", err)
+	}
+	below, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: belowSpan,
+	})
+	if err != nil {
+		t.Fatalf("boundary below the unobserved span: %v", err)
+	}
+	if got := below.Candidates.Candidates; len(got) != 7 || got[0].Position.Entry != 1 || got[len(got)-1].Position.Entry != 7 {
+		t.Fatalf("boundary below the span = %+v, want the contiguous prefix [1..7]", got)
+	}
+	if !below.Exhausted {
+		t.Fatalf("boundary below the span = %+v, want exhaustion", below)
+	}
+}
+
+// An ordinary append can advance the visible entry ordinal by more than one:
+// every logical group consumes an entry ordinal, including one that projects no
+// visible item, so the next visible turn after entry 10 can be entry 12. A fresh
+// page that resumes at that later entry is not a rewrite; rotating the
+// incarnation over it would stale the cursor a client minted before the append.
+func TestRemoteHubSourceKeepsIdentityAcrossSkippedEntryAppend(t *testing.T) {
+	older := remoteItemCursor(t, 4)
+	rebased := remoteItemCursor(t, 8)
+	source, calls := newScriptedRemote(t, "host", func(_ string, params json.RawMessage) scriptedReply {
 		var remote appwire.ThreadTurnsListParams
-		if err := json.Unmarshal(call.params, &remote); err != nil {
-			t.Fatalf("decode turns params: %v", err)
+		if err := json.Unmarshal(params, &remote); err != nil {
+			t.Errorf("decode turns params: %v", err)
 		}
-		if remote.Cursor != "" {
-			t.Fatalf("the replayed boundary reached the remote: %q", remote.Cursor)
+		switch remote.Cursor {
+		case "":
+			return scriptedReply{result: itemPageWithKeyedEntries(older, 8, 10)}
+		case rebased:
+			return scriptedReply{result: itemPageWithKeyedEntries("", 4, 5, 6)}
+		default:
+			t.Errorf("unexpected remote cursor %q", remote.Cursor)
+			return scriptedReply{result: appwire.ThreadTurnsListResponse{}}
 		}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live cursor", first)
+	}
+
+	// Ordinal 11 is a logical group with no visible items, so the appended tail
+	// resumes at entry 12.
+	appended, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: itemPageWithKeyedEntries("", 12, 13).Data},
+		OlderCursor: remoteItemCursor(t, 12),
+	})
+	if err != nil {
+		t.Fatalf("appended read: %v", err)
+	}
+	if appended.Identity != first.Identity {
+		t.Fatalf("skipped-entry append rotated the identity: got %+v, want the retained %+v", appended.Identity, first.Identity)
+	}
+	if _, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, appended.Identity); err != nil {
+		t.Fatalf("a cursor minted before the append no longer decodes: %v", err)
+	}
+
+	// The cursor stays live, and its continuation is answered from the remote: the
+	// retained window never observed the span between the two pages, so the remote
+	// cursor is the authority for what lies between them.
+	continuation, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{
+		Ref: "host:t1", ItemsView: "fragment", Cursor: first.Candidates.OlderCursor,
+	})
+	if err != nil {
+		t.Fatalf("continuation of a pre-append cursor: %v", err)
+	}
+	if got := continuation.Candidates.Candidates; len(got) != 3 || got[0].Position.Entry != 4 {
+		t.Fatalf("continuation = %+v, want the remote's older page [4,5,6]", got)
+	}
+	if !continuation.Exhausted {
+		t.Fatalf("continuation = %+v, want exhaustion", continuation)
+	}
+	var advanced appwire.ThreadTurnsListParams
+	if err := json.Unmarshal(lastMethodCall(t, calls(), appwire.MethodThreadTurnsList), &advanced); err != nil {
+		t.Fatalf("decode continuation params: %v", err)
+	}
+	if advanced.Cursor != rebased {
+		t.Fatalf("continuation remote cursor = %q, want the boundary rebased to %q", advanced.Cursor, rebased)
 	}
 }
 
@@ -885,5 +1004,112 @@ func itemPageWithLargeText(cursor string, count, size int) appwire.ThreadTurnsLi
 	return appwire.ThreadTurnsListResponse{
 		Data:       []appwire.Turn{{ID: "turn-1", Items: items}},
 		NextCursor: cursor,
+	}
+}
+
+// The retained byte bound must account for the nested image payloads of an item,
+// not just its string fields: a page of base64 input images whose visible text is
+// short would otherwise be retained far past the documented 8 MiB.
+func TestRemoteItemPagingBoundsRetainedImageBytes(t *testing.T) {
+	// Three 3 MiB images cannot fit two-to-a-page inside the 8 MiB bound, so the
+	// newest two are retained and the third is dropped.
+	const imageBytes = 3 << 20
+	page := itemPageWithImages(remoteItemCursor(t, 5), 5, imageBytes)
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: page}
+	})
+
+	first, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"})
+	if err != nil {
+		t.Fatalf("first page: %v", err)
+	}
+	if first.Candidates.OlderCursor == "" {
+		t.Fatalf("first page = %+v, want a live continuation cursor", first)
+	}
+	state, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1"))
+	if !ok {
+		t.Fatal("no retained paging state")
+	}
+	if got := remoteItemCandidatesBytes(state.candidates); got > remoteItemPagingByteCapacity {
+		t.Fatalf("retained window bytes = %d, want <= %d", got, remoteItemPagingByteCapacity)
+	}
+	if len(state.candidates) != 2 {
+		t.Fatalf("retained candidates = %d, want the newest 2 that fit the byte budget", len(state.candidates))
+	}
+	if got := state.candidates[len(state.candidates)-1].Position.Entry; got != 5 {
+		t.Fatalf("retained newest entry = %d, want 5", got)
+	}
+	// As with the text-heavy page, the trimmed rotation must mint its continuation
+	// from the retained suffix.
+	before, err := appitempaging.DecodeCursor(first.Candidates.OlderCursor, first.Identity)
+	if err != nil {
+		t.Fatalf("decode first cursor: %v", err)
+	}
+	if len(first.Candidates.Candidates) == 0 || before != first.Candidates.Candidates[0].Position {
+		t.Fatalf("cursor boundary = %+v, want the returned window's oldest %+v", before, first.Candidates.Candidates)
+	}
+}
+
+// itemPageWithImages builds one item-mode page of count items whose payload is an
+// input image of size bytes each, so the page's retention cost lives in a field a
+// string-only estimate cannot see.
+func itemPageWithImages(cursor string, count, size int) appwire.ThreadTurnsListResponse {
+	items := make([]appwire.ThreadItem, 0, count)
+	for index := range count {
+		items = append(items, appwire.ThreadItem{
+			Type:          "text",
+			ID:            fmt.Sprintf("item-%d", index),
+			TranscriptKey: fmt.Sprintf("key-%d", index),
+			Position:      &appwire.ThreadItemPosition{Entry: uint64(index + 1)},
+			Images: []appwire.InputItem{{
+				Type:      "image",
+				MediaType: "image/png",
+				Data:      make([]byte, size),
+			}},
+		})
+	}
+	return appwire.ThreadTurnsListResponse{
+		Data:       []appwire.Turn{{ID: "turn-1", Items: items}},
+		NextCursor: cursor,
+	}
+}
+
+// A remote hub is a separate process and may be a different version, so its item
+// fragments must satisfy the contract the local daemon source validates before
+// anything is merged or cached: strictly increasing, uniquely-keyed candidates.
+// An out-of-order page must fail closed rather than poison the retained cursor
+// identity for later continuations.
+func TestRemoteHubSourceRejectsUnorderedRemoteItemPage(t *testing.T) {
+	source, _ := newScriptedRemote(t, "host", func(_ string, _ json.RawMessage) scriptedReply {
+		return scriptedReply{result: itemPageWithKeyedEntries(remoteItemCursor(t, 8), 10, 8)}
+	})
+	if _, err := source.ListItemCandidates(context.Background(), appwire.ThreadTurnsListParams{Ref: "host:t1", ItemsView: "fragment"}); err == nil {
+		t.Fatal("an out-of-order remote item page was accepted")
+	} else if !strings.Contains(err.Error(), "strictly increasing") {
+		t.Fatalf("error = %v, want a strict-order rejection", err)
+	}
+	if _, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1")); ok {
+		t.Fatal("a rejected page was retained")
+	}
+}
+
+// The already-materialized read path validates the same contract: a page whose
+// fragments repeat a transcript key must fail closed before an identity is minted
+// over a window the paging package can never regroup.
+func TestRemoteHubSourceRejectsDuplicateKeyRemoteItemRead(t *testing.T) {
+	source := NewRemoteHubSource("host", nil, nil)
+	page := itemPageWithKeyedEntries("", 4, 5)
+	page.Data[0].Items[1].TranscriptKey = page.Data[0].Items[0].TranscriptKey
+	_, err := source.ItemCandidatesFromRead(context.Background(), appwire.ThreadReadParams{Ref: "host:t1"}, appwire.ThreadReadResponse{
+		Thread:      appwire.Thread{Turns: page.Data},
+		OlderCursor: remoteItemCursor(t, 4),
+	})
+	if err == nil {
+		t.Fatal("a remote item read with a duplicated transcript key was accepted")
+	} else if !strings.Contains(err.Error(), "repeats transcript key") {
+		t.Fatalf("error = %v, want a duplicate-key rejection", err)
+	}
+	if _, ok := source.itemPaging.peek(remoteItemPagingKey("host", "t1")); ok {
+		t.Fatal("a rejected read was retained")
 	}
 }
