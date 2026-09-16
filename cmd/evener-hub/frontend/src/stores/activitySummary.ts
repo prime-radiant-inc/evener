@@ -306,21 +306,25 @@ export const activitySummaryStore = createStore<ActivitySummaryStoreState>((set,
   },
 }));
 
-// The summary side of ActivitySummaryLink.
-linkActivitySummary({
-  summaryGeneration: (ref) => activitySummaryStore.getState().entries.get(ref)?.requestID,
-  onContinuationSettled(ref, { summaryRequestID, debt }) {
-    // The badge settles against the tree the panel just committed; only then
-    // does a root refresh queued behind this page (refreshRoot deferred it
-    // rather than replace the tree mid-page) get its turn.
-    const summary = activitySummaryStore.getState();
-    if (debt && summaryRequestID !== undefined) {
-      if (debt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
-      else summary.publishContinuationCounts(ref, summaryRequestID, debt.counts);
-    }
-    summary.issuePendingRootFetch(ref);
-  },
-});
+/** Registers the summary side of ActivitySummaryLink, which the panel store
+ * requires before it fetches a continuation page. The app calls this once at
+ * startup, beside its other store inits; returns the unlink. */
+export function initActivitySummary(): () => void {
+  return linkActivitySummary({
+    summaryGeneration: (ref) => activitySummaryStore.getState().entries.get(ref)?.requestID,
+    onContinuationSettled(ref, { summaryRequestID, debt }) {
+      // The badge settles against the tree the panel just committed; only then
+      // does a root refresh queued behind this page (refreshRoot deferred it
+      // rather than replace the tree mid-page) get its turn.
+      const summary = activitySummaryStore.getState();
+      if (debt && summaryRequestID !== undefined) {
+        if (debt.kind === "failure") summary.publishContinuationFailure(ref, summaryRequestID);
+        else summary.publishContinuationCounts(ref, summaryRequestID, debt.counts);
+      }
+      summary.issuePendingRootFetch(ref);
+    },
+  });
+}
 
 registerPanelStoreEvictor({
   refs: () => activitySummaryStore.getState().entries.keys(),

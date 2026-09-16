@@ -207,6 +207,13 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
   },
 
   publishFetch(ref, requestID, result) {
+    // A continuation page settles with the summary store, so its link is
+    // resolved before the updater commits: an unregistered link throws with
+    // the page still pending rather than after the entry has been cleared.
+    // The same predicate decides the settlement inside the updater.
+    const settling = get().entries.get(ref);
+    const link =
+      settling?.requestID === requestID && settling.pending?.kind === "continuation" ? requireSummaryLink() : undefined;
     // What this page owes the summary store is decided inside the updater and
     // reported after it, so the updater stays a pure function of panel state.
     let settlement: ContinuationSettlement | undefined;
@@ -322,7 +329,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
       entries.set(ref, next);
       return { entries };
     });
-    if (settlement) requireSummaryLink().onContinuationSettled(ref, settlement);
+    if (settlement && link) link.onContinuationSettled(ref, settlement);
   },
 
   setExpanded(ref, expandedIDs) {
@@ -350,6 +357,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
 
   resetForTests() {
     nextRequestID = 0;
+    summaryLink = undefined;
     set({ entries: new Map() });
   },
 }));

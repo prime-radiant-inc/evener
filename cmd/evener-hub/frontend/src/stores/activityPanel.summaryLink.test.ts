@@ -2,6 +2,7 @@
 import type { ActivityTree } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
+import { initActivitySummary } from "./activitySummary";
 import { linkFakeActivitySummary } from "./activitySummaryLinkTestUtils";
 
 function tree(revision = 1): ActivityTree {
@@ -80,6 +81,34 @@ describe("the summary link", () => {
       /no summary link registered/,
     );
     expect(activityPanelStore.getState().entries.get("ref_a")?.pending).toBeUndefined();
+  });
+
+  test("a continuation publish with no summary registered throws with the page still pending", () => {
+    resetActivityPanelStoreForTests();
+    const { unlink } = linkFakeActivitySummary(7);
+    publishRoot();
+    const page = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    unlink();
+    expect(() => activityPanelStore.getState().publishFetch("ref_a", page, { kind: "ready", tree: tree(2) })).toThrow(
+      /no summary link registered/,
+    );
+    expect(activityPanelStore.getState().entries.get("ref_a")?.pending).toMatchObject({
+      kind: "continuation",
+      nodeID: "session:sess_a",
+    });
+  });
+
+  test("resetting the store drops the link, and the init puts it back", () => {
+    resetActivityPanelStoreForTests();
+    initActivitySummary();
+    publishRoot();
+    resetActivityPanelStoreForTests();
+    publishRoot();
+    expect(() => activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" })).toThrow(
+      /no summary link registered/,
+    );
+    initActivitySummary();
+    expect(() => activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" })).not.toThrow();
   });
 
   test("a dropped stale page settles nothing", () => {
