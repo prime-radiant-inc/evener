@@ -448,6 +448,7 @@ before acting on it.
 | B3b | #1203 | **merged** as `4da382482` — native's two `projectUsage` copies collapsed to one |
 | B1b | #1190, #1197 | **done** — landed inside B1 (`27503c07d`); both issues closed |
 | C20 | #1403 | open — `settings/marketplacesPlugins/sourceLabel.ts` → `marketplaceSourceLabel.ts`, renamed because the root already exports watchRows' `sourceLabel`; three web importers and `mobile-native/src/MarketplaceBrowser.tsx` (which had reached into the web tree by relative path) now import it by package name |
+| C4 | #1428 | open — `transcriptDisplay/config.ts` → `appwire-client/typescript/transcriptDisplayConfig.ts` (renamed: `config` was directory-bound), test with it; 36 web and 8 native importers take the package name, no stub at the old path; the encoding is untouched (module diff is header + import line). `TranscriptDisplayConfig`/`TranscriptDisplayAdvanced` stay off the root because the wire types of those names are already published there — follow-ups #1430 (V1 rename) and #1431 (zero-consumer aliases) |
 
 **What A3 and A4 actually block — corrected, because three relocations have now
 landed without them.** A3 moves the package directory and A4 rewrites imports to

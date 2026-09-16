@@ -9,7 +9,7 @@ import type {
   ThreadCapabilities,
   ThreadReadResponse,
 } from "@evener/appwire-client";
-import { AppwireClient, WireError } from "@evener/appwire-client";
+import { AppwireClient, makeTranscriptDisplayConfig, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { FakeSocket } from "@evener/appwire-client/testing/fakeSocket";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -38,7 +38,6 @@ import { keyID } from "../../stores/navigation/types";
 import { holdIndexedDBEvent } from "../../stores/testing/stalledIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";

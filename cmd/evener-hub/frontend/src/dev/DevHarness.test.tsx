@@ -1,4 +1,10 @@
 import type { InitializeResponse, Thread, ThreadCapabilities, ThreadReadResponse } from "@evener/appwire-client";
+import {
+  type HubTranscriptDisplayDefault,
+  shippedDesktopConfig,
+  shippedMobileConfig,
+  toWireDefaults,
+} from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,12 +12,6 @@ import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { connectionStore } from "../stores/connection";
 import { resetThreadsStoreForTests } from "../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
-import {
-  type HubTranscriptDisplayDefault,
-  shippedDesktopConfig,
-  shippedMobileConfig,
-  toWireDefaults,
-} from "../transcriptDisplay/config";
 import { DevHarness } from "./DevHarness";
 
 // Mirrors the fixture helpers in ../stores/threads.test.ts (duplicated

@@ -1,15 +1,13 @@
-import type {
-	AnyNotification,
-	FeatureSet,
-	KeybindingsOverrides,
-	KeybindingsRule,
-} from "@evener/appwire-client";
-import type { TranscriptDisplayConfigV1 } from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
 import {
+	type AnyNotification,
+	type FeatureSet,
 	fromWireConfig,
+	type KeybindingsOverrides,
+	type KeybindingsRule,
 	normalizeConfig,
 	toWireConfig,
-} from "../../cmd/evener-hub/frontend/src/transcriptDisplay/config";
+	type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import {
 	type KeybindingDraftCheckpoint,
