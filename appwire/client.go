@@ -23,9 +23,16 @@ var ErrNotificationOverflow = errors.New("appwire notification buffer overflow")
 const NotificationBufferCap = 4096
 
 type Client struct {
-	transport     Transport
-	nextID        atomic.Int64
-	sendMu        sync.Mutex
+	transport Transport
+	nextID    atomic.Int64
+	// sendSlot is the client's single frame-write slot: a one-token channel
+	// semaphore taken before transport.Send and released after it returns, so
+	// exactly one goroutine is ever inside Send. A channel rather than a mutex
+	// is what lets a caller waiting for the slot observe its own context
+	// ending; see acquireSendSlot. sendSlotOnce guards its lazy creation for a
+	// zero-value Client (NewClient allocates it eagerly).
+	sendSlot      chan struct{}
+	sendSlotOnce  sync.Once
 	pendingMu     sync.Mutex
 	pending       map[string]pendingRequest
 	notifications chan Notification
@@ -56,6 +63,7 @@ func NewClient(transport Transport) *Client {
 		pending:       map[string]pendingRequest{},
 		notifications: make(chan Notification, NotificationBufferCap),
 		closed:        make(chan struct{}),
+		sendSlot:      make(chan struct{}, 1),
 	}
 	c.nextID.Store(1)
 	return c
@@ -236,6 +244,76 @@ func (c *Client) SetPendingCoordinator(pc PendingCoordinator) {
 	c.pendingCoord = pc
 }
 
+// RequestNotSentError reports that Client.Request failed before the request was
+// transmitted: the caller's context had already ended when the request reached
+// the point where its frame would be written, so no byte of that frame was
+// handed to the transport and the peer cannot have observed it.
+//
+// It exists because "the caller's context ended" on its own does not say
+// whether a request went out. Client.request serializes frame writes on one
+// write slot, so a context that ends while the call waits for that slot must
+// not be confused with one that ends after the frame went out and only the
+// response was lost. The wait itself observes the caller's context (the slot is
+// a one-token channel, not a mutex, since round nine), so a canceled queued
+// request reports this error promptly instead of waiting for the writer ahead
+// of it to finish — which, for a write wedged inside the transport, may be
+// never. A caller deciding whether a non-idempotent remote mutation may have
+// been applied has to tell those apart: the blocked-retry "outcome unknown"
+// reading is right for the second and wrong for the first, where nothing
+// happened and a retry is safe.
+//
+// Err is the context error that ended the call; it stays reachable through
+// Unwrap, so errors.Is(err, context.Canceled) and friends keep working. A
+// failure from the transport onward — including a transport that refuses the
+// write because its context was canceled a moment after dispatch — is
+// deliberately NOT reported this way: once Send has been called, this client
+// cannot prove the frame never left, so that case stays an ordinary in-flight
+// failure.
+type RequestNotSentError struct {
+	Err error // the context error that ended the call before transmission
+}
+
+func (e RequestNotSentError) Error() string {
+	return "appwire: request not sent: " + e.Err.Error()
+}
+
+func (e RequestNotSentError) Unwrap() error { return e.Err }
+
+// acquireSendSlot takes the client's single write slot, waiting until it is
+// free or ctx ends. Exactly one caller holds it at a time; every successful
+// acquire must be paired with exactly one releaseSendSlot.
+//
+// The wait is cancellable on purpose (round nine). Acquiring the slot is the
+// last moment at which the caller's frame is provably still untransmitted, so a
+// context that ends here is reportable as RequestNotSentError; a mutex could
+// not observe that at all, leaving a canceled request queued behind a writer
+// parked inside transport.Send — a wedged SSH stdio write never returns on its
+// own, and StreamTransport is not a Pinger, so no keepalive tears it down —
+// until that writer finished, which may be never.
+func (c *Client) acquireSendSlot(ctx context.Context) error {
+	slot := c.sendSlotChan()
+	select {
+	case slot <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// releaseSendSlot returns the write slot to the client. It must be called
+// exactly once for every successful acquireSendSlot, including on the
+// post-acquire context check and on a transport refusal.
+func (c *Client) releaseSendSlot() { <-c.sendSlotChan() }
+
+// sendSlotChan returns the client's write-slot channel, creating it on first
+// use. NewClient allocates it eagerly; the lazy creation only keeps a
+// zero-value Client (a placeholder literal in tests) blocking on a real channel
+// rather than forever on a nil one.
+func (c *Client) sendSlotChan() chan struct{} {
+	c.sendSlotOnce.Do(func() { c.sendSlot = make(chan struct{}, 1) })
+	return c.sendSlot
+}
+
 func (c *Client) request(ctx context.Context, method string, params any, out any) error {
 	id := NewIntID(c.nextID.Add(1) - 1)
 	if observe := requestIDObserverFrom(ctx); observe != nil {
@@ -247,13 +325,31 @@ func (c *Client) request(ctx context.Context, method string, params any, out any
 	c.pending[id.String()] = pendingRequest{id: id, ch: ch}
 	c.pendingMu.Unlock()
 
-	c.sendMu.Lock()
+	if err := c.acquireSendSlot(ctx); err != nil {
+		// The context ended before this request could take the write slot, so
+		// its frame is never dispatched: report it as provably unsent rather
+		// than as an in-flight cancellation whose response might have been
+		// lost. Nothing is written here, which is what lets
+		// RequestNotSentError promise the peer never saw the request.
+		c.removePending(id)
+		return RequestNotSentError{Err: err}
+	}
+	if err := ctx.Err(); err != nil {
+		// The context ended in the same instant the slot was acquired: when the
+		// slot is free and ctx is already done, acquireSendSlot's select may
+		// take either case. Nothing has been dispatched yet either, so this is
+		// still provably unsent; release the slot first so the next writer is
+		// not blocked behind a request that never runs.
+		c.releaseSendSlot()
+		c.removePending(id)
+		return RequestNotSentError{Err: err}
+	}
 	if err := c.transport.Send(ctx, RequestMessage(id, method, params)); err != nil {
-		c.sendMu.Unlock()
+		c.releaseSendSlot()
 		c.removePending(id)
 		return err
 	}
-	c.sendMu.Unlock()
+	c.releaseSendSlot()
 
 	var msg Message
 	select {
@@ -296,8 +392,15 @@ func (c *Client) Request(ctx context.Context, method string, params any, out any
 }
 
 func (c *Client) Notify(ctx context.Context, method string, params any) error {
-	c.sendMu.Lock()
-	defer c.sendMu.Unlock()
+	// Notify waits for the same write slot as Request, but does not observe ctx
+	// while waiting: a notification has no response and no
+	// RequestNotSentError-style not-sent contract, so a caller whose context
+	// ends while it is queued keeps the pre-round-nine behavior — the send
+	// proceeds when the slot frees and transport.Send applies its own context
+	// check. Only the acquisition mechanism changed, to the same channel Request
+	// uses, so the two paths still serialize against each other.
+	c.sendSlotChan() <- struct{}{}
+	defer c.releaseSendSlot()
 	return c.transport.Send(ctx, NotificationMessage(method, params))
 }
 

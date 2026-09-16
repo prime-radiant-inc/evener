@@ -254,6 +254,7 @@ describe("never echo a secret", () => {
     }));
     fake.on("evener/auth/test", () => ({ provider: "work", status: "success", message: "" }));
     fake.on("evener/auth/device/poll", () => ({ state: "pending" }));
+    fake.on("evener/auth/status", () => SIGNED_IN);
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
     const seen: string[] = [];
@@ -267,6 +268,7 @@ describe("never echo a secret", () => {
     await store.getState().logout("work");
     await store.getState().testCredentials("work");
     await store.getState().devicePoll("work", "flow-1");
+    await store.getState().authStatus("work");
     expect(fake.calls.find((call) => call.method === "evener/auth/apiKey/set")?.params).toEqual({
       provider: "work",
       value: API_KEY,
@@ -322,6 +324,50 @@ describe("never echo a secret", () => {
     nowhere(JSON.stringify(store.getState()));
     nowhere(consoleText(spies));
     for (const spy of spies) spy.mockRestore();
+  });
+});
+
+describe("authStatus", () => {
+  test("reads the provider's status through the read gate, arming no marker and refreshing nothing", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/status", () => SIGNED_IN);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    const before = store.getState();
+
+    expect(await store.getState().authStatus("work")).toEqual(SIGNED_IN);
+    expect(fake.calls.at(-1)).toEqual({ method: "evener/auth/status", params: { provider: "work" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(1);
+    expect(store.getState()).toBe(before);
+
+    // A read, so it stays available while the rows on screen are a replaced
+    // connection's; no client at all is still a programmer error.
+    store.connectionChanged(readyClient(), "ready");
+    await vi.advanceTimersByTimeAsync(0);
+    const restored = new FakeClient("ready");
+    restored.on("evener/instance/list", () => LISTING);
+    restored.on("evener/auth/status", () => SIGNED_IN);
+    store.connectionChanged(restored, "ready");
+    expect(store.getState().listingFromPreviousConnection).toBe(true);
+    expect(await store.getState().authStatus("work")).toEqual(SIGNED_IN);
+    store.resetForTests();
+    await expect(store.getState().authStatus("work")).rejects.toThrow(/no client connected/);
+  });
+
+  test("a status reply from a connection since replaced is refused with the shared words", async () => {
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    const reply = deferred<AuthStatusResponse>();
+    fake.on("evener/auth/status", () => reply.promise);
+    store.connectionChanged(fake, "ready");
+
+    const status = store.getState().authStatus("work");
+    store.connectionChanged(readyClient(), "ready");
+    reply.resolve(SIGNED_IN);
+    await expect(status).rejects.toThrow(CONNECTION_REPLACED_ERROR);
   });
 });
 
