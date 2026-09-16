@@ -53,7 +53,7 @@ func TestAppCapabilities_SteerGatedOnActiveTurn(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			if tc.setSteer {
-				s.SetSteerFunc(func(string) {})
+				s.SetSteerFunc(func(string) error { ; return nil })
 			}
 			if tc.reserved {
 				s.appActiveTurnID = "turn_reserved"
@@ -139,7 +139,7 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			s.SetSteerFunc(func(string) {})
+			s.SetSteerFunc(func(string) error { ; return nil })
 			s.SetCancelFunc(func() {})
 			s.appReservedTurnID = tc.reserved
 
@@ -184,7 +184,7 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetSteerFunc(func(string) {})
+	s.SetSteerFunc(func(string) error { ; return nil })
 	s.SetCancelFunc(func() {})
 
 	// End of a turn: the loop clears processing and the cancel together.

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	agentsandbox "primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -56,9 +57,14 @@ func (s *WebServer) navigationAfterDeletion(ctx context.Context, hint navigation
 }
 
 var (
-	removeProjectSessionFile            = os.Remove
-	removeProjectSessionDir             = os.RemoveAll
-	removeProjectSessionRendezvousEntry = rendezvous.Remove
+	removeProjectSessionFile = os.Remove
+	removeProjectSessionDir  = os.RemoveAll
+	// removeProjectSessionRendezvousEntry deletes one matched session's
+	// rendezvous file only while it still carries the exact identity that was
+	// just read. Deleting by PID alone would destroy a live replacement's entry
+	// if that PID were reused (or a respawn raced a slow exit) between the list
+	// and the unlink, permanently losing Hub discovery for the replacement.
+	removeProjectSessionRendezvousEntry = rendezvous.RemoveIfOwned
 	rebuildProjectDeletionPast          = func(past *hubcore.PastIndex) (bool, error) { return past.Rebuild() }
 	// projectSessionLive is the deletion-safety liveness predicate (kata
 	// 8at6): a retained crash marker (LiveEntry.Crashed=true, written by
@@ -383,10 +389,42 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 // single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
 func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
+	// Remove the artifacts first: the release below is authorized by that
+	// deletion succeeding, not by the attempt. Releasing before a removal that
+	// can still fail would tombstone a session whose metadata and transcript
+	// survive (and stay resumable), so a later resume would mint replacement
+	// scratch and let the originally retained directories be collected.
 	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {
-		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, nil
+		return false, &projectDeleteSkip{ID: threadID, Reason: err.Error()}, decisionErrors
 	}
-	return true, nil, s.scrubSessionDecisions(threadID)
+	// Under this verified deletion ownership, release the exact target root's
+	// scratch-retention manifest now that its state is purged. A manifest owned
+	// by a surviving root is never touched, so a child-only deletion cannot
+	// release its parent's retained scratch. A release failure is recorded, not
+	// silently dropped, so deletion still proceeds conservatively.
+	if err := releaseProjectDeletionScratchRetention(stateDir, threadID); err != nil {
+		decisionErrors = append(decisionErrors, "scratch retention release error: "+err.Error())
+	}
+	return true, nil, append(decisionErrors, s.scrubSessionDecisions(threadID)...)
+}
+
+// releaseProjectDeletionScratchRetention writes the terminal tombstone for the
+// scratch-retention manifest owned by exactly sessionID. It is a no-op when no
+// manifest exists for that id, so a session that is not a retention root (a
+// delegate child, or one that never minted scratch) cannot release a surviving
+// root's manifest.
+func releaseProjectDeletionScratchRetention(stateDir, sessionID string) error {
+	if stateDir == "" || sessionID == "" {
+		return nil
+	}
+	manifestPath := filepath.Join(stateDir, "scratch-retention", sessionID+".json")
+	if _, err := os.Stat(manifestPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return agentsandbox.ReleaseScratchRetention(agentsandbox.ScratchOwner{StateDir: stateDir, RootSessionID: sessionID})
 }
 
 func (s *WebServer) scrubSessionDecisions(threadID string) (decisionErrors []string) {
@@ -537,7 +575,7 @@ func removeProjectSessionRendezvous(runDir, sessionID string) error {
 		if entry.SessionID != sessionID && entry.ThreadID != sessionID {
 			continue
 		}
-		if err := removeProjectSessionRendezvousEntry(runDir, entry.PID); err != nil {
+		if err := removeProjectSessionRendezvousEntry(runDir, entry); err != nil {
 			return err
 		}
 	}

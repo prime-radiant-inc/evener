@@ -299,7 +299,9 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	name := "  srsp session  "
 	sess.SetModel(model)
 	sess.SetReasoningEffort(effort)
-	sess.Rename(name)
+	if err := sess.Rename(name); err != nil {
+		t.Error(err)
+	}
 	sess.RegisterTool("srsp_custom", "status fixture", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
 		return "unused", nil
 	})
@@ -341,7 +343,9 @@ func srspRuntimeAndStatus(t *testing.T, draw byte) {
 	before := sess.Meta()
 	sess.SetModel("gpt-5.4")
 	sess.SetReasoningEffort("low")
-	sess.Rename("after close")
+	if err := sess.Rename("after close"); err != nil {
+		t.Error(err)
+	}
 	after := sess.Meta()
 	if after.Model != before.Model || after.Config.ReasoningEffort != before.Config.ReasoningEffort || after.Name != before.Name {
 		t.Fatalf("closed setters mutated meta: before=%+v after=%+v", before, after)

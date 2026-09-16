@@ -309,19 +309,36 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	if strings.TrimSpace(input) == "" {
 		return
 	}
+	release, err := s.beginRetirementMutation("autonomous")
+	if err != nil {
+		return
+	}
 	s.mu.Lock()
 	if s.naming.set || s.naming.promptPending || strings.TrimSpace(s.naming.value) != "" || s.closingOrClosedLocked() {
 		s.mu.Unlock()
+		release()
 		return
 	}
 	s.naming.promptPending = true
+	s.naming.pending++
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	go func() {
-		defer s.sendersWG.Done()
+		defer s.finishSessionNamer(release)
 		err := s.nameSessionFromText(ctx, sessionNameSourcePrompt, input)
 		s.clearPromptNamePendingAfterAttempt(err)
 	}()
+}
+
+// finishSessionNamer releases only after provider, advisory, event and autosave
+// effects have settled. The pending count also represents work registered before
+// process-controller attachment; promptPending retains its original sticky role.
+func (s *Session) finishSessionNamer(release func()) {
+	s.mu.Lock()
+	s.naming.pending--
+	s.mu.Unlock()
+	release()
+	s.sendersWG.Done()
 }
 
 // suppressSessionNamerIfQuotaExhausted disables naming for the rest of this
@@ -403,15 +420,21 @@ func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Tu
 	if !s.shouldNameFromCompaction() {
 		return
 	}
+	release, err := s.beginRetirementMutation("autonomous")
+	if err != nil {
+		return
+	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
+		release()
 		return
 	}
+	s.naming.pending++
 	s.sendersWG.Add(1)
 	s.mu.Unlock()
 	go func() {
-		defer s.sendersWG.Done()
+		defer s.finishSessionNamer(release)
 		_ = s.nameSessionFromCompactionTurnGated(ctx, turn, publishedRevision)
 	}()
 }
@@ -493,7 +516,9 @@ func (s *Session) handleCompactionTurnEffects(t schema.Turn, writeErr error, sup
 	// enqueue time if a newer fold has published since this flush's check.
 	if s.taskStore != nil {
 		if reminder := taskReminderFull(s.taskStore); reminder != "" {
-			s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision)
+			if err := s.steerKindForFold(reminder, events.SteeringKindTaskList, publishedRevision); err != nil {
+				s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+			}
 		}
 	}
 }

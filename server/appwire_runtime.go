@@ -1234,6 +1234,8 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodUrlsRemove, s.handleAppUrlsRemove)
 	appserver.HandleTyped(router, appwire.MethodThreadCompactStart, s.handleAppThreadCompactStart)
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
+	appserver.HandleTyped(router, appwire.MethodEvenerDaemonStatus, s.handleAppDaemonStatus)
+	appserver.HandleTyped(router, appwire.MethodEvenerDaemonRetire, s.handleAppDaemonRetire)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
 	appserver.HandleTyped(router, appwire.MethodThreadVisionModelSet, s.handleAppThreadVisionModelSet)
@@ -2228,8 +2230,7 @@ func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.Thread
 	if fn == nil {
 		return appwire.EmptyResponse{}, appwire.Unavailable("rename not available")
 	}
-	fn(name)
-	return appwire.EmptyResponse{}, nil
+	return appwire.EmptyResponse{}, fn(name)
 }
 
 func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
@@ -2249,8 +2250,7 @@ func (s *Server) handleAppThreadReasoningEffortSet(_ context.Context, params app
 	if err := llm.ValidateReasoningEffort(effort); err != nil {
 		return appwire.EmptyResponse{}, appwire.InvalidParams("invalid reasoning effort: " + params.ReasoningEffort)
 	}
-	fn(effort)
-	return appwire.EmptyResponse{}, nil
+	return appwire.EmptyResponse{}, fn(effort)
 }
 
 func (s *Server) requireRootMutationTarget(rawRef, threadID string) error {

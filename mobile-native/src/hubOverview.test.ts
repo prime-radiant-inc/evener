@@ -12,7 +12,7 @@ function pending() {
 }
 it("retains known overview on failed refresh and distinguishes absent sections", async () => {
   let request = async (): Promise<SettingsOverviewResponse> => ({
-    hub: { version: "fixture" },
+    hub: { version: "fixture", daemonIdleTimeoutMillis: 3600000 },
   });
   const calls: string[] = [];
   const model = new HubOverview({
@@ -42,9 +42,9 @@ it("does not overwrite a newer overview with an old read", async () => {
     request: () => request(),
   } as unknown as ConversationClientLike);
   const first = model.refresh();
-  request = async () => ({ hub: { version: "new" } });
+  request = async () => ({ hub: { version: "new", daemonIdleTimeoutMillis: 3600000 } });
   await model.refresh();
-  old.resolve({ hub: { version: "old" } });
+  old.resolve({ hub: { version: "old", daemonIdleTimeoutMillis: 3600000 } });
   await first;
   expect(model.getSnapshot().data?.hub?.version).toBe("new");
 });
@@ -64,7 +64,7 @@ it("ignores pending responses and further reads after leaving the hub", async ()
   const read = model.refresh();
   model.dispose();
   const before = updates;
-  old.resolve({ hub: { version: "old-hub" } });
+  old.resolve({ hub: { version: "old-hub", daemonIdleTimeoutMillis: 3600000 } });
   await read;
   await model.refresh();
   expect(updates).toBe(before);

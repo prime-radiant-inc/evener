@@ -203,7 +203,18 @@ func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequir
 	return requirements
 }
 
-func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (delegateMutationPlans, error) {
+func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (result delegateMutationPlans, resultErr error) {
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return delegateMutationPlans{}, err
+	}
+	defer func() {
+		if resultErr == nil && (len(result.updates) != 0 || len(result.deliveries) != 0 || len(result.attention) != 0 || len(result.shellRepairs) != 0 || result.attentionFinalization != nil) {
+			result.retirementRelease = release
+		} else {
+			release()
+		}
+	}()
 	c.mu.Lock()
 	var cancel context.CancelFunc
 	defer func() {

@@ -118,7 +118,7 @@ func exerciseServerFuzzResiduals(_ *testing.T) {
 	} {
 		s := NewServer(ServerConfig{})
 		if tc.steer {
-			s.SetSteerFunc(func(string) {})
+			s.SetSteerFunc(func(string) error { ; return nil })
 		}
 		if tc.reserved {
 			s.appActiveTurnID, s.appReservedTurnID = "reserved", "reserved"
@@ -176,7 +176,7 @@ func exerciseAppWireResiduals() {
 	}
 	_, _ = s.handleAppTurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation"})
 	_, _ = s.handleAppTurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Input: []appwire.InputItem{{Text: "x"}}})
-	s.SetSteerFunc(func(string) {})
+	s.SetSteerFunc(func(string) error { ; return nil })
 	_, _ = s.handleAppTurnSteer(ctx, appwire.TurnSteerParams{ClientMutationID: "test-mutation", Input: []appwire.InputItem{{Text: "x"}}})
 
 	_, _ = s.handleAppTurnQueue(ctx, appwire.TurnQueueParams{ClientMutationID: "test-mutation"})
@@ -242,7 +242,7 @@ func exerciseAppWireResiduals() {
 	_, _ = s.handleAppThreadModelSet(ctx, appwire.ThreadModelSetParams{Model: "m"})
 	_, _ = s.handleAppThreadNameSet(ctx, appwire.ThreadNameSetParams{})
 	_, _ = s.handleAppThreadNameSet(ctx, appwire.ThreadNameSetParams{Name: "name"})
-	s.SetNameFunc(func(string) {})
+	s.SetNameFunc(func(string) error { return nil })
 	_, _ = s.handleAppThreadNameSet(ctx, appwire.ThreadNameSetParams{Name: "name"})
 	_, _ = s.handleAppTasksList(ctx, appwire.TaskListParams{})
 	_, _ = s.handleAppModelList(ctx, appwire.ModelListParams{})

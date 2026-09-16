@@ -45,11 +45,33 @@ func (r *Registration) UpdateSessionID(sessionID string) error {
 	if !r.registered {
 		return nil
 	}
-	r.entry.ThreadID = sessionID
-	r.entry.SessionID = sessionID
-	r.entry.InstanceID = sessionID
-	_, err := rendezvous.Write(r.runDir, r.entry)
-	return err
+	// Persist first, then adopt: writing a copy and assigning r.entry only
+	// after rendezvous.Write succeeds keeps memory and disk in agreement. A
+	// failed write that had already mutated r.entry would leave memory holding
+	// an identity newer than the file, and Remove's exact-ownership guard would
+	// then misread its own stale artifact as a replacement daemon's.
+	entry := r.entry
+	entry.ThreadID = sessionID
+	entry.SessionID = sessionID
+	entry.InstanceID = sessionID
+	if _, err := rendezvous.Write(r.runDir, entry); err != nil {
+		return err
+	}
+	r.entry = entry
+	return nil
+}
+
+// Entry returns a detached copy of the registered rendezvous record. The
+// retire path uses it to revalidate a caller's claimed ownership generation
+// against what this process actually published. The copy is taken under the
+// registration mutex so a concurrent UpdateSessionID cannot tear it.
+func (r *Registration) Entry() (rendezvous.Entry, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.registered {
+		return rendezvous.Entry{}, false
+	}
+	return r.entry, true
 }
 
 func (r *Registration) Remove() error {
@@ -58,10 +80,66 @@ func (r *Registration) Remove() error {
 	if !r.registered {
 		return nil
 	}
+	// Exact-ownership removal: if a replacement daemon has rewritten the
+	// entry for this PID, the file on disk is no longer this process's to
+	// delete, and the stale cleanup must leave it in place.
 	r.removed = true
-	err := rendezvous.Remove(r.runDir, r.entry.PID)
+	err := rendezvous.RemoveIfOwned(r.runDir, r.entry)
 	if err == nil {
 		r.registered = false
+		return nil
 	}
+	// The ownership guard protects a live replacement's rendezvous entry, and
+	// Write always publishes that entry as a regular file under the same lock.
+	// An artifact at <pid>.json that is not a regular file therefore cannot be
+	// a replacement's entry to protect, so reconcile it: RemoveUnlessRegular
+	// re-checks and unlinks under the same per-PID ownership lock, so a
+	// replacement reusing this PID cannot have its live entry deleted by a
+	// check-then-unlink that is not atomic. That keeps the contract the
+	// shutdown loop relies on -- a cleanup that failed on a transient
+	// filesystem condition still finishes when a later attempt retries it. A
+	// regular file is refused by RemoveUnlessRegular as well, and is left
+	// untouched by both.
+	fallbackErr := rendezvous.RemoveUnlessRegular(r.runDir, r.entry.PID)
+	if fallbackErr == nil {
+		r.registered = false
+		return nil
+	}
+	// Both refused, so a regular file remains at <pid>.json. If it now carries
+	// a different daemon's identity, a replacement reused this PID and rewrote
+	// the record: this process's own entry is already gone, making the guard's
+	// refusal a completed no-op rather than a failure to retry.
+	if diskHoldsReplacement(r.runDir, r.entry) {
+		r.registered = false
+		return nil
+	}
+	// Otherwise this process's own artifact survived a real failure. Return the
+	// original cause, not RemoveUnlessRegular's secondary regular-file refusal,
+	// so the shutdown loop logs and retries what actually went wrong.
 	return err
+}
+
+// diskHoldsReplacement reports whether <pid>.json currently carries a valid
+// rendezvous entry for this PID that is not this registration's identity --
+// i.e. a replacement daemon reused the PID and rewrote the record. It defers to
+// rendezvous.DiskHoldsReplacement, the single identity authority: that re-check
+// runs exactly the comparison RemoveIfOwned refuses on, under the same per-PID
+// ownership lock, so it cannot disagree with the guard.
+//
+// The canonical ownership fingerprint (rendezvous.OwnershipFingerprint) is
+// deliberately not used: it excludes HubToken, SpawnedBy, Agent, Model and
+// Provider, so a same-PID record differing only in one of them is refused by
+// the guard yet fingerprints identically -- the fingerprint would report "not a
+// replacement" and the shutdown loop would retry a record this process no
+// longer owns.
+//
+// A missing, unreadable or unparseable artifact, or a failure of the re-check
+// itself, reports false, which keeps the caller's original (retryable) error
+// rather than declaring a no-op.
+func diskHoldsReplacement(runDir string, own rendezvous.Entry) bool {
+	replaced, err := rendezvous.DiskHoldsReplacement(runDir, own)
+	if err != nil {
+		return false
+	}
+	return replaced
 }

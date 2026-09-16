@@ -102,8 +102,20 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id                       string
-	cfg                      SessionConfig
+	id  string
+	cfg SessionConfig
+	// retainedScratch, when non-nil, is the root-owned pool of scratch handles
+	// reacquired by prepareRetainedScratch before root/child initialization
+	// launches work. It holds historical or not-yet-reconstructed handles until
+	// adoption or release. It is an atomic pointer (a single swapped reference,
+	// never held across work), so it is not a sampling-relevant mutex.
+	retainedScratch atomic.Pointer[retainedScratchPool]
+	// scratchRetentionErr records the first sticky scratch-retention
+	// publication failure this session observed after an environment swap: the
+	// durable manifest diverged from the live environment and no later swap
+	// repaired it, so preparation must fail closed rather than trust the
+	// manifest. Guarded by mu.
+	scratchRetentionErr      error
 	delegateController       *delegateTreeController
 	delegateRootSessionID    string
 	owningDelegateID         string
@@ -268,6 +280,10 @@ type Session struct {
 	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
+	// retirementController is process-owned and published atomically so admission
+	// never nests the controller mutex with a Session lock. Nil leaves ordinary
+	// non-daemon sessions unchanged; descendants inherit it before starting work.
+	retirementController atomic.Pointer[RetirementController]
 	// metaSaveMu serializes each metadata snapshot with its write. It is acquired
 	// before mu by maybeAutoSave, preventing an older snapshot from waiting behind
 	// and then overwriting a newer save from another goroutine.
@@ -368,9 +384,10 @@ type Session struct {
 	toolEventsWG                  sync.WaitGroup                       // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup                       // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup                       // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
+	disposeRetirement             []func()                             // anonymous same-session admissions; guarded by mu, including work begun before controller attachment
 	sweepWG                       sync.WaitGroup                       // in-flight P3 open-pass residue sweeps; the open timer callback Adds under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before its own disposal (spec §P3)
 	envWorkWG                     sync.WaitGroup                       // admitted work that runs commands on the session's environment: a whole manage_worktree call (admitted at its dispatch), a swap's refresh (swapEnvAndRefresh), the cut of a delegate's isolation lane and the rollback that undoes it (prepareIsolation), and the deferred rollback a refused or failed op still owes after that swap returned; Adds under mu gated on closing so the Add happens-before Close()'s join, which Close() runs after its dispose and sweep joins and BEFORE the delegate-tree close, its own lane cleanup, the store closures and the environment cleanup — everything the admitted work is still using
-	envWork                       map[envWorkID]string                 // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
+	envWork                       map[envWorkID]envWorkRecord          // what each live envWorkWG admission is, so a close whose bounded join gives up can name what it walked past; guarded by mu
 	abandonedEnvs                 []*execenv.LocalExecutionEnvironment // environments swapped away from that are neither current nor parked (the clone between two enters); a child sharing one can still mint scratch on it, so close retains each; one entry per environment; guarded by mu
 	envWorkSeq                    uint64                               // last envWork handle issued; guarded by mu
 	laneSweepTimer                clock.Timer                          // one-shot P3 open-pass timer (top-level local sessions only), armed at open and stopped at close; guarded by mu
@@ -598,6 +615,10 @@ type Session struct {
 	notifyWakeDeferred bool
 	notifyFunc         func()
 	jobNotifyRetry     notificationRetry
+	// jobNotifyCallbacks counts in-flight scheduled notification retry
+	// callbacks, including callbacks begun before retirement controller
+	// attachment. Guarded by pendingJobNotifsMu.
+	jobNotifyCallbacks int
 
 	jobManager *jobManager
 
@@ -800,6 +821,7 @@ type Session struct {
 	// attentionMu serializes transcript-backed attention resolution for this
 	// resident Session. The transcript remains the only stored attention state.
 	attentionMu               sync.Mutex
+	attentionCallbacks        int // guarded by attentionMu; includes pre-retirement-attachment callbacks
 	delegateDeliveryMu        sync.Mutex
 	delegateDeliveryCommits   map[string][]*delegateToolResultCommit
 	pendingDelegateDeliveries []delegateDeliveryPlan
@@ -1119,6 +1141,27 @@ func (s *Session) notify() {
 	}
 }
 
+// beginJobNotifyCallback retains local ownership of one scheduled notification
+// retry callback even when the process controller is attached after that
+// callback starts. Source receipt consumption and retry-generation resets do
+// not settle an outstanding unlocked callback: the count registered here is
+// projected by the local collector until the callback returns.
+func (s *Session) beginJobNotifyCallback() (func(), error) {
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		return nil, err
+	}
+	s.pendingJobNotifsMu.Lock()
+	s.jobNotifyCallbacks++
+	s.pendingJobNotifsMu.Unlock()
+	return func() {
+		s.pendingJobNotifsMu.Lock()
+		s.jobNotifyCallbacks--
+		s.pendingJobNotifsMu.Unlock()
+		release()
+	}, nil
+}
+
 func (s *Session) scheduleJobNotificationRetryLocked() {
 	if s.jobNotifyRetry.active {
 		return
@@ -1131,6 +1174,25 @@ func (s *Session) scheduleJobNotificationRetryLocked() {
 	s.jobNotifyRetry.generation++
 	generation := s.jobNotifyRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		release, err := s.beginJobNotifyCallback()
+		if err != nil {
+			// Admission was refused for this one-shot firing (a real TryClaim
+			// preparing window). Do not consume the only firing: clear the
+			// armed flag and synchronously re-arm under the owner lock so the
+			// backoff chain survives the refusal and a later firing still
+			// delivers the retained source. Only a still-current generation
+			// owns the armed flag: a superseded one was invalidated by
+			// resetJobNotificationRetry or a newer schedule, and re-arming it
+			// would resurrect a stale wake the owner already settled.
+			s.pendingJobNotifsMu.Lock()
+			if s.jobNotifyRetry.generation == generation {
+				s.jobNotifyRetry.active = false
+				s.scheduleJobNotificationRetryLocked()
+			}
+			s.pendingJobNotifsMu.Unlock()
+			return
+		}
+		defer release()
 		s.pendingJobNotifsMu.Lock()
 		if s.jobNotifyRetry.generation != generation {
 			s.pendingJobNotifsMu.Unlock()
@@ -1184,6 +1246,7 @@ type sessionName struct {
 	updated        time.Time // when value last changed
 	set            bool      // a name has been assigned
 	promptPending  bool      // a naming LLM call is in flight
+	pending        int       // registered naming attempts, including compaction refreshes
 	quotaExhausted bool      // current model's allowance is spent; stop naming until SetModel
 }
 
@@ -1268,11 +1331,16 @@ func (s *Session) CostFor(ref string) *registry.Cost {
 
 // SetReasoningEffort updates the reasoning effort used for future LLM calls.
 // Takes effect on the next request (spec).
-func (s *Session) SetReasoningEffort(effort string) {
+func (s *Session) SetReasoningEffort(effort string) error {
+	release, err := s.beginRetirementMutation("admission")
+	if err != nil {
+		return err
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	// Normalize disable-aliases (off/false/...) to the canonical "none" so a
 	// runtime off stays an explicit off through buildModelRequest, matching
@@ -1284,7 +1352,7 @@ func (s *Session) SetReasoningEffort(effort string) {
 	// Flush meta.json so a daemon crash before the next happy-path turn
 	// boundary doesn't leave on-disk cfg stale. Kata wnfz. maybeAutoSave
 	// re-acquires s.mu via s.Meta(), so the lock must be released first.
-	s.maybeAutoSave()
+	return s.saveMeta()
 }
 
 // resolveProfileForRef resolves a model ref to a *provider.Profile. When the
@@ -1352,6 +1420,11 @@ func (s *Session) reapplyProviderSpecificTools(oldProfile, newProfile *provider.
 // switch, cfg.ModelFallbacks entries that no longer validate against the new
 // profile are dropped; see DroppedModelFallbacksFromLastSwitch.
 func (s *Session) SetModel(model string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
@@ -1466,6 +1539,11 @@ func (s *Session) SetModel(model string) error {
 // the client. It takes effect on the next image read and persists with the
 // session config; it never alters the active model itself.
 func (s *Session) SetVisionModel(ref string) error {
+	release, admissionErr := s.beginRetirementMutation("admission")
+	if admissionErr != nil {
+		return admissionErr
+	}
+	defer release()
 	ref = strings.TrimSpace(ref)
 	ref = canonicalVisionModelOff(ref)
 	s.mu.Lock()
@@ -1569,15 +1647,20 @@ func (s *Session) DroppedModelFallbacksFromLastSwitch() []string {
 // auto-namers (prompt + compaction) will never overwrite it — shouldApplySession
 // NameLocked and shouldNameFromCompaction both reject any source that is not
 // "prompt"/"compaction". Persists meta so the name survives a daemon crash.
-func (s *Session) Rename(name string) {
+func (s *Session) Rename(name string) error {
+	release, err := s.beginRetirementMutation("admission")
+	if err != nil {
+		return err
+	}
+	defer release()
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return
+		return nil
 	}
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
 		s.mu.Unlock()
-		return
+		return nil
 	}
 	s.naming.value = name
 	s.naming.source = sessionNameSourceUser
@@ -1587,6 +1670,7 @@ func (s *Session) Rename(name string) {
 	s.emit(events.EventSessionNameChanged, events.SessionNameChangedData{Name: name, Source: sessionNameSourceUser})
 	// maybeAutoSave re-acquires s.mu via s.Meta(); must not hold the lock here.
 	s.maybeAutoSave()
+	return nil
 }
 
 func (s *Session) applyModelRequestMetadata(req *llm.Request) {

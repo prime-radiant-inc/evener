@@ -375,6 +375,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerNavigationReadHandler(server, navigation)
 	registerFavoriteHandler(server, cfg, navigation)
 	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
+	registerDaemonHandlers(server, cfg, sources)
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
 	registerMiscHandlers(server, cfg, sources)
@@ -735,6 +736,17 @@ func registerThreadHandlers(
 			}
 			if _, resumeErr := resumeTurnStartThread(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: params.ThreadID}); resumeErr != nil {
 				return appwire.TurnStartResponse{}, blockedUnknownMutationError(params.ClientMutationID, resumeErr)
+			}
+			resolved = false
+			return attemptStart()
+		}
+		if isLifecycleRetiringError(err) {
+			// The owning daemon refused the mutation because it is retiring and
+			// still owns the session. Resolve the race under existing recovery
+			// authority — admission fences, ownership alias locks, confirmed exit,
+			// one resume — then retry the original request verbatim.
+			if resumeErr := resumeAfterConfirmedRetirement(ctx, cfg, sources, params); resumeErr != nil {
+				return appwire.TurnStartResponse{}, resumeErr
 			}
 			resolved = false
 			return attemptStart()

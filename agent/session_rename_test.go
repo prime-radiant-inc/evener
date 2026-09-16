@@ -13,7 +13,9 @@ import "testing"
 // "user" source falls out as suppressed for free.
 func TestRenameSetsUserSourceAndSurvivesCompaction(t *testing.T) {
 	sess := newTestSession(t)
-	sess.Rename("my chosen title")
+	if err := sess.Rename("my chosen title"); err != nil {
+		t.Error(err)
+	}
 	m := sess.Meta()
 	if m.Name != "my chosen title" || m.NameSource != "user" {
 		t.Fatalf("rename should set Name + NameSource=user, got %+v", m)

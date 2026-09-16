@@ -771,6 +771,25 @@ func (s *Session) unionCoveredRootDelegateAttention(ids []string) []string {
 	return out
 }
 
+// beginAttentionCallback retains local ownership even when the process
+// controller is attached after this callback starts. Source receipt consumption
+// and retry-generation resets do not settle an outstanding unlocked callback.
+func (s *Session) beginAttentionCallback() (func(), error) {
+	release, err := s.beginRetirementMutation("notification")
+	if err != nil {
+		return nil, err
+	}
+	s.attentionMu.Lock()
+	s.attentionCallbacks++
+	s.attentionMu.Unlock()
+	return func() {
+		s.attentionMu.Lock()
+		s.attentionCallbacks--
+		s.attentionMu.Unlock()
+		release()
+	}, nil
+}
+
 func (s *Session) scheduleRootAttentionRetryLocked() {
 	if s.rootAttentionRetry.active || s.rootAttentionWake || len(s.rootAttentionWakeIDs) == 0 {
 		return
@@ -783,6 +802,25 @@ func (s *Session) scheduleRootAttentionRetryLocked() {
 	s.rootAttentionRetry.generation++
 	generation := s.rootAttentionRetry.generation
 	s.sclock().AfterFunc(delay, func() {
+		release, err := s.beginAttentionCallback()
+		if err != nil {
+			// Admission was refused for this one-shot firing (a real TryClaim
+			// preparing window). Do not consume the only firing: clear the
+			// armed flag and synchronously re-arm under the owner lock so the
+			// backoff chain survives the refusal and a later firing still
+			// wakes the retained source. Only a still-current generation owns
+			// the armed flag: a superseded one was invalidated by
+			// resetRootAttentionRetryLocked or a newer schedule, and re-arming
+			// it would resurrect a stale wake the owner already settled.
+			s.attentionMu.Lock()
+			if s.rootAttentionRetry.generation == generation {
+				s.rootAttentionRetry.active = false
+				s.scheduleRootAttentionRetryLocked()
+			}
+			s.attentionMu.Unlock()
+			return
+		}
+		defer release()
 		s.attentionMu.Lock()
 		if s.rootAttentionRetry.generation != generation {
 			s.attentionMu.Unlock()

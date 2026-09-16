@@ -19,7 +19,7 @@ import (
 func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetQueueFunc(func(string) error { return nil })
 	srv.SetCancelFunc(context.CancelFunc(func() {}))
 
@@ -75,7 +75,7 @@ func TestStatusChangeCarriesTheCapabilitiesForThatStatus(t *testing.T) {
 func TestStatusChangeOmitsCapabilitiesWhenTheDaemonCloses(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetQueueFunc(func(string) error { return nil })
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventUserInput, SessionID: "th_1", Data: events.UserInputData{Text: "go"}})

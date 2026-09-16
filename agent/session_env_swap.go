@@ -3,7 +3,9 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 )
 
@@ -63,6 +65,10 @@ var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; e
 // with s.mu held: it may only assign session fields, and must neither block
 // nor take s.mu itself.
 func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, record func()) error {
+	release, err := s.beginRetirementMutation("environment")
+	if err != nil {
+		return err
+	}
 	// Step 0 — move the session's scratch onto next BEFORE any command runs on
 	// it: the git snapshot and the pre-warm below spawn through next, and a
 	// command is what mints a scratch on an environment that owns none. Adopting
@@ -92,15 +98,24 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	shared := s.parentSharedEnv
 	var admission envWorkID
 	if !closing {
-		admission = s.registerEnvWorkLocked("environment swap to " + next.WorkingDirectory())
+		admission = s.registerEnvWorkLocked("environment swap to "+next.WorkingDirectory(), release)
 	}
 	s.mu.Unlock()
 	if closing {
+		release()
 		return errSwapWhileClosing
 	}
 	defer s.endEnvWork(admission)
 	moved := current != nil && !sameEnvironment(shared, current) && !sameEnvironment(shared, next)
 	if moved {
+		// Persist the allocation-ownership transition BEFORE the handles move.
+		// An occupied target keeps what it already owns and retains the incoming
+		// allocation (AdoptSessionScratch releases that lease), so a source's
+		// owning slot must never be durably dropped before the target's
+		// replacement slot and the consumer's new current binding are committed.
+		if err := s.stageScratchSwapBinding(next, current, s.id); err != nil {
+			return err
+		}
 		next.AdoptSessionScratch(current)
 	}
 	// Step 0b — the context step 1's git runs under. Every command below forks
@@ -184,5 +199,23 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	promptWarning := s.refreshSystemPromptCache(next)
 	s.mu.Unlock()
 	s.reportPromptRenderFailure(promptWarning)
+	// Publish the swapped-in environment's binding and its current/parked
+	// consumer roles outside any Session lock, so retention tracks the same
+	// environment the session now works in. The swap is already committed here
+	// (s.env is next and the caller's rollback must not run), so a publication
+	// failure is reported as a warning rather than returned: the "error ⇒ no
+	// swap" contract stays true. Publishing BEFORE the install is not the
+	// smaller correct option — the roles derive from worktreeRestoreEnv and the
+	// abandoned set, both decided by record() under the same s.mu hold that
+	// installs next, so an early publish would record pre-swap roles.
+	if err := s.registerScratchConsumerRoles(next); err != nil {
+		// The swap is already committed (s.env is next and the caller's rollback
+		// must not run), so the failure is a warning for the op — but the manifest
+		// may now diverge from the environment, so it is recorded sticky for the
+		// preparation readiness check to fail closed with a persistence error.
+		s.recordScratchRetentionError(err)
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			"scratch retention publication after environment swap failed: %v", err)})
+	}
 	return nil
 }

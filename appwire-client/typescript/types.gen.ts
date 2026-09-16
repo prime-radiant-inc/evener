@@ -193,6 +193,64 @@ export interface CommandListResponse {
   commands: CommandDescriptor[];
 }
 
+export interface DaemonBlocker {
+  category: string;
+  sessionId?: string;
+  delegateId?: string;
+}
+
+export interface DaemonIdentity {
+  ref: string;
+  pid: number;
+  startedAt: string;
+  generation: string;
+}
+
+export interface DaemonLifecycle {
+  phase: string;
+  timeoutMillis: number;
+  eligibleSince?: string;
+  deadline?: string;
+  blockers: DaemonBlocker[];
+  failure?: string;
+}
+
+export interface DaemonListParams {
+}
+
+export interface DaemonListResponse {
+  defaultTimeoutMillis: number;
+  daemons: DaemonResident[];
+}
+
+export interface DaemonResident {
+  identity: DaemonIdentity;
+  name: string;
+  protocol: string;
+  compatibility: string;
+  archived: boolean;
+  probeState: string;
+  lifecycle?: DaemonLifecycle;
+  canRetire: boolean;
+  canForceStop: boolean;
+}
+
+export interface DaemonRetireParams {
+  identity: DaemonIdentity;
+}
+
+export interface DaemonRetireResponse {
+  accepted: boolean;
+  lifecycle: DaemonLifecycle;
+}
+
+export interface DaemonStatusParams {
+}
+
+export interface DaemonStatusResponse {
+  lifecycle: DaemonLifecycle;
+}
+
 export interface DeletionSkip {
   id: string;
   reason: string;
@@ -1646,6 +1704,7 @@ export interface SettingsHubOverview {
   spawnTimeout?: string;
   bearerTokenAge?: string;
   pastIndex?: SettingsPastIndexOverview;
+  daemonIdleTimeoutMillis: number;
 }
 
 export interface SettingsMCPOverview {
@@ -1793,6 +1852,7 @@ export interface ThreadCompactStartParams {
 
 export interface ThreadForceStopParams {
   ref: string;
+  expectedDaemon?: DaemonIdentity;
 }
 
 export interface ThreadForkParams {
@@ -2339,6 +2399,9 @@ export const METHOD_NAMES = [
   "evener/tasks/list",
   "evener/jobs/list",
   "evener/jobs/output",
+  "evener/daemon/list",
+  "evener/daemon/retire",
+  "evener/daemon/status",
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
@@ -2534,6 +2597,9 @@ export interface MethodTypes {
   "evener/tasks/list": { params: TaskListParams; result: TaskListResponse };
   "evener/jobs/list": { params: JobsListParams; result: JobsListResponse };
   "evener/jobs/output": { params: JobsOutputParams; result: JobsOutputResponse };
+  "evener/daemon/list": { params: DaemonListParams; result: DaemonListResponse };
+  "evener/daemon/retire": { params: DaemonRetireParams; result: DaemonRetireResponse };
+  "evener/daemon/status": { params: DaemonStatusParams; result: DaemonStatusResponse };
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };

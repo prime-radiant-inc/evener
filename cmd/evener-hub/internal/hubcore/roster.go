@@ -62,6 +62,14 @@ type LiveEntry struct {
 	// daemon that carries no per-child watches omits the entry entirely.
 	ChildWatches map[string][]appwire.EvenerWatchInfo
 	Project      identifier.Project // canonical identity resolved at hub ingestion, when available
+	// Lifecycle is the daemon's retirement lifecycle as of the probe that
+	// produced this entry; nil when the daemon could not answer
+	// evener/daemon/status (capability unknown). A failed lifecycle probe
+	// clears capability, never process ownership.
+	Lifecycle *appwire.DaemonLifecycle
+	// LifecycleFresh reports whether Lifecycle (or its absence) came from a
+	// daemon/status answer in that same probe.
+	LifecycleFresh bool
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -75,8 +83,13 @@ type ProbeResult struct {
 	RunningSubagentStates map[string]string
 	RunningJobs           []appwire.EvenerJobInfo
 	CompletedJobs         []appwire.EvenerJobInfo
-	Watches               []appwire.EvenerWatchInfo
-	ChildWatches          map[string][]appwire.EvenerWatchInfo
+	// Lifecycle mirrors LiveEntry.Lifecycle: the retirement lifecycle from
+	// this probe, nil when the daemon could not answer daemon/status.
+	Lifecycle *appwire.DaemonLifecycle
+	// LifecycleFresh reports whether daemon/status answered in this probe.
+	LifecycleFresh bool
+	Watches        []appwire.EvenerWatchInfo
+	ChildWatches   map[string][]appwire.EvenerWatchInfo
 	// ProtocolMismatch: the endpoint answered, but as a daemon this hub cannot
 	// talk to (restart required). Such an answer names no session of its own,
 	// so it does not vouch for the entry's PID the way a bound answer does.
@@ -130,9 +143,22 @@ func cloneLiveEntry(in LiveEntry) LiveEntry {
 	out.RunningSubagentStates = cloneSubagentStates(in.RunningSubagentStates)
 	out.RunningJobs = cloneRunningJobs(in.RunningJobs)
 	out.CompletedJobs = cloneRunningJobs(in.CompletedJobs)
+	out.Lifecycle = cloneDaemonLifecycle(in.Lifecycle)
 	out.Watches = cloneWatches(in.Watches)
 	out.ChildWatches = cloneChildWatches(in.ChildWatches)
 	return out
+}
+
+// cloneDaemonLifecycle deep-copies a lifecycle snapshot (including its blocker
+// list) so a roster hand-off can never alias the probe's copy; nil stays nil
+// so "capability unknown" survives intact.
+func cloneDaemonLifecycle(in *appwire.DaemonLifecycle) *appwire.DaemonLifecycle {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	out.Blockers = append([]appwire.DaemonBlocker(nil), in.Blockers...)
+	return &out
 }
 
 // crashedFileRetention is how long Refresh keeps a dead PID's rendezvous file
@@ -409,6 +435,34 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 		completedJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].CompletedJobs...)
 		writeJobs(completedJobs)
 		_, _ = h.Write([]byte{0})
+		// Lifecycle phase transitions (resident -> preparing -> retiring) and
+		// blocker changes must bump the fingerprint exactly like child state:
+		// they change what resident UI surfaces for this daemon.
+		if bySess[id].LifecycleFresh {
+			_, _ = h.Write([]byte{1})
+		}
+		_, _ = h.Write([]byte{0})
+		if lifecycle := bySess[id].Lifecycle; lifecycle != nil {
+			_, _ = h.Write([]byte(lifecycle.Phase))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(strconv.FormatInt(lifecycle.TimeoutMillis, 10)))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(lifecycle.EligibleSince))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(lifecycle.Deadline))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(lifecycle.Failure))
+			_, _ = h.Write([]byte{0})
+			for _, blocker := range lifecycle.Blockers {
+				_, _ = h.Write([]byte(blocker.Category))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(blocker.SessionID))
+				_, _ = h.Write([]byte{0})
+				_, _ = h.Write([]byte(blocker.DelegateID))
+				_, _ = h.Write([]byte{0})
+			}
+		}
+		_, _ = h.Write([]byte{0})
 		// Watches are rendered on the session row, so any change the sidebar
 		// shows — a new watch, a delivery, a flip to inactive — must move the
 		// fingerprint or onChange never invalidates navigation. Sorted on a
@@ -587,6 +641,13 @@ func (r *Roster) refresh() error {
 					retainUnconfirmed(e)
 					continue
 				}
+				// The exact identity still matches, so keep the last-known route
+				// and status. The probe itself failed, though, so this reused entry
+				// carries no fresh lifecycle observation: clear the capability and
+				// mark it stale. Stale lifecycle data must never present as current
+				// eligibility, and a stale row must not offer a retire action.
+				prev.Lifecycle = nil
+				prev.LifecycleFresh = false
 				byPID[e.PID] = prev
 				if prev.SessionID != "" {
 					if current, ok := bySess[prev.SessionID]; !ok || preferLiveEntry(prev, current) {
@@ -616,8 +677,11 @@ func (r *Roster) refresh() error {
 				// file on disk is pure garbage, so reclaim it instead of
 				// rescanning it on every refresh forever. Removal failure is
 				// non-fatal (same stance as the List error above): the file
-				// just survives until a later refresh.
-				_ = rendezvous.Remove(r.runDir, e.PID)
+				// just survives until a later refresh. Removal is exact-owned:
+				// if a replacement daemon has since reused this PID and
+				// rewritten the file, it is not ours to unlink, so the guard's
+				// refusal is a normal no-op rather than an error to surface.
+				_ = rendezvous.RemoveIfOwned(r.runDir, e)
 				continue
 			}
 			if time.Since(e.StartedAt) > crashedFileRetention {
@@ -625,7 +689,7 @@ func (r *Roster) refresh() error {
 				// entry and unlink the file so dead-pid rendezvous files stop
 				// accumulating forever. Fresh crashes keep the retained
 				// "errored" contract below untouched.
-				_ = rendezvous.Remove(r.runDir, e.PID)
+				_ = rendezvous.RemoveIfOwned(r.runDir, e)
 				continue
 			}
 			crashed := LiveEntry{Entry: e, SessionID: sessionID}
@@ -972,10 +1036,13 @@ func preferLiveEntry(candidate, current LiveEntry) bool {
 	return candidate.PID > current.PID
 }
 
+// sameDaemonIdentity compares the process identity of two rendezvous entries
+// through the single exact-ownership authority, rendezvous.OwnershipFingerprint.
+// A hand-picked field list drifts from that authority (the previous copy here
+// omitted WorkingDir and StateDir while including HubToken), so the roster
+// would confirm or preserve the wrong owner after an identity change.
 func sameDaemonIdentity(a, b rendezvous.Entry) bool {
-	return a.PID == b.PID && a.Protocol == b.Protocol && a.Endpoint == b.Endpoint && a.Address == b.Address &&
-		a.SourceID == b.SourceID && a.ThreadID == b.ThreadID && a.SessionID == b.SessionID &&
-		a.WorkspaceRef == b.WorkspaceRef && a.InstanceID == b.InstanceID && a.HubToken == b.HubToken && a.StartedAt.Equal(b.StartedAt)
+	return rendezvous.OwnershipFingerprint(a) == rendezvous.OwnershipFingerprint(b)
 }
 
 // HasConfirmedEntry reports whether the exact daemon identity has a live route.
@@ -987,8 +1054,14 @@ func (r *Roster) HasConfirmedEntry(entry rendezvous.Entry) bool {
 
 func (r *Roster) hasConfirmedEntry(entry rendezvous.Entry) bool {
 	live, ok := r.byPID[entry.PID]
+	if !ok {
+		// No live daemon holds this PID: there is no session key to route by,
+		// and indexing bySess with the zero-value LiveEntry's empty SessionID
+		// would look up an unrelated key instead of failing fast.
+		return false
+	}
 	routed, found := r.bySess[live.SessionID]
-	return ok && found && !live.Crashed && routed.PID == entry.PID && sameDaemonIdentity(live.Entry, entry)
+	return found && !live.Crashed && routed.PID == entry.PID && sameDaemonIdentity(live.Entry, entry)
 }
 
 // RestartRequiredRootRef resolves metadata-only admission from one roster
@@ -1114,6 +1187,40 @@ func (r *Roster) UnconfirmedEntries() []rendezvous.Entry {
 	return slices.Clone(r.unconfirmed)
 }
 
+// ResidentEntry is one discovered daemon process identity: the rendezvous
+// claim plus, when established, the roster's confirmed view of that same
+// process. Confirmed is nil for claims whose process is alive but whose
+// ownership could not be verified. A Confirmed entry with Crashed set is
+// retained crash evidence, not a resident; the caller decides whether dead
+// markers belong in its view.
+type ResidentEntry struct {
+	Entry     rendezvous.Entry
+	Confirmed *LiveEntry
+}
+
+// ResidentEntries snapshots every discovered process identity under the
+// roster lock: confirmed entries (sorted by PID for determinism) followed by
+// unconfirmed claims. It performs no OS process scan and no archive
+// filtering, and it clones every slice so callers cannot mutate roster state.
+func (r *Roster) ResidentEntries() []ResidentEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ResidentEntry, 0, len(r.byPID)+len(r.unconfirmed))
+	pids := make([]int, 0, len(r.byPID))
+	for pid := range r.byPID {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	for _, pid := range pids {
+		live := cloneLiveEntry(r.byPID[pid])
+		out = append(out, ResidentEntry{Entry: live.Entry, Confirmed: &live})
+	}
+	for _, claim := range r.unconfirmed {
+		out = append(out, ResidentEntry{Entry: claim})
+	}
+	return out
+}
+
 func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 	return LiveEntry{
 		Entry:                 e,
@@ -1126,6 +1233,8 @@ func liveEntryFromProbe(e rendezvous.Entry, result ProbeResult) LiveEntry {
 		RunningSubagentStates: cloneSubagentStates(result.RunningSubagentStates),
 		RunningJobs:           cloneRunningJobs(result.RunningJobs),
 		CompletedJobs:         cloneRunningJobs(result.CompletedJobs),
+		Lifecycle:             cloneDaemonLifecycle(result.Lifecycle),
+		LifecycleFresh:        result.LifecycleFresh,
 		Watches:               cloneWatches(result.Watches),
 		ChildWatches:          cloneChildWatches(result.ChildWatches),
 	}

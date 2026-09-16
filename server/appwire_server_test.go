@@ -181,7 +181,7 @@ func TestServerAppWireThreadReadExposesReservedActiveTurnIDAlongsideSeededTurns(
 	// Production restores before it bridges: SessionStart carries the persisted
 	// entry count so live ids start above the seeded ones.
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_1", Data: events.SessionStartData{Restored: true, TranscriptEntries: 2}})
-	srv.SetSteerFunc(func(string) {})
+	srv.SetSteerFunc(func(string) error { ; return nil })
 	srv.SetCancelFunc(func() {})
 	installProjectedMutationCallbacksForTest(srv)
 
@@ -688,9 +688,10 @@ func TestServerAppWireTurnSteerPreservesImages(t *testing.T) {
 	srv.SetAppIdentity("local", "th_1")
 	var gotText string
 	var gotImages []ImageAttachment
-	srv.SetSteerWithImagesFunc(func(text string, images []ImageAttachment) {
+	srv.SetSteerWithImagesFunc(func(text string, images []ImageAttachment) error {
 		gotText = text
 		gotImages = append([]ImageAttachment(nil), images...)
+		return nil
 	})
 	installProjectedMutationCallbacksForTest(srv)
 
@@ -724,8 +725,9 @@ func TestServerAppWireTurnSteerRejectsImagesWithoutImageHook(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	var steered []string
-	srv.SetSteerFunc(func(text string) {
+	srv.SetSteerFunc(func(text string) error {
 		steered = append(steered, text)
+		return nil
 	})
 	installProjectedMutationCallbacksForTest(srv)
 
