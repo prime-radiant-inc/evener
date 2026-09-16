@@ -109,8 +109,12 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   the rail's expand state - over a `connect`/`request`/`onNotification`/`onReady`
   client port handed to `init(client)` and a `NavigationPersistence` port
   (`readExpansion`/`writeExpansion`) for expansion, with `projectNodeExpansionKey`
-  naming a project's row. The subpath resolves to `state/navigation/index.ts`,
-  a barrel that re-exports the seven modules whole.
+  naming a project's row, and the selectors both apps read that state through
+  (`selectors`): launch sources, section and catalog rows with their remaining
+  counts and next offsets, pin-section summaries, the project catalog and a
+  session summary found by ref, each pure over `NavigationState`. The subpath
+  resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
+  modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
