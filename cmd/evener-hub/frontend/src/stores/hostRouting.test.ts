@@ -1,7 +1,8 @@
 // @vitest-environment node
-import { describe, expect, test } from "vitest";
-import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+
 import type { HostForwardedResult, MethodName } from "@evener/appwire-client";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { describe, expect, test } from "vitest";
 import { HOST_DEPENDENT_DISCOVERY_METHODS, hostRequest, isLocalHost, LOCAL_HOST } from "./hostRouting";
 
 // Every method the spawn form issues against a selected host (component 06

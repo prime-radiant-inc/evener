@@ -6,13 +6,13 @@
 // core which client the rows belong to, and the core listens for
 // evener/auth/updated on that client itself.
 
+import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
+import { errorText } from "@evener/appwire-client";
 import {
   type CredentialInstancesState,
   createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
 import { createStore, useStore } from "zustand";
-import type { InstanceEntry, ProviderDescriptor } from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
 import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
 import { hostRequest, isLocalHost } from "./hostRouting";
 import { ownClientId } from "./mutationClientIdentity";

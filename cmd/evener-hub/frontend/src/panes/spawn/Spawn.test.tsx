@@ -7100,7 +7100,8 @@ test("the picker creates a folder on the selected host, never on the controller"
     f.on("evener/host/request", (params) => {
       const method = (params as HostRequestParams).method;
       forwarded.push(method);
-      if (method === "evener/dirs/create") return { path: "/srv/remote-create/child", created: true } as HostForwardedResult;
+      if (method === "evener/dirs/create")
+        return { path: "/srv/remote-create/child", created: true } as HostForwardedResult;
       return routedDiscoveryDefault(method);
     }),
   );
@@ -8552,4 +8553,153 @@ test("a host that answers its schema reconciles the advanced options even when i
   expect(draft.fields.getState().advancedValues).toEqual({ maxRounds: { value: "7" } });
   // ...while the harness whose request never answered stays put.
   expect(draft.fields.getState().harness).toBe("external");
+});
+
+// --- round seven -----------------------------------------------------------
+
+/** Every "create this directory" the pane issued, naming the host it was
+ * addressed to: the plain call is the controller's, a forwarded one carries the
+ * host it was scoped to. */
+function createDirCallHosts(fake: FakeClient): string[] {
+  const hosts: string[] = [];
+  for (const call of fake.calls) {
+    if (call.method === "evener/dirs/create") hosts.push("local");
+    else if (
+      call.method === "evener/host/request" &&
+      (call.params as HostRequestParams).method === "evener/dirs/create"
+    ) {
+      hosts.push((call.params as HostRequestParams).host);
+    }
+  }
+  return hosts;
+}
+
+// The "Create directory?" confirmation is an action against ONE host: buildbox
+// validated the path and supplied the draft's launch config, so the pending
+// create belongs to buildbox. The manifest's `online` flag is live, and an
+// offline source makes hostChoice fall back to "local" (see its derivation)
+// without touching createDialogPath - so before round seven the open dialog's
+// "Create & start" created the path and started the session on the host that
+// took over, with a draft that host never offered. A host switch now dismisses
+// the pending create instead of re-homing it.
+test("a host that drops offline while the create dialog is open never creates or starts on the host that took over", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  const fake = readyClient((f) =>
+    readyRemoteHost(f, { "evener/path/validate": { path: "/srv/taken-over", valid: false } }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/taken-over");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  window.history.pushState({}, "", "/new?dir=/srv/taken-over");
+  renderSpawn(fake);
+  await settled();
+
+  // buildbox says the directory does not exist, so the pane offers to create it
+  // - on buildbox, which is also where the draft's model came from.
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(await screen.findByRole("dialog", { name: "Create directory?" })).toBeTruthy();
+
+  await act(async () => {
+    seedSources([
+      { id: "local", label: "Local", kind: "local", online: true },
+      { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+    ]);
+  });
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+
+  // The confirmation went with the host it was bound to...
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(draft.fields.getState()).toMatchObject({ createDialogPath: null, createDialogHost: null });
+  // ...so nothing was created anywhere and nothing was started, on either host.
+  expect(createDirCallHosts(fake)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+  // Re-pinned to main's landed offline-fallback write-back (component 06b
+  // review, round nine - see "a host that returns online after its offline
+  // fallback stays on local"): the picker's fallback is recorded in the draft so
+  // the select and the launch target never diverge, which supersedes the branch's
+  // round-five "the stale draft value stays until the picker changes it". The
+  // draft's other config is untouched, and what round seven still guarantees -
+  // no create and no start on the host that took over - is asserted above.
+  expect(draft.fields.getState().source).toBe("local");
+});
+
+// The binding is re-checked at the confirm, not only by the switch effect: a
+// dialog restored from the draft (a remount) can open onto a selection that has
+// moved since it was preflighted, and that confirm must not fall back to the
+// host selected now. Here buildbox went offline while the pane was unmounted,
+// so the restored dialog is bound to buildbox while hostChoice is "local".
+test("a restored create dialog whose preflight host is no longer selected aborts instead of creating the path", async () => {
+  const user = userEvent.setup();
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  const draft = selectSpawnDirectory("/srv/stale-create");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "createDialogPath", "/srv/stale-create");
+  setDraftField(draft, "createDialogHost", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/stale-create");
+  renderSpawn(fake);
+  await settled();
+
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("local");
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+
+  expect(createDirCallHosts(fake)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect(draft.fields.getState()).toMatchObject({ createDialogPath: null, createDialogHost: null });
+  expect(await screen.findByText(/host changed after this directory was checked/i)).toBeTruthy();
+});
+
+// The other half of handleSpawn's gate: the host that preflighted the path is
+// still selected, but its catalogs have not answered, so the draft's launch
+// config has not been reconciled against them. The confirmation is held (the
+// binding is intact, so the dialog stays for the next click) and releases on the
+// answers - settlement, not success (round five), so it can never dead-end.
+test("a create confirmation waits for the selected host's catalogs before creating and starting", async () => {
+  const user = userEvent.setup();
+  seedSources(REMOTE_SOURCES);
+  let releaseHarnesses!: (result: HostForwardedResult) => void;
+  const fake = readyClient((f) =>
+    readyRemoteHost(f, {
+      "evener/harnesses/list": new Promise<HostForwardedResult>((resolve) => {
+        releaseHarnesses = resolve;
+      }),
+    }),
+  );
+  connectionStore.getState().connect(fake);
+  const draft = selectSpawnDirectory("/srv/unsettled-create");
+  setDraftField(draft, "source", "buildbox");
+  setDraftField(draft, "model", "openai/gpt-4o");
+  setDraftField(draft, "createDialogPath", "/srv/unsettled-create");
+  setDraftField(draft, "createDialogHost", "buildbox");
+  window.history.pushState({}, "", "/new?dir=/srv/unsettled-create");
+  renderSpawn(fake);
+  await settled();
+
+  expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "Create & start" }));
+
+  expect(createDirCallHosts(fake)).toEqual([]);
+  expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(0);
+  expect(screen.getByRole("dialog", { name: "Create directory?" })).toBeTruthy();
+
+  act(() => releaseHarnesses({ data: [{ id: "evener", label: "evener", kind: "evener" }] }));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  await user.click(screen.getByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "thread/start")).toHaveLength(1));
+  // The create and the launch both still name the host the path was preflighted
+  // on, with the draft that host offered.
+  expect(createDirCallHosts(fake)).toEqual(["buildbox"]);
+  expect(fake.calls.find((entry) => entry.method === "thread/start")?.params).toMatchObject({
+    source: "buildbox",
+    cwd: "/srv/unsettled-create",
+  });
+  expect(screen.queryByRole("dialog")).toBeNull();
 });

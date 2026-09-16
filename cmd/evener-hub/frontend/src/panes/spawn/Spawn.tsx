@@ -416,6 +416,32 @@ function SpawnForm({
     isLocalHost(submittedSource) ? submittedSource : null,
   );
   const [createDialogPath, setCreateDialogPath] = useDraftField(draft, "createDialogPath");
+  // The host that preflighted createDialogPath. The pair is one action: the
+  // dialog offers to create a path ON the host that just validated it, and the
+  // draft's launch config was reconciled against that host's catalogs.
+  const [createDialogHost, setCreateDialogHost] = useDraftField(draft, "createDialogHost");
+  // Opened, confirmed, and dismissed as a unit, so neither half can outlive the
+  // other.
+  const closeCreateDialog = useCallback(() => {
+    setCreateDialogPath(null);
+    setCreateDialogHost(null);
+  }, [setCreateDialogPath, setCreateDialogHost]);
+  // The selection can change while the dialog is open: the manifest's `online`
+  // flag is live, and an offline source makes hostChoice fall back to "local"
+  // (see its derivation). Left open, "Create & start" would then create THIS
+  // path and launch THIS draft on whichever host is selected now - a launch the
+  // newly selected host never offered, which is the remote-draft-silently-
+  // converted-to-a-local-launch class round five closed for the normal Start
+  // path. A host switch dismisses the pending create rather than re-homing it:
+  // the user confirmed a path on one machine, so the same click must not act on
+  // another. handleCreateConfirm re-checks the binding as well, because a
+  // confirm can race this effect (component 07b review, round seven).
+  const createDialogHostRef = useRef(submittedSource);
+  useEffect(() => {
+    if (createDialogHostRef.current === submittedSource) return;
+    createDialogHostRef.current = submittedSource;
+    closeCreateDialog();
+  }, [submittedSource, closeCreateDialog]);
   const [busy, setBusy] = useDraftField(draft, "busy");
   // Loader's elapsed readout is pure-render (widgets/loader's own doc
   // comment - no internal timer, so it can't drift or fake liveness): the
@@ -436,7 +462,7 @@ function SpawnForm({
   // Every unset launch-config control names its entry in this effective layer:
   // "high (default)", "On (default)", etc. Unknown defaults remain plain.
   const resolvedDefaults =
-    defaultPreview?.draft === draft && defaultPreview.host === hostChoice ? defaultPreview.effective : null;
+    defaultPreview?.draft === draft && defaultPreview.host === submittedSource ? defaultPreview.effective : null;
   // kata xgk8: true only once evener/launch/resolve has CONFIRMED the hub has
   // no default model for this cwd (Effective.Model resolves empty with no
   // overrides) - never set on a rejection or before cwd is chosen, so an
@@ -946,7 +972,6 @@ function SpawnForm({
     // editing a value is what re-judges it.
     if (previous === submittedSource) return;
     const stored = readAdvancedValues();
-    const storedErrors = draft.fields.getState().advancedErrors;
     for (const option of schemaOptions) {
       if (!option.pathKind) continue;
       const field = stored[option.wireField];
@@ -980,7 +1005,6 @@ function SpawnForm({
       );
     }
   }, [
-    draft,
     submittedSource,
     schemaOptions,
     validatePath,
@@ -1401,7 +1425,7 @@ function SpawnForm({
       Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
         ([result, models]) => {
           if (!active) return;
-          setDefaultPreview({ draft, host: hostChoice, effective: result.effective });
+          setDefaultPreview({ draft, host: submittedSource, effective: result.effective });
           const defaultModel = (result.effective.model ?? "").trim();
           // A remote target resolves its own default model from its own host's
           // credentials and catalog, so this controller's launchable set is not
@@ -1997,7 +2021,13 @@ function SpawnForm({
         return;
       }
       if (outcome.kind === "offer-create") {
+        // Stamped with the host this preflight ran against (submittedSource is
+        // the value the request carried), so the confirmation is bound to that
+        // host rather than to whatever is selected when it is answered. The
+        // launch target, not the picker's settled value: with the manifest still
+        // in flight the two differ, and the request followed submittedSource.
         setCreateDialogPath(outcome.path);
+        setCreateDialogHost(submittedSource);
         busyRef.current = false;
         setBusy(false);
         setBusyStartedAt(null);
@@ -2023,6 +2053,31 @@ function SpawnForm({
     if (busyRef.current) return; // same re-entrancy guard as handleSpawn (kata 61v2)
     const path = createDialogPath;
     if (path === null) return;
+    // The confirmation belongs to the host that preflighted this path, not to
+    // the host selected when the button is clicked: confirming across a host
+    // change would create the path and start the session on a machine the user
+    // never checked, with a draft that machine never offered. The host-switch
+    // effect above dismisses the dialog, so this catches a confirm that raced
+    // it or a dialog restored from the draft onto a selection that has since
+    // moved. Abort rather than re-home: re-running the preflight against the
+    // new host would take a second, materially different action off one click.
+    if (createDialogHost !== submittedSource) {
+      toasts.push(
+        "error",
+        "The selected host changed after this directory was checked, so nothing was created. Press Start to launch on the host you want.",
+      );
+      closeCreateDialog();
+      return;
+    }
+    // The gate handleSpawn enforces (and the disabled Start button mirrors): the
+    // selected host's harness/schema and model answers are still in flight, so
+    // its launch config has not been reconciled against them and a submit could
+    // carry a value that host does not offer. No toast: both requests always
+    // SETTLE - a refusal releases the gate too (round five) - so a click here is
+    // held briefly, never dead-ended, and the same reasoning as handleSpawn's
+    // applies (the state is already explained, and a repeating chord must not
+    // stack toasts).
+    if (hostCatalogPending || modelHostPending) return;
     busyRef.current = true;
     setBusy(true);
     setBusyStartedAt(Date.now());
@@ -2044,7 +2099,7 @@ function SpawnForm({
       setBusy(false);
       setBusyStartedAt(null);
     } finally {
-      setCreateDialogPath(null);
+      closeCreateDialog();
     }
   }
 
@@ -2498,8 +2553,8 @@ function SpawnForm({
             validatePath={validatePath}
             createDirectory={createDirectory}
             listRecents={listRecents}
-                fallbackDir={pickerFallbackDir}
-                onCwdPanelClose={commitLastWorkingDir}
+            fallbackDir={pickerFallbackDir}
+            onCwdPanelClose={commitLastWorkingDir}
             branch={branch}
             accessMode={accessMode}
             accessOptions={accessOptions}
@@ -2554,7 +2609,7 @@ function SpawnForm({
         destructive={false}
         busy={busy}
         onConfirm={() => void handleCreateConfirm()}
-        onCancel={() => setCreateDialogPath(null)}
+        onCancel={closeCreateDialog}
       >
         The directory {createDialogPath} doesn't exist yet. Create it and start the session?
       </ConfirmDialog>

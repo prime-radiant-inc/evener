@@ -43,7 +43,7 @@ export function useProviderSetup(host: string = LOCAL_HOST) {
     return () => {
       cancelled = true;
     };
-  }, [client, connection, load, host]);
+  }, [client, connection, load]);
 
   const configured = instances.some(
     (instance) =>
