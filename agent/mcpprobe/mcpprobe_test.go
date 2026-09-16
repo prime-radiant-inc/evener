@@ -2,6 +2,7 @@ package mcpprobe_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptrace"
 	"os/exec"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,9 +68,8 @@ func TestProbe_HTTP_ValidInitialize_Available(t *testing.T) {
 
 // A healthy server must still read "available" when some other component
 // closes http.DefaultTransport's idle connections mid-handshake — which every
-// httptest.Server.Close in the process does, and which the parallel tests in
-// this file therefore do to each other (#1486). The probe's connections must
-// not live in a pool it doesn't own.
+// httptest.Server.Close in the process does, so the parallel tests in this
+// file do it to each other (#1486).
 //
 // The dangerous window is net/http's: after a bodyless response (the 202 to
 // "notifications/initialized") the readLoop returns the connection to the
@@ -79,22 +80,17 @@ func TestProbe_HTTP_ValidInitialize_Available(t *testing.T) {
 // retry a POST with a body, so Connect fails and the probe reads unreachable.
 //
 // httptrace.PutIdleConn fires on the readLoop exactly inside that gap, so the
-// hook closes a decoy server there; the Gosched lets roundTrip observe the
+// hook reaps the default pool there; the Gosched lets roundTrip observe the
 // closed conn before the readLoop reaches its response send (measured on the
-// unfixed probe: 3/50 failures without the yield, 47/50 with it). With the
-// probe owning its transport the decoy's reap never touches its connections,
-// so the outcome no longer depends on scheduling.
+// unfixed probe: 3/50 failures without the yield, 47/50 with it). A probe
+// that owns its transport has nothing in that pool, so the outcome no longer
+// depends on scheduling.
 func TestProbe_HTTP_ProcessWideIdleConnClose_Available(t *testing.T) {
 	t.Parallel()
 	srv := newMCPTestServer(t, nil)
-	decoy := httptest.NewServer(http.NotFoundHandler())
-	t.Cleanup(decoy.Close)
 	ctx := httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
-		PutIdleConn: func(err error) {
-			if err != nil {
-				return
-			}
-			decoy.Close() // reaps http.DefaultTransport's idle connections
+		PutIdleConn: func(error) {
+			http.DefaultTransport.(*http.Transport).CloseIdleConnections()
 			runtime.Gosched()
 		},
 	})
@@ -109,6 +105,37 @@ func TestProbe_HTTP_ProcessWideIdleConnClose_Available(t *testing.T) {
 	if got := results[0]; got.Status != "available" || got.Error != "" {
 		t.Errorf("Status/Error = %q/%q, want available with no error", got.Status, got.Error)
 	}
+}
+
+// A replaced http.DefaultTransport still carries the probe's requests: the
+// hub's sandbox tests install a deny-all RoundTripper there to catch stray
+// network access, and Probe only takes a private pool when the default
+// transport has one to clone. Mutates the process-wide default, so not
+// parallel.
+func TestProbe_HTTP_ReplacedDefaultTransport_Honoured(t *testing.T) {
+	recorder := &recordingTransport{}
+	orig := http.DefaultTransport
+	http.DefaultTransport = recorder
+	t.Cleanup(func() { http.DefaultTransport = orig })
+
+	results := mcpprobe.Probe(context.Background(), []mcpconfig.ServerConfig{
+		{Name: "denied", Type: "http", URL: "http://mcpprobe.invalid"},
+	})
+
+	if len(results) != 1 || results[0].Status != "unreachable" {
+		t.Fatalf("results = %+v, want a single unreachable row", results)
+	}
+	if recorder.requests.Load() == 0 {
+		t.Error("the replaced DefaultTransport saw no requests: Probe bypassed it")
+	}
+}
+
+// recordingTransport refuses every request and counts them.
+type recordingTransport struct{ requests atomic.Int32 }
+
+func (r *recordingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	r.requests.Add(1)
+	return nil, errors.New("network blocked by test")
 }
 
 // This is the exact bug the orphaned mcpstatus package had: it treated ANY

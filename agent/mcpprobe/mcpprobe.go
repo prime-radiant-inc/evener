@@ -48,8 +48,7 @@ const probeTimeout = 3 * time.Second
 
 // probeDeps contains the external boundaries used by one Probe call. It is
 // passed by value to keep test configuration local to that call; production
-// supplies the normal lookup and a client whose connection pool belongs to
-// that call alone (see Probe).
+// supplies the normal lookup and Probe's per-call client.
 type probeDeps struct {
 	lookupPath func(string) (string, error)
 	httpClient *http.Client
@@ -74,23 +73,30 @@ type Result struct {
 // mutex is needed on results itself, since every index has exactly one
 // writer and results is only read after wg.Wait() establishes
 // happens-before (mirrors agent/internal/mcp's NewManager).
-//
-// The http/sse probes share one transport that exists only for this call.
-// Pooling their connections in http.DefaultTransport instead would let any
-// other component's CloseIdleConnections (every httptest.Server.Close does
-// one) close a probe's connection in net/http's pool-before-deliver window
-// after a bodyless response, and a server that just accepted the initialize
-// handshake would read "unreachable" (#1486). Cloning DefaultTransport keeps
-// its proxy, dial and TLS settings; closing the clone's idle connections
-// afterwards is what stops the probe leaking keep-alive connections to every
-// configured server.
 func Probe(ctx context.Context, configs []mcpconfig.ServerConfig) []Result {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	defer transport.CloseIdleConnections()
-	return probeWithDeps(ctx, configs, probeDeps{
-		lookupPath: exec.LookPath,
-		httpClient: &http.Client{Transport: transport},
-	})
+	client, release := probeHTTPClient()
+	defer release()
+	return probeWithDeps(ctx, configs, probeDeps{lookupPath: exec.LookPath, httpClient: client})
+}
+
+// probeHTTPClient returns the client the http/sse probes of one Probe call
+// share, and the function that releases its connection pool afterwards.
+// Pooling probe connections in http.DefaultTransport would let any other
+// component's CloseIdleConnections break a handshake in flight (#1486; the
+// net/http window is described on
+// TestProbe_HTTP_ProcessWideIdleConnClose_Available), and releasing the pool
+// is what stops the probe leaking keep-alive connections to every configured
+// server. Cloning keeps DefaultTransport's proxy, dial and TLS settings. A
+// DefaultTransport that is not an *http.Transport (the hub's sandbox tests
+// install a deny-all RoundTripper to catch stray network access) has no pool
+// of ours to protect and is used as-is.
+func probeHTTPClient() (*http.Client, func()) {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Client{Transport: http.DefaultTransport}, func() {}
+	}
+	transport := base.Clone()
+	return &http.Client{Transport: transport}, transport.CloseIdleConnections
 }
 
 // probeWithDeps is Probe with its process lookup and HTTP client supplied by
@@ -213,20 +219,13 @@ func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 	return h.base.RoundTrip(req)
 }
 
-// httpClientWithHeaders returns a copy of base that injects headers. A nil
-// base gets a new client on the default transport rather than inheriting
-// mutable DefaultClient state.
+// httpClientWithHeaders returns a copy of base (a fresh client when base is
+// nil) that injects headers.
 func httpClientWithHeaders(base *http.Client, headers map[string]string) *http.Client {
-	if base == nil {
-		return &http.Client{
-			Transport: &headerRoundTripper{
-				base:    http.DefaultTransport,
-				headers: headers,
-			},
-		}
+	client := http.Client{}
+	if base != nil {
+		client = *base
 	}
-
-	client := *base
 	transport := client.Transport
 	if transport == nil {
 		transport = http.DefaultTransport
