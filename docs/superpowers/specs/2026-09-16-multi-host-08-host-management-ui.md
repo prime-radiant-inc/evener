@@ -50,8 +50,10 @@ what makes the federation fully operable without a terminal.
 - Controller-side hub methods: `evener/host/list`, `evener/host/add`,
   `evener/host/update`, `evener/host/remove`, `evener/host/status`,
   `evener/host/plan`, `evener/host/deploy`, `evener/host/restart`, and
-  `evener/host/operations`, plus the local `evener/host/running` probe
-  handler and the `evener/host/teardown-retry` repair mutation.
+  `evener/host/operations`, the local `evener/host/running` probe
+  handler, the `evener/host/teardown-retry` repair mutation, and the
+  `evener/host/orphan-resolve` crash-recovery mutation (thirteen methods
+  total — twelve besides `attach`).
   `evener/host/attach` ships with #1603 and is
   unchanged here — relied on, not re-specified.
 - Durable persistence of host entries with a hot-apply path: the running hub
@@ -90,7 +92,7 @@ what makes the federation fully operable without a terminal.
   methods by omitting the marker; that threat is contained by token secrecy
   (0600 token file, loopback-only bridge dial, no-proxy handshake), not by the
   guard. Every
- `evener/host/*` request (all twelve methods, `attach` included) passes
+ `evener/host/*` request (all thirteen methods, `attach` included) passes
   through the shared origin guard — **landed by #1603 at the dial seam
   (`guardRemoteHostDial`) and the remote-client dispatch seam
   (`guardRemoteDispatch`), and extended by 08a to the common
@@ -98,7 +100,8 @@ what makes the federation fully operable without a terminal.
   peer-forwarded requests are refused before admission** (before dedup and
  before token validation on the 08b phases where those stages exist — 08a
  asserts the guard-before-admission ordering on its own surface), before any handler logic runs. The mutating handlers (`attach`,
-  `plan`, `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`) are unreachable
+  `plan`, `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`,
+  `orphan-resolve`) are unreachable
   to honestly-marked peer-forwarded requests — refused before admission for
   honestly-marked remote-origin requests (a markerless request is
   local-originated by construction and takes the full admission path — the
@@ -106,7 +109,7 @@ what makes the federation fully operable without a terminal.
   residual-risk paragraph above); the reads (`list`/`status`/`operations`/`running`) are guarded
   equally because they disclose the controller's topology and operation
   state. (`attach`'s guard routing ships and is test-pinned with #1603; this
- component pins the other eleven.) **The one direction-scoped exception is
+ component pins the other twelve.) **The one direction-scoped exception is
  the `evener/host/running` peer probe: a controller-originated request issued
  only through `sshManager.ChannelIfAttached(name)` over a live channel peered
  by the #1603 handshake, admitted on the remote only over that same attached
@@ -977,11 +980,14 @@ cannot produce those fields), keyed by the host's registry (generation,
   the round-ten reattach — the matching shape is typed refusal, not
   operation-owned attach-first: `deploy` spends a single-use token, so it
   must not consume it to open a worker that then attach-firsts into an
-  unvalidated channel):** if the channel is gone when the locked
-  re-resolution needs the running re-probe, `deploy` refuses with the typed
-  `host-detached` error — never consuming the token, never creating a
-  record — directing the UI to Connect and re-plan (`restart` keeps its
-  operation-owned attach-first because it spends no token). Never blocks the RPC on the push:
+  unvalidated channel — and the flow above is probe-first, gate-second
+  (step (3): probe gateless, then acquire the gate and re-validate — there
+  is no locked re-probe):** if the channel is gone at the pre-acquisition
+  probe, or the post-acquisition revalidation finds the channel dropped,
+  `deploy` refuses with the typed `host-detached` error — never consuming
+  the token, never creating a record — directing the UI to Connect and
+  re-plan (`restart` keeps its operation-owned attach-first because it
+  spends no token). Never blocks the RPC on the push:
   the RPC returns the record id once the atomic consume-and-create write
   lands, and the push runs on a worker under the controller-lifetime
   context (see the operation store), never the RPC context — a client
@@ -1073,9 +1079,11 @@ controller-side operation records; this component defines a
   `interrupted`/`orphan-unverified` — extending the round-twenty-five
   record, which enumerated five states while `orphan-unverified` persisted as
   a durable per-record state: the enum now names all six), the persisted
-  orphan boundary identity (pgid, session id, pid, start time — present
-  exactly on `orphan-unverified` records, exposed as `orphanBoundary` on the
-  wire record), progress entries (timestamped, bounded), terminal result,
+  orphan boundary identity — the tagged platform-specific boundary below
+  (Linux: cgroup identity + nonce; Darwin: process-group/session + launcher-
+  observed pid/start time — present exactly on `orphan-unverified` records,
+  exposed as `orphanBoundary` on the wire record), progress entries
+  (timestamped, bounded), terminal result,
 timestamps, the **pinned host generation (the incarnation the record ran
 against — part of the dedup scope, so polling after client operation-ID reuse
 returns distinguishable records and the current incarnation is selected by
@@ -1239,8 +1247,10 @@ returns distinguishable records and the current incarnation is selected by
   on a clean boundary (empty, or pid/start-time mismatch on every member),
   drops the intent and transitions the record to `interrupted`; on members
   still present it refuses with the transient busy form, never a force-clear)
-  — the record's persisted boundary identity (pgid, session id, pid,
-  start time) is visible through the `operations` detail filter, so the
+  — the record's persisted tagged boundary (platform discriminator plus the
+  platform's ownership data — Linux cgroup identity + nonce, Darwin pgid +
+  session id + launcher-observed pid/start time) is visible through the
+  `operations` detail filter, so the
   operator kills the listed members (or confirms them gone) and calls
   `orphan-resolve` (a hub restart re-runs the same enumeration at boot, and
   the post-recovery enumeration resolves the record the same way) — a newer
@@ -1250,12 +1260,16 @@ returns distinguishable records and the current incarnation is selected by
   start "meanwhile" — overlapping an unverified crashed SSH subprocess that
   might still be running, contradicting the no-overlap rule below: what
   changes is the gate — while any `orphan-unverified` record is open for a
-  host, that host admits no new operation past admission: `deploy`,
-  `restart`, and `teardown-retry` refuse with the transient busy form, and
-  local reaping stays incomplete — until the boundary is verified (a later
-  boot's enumeration resolves the record) or the operator resolves it through
-  `evener/host/orphan-resolve` above — only then does a fresh
-  operation start under a new epoch after local reap completion). A crash between the
+  host, that host admits no new lifecycle or mutation call past admission:
+  `plan`, `deploy`, `restart`, `add`, `update`, `remove`,
+  `teardown-retry`, `attach`, and `Ensure`-triggered work all refuse with
+  the transient busy form, and local reaping stays incomplete — until the
+  boundary is verified (a later boot's enumeration resolves the record) or
+  the operator resolves it through `evener/host/orphan-resolve` above —
+  only then does a fresh
+  operation start under a new epoch after local reap completion — only the
+  read-only calls (`list`, `status`, `operations`, `running`) and the
+  `orphan-resolve` way out itself bypass the persistent orphan fence). A crash between the
   pre-spawn persist and the spawn leaves a persisted-but-empty boundary: boot
   enumerates it, finds no members, and drops the intent — never an orphan,
   never a reap of unrelated work; (2)
@@ -1364,10 +1378,20 @@ direct SSH — never through the old wrapper itself (extending the
 round-twenty-three reinstall, which routed the reinstall through the old
 wrapper after the guard advance while trusting that wrapper to enforce
 register/fence/perform with no version-compatibility rule: what changes is
-the delivery path — the old wrapper is untrusted for self-replacement, so the
-new epoch's worker writes the new helper bytes directly, verifies the new
-version string with the read-only pre-fence check, and only then routes
+the delivery path — the old wrapper is untrusted for self-replacement AND
+for the pre-advance kill/wait, so when the pre-fence version check reports
+an older, incompatible, or explicitly untrusted helper the worker runs the
+superseded-epoch kill/wait as a backward-compatible migration primitive
+over direct SSH — reading the prior epoch's lease entries with the
+read-only pre-fence check, verifying each entry's ownership token (remote
+PID start time, per-spawn nonce, or cgroup membership) directly instead of
+through the old wrapper, and signaling only verified members — then
+advances the guard, then writes the new helper bytes directly, verifies the
+new version string with the read-only pre-fence check, and only then routes
 further mutating steps through the wrapper), never before the advance.
+Only a remote that cannot run even the direct-SSH migration kill/wait (no
+POSIX shell at the target path) refuses fail-closed until the operator
+replaces the helper out-of-band.
 Migration: remotes first contacted by this
  component predate the helper, so deploy/restart on them refuses fail-closed
  until the operator installs the helper out-of-band (the next operation's
@@ -1375,7 +1399,10 @@ Migration: remotes first contacted by this
  round-trip before the kill/wait) before any mutating step; a remote whose platform cannot run
  the helper (no POSIX shell at the target path) stays fail-closed for
  deploy/restart — reads and `plan` still serve — until the operator
- upgrades it out-of-band. Routing: EVERY mutating SSH command the
+ upgrades it out-of-band. An older, incompatible, or explicitly untrusted
+ helper is never an out-of-band case — it takes the direct-SSH migration
+ primitive above in-band, so the host upgrades and deploy/restart proceed
+ without operator intervention. Routing: EVERY mutating SSH command the
  controller issues to the host — deploy pushes, remote deploy/restart
 commands, and the 04b `Ensure`-triggered
  paths — runs through the wrapper under the worker's epoch (the 04b paths
@@ -1459,10 +1486,12 @@ model). A host without the
   back, and the max-of-both restoration below reads the surviving mirror as
   the high-water mark — so discarding a corrupt sidecar can never discard the
   surviving high-water mark and let a re-added host reuse an old generation.
-  Both durable stores therefore converge to the maximum recovered value for
-  every known name before the store serves; the only exception is the
-  no-sidecar-mark case above, where the surviving mirror alone is
-  authoritative.**
+  The two branches therefore converge differently before the store serves:
+  a name with a valid sidecar marker triple rolls back to the sidecar mark
+  (never the maximum — the mirror's newer compensated-away generation is
+  discarded); a name with no sidecar mark preserves the surviving mirror,
+  and the max-of-both restoration below reads that mirror alone as the
+  high-water mark.**
   Records reach the store only through the
   atomic consume-and-create write, so no crash window can consume a token
   without leaving a recoverable record. No record can stay stuck forever.
@@ -2324,7 +2353,9 @@ arm with its `remnantId`). `HostPlan` is `{host, generation,
   (3) the hub's durable state roots are writable (state-root write probe —
   a real atomic temp-plus-rename probe inside the state dir (create uniquely
   named temp per probe — pid plus a per-process counter, never a shared
-  probe name — fsync, rename over the probe's own temp name, remove —
+  probe name — fsync, rename to a DISTINCT probe target in the same dir
+  (a second unique probe-prefixed name, never the temp's own name — a
+  self-rename is a no-op and tests nothing), fsync the dir, then remove —
   never the live store or sidecar names — plus a free-space query against
   the state root; concurrent probes never share a rename target, so they
   neither race nor serialize each other; a probe temp orphaned by a crash
@@ -2438,21 +2469,30 @@ generation" is reserved for calls that name a host — extending the
 round-twenty-five params text, which promised the first page "of the current
 generation" for a multi-host page that has no single current generation);
 response
-  `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number}}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq)` triple per host present on the page) — `limit` defaults
+  `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number, presenceEpoch: number}}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per host present on the page — `presenceEpoch` the per-host removal/presence epoch below, validated on every continuation) — `limit` defaults
   to 50 and caps at 200; responses never exceed the cap, and an unfiltered
   call pages instead of returning the whole store. `OperationRecord` is `{id,
 clientOperationId, host, generation: number, incarnationId: string, kind: "deploy" | "restart", state:
-  "pending" | "running" | "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?: {pgid: number, sessionId: number, pid: number, startTime: string}, progress:
+  "pending" | "running" | "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?: {platform: "linux", cgroupId: string, nonce: string} | {platform: "darwin", pgid: number, sessionId: number, pid: number, startTime: string}, progress:
   ProgressEntry[], result?: {ok: bool, message: string}, createdAt: string,
   updatedAt: string, hostRemoved: bool, compacted?: true}` — `incarnationId`
   is the pinned incarnation the record ran against (the dedup scope's second
   half, see the operation store — without it the response cannot distinguish
   the colliding same-generation incarnations); `orphanBoundary` is present
   exactly on records whose `state` is `orphan-unverified` (absent on every
-  other state per the absent-when-unknown rule — extending the
+  other state per the absent-when-unknown rule — the `platform`
+  discriminator selects the ownership data the verifier needs (Linux:
+  kernel-enforced cgroup identity plus the pre-spawn server nonce —
+  membership alone authorizes the kill; Darwin: the (pgid, session id) pair
+  plus the launcher-observed (pid, start time) instance marker — a pid whose
+  start time differs names a different process and reads as already clean) —
+  extending the
   round-twenty-five `operations` detail filter, which exposed the persisted
-  boundary identity only as prose with no wire field, so operators could read
-  it but no client could parse it: the filter still resolves through `id`,
+  boundary identity only as prose with no wire field, and the round-twenty-six
+  wire shape, which exposed only the Darwin fields (pgid, session id, pid,
+  start time) with no platform discriminator, no cgroup identity, and no
+  nonce — so a Linux boundary was unrepresentable and no verifier could tell
+  which ownership rule applied: the filter still resolves through `id`,
   and the record now carries the boundary the operator must verify before
   calling `orphan-resolve`); `compacted` is present as
   `true` exactly on tombstone replays (absent on live records per the
@@ -2500,12 +2540,19 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   to the new generation; a generation-pinned page requires `name` — a
   host-pinned first page returns the pinned pair for the single host named by
   the request, while an unfiltered response carries a per-host boundary map (one
-  `(generation, incarnationId, compactSeq)` triple per host present on the
+  `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per host present on the
   page) and the cursor encodes that map alongside `(createdAt, id)`
   (the cursor is a versioned base64url JSON envelope `{v: 1, pos: [createdAt,
-  id], bounds: {[host]: [generation, incarnationId, compactSeq] | "absent"}}`
+  id], bounds: {[host]: [generation, incarnationId, compactSeq, presenceEpoch] | "absent"}}`
   — the absent marker encodes as the literal string `"absent"`, pinned in
-  the 08b protocol-shapes test — capped at 8 KiB encoded (a first page
+  the 08b protocol-shapes test; `presenceEpoch` is a per-host monotonic
+  removal/presence epoch minted in the same atomic sidecar write as every
+  `add`/`remove`/re-add (including tombstone re-add and expiry purge), so a
+  removal that preserves the tombstone's generation and incarnation still
+  advances the epoch — extending the round-twenty-six cursor, which carried
+  only the (generation, incarnationId, compactSeq) triple with no
+  removal-epoch signal, so a removal preserving the triple listed
+  removed-host records on later pages instead of refusing — capped at 8 KiB encoded (a first page
   whose boundary map would exceed the cap refuses with typed
   `cursor-invalidated` naming the cap, never a truncated cursor; the 63-host
   cap bounds the map, so the cap is reachable only with adversarial
@@ -2513,7 +2560,9 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   cursor was minted has no stored triple to validate — later pages skip
   its records (a newer host's records appear only on a fresh unpinned read,
   never mid-pagination; a host removed after mint trips the same stored-triple
-  mismatch rule, so later pages refuse `stale-entry` — see below)
+  mismatch rule — including its `presenceEpoch` fingerprint, which a removal
+  always advances even when generation and incarnation are preserved, so
+  later pages refuse `stale-entry` — see below)
   (extending the
   round-twenty-five cursor, which left post-creation hosts undefined and
   defined no encoding or size bound, so a new host between pages had no
@@ -2527,7 +2576,7 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   boundaries only for present hosts, so a host absent from page one could
   advance generations before page two and list wrong-incarnation results
   under the pin: a host with no records on the page still contributes its
-  current (generation, incarnation id, compactSeq) triple — or its absent
+  current (generation, incarnation id, compactSeq, presenceEpoch) boundary — or its absent
   marker when the host holds no records at all — and a later page whose
   stored triple no longer matches the host's current boundary is a typed
   `stale-entry` re-list refusal, never a mixed page) — and its
@@ -2631,9 +2680,9 @@ the 08a tests below) (with hand-written request/response types — the
   their atomic writes, shipped as store-owned helpers with no 08b behavior
   behind them); **08b** the union-registration generator change plus the
   union-shaped catalog + regenerated client for the 08a methods alongside
-  `status`/`plan` (token) / `deploy` / `restart` / `orphan-resolve` /
-  `operations` + the full operation store (records, dedup, tokens,
-  reconciliation); **08c** the frontend (settings section,
+  `status`/`plan` (token) / `deploy` / `restart` / `running` /
+  `orphan-resolve` / `operations` + the full operation store (records,
+  dedup, tokens, reconciliation); **08c** the frontend (settings section,
   dialogs, deploy confirmation). 08b stacks on 08a; 08c stacks on 08b.
   (Extending the round-sixteen/round-seventeen sequence — r16 placed
   `remove`/`teardown-retry` in 08a with the store in 08b, and r17 kept the
@@ -3165,14 +3214,16 @@ origin rejection is asserted in 08a with its commit-point tests),
   `restartRequiredDaemon` probe path)**, **pinned pagination (stable `(createdAt, id)` order
   across concurrent terminal writes; mid-pagination generation advance keeps
   later pages on the pinned incarnation; cursor carries `(generation,
-  incarnationId, compactSeq, createdAt, id)` with pair-mismatch (`stale-entry`
+  incarnationId, compactSeq, presenceEpoch, createdAt, id)` with pair-mismatch (`stale-entry`
   re-list) and post-cursor compaction (`cursor-invalidated`) both surfaced as
   refusals, never silent page shifts; host-pinned pages carry the top-level
   pair while unfiltered cross-host pages omit it (`hostBoundaries`
   authoritative — the shapes test pins the absence); the cursor pins every
   host in the query at creation, including absent ones (absent encodes as the
   literal `"absent"` string, pinned field-for-field) — a host advancing
-  generations between pages is a `stale-entry` re-list refusal; a host created
+  generations between pages is a `stale-entry` re-list refusal, and a host
+  removed after mint (presence epoch advanced, triple preserved) is a
+  `stale-entry` re-list refusal the same way; a host created
   after mint is skipped on later pages (fresh read only); the versioned
   base64url envelope is capped at 8 KiB encoded (over-cap first page refuses
   `cursor-invalidated`))**,
