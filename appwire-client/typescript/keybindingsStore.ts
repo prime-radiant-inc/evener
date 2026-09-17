@@ -70,12 +70,15 @@ export interface KeybindingDraftStorage {
   /** Removes the stored checkpoint only if it is still this one; reports
    * whether it did. */
   removeIf(checkpoint: KeybindingDraftCheckpoint): boolean;
+  /** Replaces the stored checkpoint with `next` only if `expected` is still
+   * the one stored; reports whether it did. */
+  replaceIf(expected: KeybindingDraftCheckpoint, next: KeybindingDraftCheckpoint): boolean;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
  * store's state only and does not survive the instance. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false, replaceIf: () => false };
 }
 
 export interface KeybindingsStoreFields {
@@ -253,6 +256,11 @@ const DRAFT_DISCARD_FAILED_MESSAGE = "Could not discard the shortcut draft local
 const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved shortcut draft. Check current shortcuts to retry.";
 const DRAFT_CLEANUP_FAILED_MESSAGE =
   "The hub confirmed this save, but the local draft could not be updated. Check current shortcuts to retry.";
+/** The direct write's reply landed after the generation ended, support
+ * dropped or the hub was replaced: whatever the reply says is not this
+ * write's outcome with the CURRENT hub, so resolving with a stale current
+ * value would report an acknowledgement the current hub never gave. */
+const WRITE_NOT_ACKNOWLEDGED_MESSAGE = "The hub connection changed before this write's outcome was confirmed.";
 
 /** The hub's whitespace, enumerated: `strings.TrimSpace` tests each rune with
  * Go's `unicode.IsSpace`, which is U+0009-U+000D, U+0020, U+0085 and U+00A0
@@ -903,10 +911,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const { draft, writeUncertain, saving } = getState();
     if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
+      let replaced: boolean;
       try {
-        persistDraft({ baseRevision: draft.revision, rules: draft.rules, writeUncertain: false });
+        replaced = drafts.replaceClassified({
+          id: drafts.createId(),
+          baseRevision: draft.revision,
+          rules: draft.rules,
+          writeUncertain: false,
+        });
       } catch {
         return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
+      }
+      if (!replaced) {
+        // The checkpoint this write was settling is gone, replaced by
+        // another window's edit while the outcome was unknown: adopt
+        // whatever is actually on disk now rather than overwrite it.
+        return restoreDraft(getState());
       }
     }
     return { writeUncertain: false };
@@ -1071,10 +1091,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           expectedRevision: state.revision,
           config: { version: 1, rules: cloneRules(rules) },
         });
-        if (!stillMine()) {
-          const current = getState();
-          return { version: 1, revision: current.revision, rules: [...current.rawOverrides] };
-        }
+        // A fenced reply resolving with the current state is indistinguishable
+        // from a genuine acknowledgement - sharpest for a no-op write (the
+        // requested rules already equal what the hub confirms), where the
+        // current value and "this write applied" read identically. Rejecting
+        // is the only way to say the CURRENT hub never actually confirmed
+        // this particular write (round 21 Medium 3).
+        if (!stillMine()) throw new Error(WRITE_NOT_ACKNOWLEDGED_MESSAGE);
         const payload = fromWireOverrides(result);
         if (payload === undefined) throw new Error("Hub returned malformed keybindings PATCH response");
         applyHubOverrides(payload);
@@ -1186,10 +1209,51 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         config: { version: 1, rules: checked },
       });
     } catch (error) {
+      if (!stillMine()) {
+        settleUnsettleableWrite(whyFenced(generation, token));
+        throw error;
+      }
+      // Post-rename durable failure: the patch APPLIED on the hub (the error
+      // carries the canonical applied state, and the broadcast reconciles
+      // every client) - the same known-outcome rule patchOverrides follows.
+      // Apply locally and report success: surfacing writeUncertain here
+      // would leave editing disabled over bindings that are already live.
+      const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
+      if (applied !== undefined) {
+        applyHubOverrides(applied, { saving: false, writeUncertain: false });
+        let storageError: string | null = null;
+        let refused: Partial<KeybindingsStoreFields> | null = null;
+        try {
+          if (!drafts.removeIf(checkpoint)) refused = restoreDraft(getState());
+        } catch {
+          storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
+        }
+        setState(
+          refused ?? {
+            draft: storageError !== null ? getState().draft : null,
+            storageUnavailable: storageError !== null,
+            draftError: storageError,
+          },
+        );
+        return applied;
+      }
+      // A lost revision race: the rejection carries the server's current
+      // state, so this is not a lost reply - the outcome is known - and the
+      // checkpoint is re-marked settled rather than left claiming an unknown
+      // one, the same rule the direct write and the transcript store follow.
+      const conflictState = rejectionPayload(error, "conflict", "current");
+      if (conflictState !== undefined) {
+        applyHubOverrides(conflictState, { saving: false, writeUncertain: false, draftConflict: true });
+        try {
+          if (!drafts.replaceClassified({ ...checkpoint, writeUncertain: false })) setState(restoreDraft(getState()));
+        } catch {
+          setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
+        }
+        throw error;
+      }
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
-      if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
-      else settleUnsettleableWrite(whyFenced(generation, token));
+      setState({ saving: false, draftConflict: true, writeUncertain: true });
       throw error;
     }
     // The reply is back. What follows is ONE ordered sequence with no side
@@ -1243,17 +1307,27 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState({ ...settled, hubError: errorText(error) });
     }
     let storageError: string | null = null;
+    let refused: Partial<KeybindingsStoreFields> | null = null;
     try {
-      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
-      else drafts.removeIf(checkpoint);
+      if (newerExternal) {
+        if (!drafts.replaceClassified({ ...checkpoint, writeUncertain: false })) refused = restoreDraft(getState());
+      } else if (!drafts.removeIf(checkpoint)) {
+        // The checkpoint this write settled is gone, replaced by another
+        // writer while the PATCH was out: the replacement survives on disk
+        // (removeIf's own byte-aware compare refused to touch it) and must
+        // not be hidden behind a "no draft" report.
+        refused = restoreDraft(getState());
+      }
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
-    setState({
-      draft: newerExternal || storageError !== null ? getState().draft : null,
-      storageUnavailable: storageError !== null,
-      draftError: storageError,
-    });
+    setState(
+      refused ?? {
+        draft: newerExternal || storageError !== null ? getState().draft : null,
+        storageUnavailable: storageError !== null,
+        draftError: storageError,
+      },
+    );
     if (applyFailure !== null) throw applyFailure;
     return value;
   }

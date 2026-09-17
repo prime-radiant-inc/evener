@@ -90,20 +90,31 @@ export interface TranscriptDraftStorage {
   /** Removes the stored checkpoint only if it is still this one; reports
    * whether it did. */
   removeIf(checkpoint: TranscriptDraftCheckpoint): boolean;
+  /** Replaces the stored checkpoint with `next` only if `expected` is still
+   * the one stored; reports whether it did. */
+  replaceIf(expected: TranscriptDraftCheckpoint, next: TranscriptDraftCheckpoint): boolean;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
  * store's state only and does not survive the instance. */
 function memoryDraftStorage(): TranscriptDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false, replaceIf: () => false };
 }
 
 /** The offline editor's proposal: one layout's configuration and the
- * confirmed revision it was composed against. */
+ * confirmed revision it was composed against. `generation` is the ready
+ * generation it was last confirmed valid under - null for a draft restored
+ * before any generation has begun (nothing to compare yet). Hub revision
+ * numbering restarts on a hub replacement (a reconnect to a different hub,
+ * or the same hub after a restart), so a draft composed against generation
+ * N's revision 3 must not read as current just because generation N+1 also
+ * reports revision 3 - the fence's own generation counter, not the hub's
+ * revision, is what actually changed. */
 export interface TranscriptDraft {
   layout: ViewportClass;
   revision: number;
   config: TranscriptDisplayConfigV1;
+  generation: number | null;
 }
 
 /** One `changed` broadcast, as the host may also feed it in by hand. */
@@ -251,6 +262,12 @@ const DRAFT_DISCARD_FAILED_MESSAGE = "Could not discard the transcript draft loc
 const DRAFT_RESTORE_FAILED_MESSAGE = "Could not restore the saved transcript draft. Check current settings to retry.";
 const DRAFT_CLEANUP_FAILED_MESSAGE =
   "The hub confirmed this save, but the local draft could not be updated. Check current settings to retry.";
+/** The direct write's reply landed after the generation ended, support
+ * dropped or the hub was replaced: whatever the reply says - a success, a
+ * conflict's canonical, a transport failure - is not this write's outcome
+ * with the CURRENT hub, so resolving with a stale current value would report
+ * an acknowledgement the current hub never gave. */
+const WRITE_NOT_ACKNOWLEDGED_MESSAGE = "The hub connection changed before this write's outcome was confirmed.";
 
 /** A distinguishable class for the response-shape rejection: the direct write
  * reports it on both error fields, where a transport failure reports on the
@@ -359,8 +376,13 @@ function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
 
 /** A draft composed against one confirmed revision is stale once its layout
  * has confirmed a different one. */
-function staleDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout): boolean {
+function staleDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout, currentGeneration: number): boolean {
   if (draft === null) return false;
+  // A generation change is a hub replacement (reconnect to a different hub,
+  // or the same hub restarted): the hub's own revision numbering may restart
+  // too, so a draft carrying a real (non-null) generation that no longer
+  // matches is stale regardless of what the new generation's revision says.
+  if (draft.generation !== null && draft.generation !== currentGeneration) return true;
   const confirmed = hub[draft.layout];
   return confirmed !== undefined && confirmed.revision !== draft.revision;
 }
@@ -422,7 +444,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     try {
       const checkpoint = drafts.load();
       const draft = checkpoint
-        ? { layout: checkpoint.layout, revision: checkpoint.baseRevision, config: checkpoint.config }
+        ? {
+            layout: checkpoint.layout,
+            revision: checkpoint.baseRevision,
+            config: checkpoint.config,
+            generation: currentGeneration(),
+          }
         : null;
       return {
         draft,
@@ -430,7 +457,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         storageUnavailable: false,
         draftUnreadable: false,
         draftError: null,
-        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.hub),
+        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.hub, fence.generation),
       };
     } catch (error) {
       return {
@@ -443,6 +470,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
 
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
+  }
+
+  /** The generation to stamp a freshly composed or reconciled draft with -
+   * null before any ready generation has begun (nothing to compare a later
+   * one against yet). */
+  function currentGeneration(): number | null {
+    return fence.generation >= 0 ? fence.generation : null;
   }
 
   /** Takes the layout for this write. A layer carries ONE hub value, so the
@@ -550,7 +584,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     setState({
       hub,
       ...(contradictsPreview ? clearPreview(layout) : {}),
-      draftConflict: staleDraft(state.draft, hub),
+      draftConflict: staleDraft(state.draft, hub, fence.generation),
       ...extra,
     });
     return true;
@@ -704,8 +738,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const { draft, writeUncertain, saving } = getState();
     if (writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
+      let replaced: boolean;
       try {
-        persistDraft({
+        replaced = drafts.replaceClassified({
+          id: drafts.createId(),
           layout: draft.layout,
           baseRevision: draft.revision,
           config: draft.config,
@@ -713,6 +749,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         });
       } catch {
         return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
+      }
+      if (!replaced) {
+        // The checkpoint this write was settling is gone, replaced by
+        // another window's edit while the outcome was unknown: adopt
+        // whatever is actually on disk now rather than overwrite it.
+        return restoreDraft(getState());
       }
     }
     return { writeUncertain: false };
@@ -811,7 +853,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         expectedRevision: confirmed.revision,
         config: toWireConfig(config),
       });
-      if (!stillMine()) return getState().hub[layout] ?? confirmed;
+      if (!stillMine()) throw new Error(WRITE_NOT_ACKNOWLEDGED_MESSAGE);
       const canonical = decodePatchReply(result, layout, confirmed, config);
       // The direct write's host presents the live value, so a reply the store
       // has already moved past cannot be shown as this write's outcome.
@@ -837,8 +879,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         // fence it belongs to a hub this store has left: applying it would
         // repopulate a retired payload and mark it confirmed, and the next
         // hub's refresh - a restart numbering from its own 1 - would then be
-        // eaten by the stale guard.
-        return getState().hub[layout] ?? confirmed;
+        // eaten by the stale guard. The reply's own error is a fact about
+        // that departed hub, not about whether the CURRENT one acknowledged
+        // anything, so it is not what this call rejects with either.
+        throw new Error(WRITE_NOT_ACKNOWLEDGED_MESSAGE);
       }
       const canonical = conflictCurrent(error, layout);
       if (canonical !== undefined) applyHubDefault(layout, canonical);
@@ -912,8 +956,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const existing = getState().draft;
     const revision = existing?.layout === layout ? existing.revision : confirmedFor(hub, layout).revision;
     persistDraft({ layout, baseRevision: revision, config, writeUncertain: false });
-    const draft = { layout, revision, config };
-    setState({ draft, draftConflict: staleDraft(draft, hub), draftError: null });
+    const draft = { layout, revision, config, generation: currentGeneration() };
+    setState({ draft, draftConflict: staleDraft(draft, hub, fence.generation), draftError: null });
   }
 
   async function saveDraft(
@@ -932,7 +976,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const token = claimLayoutWrite(layout);
     const generation = fence.generation;
     const stillMine = () => writeStillMine(generation, layout, token);
-    setState({ saving: true, draft: { layout, revision, config }, draftError: null });
+    setState({ saving: true, draft: { layout, revision, config, generation: currentGeneration() }, draftError: null });
     let result: unknown;
     try {
       // The saving publish above may have disposed the store or retired the
@@ -958,7 +1002,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         // settled rather than left claiming an unknown outcome.
         applyHubDefault(layout, canonical, { saving: false, writeUncertain: false, draftConflict: true });
         try {
-          persistDraft({ ...checkpoint, writeUncertain: false });
+          if (!drafts.replaceClassified({ ...checkpoint, writeUncertain: false })) setState(restoreDraft(getState()));
         } catch {
           setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
         }
@@ -1005,9 +1049,17 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     if (newerExternal) setState(settled);
     else applyHubDefault(layout, value, settled);
     let storageError: string | null = null;
+    let refused: Partial<TranscriptDisplayStoreFields> | null = null;
     try {
-      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
-      else drafts.removeIf(checkpoint);
+      if (newerExternal) {
+        if (!drafts.replaceClassified({ ...checkpoint, writeUncertain: false })) refused = restoreDraft(getState());
+      } else if (!drafts.removeIf(checkpoint)) {
+        // The checkpoint this write settled is gone, replaced by another
+        // writer while the PATCH was out: the replacement survives on disk
+        // (removeIf's own byte-aware compare refused to touch it) and must
+        // not be hidden behind a "no draft" report.
+        refused = restoreDraft(getState());
+      }
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
@@ -1015,9 +1067,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // a superseded write and must not outlive the value that replaced it -
     // whether this write's own value landed or a newer external one did.
     setState({
-      draft: newerExternal || storageError !== null ? getState().draft : null,
-      storageUnavailable: storageError !== null,
-      draftError: storageError,
+      ...(refused ?? {
+        draft: newerExternal || storageError !== null ? getState().draft : null,
+        storageUnavailable: storageError !== null,
+        draftError: storageError,
+      }),
       ...clearPreview(layout),
     });
     return value;
@@ -1060,7 +1114,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     if (draft === null || hubLoading || confirmedFor(hub, draft.layout).revision !== reviewedRevision)
       throw new Error("Transcript settings changed again. Review the current values.");
     persistDraft({ layout: draft.layout, baseRevision: reviewedRevision, config: draft.config, writeUncertain: false });
-    setState({ draft: { ...draft, revision: reviewedRevision }, draftConflict: false, draftError: null });
+    setState({
+      draft: { ...draft, revision: reviewedRevision, generation: currentGeneration() },
+      draftConflict: false,
+      draftError: null,
+    });
   }
 
   return {

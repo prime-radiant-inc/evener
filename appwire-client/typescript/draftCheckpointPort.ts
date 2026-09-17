@@ -15,6 +15,12 @@ export interface DraftPort<Checkpoint> {
   /** Removes the stored record only if `checkpoint` still names it; reports
    * whether it did. */
   removeIf(checkpoint: Checkpoint): boolean;
+  /** Replaces the stored record with `next` only if `expected` still names
+   * it; reports whether it did. The atomic twin of removeIf: a load-then-
+   * save pair has the identical race a load-then-remove pair would (the
+   * reason removeIf exists at all) - a concurrent writer's checkpoint landing
+   * between the two would be silently overwritten by an unconditional save. */
+  replaceIf(expected: Checkpoint, next: Checkpoint): boolean;
 }
 
 /** What the port held is not a checkpoint this build can read. Distinct from
@@ -41,6 +47,12 @@ export interface DraftRepository<Checkpoint> {
   save(checkpoint: Checkpoint): void;
   removeIf(checkpoint: Checkpoint): boolean;
   discardClassified(): boolean;
+  /** Settles the classified record onto `next` atomically against the
+   * identity load()/save() most recently classified. Reports whether it
+   * did; a refusal means another writer replaced the record while this
+   * store's write was in flight, and the caller must adopt that
+   * replacement (load() again) rather than overwrite it. */
+  replaceClassified(next: Checkpoint): boolean;
 }
 
 /** The draft port with every checkpoint normalized through `decode` in BOTH
@@ -119,6 +131,24 @@ export function createDraftRepository<Checkpoint>(
     discardClassified(): boolean {
       if (!hasLastClassified) return discardStoredDraft(storage);
       return storage.removeIf(lastClassified as Checkpoint);
+    },
+    replaceClassified(next: Checkpoint): boolean {
+      const decoded = decode(next);
+      // Nothing classified yet: there is no identity to be atomic against
+      // (the defensive case discardClassified also falls back from) - the
+      // write itself is the first classification.
+      if (!hasLastClassified) {
+        storage.save(decoded);
+        lastClassified = decoded;
+        hasLastClassified = true;
+        return true;
+      }
+      const replaced = storage.replaceIf(lastClassified as Checkpoint, decoded);
+      if (replaced) {
+        lastClassified = decoded;
+        hasLastClassified = true;
+      }
+      return replaced;
     },
   };
 }

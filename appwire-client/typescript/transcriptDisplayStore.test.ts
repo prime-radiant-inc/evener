@@ -362,6 +362,32 @@ describe("the direct write", () => {
     });
   });
 
+  // RoboRev round 21 Medium 3: a fenced reply resolving with the current
+  // value is indistinguishable from a genuine acknowledgement - most sharply
+  // for a NO-OP write (the requested config equals what the hub already
+  // confirms), where the current value and "this write applied" read
+  // identically. Rejecting is the only way to say the CURRENT hub never
+  // actually confirmed this particular write.
+  test("a fenced no-op write rejects rather than reporting a success the current hub never acknowledged", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    // Proposes exactly the confirmed configuration: a no-op write.
+    const write = store.getState().patchHubDefault("mobile", mobileConfig);
+    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === patchMethod)).toHaveLength(1));
+
+    // The hub is replaced while this write's reply is still out.
+    store.detachHub();
+
+    // The reply confirms the SAME configuration this write also proposed -
+    // an unguarded resolve would be indistinguishable from this write having
+    // actually landed on the hub that is now current.
+    reply.resolve(patchAnswer("mobile", hubDefault(2, mobileConfig)));
+
+    await expect(write).rejects.toThrow(/hub connection changed/);
+  });
+
   test("a lost revision race adopts the canonical current and reports the conflict on the layout", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
@@ -394,10 +420,13 @@ describe("the direct write", () => {
         current: toWireDefault(hubDefault(9, desktopConfig)),
       }),
     );
-    await write;
-    // The canonical belongs to the hub this write was fenced out of. Landing
-    // it would repopulate a retired payload AND mark it confirmed, so the next
-    // hub's refresh - a restart numbering from 1 - is eaten by the stale guard.
+    // The reply's own error - and its canonical - belong to the hub this
+    // write was fenced out of. Applying it would repopulate a retired
+    // payload AND mark it confirmed, so the next hub's refresh (a restart
+    // numbering from 1) would be eaten by the stale guard; resolving with a
+    // stale current value would report an outcome the CURRENT hub never
+    // gave. Round 21 Medium 3: it rejects instead.
+    await expect(write).rejects.toThrow(/hub connection changed/);
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
     expect(store.getState().loaded).toBe(false);
   });
@@ -417,9 +446,13 @@ describe("the direct write", () => {
     await vi.waitFor(() => expect(sends).toBe(2));
 
     // The direct write's reply is now the OLDER write on this layout: a later
-    // write took the layout, so this reply may not land its value.
+    // write took the layout, so this reply may not land its value, and the
+    // earlier write's own outcome is genuinely unknown - resolving it with
+    // whatever the hub currently confirms would be the same "unacknowledged
+    // success" Medium 3 covers, just fenced by a superseding write instead of
+    // a hub change.
     first.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
-    await direct;
+    await expect(direct).rejects.toThrow(/hub connection changed/);
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
 
     second.resolve(patchAnswer("mobile", hubDefault(3, mobileConfig)));
@@ -456,7 +489,7 @@ describe("the direct write", () => {
     expect(store.getState().drafts.mobile).toBeUndefined();
 
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
-    await write;
+    await expect(write).rejects.toThrow(/hub connection changed/);
     expect(store.getState().hub.mobile).toEqual(hubDefault(1, mobileConfig));
   });
 
@@ -601,7 +634,7 @@ describe("the direct write", () => {
     // the hub may well have applied it.
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
-    await write;
+    await expect(write).rejects.toThrow(/hub connection changed/);
     expect(store.getState().drafts.mobile).toEqual(proposed);
 
     // On reconnect the hub confirms a NEWER revision holding something else:
@@ -630,7 +663,7 @@ describe("the direct write", () => {
     // a hub that no longer exists, so revision is no guide at all here.
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(8, proposed)));
-    await write;
+    await expect(write).rejects.toThrow(/hub connection changed/);
     expect(store.getState().drafts.mobile).toEqual(proposed);
 
     client.on(getMethod, () => ({
@@ -653,7 +686,7 @@ describe("the direct write", () => {
 
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
-    await write;
+    await expect(write).rejects.toThrow(/hub connection changed/);
     expect(store.getState().drafts.mobile).toEqual(proposed);
 
     // The new generation's first authoritative payload numbers the SAME as the
@@ -678,7 +711,7 @@ describe("the direct write", () => {
     await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
     store.endReadyGeneration();
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
-    await write;
+    await expect(write).rejects.toThrow(/hub connection changed/);
 
     // The hub holds what the write asked for, but this write's reply never
     // landed: the host still has an unacknowledged write to tell the user
@@ -715,7 +748,7 @@ describe("the checkpointed draft editor", () => {
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     store.getState().editDraft("mobile", proposed);
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
     expect(drafts.calls).toEqual(["load", "save:settled"]);
 
     const reply = deferred<TranscriptDisplayPatchResponse>();
@@ -732,6 +765,43 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
   });
 
+  // RoboRev round 21 High: the post-save cleanup discarded removeIf's
+  // result, so a checkpoint another writer replaced while the PATCH was in
+  // flight survived on disk (removeIf's own byte-aware compare already
+  // refuses to remove a non-matching record) while the store still reported
+  // no draft at all - the replacement was hidden rather than shown.
+  test("a successful save whose checkpoint was replaced while the PATCH was in flight adopts the replacement", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft();
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // Another window or app version replaces the SAME on-disk record with
+    // its own draft while this write is still out.
+    const replacement: TranscriptDraftCheckpoint = {
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    };
+    drafts.storage.save(replacement);
+
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    expect(await save).toEqual(hubDefault(3, proposed));
+
+    // The write succeeded, but the checkpoint it wrote is gone - replaced,
+    // not just removed. The replacement survives on disk, and the store
+    // adopts it rather than reporting no draft.
+    expect(drafts.stored()).toEqual(replacement);
+    expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig, generation: 1 });
+  });
+
   test("a lost reply leaves the write uncertain and edits blocked until an authoritative read settles it", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
@@ -746,6 +816,40 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshHubDefaults();
     expect(store.getState().writeUncertain).toBe(false);
     expect(drafts.stored()?.writeUncertain).toBe(false);
+  });
+
+  // RoboRev round 21 Medium 1: settling an uncertain checkpoint used an
+  // unconditional save, so a concurrent writer's newer draft (landed while
+  // this write's outcome was unknown) would be silently overwritten by the
+  // stale one this store was about to settle.
+  test("settling an uncertain write after its checkpoint was replaced adopts the replacement instead of overwriting it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // Another writer replaces the SAME on-disk record while the outcome is
+    // still unknown.
+    const replacement: TranscriptDraftCheckpoint = {
+      id: "other",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    };
+    drafts.storage.save(replacement);
+
+    // An authoritative read settles the write - but the checkpoint it would
+    // settle onto is gone, replaced. It must adopt the replacement, never
+    // overwrite it with the stale (now-settled) checkpoint.
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toEqual(replacement);
+    expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig, generation: 1 });
   });
 
   test("saveDraft refuses a reply that is not this write's own outcome", async () => {
@@ -815,8 +919,31 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().hubError).toBeNull();
     expect(() => store.getState().rebaseDraft(3)).toThrow(/changed again/);
     store.getState().rebaseDraft(4);
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 4, config: proposed });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 4, config: proposed, generation: 1 });
     expect(store.getState().draftConflict).toBe(false);
+  });
+
+  // RoboRev round 21 Medium 4: staleDraft compared revision alone, but hub
+  // revision numbering restarts on a hub replacement, so a NEW generation
+  // reporting the SAME revision by coincidence let a stale draft (composed
+  // against a DIFFERENT hub session) read as current.
+  test("a draft is flagged stale across a generation change even when the new generation happens to report the same revision", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    store.getState().editDraft("mobile", proposed);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    // The connection drops and reconnects (a different hub, or the same hub
+    // restarted) - a new generation begins, and its own numbering happens to
+    // confirm the identical revision this draft was composed against.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState().hub.mobile?.revision).toBe(2);
+    expect(store.getState().draftConflict).toBe(true);
   });
 
   test("a restored checkpoint is the store's first state; a corrupt one marks the port unavailable", async () => {
@@ -829,7 +956,7 @@ describe("the checkpointed draft editor", () => {
     });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
     expect(store.getState().writeUncertain).toBe(true);
 
     const corrupt = memoryDraftStorage<TranscriptDraftCheckpoint>({ id: "", baseRevision: -1 });
@@ -923,7 +1050,7 @@ describe("the checkpointed draft editor", () => {
     // actually there now, which is readable.
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
   });
 
   test("a discard refuses and re-classifies when the READABLE record has been replaced", async () => {
@@ -937,7 +1064,7 @@ describe("the checkpointed draft editor", () => {
     });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
 
     // Another store or app version replaces the SAME record with a valid,
     // newer checkpoint - under different storage bytes - between this
@@ -958,7 +1085,7 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toEqual(newer);
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig });
+    expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig, generation: 1 });
   });
 
   test("restore, edit, discard: the edited draft is gone on the first discard", async () => {
@@ -972,14 +1099,14 @@ describe("the checkpointed draft editor", () => {
     });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
 
     // The user edits the restored draft: save() writes a NEW checkpoint. The
     // repository's tracked identity must move with it, or a discard right
     // after still names the PRE-EDIT bytes and refuses against what save()
     // just wrote.
     store.getState().editDraft("mobile", desktopConfig);
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: desktopConfig });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: desktopConfig, generation: 1 });
 
     // One discard call removes the edited draft - not two.
     store.getState().discardDraft();
