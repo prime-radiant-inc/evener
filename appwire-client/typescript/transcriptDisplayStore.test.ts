@@ -16,7 +16,6 @@ import {
   type TranscriptDisplayStore,
   type TranscriptDisplayStoreDeps,
   type TranscriptDraftCheckpoint,
-  type TranscriptDraftStorage,
   transcriptDisplaySupport,
 } from "./transcriptDisplayStore";
 import type { AnyNotification, TranscriptDisplayDefaults, TranscriptDisplayPatchResponse } from "./types.gen";
@@ -849,7 +848,12 @@ describe("the checkpointed draft editor", () => {
   test("an unreadable stored record never locks the section: the hub loads, discard clears it, edits resume", async () => {
     // The shape the native host wrote before layouts were recorded - and any
     // other value this build cannot read.
-    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: legacy.storage });
 
@@ -875,7 +879,12 @@ describe("the checkpointed draft editor", () => {
     // checkpoint that does not say which layer it proposes names no draft:
     // it is not restored, and it takes the same path as any other malformed
     // stored value rather than being guessed at.
-    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: legacy.storage });
     expect(store.getState().draft).toBeNull();

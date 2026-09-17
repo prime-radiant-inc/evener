@@ -1,6 +1,32 @@
 /** The device store the draft ports write through, over any synchronous
  * key-value store. Exported as a factory so its compare/remove contract can be
  * tested without the platform store. */
+/** A value serialized with object keys in sorted order, so two encodings of the
+ * SAME record compare equal however they were written. `JSON.stringify` alone
+ * does not: it preserves insertion order, so a checkpoint rebuilt by the store's
+ * own validator encodes differently from the bytes it was decoded from whenever
+ * those bytes came from another writer or an older build. */
+function canonical(value: unknown): string {
+	if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+	if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+	const entries = Object.entries(value as Record<string, unknown>)
+		.filter(([, member]) => member !== undefined)
+		.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+	return `{${entries.map(([key, member]) => `${JSON.stringify(key)}:${canonical(member)}`).join(",")}}`;
+}
+
+/** Whether the stored bytes decode to the record `value` names. This is what
+ * "still this one" means for a readable record: the store's repository rebuilds
+ * every checkpoint through one validator, so the object handed back here is
+ * equal to - but not byte-identical with - what the port returned. */
+function sameRecord(stored: string, value: unknown): boolean {
+	try {
+		return canonical(JSON.parse(stored)) === canonical(value);
+	} catch {
+		return false;
+	}
+}
+
 export interface SynchronousKeyValueStore {
 	getItemSync(key: string): string | null;
 	setItemSync(key: string, value: string): void;
@@ -54,12 +80,11 @@ export function draftBackend(
 			if (stored === null) return;
 			// Three ways a value names what is stored, all of them about THIS value:
 			// the raw bytes handed back for a record no decoder accepts, the bytes
-			// the very object being handed back was decoded from (a record that
-			// parses but is not a checkpoint keeps its original formatting), and the
-			// canonical encoding of a checkpoint we wrote.
+			// the very object being handed back was decoded from, and - for a
+			// readable record, which the store's repository rebuilds through its own
+			// validator before handing it back - the record those bytes decode to.
 			const source = typeof value === "object" && value !== null ? decodedFrom.get(value) : undefined;
-			if (stored === value || stored === source || stored === JSON.stringify(value))
-				store.removeItemSync(key);
+			if (stored === value || stored === source || sameRecord(stored, value)) store.removeItemSync(key);
 		},
 	};
 }

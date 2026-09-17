@@ -4,16 +4,16 @@ import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
-  type KeybindingDraftCheckpoint,
   fromWireOverrides,
+  type KeybindingDraftCheckpoint,
   type KeybindingsStore,
   type KeybindingsStoreDeps,
   type KeybindingsSupport,
   keybindingsSupport,
 } from "./keybindingsStore";
 import { deferred } from "./testing/deferred";
-import { FakeClient } from "./testing/fakeClient";
 import { memoryDraftStorage } from "./testing/draftStorage";
+import { FakeClient } from "./testing/fakeClient";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
 import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
@@ -473,7 +473,9 @@ describe("the checkpointed draft editor", () => {
     ["a whitespace-only action id", [{ action: " ", chord: "Control+P" }]],
     ["a whitespace-only chord", [{ action: ACTIONS.paletteOpen, chord: "\t\n" }]],
   ])("editDraft refuses %s, as the hub would", async (_name, proposed) => {
-    const store = await readyStore(clientServing(3), { drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage });
+    const store = await readyStore(clientServing(3), {
+      drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage,
+    });
     expect(() => store.getState().editDraft(proposed as KeybindingsRule[])).toThrow("Invalid keybinding draft.");
     expect(store.getState().draft).toBeNull();
   });
@@ -524,7 +526,10 @@ describe("a retired payload fences every reply still in flight", () => {
   test.each(cells)("%s while a %s reply is in flight", async (_site, _path, reset, method, start) => {
     const registry = registryWithDefaults();
     const client = clientServing(3, [applied]);
-    const store = await readyStore(client, { registry, drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage });
+    const store = await readyStore(client, {
+      registry,
+      drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage,
+    });
     const reply = deferred<KeybindingsOverrides>();
     client.on(method, () => reply.promise);
     const settled = start(store).then(

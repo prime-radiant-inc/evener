@@ -279,6 +279,48 @@ describe("native preference drafts", () => {
 		);
 	});
 
+	it("a READABLE record with reordered keys is discarded and does not come back", () => {
+		const raw = new Map<string, string>();
+		const store = {
+			getItemSync: (key: string) => raw.get(key) ?? null,
+			setItemSync: (key: string, value: string) => {
+				raw.set(key, value);
+			},
+			removeItemSync: (key: string) => {
+				raw.delete(key);
+			},
+		};
+		const port = draftBackend(store, () => "id-1");
+		const storage = nativeTranscriptDrafts("hub", port);
+		const key = "evener.native.transcript-draft.hub";
+
+		// A perfectly valid checkpoint, stored with its keys in a different order
+		// from this build's canonical encoding - an older build, or another writer.
+		raw.set(
+			key,
+			JSON.stringify({
+				writeUncertain: false,
+				config,
+				baseRevision: 4,
+				layout: "mobile",
+				id: "d1",
+			}),
+		);
+
+		// The ordinary discard path rebuilds the checkpoint before handing it back,
+		// so the object is not the one the port returned. It must still remove the
+		// record, or the store reports success and the draft returns next launch.
+		const decoded = storage.load() as Record<string, unknown>;
+		storage.removeIf({
+			id: decoded.id,
+			layout: decoded.layout,
+			baseRevision: decoded.baseRevision,
+			config: decoded.config,
+			writeUncertain: decoded.writeUncertain,
+		} as never);
+		expect(raw.has(key)).toBe(false);
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(
