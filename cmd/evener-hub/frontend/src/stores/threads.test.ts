@@ -9494,6 +9494,112 @@ test("a Stop canceled retry is not resent by a later discovery scan", async () =
   }
 });
 
+// The per-ID set also closes the ref-level flag's leak. A Stop canceled the
+// sibling; the old flag protected the ref, but a background-note retry on a
+// different mutation deleted that flag, so the retry's reconciliation reopened
+// the sibling and a later scan resent it. A background-note retry re-affirms
+// only the mutation it names, so the sibling must stay blockedUnknown.
+test("a background-note retry does not release a sibling mutation canceled by the same Stop", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let reads = 0;
+    const reconciliationRead = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 2 ? reconciliationRead.promise : readResponse("ref_a", { status: { type: "idle" } });
+    });
+    fake.on("thread/shutdown", () => ({}));
+    fake.on("notes/human/set", (params) => ({
+      note: params.note ?? "",
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        threadId: "thr_ref_a",
+        disposition: "applied",
+        projectionState: "notProjected",
+      },
+    }));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      if (sends === 1) throw new RequestTimeoutError("response lost");
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // The sibling the Stop will cancel: an uncertain send left blockedUnknown.
+    await threadsStore.getState().send("ref_a", "sibling");
+    await flushIndexedDBUntil(() => sends === 1);
+    const sibling = (await storage.listOutbox("ref_a"))[0];
+    if (!sibling) throw new Error("missing uncertain sibling");
+    await storage.markUnknown(sibling.clientMutationId, "blockedUnknown");
+    // A user retry of the sibling begins, then a Stop lands while its read is in
+    // flight. Under the old flag this is what set protection for the whole ref.
+    const retry = retryBlockedMutation(sibling.clientMutationId);
+    await flushIndexedDBUntil(() => reads >= 2);
+    await threadsStore.getState().shutdown("ref_a");
+    reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
+    await expect(retry).rejects.toThrow("Stop canceled this pending action");
+    // A background note save, itself blocked, appears afterwards on the same
+    // ref. Its own retry must not release the sibling the earlier Stop canceled.
+    const note = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "draft", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+    await retryBlockedMutation(note.clientMutationId, "backgroundNote");
+    await vi.advanceTimersByTimeAsync(2000);
+    await flushIndexedDBUntil(() => sends >= 2);
+    expect(sends).toBe(1);
+    expect((await storage.getOutbox(sibling.clientMutationId))?.state).toBe("blockedUnknown");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// The per-ID release: an explicit user retry re-affirms exactly the mutation it
+// names, so its ID leaves the canceled set and reconciliation may reopen it.
+// Without the release a Stop-canceled record could never be resent, even on the
+// user's own retry.
+test("an explicit user retry after a Stop dispatches the canceled mutation", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    if (sends === 1) throw new RequestTimeoutError("response lost");
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // An uncertain send left blockedUnknown by its lost response.
+  await threadsStore.getState().send("ref_a", "uncertain");
+  await flushIndexedDBUntil(() => sends === 1);
+  const uncertain = (await storage.listOutbox("ref_a"))[0];
+  if (!uncertain) throw new Error("missing uncertain send");
+  await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+  // Stop cancels the pending record by ID.
+  await threadsStore.getState().shutdown("ref_a");
+  // The user explicitly retries it: the release must let it dispatch.
+  expect(await retryBlockedMutation(uncertain.clientMutationId)).toBe(true);
+  await flushIndexedDBUntil(() => sends >= 2);
+  expect(sends).toBe(2);
+});
+
 test("persistent journal failures wait for periodic recovery between attempts", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {

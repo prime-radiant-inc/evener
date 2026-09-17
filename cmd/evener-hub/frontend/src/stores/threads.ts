@@ -912,11 +912,27 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 
 const userIntentStopGenerations = new Map<string, number>();
 
-// A retry a Stop canceled must stay canceled. Reconciliation reopens a blocked
-// record to submitting so the target can dispatch, so without this a later
-// lifecycle/discovery scan would resend the very mutation the Stop canceled.
-// The ref is released when the user explicitly retries it or enqueues new work.
-const stoppedRetryRefs = new Set<string>();
+// The mutations a Stop canceled, by clientMutationId. Reconciliation reopens a
+// blockedUnknown record to submitting so the target can dispatch, so without
+// this a later lifecycle/discovery scan would resend the very mutation the Stop
+// canceled. It is keyed by ID, not by ref: a ref-level flag released every
+// canceled mutation on a ref when any one was retried, so a background-note
+// retry reopened a sibling the same Stop had canceled. One ID is released only
+// by an explicit user retry of that ID; a fresh send gets a new ID and needs no
+// release.
+const canceledMutationIds = new Set<string>();
+
+// Record a ref's pending outbox records as canceled by the Stop just
+// acknowledged. In memory only: the hub's SessionRecoveryState stays the
+// durable authority, and the page re-derives from it on reload.
+async function recordCanceledMutations(ref: string): Promise<void> {
+  const runtime = getMutationRuntime();
+  if (!runtime) return;
+  await runtime.start;
+  for (const record of await runtime.storage.listOutbox(ref)) {
+    canceledMutationIds.add(record.clientMutationId);
+  }
+}
 
 function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, (userIntentStopGenerations.get(ref) ?? 0) + 1);
@@ -944,7 +960,6 @@ export async function retryBlockedMutation(
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
-  stoppedRetryRefs.delete(record.targetRef);
   const savedTargetGeneration = stopGenerations.get(record.targetRef) ?? 0;
   const stoppedSinceBaseline = () => (userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration;
   const checkStopped = () => {
@@ -974,6 +989,10 @@ export async function retryBlockedMutation(
   const epoch = dispatchReadyEpoch;
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
+  // An explicit user retry re-affirms exactly this mutation, so its canceled ID
+  // is released here, just before reconciliation may reopen it. A background
+  // note save re-affirms nothing of the kind and must not release a sibling.
+  if (mode === "user") canceledMutationIds.delete(clientMutationId);
   await handleReady(
     client,
     epoch,
@@ -992,7 +1011,6 @@ export async function retryBlockedMutation(
     // retries explicitly.
     await runtime.storage.markUnknown(clientMutationId, "blockedUnknown");
     dispatchableMutationRefs.delete(record.targetRef);
-    stoppedRetryRefs.add(record.targetRef);
     if (mode === "backgroundNote") return false;
     throw new Error("Stop canceled this pending action; retry again when ready.");
   }
@@ -1385,7 +1403,6 @@ async function enqueueMutationIntent(
   const ref = intent.targetRef;
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
-  stoppedRetryRefs.delete(ref);
   const runtime = requireMutationRuntime();
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
@@ -1689,8 +1706,7 @@ async function publishAndReconcileThreadHydration(
         if (
           !mutationStateAuthoritative ||
           published.status.type === "restartRequired" ||
-          published.status.type === "notLoaded" ||
-          stoppedRetryRefs.has(ref)
+          published.status.type === "notLoaded"
         ) {
           for (const record of await runtime.storage.listOutbox(ref)) {
             if (!current()) return;
@@ -1699,7 +1715,7 @@ async function publishAndReconcileThreadHydration(
           }
           notifyMutationPersistence([ref]);
         } else {
-          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds, canceledMutationIds);
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
@@ -3025,6 +3041,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         .catch(() => {});
       throw error;
     }
+    await recordCanceledMutations(ref);
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
     }));
@@ -3038,6 +3055,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
+    await recordCanceledMutations(ref);
   },
 
   async forkFromTurn(ref, opts) {
@@ -3185,7 +3203,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
-  stoppedRetryRefs.clear();
+  canceledMutationIds.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
