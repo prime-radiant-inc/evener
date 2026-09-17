@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
+	"primeradiant.com/evener/llm/providers/internal/requestutil"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -29,13 +30,13 @@ type openAIModelListEntry struct {
 // entry doesn't report).
 func (m openAIModelListEntry) row() registry.Model {
 	caps := registry.Caps{}
-	if w := firstPositiveInt(m.ContextWindow, m.MaxContext); w > 0 {
+	if w := requestutil.FirstPositiveInt(m.ContextWindow, m.MaxContext); w > 0 {
 		caps.ContextWindow = new(w)
 	}
-	if i := firstPositiveInt(m.MaxInputTokens, m.InputTokenLimit); i > 0 {
+	if i := requestutil.FirstPositiveInt(m.MaxInputTokens, m.InputTokenLimit); i > 0 {
 		caps.MaxInputTokens = new(i)
 	}
-	if o := firstPositiveInt(m.MaxOutputTokens, m.OutputTokens); o > 0 {
+	if o := requestutil.FirstPositiveInt(m.MaxOutputTokens, m.OutputTokens); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
 	return registry.Model{ID: m.ID, Caps: caps}
@@ -79,13 +80,13 @@ func (m codexModelListEntry) id() string {
 // entry doesn't report).
 func (m codexModelListEntry) row() registry.Model {
 	caps := registry.Caps{}
-	if w := firstPositiveInt(m.ContextWindow, m.MaxContextWindow); w > 0 {
+	if w := requestutil.FirstPositiveInt(m.ContextWindow, m.MaxContextWindow); w > 0 {
 		caps.ContextWindow = new(w)
 	}
-	if i := firstPositiveInt(m.MaxInputTokens, m.InputTokenLimit); i > 0 {
+	if i := requestutil.FirstPositiveInt(m.MaxInputTokens, m.InputTokenLimit); i > 0 {
 		caps.MaxInputTokens = new(i)
 	}
-	if o := firstPositiveInt(m.MaxOutputTokens, m.OutputTokenLimit); o > 0 {
+	if o := requestutil.FirstPositiveInt(m.MaxOutputTokens, m.OutputTokenLimit); o > 0 {
 		caps.MaxOutputTokens = new(o)
 	}
 	if efforts := codexReasoningEfforts(m.SupportedReasoningLevels); len(efforts) > 0 {
@@ -121,17 +122,6 @@ func codexReasoningEfforts(levels []codexReasoningLevel) []string {
 		out = append(out, effort)
 	}
 	return out
-}
-
-// firstPositiveInt returns the first positive argument, or 0 if none is
-// positive.
-func firstPositiveInt(values ...int) int {
-	for _, v := range values {
-		if v > 0 {
-			return v
-		}
-	}
-	return 0
 }
 
 // ListModels implements llm.Protocol. The platform API answers with data[]

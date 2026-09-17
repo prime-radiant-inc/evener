@@ -132,6 +132,18 @@ export function useHostInstances(host: string): HostInstanceState {
   return useStore(hostInstancesStore, (state) => hostPartition(state, host));
 }
 
+/** hostRequestVersions is one monotonic sequence per host, the same ordering
+ * guard the package's own credential instances store puts on its listing reads
+ * (appwire-client's state/credentials/instances.ts, requestVersion). The
+ * connection generation above cannot order two reads of the SAME host: it
+ * advances on connection transitions rather than per request, so two
+ * overlapping fetchHost calls for one host capture the same generation and the
+ * OLDER answer can commit over the newer partition. The product reaches that
+ * state without anything unusual - a mount-time load of the selected host raced
+ * by the wrapped-notification refetch below, or a user's retry - and the newer
+ * listing is the one that describes the host. */
+const hostRequestVersions = new Map<string, number>();
+
 /** fetchHost reads `host`'s own instance listing through evener/host/request
  * (component 07b), so the spawn form's provider setup describes the machine the
  * launch will use. The controller's host is not a partition - its rows are the
@@ -141,11 +153,13 @@ export async function fetchHost(host: string): Promise<void> {
   if (isLocalHost(host)) return;
   const client = connectionStore.getState().client;
   if (!client) return;
+  const version = (hostRequestVersions.get(host) ?? 0) + 1;
+  hostRequestVersions.set(host, version);
   const generation = hostInstancesStore.getState().generation;
   setHostPartition(host, (previous) => ({ ...previous, loading: true, error: null }));
   try {
     const resp = await hostRequest(client, host, "evener/instance/list", {});
-    if (hostInstancesStore.getState().generation !== generation) return;
+    if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
     setHostPartition(host, () => ({
       instances: resp.instances,
       availableProviders: resp.availableProviders,
@@ -154,7 +168,7 @@ export async function fetchHost(host: string): Promise<void> {
       error: null,
     }));
   } catch (err) {
-    if (hostInstancesStore.getState().generation !== generation) return;
+    if (version !== hostRequestVersions.get(host) || hostInstancesStore.getState().generation !== generation) return;
     setHostPartition(host, (previous) => ({ ...previous, loading: false, error: errorText(err) }));
   }
 }
@@ -196,6 +210,7 @@ onConnectionNotification((notification) => {
 export function resetHostInstancesForTests(): void {
   for (const pending of hostRefetchTimers.values()) clearTimeout(pending);
   hostRefetchTimers.clear();
+  hostRequestVersions.clear();
   hostInstancesStore.setState({ hosts: {}, generation: 0 });
 }
 

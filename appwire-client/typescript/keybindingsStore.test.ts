@@ -630,9 +630,29 @@ describe("payload rules shared by both apps", () => {
       { version: 1, revision: 1, rules: [{ action: "palette.open", chord: "\t\n" }] },
       undefined,
     ],
+    // The hub's whitespace set is Go's unicode.IsSpace, not JS trim's. NEL is
+    // whitespace there and is trimmed away, so a rule of only NEL names no
+    // action and every later whole-payload PATCH is rejected for it.
+    [
+      "an action id of only U+0085",
+      { version: 1, revision: 1, rules: [{ action: "\u0085", chord: "Control+P" }] },
+      undefined,
+    ],
+    [
+      "a chord of only U+0085",
+      { version: 1, revision: 1, rules: [{ action: "palette.open", chord: "\u0085" }] },
+      undefined,
+    ],
     ["a non-string loadError", { version: 1, revision: 1, rules: [], loadError: 4 }, undefined],
     ["a non-object", "nope", undefined],
   ])("fromWireOverrides: %s", (_name, value, expected) => {
     expect(fromWireOverrides(value)).toEqual(expected);
+  });
+
+  test("U+FEFF is an ordinary character to the hub, so the boundary keeps it", () => {
+    // JS trim() strips the BOM; Go's unicode.IsSpace does not, so the hub
+    // stores and serves such a rule and this client must not discard it.
+    const payload = { version: 1, revision: 1, rules: [{ action: "\ufeff", chord: "\ufeff" }] };
+    expect(fromWireOverrides(payload)).toEqual(payload);
   });
 });
