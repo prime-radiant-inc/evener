@@ -1797,35 +1797,41 @@ function handleNotification(n: AnyNotification): void {
     inflightModelsList = null;
     inflightModelsListIsRefresh = false;
   }
+  // One chain per notification, not two independently-scheduled ones: both
+  // reconcileIdentities and (queueChanged only) retireConsumedQueueIntents
+  // mutate the same durable records this ref's refreshMutationPins reads
+  // pinnedMutationRefs/dropUnpinnedModel from, so two unordered chains could
+  // let a late pass re-pin a ref the other just dropped. queueChanged's own
+  // clientMutationIds are the server's current whole queue, not the partial,
+  // single-id shape notificationMutationIdentities reads for other
+  // notifications - retiring a same-client queue intent absent from it needs
+  // that whole-queue snapshot.
   const mutationIdentities = notificationMutationIdentities(n);
-  if (mutationIdentities.length > 0) {
+  const ref = notificationRef(n);
+  if (mutationIdentities.length > 0 || n.method === "thread/queueChanged") {
     const runtime = getMutationRuntime();
     if (runtime) {
-      void runtime.dispatcher
-        .reconcileIdentities(mutationIdentities)
-        .then(() => {
-          const ref = notificationRef(n);
-          return ref ? refreshMutationPins(runtime, [ref]) : undefined;
-        })
-        .catch(() => {
-          // A later snapshot or receipt retries the same identity settlement.
-        });
-    }
-  }
-  // queueChanged's own clientMutationIds are the server's current queue, not
-  // a partial list like the other notifications notificationMutationIdentities
-  // reads above - retiring a same-client queue intent absent from it needs
-  // this whole-queue snapshot, never the single-id shape those share.
-  if (n.method === "thread/queueChanged") {
-    const ref = notificationRef(n);
-    const runtime = getMutationRuntime();
-    if (ref && runtime) {
-      void runtime.dispatcher
-        .retireConsumedQueueIntents(ref, new Set(n.params.queue.clientMutationIds ?? []))
-        .then(() => refreshMutationPins(runtime, [ref]))
-        .catch(() => {
-          // A later queueChanged or receipt retries the same settlement.
-        });
+      void (async () => {
+        try {
+          // mutationIdentities already non-empty is reason enough to refresh
+          // (unchanged from before this notification carried a second
+          // reconciliation step); retireConsumedQueueIntents's own settled
+          // ids are what decide it otherwise, so an empty queueChanged with
+          // nothing optimistic to retire skips the refresh's own reads too.
+          let settledSomething = mutationIdentities.length > 0;
+          if (settledSomething) await runtime.dispatcher.reconcileIdentities(mutationIdentities);
+          if (n.method === "thread/queueChanged" && ref) {
+            const settled = await runtime.dispatcher.retireConsumedQueueIntents(
+              ref,
+              new Set(n.params.queue.clientMutationIds ?? []),
+            );
+            settledSomething ||= settled.length > 0;
+          }
+          if (ref && settledSomething) await refreshMutationPins(runtime, [ref]);
+        } catch {
+          // A later snapshot or receipt retries the same settlement.
+        }
+      })();
     }
   }
   const now = Date.now();
