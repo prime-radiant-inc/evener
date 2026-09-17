@@ -35,9 +35,13 @@ export interface StoreLifecycleOptions<S> {
    * changed (a revision the host keys derived data on, a cache the change
    * retires). */
   onNotified?(): void;
-  /** Fences whatever else the store has on the wire, on reset and dispose:
-   * its list revision, and any per-key generation beside it. */
-  onFence?(): void;
+  /** Fences whatever else the store has on the wire - its list revision, and
+   * any per-key generation beside it - and settles what the fenced requests
+   * would have answered. Nothing is on the wire once this returns, so a flag a
+   * fenced request raised has nothing left to lower it: the store lowers it
+   * here, through the guarded setter, which drops the write if the store has
+   * been disposed (nobody is listening then). */
+  onFence?(set: FrameworkFreeStore<S>["setState"]): void;
   /** Whether the list has been read: a read that landed, or one that failed
    * and left its error. Only an established list is recovered on reconnect. */
   established(state: S): boolean;
@@ -73,9 +77,12 @@ export function createStoreLifecycle<S>(
   // Whether this store has ever had a ready connection: what tells a
   // reconnection from a first connection.
   let hasBeenReady = false;
+  // The store's own publish, guarded: kept so the fence can settle what the
+  // requests it cancels would have answered.
+  let guardedSet: FrameworkFreeStore<S>["setState"] | undefined;
 
   function fenceInFlight(): void {
-    options.onFence?.();
+    if (guardedSet) options.onFence?.(guardedSet);
     clearTimeout(refetchTimer);
     refetchTimer = undefined;
   }
@@ -96,11 +103,12 @@ export function createStoreLifecycle<S>(
   }
 
   return {
-    guard:
-      (publish) =>
-      (partial): void => {
+    guard(publish) {
+      guardedSet = (partial): void => {
         if (!disposed) publish(partial);
-      },
+      };
+      return guardedSet;
+    },
     start() {
       if (disposed || stopNotifications) return;
       stopNotifications = client.onNotification(handleNotification);
@@ -125,6 +133,7 @@ export function createStoreLifecycle<S>(
       // cancelled: the read a notification scheduled is about a change no
       // recovery read would replace.
       if (client === previous.client && state === previous.state) return;
+      const replaced = client !== previous.client;
       connection = { client, state };
       // A read scheduled on the connection that is changing has nothing left
       // to say: on the way down it would fire against a socket that is gone
@@ -133,6 +142,13 @@ export function createStoreLifecycle<S>(
       // same change.
       clearTimeout(refetchTimer);
       refetchTimer = undefined;
+      // A REPLACED client is a different hub, and everything the previous one
+      // still owes describes a machine this store no longer speaks to: a list,
+      // a mutation's answer, a browse. All of it is fenced, so none of it can
+      // populate this store with the previous hub's data. A transition on the
+      // SAME client is not that - its own replies reject when its socket
+      // drops, and a flap leaves what it already answered as true as it was.
+      if (replaced) fenceInFlight();
       if (disposed || state !== "ready") return;
       const away = hasBeenReady;
       hasBeenReady = true;

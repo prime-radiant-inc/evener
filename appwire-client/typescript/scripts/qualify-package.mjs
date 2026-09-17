@@ -469,7 +469,11 @@ assert.equal(layerStore.getState().launchLayer, null);
 const listRevision = client.createListRevision();
 const first = listRevision.next();
 listRevision.fence();
-assert.equal(listRevision.commit(first), false);
+let fencedAnswerPublished = false;
+listRevision.publish(first, () => {
+  fencedAnswerPublished = true;
+});
+assert.equal(fencedAnswerPublished, false);
 marketplacesStore
   .getState()
   .fetchMarketplaces()

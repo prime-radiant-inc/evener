@@ -72,7 +72,11 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
     debounceMs: LAUNCH_LAYER_REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchLaunchLayer(),
-    onFence: () => listRevision.fence(),
+    onFence: (set) => {
+      listRevision.fence();
+      // Nothing is coming to lower it.
+      set({ launchLayerLoading: false });
+    },
     established: (s) => s.launchLayer !== null || s.launchLayerError !== null,
   });
 
@@ -94,11 +98,11 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
           // success would clear an error a newer read posted or hide a read
           // still running, and its failure would put "Failed to load" over a
           // newer write's layer.
-          if (!listRevision.commit(revision)) return;
-          set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null });
+          listRevision.publish(revision, () =>
+            set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null }),
+          );
         } catch (err) {
-          if (!listRevision.commit(revision)) return;
-          set({ launchLayerLoading: false, launchLayerError: errorText(err) });
+          listRevision.publish(revision, () => set({ launchLayerLoading: false, launchLayerError: errorText(err) }));
         }
       },
 
@@ -119,7 +123,7 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
           listRevision.retract(revision);
           throw err;
         }
-        if (listRevision.commit(revision)) set({ launchLayer: next });
+        listRevision.publish(revision, () => set({ launchLayer: next }));
       },
     };
   });

@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
+import { deferFailure, deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { LaunchConfigLayer, MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
@@ -40,6 +40,10 @@ interface LifecycleCase<S> {
   deferMutation(fake: FakeClient): () => void;
   /** Scripts the mutation to fail. */
   failMutation(fake: FakeClient): void;
+  /** Holds the mutation; the returned function fails it. */
+  deferFailingMutation(fake: FakeClient): () => void;
+  /** The list the store holds, null until something has read it. */
+  list(state: S): unknown;
   fetch(state: S): Promise<void>;
   /** The mutation deferMutation holds. */
   mutate(state: S): Promise<void>;
@@ -76,6 +80,11 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
     return () => release({ marketplaces: [] });
   },
   failMutation: (fake) => fake.on("evener/marketplace/remove", failing("write refused")),
+  deferFailingMutation: (fake) => {
+    const fail = deferFailure(fake, "evener/marketplace/remove");
+    return () => fail(new Error("write refused"));
+  },
+  list: (state) => state.marketplaces,
   fetch: (state) => state.fetchMarketplaces(),
   mutate: (state) => state.removeMarketplace("acme"),
   loading: (state) => state.marketplacesLoading,
@@ -109,6 +118,11 @@ const PLUGINS: LifecycleCase<PluginsState> = {
     return () => release({ plugins: [] });
   },
   failMutation: (fake) => fake.on("evener/plugin/remove", failing("write refused")),
+  deferFailingMutation: (fake) => {
+    const fail = deferFailure(fake, "evener/plugin/remove");
+    return () => fail(new Error("write refused"));
+  },
+  list: (state) => state.plugins,
   fetch: (state) => state.fetchPlugins(),
   mutate: (state) => state.removePlugin("linter", "acme"),
   loading: (state) => state.pluginsLoading,
@@ -140,6 +154,11 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
     return () => release({ effective: {} });
   },
   failMutation: (fake) => fake.on("evener/launch/setLayer", failing("write refused")),
+  deferFailingMutation: (fake) => {
+    const fail = deferFailure(fake, "evener/launch/setLayer");
+    return () => fail(new Error("write refused"));
+  },
+  list: (state) => state.launchLayer,
   fetch: (state) => state.fetchLaunchLayer(),
   mutate: (state) => state.setLaunchLayer({ pluginDirs: ["/opt/plugins"] }),
   loading: (state) => state.launchLayerLoading,
@@ -355,6 +374,52 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       answer();
       await reading;
       expect(lifecycle.loading(store.getState())).toBe(false);
+    });
+
+    test("a reply from the connection that was replaced publishes nothing", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      const releases = lifecycle.gateList(fake);
+      const reading = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+
+      // A different hub answers different questions, and this reply is the
+      // previous one's answer: it describes a machine this store no longer
+      // speaks to.
+      store.connectionChanged(lifecycle.create().fake, "ready");
+      const answer = releases[0];
+      if (!answer) throw new Error("the read must be in flight");
+      answer();
+      await reading;
+
+      expect(lifecycle.list(store.getState())).toBeNull();
+      expect(lifecycle.loading(store.getState())).toBe(false);
+    });
+
+    test("a read that landed fenced is applied when the write that fenced it retracts", async () => {
+      const { fake, store } = lifecycle.create();
+      const releases = lifecycle.gateList(fake);
+      const reading = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+      const failWrite = lifecycle.deferFailingMutation(fake);
+      const mutating = lifecycle.mutate(store.getState());
+      await Promise.resolve();
+
+      // The read answers first and is superseded, so it publishes nothing -
+      // the flag it raised belongs to the write now.
+      const answer = releases[0];
+      if (!answer) throw new Error("the read must be in flight");
+      answer();
+      await reading;
+      expect(lifecycle.loading(store.getState())).toBe(true);
+
+      // Then the write fails, publishing nothing and giving the state back.
+      // The read's answer is the newest one anybody has, and it is the last
+      // one there will be: nothing else is coming to lower that flag.
+      failWrite();
+      await expect(mutating).rejects.toThrow("write refused");
+      expect(lifecycle.loading(store.getState())).toBe(false);
+      expect(lifecycle.list(store.getState())).not.toBeNull();
     });
 
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {

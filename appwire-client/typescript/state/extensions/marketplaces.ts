@@ -163,11 +163,13 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     // Every browse still on the wire is fenced with the list: reset and
     // dispose both want a reply that started before them to land nothing -
     // its catalogs included, which is what the generation below counts.
-    onFence: () => {
+    onFence: (set) => {
       generation += 1;
       listRevision.fence();
       for (const name of browseInFlight.keys()) retireGeneration(name);
       browseInFlight.clear();
+      // Nothing is coming to lower it.
+      set({ marketplacesLoading: false });
     },
     established: (s) => s.marketplaces !== null || s.marketplacesError !== null,
   });
@@ -194,14 +196,15 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         throw err;
       }
       if (issuedIn !== generation) return;
-      set((s) => ({
-        // The same three fields a read's success writes; see plugins.ts's
-        // mutate for why a committing response owns all three.
-        ...(listRevision.commit(revision)
-          ? { marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }
-          : {}),
-        ...(retire.length ? { browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) } : {}),
-      }));
+      // The catalogs this mutation names are retired whether or not its list
+      // is the live answer: retiring is monotonic within the generation, so a
+      // catalog stale under an older list is stale under a newer one too.
+      if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
+      // The list, and the two fields that belong to it, go through the fence:
+      // see plugins.ts's mutate for why the live answer owns all three.
+      listRevision.publish(revision, () =>
+        set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
+      );
     }
 
     const setCatalog = (name: string, entry: MarketplaceCatalogEntry): void =>
@@ -222,11 +225,11 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
           // success would clear an error a newer fetch posted or hide a load
           // still running, and its failure would put "Failed to load" over a
           // newer mutation's list.
-          if (!listRevision.commit(revision)) return;
-          set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
+          listRevision.publish(revision, () =>
+            set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
+          );
         } catch (err) {
-          if (!listRevision.commit(revision)) return;
-          set({ marketplacesLoading: false, marketplacesError: errorText(err) });
+          listRevision.publish(revision, () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }));
         }
       },
 

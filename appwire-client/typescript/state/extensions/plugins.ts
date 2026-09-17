@@ -85,7 +85,11 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     // derived data on it wants to know the set changed as soon as the hub
     // says so.
     onNotified: () => store.setState((s) => ({ pluginRevision: s.pluginRevision + 1 })),
-    onFence: () => listRevision.fence(),
+    onFence: (set) => {
+      listRevision.fence();
+      // Nothing is coming to lower it.
+      set({ pluginsLoading: false });
+    },
     established: (s) => s.plugins !== null || s.pluginsError !== null,
   });
 
@@ -108,9 +112,9 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
       // commits is the store's newest word on the list, so it owns the error
       // and the loading flag too - a read this one outran writes none of the
       // three when it lands, including the flag it raised on its way out.
-      if (listRevision.commit(revision)) {
+      listRevision.publish(revision, () => {
         set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
-      }
+      });
     }
 
     const mutation = (method: PluginRefMethod) => (plugin: string, marketplace: string) =>
@@ -128,15 +132,18 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
         try {
           const resp = await client.request("evener/plugin/list", {});
           // The loading flag and the error belong to this response as much as
-          // its list does, so an outrun fetch writes none of the three: its
+          // its list does, so an outrun fetch publishes none of the three: its
           // success would clear an error a newer fetch posted or hide a load
           // still running, and its failure would put "Failed to load" over a
-          // newer mutation's list.
-          if (!listRevision.commit(revision)) return;
-          set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+          // newer mutation's list. Held, not dropped: if everything that
+          // outran it retracts, this is the newest answer there is.
+          listRevision.publish(revision, () => {
+            set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
+          });
         } catch (err) {
-          if (!listRevision.commit(revision)) return;
-          set({ pluginsLoading: false, pluginsError: errorText(err) });
+          listRevision.publish(revision, () => {
+            set({ pluginsLoading: false, pluginsError: errorText(err) });
+          });
         }
       },
 
