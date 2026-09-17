@@ -22,7 +22,7 @@
 // column; SessionChrome now lives in the composer's own PromptCard control row.
 
 import type { ThreadModel } from "@evener/appwire-client";
-import { configFingerprint, resolveEffectiveConfig } from "@evener/appwire-client";
+import { configFingerprint, projectThread, resolveEffectiveConfig } from "@evener/appwire-client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -34,7 +34,6 @@ import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
 import { resumeStopFence, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
-import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { SessionChrome } from "./chrome/SessionChrome";

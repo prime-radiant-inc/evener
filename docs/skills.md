@@ -330,9 +330,10 @@ as prose:
   the skill's canonical name, in the sentence where it was typed; surrounding
   text and attachment anchors are untouched, and a pasted or typed inline
   `/name` mention that is never explicitly selected stays ordinary text.
-  Completion adds a separating space only when the text that follows would
-  otherwise join the name; punctuation that already bounds the reference is
-  left as typed. Commands keep their existing insert-then-execute behavior.
+  Completion adds a separating space whenever the text that follows would
+  otherwise join the name, including at the end of the input; punctuation or
+  whitespace that already bounds the reference is left as typed. Commands keep
+  their existing insert-then-execute behavior.
   A chip is one unit: it is deleted with Backspace or Delete (never edited
   letter by letter), typing a name character directly against it separates the
   two rather than dissolving the selection, and undo and redo treat the chip

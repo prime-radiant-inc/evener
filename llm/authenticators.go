@@ -86,8 +86,8 @@ func missingCredential(res registry.Resolved) error {
 	msg := fmt.Sprintf("instance %q has no credential", res.Instance)
 	for _, w := range res.Warnings {
 		if strings.HasPrefix(w, "no credential") {
-			return &ConfigurationError{Message: msg + ": " + w}
+			return &ConfigurationError{Message: msg + ": " + w, Cause: ErrNoCredential}
 		}
 	}
-	return &ConfigurationError{Message: msg}
+	return &ConfigurationError{Message: msg, Cause: ErrNoCredential}
 }

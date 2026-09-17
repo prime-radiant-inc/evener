@@ -1,7 +1,8 @@
-import type { InputItem, PendingMutation, ThreadModel } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { MutationOutboxRecord } from "../../../../stores/mutationOutbox";
-import { reconcilePendingEntries } from "./pendingReconcile";
+import type { InputItem, PendingMutation } from "../../types.gen";
+import { reconcilePendingEntries } from "./pendingEntries";
+import type { MutationOutboxRecord } from "./records";
+import { threadModel as model } from "./testing";
 
 function outbox(
   clientMutationId: string,
@@ -25,50 +26,25 @@ function outbox(
   };
 }
 
-function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
-  return {
-    ref: "ref_a",
-    threadId: "thread_a",
-    name: "",
-    status: { type: "active" },
-    modelProvider: "",
-    model: "",
-    visionModel: "",
-    askPending: false,
-    pendingEscalations: [],
-    turns: [],
-    queue: { revision: 1 },
-    tasks: null,
-    jobsUpdatedAt: null,
-    lastFrameAt: 0,
-    capabilities: {} as ThreadModel["capabilities"],
-    goal: null,
-    humanNote: "",
-    agentNote: "",
-    sessionUrls: [],
-    contextUsed: 0,
-    contextWindow: 0,
-    contextPressure: 0,
-    usage: null,
-    workMillis: 0,
-    reasoningEffortLevels: [],
-    supportsReasoning: false,
-    cwd: "",
-    createdAt: "",
-    updatedAt: "",
-    ...rest,
-    jobsTreeRevision,
-  };
-}
-
 // The ids this client's own durable projection has held. Empty unless a test
 // is specifically about a submission whose local record is already gone.
 const NOTHING_SUBMITTED_HERE: ReadonlySet<string> = new Set();
 
+// The safe unattributed-only answer a caller with no ClientIdentity instance
+// handy still gets. Every outbox() fixture below leaves originClientId unset,
+// so this is indistinguishable from a real identity's rule for them; the
+// "names this client" branch gets its own predicate and test further down.
+const UNATTRIBUTED_ONLY = (record: { originClientId?: string }): boolean => record.originClientId === undefined;
+
 test("two same-text outbox records remain distinct by client mutation identity", () => {
   expect(
-    reconcilePendingEntries("ref_a", [outbox("mutation_1"), outbox("mutation_2")], model(), NOTHING_SUBMITTED_HERE),
+    reconcilePendingEntries(
+      "ref_a",
+      [outbox("mutation_1"), outbox("mutation_2")],
+      model(),
+      NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
+    ),
   ).toMatchObject([
     { id: "mutation_1", text: "hello", source: "outbox" },
     { id: "mutation_2", text: "hello", source: "outbox" },
@@ -90,7 +66,7 @@ test("a skill-only pending entry carries its canonical skill selection", () => {
     payload: { ref: "ref_a", input: skillInput, clientMutationId: "mutation_1" },
     optimisticDisplay: { method: "turn/queue", input: skillInput },
   };
-  expect(reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE)).toEqual([
+  expect(reconcilePendingEntries("ref_a", [record], model(), NOTHING_SUBMITTED_HERE, UNATTRIBUTED_ONLY)).toEqual([
     expect.objectContaining({ id: "mutation_1", text: "", imageCount: 0, skillNames: ["pkg:probe"] }),
   ]);
 });
@@ -109,6 +85,7 @@ test("the authoritative pending projection replaces the same outbox identity", (
       [outbox("mutation_1", "turn/steer", "keep steering")],
       model({ pendingMutations: [pending] }),
       NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
     ),
   ).toEqual([
     expect.objectContaining({
@@ -134,12 +111,18 @@ test("a locally submitted mutation stays this client's own once the authoritativ
     projectionState: "pending",
   };
   expect(
-    reconcilePendingEntries("ref_a", [outbox("mutation_1")], model({ pendingMutations: [pending] }), new Set()),
+    reconcilePendingEntries(
+      "ref_a",
+      [outbox("mutation_1")],
+      model({ pendingMutations: [pending] }),
+      new Set(),
+      UNATTRIBUTED_ONLY,
+    ),
   ).toEqual([expect.objectContaining({ id: "mutation_1", source: "authoritative", fromThisClient: true })]);
 });
 
 // The hydrate that re-describes the row also settles the durable record behind
-// it (threads.ts's reconcileIdentities -> settleApplied), so the outbox list is
+// it (the host's reconcileIdentities -> settleApplied), so the outbox list is
 // empty by the time the next message is composed. The submitted-here identities
 // are what carries the answer across that deletion.
 test("a mutation this client submitted stays its own after its durable record is settled away", () => {
@@ -150,9 +133,15 @@ test("a mutation this client submitted stays its own after its durable record is
     executionState: "accepted",
     projectionState: "pending",
   };
-  expect(reconcilePendingEntries("ref_a", [], model({ pendingMutations: [pending] }), new Set(["mutation_1"]))).toEqual(
-    [expect.objectContaining({ id: "mutation_1", source: "authoritative", fromThisClient: true })],
-  );
+  expect(
+    reconcilePendingEntries(
+      "ref_a",
+      [],
+      model({ pendingMutations: [pending] }),
+      new Set(["mutation_1"]),
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toEqual([expect.objectContaining({ id: "mutation_1", source: "authoritative", fromThisClient: true })]);
 });
 
 test("a pending mutation this client never submitted is not its own", () => {
@@ -163,9 +152,15 @@ test("a pending mutation this client never submitted is not its own", () => {
     executionState: "accepted",
     projectionState: "pending",
   };
-  expect(reconcilePendingEntries("ref_a", [], model({ pendingMutations: [pending] }), new Set(["mutation_1"]))).toEqual(
-    [expect.objectContaining({ id: "mutation_from_another_client", fromThisClient: false })],
-  );
+  expect(
+    reconcilePendingEntries(
+      "ref_a",
+      [],
+      model({ pendingMutations: [pending] }),
+      new Set(["mutation_1"]),
+      UNATTRIBUTED_ONLY,
+    ),
+  ).toEqual([expect.objectContaining({ id: "mutation_from_another_client", fromThisClient: false })]);
 });
 
 test("a transcript item with the identity removes the optimistic projection regardless of text", () => {
@@ -191,6 +186,7 @@ test("a transcript item with the identity removes the optimistic projection rega
         ],
       }),
       NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
     ),
   ).toEqual([]);
 });
@@ -202,6 +198,7 @@ test("an authoritative queue identity is rendered by QueueStrip rather than dupl
       [outbox("mutation_1", "turn/queue")],
       model({ queue: { revision: 1, clientMutationIds: ["mutation_1"] } }),
       NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
     ),
   ).toEqual([]);
 });
@@ -213,6 +210,7 @@ test("blockedUnknown remains visible and is not converted by elapsed time", () =
       [outbox("mutation_1", "turn/start", "uncertain", "blockedUnknown")],
       model(),
       NOTHING_SUBMITTED_HERE,
+      UNATTRIBUTED_ONLY,
     ),
   ).toEqual([
     expect.objectContaining({
@@ -220,5 +218,24 @@ test("blockedUnknown remains visible and is not converted by elapsed time", () =
       state: "blockedUnknown",
       text: "uncertain",
     }),
+  ]);
+});
+
+// A real ClientIdentity's isOwnMutationRecord answers true for BOTH an
+// unattributed record and one whose originClientId names this client
+// (records.ts:158-160) - the branch UNATTRIBUTED_ONLY above never exercises.
+// An outbox record attributed to this client's own id must reach the entry
+// as fromThisClient: true, same as an unattributed one; a record attributed
+// to a different id must not.
+test("an outbox record whose originClientId names this client is its own", () => {
+  const ownedByThisClient = (record: { originClientId?: string }): boolean =>
+    record.originClientId === undefined || record.originClientId === "this-client";
+  const ownRecord: MutationOutboxRecord = { ...outbox("mutation_1"), originClientId: "this-client" };
+  const otherRecord: MutationOutboxRecord = { ...outbox("mutation_2"), originClientId: "another-client" };
+  expect(
+    reconcilePendingEntries("ref_a", [ownRecord, otherRecord], model(), NOTHING_SUBMITTED_HERE, ownedByThisClient),
+  ).toEqual([
+    expect.objectContaining({ id: "mutation_1", fromThisClient: true }),
+    expect.objectContaining({ id: "mutation_2", fromThisClient: false }),
   ]);
 });

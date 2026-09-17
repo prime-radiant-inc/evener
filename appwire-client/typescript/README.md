@@ -57,7 +57,11 @@ models and which take a plugin selection), the built-in slash invocation
 matcher and argument lookup both composers run a draft through before sending
 it, the transcript display configuration both apps resolve (local over hub
 over shipped), encode for local storage and summarize a transcript's content
-level and advanced toggles with, the keybinding group both apps' shortcut settings are built on (the action
+level and advanced toggles with, the transcript projector
+(`projectThread(model, config)`) that turns a thread's turns and items into
+the rows a transcript renders - content-level filtering, the critical/intent/
+thinking/hidden decision per item, disclosure eligibility and anchors - over
+the same config, framework-free and with no host global, the keybinding group both apps' shortcut settings are built on (the action
 ids, the chord AST with its overlap predicate, the default binding map, the
 display rows, the override primitives and the semantic override validation) -
 its registry is a framework-free store factory, `createKeybindingsRegistry(parse)`
@@ -104,8 +108,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   replaced client never keeps a live subscription; `onConnectionNotification(store, handler)`
   follows whichever client the store holds across a swap. No handshake, no
   view binding. Resolves to `state/connection/index.ts`, a barrel.
-- `@evener/appwire-client/state/navigation` - the navigation state layer both
-  apps' navigation stores are built on: the resource-key vocabulary and
+- `@evener/appwire-client/state/navigation` - the navigation state layer the
+  web app's navigation store is built on, adoptable by native if it ever
+  gains one: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
   merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
   matching a hub invalidation target to a loaded resource and the revision it
@@ -129,10 +134,19 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
-  one cached browse result per marketplace, where fetches record their failure
-  in state and mutations reject), with the installed-plugin and directory
-  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
-  barrel over the layer's modules.
+  one cached browse result per marketplace), the installed-plugins store
+  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  plugins, their six mutations and a `pluginRevision` that moves as the hub
+  announces a change), and the two pieces both are built over:
+  `createListRevision`, the fence on a list every response replaces whole, and
+  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  `connectionChanged` recovery (a list a host has read is read again when the
+  connection is ready again, because the hub's broadcast only reaches clients
+  that were connected) and the `start`/`reset`/`dispose` trio a host drives
+  from its screen. In both stores
+  fetches record their failure in state and mutations reject. The directories store is to follow. The
+  subpath resolves to `state/extensions/index.ts`, a barrel over the layer's
+  modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
@@ -143,6 +157,49 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `foreignListingChange` predicate both hosts gate a credential probe on, and
   `listingEstablished` in the state. Resolves to
   `state/credentials/index.ts`, a barrel.
+- `@evener/appwire-client/state/mutation` - the mutation state layer: the
+  durable record shapes both apps' outboxes store (`MutationIntent`,
+  `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
+  `MutationRecoveryRecord`), generic over the attachment type so a host's own
+  attachment bytes (the web's `Blob`) never enter the package, and the client
+  provenance a shared outbox's readers need. `createClientIdentity(storage,
+  randomSource)` is a factory, not a module singleton - the package names no
+  browser global, so a host builds one instance over its own
+  `ClientIdentityStorage` port (the web passes a lazy `sessionStorage`
+  adapter; a host with none gets a per-process identity) and gets back
+  `{ ownClientId, isOwnMutationRecord }`, each memoized per instance.
+  `isOwnMutationRecord` claims an unattributed record (written before the
+  field existed) as well as this instance's own. `createSecureUUID(source)`
+  is the strong identifier source both the record shapes' `clientMutationId`
+  convention and a generated client identity use; both take their
+  `SecureRandomSource` (`randomUUID?`/`getRandomValues?`, both optional) as a
+  required parameter with no default - `globalThis.crypto` is named nowhere
+  in the package, so a host with no global Web Crypto (React Native without a
+  polyfill) passes its own source (the web's lazily-read, guarded `crypto`;
+  `expo-crypto` for native) rather than the package assuming one exists.
+  `createSecureUUID` documents its own fallback for a source with neither
+  method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
+  layer also carries `MutationOutbox`, the discovery half of an outbox: a class
+  that enqueues through a `MutationOutboxStorage` port (the 13 calls this layer
+  and the dispatcher make; the web's IndexedDB adapter implements it and stays
+  in the app), announces a commit to sibling clients, and re-scans when a host
+  says a scan is worth doing. Every host-shaped capability is an option - the
+  channel, the lifecycle and visibility targets, the timer - and none defaults
+  to a browser global, so no DOM type lives here. Its pure reconciliation
+  (`reconcilePendingEntries`) turns those durable records plus a live
+  `ThreadModel` into the `PendingTurnEntry` rows a composer's queue renders -
+  identity-based, so an authoritative projection replaces the same outbox entry
+  rather than duplicating it - and the pending-turns projection store built on
+  that reconciliation: `createPendingTurnsStore({ threads, draft, identity })`
+  is a framework-free store holding a host's own outbox/optimistic/recovery
+  records plus the submission bookkeeping (`submittingRefs`, `submittedHere`)
+  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
+  `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
+  clear) and the host's own `ClientIdentity` (`isOwnMutationRecord`),
+  generic over the attachment type like the records above. No storage
+  adapter, scheduling policy or DOM type lives here - just the shapes, the
+  identity, the rules, the reconciliation and the store built on them.
+  Resolves to `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

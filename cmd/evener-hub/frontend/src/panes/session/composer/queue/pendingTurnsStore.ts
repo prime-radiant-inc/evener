@@ -1,10 +1,13 @@
-import type { ThreadModel } from "@evener/appwire-client";
-import { useEffect, useMemo } from "react";
+import {
+  createPendingTurnsStore,
+  type PendingTurnsDraftPort,
+  type PendingTurnsThreadsPort,
+} from "@evener/appwire-client/state/mutation";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
-import { createStore } from "zustand/vanilla";
 import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
-  MutationOptimisticRecord,
+  MutationAttachment,
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "../../../../stores/mutationOutbox";
@@ -21,41 +24,30 @@ import {
   useThreadsStore,
 } from "../../../../stores/threads";
 import { clearDraft, readComposerDraft, readDraftRevision } from "../draft";
-import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingReconcile";
+import type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
 export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 
-interface PendingTurnsStoreState {
-  outbox: Map<string, MutationOutboxRecord>;
-  optimistic: Map<string, MutationOptimisticRecord>;
-  recovery: Map<string, MutationRecoveryRecord>;
-  submittingRefs: ReadonlySet<string>;
-  // Every client mutation id this client's own durable projection has held, for
-  // as long as this page lives. The durable records themselves are the primary
-  // evidence of "this client submitted it", and they are deliberately short
-  // lived: publishing an authoritative read settles every identity the daemon
-  // reports back out of storage (threads.ts's reconcileIdentities), including
-  // the still-unreflected sends it lists in pendingMutations. Provenance has to
-  // outlive the record, because routing asks about it after the hydrate too -
-  // see reconcilePendingEntries.
-  //
-  // Local commits publish their identity directly, before the composer can
-  // accept another message. Projection reads discover identities from reloads
-  // and other tabs; a stalled read cannot hide a commit made by this page.
-  //
-  // Ids only, one per mutation this page submits, never pruned - a page that
-  // submits enough sends for that to matter has far larger records than these
-  // in the durable stores it is reading from.
-  submittedHere: ReadonlySet<string>;
-}
-
-const pendingTurnsStore = createStore<PendingTurnsStoreState>(() => ({
-  outbox: new Map(),
-  optimistic: new Map(),
-  recovery: new Map(),
-  submittingRefs: new Set(),
-  submittedHere: new Set(),
-}));
+// The client-swap safety, reconciliation and submission bookkeeping now live
+// in the package's pending-turns projection store
+// (`@evener/appwire-client/state/mutation`); this module is the web's one
+// instance, bound to the browser's thread store, composer-draft storage and
+// client identity through the three ports the core takes. Every durable-read
+// op below (the generation fencing, IndexedDB reads, settle tracking) stays
+// here: it is genuinely web-specific, not part of what moved.
+const threadsPort: PendingTurnsThreadsPort = {
+  getThreadModel: (ref) => threadsStore.getState().threads.get(ref),
+};
+const draftPort: PendingTurnsDraftPort = {
+  readDraftRevision,
+  readComposerDraft,
+  clearDraft,
+};
+const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
+  threads: threadsPort,
+  draft: draftPort,
+  identity: { isOwnMutationRecord },
+});
 
 let refreshGeneration = 0;
 let allTargetsRefreshGeneration = 0;
@@ -148,22 +140,6 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
   return trackProjectionWork(readProjectionIntoStore(ref));
 }
 
-function recordSubmittedHere(snapshot: {
-  outbox: MutationOutboxRecord[];
-  optimistic: MutationOptimisticRecord[];
-}): void {
-  const known = pendingTurnsStore.getState().submittedHere;
-  // The outbox is shared per origin: another tab's records read back out of it
-  // are visible here but are not this client's submissions, and claiming them
-  // would reroute this tab's composer behind their sends.
-  const discovered = [...snapshot.outbox, ...snapshot.optimistic]
-    .filter((record) => isOwnMutationRecord(record))
-    .map((record) => record.clientMutationId)
-    .filter((id) => !known.has(id));
-  if (discovered.length === 0) return;
-  pendingTurnsStore.setState((state) => ({ submittedHere: new Set([...state.submittedHere, ...discovered]) }));
-}
-
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   const epoch = refreshEpoch;
   const generation = ++refreshGeneration;
@@ -179,7 +155,7 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
     // superseded still saw a record of this client's, and the newer read - taken
     // later - may be looking at storage that record has since been settled out
     // of. Skipping it there would leave the id known to nobody.
-    recordSubmittedHere(snapshot);
+    pendingTurnsStore.recordSubmittedHere(snapshot);
     // Reads of all targets and reads of one target share the same ordering.
     // An old all-target snapshot must not erase a newer local commit.
     const targets = new Set(
@@ -214,7 +190,7 @@ subscribeMutationPersistence((targetRefs, committed) => {
   if (committed) {
     const { record, recoveryId } = committed;
     refreshGenerations.set(record.targetRef, ++refreshGeneration);
-    recordSubmittedHere({ outbox: [record], optimistic: [] });
+    pendingTurnsStore.recordSubmittedHere({ outbox: [record], optimistic: [] });
     pendingTurnsStore.setState((state) => {
       const recovery = new Map(state.recovery);
       if (recoveryId) recovery.delete(recoveryId);
@@ -277,12 +253,11 @@ export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
   perform: () => Promise<void>,
 ): Promise<void> {
-  if (pendingTurnsStore.getState().submittingRefs.has(opts.ref)) {
+  if (!pendingTurnsStore.beginSubmission(opts.ref)) {
     return Promise.reject(new Error("A message submission is already pending for this task"));
   }
   const epoch = refreshEpoch;
-  const draftRevision = readDraftRevision(opts.ref);
-  pendingTurnsStore.setState((state) => ({ submittingRefs: new Set(state.submittingRefs).add(opts.ref) }));
+  const draftRevisionAtStart = readDraftRevision(opts.ref);
   return trackProjectionWork(
     (async () => {
       try {
@@ -294,40 +269,37 @@ export function submitWithPendingTracking(
         }
         // Submission ownership outlives a mounted composer. A retired mount
         // must not clear a newer draft written after a tab switch.
-        const draftUnchanged = readDraftRevision(opts.ref) === draftRevision;
-        const draft = readComposerDraft(opts.ref);
-        const skillNames = [...(opts.skillNames ?? [])];
-        const selectionsUnchanged =
-          draft.skillNames.length === skillNames.length && draft.skillNames.every((name, i) => name === skillNames[i]);
-        const clearStoredDraft = draftUnchanged && draft.text === opts.text && selectionsUnchanged;
-        if (epoch === refreshEpoch && (clearStoredDraft || opts.recoveryId)) {
-          if (clearStoredDraft) clearDraft(opts.ref);
-          for (const listener of submissionCommittedListeners) {
-            try {
-              listener(
-                opts.ref,
-                opts.text,
-                skillNames,
-                opts.recoveryId
-                  ? {
-                      clientMutationId: opts.recoveryId,
-                      draftUnchanged,
-                      attachments: opts.attachments ?? [],
-                    }
-                  : undefined,
-              );
-            } catch (error) {
-              console.error("Composer submission listener failed", error);
+        if (epoch === refreshEpoch) {
+          const skillNames = [...(opts.skillNames ?? [])];
+          const { cleared: clearStoredDraft, draftUnchanged } = pendingTurnsStore.settleSubmittedDraft(opts.ref, {
+            draftRevisionAtStart,
+            text: opts.text,
+            skillNames,
+          });
+          if (clearStoredDraft || opts.recoveryId) {
+            for (const listener of submissionCommittedListeners) {
+              try {
+                listener(
+                  opts.ref,
+                  opts.text,
+                  skillNames,
+                  opts.recoveryId
+                    ? {
+                        clientMutationId: opts.recoveryId,
+                        draftUnchanged,
+                        attachments: opts.attachments ?? [],
+                      }
+                    : undefined,
+                );
+              } catch (error) {
+                console.error("Composer submission listener failed", error);
+              }
             }
           }
         }
       } finally {
         if (epoch === refreshEpoch) {
-          pendingTurnsStore.setState((state) => {
-            const submittingRefs = new Set(state.submittingRefs);
-            submittingRefs.delete(opts.ref);
-            return { submittingRefs };
-          });
+          pendingTurnsStore.endSubmission(opts.ref);
         }
         // Projection reads own their tracking, but cannot delay or change the
         // result of a submission whose durable outcome is already known.
@@ -341,42 +313,82 @@ const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
 
-// The one projection of the pending entries a ref shows, over a snapshot of
-// the store's records and the thread's model.
-function projectPendingEntries(
-  ref: string,
-  method: PendingMethod | undefined,
-  state: Pick<PendingTurnsStoreState, "outbox" | "optimistic" | "submittedHere">,
-  model: ThreadModel | undefined,
-): PendingTurnEntry[] {
-  const matches = reconcilePendingEntries(
-    ref,
-    [...state.outbox.values(), ...state.optimistic.values()],
-    model,
-    state.submittedHere,
-  ).filter((entry) => method === undefined || entry.method === method);
-  return matches.length > 0 ? matches : NO_ENTRIES;
-}
+type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 
+// pendingTurnEntries() reads both pendingTurnsStore's own state and, through
+// the threads port, the live thread model - a turn moving from queued to
+// started arrives over the wire into threadsStore, not into an outbox
+// record, so a subscription to pendingTurnsStore alone would leave a
+// component showing a turn as still pending after the hub already started
+// it. useSyncExternalStore only re-runs getSnapshot on a subscribe
+// notification (or a render for an unrelated reason), so it has to hear from
+// both stores; and since pendingTurnEntries() builds a fresh array on every
+// call, getSnapshot caches the last one and only replaces it when the
+// inputs it actually reads - outbox, optimistic, submittedHere, the thread
+// model, and which ref/method were asked for - have themselves changed
+// (never the whole pendingTurnsStore state object, which also changes on
+// writes this read does not depend on, like beginSubmission/endSubmission's
+// submittingRefs or the recovery map), which is what keeps this from
+// tearing into an infinite render loop without over-invalidating on those
+// unrelated writes.
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
-  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
-  const optimistic = useStore(pendingTurnsStore, (state) => state.optimistic);
-  const submittedHere = useStore(pendingTurnsStore, (state) => state.submittedHere);
-  const model = useThreadsStore((state) => state.threads.get(ref));
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
-  return useMemo(
-    () => projectPendingEntries(ref, method, { outbox, optimistic, submittedHere }, model),
-    [outbox, optimistic, submittedHere, model, ref, method],
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const unsubscribePending = pendingTurnsStore.subscribe(onStoreChange);
+      const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
+        if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
+      });
+      return () => {
+        unsubscribePending();
+        unsubscribeThreads();
+      };
+    },
+    [ref],
   );
+
+  const cacheRef = useRef<{
+    outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
+    optimistic: ReturnType<typeof pendingTurnsStore.getState>["optimistic"];
+    submittedHere: ReturnType<typeof pendingTurnsStore.getState>["submittedHere"];
+    model: ThreadsPortModel;
+    ref: string;
+    method: PendingMethod | undefined;
+    entries: PendingTurnEntry[];
+  } | null>(null);
+  const getSnapshot = useCallback((): PendingTurnEntry[] => {
+    const { outbox, optimistic, submittedHere } = pendingTurnsStore.getState();
+    const model = threadsPort.getThreadModel(ref);
+    const cached = cacheRef.current;
+    if (
+      cached &&
+      cached.outbox === outbox &&
+      cached.optimistic === optimistic &&
+      cached.submittedHere === submittedHere &&
+      cached.model === model &&
+      cached.ref === ref &&
+      cached.method === method
+    ) {
+      return cached.entries;
+    }
+    const entries = pendingTurnsStore.pendingTurnEntries(ref, method);
+    const result = entries.length > 0 ? entries : NO_ENTRIES;
+    cacheRef.current = { outbox, optimistic, submittedHere, model, ref, method, entries: result };
+    return result;
+  }, [ref, method]);
+
+  return useSyncExternalStore(subscribe, getSnapshot);
 }
 
 // The same projection read from the stores as they are now, not as a component
 // rendered them: for the press handlers that re-derive their verdict at the
 // press (stores/liveControls.ts is the rule; this is its pending-send input).
 export function pendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
-  return projectPendingEntries(ref, method, pendingTurnsStore.getState(), threadsStore.getState().threads.get(ref));
+  const entries = pendingTurnsStore.pendingTurnEntries(ref, method);
+  return entries.length > 0 ? entries : NO_ENTRIES;
 }
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {

@@ -119,24 +119,44 @@ func (m *Manager) Attached(name string) bool
 // never disagree within one observation.
 func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool)
 
+// ChannelIfAttached returns name's installed live channel ONLY while a live,
+// not-closed channel is installed, and reports false otherwise. It is the one
+// production backing accessor for the attached-only facts handshake:
+// cmd/evener-hub/main.go builds both hubcore.WebConfig.RemoteHostFacts
+// (remoteHostFactsForChannel) and RemoteHostHandshake
+// (remoteHostHandshakeForChannel) from a single ChannelIfAttached lookup, with
+// the generation guard `ch.Client() == client` applied at the call site so a
+// supervisor reconnect between two lookups cannot splice one generation's facts
+// onto another's client. Like ClientIfAttached it takes the manager-wide mutex,
+// not the per-host gate, and never dials.
+func (m *Manager) ChannelIfAttached(name string) (*Channel, bool)
+
 // HandshakeIfAttached returns the InitializeResponse captured when host's
 // current channel attached, ONLY while a live, not-closed channel is installed
 // (reports false otherwise). Like ClientIfAttached it takes the manager-wide
-// mutex, not the per-host gate, and never dials. appwire.Client keeps its
-// Features privately with no accessor, so component 05's capability probe reads
-// ProtocolVersion/ServerInfo/SourceID/Features through this seam (the
-// Channel-level source is Channel.Handshake below).
+// mutex, not the per-host gate, and never dials. It is NOT the production backer
+// for hubcore.WebConfig.RemoteHostHandshake: that seam is
+// remoteHostHandshakeForChannel, built on ChannelIfAttached with the channel
+// generation guard (`ch.Client() == client`) at the call site. This accessor has
+// no non-test caller; it is retained for tests and for a caller that does not
+// need the generation guard. appwire.Client keeps its Features privately with no
+// accessor, so component 05's capability probe reads
+// ProtocolVersion/ServerInfo/SourceID/Features from the channel value
+// (Channel.Handshake below).
 func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool)
 
 // PreflightIfAttached returns the preflight facts captured when host's current
 // channel attached, ONLY while a live, not-closed channel is installed (reports
 // false otherwise). Like ClientIfAttached and HandshakeIfAttached it takes the
-// manager-wide mutex, not the per-host gate, and never dials. This is the
-// attached-only accessor behind hubcore.WebConfig.RemoteHostFacts: without it
-// cmd/evener-hub/main.go cannot construct RemoteHostFacts from a privately-held
-// channel, and component 05's capability probe cannot populate
-// HostCapabilities.OS/Arch (see Channel.Preflight below; component 05,
-// §"Capability probe").
+// manager-wide mutex, not the per-host gate, and never dials. It is NOT the
+// production backer for hubcore.WebConfig.RemoteHostFacts: that seam is
+// remoteHostFactsForChannel, built on ChannelIfAttached with the channel
+// generation guard (`ch.Client() == client`) at the call site, so a supervisor
+// reconnect between the attach and the facts read cannot splice one generation's
+// preflight onto another's client (component 05's capability probe populates
+// HostCapabilities.OS/Arch from it; see Channel.Preflight below). This accessor
+// has no non-test caller; it is retained for tests and for a caller that does
+// not need the generation guard.
 func (m *Manager) PreflightIfAttached(name string) (Preflight, bool)
 
 // Channel is one owned SSH channel + the AppWire client over it.
