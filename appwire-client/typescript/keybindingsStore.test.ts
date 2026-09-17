@@ -395,6 +395,59 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toBeNull();
   });
 
+  // RoboRev round 22 Medium 2: unlike the main post-reply sequence's
+  // applyHubOverrides call, these two rejection branches called it with no
+  // try/catch, so a reconciler throw (a wedged registry that has already
+  // rolled back) propagated straight out of saveDraft with `saving` never
+  // cleared - the editor stays disabled forever, since nothing else clears it.
+  function wedgePaletteDefault(registry: KeybindingsRegistry): void {
+    const paletteDefault = registryWithDefaults()
+      .getState()
+      .bindings.find((b) => b.id === ACTIONS.paletteOpen);
+    if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
+    registry
+      .getState()
+      .registerBinding({ id: "foreign.squatter", actionId: "foreign", chord: serializeChord(paletteDefault.chord) });
+  }
+
+  test("a post-rename durable failure whose local reconcile throws still clears saving", async () => {
+    const registry = registryWithDefaults();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new WireError("sync keybindings state directory: boom", -32603, {
+        evenerErrorInfo: "keybindingsPostRename",
+        applied: payload(4, []),
+      });
+    });
+    const store = await readyStore(client, { registry, drafts: drafts.storage });
+    wedgePaletteDefault(registry);
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().hubError).not.toBeNull();
+  });
+
+  test("a revision conflict whose local reconcile throws still clears saving", async () => {
+    const registry = registryWithDefaults();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        current: payload(5, []),
+      });
+    });
+    const store = await readyStore(client, { registry, drafts: drafts.storage });
+    wedgePaletteDefault(registry);
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().hubError).not.toBeNull();
+  });
+
   test("a lost reply leaves the write uncertain and blocks edits until an authoritative read", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);

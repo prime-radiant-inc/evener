@@ -780,6 +780,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return true;
   }
 
+  /** Applies a confirmed payload while guaranteeing `settled` publishes even
+   * if the reconciler throws (the registry has already rolled back): every
+   * settle path clears `saving`/`writeUncertain` the same way whether or not
+   * the local apply succeeded, so a wedged registry can never leave the
+   * editor disabled. Returns the thrown error, if any, for the caller to
+   * re-throw once its own draft-port cleanup has run. */
+  function applyHubOverridesSettling(payload: KeybindingsOverrides, settled: Partial<KeybindingsStoreFields>): unknown {
+    try {
+      applyHubOverrides(payload, settled);
+      return null;
+    } catch (error) {
+      setState({ ...settled, hubError: errorText(error) });
+      return error;
+    }
+  }
+
   function endReadyGeneration(): void {
     fence.end();
     unwireNotification?.();
@@ -1275,7 +1291,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // would leave editing disabled over bindings that are already live.
       const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
       if (applied !== undefined) {
-        applyHubOverrides(applied, { saving: false, writeUncertain: false });
+        const settled = { saving: false, writeUncertain: false };
+        const applyFailure = applyHubOverridesSettling(applied, settled);
         let storageError: string | null = null;
         let refused: Partial<KeybindingsStoreFields> | null = null;
         try {
@@ -1290,6 +1307,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
             draftError: storageError,
           },
         );
+        if (applyFailure !== null) throw applyFailure;
         return applied;
       }
       // A lost revision race: the rejection carries the server's current
@@ -1298,7 +1316,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // one, the same rule the direct write and the transcript store follow.
       const conflictState = rejectionPayload(error, "conflict", "current");
       if (conflictState !== undefined) {
-        applyHubOverrides(conflictState, { saving: false, writeUncertain: false, draftConflict: true });
+        applyHubOverridesSettling(conflictState, { saving: false, writeUncertain: false, draftConflict: true });
         try {
           if (!drafts.replaceClassified({ ...checkpoint, writeUncertain: false })) setState(restoreDraft(getState()));
         } catch {
@@ -1354,13 +1372,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       draftConflict: newerExternal,
     };
     let applyFailure: unknown = null;
-    try {
-      if (newerExternal) setState(settled);
-      else applyHubOverrides(value, settled);
-    } catch (error) {
-      applyFailure = error;
-      setState({ ...settled, hubError: errorText(error) });
-    }
+    if (newerExternal) setState(settled);
+    else applyFailure = applyHubOverridesSettling(value, settled);
     let storageError: string | null = null;
     let refused: Partial<KeybindingsStoreFields> | null = null;
     try {
