@@ -334,8 +334,8 @@ function imagesToItemImagesForSession(
   // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
   // `omitempty` implies. Real frames carry it — a steering notification with
   // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
-  // erases an older page's images through mergePageItem. Output images are the
-  // opposite: there an explicit empty list IS the value (see below).
+  // erases an older page's images through mergePageItem. Output images read the
+  // same way here — outputImagesToItemImages folds an empty list to absent too.
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so

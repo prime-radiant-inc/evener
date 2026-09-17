@@ -55,3 +55,16 @@ test("nothing at all (no title, no text, no hint) renders nothing", () => {
   const { container } = render(<WarningItem item={item({ text: "" })} turn={turn} live={false} />);
   expect(container.firstChild).toBeNull();
 });
+
+// Whitespace is not content: a title of spaces or a hint of newlines would
+// otherwise render a row whose text a reader sees as blank — the reading the
+// phone's projector already takes (mobile/src/conversation/project.ts's warning
+// branch filters parts on trimmed content).
+test.each([
+  ["a whitespace title", { text: "   ", warning: { title: "  " } }],
+  ["a whitespace hint", { text: " ", warning: { hint: "\n\t" } }],
+  ["whitespace everywhere", { text: "\n", warning: { title: " ", hint: "  " } }],
+])("%s renders nothing", (_case, overrides) => {
+  const { container } = render(<WarningItem item={item(overrides)} turn={turn} live={false} />);
+  expect(container.firstChild).toBeNull();
+});

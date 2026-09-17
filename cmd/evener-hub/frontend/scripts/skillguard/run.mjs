@@ -441,6 +441,39 @@ export class Driver {
     await this.selectRange(ref, 0, state.value.length);
   }
 
+  // #1669: macOS Chrome does not hand a page the OS clipboard without a
+  // permission the guard's browser profile does not grant, so the copy/paste
+  // milestone cannot use the real chords there. It drives the same two events
+  // the browser would fire, each carrying a real DataTransfer, so the editor's
+  // own clipboard serializer (copy) and paste importer stay under test while
+  // only the OS clipboard itself is out of the loop. copySelection returns the
+  // text/plain the editor's clipboardTextSerializer wrote into that
+  // DataTransfer, which is the payload a real Ctrl+C would have put on the
+  // clipboard.
+  async copySelection(ref) {
+    return evaluate(this.send, `(() => {
+      const editor = ${this.editorExpr(ref)};
+      if (!editor) return null;
+      const dt = new DataTransfer();
+      editor.dispatchEvent(new ClipboardEvent("copy", { clipboardData: dt, bubbles: true, cancelable: true }));
+      return dt.getData("text/plain");
+    })()`);
+  }
+
+  // pasteText delivers `text` the way a real Ctrl+V would: a `paste` event
+  // carrying a DataTransfer with a text/plain payload, dispatched at the
+  // editor so its own paste handler imports it. The edit it causes is awaited
+  // by the caller's waitPage, exactly as the native chord was.
+  async pasteText(ref, text) {
+    return evaluate(this.send, `(() => {
+      const editor = ${this.editorExpr(ref)};
+      if (!editor) return null;
+      const dt = new DataTransfer();
+      dt.setData("text/plain", ${JSON.stringify(text)});
+      return editor.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    })()`);
+  }
+
   // press sends a real key to one session's composer. The CDP event goes to
   // whatever the page has focused, which is not necessarily the editor this
   // scenario is driving, so focus is put back on that composer first -- in the
@@ -1613,14 +1646,19 @@ async function runInlineEditing(driver) {
   await driver.assertComposerDraft(ref, "surrounding edits preserve atoms", two);
 
 
-  // The browser owns the clipboard and fires real copy/paste events. Paste
-  // imports plain canonical text only, never activation metadata. Original
-  // atoms must survive while their pasted labels remain ordinary text.
+  // The OS clipboard needs a permission the guard's Chrome does not have on
+  // macOS (#1669), so the milestone drives the same two events the browser
+  // would fire, each carrying a real DataTransfer, instead of the copy/paste
+  // chords. The editor's serializer and importer are still under test: the copy
+  // event must emit the canonical display text, and the paste event must import
+  // that text as plain prose only, never activation metadata. Original atoms
+  // must survive while their pasted labels remain ordinary text.
   await driver.selectAll(ref);
-  await driver.press(ref, "c", modifier);
+  const copied = await driver.copySelection(ref);
+  check(copied === TWO_SKILLS, `copy serialized ${JSON.stringify(copied)}, expected ${JSON.stringify(TWO_SKILLS)}`);
   await driver.focusComposer(ref);
   await driver.typeText(ref, " ");
-  await driver.press(ref, "v", modifier);
+  await driver.pasteText(ref, copied);
   const pastedText = `${TWO_SKILLS} ${TWO_SKILLS}`;
   await driver.waitPage(`(() => { const state = ${driver.composerStateExpr(ref)};
     return state && state.text === ${JSON.stringify(pastedText)} ? state : null; })()`,
