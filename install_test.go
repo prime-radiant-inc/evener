@@ -92,6 +92,13 @@ func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 	t.Parallel()
 
+	if runtime.GOOS == "windows" {
+		t.Skip("scripts/native/native-preflight.sh requires a Unix shell")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skipf("sh is not available: %v", err)
+	}
+
 	repoRoot, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
@@ -100,6 +107,9 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 	if _, err := os.Stat(script); err != nil {
 		t.Fatalf("native-preflight.sh: %v", err)
 	}
+
+	const fakeExpo = "#!/bin/sh\nexit 0\n"
+	const sameLock = "SAME\n"
 
 	// write lays down one fixture file, creating its parent directories.
 	write := func(t *testing.T, dir, rel, content string, mode os.FileMode) {
@@ -118,24 +128,53 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 			t.Fatalf("chtimes %s: %v", path, err)
 		}
 	}
-	run := func(t *testing.T, nativeDir string) (string, error) {
+	symlink := func(t *testing.T, target, link string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", filepath.Dir(link), err)
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("symlink %s -> %s: %v", link, target, err)
+		}
+	}
+	// runShell drives the script under one shell, so the lockfile fixture can be
+	// checked under both sh (dash on Linux) and bash without depending on which
+	// shell /bin/sh happens to be.
+	runShell := func(t *testing.T, shell, nativeDir string) (string, error) {
 		t.Helper()
 		env := installTestEnv(t, t.TempDir(), map[string]string{"EVENER_NATIVE_DIR": nativeDir})
-		out, err := combinedOutputRetryingETXTBSY("", env, "sh", script)
+		out, err := combinedOutputRetryingETXTBSY("", env, shell, script)
 		return string(out), err
+	}
+	run := func(t *testing.T, nativeDir string) (string, error) {
+		t.Helper()
+		return runShell(t, "sh", nativeDir)
+	}
+	// assertRefusal requires the refusal to name each of want.
+	assertRefusal := func(t *testing.T, out string, want ...string) {
+		t.Helper()
+		for _, w := range want {
+			if !strings.Contains(out, w) {
+				t.Errorf("refusal does not name %q:\n%s", w, out)
+			}
+		}
 	}
 	// assertInstallRefusal requires the refusal to name the directory, the
 	// reason, and the install command the developer must run.
 	assertInstallRefusal := func(t *testing.T, out, dir, reason string) {
 		t.Helper()
-		for _, want := range []string{dir, reason, "cd " + dir + " && npm ci"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("refusal does not name %q:\n%s", want, out)
-			}
-		}
+		assertRefusal(t, out, dir, reason, "cd "+dir+" && npm ci")
 	}
-
-	const fakeExpo = "#!/bin/sh\nexit 0\n"
+	// freshShared builds a shared install whose node_modules is newer than its
+	// own lockfile, so only the branch under test decides the verdict.
+	freshShared := func(t *testing.T, lockfile string, expoMode os.FileMode) string {
+		t.Helper()
+		shared := t.TempDir()
+		write(t, shared, "package-lock.json", lockfile, 0o644)
+		write(t, shared, "node_modules/.bin/expo", fakeExpo, expoMode)
+		setMtime(t, filepath.Join(shared, "node_modules"), time.Now().Add(2*time.Hour))
+		return shared
+	}
 
 	t.Run("missing install", func(t *testing.T) {
 		dir := t.TempDir()
@@ -146,6 +185,27 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 			t.Fatalf("preflight accepted a missing install:\n%s", out)
 		}
 		assertInstallRefusal(t, out, dir, "is missing")
+	})
+
+	t.Run("missing package-lock.json", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "node_modules/.bin/expo", fakeExpo, 0o755)
+		setMtime(t, filepath.Join(dir, "node_modules"), time.Now().Add(2*time.Hour))
+
+		// `test -nt` reads an absent second file differently under dash and
+		// bash, so this fixture must refuse identically under both.
+		for _, shell := range []string{"sh", "bash"} {
+			t.Run(shell, func(t *testing.T) {
+				if _, err := exec.LookPath(shell); err != nil {
+					t.Skipf("%s is not available: %v", shell, err)
+				}
+				out, err := runShell(t, shell, dir)
+				if err == nil {
+					t.Fatalf("%s accepted an install with no package-lock.json:\n%s", shell, out)
+				}
+				assertRefusal(t, out, dir, filepath.Join(dir, "package-lock.json"))
+			})
+		}
 	})
 
 	t.Run("stale real install", func(t *testing.T) {
@@ -163,28 +223,83 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 	})
 
 	t.Run("symlink whose shared lockfile differs", func(t *testing.T) {
-		shared := t.TempDir()
-		write(t, shared, "package-lock.json", "{\"shared\":true}\n", 0o644)
-		write(t, shared, "node_modules/.bin/expo", fakeExpo, 0o755)
-		// NEWER than the worktree's lockfile on purpose: the content compare must
-		// refuse the mismatched shared tree even though mtime would accept it.
-		setMtime(t, filepath.Join(shared, "node_modules"), time.Now().Add(2*time.Hour))
+		shared := freshShared(t, "{\"shared\":true}\n", 0o755)
 
 		work := t.TempDir()
 		write(t, work, "package-lock.json", "{\"worktree\":true}\n", 0o644)
-		if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules")); err != nil {
-			t.Fatalf("symlink: %v", err)
-		}
+		symlink(t, filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules"))
 
 		out, err := run(t, work)
 		if err == nil {
 			t.Fatalf("preflight accepted a mismatched shared symlink:\n%s", out)
 		}
-		for _, want := range []string{work, filepath.Join(shared, "package-lock.json"), "does not match", "never npm ci through the"} {
-			if !strings.Contains(out, want) {
-				t.Errorf("refusal does not name %q:\n%s", want, out)
-			}
+		assertRefusal(t, out, work, filepath.Join(shared, "package-lock.json"), "does not match", "never npm ci through the")
+	})
+
+	t.Run("symlink whose shared install is stale", func(t *testing.T) {
+		shared := freshShared(t, sameLock, 0o755)
+		// The shared lockfile matches, but the shared tree predates it: content
+		// alone must not accept a shared install that was never refreshed.
+		setMtime(t, filepath.Join(shared, "node_modules"), time.Now().Add(-2*time.Hour))
+
+		work := t.TempDir()
+		write(t, work, "package-lock.json", sameLock, 0o644)
+		symlink(t, filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules"))
+
+		out, err := run(t, work)
+		if err == nil {
+			t.Fatalf("preflight accepted a stale shared symlink:\n%s", out)
 		}
+		assertRefusal(t, out, work, filepath.Join(shared, "package-lock.json"), "older than", "never npm ci through the")
+	})
+
+	t.Run("symlink whose shared install is unhealthy", func(t *testing.T) {
+		shared := freshShared(t, sameLock, 0o644) // no execute bit
+
+		work := t.TempDir()
+		write(t, work, "package-lock.json", sameLock, 0o644)
+		symlink(t, filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules"))
+
+		out, err := run(t, work)
+		if err == nil {
+			t.Fatalf("preflight accepted an unhealthy shared symlink:\n%s", out)
+		}
+		assertRefusal(t, out, work, "unhealthy", shared, "never npm ci through the")
+	})
+
+	t.Run("relative symlink target is reported absolutely", func(t *testing.T) {
+		parent := t.TempDir()
+		shared := filepath.Join(parent, "shared-install")
+		work := filepath.Join(parent, "work")
+		write(t, shared, "package-lock.json", "{\"shared\":true}\n", 0o644)
+		write(t, work, "package-lock.json", "{\"worktree\":true}\n", 0o644)
+		symlink(t, "../shared-install/node_modules", filepath.Join(work, "node_modules"))
+
+		out, err := run(t, work)
+		if err == nil {
+			t.Fatalf("preflight accepted a mismatched relative symlink:\n%s", out)
+		}
+		assertRefusal(t, out, filepath.Join(shared, "package-lock.json"))
+		if strings.Contains(out, "../shared-install") {
+			t.Errorf("refusal names a relative shared path:\n%s", out)
+		}
+	})
+
+	t.Run("directory named .bin/expo", func(t *testing.T) {
+		dir := t.TempDir()
+		write(t, dir, "package-lock.json", "{}\n", 0o644)
+		// A searchable directory is "executable" to test -x, but it is not the
+		// expo bin the bundler needs.
+		if err := os.MkdirAll(filepath.Join(dir, "node_modules", ".bin", "expo"), 0o755); err != nil {
+			t.Fatalf("mkdir expo dir: %v", err)
+		}
+		setMtime(t, filepath.Join(dir, "node_modules"), time.Now().Add(2*time.Hour))
+
+		out, err := run(t, dir)
+		if err == nil {
+			t.Fatalf("preflight accepted a directory named .bin/expo:\n%s", out)
+		}
+		assertInstallRefusal(t, out, dir, "unhealthy")
 	})
 
 	t.Run("unexecutable .bin/expo", func(t *testing.T) {
@@ -218,19 +333,18 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 	})
 
 	t.Run("healthy shared symlink", func(t *testing.T) {
-		shared := t.TempDir()
-		write(t, shared, "package-lock.json", "SAME\n", 0o644)
-		write(t, shared, "node_modules/.bin/expo", fakeExpo, 0o755)
+		shared := freshShared(t, sameLock, 0o755)
 
 		work := t.TempDir()
-		write(t, work, "package-lock.json", "SAME\n", 0o644)
-		if err := os.Symlink(filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules")); err != nil {
-			t.Fatalf("symlink: %v", err)
-		}
+		write(t, work, "package-lock.json", sameLock, 0o644)
+		symlink(t, filepath.Join(shared, "node_modules"), filepath.Join(work, "node_modules"))
 
 		out, err := run(t, work)
 		if err != nil {
 			t.Fatalf("preflight refused a matching shared symlink: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "ERROR") {
+			t.Fatalf("healthy shared symlink produced a refusal:\n%s", out)
 		}
 	})
 }
