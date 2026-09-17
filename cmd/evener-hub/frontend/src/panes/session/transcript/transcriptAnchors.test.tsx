@@ -1,8 +1,7 @@
-import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 // Registers the tool descriptors (fsTools' read_file is fold: "quiet") the
 // same way the real session pane does - through TurnBlock's side-effect

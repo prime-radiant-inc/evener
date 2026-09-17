@@ -460,6 +460,14 @@ export {
   wireToDefault,
   wireToDefaults,
 } from "./transcriptDisplayConfig";
+export type {
+  ProjectedAnchor,
+  ProjectedEntry,
+  ProjectedTurn,
+  TranscriptMetadataVisibility,
+  TranscriptProjection,
+} from "./transcriptProjector";
+export { ACTION_SUMMARY_UNAVAILABLE, projectThread } from "./transcriptProjector";
 export type { WebSocketLike } from "./transport";
 export { rpcURLFromLocation } from "./transport";
 export type * from "./types.gen";
