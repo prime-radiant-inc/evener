@@ -3968,6 +3968,24 @@ test("removing an attachment that joined a token to a chip keeps the editor and 
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
 });
 
+test("deleting the separator between two chips restores exactly one space", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_shared_chip_boundary";
+  const text = "Run /cleanup /cleanup.v2";
+  writeComposerDraft(ref, { text, skillNames: ["cleanup", "cleanup.v2"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(2);
+
+  // Removing the shared separator breaks both references at one boundary, so
+  // the repair owes one space - not one per atom.
+  selectEditorText(editor, "Run /cleanup ".length);
+  await user.keyboard("{Backspace}");
+
+  expect(editor.textContent).toBe(text);
+  expect(readComposerDraft(ref)).toEqual({ text, skillNames: ["cleanup", "cleanup.v2"] });
+});
+
 test("a chip at the end of the draft does not reopen the slash menu when its separator is removed", async () => {
   const user = userEvent.setup();
   const ref = "ref_chip_without_separator";
