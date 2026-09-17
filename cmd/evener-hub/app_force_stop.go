@@ -450,6 +450,16 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 			}
 		}
 	}
+	if !stopResumes {
+		// Publish the no-op decision under the held alias tokens: a Resume
+		// registration already waiting for them must re-admit on a snapshot
+		// taken after shutdown reported the session stopped, not launch on
+		// one taken before. The stopResumes path already invalidates these
+		// waiters through its BeginForceStop fence; a fence here would also
+		// refuse fresh admissions during the check, which ordinary shutdown
+		// must not do — it manufactures no recovery obligation.
+		cfg.ResumeLocks.InvalidateResumeAdmission(aliases)
+	}
 	return true, nil
 }
 

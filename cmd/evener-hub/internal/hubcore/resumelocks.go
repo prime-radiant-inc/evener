@@ -612,6 +612,22 @@ func (r *ResumeLocks) beginForceStopLocked(aliases []string) func(bool) {
 	}
 }
 
+// InvalidateResumeAdmission advances every alias's admission epoch without
+// installing a stop fence: Stopping, ResumeRequired, and the connection-level
+// recovery sequence are untouched. A confirmed-stopped no-op calls it while it
+// still holds the alias tokens, so a Resume registration already waiting for
+// those tokens cannot launch on an admission snapshot taken before the no-op
+// reported the session stopped; it is refused and must re-admit afterward.
+func (r *ResumeLocks) InvalidateResumeAdmission(aliases []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range aliases {
+		state := r.recovery[id]
+		state.Epoch++
+		r.recovery[id] = state
+	}
+}
+
 // ExplicitResumeCompleted clears every alias only if no newer recovery began.
 func (r *ResumeLocks) ExplicitResumeCompleted(sessionID string, epoch uint64) error {
 	r.persistenceMu.Lock()

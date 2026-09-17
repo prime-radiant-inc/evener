@@ -69,7 +69,11 @@ func TestConfirmedStoppedSessionRepeatedShutdownWithoutProcess(t *testing.T) {
 				t.Fatalf("repeated stop touched a process: spawns=%d events=%v", spawns, events)
 			}
 			after := locks.RecoveryState(sessionID)
-			if after.Epoch != before.Epoch || !after.ExitConfirmed || !after.ResumeRequired || after.Stopping != 0 || after.ResumeSessionID != before.ResumeSessionID {
+			// Epoch is admission generation, not recovery authority: the
+			// confirmed-stopped no-op advances it so a Resume registration that
+			// was waiting for the alias cannot launch on a pre-decision
+			// snapshot. The authority itself must stay unchanged.
+			if !after.ExitConfirmed || !after.ResumeRequired || after.Stopping != 0 || after.ResumeSessionID != before.ResumeSessionID {
 				t.Fatalf("idempotent stop changed recovery authority: before=%+v after=%+v", before, after)
 			}
 		})

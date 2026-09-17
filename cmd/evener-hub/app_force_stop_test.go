@@ -2013,9 +2013,84 @@ func TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp(t *testing.T)
 		}
 		held.Unlock()
 		<-noopDone
-		if err := <-registered; err != nil {
+		// The no-op published its stopped decision while it held the
+		// reservation, so the registration that was waiting on the alias must
+		// re-admit on a snapshot taken after the decision instead of launching
+		// on one taken before shutdown reported success.
+		if err := <-registered; !errors.Is(err, hubcore.ErrResumeInvalidated) {
+			t.Fatalf("waiting registration after the no-op = %v, want ErrResumeInvalidated", err)
+		}
+		fresh, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
 			t.Fatal(err)
 		}
+		fresh.Complete(nil)
+	})
+}
+
+// TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration pins the admission
+// race RoboRev found: ordinary shutdown's confirmed-stopped no-op only
+// serialized with RegisterResume, so a Resume registration already waiting for
+// the alias when the no-op decided could register with its pre-decision
+// snapshot the moment the no-op released — launching after shutdown had
+// already reported success. The no-op must invalidate that snapshot as it
+// publishes the decision; the waiter then re-admits afterwards.
+func TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID})
+		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish(true)
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Block the no-op on its first under-reservation deletion check, so it
+		// holds the alias reservation while the registration waits for it.
+		entered, release := make(chan struct{}), make(chan struct{})
+		blocked := false
+		original := deletionTargetState
+		deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+			if !blocked {
+				blocked = true
+				close(entered)
+				<-release
+			}
+			return "", false
+		}
+		defer func() { deletionTargetState = original }()
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks, DeletionStore: store}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- shutdownThreadTolerateExited(t.Context(), cfg, appsource.NewRegistry(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID})
+		}()
+		<-entered // the no-op holds the alias reservation
+		epochs := map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch}
+		registered := make(chan error, 1)
+		go func() {
+			_, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, epochs)
+			registered <- err
+		}()
+		synctest.Wait() // the registration is now waiting for the held alias
+		close(release)
+		if err := <-stopped; err != nil {
+			t.Fatalf("confirmed-stopped shutdown no-op: %v", err)
+		}
+		if err := <-registered; !errors.Is(err, hubcore.ErrResumeInvalidated) {
+			t.Fatalf("registration waiting across the no-op = %v, want ErrResumeInvalidated", err)
+		}
+		// The decision is published: a fresh admission snapshot registers.
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		active.Complete(nil)
 	})
 }
 
