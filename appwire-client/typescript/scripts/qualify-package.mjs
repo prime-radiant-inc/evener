@@ -600,7 +600,10 @@ const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array
 assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 const insecureUUID = client.createSecureUUID({});
 assert.match(insecureUUID, /^insecure-/);
-assert.deepEqual(client.reconcilePendingEntries("ref", [], undefined, new Set()), []);
+assert.deepEqual(
+  client.reconcilePendingEntries("ref", [], undefined, new Set(), identityA.isOwnMutationRecord),
+  [],
+);
 `,
     },
   };
