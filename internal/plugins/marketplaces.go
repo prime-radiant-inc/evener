@@ -161,6 +161,17 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (ref Marketpla
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
+		if ref.Source.Kind != SourceDirectory {
+			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
+				// The name's InstallLocation was never recorded, so nothing
+				// lists this clone - but it still sits on disk where a retry
+				// of this fetch would find it in the way, which is the store
+				// left changed rather than back as it was found
+				// (ErrStoreChanged's own rule). AddMarketplace's own rollback
+				// hits this same shape.
+				return MarketplaceRef{}, false, errors.Join(err, rollbackErr, ErrStoreChanged)
+			}
+		}
 		return MarketplaceRef{}, false, err
 	}
 	return ref, true, nil

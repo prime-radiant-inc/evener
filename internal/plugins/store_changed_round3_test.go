@@ -253,6 +253,86 @@ func TestAddMarketplaceWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.
 	}
 }
 
+// ensureFetched's lazy clone (a seeded marketplace's first access) can
+// succeed and leave a directory on disk before the metadata save that would
+// record it fails - the same shape AddMarketplace has. A rollback that
+// succeeds is then a clean refusal.
+func TestEnsureFetchedWhoseSaveFailedRollsBackTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if err := m.saveMarketplaces(Marketplaces{"market-a": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/repo.git"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	origClone := marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitClone = origClone })
+	marketplaceGitClone = func(_ context.Context, _, dest, _, _ string) error { return os.MkdirAll(dest, 0o755) }
+
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	_, _, err := m.ensureFetched(ctx, "market-a")
+	if err == nil {
+		t.Fatal("ensureFetched = nil, want the failed save reported")
+	}
+	if errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want a plain refusal: the rollback removed the clone", err)
+	}
+	if _, statErr := os.Stat(m.marketplaceDir("market-a")); !os.IsNotExist(statErr) {
+		t.Fatalf("clone survived a rolled-back fetch: %v", statErr)
+	}
+}
+
+// When the rollback itself cannot remove the clone, the store is left
+// changed after all - and both the save failure and the rollback failure
+// have to survive in the error, or the caller only learns half of what
+// happened.
+func TestEnsureFetchedWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if err := m.saveMarketplaces(Marketplaces{"market-a": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/repo.git"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	origClone := marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitClone = origClone })
+	marketplaceGitClone = func(_ context.Context, _, dest, _, _ string) error { return os.MkdirAll(dest, 0o755) }
+
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
+	marketplaceRemoveAll = func(path string) error {
+		if path == m.marketplaceDir("market-a") {
+			return errors.New("the rollback removal failed")
+		}
+		return origRemove(path)
+	}
+
+	_, _, err := m.ensureFetched(ctx, "market-a")
+	if err == nil {
+		t.Fatal("ensureFetched = nil, want the failed save reported")
+	}
+	if !errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want it to report the store changed: the rollback itself failed", err)
+	}
+	if !strings.Contains(err.Error(), "the store file could not be written") {
+		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
+	}
+	if !strings.Contains(err.Error(), "the rollback removal failed") {
+		t.Fatalf("err = %v, want the rollback failure reported too", err)
+	}
+}
+
 // RemoveMarketplace must save the metadata before it deletes the clone: a
 // save that fails first leaves the marketplace registered and its clone
 // untouched, a plain refusal rather than a change no rollback could undo.
