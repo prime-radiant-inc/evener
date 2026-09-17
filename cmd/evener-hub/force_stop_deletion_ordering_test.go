@@ -102,9 +102,12 @@ func TestForceStopValidatesDeletionUnderReservationFallback(t *testing.T) {
 		writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: sessionID, StartedAt: time.Now()})
 		original := deletionTargetState
 		calls := 0
-		deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+		// The stub is alias-aware: it reports the deletion only when the alias
+		// the fence names is the one being queried, so a check that skips an
+		// alias cannot observe the fence through another alias's answer.
+		deletionTargetState = func(_ *hubcore.DeletionStore, _, threadID string) (hubcore.DeletionState, bool) {
 			calls++
-			return hubcore.DeletionStateDeleting, calls > 1
+			return hubcore.DeletionStateDeleting, calls > 1 && threadID == sessionID
 		}
 		defer func() { deletionTargetState = original }()
 		store, err := hubcore.NewDeletionStore(t.TempDir())
@@ -150,6 +153,77 @@ func TestForceStopValidatesDeletionUnderReservationFallback(t *testing.T) {
 		<-cleaned
 		if err := <-stopped; err == nil {
 			t.Fatal("force stop with a racing deletion succeeded")
+		} else if !isTargetDeletedError(err) {
+			t.Fatalf("force stop error = %v, want the target-deleted refusal", err)
+		}
+		if slices.Contains(events, "kill") {
+			t.Fatalf("a refused force stop reached process control: %v", events)
+		}
+	})
+}
+
+// TestForceStopValidatesSiblingDeletionUnderReservationFallback pins the
+// sibling-alias half of the fallback: the persisted fence names ONLY the
+// sibling alias while a held reservation forces cancel-then-acquire. A
+// post-acquisition re-check that queries only the requested alias bypasses
+// the fence and kills the daemon, so the re-check must loop over every alias
+// the way the reservationsHeld branch and confirmedStoppedWithoutClaim do.
+func TestForceStopValidatesSiblingDeletionUnderReservationFallback(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		runDir, sessionID, siblingID := t.TempDir(), hubtest.SessionID(t), hubtest.SessionID(t)
+		writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: siblingID, StartedAt: time.Now()})
+		original := deletionTargetState
+		// The fence names only the sibling alias; the requested alias is never
+		// deleted, so the request's entry fence check passes.
+		deletionTargetState = func(_ *hubcore.DeletionStore, _, threadID string) (hubcore.DeletionState, bool) {
+			return hubcore.DeletionStateDeleting, threadID == siblingID
+		}
+		defer func() { deletionTargetState = original }()
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		allowCleanup, cleaned := make(chan struct{}), make(chan struct{})
+		var events []string
+		cfg := hubcore.WebConfig{
+			RunDir:        runDir,
+			ResumeLocks:   locks,
+			DeletionStore: store,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				events = append(events, "open")
+				active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+				if err != nil {
+					return nil, err
+				}
+				// Hold the requested alias's reservation the way an in-flight
+				// launch does, so the force stop's TryLock falls back to
+				// cancel-then-acquire.
+				locks.For(sessionID).Lock()
+				go func() {
+					<-active.Context().Done()
+					<-allowCleanup
+					locks.For(sessionID).Unlock()
+					close(cleaned)
+					active.Complete(nil)
+				}()
+				return &forceStopProcess{events: &events}, nil
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-stopped:
+			t.Fatalf("force stop returned before the raced launch released ownership: %v", err)
+		default:
+		}
+		close(allowCleanup)
+		<-cleaned
+		if err := <-stopped; err == nil {
+			t.Fatal("force stop with a sibling-alias deletion fence succeeded")
 		} else if !isTargetDeletedError(err) {
 			t.Fatalf("force stop error = %v, want the target-deleted refusal", err)
 		}

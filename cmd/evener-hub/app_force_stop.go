@@ -194,8 +194,15 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if err := expectedDaemonConflict(current, params.ExpectedDaemon); err != nil {
 		return err
 	}
-	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
-		return err
+	// A deletion record may name any alias in the ownership group, not only
+	// the one the request addressed. Loop over every alias here, the way the
+	// reservationsHeld branch and confirmedStoppedWithoutClaim already do, so
+	// a sibling-alias fence cannot slip past the cancel-then-acquire fallback
+	// before the exited/kill branch.
+	for _, alias := range aliases {
+		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+			return err
+		}
 	}
 	if exited {
 		// There is no retained process handle to reverify. An unchanged marker
