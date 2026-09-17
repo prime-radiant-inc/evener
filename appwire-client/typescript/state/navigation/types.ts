@@ -3,7 +3,7 @@
 // and response shapes, and the classifiers for a hub that has no navigation
 // to offer or a base the hub no longer recognizes.
 import { WireError } from "../../errors";
-import type { NavigationReadBase } from "../../types.gen";
+import type { NavigationReadBase, NavigationReadParams } from "../../types.gen";
 import type { DecodedNavigationResponse, NormalizedResource } from "./codec";
 
 const NAVIGATION_UNAVAILABLE_CODE = -32014;
@@ -38,6 +38,16 @@ function rawBase64URL(value: string): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
+/** The hub's page maxima, one per resource family. A read that omits `limit`
+ * is served the maximum for its kind rather than some smaller default:
+ * `navigationReadPage` in `cmd/evener-hub/app_navigation.go` starts from the
+ * maximum and only narrows it when the caller names one, and the two maxima
+ * are `maxNavigationSectionRows` and `maxNavigationCatalogRows` in
+ * `cmd/evener-hub/navigation_projection.go`. A client that assumes a
+ * different default builds a resource key for a page the hub never served. */
+export const NAVIGATION_SECTION_LIMIT = 50;
+export const NAVIGATION_CATALOG_LIMIT = 100;
+
 function canonicalNavigationLimit(limit: number, maximum: number): number {
   return limit === 0 || limit > maximum ? maximum : limit;
 }
@@ -45,6 +55,52 @@ function canonicalNavigationLimit(limit: number, maximum: number): number {
 export function canonicalResourceKey(key: ResourceKey): ResourceKey {
   if (key.kind !== "location" || key.ref.includes(":")) return key;
   return { kind: "location", ref: `local:${key.ref}` };
+}
+
+/** The resource a read's parameters identify. The inverse of the params a
+ * store builds from a key, and the one place a client turns a request it is
+ * about to send - or a target it has resolved to a read - into the key the
+ * codec validates the response against. An omitted `offset` is the first
+ * page and an omitted `limit` is the hub's maximum for that kind. */
+export function navigationParamsToResourceKey(params: NavigationReadParams): ResourceKey {
+  const offset = params.offset ?? 0;
+  const paged = (maximum: number) => ({ offset, limit: params.limit ?? maximum });
+  // The wire type generates `resource: string`, wider than ResourceKey["kind"]:
+  // the cast plus the never-typed default below is what makes an unhandled
+  // kind (a real protocol addition, or a typo) a build failure here instead
+  // of a silent fallback to manifest.
+  const resource = params.resource as ResourceKey["kind"];
+  switch (resource) {
+    case "manifest":
+      return { kind: "manifest" };
+    case "section":
+      return { kind: "section", section: params.section as "live" | "needs_you", ...paged(NAVIGATION_SECTION_LIMIT) };
+    case "pin_catalog":
+      return { kind: "pin_catalog", ...paged(NAVIGATION_CATALOG_LIMIT) };
+    case "pin_section":
+      return { kind: "pin_section", sectionId: params.sectionId as string, ...paged(NAVIGATION_SECTION_LIMIT) };
+    case "catalog":
+      return {
+        kind: "catalog",
+        catalog: params.catalog as "projects" | "archived_projects" | "test_runs",
+        ...paged(NAVIGATION_CATALOG_LIMIT),
+      };
+    case "project":
+      return { kind: "project", projectKey: params.projectKey as string };
+    case "project_page":
+      return {
+        kind: "project_page",
+        projectKey: params.projectKey as string,
+        tier: params.tier as "current" | "recent" | "archived",
+        ...paged(NAVIGATION_SECTION_LIMIT),
+      };
+    case "location":
+      return { kind: "location", ref: params.ref as string };
+    default: {
+      const exhaustive: never = resource;
+      throw new Error(`unknown navigation resource: ${String(exhaustive)}`);
+    }
+  }
 }
 
 export function navigationViewScope(key: ResourceKey): string {
@@ -59,21 +115,21 @@ export function navigationViewScope(key: ResourceKey): string {
     case "section":
       kind = key.section;
       offset = key.offset;
-      limit = canonicalNavigationLimit(key.limit, 50);
+      limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
       break;
     case "pin_catalog":
       offset = key.offset;
-      limit = canonicalNavigationLimit(key.limit, 100);
+      limit = canonicalNavigationLimit(key.limit, NAVIGATION_CATALOG_LIMIT);
       break;
     case "pin_section":
       sectionID = key.sectionId;
       offset = key.offset;
-      limit = canonicalNavigationLimit(key.limit, 50);
+      limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
       break;
     case "catalog":
       kind = key.catalog;
       offset = key.offset;
-      limit = canonicalNavigationLimit(key.limit, 100);
+      limit = canonicalNavigationLimit(key.limit, NAVIGATION_CATALOG_LIMIT);
       break;
     case "project":
       projectKey = key.projectKey;
@@ -82,7 +138,7 @@ export function navigationViewScope(key: ResourceKey): string {
       projectKey = key.projectKey;
       tier = key.tier;
       offset = key.offset;
-      limit = canonicalNavigationLimit(key.limit, 50);
+      limit = canonicalNavigationLimit(key.limit, NAVIGATION_SECTION_LIMIT);
       break;
     case "location":
       id = key.ref;
