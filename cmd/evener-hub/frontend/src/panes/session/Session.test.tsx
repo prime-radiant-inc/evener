@@ -3332,8 +3332,11 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   expect(activityPanelStore.getState().entries.get(ref)?.load.kind).toBe("ready");
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   const editor = screen.getByRole("textbox", { name: "Message" });
-  expect((editor as HTMLTextAreaElement).disabled).toBe(false);
-  expect((editor as HTMLTextAreaElement).readOnly).toBe(false);
+  // The composer's editor is a contenteditable div, which carries neither
+  // `disabled` nor `readOnly`; `contenteditable="true"` is the one writable
+  // state those two textarea assertions pinned (jsdom implements no
+  // contentEditable IDL property, so the attribute is the only faithful read).
+  expect(editor.getAttribute("contenteditable")).toBe("true");
   const user = userEvent.setup();
   await user.click(menuTrigger);
   await user.click(screen.getByRole("menuitem", { name: "Force stop…" }));

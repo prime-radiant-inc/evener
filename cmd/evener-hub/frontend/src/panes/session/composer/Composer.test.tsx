@@ -3302,7 +3302,11 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
   // The card stays: it is the writing surface the retained draft lives in.
   expect(screen.getByTestId("composer-input-card")).toBeTruthy();
   const editor = textarea();
-  expect(editor.disabled).toBe(false);
+  // The editor is a contenteditable div, which has no `disabled` property;
+  // `contenteditable="true"` is the writable state the old textarea's
+  // `disabled === false` pinned (jsdom implements no contentEditable IDL
+  // property, so the attribute is the only faithful reading).
+  expect(editor.getAttribute("contenteditable")).toBe("true");
   await user.click(editor);
   await user.type(editor, "one more thing");
 
@@ -4875,7 +4879,10 @@ test.each([
   async ({ label, queue, control, method }) => {
     const user = userEvent.setup();
     const ref = `local:skill-gate-${label.toLowerCase()}`;
-    writeComposerDraft(ref, { text: "skillful action", skillNames: ["pkg:probe"] });
+    // A selection is staged only as a complete chip in the document - main's
+    // parser never reconstructs a hidden name that the text does not spell -
+    // so the reference has to be present for the gate below to see a skill.
+    writeComposerDraft(ref, { text: "skillful action /pkg:probe", skillNames: ["pkg:probe"] });
     const fake = await mountComposer(ref, {
       status: { type: "active" },
       evener: {
@@ -4889,7 +4896,7 @@ test.each([
     });
     // The recovery fence does not defer the gate for any verb.
     await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
-    expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+    expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
 
     await user.click(control === "submit" ? submitButton() : steerButton());
 
@@ -4897,6 +4904,6 @@ test.each([
       "Skill selections aren't supported on this session yet; your draft is kept",
     );
     expect(fake.calls.filter((call) => call.method === method)).toHaveLength(0);
-    expect(screen.getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
+    expect(within(textarea()).getByTestId("composer-skill-chip").textContent).toContain("pkg:probe");
   },
 );
