@@ -27,6 +27,7 @@
 // carries no clientMutationId, no targetRef, no payload, no sequence and no
 // persisted state, so nothing here aliases it; D25d is where native gains
 // records and this class is what notices them.
+import { tryOrUndefined } from "./secureUUID";
 import type {
   MutationAttachmentRef,
   MutationIntent,
@@ -229,16 +230,14 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   ): Promise<MutationOutboxRecord<A>> {
     const record = await this.#storage.enqueueIntent(intent);
     onCommitted?.(record);
-    try {
+    // The commit owns the message. Lifecycle scans also discover it if a
+    // closing client cannot broadcast; that cannot turn acceptance into failure.
+    tryOrUndefined(() =>
       this.#channel?.postMessage({
         version: 1,
         targetRef: record.targetRef,
-      } satisfies MutationOutboxWakeup);
-    } catch {
-      // The commit owns the message. Lifecycle scans also discover it if a
-      // closing client cannot broadcast; that cannot turn acceptance into
-      // failure.
-    }
+      } satisfies MutationOutboxWakeup),
+    );
     if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
     return record;
   }
