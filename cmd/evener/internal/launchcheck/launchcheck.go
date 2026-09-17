@@ -175,14 +175,36 @@ func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDia
 // facts (the status code, the sentinel), so the line stays one short reason;
 // every other failure keeps its own — redacted — text.
 func launchCheckDiagnosticMessage(err error) string {
-	var llmErr llm.Error
-	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
-		return "HTTP " + strconv.Itoa(llmErr.StatusCode())
+	if status := launchCheckHTTPStatus(err); status != 0 {
+		return "HTTP " + strconv.Itoa(status)
 	}
 	if errors.Is(err, llm.ErrNoCredential) {
 		return "no credential"
 	}
 	return redactLaunchCheckDiagnostic(err.Error())
+}
+
+// launchCheckHTTPStatus reports the first provider HTTP status on the error's
+// chain, including one buried under a wrapper: errors.As alone stops at the
+// outermost llm.Error, and a configuration wrapper (the google protocol's
+// regional-Vertex remap) carries a zero status while its cause holds the
+// classified HTTP error whose prose the line must not quote.
+func launchCheckHTTPStatus(err error) int {
+	stack := []error{err}
+	for len(stack) > 0 {
+		e := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if llmErr, ok := e.(llm.Error); ok && llmErr.StatusCode() != 0 {
+			return llmErr.StatusCode()
+		}
+		switch x := e.(type) {
+		case interface{ Unwrap() error }:
+			stack = append(stack, x.Unwrap())
+		case interface{ Unwrap() []error }:
+			stack = append(stack, x.Unwrap()...)
+		}
+	}
+	return 0
 }
 
 func redactLaunchCheckDiagnostic(text string) string {

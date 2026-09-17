@@ -230,6 +230,24 @@ func TestLaunchCheckDiagnosticCompactsAMissingCredential(t *testing.T) {
 	}
 }
 
+// The google protocol buries a classified HTTP error under a ConfigurationError
+// (reclassifyGemini's regional-Vertex remap, whose message quotes the provider
+// verbatim). The picker's line must still stop at the wrapped status, not the
+// wrapped prose.
+func TestLaunchCheckDiagnosticFindsAStatusUnderAConfigurationWrapper(t *testing.T) {
+	inner := llm.ClassifyHTTPError("models.list", http.StatusNotFound, nil,
+		[]byte("Publisher model `projects/p/locations/us-central1/models/gemini-x` was not found"),
+		registry.Resolved{Instance: "vtx"})
+	err := &llm.ConfigurationError{
+		Message: "a global-only model under a regional location needs `global`; provider said: " + inner.Error(),
+		Cause:   inner,
+	}
+
+	if got := launchCheckModelDiagnostic("vtx", err).Message; got != "HTTP 404" {
+		t.Fatalf("diagnostic message=%q, want the wrapped HTTP 404 class", got)
+	}
+}
+
 func TestLaunchCheckModelDiagnosticRedactsEnvSecrets(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-launch-secret")
