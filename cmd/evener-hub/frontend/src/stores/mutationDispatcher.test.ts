@@ -666,10 +666,12 @@ describe("retireConsumedQueueIntents", () => {
     outbox.close();
   });
 
-  // A queue intent the authoritative snapshot still names - fresh work the
-  // server has not consumed - must survive even though it is `turn/queue`
-  // and sits in the optimistic store, same as a consumed one would.
-  test("keeps an optimistic queue intent the authoritative queue still names", async () => {
+  // This method's own scope, not an end-to-end guarantee: a named id is
+  // simply left alone here. Whether it is ever settled - and when - is
+  // reconcileIdentities' call, fed the same clientMutationIds by
+  // notificationMutationIdentities/handleNotification; that path runs
+  // regardless of what this one does.
+  test("leaves a queue intent alone when its authoritative snapshot still names it", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "retire-keeps-named", ["queue-a"]);
     const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
@@ -686,19 +688,11 @@ describe("retireConsumedQueueIntents", () => {
     outbox.close();
   });
 
-  // The exact hazard RoboRev flagged on #1694 (dispatcher.ts:169-174 at the
-  // time): two tabs share one outbox with no cross-tab lease or leader
-  // election (mutationOutboxIndexedDB.ts's own header comment) - each tab's
-  // per-target FIFO serializes only that tab's OWN sends. intentSequence is
-  // allocated inside one atomic IndexedDB transaction (#allocateSequence),
-  // so it orders intent CREATION globally across tabs, but that is not the
-  // same fact as "accepted before another tab's drain was sent" once a
-  // second instance can send concurrently. Tab A's queue intent here has a
-  // LOWER sequence than tab B's drain (created first) yet is accepted by the
-  // server AFTER the drain (tab A was still catching up) - genuinely fresh
-  // work on the emptied queue, not the drain's leftovers. The old rule
-  // compared intentSequence and would have retired it anyway; this method
-  // never reads intentSequence at all.
+  // The exact hazard RoboRev flagged on #1694 (measured in #1704): two tabs
+  // share one outbox with no cross-tab lease or leader election, so tab A's
+  // queue intent (lower sequence, created first) is accepted by the server
+  // AFTER tab B's drain (higher sequence) - genuinely fresh work, not the
+  // drain's leftovers. This method never reads intentSequence at all.
   test("two tabs sharing one outbox: a lower-sequence queue intent accepted after another tab's drain is never retired", async () => {
     const indexedDB = new IDBFactory();
     const tabA = storage(indexedDB, "two-tabs", ["queue-a", "drain-b"]);
@@ -715,14 +709,12 @@ describe("retireConsumedQueueIntents", () => {
     // this is accepted as brand new work, not a replay of anything drained.
     const clientA = new FakeClient();
     clientA.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
-    await new MutationDispatcher(tabA, { getClient: () => clientA }).dispatchTargets(["ref-a"]);
+    const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
+    await dispatcherA.dispatchTargets(["ref-a"]);
 
     // The authoritative queue right now genuinely still names tab A's
     // message - the server never consumed it.
-    await new MutationDispatcher(tabA, { getClient: () => clientA }).retireConsumedQueueIntents(
-      "ref-a",
-      new Set([queued.clientMutationId]),
-    );
+    await dispatcherA.retireConsumedQueueIntents("ref-a", new Set([queued.clientMutationId]));
 
     expect((await tabA.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
       queued.clientMutationId,
