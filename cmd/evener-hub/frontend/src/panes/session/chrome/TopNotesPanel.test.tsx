@@ -521,7 +521,7 @@ test("expanded root carries the card marker; no state carries an affordance hint
   expect(screen.getByTestId("top-notes-collapse-trigger").getAttribute("aria-describedby")).toBeNull();
 });
 
-test("the panel sits flush against the pane's top edge in both densities", () => {
+test("the panel sits flush in both states, and the card's border cannot clip", () => {
   // The transcript column keeps the pane body's side padding, but the notes
   // panel claims the top edge back: PaneScaffold's .body pads --space-5
   // (desktop) / --space-4 (phone), and the panel cancels exactly that.
@@ -530,4 +530,21 @@ test("the panel sits flush against the pane's top edge in both densities", () =>
   expect(root?.[1]).toContain("margin-top: calc(-1 * var(--space-5))");
   const mobile = css.match(/@media \(max-width: 899px\)\s*\{\s*\.topNotesPanel\s*\{([^}]*)\}/);
   expect(mobile?.[1]).toContain("margin-top: calc(-1 * var(--space-4))");
+
+  // The expanded card draws its boundary as a real border, not
+  // --shadow-overlay's ring: the ring is a spread box-shadow, which paints
+  // outside the border box and gets shaved by the pane body's scrollport at
+  // the flush top edge; a border paints inside the box and cannot clip.
+  const expanded = css.match(/\.topNotesPanel\[data-expanded="true"\]\s*\{([^}]*)\}/);
+  expect(expanded?.[1]).toContain("border: 1px solid var(--edge-strong)");
+  expect(expanded?.[1]).toContain("box-shadow: 0 8px 28px var(--shadow-color)");
+
+  // Keyboard focus must survive the clipping containers: the card's
+  // overflow:hidden and the body's scrollport cut an outside outline, so
+  // both trigger states carry the sanctioned inset ring (the same recipe
+  // sessionchrome.module.css documents for controls flush inside a clip
+  // boundary).
+  const focus = css.match(/\.summary:focus-visible\s*,\s*\.expandedHeader:focus-visible\s*\{([^}]*)\}/);
+  expect(focus?.[1]).toContain("outline: var(--focus-ring)");
+  expect(focus?.[1]).toContain("outline-offset: -2px");
 });

@@ -4652,6 +4652,50 @@ test("the open menu wires listbox/option roles and aria-activedescendant on the 
   expect(textarea().getAttribute("aria-activedescendant")).toBeNull();
 });
 
+test("closing the slash menu removes both of the editor's optional ARIA references", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  const ref = "ref_slash_aria_cleanup";
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  });
+  const editor = textarea();
+
+  await user.type(editor, "hi /re");
+  const listboxId = editor.getAttribute("aria-controls");
+  expect(listboxId).toBeTruthy();
+  expect(document.getElementById(listboxId ?? "")).toBe(slashMenu());
+  expect(editor.getAttribute("aria-activedescendant")).toBeTruthy();
+
+  // Closing must REMOVE the attributes rather than leave empty ones: an empty
+  // reference still points assistive technology at a menu that is gone.
+  await user.keyboard("{Escape}");
+  expect(editor.hasAttribute("aria-controls")).toBe(false);
+  expect(editor.hasAttribute("aria-activedescendant")).toBe(false);
+
+  // Completion closes the menu by the other route, and must clean up the same.
+  await user.type(editor, " /skill-1");
+  expect(slashOptions()).toHaveLength(1);
+  await user.click(slashOptions()[0]!);
+  expect(editor.hasAttribute("aria-controls")).toBe(false);
+  expect(editor.hasAttribute("aria-activedescendant")).toBe(false);
+});
+
 // --- Enter/submit interception: the composer as the session command line
 // (2026-08-14 decision, "the composer is where you act on this session") ---
 //
