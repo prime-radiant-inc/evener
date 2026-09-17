@@ -165,7 +165,7 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 	// Preserve the manager's sentinel precedence before the source's
 	// transport mapping can claim the chain: a deploy-family error wrapped
 	// with a deadline still names a failed deploy, not a lost transport.
-	if wire, ok := hostAttachWireError(err).(appwire.WireError); ok {
+	if wire, ok := errors.AsType[appwire.WireError](hostAttachWireError(err)); ok {
 		return wire
 	}
 	if sources != nil {
