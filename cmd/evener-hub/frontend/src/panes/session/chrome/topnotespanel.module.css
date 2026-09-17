@@ -1,11 +1,17 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* The bar sits flush against the pane's top/left/right edges: PaneScaffold's
-   * .body carries the padding (--space-5 desktop, --space-4 mobile), and these
-   * negative margins pull the panel back out to the body's bounds. */
-  margin-top: calc(-1 * var(--space-5));
-  margin-inline: calc(-1 * var(--space-5));
+}
+
+/* Expanded, the panel is a floating layer over the transcript flow, so it
+ * takes the design system's one elevation treatment (the same family as
+ * menus and dialogs): surface-2 fill, pane radius, and the overlay ring +
+ * soft shadow. Collapsed it stays flat structural chrome: a hairline-under
+ * row inside the pane's own padding, no card. */
+.topNotesPanel[data-expanded="true"] {
+  background: var(--surface-2);
+  border-radius: var(--radius-pane);
+  box-shadow: var(--shadow-overlay);
 }
 
 .summary {
@@ -99,6 +105,7 @@
   width: 100%;
   border: none;
   border-bottom: 1px solid var(--edge);
+  border-radius: var(--radius-pane) var(--radius-pane) 0 0;
   text-align: left;
   height: 28px;
   min-height: 28px;
@@ -129,11 +136,4 @@
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: clip;
-}
-
-@media (max-width: 899px) {
-  .topNotesPanel {
-    margin-top: calc(-1 * var(--space-4));
-    margin-inline: calc(-1 * var(--space-4));
-  }
 }

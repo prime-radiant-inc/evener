@@ -54,7 +54,8 @@ export interface PendingAttachment {
 // by construction and therefore can't reproduce that specific staleness
 // class - Composer.test.tsx's own regression test is what has to.
 export interface TextEditor {
-  read(): { text: string; cursor: number };
+  /** Selection is the UTF-16 range replaced by an accepted attachment marker. */
+  read(): { text: string; cursor: number; selection: { start: number; end: number } };
   write(text: string, cursor: number, source?: "edit" | "submission"): void;
 }
 
@@ -72,7 +73,7 @@ export interface UseAttachmentsResult {
    * staged attachment is still mid-encode" blocks send/steer alike). */
   hasPending: boolean;
   /** Validates + stages every file, synchronously splicing one "[image N]"
-   * marker per accepted file into the composer text at the current cursor,
+   * marker per accepted file into the composer text, replacing the selection,
    * then re-encodes each to PNG asynchronously. Every rejection reason from
    * this one call is combined into a single onRejected call (never one per
    * file) - the caller (Composer.tsx) wires this straight to
@@ -195,14 +196,17 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
         // Spliced synchronously, in order, before any async decode - each
         // sibling marker in the SAME batch chains off the cursor position
         // the previous insertMarker call already advanced to.
-        let { text, cursor } = editor.read();
+        let {
+          text,
+          selection: { start, end },
+        } = editor.read();
         const newItems: PendingAttachment[] = accepted.map(({ file, marker }) => {
-          const edit = insertMarker(text, cursor, cursor, markerText(marker));
+          const edit = insertMarker(text, start, end, markerText(marker));
           text = edit.value;
-          cursor = edit.cursor;
+          start = end = edit.cursor;
           return { marker, name: file.name, mediaType: "image/png", pending: true };
         });
-        editor.write(text, cursor);
+        editor.write(text, start);
         setItems((prev) => [...prev, ...newItems]);
 
         for (const { file, marker } of accepted) {
@@ -265,12 +269,13 @@ export function useAttachments(editor: TextEditor, backingStore?: AttachmentStor
         // no-op (returns its input unchanged) for any marker no longer
         // present in the CURRENT text, so this never fights a concurrent
         // edit that already removed one itself.
-        let current = editor.read();
+        let { text, cursor } = editor.read();
         for (const marker of submittedMarkers) {
-          const stripped = stripMarker(current.text, current.cursor, marker);
-          current = { text: stripped.value, cursor: stripped.cursor ?? current.cursor };
+          const stripped = stripMarker(text, cursor, marker);
+          text = stripped.value;
+          cursor = stripped.cursor ?? cursor;
         }
-        editor.write(current.text, current.cursor, "submission");
+        editor.write(text, cursor, "submission");
       }
       setItems((prev) => {
         const next = prev.filter((item) => !submittedMarkers.has(item.marker));
