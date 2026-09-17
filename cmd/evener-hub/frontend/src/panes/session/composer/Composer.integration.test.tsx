@@ -1159,6 +1159,48 @@ test("queue edit restores inline selections that a nonempty composer drain sends
   expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
 });
 
+test("editing a selection-only queued entry keeps its selection as a visible chip", async () => {
+  const fake = await mountComposer("ref_a", {
+    evener: {
+      ref: "ref_a",
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: {
+        revision: 0,
+        depth: 1,
+        ids: ["q1"],
+        texts: [""],
+        preview: ["[skill: probe]"],
+        skillNames: [["probe"]],
+      },
+      activeTurnId: "turn_1",
+    },
+  });
+  fake.on("turn/cancelQueued", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    removedText: "",
+  }));
+  const user = userEvent.setup();
+  const edit = screen.getAllByRole("button", { name: /edit message/i })[0];
+  if (!edit) throw new Error("missing queued message edit control");
+  await user.click(edit);
+
+  // The entry carries a selection and no prose. Its chip has to be visible in
+  // the sentence, so the reference is written out rather than the selection
+  // dropped on the way in.
+  const editor = screen.getByRole("textbox", { name: "Message" });
+  expect(
+    within(editor)
+      .getAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(["/probe"]);
+  expect(readComposerDraft("ref_a")).toEqual({ text: "/probe", skillNames: ["probe"] });
+});
+
 test("queue edit restores inline selections when the composer already holds a draft", async () => {
   const text = "Run /skill-1 and then /skill-2";
   const merged = "already typing\n\nRun /skill-1 and then /skill-2";

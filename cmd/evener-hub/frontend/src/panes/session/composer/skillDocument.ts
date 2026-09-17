@@ -99,6 +99,20 @@ export function maskSkillAtoms(value: SkillEditorValue): string {
   return text;
 }
 
+/**
+ * The text with a canonical reference appended for every name it does not
+ * already spell out. A queued entry can carry a selection with no prose to hang
+ * it on, and the composer shows a selection as its own `/<name>` in the
+ * sentence - so the reference is written out rather than the selection dropped.
+ */
+export function materializeSkillReferences(text: string, names: readonly string[]): string {
+  const present = new Set(serializeSkillDocument(parseSkillDocument({ text, skillNames: [...names] })).skillNames);
+  const missing = names.filter((name) => !present.has(name));
+  if (missing.length === 0) return text;
+  const head = text.trimEnd();
+  return [...(head === "" ? [] : [head]), ...missing.map((name) => `/${name}`)].join(" ");
+}
+
 /** Map a UTF-16 serialized offset to a flat document position; bias snaps atom interiors. */
 export function textOffsetToDocumentPosition(doc: ProseMirrorNode, offset: number, bias: -1 | 1 = -1): number {
   let textOffset = 0;

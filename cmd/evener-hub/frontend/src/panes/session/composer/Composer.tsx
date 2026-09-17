@@ -111,7 +111,13 @@ import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import { maskSkillAtoms, parseSkillDocument, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
+import {
+  maskSkillAtoms,
+  materializeSkillReferences,
+  parseSkillDocument,
+  type SkillEditorValue,
+  serializeSkillDocument,
+} from "./skillDocument";
 import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {
@@ -1042,13 +1048,18 @@ export function Composer({ ref, focused }: ComposerProps) {
     restoredSkillNames?: readonly string[],
   ): void {
     const merged = mergeDraftText(textRef.current, restoredText);
-    if (restoredSkillNames?.length) editSkillNames([...skillNamesRef.current, ...restoredSkillNames]);
+    const wanted = [...new Set([...skillNamesRef.current, ...(restoredSkillNames ?? [])])];
+    // An entry can carry a selection with no prose of its own. Its chip has to
+    // be visible in the sentence either way, so spell the reference out rather
+    // than let the restore drop what the user chose.
+    const text = materializeSkillReferences(merged, wanted);
+    if (restoredSkillNames?.length) editSkillNames(wanted);
     // A queued entry's selections are named, not spelled out, so the value that
     // carries them is authoritative here exactly as a recovery activation's is:
     // without this the merge is a partial append, the references land as plain
     // text, and the request would carry activations the user cannot see.
     markRestore();
-    textEditor.write(merged, merged.length);
+    textEditor.write(text, text.length);
     editorRef.current?.focus();
   }
 

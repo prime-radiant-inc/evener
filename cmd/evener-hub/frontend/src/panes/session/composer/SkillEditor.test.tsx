@@ -185,6 +185,14 @@ describe("SkillEditor real ProseMirror view", () => {
     expect(result.value()).toEqual({ text: "/review, please", skillNames: ["review"] });
   });
 
+  it("does not separate a completed skill from sentence punctuation", () => {
+    const result = mount({ text: "/rev. more", skillNames: [] });
+    act(() => result.ref.current?.insertSkill(0, 4, "review"));
+    // A dot followed by a non-token character already bounds the reference, so
+    // the parser reads `/review. more` as complete and no space is needed.
+    expect(result.value()).toEqual({ text: "/review. more", skillNames: ["review"] });
+  });
+
   it("separates a completed skill from text that would join its reference", () => {
     const result = mount({ text: "/revplease", skillNames: [] });
     act(() => result.ref.current?.insertSkill(0, 4, "review"));
