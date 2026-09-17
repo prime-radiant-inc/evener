@@ -3882,6 +3882,29 @@ function installFailingDecodeStub(): void {
 // desyncing the draft (a revert that bypasses writeDraft). Reproduction:
 // paste an image whose decode later fails, then type SYNCHRONOUSLY (no
 // yield to the microtask queue) before that rejection settles.
+test("a failed decode strips its marker while a selection is held, caret at that selection's start", async () => {
+  installFailingDecodeStub();
+  await mountComposer("ref_a");
+  const editor = textarea();
+
+  act(() => {
+    pastePngInto(editor);
+  });
+  replaceEditorText(editor, "keep [image 1] tail");
+  expect(editor.textContent).toBe("keep [image 1] tail");
+
+  // Hold a real forward selection while the decode fails. The field this
+  // replaced reported the selection's lower offset, so the caret after the
+  // strip belongs at the selection's start, not at its focus end.
+  selectEditorText(editor, 0, 4);
+
+  await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
+
+  expect(editor.textContent).toBe("keep  tail");
+  expect(editorCursor(editor)).toBe(0);
+  expect(readComposerDraft("ref_a")).toEqual({ text: "keep  tail", skillNames: [] });
+});
+
 test("typing synchronously after a paste whose decode later fails survives - the failed marker alone is stripped (critical)", async () => {
   installFailingDecodeStub();
   await mountComposer("ref_a");
@@ -4061,6 +4084,24 @@ test("removing an attachment that joined a token to a chip keeps the editor and 
   await waitFor(() => expect(editor.textContent).toBe("Use /cleanup d"));
   expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+});
+
+test("deleting the separator between two chips restores exactly one space", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_shared_chip_boundary";
+  const text = "Run /cleanup /cleanup.v2";
+  writeComposerDraft(ref, { text, skillNames: ["cleanup", "cleanup.v2"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(2);
+
+  // Removing the shared separator breaks both references at one boundary, so
+  // the repair owes one space - not one per atom.
+  selectEditorText(editor, "Run /cleanup ".length);
+  await user.keyboard("{Backspace}");
+
+  expect(editor.textContent).toBe(text);
+  expect(readComposerDraft(ref)).toEqual({ text, skillNames: ["cleanup", "cleanup.v2"] });
 });
 
 test("a chip at the end of the draft does not reopen the slash menu when its separator is removed", async () => {
