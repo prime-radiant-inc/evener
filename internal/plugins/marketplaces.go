@@ -898,7 +898,12 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
-	if ref.Source.Kind != SourceDirectory {
+	// Only a fetched source's refresh touches the clone on disk (a pull, a
+	// staged reclone, or a first fetch); a directory source's refresh only
+	// ever changes ref.LastUpdated below, in memory, so a failing record is a
+	// plain refusal for that source and ErrStoreChanged only for this one.
+	touchedDisk := ref.Source.Kind != SourceDirectory
+	if touchedDisk {
 		if ref.InstallLocation == "" {
 			// Never fetched (seeded pointer): clone now — that is the refresh.
 			installLoc := m.marketplaceDir(name)
@@ -925,10 +930,14 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
-		// The clone on disk has already moved — a pull, a staged reclone, or a
-		// first fetch — so the store is changed even though its file does not
-		// say so, and the hub must still announce it (ErrStoreChanged).
-		return fmt.Errorf("%w: %w", ErrStoreChanged, err)
+		if touchedDisk {
+			// The clone on disk has already moved — a pull, a staged reclone,
+			// or a first fetch — so the store is changed even though its
+			// file does not say so, and the hub must still announce it
+			// (ErrStoreChanged).
+			return fmt.Errorf("%w: %w", ErrStoreChanged, err)
+		}
+		return err
 	}
 	return nil
 }

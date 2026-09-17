@@ -55,10 +55,12 @@ func TestEditWhoseUndoFailedReportsTheStoreChanged(t *testing.T) {
 	}
 }
 
-// A refresh touches the clone on disk — a pull, a staged reclone, or a first
-// fetch — and only then records it. A failing record leaves the store's
-// directories changed and its file not naming them.
-func TestRefreshWhoseRecordFailedReportsTheStoreChanged(t *testing.T) {
+// A directory-source refresh touches nothing on disk: the fetch/pull/reclone
+// block only runs for a fetched source, so a directory source's refresh only
+// ever changes ref.LastUpdated in memory. A failing record is then a plain
+// refusal, not a store change - broadcasting it would have every other client
+// refetch a listing that in fact never moved.
+func TestRefreshDirectorySourceWhoseRecordFailedReportsAPlainRefusal(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	ctx := context.Background()
@@ -76,8 +78,45 @@ func TestRefreshWhoseRecordFailedReportsTheStoreChanged(t *testing.T) {
 	if err == nil {
 		t.Fatal("RefreshMarketplace = nil, want the failed record reported")
 	}
+	if errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want a plain refusal: a directory source's refresh touches nothing on disk", err)
+	}
+}
+
+// A fetched (git) source's refresh touches the clone on disk first - a pull,
+// a staged reclone, or a first fetch - and only then records it. A failing
+// record leaves the store's directories changed and its file not naming
+// them, so the hub must still announce it.
+func TestRefreshGitSourceWhoseRecordFailedReportsTheStoreChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	installLoc := m.marketplaceDir("market-a")
+	if err := os.MkdirAll(installLoc, 0o755); err != nil {
+		t.Fatalf("planting the clone directory: %v", err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"market-a": {
+		Source:          Source{Kind: SourceURL, URL: "https://example.invalid/repo.git"},
+		InstallLocation: installLoc,
+	}}); err != nil {
+		t.Fatalf("planting the marketplace: %v", err)
+	}
+	origPull := marketplaceGitPull
+	t.Cleanup(func() { marketplaceGitPull = origPull })
+	marketplaceGitPull = func(context.Context, string) error { return nil }
+
+	original := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = original })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	err := m.RefreshMarketplace(ctx, "market-a")
+	if err == nil {
+		t.Fatal("RefreshMarketplace = nil, want the failed record reported")
+	}
 	if !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("err = %v, want it to report the store changed so the hub still broadcasts", err)
+		t.Fatalf("err = %v, want it to report the store changed so the hub still broadcasts: the pull already ran", err)
 	}
 }
 
