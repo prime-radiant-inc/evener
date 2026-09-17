@@ -31,7 +31,16 @@ const backend = {
 	createId: () => Crypto.randomUUID(),
 	get(key: string): unknown {
 		const value = Storage.getItemSync(key);
-		return value === null ? null : JSON.parse(value);
+		if (value === null) return null;
+		try {
+			return JSON.parse(value);
+		} catch {
+			// Bytes this build cannot parse are still A RECORD, and the shared
+			// store's own decoder is what classifies them: handing back the raw
+			// string makes it an unreadable RECORD (draftUnreadable, discardable)
+			// instead of a throw it can only read as a dead port.
+			return value;
+		}
 	},
 	set(key: string, value: unknown) {
 		Storage.setItemSync(key, JSON.stringify(value));
@@ -41,7 +50,12 @@ const backend = {
 	},
 	deleteIf(key: string, value: unknown) {
 		// Synchronous compare/remove cannot interleave with a newer model's checkpoint.
-		if (Storage.getItemSync(key) === JSON.stringify(value))
+		const stored = Storage.getItemSync(key);
+		if (stored === null) return;
+		// An unreadable record is handed back to us as the raw bytes `get`
+		// returned, so those bytes are what the comparison is against; a decoded
+		// checkpoint compares by its re-encoding as before.
+		if (stored === value || stored === JSON.stringify(value))
 			Storage.removeItemSync(key);
 	},
 };

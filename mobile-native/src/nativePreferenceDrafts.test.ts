@@ -75,6 +75,45 @@ describe("native preference drafts", () => {
 		expect(keybindings.load()).toEqual(keybindingCheckpoint);
 	});
 
+	it("classifies bytes it cannot parse as an unreadable record, and clears them", () => {
+		// The device store as the provider wraps it: a value it cannot parse comes
+		// back as its RAW bytes rather than throwing, so the shared store reads it
+		// as an unreadable record (draftUnreadable) instead of a dead port.
+		const raw = new Map<string, string>();
+		const port: NativePreferenceDraftBackend = {
+			createId: () => "1",
+			get: (key) => {
+				const value = raw.get(key);
+				if (value === undefined) return null;
+				try {
+					return JSON.parse(value);
+				} catch {
+					return value;
+				}
+			},
+			set: (key, value) => {
+				raw.set(key, JSON.stringify(value));
+			},
+			delete: (key) => {
+				raw.delete(key);
+			},
+			deleteIf: (key, value: unknown) => {
+				const stored = raw.get(key);
+				if (stored === undefined) return;
+				if (stored === value || stored === JSON.stringify(value)) raw.delete(key);
+			},
+		};
+		const storage = nativeTranscriptDrafts("hub", port);
+		raw.set("evener.native.transcript-draft.hub", "{not json");
+
+		// Read back as the raw string, which is not a checkpoint.
+		expect(storage.load()).toBe("{not json");
+
+		// And removable by handing those same bytes back.
+		storage.removeIf("{not json" as never);
+		expect(storage.load()).toBeNull();
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(
