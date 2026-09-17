@@ -5,12 +5,11 @@ import type {
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
-	materializeNavigationResource,
-	normalizedGraphFromSnapshot,
+	materializeSnapshot,
+	navigationParamsToResourceKey,
 	requiredRevision,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { resourceKeyFor } from "./navigationPages";
 
 function resourceFor(
 	target: NavigationInvalidationTarget,
@@ -20,13 +19,13 @@ function resourceFor(
 		case "manifest":
 			return base;
 		case "section":
-			return { ...base, section: target.section, limit: 50 };
+			return { ...base, section: target.section };
 		case "pin_catalog":
-			return { ...base, limit: 50 };
+			return base;
 		case "pin_section":
-			return { ...base, sectionId: target.sectionId, limit: 50 };
+			return { ...base, sectionId: target.sectionId };
 		case "catalog":
-			return { ...base, catalog: target.catalog, limit: 50 };
+			return { ...base, catalog: target.catalog };
 		case "project":
 			return { ...base, projectKey: target.projectKey };
 		// This invalidates loaded project pages without an individual version.
@@ -53,7 +52,7 @@ export async function navigationReadback(
 	) => {
 		const params = { ...input, representationVersion: 2 };
 		check();
-		const key = resourceKeyFor(params);
+		const key = navigationParamsToResourceKey(params);
 		const wire = await client.request("evener/navigation/read", {
 			...params,
 			representationVersion: 2,
@@ -73,15 +72,7 @@ export async function navigationReadback(
 			);
 		return {
 			...decoded,
-			data:
-				decoded.status === "snapshot"
-					? materializeNavigationResource({
-							key,
-							graph: normalizedGraphFromSnapshot(decoded.snapshot),
-							version: decoded.version,
-							presence: "present",
-						})
-					: null,
+			data: decoded.status === "snapshot" ? materializeSnapshot(key, decoded) : null,
 		};
 	};
 	const manifestParams = { resource: "manifest" };
