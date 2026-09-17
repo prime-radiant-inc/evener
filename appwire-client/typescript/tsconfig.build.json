@@ -93,6 +93,7 @@
     "state/extensions/plugins.ts",
     "state/extensions/storeLifecycle.ts",
     "state/mutation/index.ts",
+    "state/mutation/outbox.ts",
     "state/mutation/records.ts",
     "state/mutation/pendingEntries.ts",
     "state/mutation/secureUUID.ts",
