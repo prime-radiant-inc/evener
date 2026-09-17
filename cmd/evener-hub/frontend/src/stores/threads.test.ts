@@ -9407,16 +9407,40 @@ test("a Stop during refreshThread's reconciliation is not overtaken by its dispa
   }
 });
 
-// The resume fence's Stop generations are keyed by ref but read only by fences
-// a living pane captured. releaseThread already tears down every other per-ref
-// structure when the last holder lets go; the Stop generation goes with it, so
-// the map stays bounded by live refs instead of growing for every stopped ref
-// in the page's lifetime. A fence captured BEFORE the release must keep
-// firing afterwards: release never reads as "no Stop has landed". Pruning is
-// only safe because the values come from one page-wide sequence - a per-ref
-// counter would restart at the value a pre-release fence captured, and a Stop
-// landing after a re-ensure would read to that fence as its own baseline.
-test("releasing a ref prunes its Stop generation, and a fence captured before the release still fires", async () => {
+// RoboRev Medium on fee4eb8 (PR 1393): pruning a ref's Stop generation on
+// release could make a fence miss a REAL Stop in one interleaving - the
+// baseline sees the absent entry as 0, the Stop records a nonzero sequence
+// value, release deletes the entry, and the fence reads absent-as-0 again,
+// equal to its own baseline. Stop generations now persist for the page
+// session, so the Stop a fence was captured before still reads as a landed
+// Stop after any release.
+test("a fence captured before a Stop still fires after the ref is released", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // Captured before any Stop: the ref's absent entry reads as 0.
+  const fence = resumeStopFence("ref_a");
+  const baseline = resumeStopBaseline();
+  await threadsStore.getState().shutdown("ref_a");
+  threadsStore.getState().releaseThread("ref_a");
+  expect(fence).toThrow("Stop canceled this pending action");
+  expect(() => baseline("ref_a")).toThrow("Stop canceled this pending action");
+  expect(() => baseline()).toThrow("Stop canceled this pending action");
+});
+
+// Stop generations persist for the page session. Retention makes release
+// truthful where pruning could only be conservative: a fence captured AFTER
+// a Stop reads the retained generation as exactly its own baseline - no NEW
+// Stop - and stays quiet across a bare release, because release is not a
+// Stop. The page-wide sequence still never reissues a value, so a Stop
+// landing after a re-ensure fires every fence captured before it. (This
+// restructures the pruning test added with the sequence: that test pinned
+// prune-as-reset, which fired post-Stop fences on release precisely because
+// deletion destroyed the information retention now keeps.)
+test("releasing a ref retains its Stop generation across release and re-ensure", async () => {
   setMutationStorageForTests(new MutationOutboxIndexedDB());
   const fake = connectFakeClient("connecting");
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
@@ -9424,21 +9448,18 @@ test("releasing a ref prunes its Stop generation, and a fence captured before th
   fake.emitReady();
   await threadsStore.getState().ensureThread("ref_a");
   await threadsStore.getState().shutdown("ref_a");
-  // Captures the post-Stop generation; without pruning this reads the same
-  // generation after the release and never fires.
+  // Captured after the Stop: quiet before AND after a bare release - the
+  // retained value is exactly the captured baseline.
+  const settledFence = resumeStopFence("ref_a");
+  const settledBaseline = resumeStopBaseline();
+  threadsStore.getState().releaseThread("ref_a");
+  settledFence();
+  settledBaseline("ref_a");
+  settledBaseline();
+  // A fence captured before a SECOND Stop still fires: retention never
+  // recycles the first Stop's value, and the sequence never reissues it.
   const staleFence = resumeStopFence("ref_a");
   const staleBaseline = resumeStopBaseline();
-  threadsStore.getState().releaseThread("ref_a");
-  // Pruned: a fresh fence starts from a zero baseline and stays quiet until
-  // the next Stop.
-  resumeStopFence("ref_a")();
-  // The fence captured before the release reads the reset as a changed
-  // generation and still cancels its pending action.
-  expect(staleFence).toThrow("Stop canceled this pending action");
-  expect(() => staleBaseline("ref_a")).toThrow("Stop canceled this pending action");
-  // A second Stop after a re-ensure must not recycle the released value: the
-  // fence captured before the release must still cancel, not compare the
-  // re-registered generation equal to its own.
   await threadsStore.getState().ensureThread("ref_a");
   await threadsStore.getState().shutdown("ref_a");
   expect(staleFence).toThrow("Stop canceled this pending action");
@@ -9450,8 +9471,8 @@ test("releasing a ref prunes its Stop generation, and a fence captured before th
 // reconnect window ends before the resumed identity is knowable, so the check
 // cannot name a ref and instead fires on ANY Stop acknowledged since the
 // snapshot. Values only grow (the page-wide sequence), so an increased entry
-// is exactly a landed Stop; a ref whose entry simply pruned away reads as no
-// movement, which is correct - release is not a Stop.
+// is exactly a landed Stop; a released ref's retained entry compares equal to
+// its snapshot, which is correct - release is not a Stop.
 test("the global resume Stop baseline fires on any ref's Stop and on nothing else", async () => {
   setMutationStorageForTests(new MutationOutboxIndexedDB());
   const fake = connectFakeClient("connecting");

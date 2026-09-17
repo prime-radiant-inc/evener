@@ -921,13 +921,16 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 }
 
 const userIntentStopGenerations = new Map<string, number>();
-// Stop generations come from one page-wide sequence, never a per-ref counter:
-// releaseThread prunes a ref's entry when its last holder lets go, and a
-// per-ref counter would restart at the same value a fence captured before the
-// release - a Stop landing after a re-ensure would then compare equal to that
-// fence's baseline and slip past it. Sequence values are forever-unique and
-// start at 1, so an absent entry's `?? 0` stays below every real generation
-// and pruning the map stays safe.
+// Stop generations come from one page-wide sequence, never a per-ref counter,
+// and an entry once written persists for the page session - releaseThread
+// deliberately does NOT prune. Deleting the only cancellation evidence let a
+// fence miss a real Stop (baseline 0, Stop nonzero, release deletes, fence
+// reads 0); tombstones with a clearing schedule need a fence-lifetime
+// registry that does not exist, and one that never clears is this. Growth is
+// bounded by the distinct refs a user actually Stops in the page's lifetime.
+// Sequence values are forever-unique and start at 1, so an absent entry's
+// `?? 0` stays below every real generation, an increased entry is exactly a
+// landed Stop, and a Stop after a re-ensure never recycles an older value.
 let userIntentStopSequence = 0;
 
 function cancelPendingUserIntents(ref: string): void {
@@ -961,8 +964,8 @@ export function resumeStopFence(ref: string): () => void {
 // identity is knowable, so a per-ref fence cannot name it -- any ref's
 // acknowledged Stop in the reconnect window suppresses the resume RPC. Values
 // only grow (the page-wide sequence), so an increased entry is exactly a
-// landed Stop; a release-pruned entry reads as no movement, which is correct
-// -- release is not a Stop.
+// landed Stop; a released ref's retained entry compares equal to its
+// snapshot, which is correct -- release is not a Stop.
 export function resumeStopBaseline(): (ref?: string) => void {
   const generations = new Map(userIntentStopGenerations);
   return (ref?: string) => {
@@ -2618,13 +2621,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrateEpochs.delete(ref);
     trackedHydrationCompletions.delete(ref);
     pendingThreadHydrations.delete(ref);
-    // The resume fence's Stop generation has no readers left once the last
-    // holder lets go; pruning keeps the map bounded by live refs. A fence
-    // captured before the release reads the reset as a changed generation and
-    // still cancels its pending action - release never reads as "no Stop".
-    // The sequence never recycles a value, so a Stop landing after a
-    // re-ensure cannot resurrect the pruned generation either.
-    userIntentStopGenerations.delete(ref);
+    // The Stop generation is the one per-ref structure release must NOT tear
+    // down: it is the only cancellation evidence fences captured elsewhere
+    // read, and those fences have no registered lifetime to prune against.
+    // Retention is what lets a fence captured before a Stop keep firing after
+    // the ref's last holder lets go (see the map's own comment above).
     // A watched lifecycle may still hold this ref (watchRefCounts), and its
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
     // subscription when this was the last holder of either kind, so the hub
