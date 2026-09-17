@@ -604,7 +604,7 @@ test("pin catalog page loading preserves every assignment target", async () => {
     { resource: "pin_catalog", offset: 0, limit: 100, representationVersion: 2 },
     { resource: "pin_catalog", offset: 1, limit: 100, representationVersion: 2 },
   ]);
-  expect(selectPinSectionSummaries()).toEqual([
+  expect(selectPinSectionSummaries(navigationStore.getState())).toEqual([
     { id: "first", name: "First", member_count: 0 },
     { id: "second", name: "Second", member_count: 2 },
   ]);
@@ -634,7 +634,9 @@ test("forced pin catalog page loading replaces every fresh cached page", async (
       .map((call) => call.params as NavigationReadParams)
       .filter((params) => params.resource === "pin_catalog"),
   ).toHaveLength(4);
-  expect(selectPinSectionSummaries()).toEqual([{ id: "section", name: "After", member_count: 0 }]);
+  expect(selectPinSectionSummaries(navigationStore.getState())).toEqual([
+    { id: "section", name: "After", member_count: 0 },
+  ]);
 });
 
 test("AppWire envelope status and conditional reads preserve cached navigation", async () => {
@@ -832,7 +834,7 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
 
   const initial = await navigationStore.getState().loadSection("live");
   expect(initial.error).toBeNull();
-  expect(selectGlobalRows().map((row) => row.title)).toEqual(["Present"]);
+  expect(selectGlobalRows(navigationStore.getState()).map((row) => row.title)).toEqual(["Present"]);
 
   client.emitNotification(
     navigationInvalidatedNotification({
@@ -847,7 +849,7 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
   expect(gone?.normalized?.presence).toBe("gone");
   expect(gone?.normalized?.graph.entities.size).toBe(0);
   expect(gone?.normalized?.version).toEqual({ generationId: generation, revision: 2, etag: "section-2" });
-  expect(selectGlobalRows()).toEqual([]);
+  expect(selectGlobalRows(navigationStore.getState())).toEqual([]);
 
   expect(await navigationStore.getState().loadSection("live")).toBe(gone);
   expect(sectionCalls).toBe(2);
@@ -878,7 +880,7 @@ test("v2 gone tombstones clear visible rows, retain the exact base, and reappear
   expect(reappeared?.normalized?.presence).toBe("present");
   expect(reappeared?.normalized?.graph.entities.size).toBe(1);
   expect(reappeared?.normalized?.version).toEqual({ generationId: generation, revision: 3, etag: "section-3" });
-  expect(selectGlobalRows().map((row) => row.title)).toEqual(["Reappeared"]);
+  expect(selectGlobalRows(navigationStore.getState()).map((row) => row.title)).toEqual(["Reappeared"]);
   expect(sectionCalls).toBe(4);
 });
 
@@ -961,7 +963,7 @@ test("client replacement clears prior navigation ownership during bootstrap but 
   await flush();
   navigationStore.getState().setExpanded("remembered-project", true);
   const retainedExpansion = navigationStore.getState().expanded;
-  expect(selectGlobalRows().map((session) => session.ref)).toEqual(["local:old-client"]);
+  expect(selectGlobalRows(navigationStore.getState()).map((session) => session.ref)).toEqual(["local:old-client"]);
   expect(navigationStore.getState().manifest?.version).toEqual({
     generationId: "old",
     revision: 1,
@@ -1397,7 +1399,9 @@ test("pending v2 read stays bound across a same-generation reconnect", async () 
   expect((loaded.data as { sessions: Array<{ ref: string }> }).sessions.map((session) => session.ref)).toEqual([
     "local:representation-bound",
   ]);
-  expect(selectGlobalRows().map((session) => session.ref)).toEqual(["local:representation-bound"]);
+  expect(selectGlobalRows(navigationStore.getState()).map((session) => session.ref)).toEqual([
+    "local:representation-bound",
+  ]);
   expect(navigationStore.getState().protocolError).toBeNull();
   expect(navigationStore.getState().mode).toBe("v2");
 });
@@ -1723,7 +1727,7 @@ test("shutdown convergence re-arms past unrelated receipts until its session set
   const rearmed: unknown[] = [];
   const converged = awaitNavigationConvergence(waiter, [{ kind: "section", section: "live" }], {
     timeoutMs: 10_000,
-    settled: () => !selectGlobalRows().some((row) => row.ref === "local:doomed"),
+    settled: () => !selectGlobalRows(navigationStore.getState()).some((row) => row.ref === "local:doomed"),
     rearm: () => {
       const next = navigationStore.getState().awaitNavigationInvalidation(matches);
       rearmed.push(next);
