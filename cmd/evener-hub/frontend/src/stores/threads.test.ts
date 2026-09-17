@@ -3538,9 +3538,9 @@ describe("reconnect resubscribe", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
 
     reconnectRead.resolve?.(authoritativeSnapshot);
-    // hydrateAndSubscribe now awaits peekAcceptCounter's own rehydration
-    // right after this response resolves (ThreadHydration's own `queueCut`),
-    // an extra microtask hop before it reaches
+    // hydrateAndSubscribe now mints a queue snapshot (captureQueueSnapshot's
+    // own rehydration) right after this response resolves (ThreadHydration's
+    // own `queueSnapshot`), an extra microtask hop before it reaches
     // publishAndReconcileThreadHydration - flushed out rather than counted,
     // since exactly how many turns that hop costs is an implementation
     // detail, not this test's own contract.

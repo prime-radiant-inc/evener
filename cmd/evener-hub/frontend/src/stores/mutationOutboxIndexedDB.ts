@@ -269,7 +269,7 @@ export class MutationOutboxIndexedDB {
         if (authoritativeIds.has(record.clientMutationId)) continue;
         // Absence alone does not prove this record predates the snapshot cut
         // - the shared per-target chain only proves no write and this scan
-        // interleave, not causal order (#1717's Medium 1, round 4). A record
+        // interleave, not causal order (#1717's Medium 1). A record
         // accepted after the snapshot's own cut (its own durable
         // intentSequence, allocated once by #allocateSequence and never
         // reused) postdates what the snapshot can vouch for and survives.

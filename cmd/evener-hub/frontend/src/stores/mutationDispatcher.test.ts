@@ -653,15 +653,21 @@ describe("MutationDispatcher", () => {
 // cut defaults to +Infinity: "retire on absence alone, with no cut
 // protection" - the pre-#1717-Medium-1 behavior, for tests that exercise
 // something else entirely. A test of the cut mechanism itself overrides it,
-// typically with dispatcher.peekAcceptCounter(targetRef) at the point it
-// wants to simulate the snapshot's own arrival.
+// typically via dispatcher.captureQueueSnapshot(targetRef, ...) at the point
+// it wants to simulate the snapshot's own arrival.
 function queueSnapshot(overrides: Partial<QueueSnapshot> = {}): QueueSnapshot {
+  const { cut, ...rest } = overrides;
+  return { ...queueSnapshotWithoutCut(rest), cut: cut ?? Number.POSITIVE_INFINITY };
+}
+
+// Same defaults as queueSnapshot(), without `cut` - for a test that mints
+// its own via dispatcher.captureQueueSnapshot() instead of overriding it.
+function queueSnapshotWithoutCut(overrides: Partial<Omit<QueueSnapshot, "cut">> = {}): Omit<QueueSnapshot, "cut"> {
   return {
     ids: new Set(),
     revision: 1,
     authoritative: true,
     instanceId: "instance-a",
-    cut: Number.POSITIVE_INFINITY,
     ...overrides,
   };
 }
@@ -998,13 +1004,13 @@ describe("reconcileQueueSnapshot", () => {
     outbox.close();
   });
 
-  // RoboRev's review round 4 Medium 1: chain-enqueue order is not proof of
-  // causal order. A stale snapshot's OWN data can predate an accept even
-  // though, by the time its scan actually runs (delayed by other work, or
-  // simply queued behind the accept), the accept has already landed - so
-  // absence from `ids` alone is not enough; the scan also needs each
-  // record's own accept-stamp, checked against the snapshot's `cut` as
-  // captured at its TRUE arrival, before whichever runs first.
+  // #1717's Medium 1: chain-enqueue order is not proof of causal order. A
+  // stale snapshot's OWN data can predate an accept even though, by the time
+  // its scan actually runs (delayed by other work, or simply queued behind
+  // the accept), the accept has already landed - so absence from `ids`
+  // alone is not enough; the scan also needs each record's own
+  // intentSequence, checked against the snapshot's `cut` as captured at its
+  // TRUE arrival, before whichever runs first.
   test("a snapshot's cut, captured before an accept, protects that accept even though the scan runs after it lands", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "cut-protects-post-cut-accept", ["queue-a"]);
@@ -1012,10 +1018,10 @@ describe("reconcileQueueSnapshot", () => {
     client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
 
-    // The snapshot's own cut is read at its TRUE arrival - before the accept
-    // below even happens (a hydrate reads this before reconcileIdentities/
+    // The snapshot is minted at its TRUE arrival - before the accept below
+    // even happens (a hydrate reads this before reconcileIdentities/
     // restoreProvenAbsent, both real awaits the accept can land during).
-    const cut = await dispatcher.peekAcceptCounter("ref-a");
+    const snapshot = await dispatcher.captureQueueSnapshot("ref-a", queueSnapshotWithoutCut({ ids: new Set() }));
 
     const fresh = await outbox.enqueueIntent(queueIntent("ref-a", "fresh"));
     await dispatcher.dispatchTargets(["ref-a"]);
@@ -1023,7 +1029,7 @@ describe("reconcileQueueSnapshot", () => {
 
     // Only NOW is the (already-stale, unaware of "fresh") snapshot actually
     // reconciled, using the cut captured before the accept.
-    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), cut }));
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", snapshot);
 
     expect(settled).toEqual([]);
     expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
@@ -1032,13 +1038,10 @@ describe("reconcileQueueSnapshot", () => {
     outbox.close();
   });
 
-  // The cut fix above (#1717's Medium 1) kept its own clock -
-  // #acceptCounters - in memory only, so a page reload or a second tab opens
-  // a fresh MutationDispatcher whose own peekAcceptCounter reads 0
-  // regardless of what a PREVIOUS dispatcher instance already accepted into
-  // this same durable storage. `record.acceptStamp (0) >= cut (0)` then
-  // protects the ghost forever - the ghost's own stamp can never be less
-  // than a clock that never advanced past its starting value.
+  // captureQueueSnapshot's own clock (#lastAcceptedIntentSequence) is
+  // rehydrated from storage on first use, so a page reload or a second tab's
+  // fresh dispatcher still retires a ghost a PREVIOUS dispatcher instance
+  // accepted into this same durable storage.
   test("a reload's fresh dispatcher still retires a ghost accepted by a previous dispatcher instance", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "reload-retires-ghost", ["queue-a"]);
@@ -1054,8 +1057,10 @@ describe("reconcileQueueSnapshot", () => {
     // dispatcher's own in-memory state.
     const reopened = new MutationOutboxIndexedDB({ indexedDB, databaseName: "reload-retires-ghost" });
     const reloaded = new MutationDispatcher(reopened, { getClient: () => client });
-    const cut = await reloaded.peekAcceptCounter("ref-a");
-    const settled = await reloaded.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), cut }));
+    const settled = await reloaded.reconcileQueueSnapshot(
+      "ref-a",
+      await reloaded.captureQueueSnapshot("ref-a", queueSnapshotWithoutCut({ ids: new Set() })),
+    );
 
     expect(settled).toEqual([queued.clientMutationId]);
     expect(await outbox.listOptimistic("ref-a")).toEqual([]);
