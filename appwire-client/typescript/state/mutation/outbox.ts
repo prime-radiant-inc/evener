@@ -126,13 +126,11 @@ export interface MutationOutboxOptions {
   // an outbox that has stopped. Pass both or neither — one alone is no timer.
   setInterval?: (callback: () => void, milliseconds: number) => number;
   clearInterval?: (intervalId: number) => void;
-  // How often a host with a timer re-scans. The web's 2s default is the
-  // interval its oracle pins; a host that passes no timer never uses it.
-  scanIntervalMs?: number;
 }
 
 const CHANNEL_NAME = "evener-mutation-outbox-v1";
-const DEFAULT_SCAN_INTERVAL_MS = 2000;
+// How often a host with a timer re-scans — the interval the web's oracle pins.
+const SCAN_INTERVAL_MS = 2000;
 
 interface MutationOutboxWakeup {
   version: 1;
@@ -157,7 +155,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   readonly #visibilityTarget: MutationVisibilityTarget | undefined;
   readonly #setInterval: ((callback: () => void, milliseconds: number) => number) | undefined;
   readonly #clearInterval: ((intervalId: number) => void) | undefined;
-  readonly #scanIntervalMs: number;
   #channel: MutationOutboxChannel | undefined;
   #intervalId: number | undefined;
   #started = false;
@@ -193,7 +190,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     const cancellableTimer = options.setInterval !== undefined && options.clearInterval !== undefined;
     this.#setInterval = cancellableTimer ? options.setInterval : undefined;
     this.#clearInterval = cancellableTimer ? options.clearInterval : undefined;
-    this.#scanIntervalMs = options.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS;
   }
 
   async start(): Promise<void> {
@@ -204,7 +200,7 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#lifecycleTarget?.addEventListener("online", this.#handleOnline);
     this.#lifecycleTarget?.addEventListener("focus", this.#handleFocus);
     this.#visibilityTarget?.addEventListener("visibilitychange", this.#handleVisibility);
-    this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), this.#scanIntervalMs);
+    this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), SCAN_INTERVAL_MS);
     // Submissions need the runtime's listeners, not a scan of earlier work.
     // Queue startup discovery so a stalled read cannot delay their own commit.
     this.#schedule(() => this.#discoverAll("startup"));
