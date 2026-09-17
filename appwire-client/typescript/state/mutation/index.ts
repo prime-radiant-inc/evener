@@ -20,6 +20,7 @@ export type {
 } from "./pendingTurns";
 export { createPendingTurnsStore } from "./pendingTurns";
 export type {
+  ClientIdentity,
   ClientIdentityStorage,
   MutationAttachmentRef,
   MutationIntent,
@@ -30,4 +31,6 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { isOwnMutationRecord, ownClientId, setMutationClientIdentityForTests } from "./records";
+export { createClientIdentity } from "./records";
+export type { SecureRandomSource } from "./secureUUID";
+export { createSecureUUID } from "./secureUUID";

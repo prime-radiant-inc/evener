@@ -17,12 +17,12 @@ import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../framewo
 import type { ThreadModel } from "../../model";
 import { type PendingMethod, type PendingTurnEntry, reconcilePendingEntries } from "./pendingEntries";
 import type {
+  ClientIdentity,
   MutationAttachmentRef,
   MutationOptimisticRecord,
   MutationOutboxRecord,
   MutationRecoveryRecord,
 } from "./records";
-import { isOwnMutationRecord } from "./records";
 
 // What a ref's pending-turns projection needs from the host's thread store:
 // the current model, read fresh whenever `pendingTurnEntries` reconciles -
@@ -46,6 +46,12 @@ export interface PendingTurnsDraftPort {
 export interface PendingTurnsStoreDeps {
   threads: PendingTurnsThreadsPort;
   draft: PendingTurnsDraftPort;
+  // The host's own ClientIdentity capability (createClientIdentity), not a
+  // package default: recordSubmittedHere and pendingTurnEntries both ask "is
+  // this record this client's own", and a caller with no identity handy
+  // should build one rather than this module silently assuming "unattributed
+  // only" the way reconcilePendingEntries's own default does.
+  identity: Pick<ClientIdentity, "isOwnMutationRecord">;
 }
 
 export interface PendingTurnsState<A extends MutationAttachmentRef = MutationAttachmentRef> {
@@ -123,7 +129,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
     // claiming them would reroute this store's own routing behind their
     // sends.
     const discovered = [...snapshot.outbox, ...snapshot.optimistic]
-      .filter((record) => isOwnMutationRecord(record))
+      .filter((record) => deps.identity.isOwnMutationRecord(record))
       .map((record) => record.clientMutationId)
       .filter((id) => !known.has(id));
     if (discovered.length === 0) return;
@@ -162,6 +168,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
       [...state.outbox.values(), ...state.optimistic.values()],
       deps.threads.getThreadModel(ref),
       state.submittedHere,
+      (record) => deps.identity.isOwnMutationRecord(record),
     ).filter((entry) => method === undefined || entry.method === method);
   };
 

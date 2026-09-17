@@ -2,7 +2,6 @@ import { canonicalSkillNames } from "../../composerInput";
 import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
-import { isOwnMutationRecord } from "./records";
 
 export type PendingMethod = "send" | "steer" | "queue" | "drain";
 export type PendingTurnState = "submitting" | "blockedUnknown" | "accepted" | "claimed";
@@ -74,7 +73,10 @@ function reflectedMutationIds(model: ThreadModel | undefined): Set<string> {
   return ids;
 }
 
-function outboxEntry(record: PendingRecord): PendingTurnEntry | undefined {
+function outboxEntry(
+  record: PendingRecord,
+  isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
+): PendingTurnEntry | undefined {
   const method = pendingMethod(record.method);
   if (!method) return undefined;
   const preview = inputPreview(outboxInput(record));
@@ -123,18 +125,24 @@ function authoritativeEntry(
 // the same id: publishing a read settles every authoritative identity out of
 // durable storage (the host's own reconcileIdentities). This set is what
 // carries provenance past that settlement.
+//
+// isOwnMutationRecord is the host's ClientIdentity capability, not the
+// package's default: a caller with no identity handy still gets the safe
+// answer (unattributed only) rather than being forced to build one.
 export function reconcilePendingEntries(
   ref: string,
   outbox: PendingRecord[],
   model: ThreadModel | undefined,
   submittedHere: ReadonlySet<string>,
+  isOwnMutationRecord: (record: { originClientId?: string }) => boolean = (record) =>
+    record.originClientId === undefined,
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
   const entries = new Map<string, PendingTurnEntry>();
 
   for (const record of outbox) {
     if (record.targetRef !== ref || reflected.has(record.clientMutationId)) continue;
-    const entry = outboxEntry(record);
+    const entry = outboxEntry(record, isOwnMutationRecord);
     if (entry) entries.set(entry.id, entry);
   }
 

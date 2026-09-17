@@ -492,40 +492,58 @@ const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => und
 const pendingMethod: PendingMethod = "send";
 const pendingState: PendingTurnState = "submitting";
 const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
+const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
+const identity: ClientIdentity = createClientIdentity(storage, secureRandomSource);
 const threadsPort: PendingTurnsThreadsPort = { getThreadModel: () => undefined };
 const draftPort: PendingTurnsDraftPort = {
   readDraftRevision: () => 0,
   readComposerDraft: () => ({ text: "", skillNames: [] }),
   clearDraft: () => undefined,
 };
-const pendingTurnsStore: PendingTurnsStore = createPendingTurnsStore({ threads: threadsPort, draft: draftPort });
+const pendingTurnsStore: PendingTurnsStore = createPendingTurnsStore({ threads: threadsPort, draft: draftPort, identity });
 const pendingTurnsState: PendingTurnsState = pendingTurnsStore.getState();
 const submittedDraft: SubmittedDraft = { draftRevisionAtStart: 0, text: "hi", skillNames: [] };
-void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry; void pendingTurnsState; void submittedDraft;`,
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry; void pendingTurnsState; void submittedDraft; void secureRandomSource;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
+const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
+const identity: client.ClientIdentity = client.createClientIdentity(storage, secureRandomSource); void identity;
 const pendingTurnsState: client.PendingTurnsState = client.createPendingTurnsStore({
   threads: { getThreadModel: () => undefined },
   draft: { readDraftRevision: () => 0, readComposerDraft: () => ({ text: "", skillNames: [] }), clearDraft: () => undefined },
+  identity,
 }).getState(); void pendingTurnsState;`,
-      // ownClientId is memoized per process (one client, one identity), so
-      // setMutationClientIdentityForTests resets it before the probe: two
-      // reads against the same fake storage return the same identity, that
-      // identity is what makes a record isOwnMutationRecord, another client's
-      // is not, and an unattributed record stays claimable. reconcilePendingEntries
-      // needs no model to prove it runs: an absent one is the same "no live
-      // projection yet" case a fresh composer starts from. The pending-turns
-      // store is built over fake threads/draft ports: beginSubmission's guard,
-      // its release and the empty-projection read all prove the store runs
-      // without a real thread store or composer-draft storage behind it.
-      smoke: `client.setMutationClientIdentityForTests(undefined);
-const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
-const firstId = client.ownClientId(identityStorage);
-const secondId = client.ownClientId(identityStorage);
-assert.equal(firstId, secondId);
-assert.equal(client.isOwnMutationRecord({ originClientId: firstId }), true);
-assert.equal(client.isOwnMutationRecord({ originClientId: "someone-else" }), false);
-assert.equal(client.isOwnMutationRecord({}), true);
+      // createClientIdentity is a factory, not a module singleton: two
+      // instances over two storages get two identities, and one instance's
+      // identity is memoized across repeated calls. Both take their random
+      // source explicitly - no default to globalThis.crypto lives in the
+      // package. createSecureUUID is the same helper mutation ids use; a
+      // source with no randomUUID proves the getRandomValues fallback runs,
+      // and a source with neither proves the non-crypto fallback runs rather
+      // than throwing. reconcilePendingEntries needs no model to prove it
+      // runs: an absent one is the same "no live projection yet" case a
+      // fresh composer starts from. The pending-turns store is built over
+      // fake threads/draft ports plus one of the identities below:
+      // beginSubmission's guard, its release and the empty-projection read
+      // all prove the store runs without a real thread store or composer-
+      // draft storage behind it.
+      smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
+const identityRandomSource = { getRandomValues: (array) => globalThis.crypto.getRandomValues(array) };
+const identityA = client.createClientIdentity(identityStorage, identityRandomSource);
+const identityB = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, identityRandomSource);
+const firstId = identityA.ownClientId();
+assert.equal(identityA.ownClientId(), firstId);
+assert.notEqual(identityB.ownClientId(), firstId);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
+assert.equal(identityA.isOwnMutationRecord({}), true);
+const noRandomSourceIdentity = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, {});
+assert.equal(typeof noRandomSourceIdentity.ownClientId(), "string");
+assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");
+const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array });
+assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+const insecureUUID = client.createSecureUUID({});
+assert.match(insecureUUID, /^insecure-/);
 assert.deepEqual(client.reconcilePendingEntries("ref", [], undefined, new Set()), []);
 const draftState = { revision: 0, text: "", skillNames: [] };
 const pendingTurnsStore = client.createPendingTurnsStore({
@@ -537,6 +555,7 @@ const pendingTurnsStore = client.createPendingTurnsStore({
       draftState.text = "";
     },
   },
+  identity: identityA,
 });
 assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
 assert.equal(pendingTurnsStore.beginSubmission("ref-a"), false);

@@ -2,8 +2,20 @@ import { describe, expect, test } from "vitest";
 import type { ThreadModel } from "../../model";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
 import { createPendingTurnsStore } from "./pendingTurns";
-import type { MutationOptimisticRecord, MutationOutboxRecord } from "./records";
-import { setMutationClientIdentityForTests } from "./records";
+import type { ClientIdentity, MutationOptimisticRecord, MutationOutboxRecord } from "./records";
+
+// A fake ClientIdentity's isOwnMutationRecord half, over a fixed id rather
+// than createClientIdentity's own storage/random-source machinery - that
+// machinery is records.test.ts's oracle, not this module's.
+function fakeIdentity(ownId: string): Pick<ClientIdentity, "isOwnMutationRecord"> {
+  return {
+    isOwnMutationRecord: (record) => record.originClientId === undefined || record.originClientId === ownId,
+  };
+}
+
+const UNATTRIBUTED_ONLY_IDENTITY: Pick<ClientIdentity, "isOwnMutationRecord"> = {
+  isOwnMutationRecord: (record) => record.originClientId === undefined,
+};
 
 function outboxRecord(overrides: Partial<MutationOutboxRecord> = {}): MutationOutboxRecord {
   return {
@@ -62,7 +74,7 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
 
 describe("createPendingTurnsStore", () => {
   test("starts with empty state", () => {
-    const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() });
+    const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() , identity: UNATTRIBUTED_ONLY_IDENTITY });
     const state = store.getState();
     expect(state.outbox.size).toBe(0);
     expect(state.optimistic.size).toBe(0);
@@ -73,8 +85,11 @@ describe("createPendingTurnsStore", () => {
 
   describe("recordSubmittedHere", () => {
     test("discovers this client's own outbox and optimistic ids, skipping foreign and already-known ones", () => {
-      setMutationClientIdentityForTests("client-x");
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
       const own = outboxRecord({ clientMutationId: "own-1", originClientId: "client-x" });
       const foreign = outboxRecord({ clientMutationId: "foreign-1", originClientId: "client-y" });
       const unattributed = optimisticRecord({ clientMutationId: "unattributed-1", originClientId: undefined });
@@ -85,25 +100,26 @@ describe("createPendingTurnsStore", () => {
       expect(submittedHere.has("own-1")).toBe(true);
       expect(submittedHere.has("unattributed-1")).toBe(true);
       expect(submittedHere.has("foreign-1")).toBe(false);
-      setMutationClientIdentityForTests(undefined);
     });
 
     test("is a no-op when every discovered id is already known", () => {
-      setMutationClientIdentityForTests("client-x");
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
       const own = outboxRecord({ clientMutationId: "own-1", originClientId: "client-x" });
       store.recordSubmittedHere({ outbox: [own], optimistic: [] });
       const stateAfterFirst = store.getState();
 
       store.recordSubmittedHere({ outbox: [own], optimistic: [] });
       expect(store.getState()).toBe(stateAfterFirst); // no new setState published
-      setMutationClientIdentityForTests(undefined);
     });
   });
 
   describe("beginSubmission / endSubmission", () => {
     test("guards a second call for the same ref while one is in flight, and endSubmission releases it", () => {
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() });
+      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() , identity: UNATTRIBUTED_ONLY_IDENTITY });
       expect(store.beginSubmission("ref-a")).toBe(true);
       expect(store.getState().submittingRefs.has("ref-a")).toBe(true);
       expect(store.beginSubmission("ref-a")).toBe(false);
@@ -114,7 +130,7 @@ describe("createPendingTurnsStore", () => {
     });
 
     test("tracks independent refs independently", () => {
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() });
+      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() , identity: UNATTRIBUTED_ONLY_IDENTITY });
       expect(store.beginSubmission("ref-a")).toBe(true);
       expect(store.beginSubmission("ref-b")).toBe(true);
       store.endSubmission("ref-a");
@@ -126,7 +142,7 @@ describe("createPendingTurnsStore", () => {
   describe("settleSubmittedDraft", () => {
     test("clears the draft and returns true when the revision, text and selections all still match", () => {
       const draft = fakeDraftPort({ revision: 1, text: "hello", skillNames: ["a"] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft });
+      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
       const cleared = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "hello",
@@ -138,7 +154,7 @@ describe("createPendingTurnsStore", () => {
 
     test("does not clear the draft when the revision changed (edited since submit started)", () => {
       const draft = fakeDraftPort({ revision: 2, text: "hello", skillNames: [] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft });
+      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
       const cleared = store.settleSubmittedDraft("ref-a", { draftRevisionAtStart: 1, text: "hello", skillNames: [] });
       expect(cleared).toBe(false);
       expect(draft.state.cleared).toEqual([]);
@@ -146,7 +162,7 @@ describe("createPendingTurnsStore", () => {
 
     test("does not clear the draft when the stored text no longer matches what was submitted", () => {
       const draft = fakeDraftPort({ revision: 1, text: "edited", skillNames: [] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft });
+      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
       const cleared = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "original",
@@ -158,7 +174,7 @@ describe("createPendingTurnsStore", () => {
 
     test("does not clear the draft when the selected skills no longer match", () => {
       const draft = fakeDraftPort({ revision: 1, text: "hello", skillNames: ["a", "b"] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft });
+      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
       const cleared = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "hello",
@@ -175,7 +191,11 @@ describe("createPendingTurnsStore", () => {
         turns: [],
         pendingMutations: [],
       } as unknown as ThreadModel;
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort({ "ref-a": model }), draft: fakeDraftPort() });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort({ "ref-a": model }),
+        draft: fakeDraftPort(),
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       store.setState({
         outbox: new Map([["cmid-1", outboxRecord({ clientMutationId: "cmid-1", method: "turn/queue" })]]),
       });
@@ -188,7 +208,11 @@ describe("createPendingTurnsStore", () => {
 
     test("filters by method when one is given", () => {
       const model: ThreadModel = { turns: [], pendingMutations: [] } as unknown as ThreadModel;
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort({ "ref-a": model }), draft: fakeDraftPort() });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort({ "ref-a": model }),
+        draft: fakeDraftPort(),
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       store.setState({
         outbox: new Map([
           ["cmid-1", outboxRecord({ clientMutationId: "cmid-1", method: "turn/queue" })],
@@ -205,6 +229,7 @@ describe("createPendingTurnsStore", () => {
       const store = createPendingTurnsStore({
         threads: fakeThreadsPort({ "ref-a": modelA, "ref-b": undefined }),
         draft: fakeDraftPort(),
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
       });
       // No records target ref-b; an absent thread model must not throw.
       expect(store.pendingTurnEntries("ref-b")).toEqual([]);

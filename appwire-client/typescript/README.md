@@ -134,21 +134,35 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
   `MutationRecoveryRecord`), generic over the attachment type so a host's own
   attachment bytes (the web's `Blob`) never enter the package, and the client
-  provenance a shared outbox's readers need (`ownClientId`, backed by a
-  structural `ClientIdentityStorage` port defaulting to
-  `globalThis.sessionStorage`, and `isOwnMutationRecord`, which a durable
-  record written before the field existed satisfies too), the pure
-  reconciliation (`reconcilePendingEntries`) that turns those durable records
+  provenance a shared outbox's readers need. `createClientIdentity(storage,
+  randomSource)` is a factory, not a module singleton - the package names no
+  browser global, so a host builds one instance over its own
+  `ClientIdentityStorage` port (the web passes a lazy `sessionStorage`
+  adapter; a host with none gets a per-process identity) and gets back
+  `{ ownClientId, isOwnMutationRecord }`, each memoized per instance.
+  `isOwnMutationRecord` claims an unattributed record (written before the
+  field existed) as well as this instance's own. `createSecureUUID(source)`
+  is the strong identifier source both the record shapes' `clientMutationId`
+  convention and a generated client identity use; both take their
+  `SecureRandomSource` (`randomUUID?`/`getRandomValues?`, both optional) as a
+  required parameter with no default - `globalThis.crypto` is named nowhere
+  in the package, so a host with no global Web Crypto (React Native without a
+  polyfill) passes its own source (the web's lazily-read, guarded `crypto`;
+  `expo-crypto` for native) rather than the package assuming one exists.
+  `createSecureUUID` documents its own fallback for a source with neither
+  method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
+  pure reconciliation (`reconcilePendingEntries`) turns those durable records
   plus a live `ThreadModel` into the `PendingTurnEntry` rows a composer's
   queue renders - identity-based, so an authoritative projection replaces the
   same outbox entry rather than duplicating it - and the pending-turns
-  projection store built on that reconciliation: `createPendingTurnsStore({ threads, draft })`
+  projection store built on that reconciliation: `createPendingTurnsStore({ threads, draft, identity })`
   is a framework-free store holding a host's own outbox/optimistic/recovery
   records plus the submission bookkeeping (`submittingRefs`, `submittedHere`)
-  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`) and a
+  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
   `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
-  clear), generic over the attachment type like the records above. No
-  storage, scheduling or DOM type lives here - just the shape, the rule, the
+  clear) and the host's own `ClientIdentity` (`isOwnMutationRecord`),
+  generic over the attachment type like the records above. No storage,
+  scheduling or DOM type lives here - just the shape, the identity, the
   reconciliation and the store built on them. Resolves to
   `state/mutation/index.ts`, a barrel.
 
