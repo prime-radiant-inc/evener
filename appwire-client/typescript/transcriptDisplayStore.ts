@@ -734,7 +734,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * write's outcome is now whatever the hub confirmed, so the checkpoint is
    * re-marked and edits unblock. A read that started before the write left,
    * or landed while one is in flight, says nothing about that write. */
-  function settledWrite(writeSerialAtStart: number): Partial<TranscriptDisplayStoreFields> {
+  function settledWrite(
+    writeSerialAtStart: number,
+    finalHub: HubDefaultsByLayout,
+  ): Partial<TranscriptDisplayStoreFields> {
     const { draft, writeUncertain, saving } = getState();
     if (writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
@@ -753,8 +756,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       if (!replaced) {
         // The checkpoint this write was settling is gone, replaced by
         // another window's edit while the outcome was unknown: adopt
-        // whatever is actually on disk now rather than overwrite it.
-        return restoreDraft(getState());
+        // whatever is actually on disk now rather than overwrite it. Judged
+        // against the FINAL hub state this call is about to publish, not
+        // getState()'s - called from applyHubDefault before its own layer's
+        // value has published, getState() still reads that layer's
+        // PRECEDING confirmed revision, and this restore's own draftConflict
+        // is spread after (and so wins over) the caller's fresher one.
+        return restoreDraft({ loaded: true, hub: finalHub });
       }
     }
     return { writeUncertain: false };
@@ -781,7 +789,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       applyHubDefault(
         "mobile",
         defaults.mobile,
-        { loaded: true, hubLoading: false, ...settledWrite(writeSerialAtStart) },
+        {
+          loaded: true,
+          hubLoading: false,
+          ...settledWrite(writeSerialAtStart, { ...getState().hub, mobile: defaults.mobile }),
+        },
         authoritative,
       );
       fence.firstPayloadApplied();
