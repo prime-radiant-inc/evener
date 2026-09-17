@@ -59,15 +59,21 @@ merge that changed `package-lock.json` but before an `npm ci`, it type-checks
 against a stale install and can report real-looking errors (missing types,
 unresolved modules) that are an artifact of the stale install, not of the
 code — `make test-web` never hits this because its preflight repairs the
-install first. Prefer `make test-web` to reproduce the gate by hand. If you
-run `npm ci` yourself instead, check `[ -L node_modules ]` first: an agent
-worktree's `node_modules` is often a symlink to a shared install other
-worktrees use, and `npm ci` deletes the existing `node_modules` before
-installing — through a symlink that deletes the shared install out from
-under everyone else. `web-preflight.sh` guards exactly this (comparing the
-symlink target's own `package-lock.json` instead of running `npm ci` through
-it); read it before reproducing its `npm ci` by hand. The same symlink risk
-applies to `appwire-client/typescript` (no preflight script owns its
+install first. Prefer `make test-web` to reproduce the gate by hand rather
+than running `npm ci` yourself: an agent worktree's `node_modules` is often
+a symlink to a shared install other worktrees use, and `npm ci` deletes the
+existing `node_modules` before installing — through a symlink that deletes
+the shared install out from under everyone else. `web-preflight.sh` only
+guards this conditionally: it checks `node_modules -nt package-lock.json`
+first, and reaches the `-L node_modules` branch — which compares the symlink
+target's own `package-lock.json` before allowing anything through — only
+when that first check is false. When a shared install happens to be newer
+than this worktree's lockfile, the `-nt` check short-circuits the symlink
+branch entirely: the script no-ops and proceeds without ever comparing
+lockfiles, so it is not a guarantee that a stale or mismatched shared
+install gets caught. If you do run `npm ci` by hand, check `[ -L node_modules ]`
+yourself first; don't rely on the script to catch it for you. The same
+symlink risk applies to `appwire-client/typescript` (no preflight script owns its
 install; `make test-api-package` runs `npm run qualification` directly) and
 to `mobile-native` (`native-preflight.sh` checks the install's freshness and
 health but never runs `npm ci` itself, precisely to avoid this — it fails
