@@ -671,16 +671,9 @@ func (m *Manager) Ensure(ctx context.Context, name string) (*Channel, error) {
 // acquisition would deadlock. The installed channel is read under the manager
 // mutex, which is the lock that publishes and clears it.
 func (m *Manager) ClientIfAttached(name string) (*appwire.Client, bool) {
-	if m.reg == nil {
-		return nil, false
-	}
-	host, ok := m.reg.Get(name)
-	if !ok {
-		// An unknown host is not attached by definition; report it as such
-		// instead of inventing the ErrHostNotFound Ensure would.
-		return nil, false
-	}
-	ch, ok := m.installedLiveChannel(host.Name)
+	// An unknown host is not attached by definition; attachedChannel reports it
+	// as such instead of inventing the ErrHostNotFound Ensure would.
+	ch, ok := m.attachedChannel(name)
 	if !ok {
 		return nil, false
 	}
@@ -704,6 +697,77 @@ func (m *Manager) installedLiveChannel(name string) (*Channel, bool) {
 		return nil, false
 	}
 	return ch, true
+}
+
+// ChannelIfAttached returns name's installed live channel ONLY while a live,
+// not-closed channel is installed, and reports false otherwise. It is the
+// atomic primitive behind the attached-only accessors, and the one production
+// wiring actually uses: cmd/evener-hub/main.go backs both
+// hubcore.WebConfig.RemoteHostFacts (remoteHostFactsForChannel) and
+// RemoteHostHandshake (remoteHostHandshakeForChannel) with one
+// ChannelIfAttached lookup each, rather than with PreflightIfAttached or
+// HandshakeIfAttached. The generation guard lives at that call site —
+// `ch.Client() == client` — so a caller that must not mix two connection
+// generations reads the channel's client, preflight, and handshake from the
+// single value this returns and refuses when its client differs, so a
+// supervisor reconnect between two separate lookups cannot splice one
+// generation's facts onto another's client. Like ClientIfAttached it takes the
+// manager-wide mutex, not the per-host gate, and never spawns ssh, preflights,
+// deploys, or attaches.
+func (m *Manager) ChannelIfAttached(name string) (*Channel, bool) {
+	return m.attachedChannel(name)
+}
+
+// PreflightIfAttached returns name's captured preflight facts ONLY while a
+// live, not-closed channel is installed, and reports false otherwise. It is
+// NOT the production backing for hubcore.WebConfig.RemoteHostFacts: that seam
+// is remoteHostFactsForChannel, built on ChannelIfAttached with the channel
+// generation guard (`ch.Client() == client`) at the call site. This accessor
+// has no non-test caller; it is retained for tests and as a convenience for a
+// caller that does not need the generation guard. Like ClientIfAttached it
+// takes the manager-wide mutex, not the per-host gate, and never spawns ssh,
+// preflights, deploys, or attaches.
+func (m *Manager) PreflightIfAttached(name string) (Preflight, bool) {
+	ch, ok := m.attachedChannel(name)
+	if !ok {
+		return Preflight{}, false
+	}
+	return ch.Preflight(), true
+}
+
+// HandshakeIfAttached returns the InitializeResponse captured when name's
+// current channel attached, ONLY while a live, not-closed channel is installed,
+// and reports false otherwise. It is NOT the production backing for
+// hubcore.WebConfig.RemoteHostHandshake: that seam is
+// remoteHostHandshakeForChannel, built on ChannelIfAttached with the channel
+// generation guard (`ch.Client() == client`) at the call site. This accessor
+// has no non-test caller; it is retained for tests and as a convenience for a
+// caller that does not need the generation guard. appwire.Client keeps its
+// Features privately, so component 05's capability probe reads
+// ProtocolVersion/SourceID/Features through the channel value directly;
+// HubVersion stays preflight-owned (the handshake's ServerInfo.Version is the
+// hub's package constant, not its build identity). Like ClientIfAttached it
+// takes the manager-wide mutex, not the per-host gate, and never dials.
+func (m *Manager) HandshakeIfAttached(name string) (appwire.InitializeResponse, bool) {
+	ch, ok := m.attachedChannel(name)
+	if !ok {
+		return appwire.InitializeResponse{}, false
+	}
+	return ch.Handshake(), true
+}
+
+// attachedChannel resolves name to its installed live channel, normalizing the
+// name through the registry exactly as ClientIfAttached does. It is the shared
+// body of the attached-only lookups so their liveness predicate cannot drift.
+func (m *Manager) attachedChannel(name string) (*Channel, bool) {
+	if m.reg == nil {
+		return nil, false
+	}
+	host, ok := m.reg.Get(name)
+	if !ok {
+		return nil, false
+	}
+	return m.installedLiveChannel(host.Name)
 }
 
 // lostAfterPublish retires the channel Ensure just published when the link died
@@ -1257,10 +1321,11 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 	initCtx, cancel := context.WithTimeout(ctx, m.opts.initTimeout())
 	defer cancel()
 
-	if _, err := client.Initialize(initCtx, appwire.InitializeParams{
+	handshake, err := client.Initialize(initCtx, appwire.InitializeParams{
 		ProtocolVersion: appwire.ProtocolVersion,
 		ClientInfo:      appwire.ClientInfo{Name: m.opts.clientName(), Version: m.opts.clientVersion()},
-	}); err != nil {
+	})
+	if err != nil {
 		// Reap synchronously before reading the sink: os/exec copies the child's
 		// stderr from its own goroutine and Wait returns only once that copy is
 		// done, so a classification cannot read a partial diagnostic.
@@ -1281,6 +1346,9 @@ func (m *Manager) attach(ctx context.Context, host hostreg.Host, facts Preflight
 		// Start-error branch above already classifies that one.
 		return nil, fmt.Errorf("%w: host %q initialize: %w: %s", ErrSSHStart, host.Name, err, sink.tail())
 	}
+	// Publish the handshake before the channel is handed to any caller, so the
+	// attached-only HandshakeIfAttached never races the attach it reports on.
+	ch.handshake = handshake
 
 	if m.baseCtx.Err() != nil {
 		_ = reapBridge(transport, stdio)
@@ -1620,6 +1688,15 @@ func isTerminal(err error) bool {
 	}
 }
 
+// ErrControllerDirty is the exported alias for the terminal dirty-controller
+// deploy refusal (errControllerDirty, deploy.go): this controller was built
+// from a dirty tree, so it has no reproducible identity to install on or match
+// against a host, and the refusal is terminal rather than a retryable ErrDeploy.
+// It is exported so a caller — the hub's attach handler — can match the refusal
+// with errors.Is and surface it as a typed deploy failure
+// (appwire.HubLaunchError) rather than a generic internal error.
+var ErrControllerDirty = errControllerDirty
+
 func (m *Manager) hostLock(name string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1936,8 +2013,12 @@ func (m *Manager) failedEvent(name string, err error) {
 
 // Channel is one owned SSH channel plus the AppWire client over it.
 type Channel struct {
-	host      hostreg.Host
-	facts     Preflight
+	host  hostreg.Host
+	facts Preflight
+	// handshake is the InitializeResponse the attach's own initialize captured.
+	// It is published once, before the channel is visible through the map, and
+	// never mutated, so the attached-only lookups can read it without a lock.
+	handshake appwire.InitializeResponse
 	stdio     Stdio
 	transport *appwire.StreamTransport
 	client    *appwire.Client
@@ -1964,6 +2045,18 @@ func (c *Channel) Preflight() Preflight {
 	pf.LaunchFlags = slices.Clone(c.facts.LaunchFlags)
 	return pf
 }
+
+// Handshake returns the InitializeResponse captured when this channel attached:
+// ProtocolVersion, ServerInfo, SourceID, and the peer's advertised Features.
+// appwire.Client keeps its own Features copy privately, so component 05's
+// capability probe reads ProtocolVersion/SourceID/Features here (reached by
+// host name through Manager.ChannelIfAttached and the
+// remoteHostHandshakeForChannel closure, not through
+// Manager.HandshakeIfAttached) rather than re-running the connection-scoped
+// initialize. ServerInfo is carried but not consumed: its Version is the hub's
+// package constant, not its build identity, so the probe's HubVersion stays
+// preflight-owned.
+func (c *Channel) Handshake() appwire.InitializeResponse { return c.handshake }
 
 // Host returns the registry entry this channel was built from. The value owns
 // its slice, mirroring Preflight and hostreg's own copies.

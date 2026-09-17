@@ -141,6 +141,23 @@ const NO_EFFORT_LEVELS: string[] = [];
 // opens the select.
 const CATALOG_SETTLE_MS = 250;
 
+// CONNECT_ATTACH_TIMEOUT_MS bounds the Connect action's `evener/host/attach`
+// RPC. The AppWire client's default request timeout is 30s
+// (DEFAULT_REQUEST_TIMEOUT_MS in appwire-client/typescript/client.ts), but the
+// Ensure seam behind the handler runs sequential bounded phases far beyond
+// that: up to three deployLimit phases (deploy + restart + launch-contract
+// refresh, 10 minutes each — deployLimit in
+// cmd/evener-hub/internal/sshconn/manager.go), up to three attemptLimit phases
+// (preflight, running-hub probe, hub-presence probe; 70s by default: 4x10s
+// connect + 30s init), and the attach handshake itself (initTimeout, 30s) —
+// about 34 minutes worst case. 35 minutes clears that server bound with
+// headroom, the same shape as hubUpdate's APPLY_TIMEOUT_MS over its server
+// bound: a slow but valid deploy resolves instead of failing the toast at 30s
+// while the server-side attach still succeeds. There is no attach-status RPC
+// to poll instead (adding one would touch the router catalog), so the explicit
+// long timeout is the whole fix.
+export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
+
 // The effort levels a catalog entry authorizes: the model's own named ladder
 // when it has one, an EMPTY list when the catalog says the model cannot
 // reason at all, and null when the hub can't say (enrichment failed, or the
@@ -187,6 +204,10 @@ const CLASS = {
   // per-option disabled flag, and an offline host must be RENDERED yet not
   // selectable (Component 06b). The class only borrows the visual treatment.
   hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
+  // The Connect affordance beside the picker: one button per offline remote
+  // host, an enabled control so a never-attached host is reachable rather
+  // than dead UI (component 06 §"Connecting a configured host").
+  hostConnectRow: requireClass(styles.hostConnectRow, "spawn.module.css", "hostConnectRow"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -288,6 +309,46 @@ function SpawnForm({
     // discard a persisted remote host that is merely still loading.
     if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
   }, [sources.length, source, hostChoice, setSource]);
+
+  // The explicit attach trigger (component 06's Connect action). A configured
+  // host with no live channel is listed offline and its spawn option is
+  // disabled, and every implicit path is attached-only by design (the snapshot
+  // walk and the non-explicit thread/list fan-out skip an unattached source),
+  // so nothing else the picker does can attach it. This is the one shipped
+  // client that issues `evener/host/attach`, the browser-reachable method that
+  // dials the host through the manager's Ensure seam. It is fire-and-forget:
+  // the hub's attach event flips the manifest's online flag (and invalidates
+  // navigation), so success needs no local bookkeeping beyond clearing the
+  // pending marker; a failure is surfaced rather than leaving a dead row.
+  const [connectingHosts, setConnectingHosts] = useState<ReadonlySet<string>>(() => new Set());
+  // The in-flight guard is a ref, not the state above: setConnectingHosts is
+  // asynchronous, so two activations in the same tick both read the pre-update
+  // `connectingHosts` set and double-dial. The ref is mutated synchronously, so
+  // the second activation sees the first one already in flight. The state stays
+  // for rendering (the Connect button's disabled state and label).
+  const connectingHostsRef = useRef<Set<string>>(new Set());
+  const connectHost = useCallback(
+    (host: string) => {
+      if (isLocalHost(host) || connectingHostsRef.current.has(host)) return;
+      connectingHostsRef.current.add(host);
+      setConnectingHosts((current) => new Set(current).add(host));
+      void client
+        .request("evener/host/attach", { host }, { timeoutMs: CONNECT_ATTACH_TIMEOUT_MS })
+        .catch((error: unknown) => {
+          toasts.push("error", `Connect ${host} failed: ${friendlyLaunchErrorMessage(error)}`);
+        })
+        .finally(() => {
+          connectingHostsRef.current.delete(host);
+          setConnectingHosts((current) => {
+            if (!current.has(host)) return current;
+            const next = new Set(current);
+            next.delete(host);
+            return next;
+          });
+        });
+    },
+    [client, toasts],
+  );
 
   // Every host-dependent discovery/validation call below is issued against
   // submittedSource (component 07b): remote hosts read models, harnesses,
@@ -2214,7 +2275,13 @@ function SpawnForm({
               disabled={busy}
               onChange={(event) => {
                 if (busyRef.current) return;
-                setSource(event.target.value);
+                const next = event.target.value;
+                setSource(next);
+                // Selecting a host is never itself an attach request: an online
+                // row is already attached (a dial would only be redundant), and
+                // an offline row's option is disabled, so a select event cannot
+                // name it — the Connect affordance below is the single path that
+                // reaches an offline host.
               }}
             >
               {displaySources.map((candidate) => (
@@ -2223,6 +2290,26 @@ function SpawnForm({
                 </option>
               ))}
             </select>
+            {displayRemoteHosts.some((candidate) => !candidate.online) && (
+              <div className={CLASS.hostConnectRow}>
+                {displayRemoteHosts
+                  .filter((candidate) => !candidate.online)
+                  .map((candidate) => (
+                    <Button
+                      key={candidate.id}
+                      variant="quiet"
+                      size="xs"
+                      type="button"
+                      disabled={connectingHosts.has(candidate.id)}
+                      onClick={() => connectHost(candidate.id)}
+                    >
+                      {connectingHosts.has(candidate.id)
+                        ? `Connecting ${candidate.label}…`
+                        : `Connect ${candidate.label}`}
+                    </Button>
+                  ))}
+              </div>
+            )}
           </FormRow>
         )}
 
