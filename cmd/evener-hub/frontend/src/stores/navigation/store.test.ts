@@ -1,25 +1,20 @@
 // What stays web-side once the navigation contract runs against
-// createNavigationStore in the package: the browser's persistence wiring
-// (railExpansion's localStorage blob reaching the store's expansion port and
-// coming back through a reset) and the rail-shaped selector the package
-// never sees. Every other selector here is a plain re-export the adapter
-// does not bind, so a call always passes state explicitly, same as the
-// package's own suite. Everything else - boot, reconnect, invalidation,
-// tombstones, recovery, pagination, convergence - is
-// appwire-client/typescript/state/navigation/store.test.ts.
+// createNavigationStore in the package: real browser localStorage reaching
+// the singleton navigationStore's expansion port and coming back through a
+// reset or a fresh boot, the adapter forwarding setExpanded to the store it
+// wraps, and selectRailModel's memoized identity, which never enters the
+// package. Where a test's core behavior is already pinned by the package's
+// own suite, only the adapter-specific delta is asserted here; everything
+// else - boot, reconnect, invalidation, tombstones, recovery, pagination,
+// convergence - is appwire-client/typescript/state/navigation/store.test.ts.
 import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
-import {
-  keyID,
-  navigationOwnedContainerKey,
-  navigationRootContainerKey,
-  navigationViewScope,
-} from "@evener/appwire-client/state/navigation";
+import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
 import { navigationInvalidatedNotification } from "@evener/appwire-client/testing/notifications";
 import { afterEach, expect, test, vi } from "vitest";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
-import { selectExpanded, selectGlobalRows, selectRailModel } from "./selectors";
+import { selectExpanded, selectRailModel } from "./selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
 
 const generation = "generation_test";
@@ -56,83 +51,42 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("client replacement clears prior navigation ownership during bootstrap but preserves expansion", async () => {
+// The core's own suite pins that client replacement wipes resources/manifest
+// and rejects a pending disposal target (against an injected in-memory
+// port); the adapter delta is that the singleton's `expanded` Map still
+// survives a replacement through the real localStorage-backed persistence.
+test("expansion survives a client replacement", async () => {
   const oldClient = new FakeClient("ready");
   oldClient.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest")
-      return wireV2(
-        params,
-        emptyManifest({
-          sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-        }),
-        '"old-manifest"',
-        1,
-        "old",
-      );
-    if (params.resource === "section")
-      return wireV2(
-        params,
-        { sessions: [{ ref: "local:old-client", children: [] }], remaining: 0, truncated: false },
-        '"old-section"',
-        1,
-        "old",
-      );
+    if (params.resource === "manifest") return reconnectManifestV2(params);
     throw new Error(`unexpected old-client resource ${params.resource}`);
   });
   initNavigation(oldClient, capability("old"));
   await flush();
   navigationStore.getState().setExpanded("remembered-project", true);
   const retainedExpansion = navigationStore.getState().expanded;
-  expect(selectGlobalRows(navigationStore.getState()).map((session) => session.ref)).toEqual(["local:old-client"]);
-  expect(navigationStore.getState().manifest?.version).toEqual({
-    generationId: "old",
-    revision: 1,
-    etag: '"old-manifest"',
-  });
 
-  let disposalError: unknown;
-  void navigationStore
-    .getState()
-    .awaitNavigationTargets([{ kind: "section", section: "live", revision: 99 }], "old")
-    .catch((error) => {
-      disposalError = error;
-    });
-  const newManifest = deferred<NavigationReadResponse>();
   const newClient = new FakeClient("ready");
   newClient.on("evener/navigation/read", (params) => {
-    if (params.resource !== "manifest") throw new Error(`unexpected new-client resource ${params.resource}`);
-    return newManifest.promise;
+    if (params.resource === "manifest") return reconnectManifestV2(params);
+    throw new Error(`unexpected new-client resource ${params.resource}`);
   });
-
   initNavigation(newClient, capability("new"));
   await flush();
 
-  const bootstrapping = navigationStore.getState();
-  expect(bootstrapping.resources.size).toBe(0);
-  expect(selectGlobalRows(bootstrapping)).toEqual([]);
-  expect(bootstrapping.manifest?.data ?? null).toBeNull();
-  expect(bootstrapping.manifest?.normalized).toBeUndefined();
-  expect(bootstrapping.manifest?.version).toBeUndefined();
-  expect(bootstrapping.capability).toEqual(capability("new"));
-  expect(bootstrapping.clientGenerationID).toBe("new");
-  expect(bootstrapping.expanded).toBe(retainedExpansion);
-  expect(bootstrapping.expanded.get("remembered-project")).toBe(true);
-  expect(disposalError).toEqual(expect.objectContaining({ message: "navigation protocol: revalidator disposed" }));
-
-  newManifest.resolve(
-    wireV2({ resource: "manifest", representationVersion: 2 }, emptyManifest(), '"new-manifest"', 1, "new"),
-  );
-  await flush();
-  const installed = navigationStore.getState();
-  expect(installed.manifest?.generationID).toBe("new");
-  expect(installed.resources.size).toBe(0);
-  expect(selectGlobalRows(installed)).toEqual([]);
-  expect(installed.expanded.get("remembered-project")).toBe(true);
-  localStorage.removeItem(EXPANSION_STORAGE_KEY);
+  try {
+    expect(navigationStore.getState().expanded).toBe(retainedExpansion);
+    expect(navigationStore.getState().expanded.get("remembered-project")).toBe(true);
+  } finally {
+    localStorage.removeItem(EXPANSION_STORAGE_KEY);
+  }
 });
 
-test("setExpanded hydrates a raw v2 project key with representation version 2", async () => {
-  const projectKey = "raw/project key";
+// The core's own suite pins the full project-hydration behavior setExpanded
+// triggers (a raw v2 project key, the read shape, the tier fan-out); the
+// adapter's one job is forwarding the call to the store it wraps.
+test("setExpanded forwards to the core store", async () => {
+  const projectKey = "p";
   const calls: NavigationReadParams[] = [];
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
@@ -147,10 +101,7 @@ test("setExpanded hydrates a raw v2 project key with representation version 2", 
     navigationStore.getState().setExpanded(projectKey, true);
     await flush();
 
-    expect(navigationStore.getState().expanded.get(projectKey)).toBe(true);
-    expect(calls.filter((params) => params.resource === "project")).toEqual([
-      { resource: "project", projectKey, representationVersion: 2 },
-    ]);
+    expect(calls.filter((params) => params.resource === "project")).toHaveLength(1);
   } finally {
     localStorage.removeItem(EXPANSION_STORAGE_KEY);
   }
@@ -191,11 +142,11 @@ test("rail expansion persists through store reset, overrides defaults, and hydra
   localStorage.removeItem(EXPANSION_STORAGE_KEY);
 });
 
-test("a canonical persisted project-node key hydrates one v2 project root during boot", async () => {
+// The core's own suite pins the persisted-key-overrides-default_expanded
+// behavior (against an injected in-memory port); the adapter delta is that
+// the key comes from real localStorage.
+test("a persisted project-node key hydrates one v2 project root during boot", async () => {
   const projectKey = "persisted/project";
-  const manifestKey = { kind: "manifest" } as const;
-  const catalogKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 100 } as const;
-  const projectEntityKey = `${navigationViewScope(catalogKey)}/entity/${"5".repeat(64)}`;
   localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ [`projectnode:${projectKey}`]: true }));
   resetNavigationStoreForTests();
 
@@ -203,54 +154,15 @@ test("a canonical persisted project-node key hydrates one v2 project root during
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     calls.push(params);
-    if (params.resource === "manifest") {
-      return {
-        status: "ok",
-        representation: "snapshot",
-        generationId: generation,
-        revision: 1,
-        etag: '"manifest-v2"',
-        data: {
-          metadata: emptyManifest({
-            catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-          }),
-          entities: [],
-          containers: [
-            {
-              key: navigationRootContainerKey(manifestKey, "manifest"),
-              owner: { kind: "resource_root", slot: "manifest" },
-              children: [],
-            },
-          ],
-        },
-      };
-    }
-    if (params.resource === "catalog") {
-      return {
-        status: "ok",
-        representation: "snapshot",
-        generationId: generation,
-        revision: 1,
-        etag: '"catalog-v2"',
-        data: {
-          metadata: { generation_id: generation, revision: 1, offset: 0, limit: 100, remaining: 0 },
-          entities: [
-            {
-              key: projectEntityKey,
-              kind: "project",
-              value: { key: projectKey, name: "Persisted project", session_count: 1, default_expanded: false },
-            },
-          ],
-          containers: [
-            {
-              key: navigationRootContainerKey(catalogKey, "projects"),
-              owner: { kind: "resource_root", slot: "projects" },
-              children: [projectEntityKey],
-            },
-          ],
-        },
-      };
-    }
+    if (params.resource === "manifest")
+      return wireV2(
+        params,
+        emptyManifest({
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (params.resource === "catalog")
+      return wireV2(params, { projects: [{ key: projectKey, default_expanded: false }], remaining: 0 });
     throw new Error(`scripted project read ${params.resource}`);
   });
 
@@ -266,91 +178,26 @@ test("a canonical persisted project-node key hydrates one v2 project root during
   }
 });
 
-test("loading and malformed-response error state preserve selected graph and rail model identity", async () => {
-  const manifestKey = { kind: "manifest" } as const;
+// The core's own suite pins that a malformed refresh commits a protocolError
+// while retaining the installed graph (loading state, error shape, graph
+// identity); the adapter delta is selectRailModel's memoized identity, which
+// only exists web-side.
+test("a malformed refresh response preserves the selected rail model identity", async () => {
   const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
-  const sessionKey = `${navigationViewScope(sectionKey)}/entity/${"7".repeat(64)}`;
-  const manifestSnapshot = {
-    metadata: {
-      generation_id: generation,
-      revision: 1,
-      sources: [],
-      attentionSummary: { needsYou: 0, error: 0, working: 0 },
-      sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-      catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-    },
-    entities: [],
-    containers: [
-      {
-        key: navigationRootContainerKey(manifestKey, "manifest"),
-        owner: { kind: "resource_root", slot: "manifest" },
-        children: [],
-      },
-    ],
-  };
-  const sectionSnapshot = {
-    metadata: { generation_id: generation, revision: 1, offset: 0, limit: 50, remaining: 0, truncated: false },
-    entities: [
-      {
-        key: sessionKey,
-        kind: "session",
-        value: {
-          ref: "local:stable",
-          host_id: "local",
-          session_id: "stable",
-          title: "Stable",
-          project: "project",
-          state: "idle",
-          kind: "session",
-          live: false,
-          children: [],
-        },
-      },
-    ],
-    containers: [
-      {
-        key: navigationRootContainerKey(sectionKey, "sessions"),
-        owner: { kind: "resource_root", slot: "sessions" },
-        children: [sessionKey],
-      },
-      {
-        key: navigationOwnedContainerKey(sessionKey, "children"),
-        owner: { kind: "entity", entityKey: sessionKey, slot: "children" },
-        children: [],
-      },
-    ],
-  };
   const refresh = deferred<NavigationReadResponse>();
   let sectionCalls = 0;
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest")
-      return {
-        status: "ok",
-        representation: "snapshot",
-        generationId: generation,
-        revision: 1,
-        etag: "manifest-1",
-        data: manifestSnapshot,
-      } as NavigationReadResponse;
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
     if (params.resource !== "section") throw new Error("unexpected navigation resource");
     sectionCalls++;
     if (sectionCalls > 1) return refresh.promise;
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 1,
-      etag: "section-1",
-      data: sectionSnapshot,
-    } as NavigationReadResponse;
+    return wireV2(params, { sessions: [{ ref: "local:stable", children: [] }], remaining: 0, truncated: false });
   });
   initNavigation(client, capability());
   await flush();
   const installed = await navigationStore.getState().loadSection("live");
   if (!installed.normalized) throw new Error("normalized section did not install");
-  const installedGraph = installed.normalized.graph;
-  const installedData = installed.data;
   const installedModel = selectRailModel(installed.normalized);
 
   client.emitNotification(
@@ -362,9 +209,6 @@ test("loading and malformed-response error state preserve selected graph and rai
   );
   await flush();
   const loading = navigationStore.getState().resources.get(keyID(sectionKey));
-  expect(loading?.loading).toBe(true);
-  expect(loading?.data).toBe(installedData);
-  expect(loading?.normalized?.graph).toBe(installedGraph);
   expect(loading?.normalized && selectRailModel(loading.normalized)).toBe(installedModel);
 
   refresh.resolve({
@@ -377,13 +221,5 @@ test("loading and malformed-response error state preserve selected graph and rai
   } as NavigationReadResponse);
   await flush();
   const failed = navigationStore.getState().resources.get(keyID(sectionKey));
-  const failure = failed?.error;
-  expect(failure).toBeInstanceOf(Error);
-  if (!(failure instanceof Error)) throw new Error("expected malformed response error");
-  expect(failure).toMatchObject({ message: "navigation protocol: invalid v2 response" });
-  expect(failure).toBe(navigationStore.getState().protocolError);
-  expect(failure.cause).toBeInstanceOf(Error);
-  expect(failed?.data).toBe(installedData);
-  expect(failed?.normalized?.graph).toBe(installedGraph);
   expect(failed?.normalized && selectRailModel(failed.normalized)).toBe(installedModel);
 });

@@ -1382,6 +1382,80 @@ test("different-generation upgrade restarts every loaded resource in v2 and keep
   expect(client.calls).toHaveLength(callsBeforeReconnect + 2);
 });
 
+test("client replacement clears prior navigation ownership during bootstrap but preserves expansion", async () => {
+  const oldClient = new FakeClient("ready");
+  oldClient.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest")
+      return wireV2(
+        params,
+        emptyManifest({
+          sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+        }),
+        '"old-manifest"',
+        1,
+        "old",
+      );
+    if (params.resource === "section")
+      return wireV2(
+        params,
+        { sessions: [{ ref: "local:old-client", children: [] }], remaining: 0, truncated: false },
+        '"old-section"',
+        1,
+        "old",
+      );
+    throw new Error(`unexpected old-client resource ${params.resource}`);
+  });
+  store.init(oldClient, capability("old"));
+  await flush();
+  store.getState().setExpanded("remembered-project", true);
+  const retainedExpansion = store.getState().expanded;
+  expect(selectGlobalRows(store.getState()).map((session) => session.ref)).toEqual(["local:old-client"]);
+  expect(store.getState().manifest?.version).toEqual({
+    generationId: "old",
+    revision: 1,
+    etag: '"old-manifest"',
+  });
+
+  let disposalError: unknown;
+  void store
+    .getState()
+    .awaitNavigationTargets([{ kind: "section", section: "live", revision: 99 }], "old")
+    .catch((error) => {
+      disposalError = error;
+    });
+  const newManifest = deferred<NavigationReadResponse>();
+  const newClient = new FakeClient("ready");
+  newClient.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected new-client resource ${params.resource}`);
+    return newManifest.promise;
+  });
+
+  store.init(newClient, capability("new"));
+  await flush();
+
+  const bootstrapping = store.getState();
+  expect(bootstrapping.resources.size).toBe(0);
+  expect(selectGlobalRows(bootstrapping)).toEqual([]);
+  expect(bootstrapping.manifest?.data ?? null).toBeNull();
+  expect(bootstrapping.manifest?.normalized).toBeUndefined();
+  expect(bootstrapping.manifest?.version).toBeUndefined();
+  expect(bootstrapping.capability).toEqual(capability("new"));
+  expect(bootstrapping.clientGenerationID).toBe("new");
+  expect(bootstrapping.expanded).toBe(retainedExpansion);
+  expect(bootstrapping.expanded.get("remembered-project")).toBe(true);
+  expect(disposalError).toEqual(expect.objectContaining({ message: "navigation protocol: revalidator disposed" }));
+
+  newManifest.resolve(
+    wireV2({ resource: "manifest", representationVersion: 2 }, emptyManifest(), '"new-manifest"', 1, "new"),
+  );
+  await flush();
+  const installed = store.getState();
+  expect(installed.manifest?.generationID).toBe("new");
+  expect(installed.resources.size).toBe(0);
+  expect(selectGlobalRows(installed)).toEqual([]);
+  expect(installed.expanded.get("remembered-project")).toBe(true);
+});
+
 test("same-generation higher-sequence reconnect advances and forces every loaded v2 base exactly once", async () => {
   const initialCapability = { ...capability(), sequence: 2 };
   const reconnectCapability = { ...initialCapability, sequence: 5 };
