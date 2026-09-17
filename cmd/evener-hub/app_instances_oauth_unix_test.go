@@ -113,30 +113,33 @@ func TestInstances_RemoveRestoresAnUnreadableOAuthRecordWhenTheCleanupFails(t *t
 
 // TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked: naming
 // the path a record is set aside at is a check followed by a rename, and a stat
-// that fails for anything but "not there" - a directory this process cannot
-// search, a candidate past the name limit - cannot say whether the destination
-// is free. Stepping past that error would spin while the removal holds credMu,
-// so the call refuses with the cause named instead. The timeout is the guard: a
-// regression to spinning fails here rather than hanging the suite. The removal
-// itself is asked below, because a state root whose records cannot be read is
-// one whose instance no longer resolves a credential, so a removal would be
-// refused earlier and never reach this check.
+// that fails for anything but "not there" - a candidate past the name limit, a
+// path this process cannot search - cannot say whether the destination is free.
+// Stepping past that error would spin while the removal holds credMu, so the
+// call refuses with the cause named instead. The timeout is the guard: a
+// regression to spinning fails here rather than hanging the suite.
+//
+// The candidate is driven past the name limit, because the record path is
+// stat'ed before the candidate is named: a record path this process cannot
+// stat is refused there, before the candidate is named, and never reaches this
+// one. The premise is checked, so a filesystem that takes the over-long name
+// skips rather than failing.
 func TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked(t *testing.T) {
 	f := newInstancesFixture(t, nil)
-	path := authopenai.AuthFilePath(f.stateDir, "openai-codex")
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// The record component stays inside the 255-byte per-component limit these
+	// filesystems enforce, and the aside built from it - the record's whole path
+	// plus the marker and a 19-digit stamp - does not.
+	name := strings.Repeat("a", 240)
+	path := authopenai.AuthFilePath(f.stateDir, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	if err := os.Chmod(dir, 0o000); err != nil {
-		t.Fatalf("Chmod: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
-	if _, err := os.Lstat(path); err == nil || errors.Is(err, os.ErrNotExist) {
-		t.Skip("this process can still stat through a 0000 directory (running as root?); the premise needs one it cannot")
+	probe := path + oauthAsideMarker + "1757000000000000000"
+	if _, err := os.Lstat(probe); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Skipf("this filesystem takes an over-long component (Lstat(%s) = %v); the premise needs one that does not", probe, err)
 	}
 
 	type aside struct {
@@ -145,7 +148,7 @@ func TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked(t *te
 	}
 	done := make(chan aside, 1)
 	go func() {
-		asidePath, err := f.ctl.setAsideOAuthFile("openai-codex")
+		asidePath, err := f.ctl.setAsideOAuthFile(name)
 		done <- aside{asidePath, err}
 	}()
 	select {

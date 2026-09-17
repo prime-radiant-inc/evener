@@ -72,7 +72,7 @@ const CLASS = {
 };
 
 // isInstanceRemovePersisted reads the hub's own discriminator for a removal that
-// stood but left a copy of the removed OAuth record on disk
+// stood in the config but could not finish
 // (appwire.ErrorInstanceRemovePersisted, read here as the literal its
 // ErrorData carries - the same way rail/actions.ts reads "resourceNotFound").
 // A refusal or any other failure carries no such info, so it stays a plain
@@ -439,15 +439,14 @@ export function CredentialsSection({
         setPendingConfirm(null);
         return;
       }
-      // A removal that stood but could not delete the copy it set aside comes
-      // back as an error carrying the hub's own discriminator for exactly that
-      // (isInstanceRemovePersisted). The instance is gone, so a retry can only
-      // fail on a missing instance: report the standing removal - close the
+      // A removal that stood in the config but could not finish comes back as an
+      // error carrying the hub's own discriminator for exactly that
+      // (isInstanceRemovePersisted): report the standing removal - close the
       // dialog and the sheet, tell the guided owner, and surface the hub's
-      // message (it names the copy still on disk and what to do about it) as a
-      // warning rather than a plain failure. Nothing else is inferred from the
-      // listing: a refusal is not a removal, and the listing cannot tell the
-      // two apart for a UI-credentialed instance with no authored entry.
+      // message (it says what was left unfinished, and what to do about it) as
+      // a warning rather than a plain failure. Nothing else is inferred from
+      // the listing: a refusal is not a removal, and the listing cannot tell
+      // the two apart for a UI-credentialed instance with no authored entry.
       if (kind === "remove" && isInstanceRemovePersisted(err)) {
         setPendingConfirm(null);
         setSelectedInstance(null);

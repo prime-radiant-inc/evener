@@ -1149,14 +1149,16 @@ func (e renamePersistedError) Error() string { return e.err.Error() }
 
 func (e renamePersistedError) Unwrap() error { return e.err }
 
-// removePersistedError is a removal that reached the file: the config, the
-// registry and the credential the instance resolved are all in their
-// post-removal state, and what is unfinished is a copy the sweep could not
-// delete (this removal's, or one an earlier removal stranded). Every other
-// client's list is stale by exactly as much
-// as it would be after a clean removal, so the RPC handler broadcasts on it and
-// still returns it, leaving the client that asked with the leftover to deal
-// with - the same shape as renamePersistedError, for the same reason.
+// removePersistedError is a removal the config carried out - the authored entry
+// is out of providers.toml - even though the removal could not finish. What is
+// unfinished is a copy the sweep could not delete (this removal's, or one an
+// earlier removal stranded), or a rollback that could not be written after the
+// reload failed, which leaves the credentials this call deleted restored under
+// a name the file no longer configures. Either way the entry is gone from the
+// file, so every other client's list is stale by exactly as much as it would be
+// after a clean removal: the RPC handler broadcasts on it and still returns it,
+// leaving the client that asked with what is unfinished to deal with - the same
+// shape as renamePersistedError, for the same reason.
 type removePersistedError struct{ err error }
 
 func (e removePersistedError) Error() string { return e.err.Error() }
@@ -1429,9 +1431,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// once this removal is reported as standing. No reload: the failure
 			// above already left the registry on the implicit-only view a load
 			// of this file produces, and writing is what is broken, not loading.
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
+			//
+			// The config carries the removal out even though the rollback could
+			// not put it back, so what is left is a persisted removal however
+			// the restore below ended: the RPC handler announces it and every
+			// other client drops the row, which is what keeps their lists from
+			// disagreeing with the file - and the caller from retrying a removal
+			// whose entry is already gone.
+			return removePersistedError{c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
-				"the entry is gone from the config")
+				"the entry is gone from the config")}
 		}
 		// The credentials go back before the reload below, because a load
 		// resolves each instance's credential from the stores: one that runs
@@ -1490,8 +1499,25 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 // are read).
 func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) {
 	path := authopenai.AuthFilePath(c.auth.stateDir, name)
-	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
+	}
+	if err != nil {
+		// Nothing here can tell what the path holds, and the rename below would
+		// report this same failure as an aside it could not make. Refused with
+		// the check named, before anything is deleted.
+		return "", fmt.Errorf("remove %s: read its OAuth state at %s before setting it aside: %w", name, path, err)
+	}
+	// Only a record is set aside. This path is renamed by the call below and
+	// deleted by the reclaim after a standing removal, and a removal may do
+	// both to the hub's own record and not to whatever else the user keeps
+	// under that name: the reclaim takes copies, so a directory renamed here
+	// would be skipped there - and the removal would report success with the
+	// user's own contents parked under a name no reader reads and no report
+	// mentions. Refused before anything is deleted, with the path named.
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("remove %s: %s is not a regular file, so the removal cannot set its OAuth state aside: move it out of the way to remove the instance", name, path)
 	}
 	// The stamp steps until it names a path nothing holds. os.Rename replaces an
 	// existing destination, so a stamp that repeats for the same record path -
@@ -1587,6 +1613,11 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 	var problems []string
 	for _, e := range entries {
 		inst, aside := oauthAsideInstance(e.Name())
+		// A directory is skipped: this takes the copies the hub itself set
+		// aside, and deleting a directory's contents is not something a removal
+		// may do. setAsideOAuthFile refuses anything but a regular file at the
+		// record path, so one filed under a copy's name was not written by a
+		// removal.
 		if e.IsDir() || !aside || inst != name {
 			continue
 		}

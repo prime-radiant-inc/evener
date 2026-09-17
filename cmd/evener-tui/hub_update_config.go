@@ -101,11 +101,11 @@ func (m hubModel) handleInstanceList(msg launchconfig.InstanceListResultMsg) (te
 
 func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
-		// A removal that stood but could not delete the OAuth copy it set aside
-		// comes back carrying the hub's own discriminator for it. The instance is
-		// gone - a retry can only fail on a missing instance - so this is not a
-		// failure to report: surface the hub's message (it names the copy left on
-		// disk) as a warning and re-read the listing the removal left behind.
+		// A removal that stood in the config but could not finish comes back
+		// carrying the hub's own discriminator for it. The entry is out of
+		// providers.toml, so this is not a failure to report: surface the hub's
+		// message (it says what was left unfinished) as a warning and re-read
+		// the listing the removal left behind.
 		if isInstanceRemovePersisted(msg.Err) {
 			m.err = nil
 			m.addInstanceRemovalWarningNotice(msg.Err)

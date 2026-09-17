@@ -2070,6 +2070,79 @@ func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *te
 	if _, still := l.Providers["work"]; still {
 		t.Fatal("[providers.work] is in the config, want the failed rollback to have left the removal applied")
 	}
+	// The entry is out of the config, so the removal stands however the
+	// rollback ended - and every other client's list is stale by exactly as
+	// much as after a clean removal. The handler is what announces that, so it
+	// has to be told: a plain failure here leaves the other clients showing a
+	// row the file no longer has, and the caller retrying a removal whose entry
+	// is already gone.
+	if _, persisted := errors.AsType[removePersistedError](err); !persisted {
+		t.Fatalf("Remove = %v (%T), want a removePersistedError so the standing removal is announced", err, err)
+	}
+	stood, wire := instanceRemoveError(err)
+	if !stood {
+		t.Fatalf("instanceRemoveError(%v) did not report the removal as standing", err)
+	}
+	var wireErr appwire.WireError
+	if !errors.As(wire, &wireErr) {
+		t.Fatalf("instanceRemoveError = %T, want appwire.WireError", wire)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorInstanceRemovePersisted {
+		t.Fatalf("instanceRemoveError info = %#v, want %s", wireErr.Data, appwire.ErrorInstanceRemovePersisted)
+	}
+}
+
+// TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath: the
+// record path is a name the removal sets aside by renaming and the sweep later
+// deletes, and a removal may do both to the hub's own record and not to
+// whatever else the user keeps there. A directory at that path is not a record
+// - and the sweep skips directories, so renaming it would park the user's own
+// contents under a name no reader reads while the removal reported success.
+// Refused by path, before anything is deleted.
+func TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// The reload is what derives the instance from the credential, the way a
+	// store entry alone makes one (registry spec §10).
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	recordPath := authopenai.AuthFilePath(f.stateDir, "groq")
+	if err := os.MkdirAll(recordPath, 0o700); err != nil {
+		t.Fatalf("MkdirAll(%s): %v", recordPath, err)
+	}
+	kept := filepath.Join(recordPath, "notes.txt")
+	if err := os.WriteFile(kept, []byte("the user's own file"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil {
+		t.Fatal("Remove accepted a directory at the OAuth record path")
+	}
+	if !strings.Contains(err.Error(), recordPath) {
+		t.Fatalf("Remove = %v, want the refusal naming %s", err, recordPath)
+	}
+	if !strings.Contains(err.Error(), "is not a regular file") {
+		t.Fatalf("Remove = %v, want the refusal to name what it found at %s", err, recordPath)
+	}
+	// The refusal comes before anything is deleted or moved, so what the caller
+	// still has is intact: the path, its contents, the credential and the row.
+	if _, statErr := os.Stat(kept); statErr != nil {
+		t.Fatalf("the refusal moved the directory's contents: %v", statErr)
+	}
+	if left := authDirEntries(t, f); len(left) != 1 || left[0] != "groq.json" {
+		t.Fatalf("the auth directory holds %v, want the record path left exactly as it was", left)
+	}
+	if v, _ := f.store.Get("groq"); v != "gk" {
+		t.Fatalf("the refused removal deleted the credential: %q", v)
+	}
+	if !listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("the refused removal removed the instance")
+	}
 }
 
 func TestInstances_SetDefaultWritesDefault(t *testing.T) {

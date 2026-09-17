@@ -30,12 +30,14 @@ const (
 	// failed; the error's data carries the applied canonical state.
 	ErrorKeybindingsPostRename ErrorInfo = "keybindingsPostRename"
 	// ErrorInstanceRemovePersisted marks a provider-instance removal that
-	// APPLIED (the authored entry left providers.toml, the registry reloaded,
-	// and the credential the instance resolved is gone) before the removal's
-	// follow-up cleanup failed to delete the copy it set the OAuth record aside
-	// as; the message names the file still on disk. Clients must report the
-	// removal as standing rather than as a failed removal - the instance is
-	// gone, and a retry can only fail on a missing instance.
+	// APPLIED - the authored entry left providers.toml - before the removal
+	// could not finish. What is unfinished is in the message: either the copy
+	// the removal set the OAuth record aside as is still on disk (the cleanup
+	// could not delete it), or the rollback after a failed reload could not be
+	// written, so the removal stands in the config and the credentials this call
+	// deleted are back under the name. Clients must report the removal as
+	// standing rather than as a failed removal, because the entry is out of the
+	// file the hub and its clients read.
 	ErrorInstanceRemovePersisted ErrorInfo = "instanceRemovePersisted"
 	// ErrorInstanceRenamePersisted marks a provider-instance rename that
 	// APPLIED (providers.toml carries the new name) before the follow-up
@@ -202,9 +204,10 @@ func QueuedDrainPartial(message string) WireError {
 	}
 }
 
-// InstanceRemovePersisted reports a provider-instance removal that stood but
-// left a copy of the removed OAuth record on disk, which the removal could not
-// delete. The message names the file; the instance itself is gone.
+// InstanceRemovePersisted reports a provider-instance removal that stood in
+// providers.toml even though the removal could not finish. The message says
+// what is unfinished and names what the caller is left with; the entry itself
+// is gone from the file.
 func InstanceRemovePersisted(message string) WireError {
 	return WireError{
 		Code:    CodeInternalError,

@@ -33,7 +33,7 @@ interface ProviderState {
 }
 
 // isInstanceRemovePersisted reads the hub's own discriminator for a removal that
-// stood but left a copy of the removed OAuth record on disk
+// stood in the config but could not finish
 // (appwire.ErrorInstanceRemovePersisted, the literal its ErrorData carries - the
 // same way the web pane reads it). A refusal or any other failure carries no
 // such info, so it stays a plain failure.
@@ -41,11 +41,11 @@ export function isInstanceRemovePersisted(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === "instanceRemovePersisted";
 }
 
-// RemovalOutcome is what a removal resolved to. A removal that stood but could
-// not delete the copy it set aside is not a failure - the instance is gone and a
-// retry can only fail on a missing instance - so it resolves with the hub's own
-// message (it names the copy still on disk) for the screen to warn with. Every
-// other failure rejects, as before.
+// RemovalOutcome is what a removal resolved to. A removal that stood in the
+// config but could not finish is not a failure - the entry is out of
+// providers.toml - so it resolves with the hub's own message (it says what was
+// left unfinished) for the screen to warn with. Every other failure rejects, as
+// before.
 export type RemovalOutcome =
   | { kind: "removed" }
   | { kind: "removedPersisted"; message: string };

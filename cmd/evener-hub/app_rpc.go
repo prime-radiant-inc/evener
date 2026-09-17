@@ -1228,8 +1228,8 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 			persisted, wireErr := instanceRemoveError(err)
 			// A removal that stood leaves every other client's list as stale as a
 			// clean removal does, so it is announced too; the error still goes back
-			// to the client that asked, which is the only one that can act on the
-			// copy the removal could not delete, carrying
+			// to the client that asked, which is the only one that can act on what
+			// the removal left unfinished, carrying
 			// ErrorInstanceRemovePersisted so that client reports the standing
 			// removal instead of a failed one.
 			if persisted {

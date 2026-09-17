@@ -166,4 +166,24 @@ func TestHandleInstanceMutateResultRemovalPersistedWarnsAndReconciles(t *testing
 	if msg, ok := cmd().(launchconfig.InstanceListResultMsg); !ok {
 		t.Fatalf("cmd msg = %T, want InstanceListResultMsg", msg)
 	}
+
+	// The other shape the discriminator covers: a rollback that could not be
+	// written, which leaves no file behind. It is the same warning, and the
+	// notice's own words must not send the user after a copy this shape never
+	// left - the hub's message is what describes what was left unfinished.
+	rollback := appwire.InstanceRemovePersisted("removing work was rolled back: write refused; the rollback could not be written, so the removal stands in the config (write refused)")
+	got, _ = hubModel{}.handleInstanceMutateResult(launchconfig.InstanceMutateResultMsg{Err: rollback})
+	after = got.(hubModel)
+	if len(after.notices) != 1 {
+		t.Fatalf("notices = %d, want one warning notice", len(after.notices))
+	}
+	notice := after.notices[0]
+	if notice.State != "warning" || !strings.Contains(notice.Reason, "removal stands in the config") {
+		t.Fatalf("notice = %+v, want a warning carrying the hub's message", notice)
+	}
+	for _, text := range []string{notice.Summary, notice.NextAction} {
+		if strings.Contains(text, "OAuth record") || strings.Contains(text, "Delete the file") {
+			t.Fatalf("notice text = %q, want no claim about a copy this shape does not leave", text)
+		}
+	}
 }
