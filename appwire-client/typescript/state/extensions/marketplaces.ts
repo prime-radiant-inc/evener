@@ -24,6 +24,7 @@ import type {
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
+import { createKeyedRevision } from "./keyedRevision";
 import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
 import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
@@ -94,14 +95,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // change. Each marketplace therefore carries a generation, bumped when its
   // cache entry is retired, and a browse whose generation moved while it was
   // in flight lands nothing.
-  const browseGenerations = new Map<string, number>();
-
-  // The promise of each browse still on the wire, keyed the same way. A caller
-  // that finds a catalog already loading has to wait for it, and the "loading"
-  // marker alone says nothing about when it lands. A retire can leave this
-  // holding the promise of a request whose entry is already gone, which is why
-  // the finally below deletes only its own registration.
-  const browseInFlight = new Map<string, Promise<void>>();
+  const browses = createKeyedRevision();
 
   // Every marketplace mutation, and the notification refetch, replaces the
   // whole list from its own response; see listRevision.ts for the fence. A
@@ -119,17 +113,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // state the reset left behind, not the one an older reply belongs to.
   let generation = 0;
 
-  function browseGeneration(name: string): number {
-    return browseGenerations.get(name) ?? 0;
-  }
-
-  /** Moves this name's generation, so a browse of it still on the wire lands
-   * nothing. */
-  function retireGeneration(name: string): void {
-    browseGenerations.set(name, browseGeneration(name) + 1);
-  }
-
-  /** Drops these names' cached catalogs and moves their generations, returning
+  /** Drops these names' cached catalogs and retires their keys, returning
    * the next browseCatalogs map. Called only once a mutation has landed: a bump
    * ahead of a request that then fails would fence out the in-flight browse and
    * strand the "loading" entry it had already written, leaving a permanent
@@ -142,7 +126,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     for (const name of names) {
       if (!name) continue;
       next.delete(name);
-      retireGeneration(name);
+      browses.retire(name);
     }
     return next;
   }
@@ -166,8 +150,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     onFence: (set) => {
       generation += 1;
       listRevision.fence();
-      for (const name of browseInFlight.keys()) retireGeneration(name);
-      browseInFlight.clear();
+      browses.retireInFlight();
       // Nothing is coming to lower it.
       set({ marketplacesLoading: false });
     },
@@ -234,31 +217,25 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         // Loaded, errored, or already in flight - see MarketplaceCatalogEntry's
         // own doc comment. A settled entry has no in-flight promise, so that
         // case resolves straight away.
-        if (get().browseCatalogs.has(name)) return browseInFlight.get(name);
-        const generation = browseGeneration(name);
+        if (get().browseCatalogs.has(name)) return browses.inFlight(name);
+        const revision = browses.issue(name);
         let settled!: (value: void | PromiseLike<void>) => void;
-        const inFlight = new Promise<void>((resolve) => {
+        const read = new Promise<void>((resolve) => {
           settled = resolve;
         });
-        browseInFlight.set(name, inFlight);
+        browses.begin(name, read);
         setCatalog(name, { status: "loading" });
         try {
           const resp = await client.request("evener/marketplace/browse", { name });
-          if (browseGeneration(name) !== generation) return;
+          if (!browses.current(name, revision)) return;
           setCatalog(name, { status: "loaded", description: resp.description, plugins: resp.plugins });
         } catch (err) {
           // Fenced the same way a success is: an error from a catalog that has
           // since been retired says nothing about the one that replaced it.
-          if (browseGeneration(name) !== generation) return;
+          if (!browses.current(name, revision)) return;
           setCatalog(name, { status: "error", error: errorText(err) });
         } finally {
-          // A retire can drop this name's entry while this request is on the
-          // wire and a replacement request take its place; that one is what
-          // the map must keep and what this request's waiters actually want,
-          // since this one's answer is fenced out.
-          const current = browseInFlight.get(name);
-          if (current === inFlight) browseInFlight.delete(name);
-          settled(current === inFlight ? undefined : current);
+          settled(browses.settle(name, read));
         }
       },
 

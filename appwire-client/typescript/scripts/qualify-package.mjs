@@ -517,6 +517,7 @@ const entry: MarketplaceCatalogEntry = { status: "loading" }; void marketplaces;
 const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient);
 const revision: ListRevision = createListRevision(); void plugins; void revision;
+const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
 const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
 const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;`,
@@ -532,6 +533,10 @@ const pluginsStore = client.createPluginsStore(offline);
 assert.equal(client.PLUGIN_REFETCH_DEBOUNCE_MS, 250);
 assert.equal(pluginsStore.getState().pluginRevision, 0);
 pluginsStore.connectionChanged(offline, "ready");
+const keyed = client.createKeyedRevision();
+const keyedRevision = keyed.issue("acme");
+keyed.retire("acme");
+assert.equal(keyed.current("acme", keyedRevision), false);
 const listRevision = client.createListRevision();
 const first = listRevision.next();
 listRevision.fence();
