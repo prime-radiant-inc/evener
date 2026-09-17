@@ -264,6 +264,31 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(lifecycle.loading(store.getState())).toBe(false);
     });
 
+    // The converse of the case above: nothing has read the list, but a
+    // mutation is in flight - so nothing in the store's OWN data (the fields
+    // wantsList reads) marks the list as wanted, yet the intent is real. The
+    // seam readRevisioned and writeRevisioned share (listRevision.ts's
+    // hasLive) is what carries it.
+    test("a write issued before any read still recovers a replaced connection's list", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
+      const releases = gateRequests(fake, lifecycle.mutationMethod);
+      const mutating = lifecycle.mutate(store.getState());
+      await Promise.resolve();
+      expect(lifecycle.list(store.getState())).toBeNull();
+
+      store.connectionChanged(lifecycle.create().fake, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
+      expect(lifecycle.list(store.getState())).not.toBeNull();
+
+      const answer = releases[0];
+      if (!answer) throw new Error("the write must be in flight");
+      answer(lifecycle.mutationResponse);
+      await mutating;
+    });
+
     test("a replacement client that arrives ready reads an established list", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready"); // the connection the host reports before anything reads

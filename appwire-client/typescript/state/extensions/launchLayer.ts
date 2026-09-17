@@ -77,7 +77,12 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
       // Nothing is coming to lower it.
       set({ launchLayerLoading: false });
     },
-    wantsList: (s) => s.launchLayer !== null || s.launchLayerError !== null || s.launchLayerLoading,
+    // A setLaunchLayer issued before any fetchLaunchLayer call touches none
+    // of these three fields, so listRevision.hasLive() is what carries its
+    // intent - a write issues the same live revision a read does (see
+    // listRevision.ts and marketplaces.ts/plugins.ts's own wantsList).
+    wantsList: (s) =>
+      s.launchLayer !== null || s.launchLayerError !== null || s.launchLayerLoading || listRevision.hasLive(),
   });
 
   const store = createFrameworkFreeStore<LaunchLayerState>((publish) => {

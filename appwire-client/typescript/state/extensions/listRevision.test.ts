@@ -185,3 +185,44 @@ describe("the two conventions", () => {
     expect(published).toEqual(["saved", "read"]);
   });
 });
+
+describe("hasLive", () => {
+  // A read and a write both issue through next(), so both leave the same
+  // trace here - this is the seam a store's own "does it want this list"
+  // question can read a mutation's intent off, symmetrically with a read's.
+  test("a read leaves hasLive true only while its answer is outstanding", async () => {
+    const revisions = createListRevision();
+    expect(revisions.hasLive()).toBe(false);
+    let resolveRequest!: (rows: string) => void;
+    const reading = readRevisioned(revisions, () => new Promise<string>((resolve) => (resolveRequest = resolve)), {
+      onAnswer: () => () => {},
+      onFailure: () => () => {},
+    });
+    expect(revisions.hasLive()).toBe(true);
+    resolveRequest("rows");
+    await reading;
+    expect(revisions.hasLive()).toBe(false);
+  });
+
+  test("a write leaves hasLive true the same way a read does", async () => {
+    const revisions = createListRevision();
+    let resolveRequest!: (rows: string) => void;
+    const writing = writeRevisioned(
+      revisions,
+      () => new Promise<string>((resolve) => (resolveRequest = resolve)),
+      () => () => {},
+    );
+    expect(revisions.hasLive()).toBe(true);
+    resolveRequest("rows");
+    await writing;
+    expect(revisions.hasLive()).toBe(false);
+  });
+
+  test("fence clears hasLive along with every other trace of what it fenced", () => {
+    const revisions = createListRevision();
+    revisions.next();
+    expect(revisions.hasLive()).toBe(true);
+    revisions.fence();
+    expect(revisions.hasLive()).toBe(false);
+  });
+});

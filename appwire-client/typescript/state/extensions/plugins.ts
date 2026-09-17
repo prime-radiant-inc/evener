@@ -90,7 +90,10 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
       // Nothing is coming to lower it.
       set({ pluginsLoading: false });
     },
-    wantsList: (s) => s.plugins !== null || s.pluginsError !== null || s.pluginsLoading,
+    // A mutation issued before any fetchPlugins call touches none of these
+    // three fields, so listRevision.hasLive() is what carries its intent - a
+    // write issues the same live revision a read does (see listRevision.ts).
+    wantsList: (s) => s.plugins !== null || s.pluginsError !== null || s.pluginsLoading || listRevision.hasLive(),
   });
 
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
