@@ -2,8 +2,10 @@ package hub
 
 import (
 	"errors"
+	"fmt"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 // A hub write that applied is announced to every client, whatever the step
@@ -14,45 +16,29 @@ import (
 // announced — otherwise the list every other client shows stays wrong until a
 // reconnect or an unrelated notification.
 //
-// The error still goes back to the caller that asked: the two are independent,
-// which is what appliedWriteError carries. The caller sees what failed, and
-// everyone else learns the write landed.
-type appliedWriteError struct{ err error }
-
-func (e appliedWriteError) Error() string { return e.err.Error() }
-
-func (e appliedWriteError) Unwrap() error { return e.err }
+// The error still goes back to the caller that asked: the two are independent.
+// The caller sees what failed, and everyone else learns the write landed.
 
 // writeApplied marks err as reporting a failure that followed a write which
-// stands. Wrapping keeps the message and the wire class of what it wraps:
-// appserver's router resolves a WireError through Unwrap.
+// stands. Wrapping hubcore.ErrWriteApplied keeps the message and the wire
+// class of what it wraps: appserver's router resolves a WireError through
+// Unwrap, and writeDidApply below reads the same sentinel back out - the same
+// one the keybindings and transcript-display stores wrap their own
+// applied-then-failed errors in, so one answer serves the hub's own writes
+// and theirs alike.
 func writeApplied(err error) error {
 	if err == nil {
 		return nil
 	}
-	return appliedWriteError{err}
-}
-
-// storeWriteError marks a hubcore state store's failure that landed its write
-// (hubcore.ErrWriteApplied: the keybindings and transcript-display stores), so
-// writeDidApply below answers for those the same way it answers for the hub's
-// own writes. The wire class of what it wraps is preserved. The plugin store's
-// own answer (plugins.ErrStoreChanged) is classified by pluginWriteError in
-// app_plugins.go, which also maps the manager's refusal classes.
-func storeWriteError(err error) error {
-	if errors.Is(err, hubcore.ErrWriteApplied) {
-		return writeApplied(err)
-	}
-	return err
+	return fmt.Errorf("%w: %w", hubcore.ErrWriteApplied, err)
 }
 
 // writeDidApply answers the handlers' one question: is there a change the
-// other clients need to hear about? A nil error is the ordinary applied write;
-// a marked error is one that applied and then failed.
+// other clients need to hear about? A nil error is the ordinary applied
+// write; hubcore.ErrWriteApplied marks a hub write or a hubcore store's
+// (keybindings, transcript-display) that landed before a later step failed;
+// plugins.ErrStoreChanged is the plugin store's own answer to the same
+// question.
 func writeDidApply(err error) bool {
-	if err == nil {
-		return true
-	}
-	_, applied := errors.AsType[appliedWriteError](err)
-	return applied
+	return err == nil || errors.Is(err, hubcore.ErrWriteApplied) || errors.Is(err, plugins.ErrStoreChanged)
 }

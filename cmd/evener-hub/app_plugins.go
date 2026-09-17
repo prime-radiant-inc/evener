@@ -230,19 +230,6 @@ func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.Ma
 	return appwire.MarketplaceListResponse{Marketplaces: entries}, nil
 }
 
-// pluginWriteError classifies a manager write's failure for the wire. A
-// refusal reads as its refusal class and changed nothing; a failure that left
-// the store changed (plugins.ErrStoreChanged) is also an applied write, so the
-// handler still broadcasts and every other client refetches the listing this
-// call made stale (#1543/#1572).
-func pluginWriteError(err error) error {
-	wire := marketplaceRefusalToWire(err)
-	if errors.Is(err, plugins.ErrStoreChanged) {
-		return writeApplied(wire)
-	}
-	return wire
-}
-
 // marketplaceRefusalToWire turns the manager's marketplace sentinels into the
 // wire's own refusal classes, so the same refusal reads the same way whichever
 // mutation raised it — a taken name is the caller's Conflict, whether another
@@ -267,7 +254,7 @@ func marketplaceRefusalToWire(err error) error {
 // path's identical ones, by marketplaceRefusalToWire.
 func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
 	if _, err := c.mgr.AddMarketplace(ctx, params.Name, marketplaceSourceFromWire(params.Source)); err != nil {
-		return appwire.MarketplaceListResponse{}, pluginWriteError(err)
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.marketplaceListAfterWrite(ctx)
 }
@@ -276,7 +263,7 @@ func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwir
 // Its one refusal, an unknown name, is classified by marketplaceRefusalToWire.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
-		return appwire.MarketplaceListResponse{}, pluginWriteError(err)
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.marketplaceListAfterWrite(ctx)
 }
@@ -286,7 +273,7 @@ func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params app
 // that failed is not a refusal and stays the hub's plain error.
 func (c *hubPluginsController) RefreshMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
 	if err := c.mgr.RefreshMarketplace(ctx, params.Name); err != nil {
-		return appwire.MarketplaceListResponse{}, pluginWriteError(err)
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.marketplaceListAfterWrite(ctx)
 }
@@ -301,7 +288,7 @@ func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwi
 		src = &converted
 	}
 	if _, err := c.mgr.EditMarketplace(ctx, params.Name, params.NewName, src); err != nil {
-		return appwire.MarketplaceListResponse{}, pluginWriteError(err)
+		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.marketplaceListAfterWrite(ctx)
 }
@@ -387,7 +374,7 @@ func (c *hubPluginsController) marketplaceListAfterWrite(ctx context.Context) (a
 // updated list.
 func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 	if _, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace); err != nil {
-		return appwire.PluginListResponse{}, pluginWriteError(err)
+		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
 }
@@ -396,7 +383,7 @@ func (c *hubPluginsController) Install(ctx context.Context, params appwire.Plugi
 // the updated list.
 func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 	if _, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace); err != nil {
-		return appwire.PluginListResponse{}, pluginWriteError(err)
+		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
 }
@@ -405,7 +392,7 @@ func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.Plugi
 // and returns the updated list.
 func (c *hubPluginsController) Remove(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 	if err := c.mgr.Remove(ctx, params.Plugin, params.Marketplace); err != nil {
-		return appwire.PluginListResponse{}, pluginWriteError(err)
+		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
 }
@@ -414,7 +401,7 @@ func (c *hubPluginsController) Remove(ctx context.Context, params appwire.Plugin
 // list.
 func (c *hubPluginsController) Enable(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, true); err != nil {
-		return appwire.PluginListResponse{}, pluginWriteError(err)
+		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
 }
@@ -423,7 +410,7 @@ func (c *hubPluginsController) Enable(ctx context.Context, params appwire.Plugin
 // updated list.
 func (c *hubPluginsController) Disable(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, false); err != nil {
-		return appwire.PluginListResponse{}, pluginWriteError(err)
+		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
 }
@@ -432,7 +419,7 @@ func (c *hubPluginsController) Disable(ctx context.Context, params appwire.Plugi
 // the updated list.
 func (c *hubPluginsController) SetAutoUpgrade(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
 	if err := c.mgr.SetAutoUpgrade(ctx, params.Plugin, params.Marketplace, params.AutoUpgrade); err != nil {
-		return appwire.PluginListResponse{}, pluginWriteError(err)
+		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
 }

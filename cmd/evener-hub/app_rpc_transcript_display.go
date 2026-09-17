@@ -25,7 +25,6 @@ func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.
 			// applied, and carries the state it published: the canonical state
 			// goes out or every other client stays on the pre-patch revision
 			// (the rule the keybindings post-rename path already follows).
-			err = storeWriteError(err)
 			if writeDidApply(err) && (err != nil || result.Revision != params.ExpectedRevision) {
 				server.BroadcastAll(appwire.NotifyEvenerSettingsTranscriptDisplayChanged,
 					appwire.TranscriptDisplayChangedParams(result))

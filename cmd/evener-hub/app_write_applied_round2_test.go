@@ -22,19 +22,21 @@ import (
 // this the marketplace rename that leaves the store between the two names
 // (internal/plugins, ErrStoreChanged) reaches the handler as a plain error and
 // nothing is broadcast, so every client keeps a listing the store no longer
-// matches.
-func TestPluginWriteErrorMarksAChangedStore(t *testing.T) {
-	changed := pluginWriteError(errors.Join(errors.New("saving known_marketplaces.json failed"), plugins.ErrStoreChanged))
+// matches. marketplaceRefusalToWire only reclassifies the manager's refusal
+// sentinels into their wire class; plugins.ErrStoreChanged is none of those,
+// so it passes through unchanged and writeDidApply reads it directly.
+func TestMarketplaceRefusalToWireKeepsAChangedStoreApplied(t *testing.T) {
+	changed := marketplaceRefusalToWire(errors.Join(errors.New("saving known_marketplaces.json failed"), plugins.ErrStoreChanged))
 	if !writeDidApply(changed) {
-		t.Fatalf("pluginWriteError(store changed) = %v, want an applied write", changed)
+		t.Fatalf("marketplaceRefusalToWire(store changed) = %v, want an applied write", changed)
 	}
-	refusal := pluginWriteError(plugins.ErrMarketplaceNotFound)
+	refusal := marketplaceRefusalToWire(plugins.ErrMarketplaceNotFound)
 	if writeDidApply(refusal) {
-		t.Fatalf("pluginWriteError(refusal) = %v, want a refusal that is not announced", refusal)
+		t.Fatalf("marketplaceRefusalToWire(refusal) = %v, want a refusal that is not announced", refusal)
 	}
 	// The refusal class still reaches the wire through the same call.
 	if _, ok := errors.AsType[appwire.WireError](refusal); !ok {
-		t.Fatalf("pluginWriteError(refusal) = %v (%T), want the wire refusal class kept", refusal, refusal)
+		t.Fatalf("marketplaceRefusalToWire(refusal) = %v (%T), want the wire refusal class kept", refusal, refusal)
 	}
 }
 
