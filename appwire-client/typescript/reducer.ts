@@ -469,15 +469,14 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
 }
 
 // A settle says nothing about images unless it carries them. `undefined` is what
-// both mappers produce for a field the payload left out — and, for input images,
-// for an empty list too (imagesToItemImagesForSession reads that as "nothing
-// said", the rule the hub applies on its own upsert: `len(incoming.Images) == 0`
-// keeps the existing list, server/appwire_turns.go:884-886, and its twin at
-// internal/apptranscript/logical_turn.go:309) — so a settle must not erase images
-// from the item it replaces, exactly as mergePageItem already refuses to.
-// outputImages keeps its own reading of an explicitly empty list, which its
-// mapper owns; `??` lets an empty array that IS a value win over the old list, so
-// a removal the wire can express is never undone here.
+// both mappers produce for a field the payload left out, and for an empty list
+// too: imagesToItemImagesForSession and outputImagesToItemImages each read `[]` as
+// absence, the same rule the hub applies on its own upsert (`len(incoming.Images)
+// == 0` and `len(incoming.OutputImages) == 0` keep the existing list,
+// server/appwire_turns.go:884-889, and its twin at
+// internal/apptranscript/logical_turn.go:309). So `undefined` is the only signal
+// this merge ever sees for either list, and a settle must not erase images from
+// the item it replaces — exactly as mergePageItem already refuses to.
 function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (!existing) return settled;
   const images = settled.images ?? existing.images;
@@ -1248,16 +1247,18 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
-        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
-        // read/write disjoint fields off the same `old` reference, so
-        // composition order is free) — this branch has its own settled
-        // items rather than item/completed's single one, so it maps instead
-        // of a single mapItem call.
+        // below (mergeCompletedText/mergeItemImages/mergeReasoning/
+        // mergeArguments/mergeObservedTiming read/write disjoint fields off the
+        // same `old` reference, so composition order is free) — this branch has
+        // its own settled items rather than item/completed's single one, so it
+        // maps instead of a single mapItem call. "Full" replaces the item set,
+        // not every field: an image list a payload omits is kept off `old`,
+        // exactly as item/completed keeps it.
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
           return mergeObservedTiming(
-            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            mergeArguments(mergeReasoning(mergeItemImages(mergeCompletedText(identitySettled, old), old), old), old),
             old,
             now,
           );
