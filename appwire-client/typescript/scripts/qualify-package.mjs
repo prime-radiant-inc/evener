@@ -357,7 +357,8 @@ const fakeClient: AppwireClientLike = {
 };
 const store: ConnectionStore = createConnectionStore();
 const state: ConnectionStoreState = store.getState();
-state.connect(fakeClient);
+store.connect(fakeClient);
+void state;
 const stop = onConnectionNotification(store, () => undefined);
 stop();`,
       cjsTypeUses: `const connectionState: client.ConnectionStoreState = client.createConnectionStore().getState(); void connectionState;`,
@@ -388,7 +389,8 @@ const readyClient = {
 };
 const connectionStore = client.createConnectionStore();
 assert.equal(connectionStore.getState().state, "idle");
-connectionStore.getState().connect(readyClient);
+assert.equal("connect" in connectionStore.getState(), false);
+connectionStore.connect(readyClient);
 assert.equal(connectionStore.getState().state, "ready");
 assert.equal(connectionStore.getState().client, readyClient);
 const stopNotifications = client.onConnectionNotification(connectionStore, () => {

@@ -21,10 +21,16 @@ function trackStateChangeWiring(client: FakeClient): { registrations: number; de
 }
 
 describe("createConnectionStore", () => {
+  test("connect is a sibling of the store, not a state key", () => {
+    const store = createConnectionStore();
+    expect("connect" in store.getState()).toBe(false);
+    expect(typeof store.connect).toBe("function");
+  });
+
   test("connect() wires the client and mirrors its current state", () => {
     const store = createConnectionStore();
     const client = new FakeClient("ready");
-    store.getState().connect(client);
+    store.connect(client);
     expect(store.getState().client).toBe(client);
     expect(store.getState().state).toBe("ready");
     client.emitStateChange("reconnecting");
@@ -35,8 +41,8 @@ describe("createConnectionStore", () => {
     const store = createConnectionStore();
     const client = new FakeClient("ready");
     const tracking = trackStateChangeWiring(client);
-    store.getState().connect(client);
-    store.getState().connect(client);
+    store.connect(client);
+    store.connect(client);
     expect(tracking.registrations).toBe(1);
   });
 
@@ -46,10 +52,10 @@ describe("createConnectionStore", () => {
     const second = new FakeClient("ready");
     const firstTracking = trackStateChangeWiring(first);
 
-    store.getState().connect(first);
+    store.connect(first);
     expect(firstTracking.registrations).toBe(1);
 
-    store.getState().connect(second);
+    store.connect(second);
     expect(firstTracking.detachments).toBe(1);
     expect(store.getState().client).toBe(second);
 
@@ -67,17 +73,17 @@ describe("createConnectionStore", () => {
     const aTracking = trackStateChangeWiring(a);
     const bTracking = trackStateChangeWiring(b);
 
-    // A store subscriber (mirroring threads.ts/credentials.ts, which react to
-    // connectionStore.subscribe) that reconnects to a different client the
-    // instant it sees `a` wired - synchronously, inside connect(a)'s own
-    // setState dispatch.
+    // A store subscriber (any consumer of this instance's subscribe(), the
+    // way a host's other stores react to a connection-store swap) that
+    // reconnects to a different client the instant it sees `a` wired -
+    // synchronously, inside connect(a)'s own setState dispatch.
     const unsubscribe = store.subscribe((state, previous) => {
       if (state.client === a && previous.client !== a) {
-        store.getState().connect(b);
+        store.connect(b);
       }
     });
 
-    store.getState().connect(a);
+    store.connect(a);
     unsubscribe();
 
     // b's connect() ran to completion first and owns the slot; a's frame,
@@ -98,11 +104,11 @@ describe("createConnectionStore", () => {
   test("connect() clears handshake metadata when swapping clients or closing", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");
-    store.getState().connect(first);
+    store.connect(first);
     store.setState({ serverInfo: { name: "hub", version: "1.0.0" }, features: undefined });
 
     const second = new FakeClient("ready");
-    store.getState().connect(second);
+    store.connect(second);
     expect(store.getState().serverInfo).toBeUndefined();
 
     store.setState({ serverInfo: { name: "hub", version: "1.0.0" }, features: undefined });
@@ -120,11 +126,11 @@ describe("onConnectionNotification", () => {
 
     const stop = onConnectionNotification(store, (n) => seen.push(n));
 
-    store.getState().connect(first);
+    store.connect(first);
     first.emitNotification({ method: "evener/plugin/updated", params: {} });
     expect(seen).toHaveLength(1);
 
-    store.getState().connect(second);
+    store.connect(second);
     first.emitNotification({ method: "evener/plugin/updated", params: {} });
     expect(seen).toHaveLength(1); // first is detached; its notification is dropped
 
@@ -139,7 +145,7 @@ describe("onConnectionNotification", () => {
   test("attaches immediately to a client the store already holds", () => {
     const store = createConnectionStore();
     const client = new FakeClient("ready");
-    store.getState().connect(client);
+    store.connect(client);
 
     const seen: unknown[] = [];
     onConnectionNotification(store, (n) => seen.push(n));

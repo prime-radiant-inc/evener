@@ -20,6 +20,14 @@ export interface ConnectionStoreState {
   // The wired client, for other stores (the web's threads.ts) to ride. The
   // only way a store without its own connect() can reach the client at all.
   client: AppwireClientLike | null;
+}
+
+// connect is a sibling of the triple, not a state key (state/navigation/store.ts's
+// `init`/`awaitConvergence`/`reset`, state/credentials/instances.ts's
+// `connectionChanged` are the same shape): a partial setState can only ever
+// replace state keys, so keeping connect out of state is what makes it
+// impossible for one to accidentally clobber the other.
+export interface ConnectionStore extends FrameworkFreeStore<ConnectionStoreState> {
   // connect wires this store's `state` to the client's own ConnectionState
   // transitions, capturing whatever state the client is already in.
   // Idempotent: calling it again with the same client instance no-ops,
@@ -28,10 +36,8 @@ export interface ConnectionStoreState {
   // Handshake metadata is populated by the caller that drives connect(), from
   // that one InitializeResponse. This function only mirrors client state and
   // deliberately remains safe to call before a handshake has started.
-  connect: (client: AppwireClientLike) => void;
+  connect(client: AppwireClientLike): void;
 }
-
-export type ConnectionStore = FrameworkFreeStore<ConnectionStoreState>;
 
 // createConnectionStore builds one instance's client-swap safety. Each host
 // (an app, a test) gets its own `unwireStateChange`, so instances never share
@@ -62,41 +68,52 @@ export function createConnectionStore(): ConnectionStore {
   // mirror that lives exactly as long as its client is the wired one.
   let unwireStateChange: (() => void) | null = null;
 
+  // Attached onto the triple in place rather than `{ ...store, connect }`
+  // (the spread every other core here uses, state/navigation/store.ts and
+  // state/credentials/instances.ts included): a spread returns a NEW object,
+  // so a caller instrumenting the returned store's `setState` (a spy, a
+  // wrapping adapter) would never see a call this closure makes through its
+  // own `store.setState` - two different objects that happen to start out
+  // holding the same functions. Mutating `store` and returning that same
+  // object keeps setState's identity exactly what every subscriber sees.
   const store = createFrameworkFreeStore<ConnectionStoreState>(() => ({
     state: "idle",
     serverInfo: undefined,
     features: undefined,
     client: null,
-    connect: (client) => {
-      if (store.getState().client === client) return;
-      unwireStateChange?.();
-      unwireStateChange = null;
-      // Register before publishing. setState dispatches to subscribers
-      // synchronously, and the real client transitions synchronously too
-      // (AppwireClient.connect enters "connecting", close() enters "closed",
-      // both without awaiting), so publishing first leaves a window where a
-      // transition has no listener and is lost until the client's next one.
-      const unwire = client.onStateChange((s) => {
-        if (store.getState().client !== client) return;
-        store.setState(s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s });
-      });
-      // Read client.state here, not before registering: a transition that
-      // landed during registration is already reflected in it, and the
-      // callback above could not have published it while this client was
-      // still not the store's.
-      store.setState({ client, state: client.state, serverInfo: undefined, features: undefined });
-      // The synchronous dispatch above can re-enter connect() with a
-      // different client. That frame completed and owns the slot, so this
-      // one is stale: retire its own listener instead of clobbering the
-      // newer entry, which would leak the newer client's subscription for
-      // the life of the store.
-      if (store.getState().client === client) {
-        unwireStateChange = unwire;
-      } else {
-        unwire();
-      }
-    },
-  }));
+  })) as ConnectionStore;
+
+  function connect(client: AppwireClientLike): void {
+    if (store.getState().client === client) return;
+    unwireStateChange?.();
+    unwireStateChange = null;
+    // Register before publishing. setState dispatches to subscribers
+    // synchronously, and the real client transitions synchronously too
+    // (AppwireClient.connect enters "connecting", close() enters "closed",
+    // both without awaiting), so publishing first leaves a window where a
+    // transition has no listener and is lost until the client's next one.
+    const unwire = client.onStateChange((s) => {
+      if (store.getState().client !== client) return;
+      store.setState(s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s });
+    });
+    // Read client.state here, not before registering: a transition that
+    // landed during registration is already reflected in it, and the
+    // callback above could not have published it while this client was
+    // still not the store's.
+    store.setState({ client, state: client.state, serverInfo: undefined, features: undefined });
+    // The synchronous dispatch above can re-enter connect() with a
+    // different client. That frame completed and owns the slot, so this
+    // one is stale: retire its own listener instead of clobbering the
+    // newer entry, which would leak the newer client's subscription for
+    // the life of the store.
+    if (store.getState().client === client) {
+      unwireStateChange = unwire;
+    } else {
+      unwire();
+    }
+  }
+
+  store.connect = connect;
   return store;
 }
 
