@@ -1406,6 +1406,24 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside, err, "the instance is still configured")
 		}
 	}
+	// The removal's durable work has landed: the record is set aside, the
+	// credential layers are deleted and, when it changed, providers.toml is
+	// written. Mark every in-flight copy under this name committed now, before the
+	// reload: a hub that dies anywhere from here through the reload and the
+	// reclaim below leaves copies startup will not put back
+	// (restoreUncommittedOAuthAsides), where one left in flight would resurrect
+	// the removal the user just carried out. The mark is not left to the reclaim
+	// because the reclaim runs only after the reload, so the whole reload would
+	// sit inside the window a crash turns back into an in-flight copy.
+	//
+	// The copy this call set aside now carries its committed name, and the
+	// rollback paths below are handed that name: restoreFailedRemoval renames
+	// whatever path it is given back to the record path, so a reload that fails
+	// still puts the record back. The config-write failure above ran before this
+	// point, so its copy is still in flight and its rollback still gets the
+	// in-flight name. Nothing is deleted here - the reload that fails must still
+	// be able to roll the record back.
+	oauthAside = c.markOAuthAsidesCommitted(name, oauthAside)
 	if err := c.reg.Reload(); err != nil {
 		if !configChanged {
 			// Nothing was written, so there is no file to put back: restoring
@@ -1487,9 +1505,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// rolled back for it: the config, the registry and the credential the
 	// instance resolved are all in their post-removal state.
 	//
-	// Each in-flight copy is marked committed before it is deleted
-	// (reclaimOAuthAsides), so a crash in this window leaves a copy startup can
-	// tell apart from one a failed removal set aside - and never puts back.
+	// The commit point above already marked these copies committed; the reclaim
+	// retries that rename for any it could not mark and then deletes them, so a
+	// crash in this window still leaves a copy startup can tell apart from one a
+	// failed removal set aside - and never puts back.
 	if err := c.reclaimOAuthAsides(name); err != nil {
 		return removePersistedError{fmt.Errorf("removed %s, but %w", name, err)}
 	}
@@ -1600,15 +1619,19 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 // oauthAsideMarker separates a record's path from the stamp of the removal that
 // set it aside (setAsideOAuthFile). It is what tells a copy apart from a record
 // when the leftovers are reclaimed, and it names an IN-FLIGHT copy: the removal
-// that made it had not stood when it was written, so startup puts it back
-// (restoreUncommittedOAuthAsides).
+// that made it had not yet done its durable work - the aside, the credential
+// deletions and, when it changed, the providers.toml write - when the copy was
+// written, so startup puts it back (restoreUncommittedOAuthAsides).
 const oauthAsideMarker = ".removing-"
 
-// oauthCommittedMarker is the same separation for a copy whose removal HAD
-// stood: reclaimOAuthAsides renames every in-flight copy to this shape before
-// deleting it, so a crash between the rename and the delete leaves a copy
-// startup can tell apart from one a failure set aside - and never puts back. The
-// stamp is preserved, so the two shapes order against each other the same way.
+// oauthCommittedMarker is the same separation for a copy whose removal HAD done
+// its durable work: markOAuthAsidesCommitted renames every in-flight copy to this
+// shape at the removal's commit point - before the reload that publishes it - and
+// the reclaim after a successful reload performs the same rename again for
+// anything the commit point could not mark. A crash from there onward therefore
+// leaves a copy startup can tell apart from one a failure set aside - and never
+// puts back. The stamp is preserved, so the two shapes order against each other
+// the same way.
 const oauthCommittedMarker = ".removed-"
 
 // oauthAsideInstance returns the instance a copy was made from, whether the
@@ -1669,6 +1692,30 @@ func oauthCommittedAsideName(name string) string {
 	return name[:i] + oauthCommittedMarker + name[i+len(oauthAsideMarker):]
 }
 
+// commitOAuthAside renames one in-flight copy to its committed shape and returns
+// the path the copy carries afterwards: the committed path on success, and the
+// in-flight path unchanged when the copy was already committed or the rename
+// failed. It is the single rename both the removal's commit point
+// (markOAuthAsidesCommitted) and its reclaim (reclaimOAuthAsides) perform, so the
+// crash mark and its retry cannot drift apart.
+//
+// A committed copy is returned untouched rather than renamed again: it already
+// carries the shape startup never puts back, and renaming it would only risk
+// losing it. The caller decides what a failure means - the commit point tolerates
+// one for the reclaim to retry and report, while the reclaim reports it.
+func commitOAuthAside(path string) (string, error) {
+	name := filepath.Base(path)
+	_, committed, aside := oauthAsideInstance(name)
+	if !aside || committed {
+		return path, nil
+	}
+	committedPath := filepath.Join(filepath.Dir(path), oauthCommittedAsideName(name))
+	if err := os.Rename(path, committedPath); err != nil {
+		return path, err
+	}
+	return committedPath, nil
+}
+
 // restoreUncommittedOAuthAsides puts back the in-flight OAuth records a removal
 // set aside for an instance that still exists. It reports what it could not put
 // back, and whether it restored anything at all.
@@ -1685,9 +1732,11 @@ func oauthCommittedAsideName(name string) string {
 // record the hub cannot read is put back as faithfully as any other.
 //
 // A COMMITTED copy (oauthCommittedMarker) is never put back: it is the leftover
-// of a removal that STOOD (reclaimOAuthAsides), so putting it back would undo a
-// removal the caller was told had happened. It is left where it is for that
-// name's next removal to collect, as today's committed debris is.
+// of a removal that had done its durable work - the commit point marked it
+// (markOAuthAsidesCommitted) before the reload that published the removal, and
+// the reclaim (reclaimOAuthAsides) then deletes what a crash left. Putting it
+// back would undo a removal the caller was told had happened. It is left where it
+// is for that name's next removal to collect, as today's committed debris is.
 //
 // Everything else is left exactly where it is. An aside whose instance the
 // config no longer names and which is not a curated credential-only provider
@@ -1794,20 +1843,69 @@ func curatedCredentialOnlyOAuth(reg *registry.Registry, name string) bool {
 	return ok && p.Implicit != nil && *p.Implicit && p.Transport.Auth == registry.AuthOAuthOpenAICodex
 }
 
+// markOAuthAsidesCommitted moves every IN-FLIGHT copy filed under name to its
+// committed shape, and returns the path this removal's own copy carries
+// afterwards: own unchanged when its rename failed, "" when this removal set
+// nothing aside. It is the removal's commit point, run once the aside, the
+// credential deletions and the providers.toml write have all landed and
+// immediately before the reload that publishes the removal (Remove), so a hub
+// that dies anywhere from there onward leaves copies startup will never put back
+// (restoreUncommittedOAuthAsides) instead of restoring a removal the user
+// carried out. The mark is not left to the reclaim below because the reclaim
+// runs only after the reload: the whole reload would then sit inside a window a
+// crash turns back into an in-flight copy.
+//
+// It deliberately does not fail the removal. The reclaim after a successful
+// reload performs the same rename for the same copy - through the same helper -
+// and reports whatever it cannot mark or delete, so a rename failure here costs
+// nothing: the copy is either marked by the retry or named in the reclaim's
+// report. An auth directory this cannot read is the same: the reclaim reports the
+// read the way it reports a collection it cannot make.
+func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) string {
+	committedOwn := own
+	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return committedOwn
+	}
+	for _, e := range entries {
+		inst, committed, aside := oauthAsideInstance(e.Name())
+		// A directory is skipped for the same reason the reclaim skips one: the
+		// hub sets copies aside as regular files, so a directory filed under a
+		// copy's name was not written by a removal.
+		if e.IsDir() || !aside || committed || inst != name {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		renamed, _ := commitOAuthAside(path)
+		if own != "" && e.Name() == filepath.Base(own) {
+			committedOwn = renamed
+		}
+	}
+	return committedOwn
+}
+
 // reclaimOAuthAsides deletes the copies of one name's OAuth record that a
 // removal of that name has just made unwanted: the copy the call set aside and
 // any an earlier removal of the name left behind. It is run once the removal has
 // stood, after the reload that drops the instance from the registry, and it
 // takes copies FILED UNDER THAT NAME ONLY.
 //
-// Each in-flight copy is renamed to its committed name before it is deleted, so
-// a hub that dies between the two leaves a copy startup can identify as one a
-// standing removal made (restoreUncommittedOAuthAsides never puts a committed
-// copy back) instead of an in-flight one it would restore - which would undo the
-// removal the caller was told had happened. A commit rename that fails is
-// reported and the delete is attempted anyway: the removal stood, so the bytes
-// are unwanted whatever the rename did, and the report is the caller's only
-// warning that the crash mark could not be set.
+// It renames each in-flight copy to its committed name before deleting it. The
+// removal's commit point (markOAuthAsidesCommitted) already did that rename
+// before the reload, so this is the retry for a copy it could not mark - a second
+// rename that usually finds the work done. The rename is what keeps a crash
+// before the delete from leaving a copy startup would put back
+// (restoreUncommittedOAuthAsides); the delete is the whole point.
+//
+// The two failure classes are described separately. A copy whose DELETE failed
+// is a credential still on disk, and deleting it is what takes it away - the
+// caller is the only one left who can. A copy whose commit rename failed but
+// which WAS deleted leaves nothing on disk, so it is reported as the crash mark
+// that could not be set, never as a leftover: naming a file that is gone would
+// send the caller after nothing. A rename that failed and whose delete failed
+// too names both, because the copy is on disk in its in-flight shape and startup
+// would put it back.
 //
 // The name is the whole of what makes a copy safe to take. A removal is the only
 // call that can know the bytes are no longer wanted, so a copy under any other
@@ -1819,8 +1917,10 @@ func curatedCredentialOnlyOAuth(reg *registry.Registry, name string) bool {
 // again is what reclaims it, because a removal of the name is the caller saying
 // the credential is not wanted any more.
 //
-// A failure to take one is reported rather than ignored: the removal stands, and
-// the caller is the only one left who can delete the copy the report names.
+// A failure is reported rather than ignored: the removal stands, and the caller
+// is the only one left who can delete the copy the report names. Both classes
+// reach the caller as the removal's own failure (removePersistedError), because
+// the removal stood and every client has to drop the row.
 func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 	// Where the records live, asked of the function that places them, so the
 	// sweep cannot look somewhere a record never lands.
@@ -1834,9 +1934,9 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 		}
 		return fmt.Errorf("collect the OAuth copies the removal of %s set aside: %w", name, err)
 	}
-	var problems []string
+	var unmarked, remaining []string
 	for _, e := range entries {
-		inst, committed, aside := oauthAsideInstance(e.Name())
+		inst, _, aside := oauthAsideInstance(e.Name())
 		// A directory is skipped: this takes the copies the hub itself set
 		// aside, and deleting a directory's contents is not something a removal
 		// may do. setAsideOAuthFile refuses anything but a regular file at the
@@ -1846,22 +1946,35 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		if !committed {
-			// The commit mark, first, is what keeps a crash before the delete
-			// below from leaving a copy startup would put back.
-			committedName := oauthCommittedAsideName(e.Name())
-			if err := os.Rename(path, filepath.Join(dir, committedName)); err != nil {
-				problems = append(problems, fmt.Sprintf("%s could not be marked committed (%v)", path, err))
-			} else {
-				path = filepath.Join(dir, committedName)
+		// The commit mark, first, is what keeps a crash before the delete below
+		// from leaving a copy startup would put back; a copy already committed by
+		// the removal's commit point comes back unchanged.
+		committedPath, markErr := commitOAuthAside(path)
+		if delErr := c.auth.deleteAside(committedPath); delErr != nil {
+			remaining = append(remaining, fmt.Sprintf("%s (%v)", committedPath, delErr))
+			if markErr != nil {
+				// The copy is on disk in its in-flight shape, so startup would put
+				// it back; name the unset crash mark beside the failed delete.
+				remaining = append(remaining, fmt.Sprintf("%s could not be marked committed first (%v)", path, markErr))
 			}
+			continue
 		}
-		if err := c.auth.deleteAside(path); err != nil {
-			problems = append(problems, fmt.Sprintf("%s (%v)", path, err))
+		if markErr != nil {
+			// Deleted, but the crash mark was never set. What is wrong is the
+			// mark, not a leftover; a copy that could not be marked and WAS
+			// deleted must not be described as remaining.
+			unmarked = append(unmarked, fmt.Sprintf("%s (%v)", path, markErr))
 		}
 	}
+	var problems []string
+	if len(unmarked) > 0 {
+		problems = append(problems, fmt.Sprintf("a credential copy the removal of %s set aside could not be marked committed, though it was deleted: %s", name, strings.Join(unmarked, ", ")))
+	}
+	if len(remaining) > 0 {
+		problems = append(problems, fmt.Sprintf("a credential the removal of %s set aside is still on disk, and deleting it is what takes it away: %s", name, strings.Join(remaining, ", ")))
+	}
 	if len(problems) > 0 {
-		return fmt.Errorf("a credential the removal of %s set aside is still on disk, and deleting it is what takes it away: %s", name, strings.Join(problems, ", "))
+		return errors.New(strings.Join(problems, "; "))
 	}
 	return nil
 }
