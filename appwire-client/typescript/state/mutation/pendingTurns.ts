@@ -96,10 +96,14 @@ export interface PendingTurnsStore<A extends MutationAttachmentRef = MutationAtt
   endSubmission(ref: string): void;
   // Decides whether the composer draft `submitted` describes should be
   // cleared now that its submission has committed, and clears it through the
-  // draft port when so. Returns whether it cleared: unchanged from
+  // draft port when so. `cleared` is that decision: unchanged from
   // `draftRevisionAtStart` (no edit landed while the submission was in
   // flight) and still textually and selection-identical to what was sent.
-  settleSubmittedDraft(ref: string, submitted: SubmittedDraft): boolean;
+  // `draftUnchanged` is the narrower, revision-only half of that same check -
+  // a caller that also needs "did the user touch the draft at all", such as a
+  // recovery commit's own flag, reads it here rather than re-reading the
+  // draft port a second time and risking the two answers disagreeing.
+  settleSubmittedDraft(ref: string, submitted: SubmittedDraft): { cleared: boolean; draftUnchanged: boolean };
   // The pending-turn rows `ref` shows right now: this store's outbox and
   // optimistic records reconciled against the thread model the threads port
   // reads fresh, filtered to `method` when given.
@@ -151,14 +155,15 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
   };
 
   store.settleSubmittedDraft = (ref, submitted) => {
-    if (deps.draft.readDraftRevision(ref) !== submitted.draftRevisionAtStart) return false;
+    const draftUnchanged = deps.draft.readDraftRevision(ref) === submitted.draftRevisionAtStart;
+    if (!draftUnchanged) return { cleared: false, draftUnchanged };
     const draft = deps.draft.readComposerDraft(ref);
     const skillNames = [...submitted.skillNames];
     const selectionsUnchanged =
       draft.skillNames.length === skillNames.length && draft.skillNames.every((name, i) => name === skillNames[i]);
-    if (draft.text !== submitted.text || !selectionsUnchanged) return false;
+    if (draft.text !== submitted.text || !selectionsUnchanged) return { cleared: false, draftUnchanged };
     deps.draft.clearDraft(ref);
-    return true;
+    return { cleared: true, draftUnchanged };
   };
 
   store.pendingTurnEntries = (ref, method) => {

@@ -160,12 +160,13 @@ describe("createPendingTurnsStore", () => {
         draft,
         identity: UNATTRIBUTED_ONLY_IDENTITY,
       });
-      const cleared = store.settleSubmittedDraft("ref-a", {
+      const { cleared, draftUnchanged } = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "hello",
         skillNames: ["a"],
       });
       expect(cleared).toBe(true);
+      expect(draftUnchanged).toBe(true);
       expect(draft.state.cleared).toEqual(["ref-a"]);
     });
 
@@ -176,40 +177,47 @@ describe("createPendingTurnsStore", () => {
         draft,
         identity: UNATTRIBUTED_ONLY_IDENTITY,
       });
-      const cleared = store.settleSubmittedDraft("ref-a", { draftRevisionAtStart: 1, text: "hello", skillNames: [] });
+      const { cleared, draftUnchanged } = store.settleSubmittedDraft("ref-a", {
+        draftRevisionAtStart: 1,
+        text: "hello",
+        skillNames: [],
+      });
       expect(cleared).toBe(false);
+      expect(draftUnchanged).toBe(false);
       expect(draft.state.cleared).toEqual([]);
     });
 
-    test("does not clear the draft when the stored text no longer matches what was submitted", () => {
+    test("does not clear the draft when the stored text no longer matches what was submitted, but the revision alone is still unchanged", () => {
       const draft = fakeDraftPort({ revision: 1, text: "edited", skillNames: [] });
       const store = createPendingTurnsStore({
         threads: fakeThreadsPort(),
         draft,
         identity: UNATTRIBUTED_ONLY_IDENTITY,
       });
-      const cleared = store.settleSubmittedDraft("ref-a", {
+      const { cleared, draftUnchanged } = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "original",
         skillNames: [],
       });
       expect(cleared).toBe(false);
+      expect(draftUnchanged).toBe(true);
       expect(draft.state.cleared).toEqual([]);
     });
 
-    test("does not clear the draft when the selected skills no longer match", () => {
+    test("does not clear the draft when the selected skills no longer match, but the revision alone is still unchanged", () => {
       const draft = fakeDraftPort({ revision: 1, text: "hello", skillNames: ["a", "b"] });
       const store = createPendingTurnsStore({
         threads: fakeThreadsPort(),
         draft,
         identity: UNATTRIBUTED_ONLY_IDENTITY,
       });
-      const cleared = store.settleSubmittedDraft("ref-a", {
+      const { cleared, draftUnchanged } = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "hello",
         skillNames: ["a"],
       });
       expect(cleared).toBe(false);
+      expect(draftUnchanged).toBe(true);
       expect(draft.state.cleared).toEqual([]);
     });
   });

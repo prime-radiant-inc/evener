@@ -270,9 +270,8 @@ export function submitWithPendingTracking(
         // Submission ownership outlives a mounted composer. A retired mount
         // must not clear a newer draft written after a tab switch.
         if (epoch === refreshEpoch) {
-          const draftUnchanged = readDraftRevision(opts.ref) === draftRevisionAtStart;
           const skillNames = [...(opts.skillNames ?? [])];
-          const clearStoredDraft = pendingTurnsStore.settleSubmittedDraft(opts.ref, {
+          const { cleared: clearStoredDraft, draftUnchanged } = pendingTurnsStore.settleSubmittedDraft(opts.ref, {
             draftRevisionAtStart,
             text: opts.text,
             skillNames,
