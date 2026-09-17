@@ -710,6 +710,40 @@ describe("the checkpointed draft editor", () => {
     expect(() => store.getState().editDraft(rules)).not.toThrow();
   });
 
+  // RoboRev round 24 Medium 2: restoreDraft's UnreadableDraftError catch set
+  // the port-failure flags but left draft/writeUncertain/draftConflict
+  // exactly as they were, so a record that becomes unreadable WHILE a write
+  // is still uncertain left writeUncertain stuck true - and assertDiscardable
+  // refuses on writeUncertain unconditionally, blocking the one recovery
+  // (discard) an unreadable record is supposed to allow.
+  test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The stored checkpoint becomes unreadable (a newer app version wrote a
+    // shape this build cannot decode) while the write's outcome is still
+    // unknown.
+    drafts.corrupt();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+    // The record is unreadable - there is nothing left to be "uncertain"
+    // about and nothing to review a "conflict" against. Both must clear, or
+    // discardDraft (the one recovery this state allows) is refused too.
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draftConflict).toBe(false);
+    expect(store.getState().draft).toBeNull();
+    expect(() => store.getState().discardDraft()).not.toThrow();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+  });
+
   test("a discard refuses and re-classifies when the unreadable record has been replaced", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.corrupt();

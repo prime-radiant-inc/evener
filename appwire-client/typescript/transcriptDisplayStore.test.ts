@@ -818,6 +818,39 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
+  // RoboRev round 24 Medium 2: restoreDraft's UnreadableDraftError catch set
+  // the port-failure flags but left draft/writeUncertain/draftConflict
+  // exactly as they were, so a record that becomes unreadable WHILE a write
+  // is still uncertain left writeUncertain stuck true - and assertDiscardable
+  // refuses on writeUncertain unconditionally, blocking the one recovery
+  // (discard) an unreadable record is supposed to allow.
+  test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The stored checkpoint becomes unreadable (a newer app version wrote a
+    // shape this build cannot decode) while the write's outcome is still
+    // unknown.
+    drafts.corrupt();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+    // The record is unreadable - there is nothing left to be "uncertain"
+    // about and nothing to review a "conflict" against. Both must clear, or
+    // discardDraft (the one recovery this state allows) is refused too.
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draftConflict).toBe(false);
+    expect(store.getState().draft).toBeNull();
+    expect(() => store.getState().discardDraft()).not.toThrow();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+  });
+
   // RoboRev round 21 Medium 1: settling an uncertain checkpoint used an
   // unconditional save, so a concurrent writer's newer draft (landed while
   // this write's outcome was unknown) would be silently overwritten by the

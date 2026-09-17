@@ -662,10 +662,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision, fence.generation),
       };
     } catch (error) {
+      // An UnreadableDraftError names the RECORD as the problem, not the
+      // port: whatever draft/writeUncertain/draftConflict described before
+      // this call described a record that no longer exists to describe -
+      // round 24 Medium 2 (leaving them intact left a write left uncertain
+      // by an earlier attempt stuck that way forever, and
+      // assertDiscardable's unconditional writeUncertain check then refused
+      // the one recovery - discard - an unreadable record is supposed to
+      // allow). A genuine port failure (the read itself failed, not what it
+      // read) says nothing about whether the in-memory state is still
+      // accurate, so it is left alone.
+      const unreadable = error instanceof UnreadableDraftError;
       return {
         storageUnavailable: true,
-        draftUnreadable: error instanceof UnreadableDraftError,
+        draftUnreadable: unreadable,
         draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+        ...(unreadable ? { draft: null, writeUncertain: false, draftConflict: false } : {}),
       };
     }
   }
