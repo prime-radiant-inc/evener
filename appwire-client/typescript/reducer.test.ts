@@ -6196,3 +6196,125 @@ test("item/completed omitting outputImages keeps the output images the item alre
     { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
   ]);
 });
+
+// The other direction of the same selector, and the reason the preserve cases
+// above cannot stand alone: a settle that DOES carry images replaces the ones
+// the item had. Reverse mergeItemImages' `??` (`existing.images ??
+// settled.images`) and every "keeps ..." assertion above stays green while a
+// stale attachment silently wins — this case is what turns that red.
+test("item/completed carrying a different images list overrides the images the item already had", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" }]);
+
+  // Same item, and this settle's own image is the one that must win.
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "BAUG", name: "new.png" }],
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,BAUG", name: "new.png" }]);
+});
+
+test("item/completed carrying a different outputImages list overrides the output images the item already had", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "tool-result", url: "/s/sess_t/images/capture", name: "capture.png" }],
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "/s/sess_t/images/capture", name: "capture.png", source: "tool-result" },
+  ]);
+});
