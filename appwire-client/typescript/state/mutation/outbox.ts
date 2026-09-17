@@ -162,7 +162,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   readonly #scheduledReadyScans = new Set<MutationDiscoveryReason>();
 
   readonly #handleBroadcast = (event: unknown) => {
-    if (!this.#isReady()) return;
     const message = (event as { data?: unknown } | null)?.data;
     if (!isMutationOutboxWakeup(message)) return;
     this.#scheduleDiscovery([message.targetRef], "broadcast");
@@ -239,7 +238,7 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   }
 
   async connectionReady(): Promise<void> {
-    if (!this.#isReady()) return;
+    if (!this.#mayDiscover("ready")) return;
     try {
       await this.#queueDiscovery(() => this.#discoverAll("ready"));
     } catch {
@@ -248,12 +247,24 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     }
   }
 
+  // May this outbox still discover, right now? Discovery is serialized, so a scan
+  // can be queued while everything is fine and RUN after stop() drained the queue
+  // or after the connection dropped — which is why every entry asks this and the
+  // execution path asks it again, rather than four ad-hoc checks that each cover
+  // one moment. Two exceptions, both deliberate:
+  //
+  //   - "enqueue": a commit that just landed is durable and announcing it costs
+  //     nothing, so it is allowed even as the outbox stops (enqueueIntent owns
+  //     the readiness decision for it);
+  //   - "startup": the first scan runs whether or not the host is ready, so an
+  //     app that opens offline still learns what is waiting.
+  #mayDiscover(reason: MutationDiscoveryReason): boolean {
+    if (reason === "enqueue") return true;
+    return this.#started && (reason === "startup" || this.#isReady());
+  }
+
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {
-    // A host's timer callback can already be queued when clearInterval lands, and
-    // a lifecycle event can arrive during shutdown: a stopped outbox scans
-    // nothing. An enqueue is deliberately not gated — its record is durable and
-    // announcing it costs nothing.
-    if (!this.#started || !this.#isReady() || this.#scheduledReadyScans.has(reason)) return;
+    if (!this.#mayDiscover(reason) || this.#scheduledReadyScans.has(reason)) return;
     this.#scheduledReadyScans.add(reason);
     this.#schedule(async () => {
       try {
@@ -265,6 +276,7 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   }
 
   #scheduleDiscovery(targetRefs: string[], reason: MutationDiscoveryReason): void {
+    if (!this.#mayDiscover(reason)) return;
     this.#schedule(() => this.#discover(targetRefs, reason));
   }
 
@@ -281,10 +293,17 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   }
 
   async #discoverAll(reason: MutationDiscoveryReason): Promise<void> {
+    // Asked again here, at execution time: this call may have waited behind a
+    // slower scan, and there is no point reading storage for an outbox that has
+    // stopped or a connection that has dropped.
+    if (!this.#mayDiscover(reason)) return;
     await this.#discover(await this.#storage.listTargetRefs(), reason);
   }
 
   async #discover(targetRefs: string[], reason: MutationDiscoveryReason): Promise<void> {
+    // The one place onDiscover is called, so the one place the answer must hold:
+    // the storage read above can itself take long enough for the outbox to stop.
+    if (!this.#mayDiscover(reason)) return;
     // The consumer may still own failed reconciliation after its last durable record settled.
     await this.#onDiscover(targetRefs, reason);
   }
