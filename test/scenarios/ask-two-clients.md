@@ -22,7 +22,7 @@ this card is rebuilt around, because they invert what it used to say:
   **durable outbox enqueue**, then removes the batch and records its keys in
   `excludedKeys` forever (`:113-138`) — so the dock clears in both tabs before either
   `turn/start` has been answered. The rejection surfaces later, through the durable
-  recovery path (`stores/mutationDispatcher.ts:104-108` →
+  recovery path (`appwire-client/typescript/state/mutation/dispatcher.ts:213-223` →
   `Composer.tsx:271-297` / `composer/queue/QueueStrip.tsx:345-393`), never as an inline
   composer drop. `sendBatch`'s own `catch` + toast (`AskDock.tsx:295-306`) is for a
   **local enqueue** failure only; a lost race does not reach it.
