@@ -1,5 +1,5 @@
 import type { SecureRandomSource } from "./secureUUID";
-import { createSecureUUID } from "./secureUUID";
+import { createSecureUUID, tryOrUndefined } from "./secureUUID";
 
 // The durable shape of a mutation this client submitted, and the one question
 // every reader of a shared outbox has to answer about it: did THIS client
@@ -89,15 +89,6 @@ export interface MutationRecoveryRecord<A extends MutationAttachmentRef = Mutati
   recoveryReason?: string;
 }
 
-// Native has no durable record of its own yet. Its ConversationMutationState
-// (mobile/src/state/conversation.ts) is a different thing entirely — UI
-// ownership bookkeeping for the one mutation in flight: which action it was,
-// whether it is pending or failed, the draft to restore, and two monotonic
-// tokens the store uses to ignore stale completions. It carries no
-// clientMutationId, no targetRef, no payload, no sequence and no persisted
-// state, so nothing here aliases it; D25d is where native gains records and
-// this shape is what it gains.
-
 // --- client provenance -------------------------------------------------------
 
 // The store this client's identity is remembered in: per client, stable across
@@ -148,22 +139,16 @@ export function createClientIdentity(
 
   function ownClientId(): string {
     if (identity !== undefined) return identity;
-    try {
-      const stored = storage?.getItem(STORAGE_KEY);
-      if (stored !== null && stored !== undefined && stored !== "") {
-        identity = stored;
-        return stored;
-      }
-    } catch {
-      // Best-effort: the identity below keeps this client consistent either way.
+    // Best-effort: the identity below keeps this client consistent either way.
+    const stored = tryOrUndefined(() => storage?.getItem(STORAGE_KEY));
+    if (stored !== null && stored !== undefined && stored !== "") {
+      identity = stored;
+      return stored;
     }
-    identity = newClientIdentity(randomSource);
-    try {
-      storage?.setItem(STORAGE_KEY, identity);
-    } catch {
-      // Best-effort, same rationale.
-    }
-    return identity;
+    const generated = newClientIdentity(randomSource);
+    identity = generated;
+    tryOrUndefined(() => storage?.setItem(STORAGE_KEY, generated));
+    return generated;
   }
 
   // Whether a durable record belongs to this client: unattributed records

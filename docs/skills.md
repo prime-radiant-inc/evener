@@ -326,23 +326,31 @@ as prose:
 
 - **Selecting.** The composer's inline slash menu lists skills (only those
   both `available` and `userInvocable`) alongside commands. Choosing a skill
-  row removes only the typed completion token and adds a chip carrying the
-  skill's canonical name; surrounding text and attachment anchors are
-  untouched, and a pasted or typed inline `/name` mention that is never
-  explicitly selected stays ordinary text. Commands keep their existing
-  insert-then-execute behavior. A chip's remove control is labeled to
-  explain that the skill applies to the request independently of later prose
-  edits, and its details show the skill's description plus a diagnostic when
-  the live catalog no longer backs the selection.
+  row replaces the typed completion token with an indivisible chip carrying
+  the skill's canonical name, in the sentence where it was typed; surrounding
+  text and attachment anchors are untouched, and a pasted or typed inline
+  `/name` mention that is never explicitly selected stays ordinary text.
+  Completion adds a separating space whenever the text that follows would
+  otherwise join the name, including at the end of the input; punctuation or
+  whitespace that already bounds the reference is left as typed. Commands keep
+  their existing insert-then-execute behavior.
+  A chip is one unit: it is deleted with Backspace or Delete (never edited
+  letter by letter), typing a name character directly against it separates the
+  two rather than dissolving the selection, and undo and redo treat the chip
+  and the edit that placed it as one step. Its details show the skill's
+  description, or a note that the live catalog no longer backs the selection.
 - **Drafts.** Each session's sticky draft persists as one structured
   `{text, skillNames}` record, so selections survive a reload, a thread
-  switch, and a remount next to the text. Editing text never drops a
-  selection, and changing chips is a draft edit even when the text is
-  byte-identical — a delayed commit clears a draft only when both halves
-  still match what was submitted. An existing plain-text draft migrates by
-  reading the old value as literal text with an empty selection list: no
-  old value is JSON-decoded to guess selections, and no slash mention in it
-  is ever inferred as one.
+  switch, and a remount next to the text. Changing chips is a draft edit even
+  when the text is byte-identical — a delayed commit clears a draft only when
+  both halves still match what was submitted. On restore a selection is only
+  kept while its complete `/<name>` reference is still visible in the text, so
+  a name whose mention the user removed does not come back as a hidden
+  activation; a queued entry that carries a selection with no prose of its own
+  has that reference written out, so its chip is visible before it is sent. An
+  existing plain-text draft migrates by reading the old value as literal text
+  with an empty selection list: no old value is JSON-decoded to guess
+  selections, and no slash mention in it is ever inferred as one.
 - **Submission.** Selections ride the existing input-bearing mutation as
   `{type: "skill", name}` items appended after the text and image items —
   there is no second wire shape, outbox, or recovery store for them. The

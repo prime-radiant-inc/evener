@@ -1,6 +1,6 @@
 // The mutation state layer, published as
 // `@evener/appwire-client/state/mutation`: the durable record shapes both
-// apps' outboxes store, the provenance rule their projections ask, and the
+// apps' outboxes store, the provenance rule their projections ask, the
 // discovery half of the outbox itself over a storage port, and the dispatcher
 // that turns a stored record into one attempt at a time with no blind replay.
 // The storage adapter and every React binding stay in the apps — this subpath
