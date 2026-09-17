@@ -11,7 +11,17 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../errors";
 import { FakeClient } from "../../testing/fakeClient";
-import { capability, completeSession, manifest, wireV2 } from "../../testing/navigation";
+import {
+  capability,
+  completeSession,
+  manifest,
+  reconnectLocationKey,
+  reconnectManifestKey,
+  reconnectSectionKey,
+  reconnectSessionSnapshot,
+  reconnectV2Response,
+  wireV2,
+} from "../../testing/navigation";
 import { memoryNavigationPersistence } from "../../testing/navigationPersistence";
 import { navigationInvalidatedNotification } from "../../testing/notifications";
 import type {
@@ -43,7 +53,6 @@ import {
   navigationRootContainerKey,
   navigationViewScope,
   nextNavigationOffset,
-  type ResourceKey,
 } from "./types";
 
 // One store per test: the contract is about a store instance, not a singleton.
@@ -94,98 +103,6 @@ const initialize = (navigation: NavigationCapability): InitializeResponse => ({
   },
   navigation,
 });
-const reconnectManifestKey = { kind: "manifest" } as const;
-const reconnectSectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
-const reconnectLocationKey = { kind: "location", ref: "local:x" } as const;
-const reconnectSessionValue = {
-  ref: "x",
-  host_id: "local",
-  session_id: "x",
-  title: "Session x",
-  project: "project",
-  state: "idle",
-  kind: "session",
-  live: false,
-  children: [],
-};
-const reconnectSessionSnapshot = (
-  resource: ResourceKey,
-  metadata: Record<string, unknown>,
-  slot: "session" | "sessions",
-): NavigationSnapshot => {
-  const entityKey = `${navigationViewScope(resource)}/entity/${"7".repeat(64)}`;
-  return {
-    metadata,
-    entities: [
-      {
-        key: entityKey,
-        kind: "session",
-        value: resource.kind === "location" ? { ...reconnectSessionValue, ref: resource.ref } : reconnectSessionValue,
-      },
-    ],
-    containers: [
-      {
-        key: navigationRootContainerKey(resource, slot),
-        owner: { kind: "resource_root", slot },
-        children: [entityKey],
-      },
-      {
-        key: navigationOwnedContainerKey(entityKey, "children"),
-        owner: { kind: "entity", entityKey, slot: "children" },
-        children: [],
-      },
-    ],
-  };
-};
-const reconnectV2Response = (params: NavigationReadParams): NavigationReadResponse => {
-  if (params.resource === "manifest")
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 11,
-      etag: '"manifest-v2"',
-      data: {
-        metadata: emptyManifest({ revision: 11 }),
-        entities: [],
-        containers: [
-          {
-            key: navigationRootContainerKey(reconnectManifestKey, "manifest"),
-            owner: { kind: "resource_root", slot: "manifest" },
-            children: [],
-          },
-        ],
-      },
-    };
-  if (params.resource === "section")
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 22,
-      etag: '"section-v2"',
-      data: reconnectSessionSnapshot(
-        reconnectSectionKey,
-        { generation_id: generation, revision: 22, offset: 0, limit: 50, remaining: 0, truncated: false },
-        "sessions",
-      ),
-    };
-  if (params.resource === "location")
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 33,
-      etag: '"location-v2"',
-      data: reconnectSessionSnapshot(
-        reconnectLocationKey,
-        { generation_id: generation, revision: 33, ref: "local:x", top_level_ref: "local:x", top_level: true },
-        "session",
-      ),
-    };
-  throw new Error(`unexpected reconnect resource ${params.resource}`);
-};
-
 afterEach(() => {
   store.reset();
   vi.unstubAllGlobals();

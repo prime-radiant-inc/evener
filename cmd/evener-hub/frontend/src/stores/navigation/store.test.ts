@@ -7,13 +7,12 @@
 // package's own suite. Everything else - boot, reconnect, invalidation,
 // tombstones, recovery, pagination, convergence - is
 // appwire-client/typescript/state/navigation/store.test.ts.
-import type { NavigationReadParams, NavigationReadResponse, NavigationSnapshot } from "@evener/appwire-client";
+import type { NavigationReadParams, NavigationReadResponse } from "@evener/appwire-client";
 import {
   keyID,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
   navigationViewScope,
-  type ResourceKey,
 } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { capability, manifest, wireV2 } from "@evener/appwire-client/testing/navigation";
@@ -45,97 +44,12 @@ const init = async (script: NavigationScript) => {
   await flush();
   return client;
 };
-const reconnectManifestKey = { kind: "manifest" } as const;
-const reconnectSectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
-const reconnectLocationKey = { kind: "location", ref: "local:x" } as const;
-const reconnectSessionValue = {
-  ref: "x",
-  host_id: "local",
-  session_id: "x",
-  title: "Session x",
-  project: "project",
-  state: "idle",
-  kind: "session",
-  live: false,
-  children: [],
-};
-const reconnectSessionSnapshot = (
-  resource: ResourceKey,
-  metadata: Record<string, unknown>,
-  slot: "session" | "sessions",
-): NavigationSnapshot => {
-  const entityKey = `${navigationViewScope(resource)}/entity/${"7".repeat(64)}`;
-  return {
-    metadata,
-    entities: [
-      {
-        key: entityKey,
-        kind: "session",
-        value: resource.kind === "location" ? { ...reconnectSessionValue, ref: resource.ref } : reconnectSessionValue,
-      },
-    ],
-    containers: [
-      {
-        key: navigationRootContainerKey(resource, slot),
-        owner: { kind: "resource_root", slot },
-        children: [entityKey],
-      },
-      {
-        key: navigationOwnedContainerKey(entityKey, "children"),
-        owner: { kind: "entity", entityKey, slot: "children" },
-        children: [],
-      },
-    ],
-  };
-};
-const reconnectV2Response = (params: NavigationReadParams): NavigationReadResponse => {
-  if (params.resource === "manifest")
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 11,
-      etag: '"manifest-v2"',
-      data: {
-        metadata: emptyManifest({ revision: 11 }),
-        entities: [],
-        containers: [
-          {
-            key: navigationRootContainerKey(reconnectManifestKey, "manifest"),
-            owner: { kind: "resource_root", slot: "manifest" },
-            children: [],
-          },
-        ],
-      },
-    };
-  if (params.resource === "section")
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 22,
-      etag: '"section-v2"',
-      data: reconnectSessionSnapshot(
-        reconnectSectionKey,
-        { generation_id: generation, revision: 22, offset: 0, limit: 50, remaining: 0, truncated: false },
-        "sessions",
-      ),
-    };
-  if (params.resource === "location")
-    return {
-      status: "ok",
-      representation: "snapshot",
-      generationId: generation,
-      revision: 33,
-      etag: '"location-v2"',
-      data: reconnectSessionSnapshot(
-        reconnectLocationKey,
-        { generation_id: generation, revision: 33, ref: "local:x", top_level_ref: "local:x", top_level: true },
-        "session",
-      ),
-    };
-  throw new Error(`unexpected reconnect resource ${params.resource}`);
-};
+// The package's own suite exercises the full manifest/section/location
+// reconnect fixture (testing/navigation.ts); this file only ever reconnects
+// against a manifest read, so a plain wireV2 manifest response stands in for
+// it instead of importing the whole apparatus.
+const reconnectManifestV2 = (params: NavigationReadParams): NavigationReadResponse =>
+  wireV2(params, emptyManifest({ revision: 11 }), '"manifest-v2"', 11, generation);
 
 afterEach(() => {
   resetNavigationStoreForTests();
@@ -223,7 +137,7 @@ test("setExpanded hydrates a raw v2 project key with representation version 2", 
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) => {
     calls.push(params);
-    if (params.resource === "manifest") return reconnectV2Response(params);
+    if (params.resource === "manifest") return reconnectManifestV2(params);
     throw new Error(`scripted project read ${params.resource}`);
   });
   initNavigation(client, capability());
