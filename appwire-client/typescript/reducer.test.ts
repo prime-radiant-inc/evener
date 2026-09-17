@@ -6051,3 +6051,108 @@ test("thread/status/changed carries askPending, and absence leaves it alone", ()
   );
   expect(olderHub.askPending).toBe(true);
 });
+
+// The hub says "this item's output images are gone" with an explicit [] on the
+// item frame (appwire.ThreadItem.OutputImages is omitzero for exactly this).
+// The conversion collapsed that to undefined, so mergePageItem's
+// `newer.outputImages ?? older.outputImages` put the older page's images back
+// and the removal never reached the screen. An absent field still means "this
+// frame says nothing", where the other side's list is the only one anybody has.
+test("an explicit empty outputImages list removes the images an older page still carries", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            outputImages: [],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            outputImages: [{ url: "stale-image", source: "tool-result" }],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+  expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([]);
+});
+
+test("an absent outputImages field keeps the images the other page carries", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toBeUndefined();
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            outputImages: [{ url: "kept-image", source: "tool-result" }],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+  expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
+});
