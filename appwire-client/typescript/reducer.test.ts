@@ -6156,3 +6156,62 @@ test("an absent outputImages field keeps the images the other page carries", () 
   });
   expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
 });
+
+// Input images have ONE rule, and it is the length rule, matching the Go side of
+// the same wire: ThreadItem.Images is omitempty (nothing removes an item's input
+// images — they are what the user sent), so an empty list and an absent one are
+// the same thing and neither may erase what another page holds. The recorded
+// fixture sends "images": [] on a steering notification
+// (fixtures/tool-and-jobs.jsonl), so treating that as a removal erases real
+// input images from an older page. Only outputImages carries empty-is-a-value.
+test("an empty input images list never erases the images an older page carries", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look at this",
+            images: [],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look at this",
+            images: [{ type: "image", mediaType: "image/png", data: "aGk=", name: "shot.png" }],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+  const images = itemAt(turnAt(merged, 0), 0).images;
+  if (!images || images.length !== 1) {
+    throw new Error(`images=${JSON.stringify(images)}, want the older page's own input image kept`);
+  }
+});

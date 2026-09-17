@@ -306,17 +306,18 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
-// An empty list is a value, not an absence: a frame that says images: []
-// says "this item has no images", which mergePageItem's `newer.images ??
-// older.images` must keep over an older page still carrying the originals.
-// undefined is reserved for a frame with no images field at all, where the
-// other side's list is the only one anybody has.
+// Empty and absent are the SAME here, unlike outputImages below: nothing
+// removes an item's input images — they are what the user sent — so
+// ThreadItem.Images is omitempty on the wire and the hub's own merges fall back
+// on a zero-length list (server/appwire_turns.go, apptranscript's twin).
+// Answering [] would make mergePageItem's `newer.images ?? older.images` erase
+// an older page's real images whenever a frame carries images: [], which the
+// recorded steering notification in fixtures/tool-and-jobs.jsonl does.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
-  if (!images) return undefined;
-  if (images.length === 0) return [];
+  if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
   // when no server route is named, the bytes themselves are the src. Falling
@@ -362,9 +363,10 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-// Empty-is-a-value, exactly as imagesToItemImagesForSession above: a tool
-// whose output images were cleared says so with [], and an older page must
-// not replay the ones it had.
+// Empty IS a value here, unlike the input images above: a tool whose output
+// images were cleared says so with [] (appwire.ThreadItem.OutputImages is
+// omitzero for exactly this), and an older page must not replay the ones it
+// had. undefined stays "this frame said nothing about images".
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images) return undefined;
   if (images.length === 0) return [];
