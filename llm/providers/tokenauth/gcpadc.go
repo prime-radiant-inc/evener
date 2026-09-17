@@ -68,7 +68,18 @@ func (a *GCPADC) Apply(ctx context.Context, req *http.Request, res registry.Reso
 		if res.Credential.Source == "store" {
 			return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: stored credential JSON: %v", res.Instance, err), Cause: err}
 		}
-		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)", res.Instance, err), Cause: err}
+		cause := err
+		if res.Credential.Source == "none" {
+			// The registry resolved no credential at all, so this lookup
+			// failure is the no-credential class: the sentinel rides
+			// alongside the library's own error so a caller (the model
+			// picker's diagnostic line) can report the class without parsing
+			// this message's remediation prose. A lookup failure for a
+			// credential the registry did see (Source "adc") is a broken
+			// file, not an absent credential, and carries no sentinel.
+			cause = errors.Join(llm.ErrNoCredential, err)
+		}
+		return &llm.ConfigurationError{Message: fmt.Sprintf("instance %q: application-default credentials: %v (run `gcloud auth application-default login`, set GOOGLE_APPLICATION_CREDENTIALS, or store a credential JSON for the instance)", res.Instance, err), Cause: cause}
 	}
 	tok, err := src.ts.Token()
 	if err != nil {
