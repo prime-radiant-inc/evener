@@ -147,6 +147,7 @@ export function createPendingTurnsStore<A extends MutationAttachmentRef = Mutati
   };
 
   store.endSubmission = (ref) => {
+    if (!store.getState().submittingRefs.has(ref)) return;
     store.setState((state) => {
       const submittingRefs = new Set(state.submittingRefs);
       submittingRefs.delete(ref);

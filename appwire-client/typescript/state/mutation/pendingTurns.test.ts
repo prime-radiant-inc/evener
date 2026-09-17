@@ -150,6 +150,17 @@ describe("createPendingTurnsStore", () => {
       expect(store.getState().submittingRefs.has("ref-a")).toBe(false);
       expect(store.getState().submittingRefs.has("ref-b")).toBe(true);
     });
+
+    test("is a no-op, safe to call, for a ref with no submission in flight", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
+      const stateBefore = store.getState();
+      store.endSubmission("ref-never-started");
+      expect(store.getState()).toBe(stateBefore); // no new setState published
+    });
   });
 
   describe("settleSubmittedDraft", () => {
