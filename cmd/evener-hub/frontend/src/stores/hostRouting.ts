@@ -26,6 +26,14 @@ export const LOCAL_HOST = "local";
 // projects, the spawn slash catalog, the branch/location git HEAD read, the
 // plugin-preview panel, and the provider-instance list. A method removed from
 // the product should be removed from both this set and the allow-list.
+//
+// The two sides are pinned to each other by a single checked-in list,
+// cmd/evener-hub/host_request_methods.txt: this file's own test asserts the
+// array below IS that list (both directions), and the Go proxy's test asserts
+// every name on it is on remoteHostAdminMethods and is actually forwarded
+// rather than refused (app_host_admin_test.go). Before that pin, each side only
+// answered to a literal of its own, so a method dropped from one end left the
+// other end green while the browser forwarded a call the proxy rejects.
 export const HOST_DEPENDENT_DISCOVERY_METHODS = [
   "model/list",
   "evener/harnesses/list",

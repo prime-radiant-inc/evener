@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 
 	"primeradiant.com/evener/appwire"
@@ -573,6 +574,19 @@ func (s *RemoteHubSource) translateOut(out any) error {
 // undeclared key such as a delegate-level "transcriptRef" (JobActivityDelegate
 // has no such field) — survives byte-for-byte.
 //
+// The walk runs ONLY on a payload recognized as an activity tree
+// (activityTreeRecognized) AND decodable as a complete appwire.JobActivityTree
+// (activityTreeDecodable). A container name outside a tree is just data, and
+// descending into an unrecognized object would re-point a ref inside a payload
+// this source does not understand: a payload that fails recognition — an empty
+// object, an object carrying `root` without its required fields, a payload whose
+// required fields carry another type, or any unrelated object — is returned as
+// the `any` value it arrived as, never rewritten. So is a payload that satisfies
+// the discriminator test but is still malformed as a tree — `entries` as an
+// object rather than an array, a declared container of the wrong type, a
+// `revision` too large for a uint64 — because the wire contract this walk
+// follows is the typed tree, not the two discriminator fields.
+//
 // An older daemon may still answer with the retired flat array of EvenerJobInfo
 // (docs/appwire-protocol.md, evener/jobs/list); that shape is translated by the
 // same declared-field policy as the tree's job nodes.
@@ -583,11 +597,83 @@ func (s *RemoteHubSource) translateOut(out any) error {
 func (s *RemoteHubSource) translateActivityRefs(value any) any {
 	switch node := value.(type) {
 	case map[string]any:
+		if !activityTreeRecognized(node) || !activityTreeDecodable(node) {
+			return value
+		}
 		s.translateActivitySession(node["root"])
 	case []any:
 		s.translateLegacyJobRefs(node)
 	}
 	return value
+}
+
+// activityTreeRecognized reports whether a decoded jobs/list object is the
+// activity-tree shape, by the required fields and their types. The wire types
+// state them: JobActivityTree.Revision is a uint64, and neither it nor
+// JobActivityTree.Root, JobActivitySession.SessionID, or JobActivitySession.Ref
+// carries omitempty, so a tree the Go encoder wrote always carries `revision` as
+// a JSON number and `root` as an object with `sessionId` and `ref` as strings.
+//
+//   - `revision` must be a JSON number holding a non-negative integer. A string,
+//     an object, an array, a negative number, or a fractional number is not a
+//     revision, so the payload is not a tree.
+//   - `root` must be a JSON object carrying `sessionId` and `ref` as strings.
+//     Both may be empty: the encoder emits them unconditionally.
+//
+// Nothing else is constrained, so a newer remote hub may add fields this
+// controller does not know and the tree stays recognizable; the walk itself only
+// touches the ref fields the declared nodes own. "It decoded without error" is
+// deliberately not the test: `{}` and any unrelated object decode with no error,
+// and they are exactly the payloads that must reach the controller untouched.
+// Recognition is a cheap first gate only; activityTreeDecodable supplies the
+// other half of the boundary, so a payload this test accepts but the typed tree
+// rejects is still passed through untouched.
+//
+// The value is the generic decode of the wire response (appwire.Client decodes
+// JobsListResponse.Data with json.Unmarshal), so a JSON number arrives as a
+// float64.
+func activityTreeRecognized(node map[string]any) bool {
+	revision, ok := node["revision"].(float64)
+	if !ok || revision < 0 || revision != math.Trunc(revision) {
+		return false
+	}
+	root, ok := node["root"].(map[string]any)
+	if !ok {
+		return false
+	}
+	if _, ok := root["sessionId"].(string); !ok {
+		return false
+	}
+	_, ok = root["ref"].(string)
+	return ok
+}
+
+// activityTreeDecodable reports whether a payload that already passed
+// activityTreeRecognized also decodes as a complete appwire.JobActivityTree.
+//
+// The discriminator test pins only `revision` and `root`, but the walk follows
+// every container JobActivityTree declares (root/entries/job/delegate/child/
+// turns) and rewrites the ref fields those nodes own. A payload can satisfy the
+// discriminators and still be malformed as a tree — `entries` an object where
+// the wire type is a []JobActivityEntry, a declared node carrying another type,
+// a `revision` that overflows the uint64 field. Walking such a payload re-points
+// a ref inside a value this source does not understand, which is precisely what
+// the recognition boundary exists to prevent; only the typed contract decides
+// whether the walk may descend at all.
+//
+// The decode is a GATE, never a translation: the value the walk operates on
+// stays the decoded map so every key the typed struct does not declare survives
+// byte-for-byte. Re-encoding the struct would drop those keys and break the
+// pass-through guarantee for recognized trees. JobsListResponse.Data is `any`,
+// so the payload arrives as a generic value; the round trip through json.Marshal
+// is what reaches the typed decoder.
+func activityTreeDecodable(node map[string]any) bool {
+	encoded, err := json.Marshal(node)
+	if err != nil {
+		return false
+	}
+	var tree appwire.JobActivityTree
+	return json.Unmarshal(encoded, &tree) == nil
 }
 
 // translateLegacyJobRefs rewrites the declared ref field of each element of the

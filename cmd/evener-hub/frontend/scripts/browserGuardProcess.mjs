@@ -744,6 +744,21 @@ export async function requestBrowserClose(endpoint, fetchImpl = fetch, WebSocket
   });
 }
 
+// The teardown below waits for every child and every discovered Chrome helper
+// to exit before it removes the profile. A helper that outlived those waits -
+// one whose group the discovery pass could not reach - or the OS still
+// flushing the writes of one that has, can put a file back into a directory
+// between the recursive removal's readdir and its rmdir. The removal then
+// fails ENOTEMPTY and the guard exits non-zero with its own verdict already
+// printed (#1563). Node retries exactly that class (EBUSY, EMFILE, ENFILE,
+// ENOTEMPTY, EPERM) with a linear backoff when the removal is recursive.
+//
+// Measured over a profile an external process keeps writing into while the
+// removal runs: 20 of 20 removals fail ENOTEMPTY without these options, 0 of
+// 20 with them. Ten tries at a 50ms linear backoff is ~2.7s of patience for a
+// teardown that already waited for the processes themselves.
+export const PROFILE_REMOVAL = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
+
 export function createBrowserProcessCleanup({
   profileDir,
   processTarget = process,
@@ -759,6 +774,7 @@ export function createBrowserProcessCleanup({
   scheduleProfileProcessCheck = setImmediate,
   cancelProfileProcessCheck = clearImmediate,
   signalProfileProcess: signalProfile = signalProfileProcess,
+  removeProfile = rmSync,
 }) {
   const children = [];
   let cleanupPromise = null;
@@ -848,7 +864,7 @@ export function createBrowserProcessCleanup({
             ),
           ),
         );
-        rmSync(profileDir, { recursive: true, force: true });
+        removeProfile(profileDir, PROFILE_REMOVAL);
       } finally {
         removeSignalHandlers();
       }

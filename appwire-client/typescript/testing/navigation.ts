@@ -1,8 +1,11 @@
 // Navigation wire fixtures for both apps' tests and dev previews: builders for
 // the capability, manifest and session-summary shapes, and the wireV2 converter.
 import {
+  NAVIGATION_CATALOG_LIMIT,
+  NAVIGATION_SECTION_LIMIT,
   type NavigationResponse,
   navigationOwnedContainerKey,
+  navigationParamsToResourceKey,
   navigationRootContainerKey,
   navigationViewScope,
   type ResourceKey,
@@ -85,16 +88,6 @@ export const completeBody = (data: unknown, revision: number, gen: string): Reco
   return body;
 };
 
-// The codec's page-limit maximums (effectiveLimit in ../state/navigation/codec.ts):
-// a fixture's metadata.limit must equal the effective limit for its key.
-const SECTION_LIMIT = 50;
-const CATALOG_LIMIT = 100;
-
-const paged = (params: NavigationReadParams, limit: number): { offset: number; limit: number } => ({
-  offset: params.offset ?? 0,
-  limit: params.limit ?? limit,
-});
-
 const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
   manifest: "manifest",
   section: "sessions",
@@ -104,38 +97,6 @@ const ROOT_SLOT: Record<ResourceKey["kind"], string | undefined> = {
   project: undefined,
   project_page: "sessions",
   location: "session",
-};
-
-export const paramsToResourceKey = (params: NavigationReadParams): ResourceKey => {
-  if (params.resource === "manifest") return { kind: "manifest" };
-  if (params.resource === "section")
-    return {
-      kind: "section",
-      section: params.section as "live" | "needs_you",
-      ...paged(params, SECTION_LIMIT),
-    };
-  if (params.resource === "pin_catalog") return { kind: "pin_catalog", ...paged(params, CATALOG_LIMIT) };
-  if (params.resource === "pin_section")
-    return {
-      kind: "pin_section",
-      sectionId: params.sectionId as string,
-      ...paged(params, SECTION_LIMIT),
-    };
-  if (params.resource === "catalog")
-    return {
-      kind: "catalog",
-      catalog: params.catalog as "projects" | "archived_projects" | "test_runs",
-      ...paged(params, CATALOG_LIMIT),
-    };
-  if (params.resource === "project") return { kind: "project", projectKey: params.projectKey as string };
-  if (params.resource === "project_page")
-    return {
-      kind: "project_page",
-      projectKey: params.projectKey as string,
-      tier: params.tier as "current" | "recent" | "archived",
-      ...paged(params, SECTION_LIMIT),
-    };
-  return { kind: "location", ref: params.ref as string };
 };
 
 // wireV2 converts a v1-shaped body into a valid v2 snapshot response for the
@@ -149,7 +110,7 @@ export const wireV2 = (
   revision = 1,
   gen = "generation_test",
 ): NavigationReadResponse => {
-  const key = paramsToResourceKey(params);
+  const key = navigationParamsToResourceKey(params);
   const body = completeBody(data, revision, gen);
   let counter = 0;
   const entityKey = () => `${navigationViewScope(key)}/entity/${String(++counter).padStart(64, "0")}`;
@@ -174,8 +135,8 @@ export const wireV2 = (
     typeof params.limit === "number"
       ? params.limit
       : key.kind === "catalog" || key.kind === "pin_catalog"
-        ? CATALOG_LIMIT
-        : SECTION_LIMIT;
+        ? NAVIGATION_CATALOG_LIMIT
+        : NAVIGATION_SECTION_LIMIT;
   let metadata: Record<string, unknown>;
   const rootChildren: string[] = [];
   const rootSlot = ROOT_SLOT[key.kind];

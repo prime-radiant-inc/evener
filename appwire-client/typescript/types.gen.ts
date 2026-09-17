@@ -2084,6 +2084,7 @@ export interface ThreadStatusChangedParams {
   ref: string;
   status: ThreadStatus;
   failedToolCalls?: number;
+  askPending?: boolean;
   capabilities?: ThreadCapabilities;
 }
 
