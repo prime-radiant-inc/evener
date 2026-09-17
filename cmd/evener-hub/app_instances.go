@@ -2088,6 +2088,24 @@ func configCarriesName(l *registry.Layer, name string) bool {
 // A record filed under its own name again is the record the instance has now, so
 // a copy beside it stays too.
 //
+// A providers.toml that cannot be read does not abort the pass. The
+// credential-only rule above does not consult the config, so those copies are
+// still put back while their record path is free - an unrelated parse failure
+// must not strand the one credential a credential-only instance ever had. Every
+// config-dependent copy is deferred untouched: a config-backed copy cannot be
+// classified without the config (guessing would either resurrect a removal that
+// stood or delete a credential that did not), and the sweep that deletes
+// committed copies no config names cannot know what the config names. The config
+// failure is reported through the problems path, so a partial pass never reads
+// as clean. When the config reads, the pass is exactly as before.
+//
+// The forward resolution never overwrites a file already filed under the copy's
+// committed name (renameNoReplace): a partial prior rename can leave both paths
+// present, and rename(2) would silently destroy the bytes already there - a copy
+// of the same instance's record, or another copy's only surviving credential. A
+// taken destination leaves the in-flight copy where it is, holds the taken
+// committed name out of the sweep so its bytes survive too, and reports both.
+//
 // One instance can hold several copies - a removal strands one, a later sign-in
 // writes the record again, a second removal sets that one aside as well - so the
 // newest IN-FLIGHT copy goes back and the rest stay: the newest is the record
@@ -2103,9 +2121,22 @@ func configCarriesName(l *registry.Layer, name string) bool {
 // true when at least one record was put back, so a partial restore (some copies
 // reported as problems) still asks for the reload.
 func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, error) {
-	layer, _, err := registry.ReadConfigFile(providersConfigPath)
-	if err != nil {
-		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
+	// The config decides two things this pass needs: the KIND of every copy that
+	// could be config-backed (one whose name the config no longer carries is
+	// resolved forward, one the config still carries is put back) and which
+	// committed copies the sweep deletes (the ones no config names). A
+	// credential-only in-flight copy needs neither: its recovery is "put it back
+	// while its record path is free", which the config cannot change. So a config
+	// that cannot be read does not abort the pass - it completes the
+	// credential-only half, defers every config-dependent copy untouched (both
+	// the config-backed copies and the committed-copy sweep stay exactly where
+	// they are for a later pass with a readable config), and reports the failure
+	// so a partial pass is never read as clean. Deferring, never guessing, is what
+	// keeps an unrelated parse failure from deleting or resurrecting anything.
+	layer, _, cfgErr := registry.ReadConfigFile(providersConfigPath)
+	var problems []string
+	if cfgErr != nil {
+		problems = append(problems, fmt.Sprintf("read %s to classify the config-backed copies and sweep the committed ones, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched (%v)", providersConfigPath, cfgErr))
 	}
 	// Where the records live, asked of the function that places them, so this
 	// cannot look somewhere a record never lands.
@@ -2113,9 +2144,17 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// No directory is nothing set aside: a state root that never held a
-		// record has no copy of one.
+		// record has no copy of one. A config failure is still reported, so a
+		// partial pass never reads as clean.
 		if errors.Is(err, os.ErrNotExist) {
+			if len(problems) > 0 {
+				return false, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
+			}
 			return false, nil
+		}
+		if len(problems) > 0 {
+			problems = append(problems, fmt.Sprintf("read the OAuth state directory %s (%v)", dir, err))
+			return false, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
 		}
 		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
 	}
@@ -2133,7 +2172,11 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	newest := make(map[string]string, len(entries))
 	stamps := make(map[string]int64, len(entries))
 	var committed []committedCopy
-	var problems []string
+	// Committed names a forward resolution could not promote onto because the
+	// destination was already taken. They are held out of the sweep: the bytes
+	// already at the committed name are exactly what the no-replace move refused
+	// to overwrite, and deleting them here would lose what it saved.
+	protected := make(map[string]bool)
 	for _, e := range entries {
 		inst, isCommitted, configBacked, aside := oauthAsideInstance(e.Name())
 		if e.IsDir() || !aside {
@@ -2150,24 +2193,41 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			// neither restore the record nor return the copy to the in-flight shape
 			// leaves a committed copy of a removal that did not stand, and this
 			// sweep deletes it on the next start.
-			if !configCarriesName(layer, inst) {
+			if cfgErr == nil && !configCarriesName(layer, inst) {
 				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
 			}
 			continue
 		}
-		carried := configCarriesName(layer, inst)
-		if configBacked && !carried {
-			// The removal reached its config write (the config is the durable
-			// evidence): resolve it forward rather than restoring it. Returning it
-			// to the committed shape lets the sweep below collect it, so it does
-			// not stay in flight for a later pass to resurrect.
-			committedName := oauthCommittedAsideName(e.Name())
-			if rerr := os.Rename(filepath.Join(dir, e.Name()), filepath.Join(dir, committedName)); rerr != nil {
-				problems = append(problems, fmt.Sprintf("return the config-backed copy %s of %q, whose name the config no longer carries, to the committed shape for the sweep (%v)", e.Name(), inst, rerr))
-			} else {
-				committed = append(committed, committedCopy{committedName, inst, configBacked})
+		if configBacked {
+			if cfgErr != nil {
+				// The config is what classifies this copy and it cannot be read:
+				// leave it in flight for a later pass rather than guessing. A
+				// guess would either resurrect a removal that stood or delete a
+				// credential that did not.
+				continue
 			}
-			continue
+			if !configCarriesName(layer, inst) {
+				// The removal reached its config write (the config is the durable
+				// evidence): resolve it forward rather than restoring it. Returning it
+				// to the committed shape lets the sweep below collect it, so it does
+				// not stay in flight for a later pass to resurrect. The move is
+				// no-replace: a destination already filed under the committed name is
+				// left untouched, the copy stays in flight for a later pass, and the
+				// take is reported - the alternative, rename(2), silently destroys
+				// the bytes already there.
+				committedName := oauthCommittedAsideName(e.Name())
+				source := filepath.Join(dir, e.Name())
+				target := filepath.Join(dir, committedName)
+				if rerr := renameNoReplace(source, target); rerr != nil {
+					// Hold the taken destination out of the sweep below: deleting it
+					// would lose exactly the bytes this refusal protected.
+					protected[committedName] = true
+					problems = append(problems, fmt.Sprintf("return the config-backed copy %s of %q, whose name the config no longer carries, to the committed shape %s for the sweep: the committed name was taken, so the copy stayed in flight and %s was left untouched (%v)", source, inst, target, target, rerr))
+				} else {
+					committed = append(committed, committedCopy{committedName, inst, configBacked})
+				}
+				continue
+			}
 		}
 		// Credential-only copies, and config-backed copies the config still
 		// carries, are put back if their record path is free.
@@ -2212,6 +2272,9 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// the delete. A delete that fails is reported with the rest of this pass's
 	// problems either way.
 	for _, c := range committed {
+		if protected[c.name] {
+			continue
+		}
 		loneCredential := false
 		if !c.configBacked {
 			if _, statErr := os.Lstat(authopenai.AuthFilePath(stateDir, c.inst)); errors.Is(statErr, os.ErrNotExist) {

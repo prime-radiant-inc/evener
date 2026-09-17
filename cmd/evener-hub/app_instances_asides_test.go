@@ -891,6 +891,111 @@ func TestRestoreUncommittedOAuthAsidesPutsBackAConfigBackedCopyTheConfigStillCar
 	}
 }
 
+// TestRestoreUncommittedOAuthAsidesLeavesACopyWhoseCommittedNameIsTaken: the
+// forward resolution of a config-backed in-flight copy must never overwrite a
+// file already filed under the copy's committed name. A partial prior rename can
+// leave both paths present, and POSIX rename(2) would silently replace the bytes
+// already there - a copy of the same instance's record, or another copy's only
+// surviving credential. The promotion refuses the taken destination
+// (renameNoReplace), leaves BOTH the in-flight copy and the committed bytes
+// exactly where they are, and reports both paths through the pass's problems
+// path. The committed copy must not be swept either: deleting it here would lose
+// precisely what the no-replace move protected.
+func TestRestoreUncommittedOAuthAsidesLeavesACopyWhoseCommittedNameIsTaken(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "1757000000000000000"
+	inflight := "gone.json" + oauthConfigAsideMarker + stamp
+	committedName := "gone.json" + oauthConfigCommittedMarker + stamp
+	const committedBytes = "the bytes already at the committed name\n"
+	const inflightBytes = "the config-backed copy still in flight\n"
+	if err := os.WriteFile(filepath.Join(dir, committedName), []byte(committedBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", committedName, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, inflight), []byte(inflightBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", inflight, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err == nil || !strings.Contains(err.Error(), inflight) || !strings.Contains(err.Error(), committedName) {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the taken committed name %s reported with the copy %s", restored, err, committedName, inflight)
+	}
+	if !strings.Contains(err.Error(), "stayed in flight") {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the copy reported as stayed in flight", err)
+	}
+	if restored {
+		t.Fatal("restoreUncommittedOAuthAsides = true, want the config-backed copy resolved forward rather than put back")
+	}
+	gotCommitted, rerr := os.ReadFile(filepath.Join(dir, committedName))
+	if rerr != nil || string(gotCommitted) != committedBytes {
+		t.Fatalf("the committed file = %q (%v), want its bytes untouched by the refused promotion", gotCommitted, rerr)
+	}
+	gotInflight, rerr := os.ReadFile(filepath.Join(dir, inflight))
+	if rerr != nil || string(gotInflight) != inflightBytes {
+		t.Fatalf("the in-flight copy = %q (%v), want it left in flight for a later pass", gotInflight, rerr)
+	}
+	if _, rerr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "gone")); !errors.Is(rerr, os.ErrNotExist) {
+		t.Fatalf("the config-backed copy was restored at its record path (Lstat = %v), want the standing removal left alone", rerr)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesRecoversCredentialOnlyCopiesWhenTheConfigCannotBeRead:
+// a credential-only in-flight copy's recovery does not need providers.toml - the
+// record file was the whole of what made the instance exist, and the copy goes
+// back whenever its record path is free. An unrelated config failure must not
+// strand that credential. The pass still completes the credential-only half,
+// defers every config-dependent copy untouched (here, the committed-copy sweep),
+// and reports the config failure so a partial pass never reads as clean.
+func TestRestoreUncommittedOAuthAsidesRecoversCredentialOnlyCopiesWhenTheConfigCannotBeRead(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	// An unreadable providers.toml: a directory stands where the file was, so
+	// ReadConfigFile fails rather than returning an empty layer.
+	if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", f.tomlPath, err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "1757000000000000000"
+	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	inflight := filepath.Join(dir, "openai-codex.json"+oauthAsideMarker+stamp)
+	const credentialBytes = "the only credential the instance ever had\n"
+	if err := os.WriteFile(inflight, []byte(credentialBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", inflight, err)
+	}
+	// A committed copy the config would not carry: the sweep that deletes it needs
+	// the config, so it must not run in a pass without one.
+	swept := "retired.json" + oauthCommittedMarker + stamp
+	if err := os.WriteFile(filepath.Join(dir, swept), []byte("a standing removal's copy\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", swept, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err == nil || !strings.Contains(err.Error(), f.tomlPath) {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the config failure naming %s reported", restored, err, f.tomlPath)
+	}
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides = false, want the credential-only copy put back without the config")
+	}
+	got, rerr := os.ReadFile(record)
+	if rerr != nil || string(got) != credentialBytes {
+		t.Fatalf("the record = %q (%v), want the credential-only copy put back", got, rerr)
+	}
+	if _, statErr := os.Lstat(inflight); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the in-flight copy is still on disk (Lstat = %v), want it moved", statErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, swept)); statErr != nil {
+		t.Fatalf("the committed copy %s was swept (Lstat = %v), want the config-dependent sweep deferred", swept, statErr)
+	}
+}
+
 // TestInstances_RemovalRecordsTheAsideKind: the kind is written into the aside
 // name by the removal's own rename, so it is durable with no extra file. A
 // removal of an AUTHORED instance (providers.toml carried the name) sets aside a
