@@ -24,8 +24,8 @@ import type {
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
-import { createListRevision } from "./listRevision";
-import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
+import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -181,30 +181,23 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
      * revision has committed since, and the catalogs it names are retired
      * either way within the generation it was issued in (retiring is
      * monotonic). Rejects as the request does. */
-    async function mutate(
+    function mutate(
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
     ): Promise<void> {
-      const revision = listRevision.next();
       const issuedIn = generation;
-      let resp: { marketplaces: MarketplaceEntry[] };
-      try {
-        resp = await request();
-      } catch (err) {
-        // Nothing to publish, so nothing to own: see listRevision's retract.
-        listRevision.retract(revision);
-        throw err;
-      }
-      if (issuedIn !== generation) return;
-      // The catalogs this mutation names are retired whether or not its list
-      // is the live answer: retiring is monotonic within the generation, so a
-      // catalog stale under an older list is stale under a newer one too.
-      if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
-      // The list, and the two fields that belong to it, go through the fence:
-      // see plugins.ts's mutate for why the live answer owns all three.
-      listRevision.publish(revision, () =>
-        set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
-      );
+      return writeRevisioned(listRevision, request, (resp) => {
+        // A reset or a dispose ended the generation this write was issued in:
+        // its answer is about a store that has forgotten everything it read.
+        if (issuedIn !== generation) return null;
+        // The catalogs this write names are retired whether or not its list is
+        // the live answer: retiring is monotonic within the generation, so a
+        // catalog stale under an older list is stale under a newer one too.
+        if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
+        // The list, and the two fields that belong to it, go through the fence:
+        // see plugins.ts's mutate for why the live answer owns all three.
+        return () => set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
+      });
     }
 
     const setCatalog = (name: string, entry: MarketplaceCatalogEntry): void =>
@@ -215,22 +208,18 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       marketplacesLoading: false,
       marketplacesError: null,
 
-      async fetchMarketplaces() {
-        const revision = listRevision.next();
+      fetchMarketplaces() {
         set({ marketplacesLoading: true, marketplacesError: null });
-        try {
-          const resp = await client.request("evener/marketplace/list", {});
-          // The loading flag and the error belong to this response as much as
-          // its list does, so an outrun fetch writes none of the three: its
-          // success would clear an error a newer fetch posted or hide a load
-          // still running, and its failure would put "Failed to load" over a
-          // newer mutation's list.
-          listRevision.publish(revision, () =>
+        // The loading flag and the error belong to this answer as much as its
+        // list does, so an outrun read publishes none of the three: its success
+        // would clear an error a newer read posted or hide a load still
+        // running, and its failure would put "Failed to load" over a newer
+        // write's list.
+        return readRevisioned(listRevision, () => client.request("evener/marketplace/list", {}), {
+          onAnswer: (resp) => () =>
             set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
-          );
-        } catch (err) {
-          listRevision.publish(revision, () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }));
-        }
+          onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }),
+        });
       },
 
       addMarketplace: (params) => mutate(() => client.request("evener/marketplace/add", params), []),
@@ -280,6 +269,5 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     };
   });
 
-  const { start, connectionChanged, reset, dispose } = lifecycle;
-  return { ...store, start, connectionChanged, reset, dispose };
+  return attachLifecycle(store, lifecycle);
 }

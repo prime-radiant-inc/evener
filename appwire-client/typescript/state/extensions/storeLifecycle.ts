@@ -271,3 +271,15 @@ export function createStoreLifecycle<S>(
     },
   };
 }
+
+/**
+ * The store a host drives: the store's own reactive triple plus everything of
+ * the lifecycle except `guard`, which stays the store's own business.
+ */
+export function attachLifecycle<S, T extends FrameworkFreeStore<S>>(
+  store: T,
+  lifecycle: StoreLifecycle<S>,
+): T & Omit<StoreLifecycle<S>, "guard"> {
+  const { start, connectionChanged, reset, dispose } = lifecycle;
+  return { ...store, start, connectionChanged, reset, dispose };
+}

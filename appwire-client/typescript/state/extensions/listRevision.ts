@@ -116,3 +116,48 @@ export function createListRevision(): ListRevision {
     },
   };
 }
+
+/**
+ * Runs a READ under a fresh revision. Either outcome is list state - the rows,
+ * or the error a view renders instead of them - so both go through the fence
+ * and the read never throws: a read that was superseded publishes neither.
+ */
+export async function readRevisioned<T>(
+  revisions: ListRevision,
+  request: () => Promise<T>,
+  handlers: { onAnswer(answer: T): () => void; onFailure(error: unknown): () => void },
+): Promise<void> {
+  const revision = revisions.next();
+  try {
+    const answer = await request();
+    revisions.publish(revision, handlers.onAnswer(answer));
+  } catch (error) {
+    revisions.publish(revision, handlers.onFailure(error));
+  }
+}
+
+/**
+ * Runs a WRITE under a fresh revision. Its answer is list state and goes
+ * through the fence; its failure is the caller's to surface, so the rejection
+ * propagates and the revision is given back - a request that published nothing
+ * must not keep what it fenced. `onAnswer` returns null to say the same thing
+ * about an answer it will not publish, for a store with a fence of its own
+ * beside this one.
+ */
+export async function writeRevisioned<T>(
+  revisions: ListRevision,
+  request: () => Promise<T>,
+  onAnswer: (answer: T) => (() => void) | null,
+): Promise<void> {
+  const revision = revisions.next();
+  let answer: T;
+  try {
+    answer = await request();
+  } catch (error) {
+    revisions.retract(revision);
+    throw error;
+  }
+  const write = onAnswer(answer);
+  if (write) revisions.publish(revision, write);
+  else revisions.retract(revision);
+}
