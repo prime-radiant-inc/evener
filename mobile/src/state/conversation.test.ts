@@ -6386,6 +6386,45 @@ describe("ConversationStore", () => {
       });
     });
 
+    // The same rule for the frames that carry transcript CONTENT, which is the
+    // half a reader would notice: a delta delivered after the response streams
+    // on top of the snapshot's own text. The snapshot is what the hub had at
+    // the cut — its materialized turn authority folds every delta into the item
+    // as it streams (server/appwire_turns.go's NotifyAgentMessageDelta case,
+    // `item.Text += params.Delta`), so a delta this store folded BEFORE the
+    // response is already in the text the response carries, and one after it
+    // appends to that text rather than being lost.
+    it("streams a delta that arrives after the response on top of the snapshot's text", async () => {
+      const service = new FakeConversationService();
+      const streaming = [agentMessageItem("a1", "", "inProgress")];
+      service.readProjectionResult = makeReadProjectionResult(runningTurnThread(streaming));
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The hub has folded "half " into the item by the time of the cut.
+      service.readProjectionResult = makeReadProjectionResult(
+        runningTurnThread([agentMessageItem("a1", "half ", "inProgress")]),
+      );
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: target,
+      } as AnyNotification);
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "half " });
+
+      // A delta after the response appends to the committed snapshot's text.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: { ...target, turnId: "t1", itemId: "a1", delta: "done" },
+      } as AnyNotification);
+      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "half done" });
+    });
+
     // Two fences on the same rule for the frames where a second application
     // would not be idempotent: a turn the snapshot already carries keeps its
     // items and raises no duplicate-turn report, and a steering the snapshot
