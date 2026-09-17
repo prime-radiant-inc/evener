@@ -150,8 +150,13 @@ the same rules as client operation IDs). The staged commit persists a durable
 mutation receipt in two writes — the single explicit receipt write point (extending
 the round-ten receipt): the step-(2) sidecar write carries a transient
 `pendingMutation` marker (the scoped key plus `stagedAt` plus the staged
-finalized-receipt payload — outcome, row, generation, and `remnantId` when the
-commit staged a remnant; a single object, never a map — at most one staged
+provisional payload — explicitly provisional outcome, row, generation, a
+pre-minted `remnantId`, and the pinned teardown target (the in-progress
+remnant: the staged supervisor/channel/fan-out teardown description for this
+commit, resolvable without the live entry — the step-(2) write lands before
+the post-commit rebind executes the first teardown, so the target and its
+remnant are durable before any irreversible teardown destroys a handle);
+a single object, never a map — at most one staged
 commit holds the mutation lock), and the
 post-commit write replaces the marker with the finalized mutation receipt —
 the scoped key, the outcome, the resulting row, and the resulting generation
@@ -163,12 +168,18 @@ a still-`pendingMutation` key never re-applies: while the original commit
 holds the mutation lock the replay fails fast with the transient busy form
 (retry with backoff); once the lock is free and the marker persists — the
 post-commit write failed or its response was lost while the process stayed
-alive — the replay finalizes the receipt from the marker's staged payload in
-one atomic sidecar write and returns the finalized receipt (outcome as staged:
-`committed`, or `committed-with-teardown-failure` with the staged `remnantId`
-when the commit staged one), so retries converge instead of reporting busy
+alive — the replay re-runs the marker's pinned teardown to completion (the
+pinned target is idempotent, so a teardown that already ran is a no-op and a
+teardown interrupted by the lost write is completed) to derive the real
+outcome and remnant, then finalizes the receipt from that observed result in
+one atomic sidecar write and returns the finalized receipt (`committed`, or
+`committed-with-teardown-failure` with the pre-minted `remnantId` when the
+re-run actually failed — never the staged provisional outcome on its own),
+so retries converge instead of reporting busy
 forever. Any mutation-path write that finds a marker it did not stage
-finalizes that marker first under the same lock before its own stage — a live
+finalizes that marker first under the same lock — including the pinned-teardown
+re-run above, so the foreign commit is durably recoverable (receipt plus real
+remnant) before the new mutation stages — before its own stage — a live
 process never accumulates an orphaned marker — and `list` already shows the
 committed row (disk holds the entry), so read-after-unknown converges even
 before finalization lands. **Crash-window recovery:** a crash between
@@ -180,10 +191,16 @@ true` (the optional receipt field in Persistence + hot-apply, below)), so a
 lost-response retry after the crash returns the recovered
 receipt instead of re-applying. Compensation's stash-restore removes the
 marker with the prior bytes, so a compensated mutation leaves neither marker
-nor receipt. **Receipt scope
+nor receipt (pre-commit only: once the first teardown executes, the commit-point
+rule below applies and the in-progress remnant is the forward-repair handle,
+never a stash restore). **Receipt scope
 — extending the round-nine receipt with the operation store's scoping:** the
 dedup key is (mutationId, host name, mutation kind, host generation at
-commit), mirroring the operation store's (host, kind, client operation ID,
+commit — the resulting post-commit generation: for `update`, the post-bump
+value the same commit advances to, pinned into the receipt at stage time, so
+a commit-then-replay names the generation the commit actually landed and hits
+instead of missing as superseded), mirroring the operation store's (host, kind,
+client operation ID,
 generation) scope. A replay matches only a receipt of the same name, kind,
 and current generation. A mutationId colliding with a current-generation
 receipt of a different name or kind is refused with the typed
@@ -323,7 +340,10 @@ per the absent-when-unknown rule.
   terminal; missing curl, unwritable target, unit findings per 04b).
   **Last-known snapshot:** the manager owns a per-host last-known store —
   the latest preflight facts with their capture timestamp plus the latest
-  attach error with its timestamp, keyed by the host's registry generation
+attach error with its timestamp, plus the last-known running revision/health
+snapshot and the last plan-time refusal (the inputs behind `status`'s
+`restartFollows` and `planRefusal` — without these a no-dial `status` read
+cannot produce those fields), keyed by the host's registry generation
   and updated on every successful preflight and every attach outcome —
   and `list`/`status` read it read-only, never dialing and never
   constructing facts from the channel. Removal clears the outgoing
@@ -619,7 +639,10 @@ controller-side operation records; this component defines a
 - Record: operation id (controller-assigned), client operation ID, host, kind
   (deploy/restart), state (`pending`/`running`/`complete`/`failed`/
   `interrupted`), progress entries (timestamped, bounded), terminal result,
-  timestamps, and a **`host-removed` mark** (set when the host is removed —
+timestamps, the **pinned host generation (the incarnation the record ran
+against — part of the dedup scope, so polling after client operation-ID reuse
+returns distinguishable records and the current incarnation is selected by
+generation match)**, and a **`host-removed` mark** (set when the host is removed —
   live at remove time, or reconstructed from the sidecar tombstones at boot
   (see crash recovery); still-readable history that never matches a dedup
   lookup either way). **Client
@@ -706,6 +729,16 @@ controller-side operation records; this component defines a
   operation-store mark are two separate durable writes (different files), so
   a crash between them leaves the mark to be reconstructed here — the
   never-match rule holds via the live mark OR this boot reconciliation.
+  **Cross-file commit marker (extending the round-fifteen boot fingerprint):
+  every sidecar commit that also advances a mirrored store-side generation
+  writes a commit marker — the (name, sidecar generation, store-mirror
+  generation) triple — into the sidecar's atomic write; boot recovery orders
+  sidecar load first, then the tombstone-derived `host-removed` pass above,
+  then generation-mirror reconciliation: a store mirror newer than the sidecar
+  mark for the same name with no matching sidecar commit marker (a store write
+  that survived its sidecar's compensation) is rolled back to the sidecar mark
+  before any token/record validation, so a compensated mutation can never boot
+  with an advanced generation invalidating valid tokens and records.**
   Records reach the store only through the
   atomic consume-and-create write, so no crash window can consume a token
   without leaving a recoverable record. No record can stay stuck forever.
@@ -864,7 +897,8 @@ controller-side operation records; this component defines a
   fix or delete the file; only sidecar state is lost).** **The sidecar file
   also carries the mutation receipts and teardown-remnant records (sibling
   of the idempotency receipts): `mutationReceipts` maps the scoped receipt
-  key (mutationId, host name, mutation kind, commit generation) to
+key (mutationId, host name, mutation kind, resulting post-commit generation
+— see Receipt scope, above) to
  `{outcome, row, generation, committedAt, remnantId?, remnantResolvedAt?, bootRecovered?}` —
  `remnantId` present exactly when the commit staged a remnant (see the commit
  point), `remnantResolvedAt` present exactly after `teardown-retry` resolves
@@ -875,7 +909,13 @@ controller-side operation records; this component defines a
  generation, mutationKey, committedAt}`, and a cleared remnant persists as
  the cleared-remnant marker `remnantId → clearedAt` in the same section
  (see `teardown-retry`), purged only by the name's next re-add or the
- retention-expiry prune. The 08a commit-point tests assert these exact
+retention-expiry prune. **Cleared-remnant markers carry their own bounded
+retention independent of tombstones (owner-set cleared-marker TTL — a live
+host's repaired failures create no tombstone, so without this the markers
+accumulate forever): every boot and every sidecar mutation compacts cleared
+markers past the TTL in the same atomic write, and lost-response retries past
+the TTL read as `teardown-unknown-key` not-found instead of
+`already-cleared`.** The 08a commit-point tests assert these exact
  fields. Both sections
  (`pendingTeardown` is the self-contained generation-scoped teardown target —
  the staged supervisor/channel/fan-out teardown description pinned at commit,
@@ -942,7 +982,10 @@ controller-side operation records; this component defines a
   host-set acceptance rewired from the startup `RemoteHosts` snapshot to the
   live set, preferably through a live-registry callback, so newly added hosts
   validate and removed hosts stop validating as part of the same swap),
-  (same config dir) before the atomic rename, so the swap is compensable;
+(same config dir — same file posture as the sidecar: stash temps created
+`0600`, atomic renames preserving the mode, startup refusing a stash readable
+beyond its owner, and stray/expired stash files pruned or ignored at boot)
+before the atomic rename, so the swap is compensable;
   (3) **swap the runtime to the staged set** — rebinding or wiring the
   live handles to the new values, and only then executing the planned
   teardowns (supervisor/channel stops, fan-out cancellations) as the
@@ -961,7 +1004,9 @@ controller-side operation records; this component defines a
   the original mutationId stays a no-op receipt return, so the API has a
   repair path that is not the replay): the same atomic sidecar write that
   persists the committed receipt also persists a durable teardown-remnant
-  record — the mutation's scoped receipt key plus the named pending teardown
+record — the mutation's scoped receipt key plus the in-progress remnant
+already pinned in the step-(2) marker (see mutation idempotency, above) —
+the named pending teardown
  (handles, seam, generation) **plus a server-generated opaque `remnantId`
  (non-empty, at most 128 bytes, unique per remnant — never derived from the
  mutationId, so an ID-less failure still gets a retry handle and a reused
@@ -1184,15 +1229,21 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
 - `evener/host/remove`: params `{name: string, mutationId?: string}` (defined once —
  the same optional idempotency key as `add`/`update`); response the
  mutation-result union below — the clean path returns `{outcome: "committed",
- name, removed: true, retainedRows}`, and only the union's failure arm
- describes the failed-rebind shape. A replay carrying a known
+host: RemovedRow}`, and only the union's failure arm
+describes the failed-rebind shape (`RemovedRow` is the dedicated removed-row
+arm — `{name, removed: true, retainedRows}` plus the tombstone's retained
+effective `HostConfig` fields, `attached: false`, `midEnsure: false`, and the
+removed entry's `origin` and `generation` per `list` tombstone values — and is
+NOT a `HostRow`: the catalog + regenerated client carry it as its own
+interface). A replay carrying a known
   key returns the recorded receipt without re-applying.
 **Mutation-result union (add/update/remove — the round-seven protocol-types
 contract is authoritative for codegen):** every add/update/remove handler
 returns either `{outcome: "committed", host: HostRow}` (remove's clean path
-substitutes `{outcome: "committed", name, removed: true, retainedRows}`) or
+returns `{outcome: "committed", host: RemovedRow}`) or
 the failure arm `{outcome: "committed-with-teardown-failure", seam:
-string, remnantId: string, host: HostRow}` — a normal result-union response,
+string, remnantId: string, host: HostRow}` (remove's failure arm carries
+`host: RemovedRow` for the same reason) — a normal result-union response,
 never an AppWire error-envelope throw (pre-commit failures throw typed error
 envelope codes; post-commit outcomes return through the union — the failure
 arm names a committed mutation whose teardown needs forward retry) — the `remnantId` is mandatory on
@@ -1206,20 +1257,28 @@ on the failure arm fails the protocol-shapes test.
   `HostRow` plus the deploy plan inputs: `controllerBuild: string`,
   `resolvedTargetPath?: string`, `restartFollows?: bool` (absent — never
   null — when unknown: `status` never dials, so an offline or never-attached
-  host may have no facts to compute it from),
+host may have no facts to compute it from — `restartFollows` and
+`planRefusal` render from the generation-scoped running-state/refusal
+snapshots in the manager store above, and stay absent when no snapshot
+exists for the current generation),
   `factsRevision?: string`, `factsAgeSec?: number`, `planRefusal?:
   {terminal: bool, message: string}`.
 - `evener/host/plan`: params `{name: string}`; response is either `{plan:
-  HostPlan, token: string}` or `{staleFacts:
+HostPlan, token: string}` or `{outcome: "no-token", staleFacts:
   {message: string, attached: bool, reason: "unattached" | "refresh-failed" |
-  "probe-failed" | "handler-absent"}}` — the `reason` discriminates the
+"probe-failed" | "handler-absent"}}` — `outcome: "no-token"` is the top-level
+discriminator on the no-token arm (the token arm carries
+`outcome: "planned"` alongside `plan`/`token`), so the generator mapping
+selects arms on `outcome` with no presence-based exception — the `reason`
+discriminates the
   failure (`stale-facts` deleted — `plan` always refreshes attached hosts, so
   no path yields it; see `plan`): `unattached` (host not attached — Connect first),
   `refresh-failed` (attached, but the gated preflight refresh failed or timed
   out — retryable diagnostics, never Connect-first),
   `probe-failed` (attached, but the `evener/host/running` probe read failed or
   was unauthenticated), `handler-absent` (attached, but the remote predates the
-  handler — take the one-time migration path). `HostPlan` is `{host, generation,
+handler — take the one-time migration path), and the 08b protocol-shapes test
+pins the `outcome` discriminator on both arms. `HostPlan` is `{host, generation,
   targetPath, controllerRevision, restartFollows, factsRevision,
   hubTomlFingerprint, factsCapturedAt: string (RFC3339), factsAgeSec: number,
   runningVersion: string, runningHealthy: bool}` — the token's bindings plus
@@ -1248,13 +1307,13 @@ on the failure arm fails the protocol-shapes test.
   — the cleared-remnant marker (remnantId → `clearedAt`) persists in the
   sidecar past the clearance so a later lost-response retry still returns
   `already-cleared`, and is purged only by the name's next re-add or
-  retention-expiry prune. **When the remnant belongs to a `remove` there is
-  no live row to return: `host` carries the tombstone's removed-row shape —
-  `{name, removed: true, retainedRows}` with the same values `remove`'s
-  clean path returns — rendered from the tombstone's retained effective
-  `HostConfig` with `attached: false`, `midEnsure: false`, and the removed
-  entry's origin and generation (see `list` tombstone values). The catalog +
-  regenerated client carry this arm, and the 08a commit-point tests pin it
+retention-expiry prune (plus the cleared-marker TTL compaction in
+Persistence + hot-apply, above — past the TTL the ID reads as
+`teardown-unknown-key`). **When the remnant belongs to a `remove` there is
+no live row to return: `host` is the same `RemovedRow` `remove`'s clean path
+returns — same values, same tombstone rendering
+(see `list` tombstone values). The catalog +
+regenerated client carry this arm as its own interface, and the 08a commit-point tests pin it
   (post-`remove` retry returns the tombstone shape, post-add/update retry
   returns the live row).**
 - Mutation conflict: `conflicting-mutation-id` rides the same AppWire error
@@ -1271,15 +1330,19 @@ on the failure arm fails the protocol-shapes test.
   (fresh create: `"pending"`; dedup hit: the existing record's state, as
   for `deploy`).
 - `evener/host/operations`: params `{name?: string, operationId?: string,
-  state?: OperationState, limit?: number, cursor?: string}` — `operationId`
-  matches the client-supplied `clientOperationId` (never the
-  controller-assigned `id`; there is no `id` filter — detail reads use the
-  deploy/restart dedup-hit response or poll by `clientOperationId`) — (all optional
-  filters plus pagination; empty params lists the first page); response
+state?: OperationState, generation?: number, id?: string, limit?: number,
+cursor?: string}` — `operationId`
+matches the client-supplied `clientOperationId` (never the
+controller-assigned `id`); `generation` selects the incarnation after client
+operation-ID reuse (omitted: the current generation); `id` is the detail filter
+for the controller-assigned record id — the busy payload's open/wait-able
+reference resolves through it directly — (all optional
+filters plus pagination; empty params lists the first page of the current
+generation); response
   `{operations: OperationRecord[], nextCursor?: string}` — `limit` defaults
   to 50 and caps at 200; responses never exceed the cap, and an unfiltered
   call pages instead of returning the whole store. `OperationRecord` is `{id,
-  clientOperationId, host, kind: "deploy" | "restart", state:
+clientOperationId, host, generation: number, kind: "deploy" | "restart", state:
   "pending" | "running" | "complete" | "failed" | "interrupted", progress:
   ProgressEntry[], result?: {ok: bool, message: string}, createdAt: string,
   updatedAt: string, hostRemoved: bool}`. `ProgressEntry` is `{ts: string
@@ -1334,7 +1397,9 @@ on the failure arm fails the protocol-shapes test.
   picker is untouched (its Connect trigger ships with #1603).
 - PR sequence: **08a** persistence + hot-apply + registry/manager/admin-
   controller surface (including the per-host gate shared with `Ensure`) +
-  `list/add/update/remove` (with catalog + client
+`list/add/update/remove` + `teardown-retry` (the repair mutation for the 08a
+sidecar's own commit-point remnants and receipts — its commit-point tests are
+the 08a tests below) (with catalog + client
   regeneration); **08b** `status`/`plan` (token) / `deploy` / `restart` /
   `operations` + the operation store; **08c** the frontend (settings section,
   dialogs, deploy confirmation). 08b stacks on 08a; 08c stacks on 08b.
@@ -1541,12 +1606,15 @@ name-keyed cache entry can never republish rows for the new host.
   unconditionally)**,
   **remote-origin rejection for `list`/`add`/`update`/`remove`** (the #1603
   origin guard refuses peer-forwarded requests before admission — the 08a
-  surface only, `running` asserted in 08b), and a
+surface only — including `teardown-retry`'s origin rejection alongside its
+08a commit-point tests — `running` asserted in 08b), and a
   wiring test mirroring the 05a registration tests.
   **Mutation-idempotency tests (the operation store's cross-name rule,
   applied to mutations): cross-name/cross-kind `mutationId` replay is the
   typed `conflicting-mutation-id` refusal; same-key replay after remove/
-  re-add opens fresh (superseded-generation receipts are not a conflict).**
+re-add opens fresh (superseded-generation receipts are not a conflict);
+commit-then-replay of an `update` returns the receipt pinned to the
+post-bump generation without rebumping.**
  **Commit-point tests: a committed-with-teardown-failure persists the
  remnant with its opaque `remnantId` in the response, replaying the original
  `mutationId` stays a no-op receipt return, and `teardown-retry` completes
@@ -1564,7 +1632,11 @@ name-keyed cache entry can never republish rows for the new host.
  row; the incarnation recheck never touches a newer live incarnation).
  Pending-marker tests: a post-commit receipt write lost while the process
  stays alive leaves the `pendingMutation` marker staged — a replay finalizes
- and returns the staged receipt (never busy forever), and the next
+carrying the pre-minted `remnantId` and the pinned teardown target — a replay
+re-runs the pinned teardown and finalizes the observed outcome (a real
+teardown failure surfaces `committed-with-teardown-failure` with the remnant;
+a clean re-run returns `committed` with no remnant — the staged provisional
+outcome is never returned as-is), and the next
  mutation-path write finalizes a foreign marker before its own stage.**
  **Lock-free `list` tests: `list` takes no mutation lock and prunes nothing
  durably; expiry filtering is in-memory only and the durable prune lands on
@@ -1580,10 +1652,13 @@ name-keyed cache entry can never republish rows for the new host.
  marker whose fingerprint no longer matches, boots into the hard startup
  error.** File-posture tests: sidecar and
  store temp files are `0600`, renames preserve the mode, and startup refuses
- a file readable beyond its owner.**
+a file readable beyond its owner, and the stash gets the same coverage
+(stash temps `0600`, mode-preserving rename, owner-only startup refusal,
+stray-stash prune/ignore).**
 - 08b: handler tests per method (validation, admission, classification incl.
   `plan`-as-mutation, **remote-origin rejection for
-  `status`/`plan`/`deploy`/`restart`/`operations`/`running`/`teardown-retry`**,
+`status`/`plan`/`deploy`/`restart`/`operations`/`running`** (`teardown-retry`'s
+origin rejection is asserted in 08a with its commit-point tests),
   the token matrix:
   missing/mismatched/expired/superseded/consumed-then-replayed-with-new-op-ID
   (pins to `token-missing`: consume deletes the row — see `deploy` step (4)),
