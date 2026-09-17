@@ -355,6 +355,14 @@ export function CredentialsSection({
   async function handleConfirmedAction(): Promise<void> {
     if (!pendingConfirm) return;
     const { kind, name, expectedEndpointFingerprint } = pendingConfirm;
+    // Whether an authored row held this name before the write is what lets the
+    // catch below tell a removal that stood from a refusal. The hub refuses an
+    // environment-backed row, which never had an authored entry; a removal that
+    // stood leaves the name with no authored row (an environment-supplied
+    // implicit row may remain). Read before the call, from the listing this
+    // connection holds.
+    const authoredBeforeCall =
+      kind === "remove" && credentialsStore.getState().instances.some((i) => i.name === name && !i.implicit);
     setConfirmBusy(true);
     try {
       if (kind === "clear") {
@@ -427,6 +435,26 @@ export function CredentialsSection({
         // closes rather than carrying a stale assertion into the retry.
         setPendingConfirm(null);
         return;
+      }
+      // A removal that stood and a refusal both arrive as errors, so the listing
+      // is the truth: if the authored row this name held is gone on a FRESH read,
+      // the removal landed and what the hub reports is a copy it could not delete.
+      // Report the standing removal as one - close the dialog and the sheet, tell
+      // the guided owner, and surface the hub's own message (it names the copy on
+      // disk and what to do about it) as a warning rather than a plain failure.
+      // confirmListingState is what forces the fresh read: it fetches and reads
+      // the store's rows only once that read applied, never a snapshot this
+      // client may have held before the removal landed.
+      if (kind === "remove" && authoredBeforeCall) {
+        const authoredRowGone = (instances: InstanceEntry[]) =>
+          !instances.some((instance) => instance.name === name && !instance.implicit);
+        if (await confirmListingState(authoredRowGone)) {
+          setPendingConfirm(null);
+          setSelectedInstance(null);
+          onInstanceRemoved?.(name);
+          toast.push("warning", friendlyErrorMessage(err));
+          return;
+        }
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
       toast.push("error", `${verb} failed: ${friendlyErrorMessage(err)}`);

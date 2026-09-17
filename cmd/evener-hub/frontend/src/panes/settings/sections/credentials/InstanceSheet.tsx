@@ -113,13 +113,29 @@ const RENAME_IDENTITY_FIELDS = [
  * digest cannot be compared as an untouched identity field across such a save. */
 const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
+/** The entry field each wire `clear*` flag stands for. The flag and the field
+ * are different names (`clearApiKeyEnv` clears `apiKeyEnv`), and a rename's
+ * identity comparison has to see a clear as the field it changed. Deriving the
+ * field from the flag by lower-casing the letter after "clear" was implicit and
+ * name-shaped - a field carrying an acronym would not match - so the pairing is
+ * written out here: a clear flag mapped to the wrong field leaves that field
+ * compared as untouched, so a superseded rename that cleared it fails to
+ * recognize its own rename and reports a stale save for a write that landed. */
+const CLEARED_FIELDS: Record<string, string> = {
+  clearBaseUrl: "baseUrl",
+  clearProtocol: "protocol",
+  clearSurface: "surface",
+  clearApiKeyEnv: "apiKeyEnv",
+  clearCredentialHeader: "credentialHeader",
+};
+
 /** The entry fields this save's params changed, whether a field carries a value
  * or a `clear` flag: those are the fields a rename may legitimately differ in. */
 function changedFields(params: InstanceEditParams): Set<string> {
   const changed = new Set<string>();
   for (const key of Object.keys(params)) {
     if (key === "name" || key === "newName") continue;
-    changed.add(key.startsWith("clear") ? key.charAt(5).toLowerCase() + key.slice(6) : key);
+    changed.add(CLEARED_FIELDS[key] ?? key);
   }
   return changed;
 }

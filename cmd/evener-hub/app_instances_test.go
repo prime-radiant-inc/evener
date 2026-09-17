@@ -775,10 +775,11 @@ func authDirEntries(t *testing.T, f *instancesFixture) []string {
 
 // TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete: what a removal moves
 // aside is the user's credential under a name no reader looks at, so a removal
-// that cannot delete it cannot report it gone either. The failure names the path
-// it left, and the removal itself stands: the record is gone from its own path
-// and the instance from the listing. The removal that follows reclaims the copy,
-// which is what the reported failure says the caller can rely on.
+// that cannot delete it cannot report it gone either. The sweep runs once the
+// removal has stood - after the reload that drops the instance - so the failure
+// names the path it left while the record is gone from its own path and the
+// instance from the listing. A later removal reclaims the copy, which is what
+// the reported failure says the caller can rely on.
 func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
@@ -827,11 +828,11 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 
 // TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft: a copy an
 // earlier removal set aside and could not delete is a credential no reader ever
-// looks at, so the next removal collects it - but only once the instance it
-// belonged to is gone, because a copy still attached to a live instance is the
-// credential that instance needs. What counts as a copy is the name the removal
-// builds - the record's path plus a numeric stamp - so an instance whose own
-// name holds the marker keeps its record.
+// looks at, so the sweep of a later removal collects it - after that removal's
+// reload, with the instance it belonged to gone, because a copy still attached
+// to a live instance is the credential that instance needs. What counts as a
+// copy is the name the removal builds - the record's path plus a numeric stamp -
+// so an instance whose own name holds the marker keeps its record.
 func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
@@ -894,6 +895,36 @@ func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T
 	}
 }
 
+// TestInstances_RemoveReclaimsACopyStrandedForTheSameName: the sweep used to
+// run before the removal deleted anything, so it skipped a copy whose instance
+// still existed - and the removal then deleted only the copy it made itself.
+// A copy an earlier removal stranded under a name that was re-created and is
+// removed again therefore outlived a removal that reported success. With the
+// sweep run after the reload, the name is gone from the registry and both
+// copies are reclaimed in the call that removes it.
+func TestInstances_RemoveReclaimsACopyStrandedForTheSameName(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	stranded := filepath.Join(dir, "openai-codex.json.removing-1700000000000000000")
+	if err := os.WriteFile(stranded, []byte(`{"access_token":"older"}`), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", stranded, err)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, err := os.Lstat(stranded); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the copy an earlier removal stranded survived a removal that reported success (Lstat = %v)", err)
+	}
+	if left := authDirEntries(t, f); len(left) != 0 {
+		t.Fatalf("the auth directory holds %v, want the sweep to have reclaimed every copy", left)
+	}
+	if listedInstance(f.ctl.List(), "openai-codex") {
+		t.Fatal("openai-codex is still listed after its removal")
+	}
+}
+
 // TestInstances_RemovalRemedyNamesSomethingThatExists: the refusal reaches the
 // CLI and direct RPC callers, so each remedy has to name an action this
 // instance can actually take - the variable it reads, the host's ADC
@@ -935,6 +966,21 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 			want:    "unset OLLAMA_API_KEY instead",
 			refuses: []string{"holds no credential of its own to clear", "clear the stored credential"},
 		},
+		{
+			// A bearer row the registry derives from its provider alone holds
+			// nothing a removal could take away; naming "the credential that
+			// supplies it" sends the caller after something that does not exist.
+			name:    "a non-keyless instance with no credential source names none to remove",
+			inst:    registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "none"},
+			want:    "holds no credential of its own to clear",
+			refuses: []string{"remove the credential that supplies it", "unset", "OAuth record"},
+		},
+		{
+			name:    "an empty credential source is treated the same as none",
+			inst:    registry.Instance{Name: "work", Implicit: true, Auth: registry.AuthBearer, CredentialSource: ""},
+			want:    "holds no credential of its own to clear",
+			refuses: []string{"remove the credential that supplies it", "unset", "OAuth record"},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := removalRemedy(tt.inst)
@@ -945,6 +991,58 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 				if strings.Contains(got, wrong) {
 					t.Fatalf("removalRemedy = %q, which names the action %q that this instance cannot take", got, wrong)
 				}
+			}
+		})
+	}
+}
+
+// TestInstances_DescribeImplicitNamesAReadableSource: the removal refusal's
+// parenthetical names what makes an implicit instance exist. The keyless sources
+// have no credential to name, so "credential source none" - the old default -
+// named an object the caller cannot go clear; each source gets words that mean
+// something to the person reading the refusal.
+func TestInstances_DescribeImplicitNamesAReadableSource(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		inst   registry.Instance
+		want   string
+		refuse string
+	}{
+		{
+			name: "an environment variable",
+			inst: registry.Instance{Name: "groq", CredentialSource: "env:GROQ_API_KEY"},
+			want: "env:GROQ_API_KEY",
+		},
+		{
+			name: "an OAuth record",
+			inst: registry.Instance{Name: "openai-codex", CredentialSource: "oauth"},
+			want: "OAuth record for openai-codex",
+		},
+		{
+			name: "a stored credential",
+			inst: registry.Instance{Name: "work", CredentialSource: "store"},
+			want: "credentials.toml entry for work",
+		},
+		{
+			name:   "no credential of its own",
+			inst:   registry.Instance{Name: "ollama", CredentialSource: "none"},
+			want:   "no credential of its own",
+			refuse: "credential source none",
+		},
+		{
+			name:   "an empty source",
+			inst:   registry.Instance{Name: "ollama", CredentialSource: ""},
+			want:   "no credential of its own",
+			refuse: "credential source",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := describeImplicit(tt.inst)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("describeImplicit = %q, want it to name %q", got, tt.want)
+			}
+			if tt.refuse != "" && strings.Contains(got, tt.refuse) {
+				t.Fatalf("describeImplicit = %q, want it not to say %q", got, tt.refuse)
 			}
 		})
 	}

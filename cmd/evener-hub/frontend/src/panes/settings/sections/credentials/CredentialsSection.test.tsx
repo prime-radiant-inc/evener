@@ -517,6 +517,108 @@ describe("the detail sheet", () => {
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
   });
+
+  // A removal that stood still comes back as an error when the hub could not
+  // delete the OAuth copy it set aside: the authored row is gone on the host,
+  // and a retry could only fail on a missing instance. The listing is the
+  // truth, so a fresh read that no longer holds the authored row turns the
+  // error into the removal it was, with the hub's own message about the
+  // leftover copy rather than a plain "Remove failed".
+  test("a removal error whose authored row is gone is reported as the removal it was", async () => {
+    const fake = connectFakeClient();
+    let listed: InstanceListResponse = LIST;
+    fake.on("evener/instance/list", () => listed);
+    const HUB_MESSAGE =
+      "removed personal, but a credential the removal set aside is still on disk, and deleting it is what takes it away: /state/auth/personal.json.removing-1 (delete refused)";
+    fake.on("evener/instance/remove", () => {
+      listed = { instances: [WORK], availableProviders: [] };
+      throw new WireError(HUB_MESSAGE, -32603);
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/still on disk/);
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(screen.queryByText(/Remove failed/)).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
+  });
+
+  // The guard must not report a refusal as a removal: when the authored row is
+  // still on the host - here the fresh read still lists it - the error stays
+  // the plain failure it was.
+  test("a removal error whose authored row is still listed stays a plain failure", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", () => {
+      throw new WireError("removing personal was refused: the endpoint moved", -32013);
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/Remove failed/);
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Remove instance" })).toBeTruthy();
+  });
+
+  // A row that was never authored has nothing whose leaving could confirm a
+  // removal, so a failure against one stays a plain failure even when the name
+  // is gone from the fresh listing. This is the shape a refused environment-
+  // backed row takes (and a UI-credentialed implicit row, a signed-in Codex
+  // account, is one no authored row ever existed for).
+  test("a removal error for a row that was never authored stays a plain failure", async () => {
+    const CODEX = instance({
+      name: "codex",
+      providerId: "openai-codex",
+      auth: "oauth-openai-codex",
+      implicit: true,
+      activeSource: "oauth",
+      hasStoredOAuth: true,
+    });
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => ({ instances: [CODEX], availableProviders: [] }));
+    fake.on("evener/instance/remove", () => {
+      throw new WireError('instance "codex" not found', -32602);
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("codex");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "codex");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/Remove failed/);
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+  });
 });
 
 describe("credential verification", () => {

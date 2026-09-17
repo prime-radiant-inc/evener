@@ -110,12 +110,13 @@ func TestInstances_RemoveRestoresAnUnreadableOAuthRecordWhenTheCleanupFails(t *t
 	}
 }
 
-// TestInstances_RemoveRefusesWhenAnOAuthCopyCannotBeReclaimed: the copy an
-// earlier removal set aside is a credential, so a removal that cannot collect it
-// says so rather than leaving it there for good. The sweep runs before anything
-// is deleted, so the refusal leaves the instance the caller still has exactly as
-// it was, with its key.
-func TestInstances_RemoveRefusesWhenAnOAuthCopyCannotBeReclaimed(t *testing.T) {
+// TestInstances_RemoveReportsWhenAnOAuthCopyCannotBeReclaimed: the copy a
+// removal set aside is a credential, so a removal that cannot collect it says so
+// rather than reporting the credential gone. The sweep runs after the reload, so
+// by then the removal has stood: the instance and its key are gone, and what the
+// caller still has to deal with is the copy the failure names. That is the
+// removePersistedError the RPC handler announces.
+func TestInstances_RemoveReportsWhenAnOAuthCopyCannotBeReclaimed(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.store.Set("groq", "gk"); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -143,12 +144,21 @@ func TestInstances_RemoveRefusesWhenAnOAuthCopyCannotBeReclaimed(t *testing.T) {
 
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
 	if err == nil || !strings.Contains(err.Error(), leftover) {
-		t.Fatalf("Remove = %v, want it refused over the copy at %s", err, leftover)
+		t.Fatalf("Remove = %v, want it to report the copy at %s", err, leftover)
 	}
-	if v, _ := f.store.Get("groq"); v != "gk" {
-		t.Fatalf("the refusal deleted the credential anyway: %q", v)
+	// The removal stood: its credential and the instance are gone, and the copy
+	// the error names is what is left for the caller.
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("the removal did not delete the credential: %q", v)
 	}
-	if !listedInstance(f.ctl.List(), "groq") {
-		t.Fatal("the refusal removed the instance anyway")
+	if listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("the removal did not remove the instance")
+	}
+	if _, statErr := os.Lstat(leftover); statErr != nil {
+		t.Fatalf("the copy the report names is gone (Lstat = %v)", statErr)
+	}
+	// The RPC handler announces a removal that stood on exactly this error.
+	if _, persisted := errors.AsType[removePersistedError](err); !persisted {
+		t.Fatalf("Remove = %v (%T), want a removePersistedError so the removal is announced", err, err)
 	}
 }
