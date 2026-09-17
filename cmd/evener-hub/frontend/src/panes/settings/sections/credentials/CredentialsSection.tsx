@@ -465,11 +465,11 @@ export function CredentialsSection({
   // re-render (see oauthDialogs.tsx's own comment on that effect).
   const closeEditor = useCallback(() => setOpenEditor(null), []);
   const rootRef = useRef<HTMLDivElement>(null);
-  // The pane swaps its rows out for a skeleton while a read is in flight and for
-  // the error banner when one fails, so any of those transitions - and any
-  // listing that no longer carries the focused row - can unmount the control
-  // holding the keyboard. The hook re-homes it to the pane's first control; a
-  // commit that removes nothing leaves focus where it was.
+  // A listing that no longer carries the focused row can unmount the control
+  // holding the keyboard (the rows themselves stay mounted through reads and
+  // through failed ones, so those are no longer cases here). The hook re-homes
+  // focus to the pane's first control; a commit that removes nothing leaves it
+  // where it was.
   useFocusRehome(rootRef);
 
   return (
@@ -519,34 +519,38 @@ export function CredentialsSection({
           listing carried no rows to act on. */}
       {!listingFromPreviousConnection && <Diagnostics diagnostics={diagnostics} />}
 
-      {loading && <Skeleton />}
+      {/* The skeleton is for the state it was written for - nothing to show yet
+          - never for a read that is merely in flight. The rows a refresh would
+          have swapped out are the listing the user is reading: replacing them
+          makes the pane flicker on every background read and unmounts the row
+          the keyboard is on (the connection dialog keeps its own rows for the
+          same reason). A failed read keeps the listing it already had
+          (readListing), so those rows stay too, with the banner above them. */}
+      {loading && instances.length === 0 && <Skeleton />}
       {error && <p className={CLASS.error}>Failed to load: {friendlyErrorMessage(error)}</p>}
-      {!loading &&
-        !error &&
-        (instances.length === 0 ? (
-          <EmptyState title="No provider instances configured." />
-        ) : (
-          <div className={CLASS.groups}>
-            {groups.map((group) => (
-              <div key={group.providerId} className={CLASS.group}>
-                {/* `name || id`, the same label the Add dialog gives a
-                    provider - one pane must not name a provider two ways. */}
-                <div className={CLASS.groupHeader}>
-                  {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
-                </div>
-                <ul className={CLASS.list}>
-                  {group.instances.map((instance) => (
-                    <InstanceRow
-                      key={instance.name}
-                      instance={instance}
-                      onSelect={() => setSelectedInstance(instance.name)}
-                    />
-                  ))}
-                </ul>
+      {!loading && !error && instances.length === 0 && <EmptyState title="No provider instances configured." />}
+      {instances.length > 0 && (
+        <div className={CLASS.groups}>
+          {groups.map((group) => (
+            <div key={group.providerId} className={CLASS.group}>
+              {/* `name || id`, the same label the Add dialog gives a
+                  provider - one pane must not name a provider two ways. */}
+              <div className={CLASS.groupHeader}>
+                {availableProviders.find((p) => p.id === group.providerId)?.name || group.providerId}
               </div>
-            ))}
-          </div>
-        ))}
+              <ul className={CLASS.list}>
+                {group.instances.map((instance) => (
+                  <InstanceRow
+                    key={instance.name}
+                    instance={instance}
+                    onSelect={() => setSelectedInstance(instance.name)}
+                  />
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
 
       <InstanceSheet
         name={selectedInstance}

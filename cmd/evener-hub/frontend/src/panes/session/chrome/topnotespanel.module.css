@@ -1,11 +1,26 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
-  /* The bar sits flush against the pane's top/left/right edges: PaneScaffold's
-   * .body carries the padding (--space-5 desktop, --space-4 mobile), and these
-   * negative margins pull the panel back out to the body's bounds. */
+  /* Flush against the pane's top edge only: PaneScaffold's .body pads
+   * --space-5 (desktop) / --space-4 (phone, below), and this cancels exactly
+   * that. The side padding stays, which is the card's horizontal inset. */
   margin-top: calc(-1 * var(--space-5));
-  margin-inline: calc(-1 * var(--space-5));
+}
+
+/* Expanded, the panel is a floating layer over the transcript flow: surface-2
+ * fill, pane radius, and a clear boundary with the overlay family's soft
+ * shadow. The boundary is a real border, NOT --shadow-overlay's ring: the
+ * ring is a spread box-shadow, which paints OUTSIDE the border box and gets
+ * shaved by the pane body's scrollport at the flush top edge (that was the
+ * broken-corner look); a border paints inside the box and cannot be clipped.
+ * overflow: hidden tucks the header and the body's scrollbar into the
+ * rounded corners; it never clips the card's own shadow. */
+.topNotesPanel[data-expanded="true"] {
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--edge-strong);
+  border-radius: var(--radius-pane);
+  box-shadow: 0 8px 28px var(--shadow-color);
 }
 
 .summary {
@@ -26,6 +41,17 @@
   box-sizing: border-box;
   color: var(--ink-mid);
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
+}
+
+/* Both trigger states sit flush inside a clipping boundary (the body's
+ * scrollport collapsed, the card's overflow:hidden expanded), where an
+ * outside outline is cut off. The sanctioned recipe for rows flush inside a
+ * clipping container (sessionchrome.module.css's .right button): the token
+ * ring pulled inset. */
+.summary:focus-visible,
+.expandedHeader:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .summary:hover {
@@ -84,14 +110,6 @@
   line-height: var(--line-height-ui);
 }
 
-.hint {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  margin-left: var(--space-3);
-  margin-top: 2px;
-  flex-shrink: 0;
-}
-
 .expandedHeader {
   display: flex;
   align-items: center;
@@ -134,6 +152,5 @@
 @media (max-width: 899px) {
   .topNotesPanel {
     margin-top: calc(-1 * var(--space-4));
-    margin-inline: calc(-1 * var(--space-4));
   }
 }
