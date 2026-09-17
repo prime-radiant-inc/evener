@@ -1452,8 +1452,10 @@ type ThreadItem struct {
 	Description          string              `json:"description,omitempty"`
 	Output               string              `json:"output,omitempty"`
 	Error                string              `json:"error,omitempty"`
-	OutputImages         []OutputImage       `json:"outputImages,omitempty"`
-	Status               string              `json:"status,omitempty"`
+	// OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
+	// Images stays omitempty: nothing removes an item's input images.
+	OutputImages []OutputImage `json:"outputImages,omitzero"`
+	Status       string        `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never

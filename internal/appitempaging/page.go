@@ -212,10 +212,7 @@ func cloneThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 		cloned.Images = make([]appwire.InputItem, len(item.Images))
 		copy(cloned.Images, item.Images)
 	}
-	if item.OutputImages != nil {
-		cloned.OutputImages = make([]appwire.OutputImage, len(item.OutputImages))
-		copy(cloned.OutputImages, item.OutputImages)
-	}
+	cloned.OutputImages = appwire.CloneOutputImages(item.OutputImages)
 	if item.Raw != nil {
 		cloned.Raw = make([]byte, len(item.Raw))
 		copy(cloned.Raw, item.Raw)
