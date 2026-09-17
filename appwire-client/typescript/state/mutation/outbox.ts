@@ -18,6 +18,15 @@
 // sibling-client channel, the lifecycle events, and the timer. None of them
 // default to a browser global, so this module names no DOM type and a host
 // that has no siblings or no lifecycle passes nothing and gets nothing.
+//
+// Native has no outbox and no durable record of its own yet. Its
+// ConversationMutationState (mobile/src/state/conversation.ts) is a different
+// thing entirely — UI ownership bookkeeping for the one mutation in flight:
+// which action it was, whether it is pending or failed, the draft to restore,
+// and two monotonic tokens the store uses to ignore stale completions. It
+// carries no clientMutationId, no targetRef, no payload, no sequence and no
+// persisted state, so nothing here aliases it; D25d is where native gains
+// records and this class is what notices them.
 import type {
   MutationAttachmentRef,
   MutationIntent,
