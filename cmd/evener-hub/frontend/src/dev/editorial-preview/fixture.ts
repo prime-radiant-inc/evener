@@ -39,7 +39,7 @@ export function createEditorialClient(): EditorialClient {
   };
   client.scriptConnect(() => ({
     serverInfo: { name: "Editorial fixture — no live hub", version: "fixture" },
-    protocolVersion: "evener-appwire-v5",
+    protocolVersion: "evener-appwire-v6",
     sourceId: "fixture",
     features: {
       threadList: true,

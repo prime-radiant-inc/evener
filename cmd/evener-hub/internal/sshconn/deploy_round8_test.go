@@ -82,7 +82,7 @@ func TestRound8EnsureFreshHostPushDeployRecordsTarget(t *testing.T) {
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
 			launchPaths = append(launchPaths, joined)
-			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -159,7 +159,7 @@ func TestRound8InstallerPreservesSymlinkedInstallLayout(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(link + "\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil
@@ -263,7 +263,7 @@ func TestRound8InstallerVersionMismatchIsTerminal(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			// The installer succeeded but fetched a newer snapshot than this
 			// controller's commit.
-			return []byte(`{"protocol":"evener-appwire-v5","version":"oldersha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v6","version":"oldersha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}

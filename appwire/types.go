@@ -14,6 +14,13 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v6 makes an empty outputImages list a REMOVAL rather than an absence: a v5
+// peer's merge restores the images a v6 frame just cleared, because under v5 the
+// field could only ever say "here are the images" and every merge fell back on a
+// zero-length list. That disagreement is silent in both directions -- a v6 hub
+// with a v5 daemon, and a v5 hub with a v6 one -- and shows up as a thumbnail
+// that will not go away, so the pair must not agree at initialize.
+//
 // v4 makes transcript reads item-only and rejects retired paging fields. v3
 // dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
@@ -22,7 +29,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v5"
+const ProtocolVersion = "evener-appwire-v6"
 
 // ThreadStatusRestartRequired identifies a live daemon that cannot serve this
 // hub's protocol. Its current activity is unavailable until explicitly restarted.

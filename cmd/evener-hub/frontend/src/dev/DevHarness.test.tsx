@@ -176,7 +176,7 @@ describe("DevHarness", () => {
     const fake = new FakeClient("ready");
     const scripted: InitializeResponse = {
       serverInfo: { name: "dev-harness-hub", version: "2.0.0" },
-      protocolVersion: "evener-appwire-v5",
+      protocolVersion: "evener-appwire-v6",
       sourceId: "dev-harness-test",
       features: {
         threadList: false,

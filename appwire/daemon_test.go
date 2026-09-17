@@ -109,7 +109,7 @@ func TestDaemonWireShapes(t *testing.T) {
 	t.Run("resident", func(t *testing.T) {
 		raw, err := json.Marshal(DaemonResident{
 			Identity: DaemonIdentity{Ref: "local:root", PID: 4242, StartedAt: "2026-09-12T10:00:00Z", Generation: "9f86d081"},
-			Name:     "evener serve", Protocol: "evener-appwire-v5",
+			Name:     "evener serve", Protocol: "evener-appwire-v6",
 			Compatibility: "compatible", Archived: false, ProbeState: "current",
 			Lifecycle: &DaemonLifecycle{Phase: "resident", TimeoutMillis: 0, Blockers: []DaemonBlocker{}},
 			CanRetire: true, CanForceStop: true,
@@ -119,7 +119,7 @@ func TestDaemonWireShapes(t *testing.T) {
 		}
 		requireDaemonJSONEq(t, `{
 			"identity": {"ref": "local:root", "pid": 4242, "startedAt": "2026-09-12T10:00:00Z", "generation": "9f86d081"},
-			"name": "evener serve", "protocol": "evener-appwire-v5",
+			"name": "evener serve", "protocol": "evener-appwire-v6",
 			"compatibility": "compatible", "archived": false, "probeState": "current",
 			"lifecycle": {"phase": "resident", "timeoutMillis": 0, "blockers": []},
 			"canRetire": true, "canForceStop": true

@@ -363,7 +363,7 @@ async function boot(): Promise<void> {
   shellClient = fake;
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-    protocolVersion: "evener-appwire-v5",
+    protocolVersion: "evener-appwire-v6",
     sourceId: "fake",
     features: {
       threadList: true,
