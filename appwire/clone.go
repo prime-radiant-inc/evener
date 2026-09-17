@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"slices"
 )
 
 // CloneThread returns a copy of t in which every known nested mutable field
@@ -64,7 +65,13 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 
 func cloneThreadItem(item ThreadItem) ThreadItem {
 	item.Images = cloneInputItems(item.Images)
-	item.OutputImages = append([]OutputImage(nil), item.OutputImages...)
+	// Nil-preserving, unlike every other slice here: an empty OutputImages list
+	// is the hub saying the pictures are gone (see ThreadItem.OutputImages), and
+	// `append` to a nil slice yields nil, which would flatten that removal into
+	// an absence on every copy of the thread.
+	if item.OutputImages != nil {
+		item.OutputImages = slices.Clone(item.OutputImages)
+	}
 	if item.Position != nil {
 		position := *item.Position
 		item.Position = &position

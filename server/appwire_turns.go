@@ -773,22 +773,20 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone.DurationMS = cloneInt64(item.DurationMS)
 	clone.ExitCode = cloneInt64(item.ExitCode)
 	clone.Raw = append(json.RawMessage(nil), item.Raw...)
-	// Both lists keep their nil-ness, the way appitempaging.cloneThreadItem
+	// OutputImages keeps its nil-ness, the way appitempaging.cloneThreadItem
 	// does: appending to a nil slice yields nil, which flattens an empty list
-	// (a removal) to absence, and make() over nil input mints an empty list on
-	// an item that never had images and announces a removal that never was.
+	// (a removal) into an absence. Images needs no such care — it is omitempty,
+	// so an empty list encodes exactly like an absent one.
 	if item.OutputImages != nil {
 		clone.OutputImages = slices.Clone(item.OutputImages)
 	}
-	if item.Images != nil {
-		clone.Images = make([]appwire.InputItem, len(item.Images))
-		for i := range item.Images {
-			clone.Images[i] = item.Images[i]
-			clone.Images[i].Data = append([]byte(nil), item.Images[i].Data...)
-			if item.Images[i].Metadata != nil {
-				clone.Images[i].Metadata = make(map[string]string, len(item.Images[i].Metadata))
-				maps.Copy(clone.Images[i].Metadata, item.Images[i].Metadata)
-			}
+	clone.Images = make([]appwire.InputItem, len(item.Images))
+	for i := range item.Images {
+		clone.Images[i] = item.Images[i]
+		clone.Images[i].Data = append([]byte(nil), item.Images[i].Data...)
+		if item.Images[i].Metadata != nil {
+			clone.Images[i].Metadata = make(map[string]string, len(item.Images[i].Metadata))
+			maps.Copy(clone.Images[i].Metadata, item.Images[i].Metadata)
 		}
 	}
 	return clone
@@ -890,12 +888,15 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	if incoming.Delta == "" {
 		incoming.Delta = existing.Delta
 	}
-	// Nil, not empty: an empty list is the frame saying the images are gone
-	// (appwire.ThreadItem.OutputImages), and copying the snapshot's own back
-	// over it would drop the one signal a client has for a removal.
-	if incoming.Images == nil {
+	// Input images keep the length rule: nothing removes them (they are what the
+	// user sent), the field is omitempty, so an empty list and an absent one are
+	// the same thing on the wire.
+	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
 	}
+	// Output images do not: an empty list is the frame saying the images are
+	// gone (appwire.ThreadItem.OutputImages), and copying the snapshot's own
+	// back over it would drop the one signal a client has for a removal.
 	if incoming.OutputImages == nil {
 		incoming.OutputImages = existing.OutputImages
 	}

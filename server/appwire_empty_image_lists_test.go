@@ -32,8 +32,11 @@ func TestMergeKeepsAnExplicitEmptyOutputImageList(t *testing.T) {
 	if merged.OutputImages == nil || len(merged.OutputImages) != 0 {
 		t.Fatalf("merged OutputImages=%+v, want the frame's explicit empty list", merged.OutputImages)
 	}
-	if merged.Images == nil || len(merged.Images) != 0 {
-		t.Fatalf("merged Images=%+v, want the frame's explicit empty list", merged.Images)
+	// Input images keep the length rule: the field is omitempty, so an empty
+	// list and an absent one are the same on the wire and a frame cannot remove
+	// them. The snapshot's own stand.
+	if len(merged.Images) != 1 {
+		t.Fatalf("merged Images=%+v, want the snapshot's own kept", merged.Images)
 	}
 }
 
@@ -52,9 +55,9 @@ func TestMergeKeepsExistingImagesWhenTheFrameCarriesNone(t *testing.T) {
 	}
 }
 
-// The clone flattened an empty non-nil list to nil (append to a nil slice
-// yields nil), and minted an empty non-nil one out of nil input, so it both
-// erased removals and announced them where none happened.
+// The clone flattened an empty non-nil output list to nil (append to a nil
+// slice yields nil), so it erased the removal the item announces; and nil input
+// must stay nil, or a clone announces a removal that never happened.
 func TestCloneCarriesImageListNilnessBothWays(t *testing.T) {
 	removed := cloneAppThreadItem(appwire.ThreadItem{
 		ID:           "item_1",
@@ -64,16 +67,10 @@ func TestCloneCarriesImageListNilnessBothWays(t *testing.T) {
 	if removed.OutputImages == nil {
 		t.Fatal("cloned OutputImages is nil, so the removal this item announces is lost")
 	}
-	if removed.Images == nil {
-		t.Fatal("cloned Images is nil, so the removal this item announces is lost")
-	}
 
 	never := cloneAppThreadItem(appwire.ThreadItem{ID: "item_2"})
 	if never.OutputImages != nil {
 		t.Fatalf("cloned OutputImages=%+v for an item that never had images, want nil", never.OutputImages)
-	}
-	if never.Images != nil {
-		t.Fatalf("cloned Images=%+v for an item that never had images, want nil", never.Images)
 	}
 }
 
@@ -128,6 +125,46 @@ func TestRecordedItemFrameCarriesTheExplicitEmptyOutputImageList(t *testing.T) {
 	if _, inputs := raw["images"]; inputs {
 		t.Fatalf("the recorded frame carries images=%s for a tool item that never had input images", raw["images"])
 	}
+
+	// And the read path: the snapshot the hub answers a thread/read with is a
+	// clone (appwire.CloneThread), which is one more place the empty list has to
+	// survive — it is the copy a client hydrates from.
+	thread := srv.appThread()
+	thread.Turns = srv.appAllTurns("th_1")
+	cloned := appwire.CloneThread(thread)
+	settled, ok := findToolItem(cloned, "call_shot")
+	if !ok {
+		t.Fatal("the cloned snapshot has no item for the settled tool call")
+	}
+	if settled.OutputImages == nil {
+		t.Fatal("the cloned snapshot's item has no outputImages list, so the removal is lost on the read path")
+	}
+	if len(settled.OutputImages) != 0 {
+		t.Fatalf("the cloned snapshot's item carries %+v, want the empty list the frame announced", settled.OutputImages)
+	}
+	encoded, err := json.Marshal(settled)
+	if err != nil {
+		t.Fatalf("Marshal the cloned item: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("Unmarshal the cloned item: %v", err)
+	}
+	if string(fields["outputImages"]) != "[]" {
+		t.Fatalf("the cloned item encodes outputImages=%s, want []", fields["outputImages"])
+	}
+}
+
+// findToolItem returns the item a tool call settled into, by call id.
+func findToolItem(thread appwire.Thread, callID string) (appwire.ThreadItem, bool) {
+	for _, turn := range thread.Turns {
+		for _, item := range turn.Items {
+			if item.CallID == callID {
+				return item, true
+			}
+		}
+	}
+	return appwire.ThreadItem{}, false
 }
 
 // lastItemFrameFields decodes the item of the last item/completed frame the
