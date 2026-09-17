@@ -9,7 +9,6 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { NativePreferencesSnapshot } from "./nativePreferences";
-import { disabled as gateDisabled, editingDisabled as gateEditingDisabled } from "./preferenceGates";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const levels: Record<ContentLevel, { label: string; description: string }> = {
@@ -90,7 +89,6 @@ export function TranscriptPreferencesEditor({
 	save,
 	refresh,
 	discard,
-	discardUnreadable,
 	rebase,
 }: {
 	hubName: string;
@@ -100,8 +98,6 @@ export function TranscriptPreferencesEditor({
 	save(): void;
 	refresh(): void;
 	discard(): void;
-	/** Local-only, so it works with no connection and no live model. */
-	discardUnreadable(): void;
 	rebase(reviewedRevision: number): void;
 }) {
 	const colors = useColors();
@@ -111,19 +107,13 @@ export function TranscriptPreferencesEditor({
 	const review = current !== null && reviewRevision === current.revision;
 	const selected = state.draft ?? current;
 	const config = selected?.config;
-	const disabled = gateDisabled(state, connected);
-	// A restored draft renders before the hub's first read lands (`draft` is
-	// restored synchronously; `confirmed` only after a successful read), and
-	// every edit/save composes against the confirmed value - `disabled` alone
-	// does not say so. Discard needs none of this: it stays gated on `disabled`
-	// (round 16 keeps that contract for #1693).
-	const editingDisabled = gateEditingDisabled(state, connected);
+	const disabled =
+		!connected ||
+		state.loading ||
+		state.saving ||
+		state.writeUncertain ||
+		state.storageUnavailable;
 	const dirty = state.draft !== null;
-	// An unreadable stored draft is the one storage failure the user can clear,
-	// and clearing it is the only way out of the disabled state above: there is
-	// no readable `draft` to hang "Discard draft" off, so it gets its own
-	// ENABLED control.
-	const unreadableDraft = state.draftUnreadable;
 	return (
 		<View style={styles.fill}>
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
@@ -209,7 +199,7 @@ export function TranscriptPreferencesEditor({
 										config.content.kind === "preset" &&
 										config.content.level === level
 									}
-									disabled={editingDisabled}
+									disabled={disabled}
 									onPress={() =>
 										edit({ ...config, content: { kind: "preset", level } })
 									}
@@ -218,7 +208,7 @@ export function TranscriptPreferencesEditor({
 							<Choice
 								label="Custom"
 								selected={config.content.kind === "custom"}
-								disabled={editingDisabled}
+								disabled={disabled}
 								onPress={() =>
 									edit({
 										...config,
@@ -243,7 +233,7 @@ export function TranscriptPreferencesEditor({
 									<Toggle
 										key={key}
 										label={label}
-										disabled={editingDisabled}
+										disabled={disabled}
 										value={
 											config.content.kind === "custom" && config.content[key]
 										}
@@ -278,7 +268,7 @@ export function TranscriptPreferencesEditor({
 											key={key}
 											label={label}
 											value={config.advanced[key]}
-											disabled={editingDisabled}
+											disabled={disabled}
 											change={(value) =>
 												edit({
 													...config,
@@ -292,7 +282,7 @@ export function TranscriptPreferencesEditor({
 										<Choice
 											key={detail}
 											label={hookLabels[detail]}
-											disabled={editingDisabled}
+											disabled={disabled}
 											selected={config.advanced.hookExits === detail}
 											onPress={() =>
 												edit({
@@ -305,22 +295,6 @@ export function TranscriptPreferencesEditor({
 								</View>
 							) : null}
 						</View>
-					</>
-				) : null}
-				{unreadableDraft ? (
-					<>
-						<Copy>
-							The draft saved on this phone could not be read. Discard it to
-							edit these settings again.
-						</Copy>
-						{/* Outside the footer and every hub-state gate: the footer needs a
-						    configuration to render, and the case this exists for is
-						    precisely the one with nothing confirmed and nothing readable.
-						    Never disabled either - discarding writes only to the device, so
-						    it works offline, and it is the way out of a locked section. */}
-						<Action onPress={discardUnreadable}>
-							Discard unreadable draft
-						</Action>
 					</>
 				) : null}
 				{state.error && !state.writeUncertain ? (
@@ -352,7 +326,7 @@ export function TranscriptPreferencesEditor({
 					<View style={[styles.row, { flexWrap: "wrap" }]}>
 						<Action
 							tone="primary"
-							disabled={editingDisabled || !dirty || state.conflict}
+							disabled={disabled || !dirty || state.conflict}
 							onPress={save}
 						>
 							Save changes

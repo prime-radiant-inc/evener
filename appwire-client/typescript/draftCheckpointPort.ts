@@ -60,14 +60,20 @@ export interface DraftRepository<Checkpoint> {
  * raw value to recover and falls back to `decode`'s normalized one, as
  * before - such a checkpoint carries no unknown fields to begin with.
  *
- * lastClassified keeps the raw value load() most recently classified -
- * readable or not - named by WHEN it was classified, not by
- * discardClassified's own call: another store or a newer app version can
- * replace the record between the two, and a fresh storage.load() at discard
- * time would then name (and remove) whatever is there NOW - never the record
- * the user was actually shown. One field for both cases, because a discard is
- * the same operation either way: remove the classified record, by its own
- * identity, and report whether that succeeded. */
+ * lastClassified keeps the raw value most recently classified - readable or
+ * not - named by WHEN it was classified, not by discardClassified's own
+ * call: another store or a newer app version can replace the record between
+ * the two, and a fresh storage.load() at discard time would then name (and
+ * remove) whatever is there NOW - never the record the user was actually
+ * shown. One field for both cases, because a discard is the same operation
+ * either way: remove the classified record, by its own identity, and report
+ * whether that succeeded.
+ *
+ * load() is not the only thing that classifies: save() writes a new record
+ * too, and if it left lastClassified pointing at the PRE-write bytes, an
+ * edit immediately followed by a discard would refuse (it would still be
+ * naming what the edit just replaced) and silently restore the edit instead
+ * of discarding it - the identity must track every write, not only reads. */
 export function createDraftRepository<Checkpoint>(
   storage: DraftPort<Checkpoint>,
   decode: (value: unknown) => Checkpoint,
@@ -90,7 +96,14 @@ export function createDraftRepository<Checkpoint>(
       return checkpoint;
     },
     save(checkpoint: Checkpoint): void {
-      storage.save(decode(checkpoint));
+      const decoded = decode(checkpoint);
+      storage.save(decoded);
+      // What was just written IS now the classified record: no raw bytes to
+      // recover (this build built it), so the decoded value is its own
+      // identity, the same fallback removeIf already uses for a checkpoint
+      // load() never produced.
+      lastClassified = decoded;
+      hasLastClassified = true;
     },
     removeIf(checkpoint: Checkpoint): boolean {
       return storage.removeIf((rawFrom.get(checkpoint as object) ?? decode(checkpoint)) as Checkpoint);

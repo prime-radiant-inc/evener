@@ -513,6 +513,30 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
   });
 
+  test("restore, edit, discard: the edited draft is gone on the first discard", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 3,
+      rules,
+      writeUncertain: false,
+    });
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+
+    // The user edits the restored draft: save() writes a NEW checkpoint. The
+    // repository's tracked identity must move with it, or a discard right
+    // after still names the PRE-EDIT bytes and refuses against what save()
+    // just wrote.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    store.getState().editDraft(otherRules);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+
+    // One discard call removes the edited draft - not two.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState().draft).toBeNull();
+  });
+
   test("a restored proposal is discardable while the hub read has failed", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.storage.save({ id: "d1", baseRevision: 2, rules, writeUncertain: false });

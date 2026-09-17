@@ -1,47 +1,30 @@
 import type {
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
+} from "@evener/appwire-client";
+import type {
 	TranscriptDraftCheckpoint,
 	TranscriptDraftStorage,
-} from "@evener/appwire-client";
-
-/** Either section's checkpoint, as the device backend stores them. */
-export type NativePreferenceDraftCheckpoint =
-	| TranscriptDraftCheckpoint
-	| KeybindingDraftCheckpoint;
+} from "./preferenceDraftRepository";
 
 export interface NativePreferenceDraftBackend {
 	createId(): string;
 	get(key: string): unknown;
 	set(key: string, value: unknown): void;
 	delete(key: string): void;
-	/** Removes the stored record only if `checkpoint` still names it; reports
-	 * whether it did. */
-	deleteIf(key: string, checkpoint: NativePreferenceDraftCheckpoint): boolean;
+	deleteIf(
+		key: string,
+		checkpoint: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
+	): boolean;
 }
 
-/** The shape either section's storage has, over its own checkpoint type. */
-interface SectionDraftStorage<Checkpoint> {
-	createId(): string;
-	load(): unknown;
-	save(checkpoint: Checkpoint): void;
-	/** Removes the stored record only if `checkpoint` still names it; reports
-	 * whether it did, so a refusal (the record it named is gone, replaced by
-	 * something else) is never mistaken for success. */
-	removeIf(checkpoint: Checkpoint): boolean;
-}
-
-/** One hub's drafts for one preference section, under that section's key
- * prefix. The two sections' ports differ only in the checkpoint type they
- * declare, and the backend stores either, so one storage satisfies both. */
-function nativeDraftStorage(
-	prefix: string,
+export function nativeKeybindingDrafts(
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
-): SectionDraftStorage<KeybindingDraftCheckpoint> & SectionDraftStorage<TranscriptDraftCheckpoint> {
+): KeybindingDraftStorage {
 	if (!hubId.trim())
 		throw new Error("A hub id is required for preference drafts.");
-	const key = `evener.native.${prefix}-draft.${hubId}`;
+	const key = `evener.native.keybinding-draft.${hubId}`;
 	return {
 		createId: () => backend.createId(),
 		load: () => backend.get(key) ?? null,
@@ -50,81 +33,21 @@ function nativeDraftStorage(
 	};
 }
 
-export function nativeKeybindingDrafts(
-	hubId: string,
-	backend: NativePreferenceDraftBackend,
-): SectionDraftStorage<KeybindingDraftCheckpoint> & KeybindingDraftStorage {
-	return nativeDraftStorage("keybinding", hubId, backend);
-}
-
 export function nativeTranscriptDrafts(
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
-): SectionDraftStorage<TranscriptDraftCheckpoint> & TranscriptDraftStorage {
-	return nativeDraftStorage("transcript", hubId, backend);
-}
-
-/** Either section's storage, by name, for a caller that only knows which
- * section it is discarding for and has no reason to pick between
- * nativeTranscriptDrafts/nativeKeybindingDrafts itself. */
-export function nativePreferenceDrafts(
-	section: "transcript" | "keybindings",
-	hubId: string,
-	backend: NativePreferenceDraftBackend,
-): SectionDraftStorage<KeybindingDraftCheckpoint> &
-	SectionDraftStorage<TranscriptDraftCheckpoint> &
-	KeybindingDraftStorage &
-	TranscriptDraftStorage {
-	return section === "transcript"
-		? nativeDraftStorage("transcript", hubId, backend)
-		: nativeDraftStorage("keybinding", hubId, backend);
-}
-
-export type RetainingDraftStorage<Checkpoint> = SectionDraftStorage<Checkpoint> & {
-	/** Removes exactly the record the most recent load() call returned -
-	 * never a fresh reload, which would name (and remove) whatever is stored
-	 * NOW. A model's own repository (createDraftRepository) retains this same
-	 * identity too, but only for as long as that model instance lives; this
-	 * wrapper is what the provider hands the model AND keeps for itself, so
-	 * the identity a model's load() classified survives that model's disposal
-	 * (a client dropped, a hub reconnect) for the no-model discard path to
-	 * use. A no-op (reporting false) before anything has ever been loaded
-	 * through it. Reports whether the removal actually happened: a refusal
-	 * (the record it named is gone, replaced by something else) re-classifies
-	 * against whatever is stored now - the same thing a live model's
-	 * discardUnreadable+restoreDraft does - so a caller never projects
-	 * "discarded" on a record that is still there. */
-	discardLastLoaded(): boolean;
-};
-
-/** Wraps a section's storage so the identity of whatever load() most
- * recently returned outlives any one caller - in particular, a model
- * instance built over this same storage and later disposed. See
- * RetainingDraftStorage. */
-export function retainingDraftStorage<Checkpoint>(
-	storage: SectionDraftStorage<Checkpoint>,
-): RetainingDraftStorage<Checkpoint> {
-	let lastLoaded: unknown;
-	let hasLastLoaded = false;
-	function trackLoad(value: unknown): unknown {
-		hasLastLoaded = value !== null && value !== undefined;
-		lastLoaded = value;
-		return value;
-	}
+): TranscriptDraftStorage {
+	if (!hubId.trim())
+		throw new Error("A hub id is required for preference drafts.");
+	const key = `evener.native.transcript-draft.${hubId}`;
 	return {
-		createId: () => storage.createId(),
-		load: () => trackLoad(storage.load()),
-		save: (checkpoint) => storage.save(checkpoint),
-		removeIf: (checkpoint) => storage.removeIf(checkpoint),
-		discardLastLoaded: () => {
-			if (!hasLastLoaded) return false;
-			const removed = storage.removeIf(lastLoaded as Checkpoint);
-			// The record this wrapper named is gone, replaced by something else:
-			// re-classify against whatever is actually there now, so a follow-up
-			// discard targets it instead of repeatedly naming a record that no
-			// longer exists.
-			if (!removed) trackLoad(storage.load());
-			return removed;
+		createId: () => backend.createId(),
+		load: () => {
+			const value = backend.get(key);
+			return value === undefined ? null : (value as TranscriptDraftCheckpoint);
 		},
+		save: (checkpoint) => backend.set(key, checkpoint),
+		remove: () => backend.delete(key),
+		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
 	};
 }

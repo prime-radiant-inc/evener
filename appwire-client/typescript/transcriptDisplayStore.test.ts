@@ -961,6 +961,32 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig });
   });
 
+  test("restore, edit, discard: the edited draft is gone on the first discard", async () => {
+    // Classified readable at construction.
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+
+    // The user edits the restored draft: save() writes a NEW checkpoint. The
+    // repository's tracked identity must move with it, or a discard right
+    // after still names the PRE-EDIT bytes and refuses against what save()
+    // just wrote.
+    store.getState().editDraft("mobile", desktopConfig);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: desktopConfig });
+
+    // One discard call removes the edited draft - not two.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState().draft).toBeNull();
+  });
+
   test("a checkpoint without a layout is undecodable, like any other malformed one", async () => {
     // The shape the native host wrote before layouts were recorded. A
     // checkpoint that does not say which layer it proposes names no draft:

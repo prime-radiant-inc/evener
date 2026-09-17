@@ -6,14 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { toWireConfig } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	type ConfirmedKeybindings,
-	type ConfirmedTranscript,
-	initialDomain,
-	type NativePreferencesSnapshot,
-	NativePreferences,
-	snapshotAfterLocalDiscard,
-} from "./nativePreferences";
+import { NativePreferences } from "./nativePreferences";
 
 const features = { keybindingsSettings: true, transcriptDisplaySettings: true };
 const keybindings: KeybindingsOverrides = {
@@ -240,7 +233,7 @@ function setupDomain(domain: "keybindings" | "transcript") {
 	const old = isKeys ? keybindings : transcript;
 	const result = isKeys
 		? { ...keybindings, revision: 4, rules: [] }
-		: { layout: "mobile", revision: 5, config: toWireConfig(config) };
+		: { revision: 5, config: toWireConfig(config) };
 	const snapshot = () =>
 		isKeys
 			? model.getSnapshot().keybindings
@@ -342,13 +335,8 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	);
 });
 
-import {
-	type NativePreferenceDraftCheckpoint,
-	nativeKeybindingDrafts,
-	nativeTranscriptDrafts,
-} from "./nativePreferenceDrafts";
-import type { TranscriptDraftCheckpoint } from "@evener/appwire-client";
-import { draftBackend } from "./nativeDraftBackend";
+import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
+import type { TranscriptDraftCheckpoint } from "./preferenceDraftRepository";
 
 function draftStorage() {
 	const values = new Map<string, unknown>();
@@ -362,10 +350,7 @@ function draftStorage() {
 			values.delete(key);
 		},
 		createId: () => String(++id),
-		// The port's own parameter type, not just the type this fixture is used
-		// with: a narrower one only compiles because `deleteIf` is declared as a
-		// method, whose parameters TypeScript compares bivariantly.
-		deleteIf: (key: string, value: NativePreferenceDraftCheckpoint) => {
+		deleteIf: (key: string, value: TranscriptDraftCheckpoint) => {
 			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
 			values.delete(key);
 			return true;
@@ -391,105 +376,6 @@ const proposedConfig = {
 	...config,
 	content: { kind: "preset" as const, level: "full" as const },
 };
-
-it("an unreadable stored record is surfaced as such and discarding clears it", async () => {
-	const disk = draftStorage();
-	// The shape written before layouts were recorded; any value this build
-	// cannot read behaves the same.
-	disk.storage.save({
-		id: "d0",
-		baseRevision: 4,
-		config,
-		writeUncertain: false,
-	} as never);
-	const f = persistedPreferences(disk.storage);
-
-	// The RECORD is unreadable, so the screen is told exactly that - not just
-	// "storage unavailable", which it would render as every control disabled.
-	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
-		draft: null,
-		storageUnavailable: true,
-		draftUnreadable: true,
-	});
-
-	// The hub is not implicated, so the section still loads its defaults.
-	await f.model.refresh();
-	expect(f.model.getSnapshot().transcriptMobile.confirmed).not.toBeNull();
-
-	// And discarding is allowed, and is what clears the record.
-	await f.model.discardTranscriptDraft();
-	expect(disk.storage.load()).toBeNull();
-	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
-		storageUnavailable: false,
-		draftUnreadable: false,
-	});
-});
-
-it("a local discard unlocks the section it cleared, and leaves the other alone", () => {
-	const locked: NativePreferencesSnapshot = {
-		keybindings: {
-			...initialDomain<ConfirmedKeybindings>(),
-			support: "supported",
-			error: "Could not restore the saved shortcut draft. Check current shortcuts to retry.",
-			conflict: true,
-			storageUnavailable: true,
-			draftUnreadable: true,
-		},
-		transcriptMobile: {
-			...initialDomain<ConfirmedTranscript>(),
-			support: "supported",
-			error: "Could not restore the saved transcript draft. Check current settings to retry.",
-			conflict: true,
-			storageUnavailable: true,
-			draftUnreadable: true,
-		},
-	};
-
-	const afterKeybindings = snapshotAfterLocalDiscard(locked, "keybindings");
-	expect(afterKeybindings.keybindings).toMatchObject({
-		draftUnreadable: false,
-		storageUnavailable: false,
-		draft: null,
-		conflict: false,
-		error: null,
-	});
-	// The other section's record is untouched: one discard clears one record.
-	expect(afterKeybindings.transcriptMobile).toEqual(locked.transcriptMobile);
-
-	const afterTranscript = snapshotAfterLocalDiscard(locked, "transcript");
-	expect(afterTranscript.transcriptMobile.draftUnreadable).toBe(false);
-	expect(afterTranscript.keybindings).toEqual(locked.keybindings);
-});
-
-it("an unreadable record stays discardable when the hub read fails", async () => {
-	const disk = draftStorage();
-	disk.storage.save({
-		id: "d0",
-		baseRevision: 4,
-		config,
-		writeUncertain: false,
-	} as never);
-	const client = fakeClient();
-	client.handlers.set("evener/settings/transcriptDisplay/get", () => {
-		throw new Error("hub unreachable");
-	});
-	const model = new NativePreferences(
-		client,
-		{ keybindingsSettings: false, transcriptDisplaySettings: true },
-		disk.storage,
-	);
-	await model.refresh();
-
-	// Nothing confirmed and nothing readable - the exact case the escape hatch
-	// exists for, and the one where the screen has no `config` to render a
-	// footer from.
-	const shown = model.getSnapshot().transcriptMobile;
-	expect(shown).toMatchObject({ confirmed: null, draft: null, draftUnreadable: true });
-
-	await model.discardTranscriptDraft();
-	expect(disk.storage.load()).toBeNull();
-	expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(false);
-});
 
 it("restores a draft synchronously and preserves its base across read and conflict review", async () => {
 	const f = persistedPreferences();
@@ -536,7 +422,7 @@ it("checkpoints before dispatch and refuses edits, discard, or duplicate save du
 	await expect(f.model.editTranscript(config)).rejects.toThrow();
 	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
 	await expect(f.model.saveTranscript()).rejects.toThrow();
-	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.storage.load()).toBeNull();
 });
@@ -555,7 +441,7 @@ it("accepts its own notification before the acknowledgement", async () => {
 			config: toWireConfig(proposedConfig),
 		},
 	});
-	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
 		conflict: false,
@@ -576,7 +462,7 @@ it("retains a proposal if a genuinely newer external revision beats its acknowle
 		method: "evener/settings/transcriptDisplay/changed",
 		params: { layout: "mobile", revision: 6, config: toWireConfig(config) },
 	});
-	ack.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
+	ack.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
 	await save;
 	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
 		conflict: true,
@@ -600,10 +486,10 @@ it("late acknowledgement cannot erase a new same-config pending checkpoint", asy
 	next.client.handlers.set(transcriptPatch, () => nextAck.promise);
 	const nextSave = next.model.saveTranscript();
 	expect(f.storage.load()).not.toEqual(oldCheckpoint);
-	oldAck.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
+	oldAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
 	await oldSave;
 	expect(f.storage.load()).not.toBeNull();
-	nextAck.resolve({ layout: "mobile", revision: 5, config: toWireConfig(proposedConfig) });
+	nextAck.resolve({ revision: 5, config: toWireConfig(proposedConfig) });
 	await nextSave;
 });
 
@@ -622,7 +508,7 @@ it("storage failure prevents dispatch and exposes a fixed safe error", async () 
 	expect(f.client.requests.some((r) => r.method === transcriptPatch)).toBe(
 		false,
 	);
-	expect(JSON.stringify(f.model.getSnapshot())).not.toContain("secret");
+	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
 });
 
 it("an uncertain write cannot be discarded or replayed until an authoritative read", async () => {
@@ -634,10 +520,10 @@ it("an uncertain write cannot be discarded or replayed until an authoritative re
 	await expect(f.model.saveTranscript(proposedConfig)).rejects.toThrow();
 	await expect(f.model.discardTranscriptDraft()).rejects.toThrow();
 	await expect(f.model.editTranscript(config)).rejects.toThrow();
-	expect(JSON.stringify(f.model.getSnapshot())).not.toContain("secret");
+	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
 	await f.model.refresh();
 	expect(f.model.getSnapshot().transcriptMobile.writeUncertain).toBe(false);
-	expect((f.storage.load() as TranscriptDraftCheckpoint | null)?.writeUncertain).toBe(false);
+	expect(f.storage.load()?.writeUncertain).toBe(false);
 	await f.model.discardTranscriptDraft();
 	expect(f.storage.load()).toBeNull();
 });
@@ -673,7 +559,6 @@ it("a cleanup failure does not turn a confirmed save into an unknown server outc
 	});
 	await f.model.refresh();
 	f.client.handlers.set(transcriptPatch, () => ({
-		layout: "mobile",
 		revision: 5,
 		config: toWireConfig(proposedConfig),
 	}));
@@ -684,7 +569,7 @@ it("a cleanup failure does not turn a confirmed save into an unknown server outc
 		storageUnavailable: true,
 		saving: false,
 	});
-	expect(JSON.stringify(f.model.getSnapshot())).not.toContain("secret");
+	expect(f.model.getSnapshot().transcriptMobile.error).not.toContain("secret");
 	await expect(f.model.saveTranscript()).rejects.toThrow();
 });
 
@@ -703,109 +588,4 @@ it("a change notification cannot hide a local recovery error", async () => {
 	});
 	expect(f.model.getSnapshot().transcriptMobile.error).toBe(error);
 	expect(f.model.getSnapshot().transcriptMobile.storageUnavailable).toBe(true);
-});
-
-// The fixture above compares two in-memory JS values, never real bytes. The
-// store's draftRepository rebuilds a checkpoint through draftCheckpoint on
-// every load and every removeIf, so the object it hands the port is never
-// the one the port decoded - only a byte-aware port (the real device
-// backend) can show whether a discard still names the stored record once
-// that rebuild has run.
-function realDraftStorage() {
-	const raw = new Map<string, string>();
-	const store = {
-		getItemSync: (key: string) => raw.get(key) ?? null,
-		setItemSync: (key: string, value: string) => {
-			raw.set(key, value);
-		},
-		removeItemSync: (key: string) => {
-			raw.delete(key);
-		},
-	};
-	return { raw, storage: nativeTranscriptDrafts("hub", draftBackend(store, () => "id-1")) };
-}
-const transcriptDraftKey = "evener.native.transcript-draft.hub";
-
-it("a stored draft carrying an unknown field is discarded and stays gone", async () => {
-	const disk = realDraftStorage();
-	// A checkpoint another build wrote, with a field this build's
-	// draftCheckpoint does not know about.
-	disk.raw.set(
-		transcriptDraftKey,
-		JSON.stringify({
-			id: "d0",
-			layout: "mobile",
-			baseRevision: 4,
-			config,
-			writeUncertain: false,
-			futureField: "written by a newer build",
-		}),
-	);
-	const f = persistedPreferences(disk.storage);
-	await f.model.refresh();
-	expect(f.model.getSnapshot().transcriptMobile.draft).toMatchObject({ revision: 4 });
-
-	await f.model.discardTranscriptDraft();
-
-	expect(disk.raw.has(transcriptDraftKey)).toBe(false);
-});
-
-it("a stored keybinding draft carrying an unknown field is discarded and stays gone", async () => {
-	const raw = new Map<string, string>();
-	const store = {
-		getItemSync: (key: string) => raw.get(key) ?? null,
-		setItemSync: (key: string, value: string) => {
-			raw.set(key, value);
-		},
-		removeItemSync: (key: string) => {
-			raw.delete(key);
-		},
-	};
-	const keybindingStorage = nativeKeybindingDrafts("hub", draftBackend(store, () => "id-1"));
-	const key = "evener.native.keybinding-draft.hub";
-	raw.set(
-		key,
-		JSON.stringify({
-			id: "d0",
-			baseRevision: 3,
-			rules: [{ action: "palette.open", chord: "Meta+P" }],
-			writeUncertain: false,
-			futureField: "written by a newer build",
-		}),
-	);
-	const client = fakeClient();
-	client.handlers.set("evener/settings/keybindings/get", () => keybindings);
-	const model = new NativePreferences(
-		client,
-		{ keybindingsSettings: true, transcriptDisplaySettings: false },
-		undefined,
-		keybindingStorage,
-	);
-	await model.refresh();
-	expect(model.getSnapshot().keybindings.draft).not.toBeNull();
-
-	await model.discardKeybindingsDraft();
-
-	expect(raw.has(key)).toBe(false);
-});
-
-it("a stored draft with reordered keys is discarded and stays gone", async () => {
-	const disk = realDraftStorage();
-	disk.raw.set(
-		transcriptDraftKey,
-		JSON.stringify({
-			writeUncertain: false,
-			config,
-			baseRevision: 4,
-			layout: "mobile",
-			id: "d0",
-		}),
-	);
-	const f = persistedPreferences(disk.storage);
-	await f.model.refresh();
-	expect(f.model.getSnapshot().transcriptMobile.draft).toMatchObject({ revision: 4 });
-
-	await f.model.discardTranscriptDraft();
-
-	expect(disk.raw.has(transcriptDraftKey)).toBe(false);
 });

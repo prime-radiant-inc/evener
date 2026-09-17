@@ -14,7 +14,6 @@ import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
-import { editingDisabled } from "./preferenceGates";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -95,32 +94,21 @@ export function KeybindingPreferencesScreen({
 	const editor = route.params.editor;
 	const action = preview.rows.find((row) => row.actionId === editor?.actionId);
 	const model = preferences.model;
+	const available =
+		!!model &&
+		preferences.connected &&
+		domain?.support === "supported" &&
+		!!domain.confirmed;
 	const busy =
-		!model ||
-		!domain ||
-		domain.support !== "supported" ||
-		editingDisabled(domain, preferences.connected) ||
-		!!domain.confirmed?.loadError;
-	/** Runs an operation THROUGH THE SHARED STORE by default, so it needs a
-	 * model. Pass `requiresHub: false` when it only touches this device, so it
-	 * still runs while disconnected; pass `requiresModel: false` too for an
-	 * operation that does not need one at all (the unreadable-record escape
-	 * hatch), which still keeps the hub-identity check and the staleness guard
-	 * every path here gets - a reply landing after the scope changed (a
-	 * different hub selected, this screen unmounted) must not set an error on
-	 * a screen it no longer describes. `message` is the fixed copy this path's
-	 * own failure shows. */
-	const run = (
-		operation: () => Promise<unknown>,
-		success?: () => void,
-		{
-			requiresHub = true,
-			requiresModel = true,
-			message = "The change could not be completed. Check current shortcuts and review your changes.",
-		}: { requiresHub?: boolean; requiresModel?: boolean; message?: string } = {},
-	) => {
-		if ((requiresModel && !model) || scope.hubId !== route.params.hubId) return;
-		if (requiresHub && !scope.connected) return;
+		!available ||
+		!!domain?.loading ||
+		!!domain?.saving ||
+		!!domain?.writeUncertain ||
+		!!domain?.storageUnavailable ||
+		!!domain?.confirmed?.loadError;
+	const run = (operation: () => Promise<unknown>, success?: () => void) => {
+		if (!scope.connected || !model || scope.hubId !== route.params.hubId)
+			return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
 		void operation()
@@ -128,7 +116,10 @@ export function KeybindingPreferencesScreen({
 				if (active()) success?.();
 			})
 			.catch(() => {
-				if (active()) setError(message);
+				if (active())
+					setError(
+						"The change could not be completed. Check current shortcuts and review your changes.",
+					);
 			});
 	};
 	const closeEditor = () => navigation.setParams({ editor: undefined });
@@ -182,28 +173,6 @@ export function KeybindingPreferencesScreen({
 							The save could not be confirmed. Your proposal is kept on this
 							phone. Check the hub before making another change.
 						</Copy>
-					)}
-					{domain?.draftUnreadable && (
-						<>
-							<Copy>
-								The shortcut draft saved on this phone could not be read.
-								Discard it to edit shortcuts again.
-							</Copy>
-							<Action
-								onPress={() => {
-									run(() => preferences.discardUnreadableDraft("keybindings"), undefined, {
-										// Local-only: no hub and no model needed for this, the one
-										// path out of an unreadable record - `model` is null in
-										// exactly the states a user meets one in.
-										requiresHub: false,
-										requiresModel: false,
-										message: "The draft could not be discarded. Try again in a moment.",
-									});
-								}}
-							>
-								Discard unreadable draft
-							</Action>
-						</>
 					)}
 					{model && domain?.support === "supported" && (
 						<Action
@@ -332,8 +301,6 @@ export function KeybindingPreferencesScreen({
 																run(
 																	() => model.discardKeybindingsDraft(),
 																	() => setReviewedRevision(null),
-																	// Local-only: no hub needed to drop a draft.
-																	{ requiresHub: false },
 																);
 														}}
 													>
@@ -356,11 +323,7 @@ export function KeybindingPreferencesScreen({
 											<Action
 												disabled={busy}
 												onPress={() => {
-													if (model)
-														run(() => model.discardKeybindingsDraft(), undefined, {
-															// Local-only: no hub needed to drop a draft.
-															requiresHub: false,
-														});
+													if (model) run(() => model.discardKeybindingsDraft());
 												}}
 											>
 												Discard changes
