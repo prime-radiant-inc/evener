@@ -24,6 +24,8 @@
 // watching the list jump between two intermediate answers - so a mutation that
 // outlives the component it was started from is a UX gap, not a data race.
 
+import { createFrameworkFreeStore } from "@evener/appwire-client";
+
 /** What a screen shows when the gate refuses: the refusal is not a failure of
  * the write the user asked for, so it must not read like one. */
 export const PLUGIN_MUTATION_BUSY = "Another plugin change is still running. Wait for it to finish.";
@@ -40,31 +42,24 @@ export interface PluginMutationGate {
 }
 
 export function createPluginMutationGate(): PluginMutationGate {
-  let busy = false;
-  const listeners = new Set<() => void>();
-
-  function set(next: boolean): void {
-    busy = next;
-    for (const listener of Array.from(listeners)) listener();
-  }
+  // The package's own store: nothing here needs a listener set of its own, and
+  // its setState notifies every subscriber, which is what a screen binds to.
+  const store = createFrameworkFreeStore<{ busy: boolean }>(() => ({ busy: false }));
 
   return {
-    isBusy: () => busy,
+    isBusy: () => store.getState().busy,
     async run(action) {
-      if (busy) return false;
-      set(true);
+      if (store.getState().busy) return false;
+      store.setState({ busy: true });
       try {
         await action();
         return true;
       } finally {
-        set(false);
+        store.setState({ busy: false });
       }
     },
     subscribe(listener) {
-      listeners.add(listener);
-      return () => {
-        listeners.delete(listener);
-      };
+      return store.subscribe(() => listener());
     },
   };
 }
