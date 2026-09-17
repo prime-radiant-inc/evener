@@ -996,8 +996,8 @@ func TestInstances_RemoveReportsACopyItCannotReclaim(t *testing.T) {
 		t.Fatalf("Remove = %v (%T), want a removePersistedError so the removal is announced", err, err)
 	}
 	left := authDirEntries(t, f)
-	if len(left) != 1 || !strings.HasPrefix(left[0], "groq.json.removing-") {
-		t.Fatalf("the auth directory holds %v, want the one copy the removal could not delete", left)
+	if len(left) != 1 || !strings.HasPrefix(left[0], "groq.json"+oauthCommittedMarker) {
+		t.Fatalf("the auth directory holds %v, want the one committed copy the removal could not delete", left)
 	}
 	if !strings.Contains(err.Error(), left[0]) {
 		t.Fatalf("Remove = %v, want it to name the copy it left as %s", err, left[0])
@@ -2224,7 +2224,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 		t.Fatalf("Rename: %v", err)
 	}
 
-	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -2251,7 +2251,7 @@ func TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut(t *testing.
 		t.Fatalf("Create: %v", err)
 	}
 	// Nothing set aside yet, and no auth directory to look in.
-	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides with nothing set aside: %v", err)
 	}
 
@@ -2278,7 +2278,7 @@ func TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut(t *testing.
 		t.Fatalf("ReadFile: %v", err)
 	}
 
-	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	for _, path := range []string{committed, live} {
@@ -2315,7 +2315,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -2333,13 +2333,14 @@ func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 	}
 }
 
-// TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload: putting the record
-// back is the whole of the recovery, because a registry resolves each
-// instance's credential from the state root as it builds its list
-// (registry.Instances). This pins that: the registry the hub already holds
-// reports the instance as resolving the restored record, with nothing between
-// the restore and the read. A reload after a restore would be dead weight, and
-// the startup pass is written without one.
+// TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload: a registry resolves
+// each instance's credential from the state root as it iterates its list
+// (registry.Instances), so for an instance the list already carries - a
+// config-carried one - the restored record resolves as soon as it is back, with
+// nothing between the restore and the read. This pins that credential half. The
+// list itself is still computed at load, which is why a credential-only instance
+// whose record came back needs the reload runMain adds; that half is pinned by
+// TestRestoreUncommittedOAuthAsidesNeedsAReloadForACredentialOnlyInstance.
 func TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -2362,7 +2363,7 @@ func TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload(t *testing.T) {
 		t.Fatalf("fixture: work = %+v (ok = %v), want the instance a set-aside record leaves credential-less", before, ok)
 	}
 
-	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	// No reload: the same registry object, read again.
@@ -5253,9 +5254,11 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 // An aside name the hub already holds must not be renamed over: os.Rename
 // replaces its destination, so a stamp that repeats for one record path would
 // destroy the bytes an earlier removal set aside - the credential the aside
-// exists to preserve. Removals of a name are serialized (credMu), so the stamp
-// steps to the next free value instead, keeping the digits-only tail the reclaim
-// parser (oauthAsideInstance) requires.
+// exists to preserve. Removals of a name are serialized (credMu), so the new
+// copy is filed one past the highest stamp already present (and the loop still
+// steps a clock-driven candidate past a collision), keeping the digits-only tail
+// the reclaim parser (oauthAsideInstance) requires. The leftovers a standing
+// removal could not delete are COMMITTED copies, so this counts both shapes.
 func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	save := func(email string) []byte {
@@ -5277,7 +5280,7 @@ func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 		dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
 		held := map[string][]byte{}
 		for _, name := range authDirEntries(t, f) {
-			if !strings.Contains(name, oauthAsideMarker) {
+			if _, _, aside := oauthAsideInstance(name); !aside {
 				continue
 			}
 			data, err := os.ReadFile(filepath.Join(dir, name))
@@ -5290,8 +5293,9 @@ func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 	}
 
 	first := save("first@example.com")
-	// One fixed instant for both removals, so the stamp repeats: that repetition
-	// is the collision the stepping has to survive.
+	// One fixed instant for both removals, so the clock alone would repeat the
+	// stamp: the seed stepping past the copy already present is what has to keep
+	// the two records apart.
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 123, time.UTC)
 	f.ctl.auth.now = func() time.Time { return fixed }
 	// The sweep cannot delete, so each removal leaves its aside in place for the
@@ -5303,11 +5307,11 @@ func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 	}
 	afterFirst := asides()
 	if len(afterFirst) != 1 {
-		t.Fatalf("after the first removal, asides = %v, want one", afterFirst)
+		t.Fatalf("after the first removal, copies = %v, want one", afterFirst)
 	}
 	for _, data := range afterFirst {
 		if !bytes.Equal(data, first) {
-			t.Fatal("the first removal's aside does not hold its record")
+			t.Fatal("the first removal's copy does not hold its record")
 		}
 	}
 
@@ -5317,7 +5321,7 @@ func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 	}
 	afterSecond := asides()
 	if len(afterSecond) != 2 {
-		t.Fatalf("after the second removal, asides = %v, want two: the repeated stamp overwrote one", afterSecond)
+		t.Fatalf("after the second removal, copies = %v, want two: the repeated stamp overwrote one", afterSecond)
 	}
 	var sawFirst, sawSecond bool
 	for _, data := range afterSecond {
@@ -5329,6 +5333,6 @@ func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 		}
 	}
 	if !sawFirst || !sawSecond {
-		t.Fatalf("asides = %v, want the first record preserved alongside the second", afterSecond)
+		t.Fatalf("copies = %v, want the first record preserved alongside the second", afterSecond)
 	}
 }

@@ -295,15 +295,29 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if err := hubReg.Reload(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — starting with implicit instances only\n", err)
 	}
-	// A record a removal set aside, under a name the config still carries, is
-	// put back here, once, before the web server is built - so no client can see
-	// the instance without the credential its own record holds, and no hub that
-	// has begun serving has a credential moved under it. Nothing stops startup:
-	// a state root this cannot recover from is one the hub starts on, the way an
-	// unreadable providers.toml is (spec §14.1). No reload follows a restore, and
-	// restoreUncommittedOAuthAsides says why.
-	if err := restoreUncommittedOAuthAsides(hubAuthStateRoot(hubReg), providersConfigPath); err != nil {
+	// A record a removal set aside is put back here, once, before the web server
+	// is built - so no client can see the instance without the credential its own
+	// record holds, and no hub that has begun serving has a credential moved
+	// under it. Nothing stops startup: a state root this cannot recover from is
+	// one the hub starts on, the way an unreadable providers.toml is (spec
+	// §14.1). This runs after the first Reload because hubAuthStateRoot reads the
+	// state root from the loaded registry (and would otherwise fall back to a
+	// default the registry may not share).
+	//
+	// A restore that put anything back is followed by a second Reload: the
+	// registry's instance list is computed at load (registry.computeInstances),
+	// so a credential-only implicit instance whose record came back after the
+	// first load is missing from that list - and from every listing built over it
+	// - until the next one. The reload runs even when the recovery also reported
+	// copies it could not put back, because it put back at least one.
+	restored, err := restoreUncommittedOAuthAsides(hubReg, hubAuthStateRoot(hubReg), providersConfigPath)
+	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+	}
+	if restored {
+		if err := hubReg.Reload(); err != nil {
+			_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — a restored OAuth record's instance may stay missing until the config loads\n", err)
+		}
 	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {

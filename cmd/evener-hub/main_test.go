@@ -465,6 +465,71 @@ func TestRunMainPutsBackARecordAFailedRemovalSetAside(t *testing.T) {
 	}
 }
 
+// TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList: a crash inside
+// a removal of a UI-credentialed (implicit Codex) instance leaves its record
+// under an in-flight aside name with no providers.toml entry to name it, so the
+// config test alone cannot make it recoverable. Startup puts the record back -
+// and must then reload, because the registry's instance list is computed at load
+// and the first load ran before the record returned. This drives runMain end to
+// end so the call site itself is what the assertions cover.
+func TestRunMainRestoresACredentialOnlyInstanceIntoTheInstanceList(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	providersPath, none := cmdutil.ProvidersConfigPath()
+	if none || providersPath == "" {
+		t.Fatal("fixture: the providers config path must be the one newTraceMainTestDeps set")
+	}
+	// Every successful load is captured, so the last one can be asked what the
+	// hub ended up listing.
+	var loads []*registry.Registry
+	deps.loadRegistry = func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		r, store, err := hermeticRegistryLoader(extra...)
+		if err == nil {
+			loads = append(loads, r)
+		}
+		return r, store, err
+	}
+	stateRoot := cmdutil.DefaultStateRoot()
+	record := authopenai.AuthFilePath(stateRoot, "openai-codex")
+	if err := os.MkdirAll(filepath.Dir(record), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := authopenai.SaveAuth(stateRoot, "openai-codex", makeOAuthRecord("openai-codex", "codex@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	aside := record + oauthAsideMarker + "1757000000000000000"
+	if err := os.Rename(record, aside); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("the credential-only record was not put back at startup: %v (stderr=%s)", err, stderr.String())
+	}
+	if len(loads) < 2 {
+		t.Fatalf("runMain loaded the registry %d times, want at least 2: one before the restore and one after it", len(loads))
+	}
+	if registryListsInstance(loads[0], "openai-codex") {
+		t.Fatal("the first load already listed the instance, so this test cannot show what the reload bought")
+	}
+	if !registryListsInstance(loads[len(loads)-1], "openai-codex") {
+		t.Fatalf("the last of %d loads does not list the restored credential-only instance", len(loads))
+	}
+}
+
+// registryListsInstance reports whether a registry's computed instance list
+// carries name.
+func registryListsInstance(reg *registry.Registry, name string) bool {
+	for _, inst := range reg.Instances() {
+		if inst.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // TestRunMainDegradesOnAnOldSchemaProvidersConfig is spec §14.1's flag-day
 // row for the hub: an old-schema providers.toml fails to load, and the hub
 // starts anyway on implicit instances alone, surfaces the pointer as a

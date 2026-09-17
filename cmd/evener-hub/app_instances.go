@@ -1486,6 +1486,10 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// removal and leaves the caller the files the failure names. Nothing is
 	// rolled back for it: the config, the registry and the credential the
 	// instance resolved are all in their post-removal state.
+	//
+	// Each in-flight copy is marked committed before it is deleted
+	// (reclaimOAuthAsides), so a crash in this window leaves a copy startup can
+	// tell apart from one a failed removal set aside - and never puts back.
 	if err := c.reclaimOAuthAsides(name); err != nil {
 		return removePersistedError{fmt.Errorf("removed %s, but %w", name, err)}
 	}
@@ -1527,15 +1531,48 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 		return "", fmt.Errorf("remove %s: %s is not a regular file, so the removal cannot set its OAuth state aside: move it out of the way to remove the instance", name, path)
 	}
 	// The stamp steps until it names a path nothing holds. os.Rename replaces an
-	// existing destination, so a stamp that repeats for the same record path -
-	// a clock that steps backward is the realistic route - would have the second
-	// aside destroy the first, losing exactly the bytes the aside exists to
-	// preserve. Stepping is safe here because removals of one name are
-	// serialized: every removal holds the caller's credMu exclusively, so no
-	// other aside for this path can be created between the existence check and
-	// the rename. The candidate keeps the all-digits tail oauthAsideInstance
-	// requires, so a stepped name is still reclaimable rather than debris.
+	// existing destination, so a stamp that repeats for the same record path
+	// would have the second aside destroy the first, losing exactly the bytes
+	// the aside exists to preserve.
+	//
+	// The seed is one past the highest stamp already filed for THIS record path,
+	// or the clock when there is no copy to step past. The clock alone is not
+	// enough: a backward step (an NTP correction, a VM snapshot, a container
+	// clock) would file a later removal's copy under a SMALLER stamp than an
+	// earlier one's, and startup restores the newest copy of a name - so the
+	// older, possibly revoked record would be the one put back while the newer
+	// credential sat as inert debris. Stepping past the highest makes the order
+	// of the stamps the order of the removals. The loop below still steps a
+	// clock-driven seed past a collision, and stepping is safe here because
+	// removals of one name are serialized: every removal holds the caller's
+	// credMu exclusively, so no other aside for this path can be created between
+	// the existence check and the rename. The candidate keeps the all-digits
+	// tail oauthAsideInstance requires, so a stepped name is still reclaimable
+	// rather than debris.
 	stamp := c.auth.now().UnixNano()
+	if entries, err := os.ReadDir(filepath.Dir(path)); err == nil {
+		var highest int64
+		var have bool
+		for _, e := range entries {
+			inst, _, aside := oauthAsideInstance(e.Name())
+			if e.IsDir() || !aside || inst != name {
+				continue
+			}
+			s, perr := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
+			if perr != nil {
+				continue
+			}
+			if !have || s > highest {
+				highest, have = s, true
+			}
+		}
+		// One past the highest is all digits for any non-negative stamp; the
+		// comparison also refuses a MaxInt64 successor, which would wrap to a
+		// negative tail no copy can carry.
+		if have && highest+1 > highest && highest+1 > stamp {
+			stamp = highest + 1
+		}
+	}
 	aside := fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)
 	for {
 		_, err := os.Lstat(aside)
@@ -1562,69 +1599,122 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 
 // oauthAsideMarker separates a record's path from the stamp of the removal that
 // set it aside (setAsideOAuthFile). It is what tells a copy apart from a record
-// when the leftovers are reclaimed.
+// when the leftovers are reclaimed, and it names an IN-FLIGHT copy: the removal
+// that made it had not stood when it was written, so startup puts it back
+// (restoreUncommittedOAuthAsides).
 const oauthAsideMarker = ".removing-"
 
-// oauthAsideInstance returns the instance a copy was made from, and reports
-// whether name is a copy at all. The aside name is the record's whole path - its
-// .json suffix included - plus a stamp, so an instance whose own name holds the
-// marker is not one: `x.removing-1`'s record is `x.removing-1.json`, whose tail
-// after the marker is not a number, and no record a load would read is ever
-// taken for debris.
-func oauthAsideInstance(name string) (string, bool) {
-	i := strings.LastIndex(name, oauthAsideMarker)
-	if i < 0 {
-		return "", false
+// oauthCommittedMarker is the same separation for a copy whose removal HAD
+// stood: reclaimOAuthAsides renames every in-flight copy to this shape before
+// deleting it, so a crash between the rename and the delete leaves a copy
+// startup can tell apart from one a failure set aside - and never puts back. The
+// stamp is preserved, so the two shapes order against each other the same way.
+const oauthCommittedMarker = ".removed-"
+
+// oauthAsideInstance returns the instance a copy was made from, whether the
+// removal that made it had stood, and whether name is a copy at all. The aside
+// name is the record's whole path - its .json suffix included - plus a stamp, so
+// an instance whose own name holds a marker is not one: `x.removing-1`'s record
+// is `x.removing-1.json`, whose tail after the marker is not a number, and no
+// record a load would read is ever taken for debris.
+func oauthAsideInstance(name string) (string, bool, bool) {
+	for _, m := range []struct {
+		marker    string
+		committed bool
+	}{
+		{oauthCommittedMarker, true},
+		{oauthAsideMarker, false},
+	} {
+		i := strings.LastIndex(name, m.marker)
+		if i < 0 {
+			continue
+		}
+		record, stamp := name[:i], name[i+len(m.marker):]
+		if !strings.HasSuffix(record, ".json") || stamp == "" {
+			continue
+		}
+		if strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+			continue
+		}
+		return strings.TrimSuffix(record, ".json"), m.committed, true
 	}
-	record, stamp := name[:i], name[i+len(oauthAsideMarker):]
-	if !strings.HasSuffix(record, ".json") || stamp == "" {
-		return "", false
-	}
-	if strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
-		return "", false
-	}
-	return strings.TrimSuffix(record, ".json"), true
+	return "", false, false
 }
 
 // oauthAsideStampText returns the stamp an aside name carries. The name has
-// already been accepted by oauthAsideInstance, so its tail is all digits.
+// already been accepted by oauthAsideInstance, so one of the markers is present
+// and the tail after it is all digits.
 func oauthAsideStampText(name string) string {
-	return name[strings.LastIndex(name, oauthAsideMarker)+len(oauthAsideMarker):]
+	for _, marker := range []string{oauthCommittedMarker, oauthAsideMarker} {
+		i := strings.LastIndex(name, marker)
+		if i < 0 {
+			continue
+		}
+		stamp := name[i+len(marker):]
+		if stamp != "" && strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) < 0 {
+			return stamp
+		}
+	}
+	return ""
 }
 
-// restoreUncommittedOAuthAsides puts back the OAuth records a removal set aside
-// for an instance providers.toml still carries, and reports what it could not
-// put back.
+// oauthCommittedAsideName returns the name an in-flight copy takes once the
+// removal it belongs to has stood. The stamp is preserved - the committed copy
+// orders against the others the same way - and only the marker changes, to the
+// shape startup never puts back. name must be an in-flight copy
+// (oauthAsideInstance returned it with committed false), so it carries the
+// marker.
+func oauthCommittedAsideName(name string) string {
+	i := strings.LastIndex(name, oauthAsideMarker)
+	return name[:i] + oauthCommittedMarker + name[i+len(oauthAsideMarker):]
+}
+
+// restoreUncommittedOAuthAsides puts back the in-flight OAuth records a removal
+// set aside for an instance that still exists. It reports what it could not put
+// back, and whether it restored anything at all.
 //
 // A removal moves the record aside before it deletes anything, so a hub that
 // dies inside that window - or a failed removal whose rename-back did not land
-// (restoreFailedRemoval) - leaves a record under its aside name with the
-// instance still in the config. providers.toml is what says whether the removal
-// reached the file, so an aside goes back only when the config still names its
-// instance and the record's own path is free. The bytes are moved, never read,
-// so a record the hub cannot read is put back as faithfully as any other.
+// (restoreFailedRemoval) - leaves a record under its in-flight aside name with
+// the instance still configured. providers.toml says whether the removal reached
+// the file, so an aside goes back when the config still names its instance OR
+// when the name is a curated credential-only provider - an implicit Codex
+// instance exists from its record alone and has no entry to name it, so the
+// config test by itself would strand exactly the record that made it exist -
+// and the record's own path is free. The bytes are moved, never read, so a
+// record the hub cannot read is put back as faithfully as any other.
+//
+// A COMMITTED copy (oauthCommittedMarker) is never put back: it is the leftover
+// of a removal that STOOD (reclaimOAuthAsides), so putting it back would undo a
+// removal the caller was told had happened. It is left where it is for that
+// name's next removal to collect, as today's committed debris is.
 //
 // Everything else is left exactly where it is. An aside whose instance the
-// config no longer names belongs to a removal that stood, or to an instance
-// whose record was what made it exist, and the copies a standing removal left
-// are that name's next removal to collect (reclaimOAuthAsides): taking them
-// here would delete the last credential of an instance a failed removal
-// stranded without the user asking for it. A record filed under its own name
-// again is the record the instance has now, so a copy beside it stays too.
+// config no longer names and which is not a curated credential-only provider
+// belongs to a removal that stood, and the copies a standing removal left are
+// that name's next removal to collect (reclaimOAuthAsides): taking them here
+// would delete the last credential of an instance a failed removal stranded
+// without the user asking for it. A record filed under its own name again is the
+// record the instance has now, so a copy beside it stays too.
 //
 // One instance can hold several copies - a removal strands one, a later sign-in
-// writes the record again, a second removal sets that one aside as well - so
-// the newest goes back and the rest stay: the newest is the record the instance
-// had last. A copy whose stamp cannot be ordered is left alone with them.
+// writes the record again, a second removal sets that one aside as well - so the
+// newest IN-FLIGHT copy goes back and the rest stay: the newest is the record
+// the instance had last. A copy whose stamp cannot be ordered is left alone with
+// them.
 //
-// No reload follows a restore. A registry resolves each instance's credential
-// from the state root as it builds its list (registry.Instances), so the one the
-// hub already holds reports the record as soon as it is back - measured, not
-// assumed: a reload here changes nothing a caller or a test can see.
-func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) error {
+// The caller must reload after a restore that put anything back. A registry
+// resolves each instance's credential from the state root as it builds its list
+// (registry.Instances), so the credential a config-carried instance resolves is
+// visible without one; but that list is computed at load, so a credential-only
+// instance whose record came back after the load stays out of the list - and
+// out of every listing over it - until the next Reload. The returned bool is
+// true when at least one record was put back, so a partial restore (some copies
+// reported as problems) still asks for the reload.
+func restoreUncommittedOAuthAsides(reg *hubcore.ProviderRegistry, stateDir, providersConfigPath string) (bool, error) {
 	layer, _, err := registry.ReadConfigFile(providersConfigPath)
 	if err != nil {
-		return fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
+		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
 	}
 	// Where the records live, asked of the function that places them, so this
 	// cannot look somewhere a record never lands.
@@ -1634,21 +1724,25 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) error {
 		// No directory is nothing set aside: a state root that never held a
 		// record has no copy of one.
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
+		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
 	}
-	// The newest copy of each name the config carries, chosen before anything
-	// moves so the choice does not depend on the order the directory hands its
-	// entries back.
+	var current *registry.Registry
+	if reg != nil {
+		current = reg.Get()
+	}
+	// The newest in-flight copy of each name that still exists, chosen before
+	// anything moves so the choice does not depend on the order the directory
+	// hands its entries back.
 	newest := make(map[string]string, len(entries))
 	stamps := make(map[string]int64, len(entries))
 	for _, e := range entries {
-		inst, aside := oauthAsideInstance(e.Name())
-		if e.IsDir() || !aside {
+		inst, committed, aside := oauthAsideInstance(e.Name())
+		if e.IsDir() || !aside || committed {
 			continue
 		}
-		if _, carried := layer.Providers[inst]; !carried {
+		if _, carried := layer.Providers[inst]; !carried && !curatedCredentialOnlyOAuth(current, inst) {
 			continue
 		}
 		stamp, err := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
@@ -1657,12 +1751,13 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) error {
 			// cannot be ordered against the copies beside it.
 			continue
 		}
-		if current, ok := stamps[inst]; !ok || stamp > current {
+		if seen, ok := stamps[inst]; !ok || stamp > seen {
 			newest[inst] = e.Name()
 			stamps[inst] = stamp
 		}
 	}
 	var problems []string
+	restored := false
 	for inst, name := range newest {
 		path := authopenai.AuthFilePath(stateDir, inst)
 		// A record filed under its own name again is the one the instance has
@@ -1678,11 +1773,25 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) error {
 			problems = append(problems, fmt.Sprintf("put %s back as %s (%v)", name, path, err))
 			continue
 		}
+		restored = true
 	}
 	if len(problems) > 0 {
-		return fmt.Errorf("a record a failed removal set aside could not be put back: %s", strings.Join(problems, ", "))
+		return restored, fmt.Errorf("a record a failed removal set aside could not be put back: %s", strings.Join(problems, ", "))
 	}
-	return nil
+	return restored, nil
+}
+
+// curatedCredentialOnlyOAuth reports whether name is a curated provider that
+// exists as an instance only when a credential resolves for it on the Codex
+// OAuth transport - the implicit instance a UI sign-in creates, which no
+// providers.toml entry names. A nil registry (no successful load) has no curated
+// view to ask, so it answers no and the config test alone decides.
+func curatedCredentialOnlyOAuth(reg *registry.Registry, name string) bool {
+	if reg == nil {
+		return false
+	}
+	p, ok := reg.Provider(name)
+	return ok && p.Implicit != nil && *p.Implicit && p.Transport.Auth == registry.AuthOAuthOpenAICodex
 }
 
 // reclaimOAuthAsides deletes the copies of one name's OAuth record that a
@@ -1690,6 +1799,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) error {
 // any an earlier removal of the name left behind. It is run once the removal has
 // stood, after the reload that drops the instance from the registry, and it
 // takes copies FILED UNDER THAT NAME ONLY.
+//
+// Each in-flight copy is renamed to its committed name before it is deleted, so
+// a hub that dies between the two leaves a copy startup can identify as one a
+// standing removal made (restoreUncommittedOAuthAsides never puts a committed
+// copy back) instead of an in-flight one it would restore - which would undo the
+// removal the caller was told had happened. A commit rename that fails is
+// reported and the delete is attempted anyway: the removal stood, so the bytes
+// are unwanted whatever the rename did, and the report is the caller's only
+// warning that the crash mark could not be set.
 //
 // The name is the whole of what makes a copy safe to take. A removal is the only
 // call that can know the bytes are no longer wanted, so a copy under any other
@@ -1718,7 +1836,7 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 	}
 	var problems []string
 	for _, e := range entries {
-		inst, aside := oauthAsideInstance(e.Name())
+		inst, committed, aside := oauthAsideInstance(e.Name())
 		// A directory is skipped: this takes the copies the hub itself set
 		// aside, and deleting a directory's contents is not something a removal
 		// may do. setAsideOAuthFile refuses anything but a regular file at the
@@ -1728,6 +1846,16 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
+		if !committed {
+			// The commit mark, first, is what keeps a crash before the delete
+			// below from leaving a copy startup would put back.
+			committedName := oauthCommittedAsideName(e.Name())
+			if err := os.Rename(path, filepath.Join(dir, committedName)); err != nil {
+				problems = append(problems, fmt.Sprintf("%s could not be marked committed (%v)", path, err))
+			} else {
+				path = filepath.Join(dir, committedName)
+			}
+		}
 		if err := c.auth.deleteAside(path); err != nil {
 			problems = append(problems, fmt.Sprintf("%s (%v)", path, err))
 		}
