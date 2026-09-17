@@ -319,7 +319,7 @@ export function QuestionSheet({
                   </Pressable>
                   <TextInput
                     ref={input}
-                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${question.header}`}
+                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${question.display.header}`}
                     placeholder={
                       answer?.resolution?.kind === "free"
                         ? "Type your answer"
