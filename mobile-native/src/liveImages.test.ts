@@ -149,10 +149,15 @@ it("shows and replaces live input images without waiting for the turn to stop", 
   expect(attachments).toMatchObject({
     items: [{ src: "data:image/png;base64,BAUG", name: "second.png" }],
   });
+  // An empty list is not a removal — the wire has no "the input images are gone"
+  // signal, and the hub keeps whatever list it had (server/appwire_turns.go's
+  // `len(incoming.Images) == 0`), so the row the reader is looking at stays.
   publish({ ...item, images: [] });
-  expect(store.getState().conversation?.items).toEqual([
-    { kind: "user", id: "user", text: "look" },
-  ]);
+  expect(
+    store.getState().conversation?.items.find((i) => i.kind === "attachments"),
+  ).toMatchObject({
+    items: [{ src: "data:image/png;base64,BAUG", name: "second.png" }],
+  });
   expect(reads()).toBe(1);
 });
 
@@ -186,58 +191,44 @@ it("preserves tool-output image references in live item events", async () => {
 // The read response is ordered at the snapshot cut, so a live image change
 // this store folded before the response is already reflected in the snapshot
 // that arrives: the snapshot's images are the ones that commit.
-for (const replacement of [
-  [],
-  [
-    {
-      type: "image" as const,
-      mediaType: "image/png",
-      data: "BAUG",
-      name: "new.png",
-    },
-  ],
-]) {
-  it(`commits the snapshot's image over a live ${replacement.length ? "replacement" : "removal"}`, async () => {
-    const item: ThreadItem = {
-      type: "userMessage",
-      id: "user",
-      status: "completed",
-      text: "look",
-      images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
-    };
-    const { store, service, sink, publish, holdNextRead } = await setup([item]);
-    const held = holdNextRead();
-    const refresh = store.getState().rehydrate(service, sink);
-    await held.started;
-    publish({ ...item, images: replacement });
-    // The live change is on screen at once.
-    expect(
-      store
-        .getState()
-        .conversation?.items.filter((row) => row.kind === "attachments"),
-    ).toHaveLength(replacement.length);
-    held.release();
-    await refresh;
-    // The snapshot then settles it: its own image is what the row shows.
-    const rows = store
-      .getState()
-      .conversation?.items.filter((row) => row.kind === "attachments");
-    expect(rows).toHaveLength(1);
-    expect(rows?.[0]).toMatchObject({
-      items: [{ src: "data:image/png;base64,AQID" }],
-    });
+it("commits the snapshot's image over a live replacement", async () => {
+  const replacement = [
+    { type: "image" as const, mediaType: "image/png", data: "BAUG", name: "new.png" },
+  ];
+  const item: ThreadItem = {
+    type: "userMessage",
+    id: "user",
+    status: "completed",
+    text: "look",
+    images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
+  };
+  const { store, service, sink, publish, holdNextRead } = await setup([item]);
+  const held = holdNextRead();
+  const refresh = store.getState().rehydrate(service, sink);
+  await held.started;
+  publish({ ...item, images: replacement });
+  // The live change is on screen at once.
+  expect(
+    store.getState().conversation?.items.find((row) => row.kind === "attachments"),
+  ).toMatchObject({ items: [{ src: "data:image/png;base64,BAUG" }] });
+  held.release();
+  await refresh;
+  // The snapshot then settles it: its own image is what the row shows.
+  const rows = store
+    .getState()
+    .conversation?.items.filter((row) => row.kind === "attachments");
+  expect(rows).toHaveLength(1);
+  expect(rows?.[0]).toMatchObject({
+    items: [{ src: "data:image/png;base64,AQID" }],
   });
-}
+});
 
-// An overlapping older page is the only evidence anybody has about an input
-// image a live frame did not mention. The wire has no "the images are gone"
-// signal for input images — an empty or absent list says nothing, which is how
-// the hub reads it too (`len(incoming.Images) == 0` keeps the existing list:
-// server/appwire_turns.go:884-886, internal/apptranscript/logical_turn.go:309)
-// — so the page restores them rather than a stale removal winning. D23d's own
-// delta: with pages merged into the model, mergePageItem decides this, where the
-// row-level prepend used to leave the live row alone.
-it("restores input images from an overlapping older page when no frame denied them", async () => {
+// One attachment row, whoever supplies it. The live frame's empty list denied
+// nothing (the reducer's mergeItemImages keeps what the item had, as the hub
+// does with `len(incoming.Images) == 0`: server/appwire_turns.go:884-886), and
+// the older page's copy of the same item merges into that same model item
+// (mergePageItem), so an overlapping page adds no second row.
+it("keeps one attachment row when an overlapping older page repeats it", async () => {
   const item: ThreadItem = {
     type: "userMessage",
     id: "user",
@@ -246,14 +237,17 @@ it("restores input images from an overlapping older page when no frame denied th
     images: [{ type: "image", mediaType: "image/png", data: "AQID" }],
   };
   const { store, service, publish } = await setup([item]);
+  // The live frame's empty list denies nothing, so the row keeps its image.
   publish({ ...item, images: [] });
-  expect(
-    store.getState().conversation?.items.map((row) => row.kind),
-  ).toEqual(["user"]);
+  expect(store.getState().conversation?.items.map((row) => row.kind)).toEqual([
+    "user",
+    "attachments",
+  ]);
   expect((await store.getState().loadOlder(service)).status).toBe("loaded");
-  expect(store.getState().conversation?.items.map((row) => row.kind)).toEqual(
-    ["user", "attachments"],
-  );
+  expect(store.getState().conversation?.items.map((row) => row.kind)).toEqual([
+    "user",
+    "attachments",
+  ]);
 });
 
 it("commits the snapshot's own rows over an image added while the read was in flight", async () => {

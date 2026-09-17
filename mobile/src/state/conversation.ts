@@ -358,15 +358,40 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
   };
 }
 
-// Apply truncation to an item's text-bearing fields (arguments, output, error,
-// markdown). Returns a new item with truncated fields. Native transcript
-// projection expands a clustered activity's members directly, so each
-// member's own detail is truncated too — not just the cluster's top-level
-// detail (the first member's).
+// Apply the bound to every text a row carries for the reader. Native transcript
+// projection expands a clustered activity's members directly, so each member's
+// own detail is bounded too — not just the cluster's top-level detail (the first
+// member's). A pasted user message, a daemon notice and a tool failure's stack
+// are as large as anything that streams, so each kind that carries prose is here.
 function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
   switch (item.kind) {
+    case "user":
+      return { ...item, text: bound(item.text) };
     case "assistant":
       return { ...item, markdown: bound(item.markdown) };
+    case "notice":
+      return { ...item, text: bound(item.text) };
+    case "failure":
+      return { ...item, title: bound(item.title), detail: bound(item.detail) };
+    case "question":
+      // Only the prose: a question's header, its option labels and its
+      // ifUnanswered text are echoed back in the answer this client composes
+      // (questionAnswers.ts's composeQuestionAnswers → composeAskAnswers), and
+      // answering with a cut label or header would name a choice the agent never
+      // offered. The prompt, the reasoning and an option's explanatory detail are
+      // read, not sent.
+      return {
+        ...item,
+        questions: item.questions.map((question) => ({
+          ...question,
+          question: bound(question.question),
+          ...(question.why === undefined ? {} : { why: bound(question.why) }),
+          options: question.options.map((option) => ({
+            ...option,
+            ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
+          })),
+        })),
+      };
     case "activity":
       return {
         ...item,
@@ -381,6 +406,9 @@ function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelin
           : {}),
       };
     default:
+      // attachments: an attachment's src IS the image (a data: URI for composer
+      // bytes), so cutting it yields something that cannot decode; the name is a
+      // filename. The wire bounds image payloads at the source instead.
       return item;
   }
 }

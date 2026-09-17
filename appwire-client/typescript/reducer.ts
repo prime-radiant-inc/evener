@@ -94,6 +94,11 @@ function epochMsToISO(ms: number | undefined): string | undefined {
 // maintained per append), so the hot readers of a live view (settleItem,
 // AgentMessageItem's per-render markdown source) get the full text in O(1)
 // instead of paying the per-element Proxy-trap cost of a join.
+// Maintaining that join is not where the pre-fix quadratic cost lived,
+// though: `brand.text + delta` is the same flat-per-delta concatenation
+// item/toolOutput/delta's `output` uses — a rope on V8, a buffered primitive
+// on Hermes — so the array copy, not the string concat, is the one quadratic
+// shape appendChunk removes.
 //
 // Purity: the reducer's contract is immutable updates, and this preserves
 // it OBSERVATIONALLY. The one deliberate alias — new views share the
@@ -377,9 +382,14 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-// Empty-is-a-value, exactly as imagesToItemImagesForSession above: a tool
-// whose output images were cleared says so with [], and an older page must
-// not replay the ones it had.
+// The OPPOSITE rule to imagesToItemImagesForSession above, and deliberately so.
+// Output images are the one image list the hub can clear: it sends `[]` to say
+// the tool's output images are gone (#1614 — `omitzero` on OutputImages, and the
+// hub's merge and clone sites preserve an empty list rather than folding it into
+// nil), so an empty list here is a value the model must hold and an older page
+// must not replay what it had. Input images have no such signal — an empty list
+// there means "nothing said" (see above) — so the two functions read the same
+// shape differently on purpose.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images) return undefined;
   if (images.length === 0) return [];
@@ -486,6 +496,27 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
     text: existing.text + (pending === undefined ? "" : pendingTextJoined(pending)),
   });
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
+}
+
+// A settle says nothing about images unless it carries them. `undefined` is what
+// both mappers produce for a field the payload left out (and, for input images,
+// for an empty list — see imagesToItemImagesForSession), so the item keeps the
+// images it already has, exactly as the hub keeps them on its own upsert
+// (`len(incoming.Images) == 0` → `incoming.Images = existing.Images`,
+// server/appwire_turns.go:884-889). An explicitly empty OUTPUT list is a value,
+// not an absence, and survives this merge as the removal it is.
+function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (!existing) return settled;
+  const images = settled.images ?? existing.images;
+  const outputImages = settled.outputImages ?? existing.outputImages;
+  if (images === settled.images && outputImages === settled.outputImages) return settled;
+  // The text-presence marker is non-enumerable, so a spread drops it: carry it
+  // the way every other merge in this chain does.
+  return copyItemTextPresence(settled, {
+    ...settled,
+    ...(images === undefined ? {} : { images }),
+    ...(outputImages === undefined ? {} : { outputImages }),
+  });
 }
 
 // item/completed's settled wire item never carries observedStartedAt/
@@ -1347,7 +1378,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             items: mapItemByIdentity(turn.items, incoming, (old) =>
               mergeObservedTiming(
                 mergeArguments(
-                  mergeReasoning(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                  mergeReasoning(
+                    mergeItemImages(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                    old,
+                  ),
                   old,
                 ),
                 old,

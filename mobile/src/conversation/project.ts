@@ -495,7 +495,11 @@ function projectItem(
   if (item.type === "warning") {
     const title = item.warning?.title;
     const hint = item.warning?.hint;
-    const text = [title, item.text, hint].filter((part) => part).join("\n");
+    // Whitespace is not content: a title of spaces or a hint of newlines reads
+    // as blank, so it is not a part and cannot make the row worth showing.
+    const text = [title, item.text, hint]
+      .filter((part) => part !== undefined && part.trim() !== "")
+      .join("\n");
     // A warning carrying no title, no message and no hint has nothing to
     // show: the web renders no row for it either (WarningItem returns null
     // for exactly this case), and an empty notice here would be a blank

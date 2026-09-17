@@ -22,7 +22,7 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "./project";
-import { hydrateThread } from "@evener/appwire-client";
+import { applyNotification, hydrateThread } from "@evener/appwire-client";
 import { projectConversation } from "./project";
 
 // The oracle drives the shim exactly as the service does: hydrate the wire
@@ -1908,6 +1908,34 @@ it("drops a warning that carries nothing at all", () => {
     thread([turn("t", [item({ id: "w", type: "warning", text: "", status: "completed" })])]),
   );
   expect(projected.items).toEqual([]);
+});
+
+// Whitespace is not content either: a title of spaces or a hint of newlines
+// joins into a row whose text a reader sees as blank. The title and hint reach
+// the model only through the reducer's own live `warning` fold, so the fixture
+// folds one.
+it.each([
+  ["a whitespace title", { title: "   " }],
+  ["a whitespace hint", { hint: "\n\t" }],
+  ["whitespace everywhere", { title: " ", hint: "  " }],
+])("drops a warning carrying only %s", (_case, warning) => {
+  const model = applyNotification(
+    hydrateThread(
+      {
+        thread: thread([turn("t", [], { status: "inProgress" })], {
+          evener: evenerThread({ activeTurnId: "t" }),
+        }),
+      },
+      "ref-1",
+      0,
+    ),
+    {
+      method: "warning",
+      params: { threadId: "thread-1", ref: "ref-1", message: "  ", ...warning },
+    } as never,
+    1000,
+  );
+  expect(projectConversation(model).items).toEqual([]);
 });
 
 it("carries a warning that has no title of its own", () => {
