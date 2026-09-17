@@ -164,7 +164,12 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         return { marketplacesLoading: false, browseCatalogs };
       });
     },
-    wantsList: (s) => s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading,
+    // A mutation issued before any fetchMarketplaces call touches none of
+    // these three fields, so listRevision.hasLive() is what carries its
+    // intent - a write issues the same live revision a read does (see
+    // listRevision.ts).
+    wantsList: (s) =>
+      s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading || listRevision.hasLive(),
   });
 
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
