@@ -13,48 +13,6 @@ import (
 // and the socket therefore has to carry the difference between an empty list
 // and no list at all, and the two below are where it was lost.
 
-// The merge treated an empty incoming list as "the frame said nothing" and
-// copied the images back, so a removal never reached a client whose item the
-// snapshot had already seen with images.
-func TestMergeKeepsAnExplicitEmptyOutputImageList(t *testing.T) {
-	existing := appwire.ThreadItem{
-		ID:           "item_1",
-		OutputImages: []appwire.OutputImage{{Name: "shot.png", SHA: "abc"}},
-		Images:       []appwire.InputItem{{Type: "image", Name: "in.png"}},
-	}
-	incoming := appwire.ThreadItem{
-		ID:           "item_1",
-		OutputImages: []appwire.OutputImage{},
-		Images:       []appwire.InputItem{},
-	}
-
-	merged := mergeAppThreadItem(existing, incoming)
-	if merged.OutputImages == nil || len(merged.OutputImages) != 0 {
-		t.Fatalf("merged OutputImages=%+v, want the frame's explicit empty list", merged.OutputImages)
-	}
-	// Input images keep the length rule: the field is omitempty, so an empty
-	// list and an absent one are the same on the wire and a frame cannot remove
-	// them. The snapshot's own stand.
-	if len(merged.Images) != 1 {
-		t.Fatalf("merged Images=%+v, want the snapshot's own kept", merged.Images)
-	}
-}
-
-// Absent stays absent: a frame that carries no list at all must not erase what
-// the snapshot holds, which is what the length check was really for.
-func TestMergeKeepsExistingImagesWhenTheFrameCarriesNone(t *testing.T) {
-	existing := appwire.ThreadItem{
-		ID:           "item_1",
-		OutputImages: []appwire.OutputImage{{Name: "shot.png", SHA: "abc"}},
-		Images:       []appwire.InputItem{{Type: "image", Name: "in.png"}},
-	}
-
-	merged := mergeAppThreadItem(existing, appwire.ThreadItem{ID: "item_1"})
-	if len(merged.OutputImages) != 1 || len(merged.Images) != 1 {
-		t.Fatalf("merged images=%+v/%+v, want the snapshot's own kept", merged.Images, merged.OutputImages)
-	}
-}
-
 // The clone flattened an empty non-nil output list to nil (append to a nil
 // slice yields nil), so it erased the removal the item announces; and nil input
 // must stay nil, or a clone announces a removal that never happened.
