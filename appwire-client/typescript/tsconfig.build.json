@@ -73,6 +73,7 @@
     "builtinInvocation.ts",
     "transcriptDisplayConfig.ts",
     "transcriptDisplayStore.ts",
+    "transcriptProjector.ts",
     "state/navigation/index.ts",
     "state/navigation/codec.ts",
     "state/navigation/immutable.ts",
