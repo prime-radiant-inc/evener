@@ -1,6 +1,9 @@
 package appwire
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 // An empty OutputImages list is the hub saying "the pictures are gone" (see
 // ThreadItem.OutputImages), so every copy of a thread has to carry the
@@ -51,5 +54,23 @@ func TestCloneThreadCopiesTheOutputImagesItIsGiven(t *testing.T) {
 	cloned.Turns[0].Items[0].OutputImages[0].Name = "other.png"
 	if original[0].Name != "shot.png" {
 		t.Fatal("the clone shares the caller's output image array")
+	}
+}
+
+// The whole nil-vs-empty rule rests on what slices.Clone does at the two ends,
+// so it is pinned here rather than assumed: a nil input must stay nil (an item
+// that never had output images sends no key) and a non-nil empty input must come
+// back non-nil and empty (the removal the hub announces). If either of these
+// ever changed, every clone site in the census would go wrong at once.
+func TestSlicesCloneCarriesOutputImageListNilness(t *testing.T) {
+	if cloned := slices.Clone([]OutputImage(nil)); cloned != nil {
+		t.Fatalf("slices.Clone(nil) = %+v, want nil", cloned)
+	}
+	cloned := slices.Clone([]OutputImage{})
+	if cloned == nil {
+		t.Fatal("slices.Clone(empty) = nil, want a non-nil empty list: the removal signal would be lost")
+	}
+	if len(cloned) != 0 {
+		t.Fatalf("slices.Clone(empty) has len %d, want 0", len(cloned))
 	}
 }
