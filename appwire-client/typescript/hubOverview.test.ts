@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { createHubOverviewStore, type HubOverviewClient } from "./hubOverview";
-import { FakeClient } from "./testing/fakeClient";
+import { FakeClient, failing } from "./testing/fakeClient";
 import type { SettingsOverviewResponse } from "./types.gen";
 
 const SAMPLE: SettingsOverviewResponse = {
@@ -15,12 +15,6 @@ const SAMPLE: SettingsOverviewResponse = {
 };
 
 const OVERVIEW = "evener/settings/overview";
-
-function failing(message: string): () => never {
-  return () => {
-    throw new Error(message);
-  };
-}
 
 function pending() {
   let resolve!: (value: SettingsOverviewResponse) => void;

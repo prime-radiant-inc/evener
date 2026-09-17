@@ -134,9 +134,20 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
-  one cached browse result per marketplace, where fetches record their failure
-  in state and mutations reject), with the installed-plugin and directory
-  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
+  one cached browse result per marketplace), the installed-plugins store
+  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  plugins, their six mutations and a `pluginRevision` that moves as the hub
+  announces a change), the global launch-layer store
+  (`createLaunchLayerStore(client)`, the one `LaunchConfigLayer` the plugin and
+  skill directory lists and the MCP server list are four fields of, read and
+  written at cwd `/` and layer `global`), and the pieces they are built over:
+  `createListRevision`, the fence on a list every response replaces whole, and
+  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  `connectionChanged` recovery (a list a host has read is read again when the
+  connection is ready again, because the hub's broadcast only reaches clients
+  that were connected) and the `start`/`reset`/`dispose` trio a host drives
+  from its screen. In every store fetches record their failure in state and
+  mutations reject. The subpath resolves to `state/extensions/index.ts`, a
   barrel over the layer's modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
@@ -170,11 +181,26 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `expo-crypto` for native) rather than the package assuming one exists.
   `createSecureUUID` documents its own fallback for a source with neither
   method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
-  pure reconciliation (`reconcilePendingEntries`) turns those durable records
-  plus a live `ThreadModel` into the `PendingTurnEntry` rows a composer's
-  queue renders - identity-based, so an authoritative projection replaces the
-  same outbox entry rather than duplicating it. No storage, scheduling or DOM
-  type lives here - just the shape, the identity and the reconciliation.
+  layer also carries `MutationOutbox`, the discovery half of an outbox: a class
+  that enqueues through a `MutationOutboxStorage` port (the 13 calls this layer
+  and the dispatcher make; the web's IndexedDB adapter implements it and stays
+  in the app), announces a commit to sibling clients, and re-scans when a host
+  says a scan is worth doing. Every host-shaped capability is an option - the
+  channel, the lifecycle and visibility targets, the timer - and none defaults
+  to a browser global, so no DOM type lives here. Its pure reconciliation
+  (`reconcilePendingEntries`) turns those durable records plus a live
+  `ThreadModel` into the `PendingTurnEntry` rows a composer's queue renders -
+  identity-based, so an authoritative projection replaces the same outbox entry
+  rather than duplicating it - and the pending-turns projection store built on
+  that reconciliation: `createPendingTurnsStore({ threads, draft, identity })`
+  is a framework-free store holding a host's own outbox/optimistic/recovery
+  records plus the submission bookkeeping (`submittingRefs`, `submittedHere`)
+  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
+  `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
+  clear) and the host's own `ClientIdentity` (`isOwnMutationRecord`),
+  generic over the attachment type like the records above. No storage
+  adapter, scheduling policy or DOM type lives here - just the shapes, the
+  identity, the rules, the reconciliation and the store built on them.
   Resolves to `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer

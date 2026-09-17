@@ -1,13 +1,34 @@
 // The mutation state layer, published as
 // `@evener/appwire-client/state/mutation`: the durable record shapes both
-// apps' outboxes store, the provenance rule their projections ask, and the
-// pure reconciliation that turns durable records plus a live model into the
-// rows a composer's queue renders. The storage, the dispatcher's scheduling
+// apps' outboxes store, the provenance rule their projections ask, the
+// discovery half of the outbox itself over a storage port, the pure
+// reconciliation that turns durable records plus a live model into the rows
+// a composer's queue renders, and the pending-turns projection store built
+// on that reconciliation. The storage adapter, the dispatcher's scheduling
 // and every React binding stay in the apps — this subpath is what a record
-// IS and how it reconciles, not where it lives.
+// IS, how waiting work gets noticed, how it reconciles, and what a host's
+// own store of them tracks, not where any of it lives.
 
+export type {
+  MutationDiscoveryReason,
+  MutationLifecycleTarget,
+  MutationOutboxChannel,
+  MutationOutboxOptions,
+  MutationOutboxStorage,
+  MutationVisibilityTarget,
+} from "./outbox";
+export { MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export { reconcilePendingEntries } from "./pendingEntries";
+export type {
+  PendingTurnsDraftPort,
+  PendingTurnsState,
+  PendingTurnsStore,
+  PendingTurnsStoreDeps,
+  PendingTurnsThreadsPort,
+  SubmittedDraft,
+} from "./pendingTurns";
+export { createPendingTurnsStore } from "./pendingTurns";
 export type {
   ClientIdentity,
   ClientIdentityStorage,

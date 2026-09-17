@@ -18,56 +18,31 @@
 //     React) catch the rejection and toast, per the app's toast-on-failure
 //     convention.
 
-import type {
-  AppwireClientLike,
-  HostNotificationParams,
-  LaunchConfigLayer,
-  PathValidateResponse,
-  PluginEntry,
-} from "@evener/appwire-client";
-import { errorText } from "@evener/appwire-client";
-import { createMarketplacesStore, type MarketplacesState } from "@evener/appwire-client/state/extensions";
+import type { AnyNotification, AppwireClientLike, PathValidateResponse } from "@evener/appwire-client";
+import {
+  createLaunchLayerStore,
+  createMarketplacesStore,
+  createPluginsStore,
+  type LaunchLayerClient,
+  type LaunchLayerState,
+  type MarketplacesClient,
+  type MarketplacesState,
+  type PluginsClient,
+  type PluginsState,
+} from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore, onConnectionNotification } from "./connection";
+import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
 import { isLocalHost } from "./hostRouting";
+import { launchConfigStore } from "./launchConfig";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
 
-export interface ExtensionsStoreState extends MarketplacesState {
-  plugins: PluginEntry[] | null;
-  pluginRevision: number;
-  pluginsLoading: boolean;
-  pluginsError: string | null;
-  fetchPlugins(): Promise<void>;
-  installPlugin(plugin: string, marketplace: string): Promise<void>;
-  upgradePlugin(plugin: string, marketplace: string): Promise<void>;
-  removePlugin(plugin: string, marketplace: string): Promise<void>;
-  enablePlugin(plugin: string, marketplace: string): Promise<void>;
-  disablePlugin(plugin: string, marketplace: string): Promise<void>;
-  setPluginAutoUpgrade(plugin: string, marketplace: string, autoUpgrade: boolean): Promise<void>;
-
-  // The global launch-config layer - backs Plugins/Skills directories and
-  // MCP's editable config-files/inline-servers lists (all four are fields
-  // on this same object). Deliberately NOT layer-aware (always cwd:"/",
-  // layer:"global") - matches every one of §§13-15's legacy partials, none
-  // of which is layer-parameterized either (Appendix B's schema-driven
-  // engine is the one that supports project-layer editing, and it's T2's
-  // Evener-launch/Per-project domain, not this store's).
-  launchLayer: LaunchConfigLayer | null;
-  launchLayerLoading: boolean;
-  launchLayerError: string | null;
-  fetchLaunchLayer(): Promise<void>;
-  setLaunchLayer(next: LaunchConfigLayer): Promise<void>;
-
+export interface ExtensionsStoreState extends MarketplacesState, PluginsState, LaunchLayerState {
+  // The filesystem three the sections' PathFields and directory pickers use;
+  // the launch-config gateway answers all of them (see below).
   validatePath(path: string, kind: string): Promise<PathValidateResponse>;
   createDirectory(path: string): Promise<void>;
-  // Backs PathField. The prefix passes through verbatim, because the widget
-  // picks which of the RPC's two duties it wants per keystroke: a trailing
-  // slash lists a directory's children, a bare prefix fuzzy-completes it
-  // (TestHubRPCPathsCompleteReturnsMatchingDirectories). includeFiles adds
-  // files to the dirs-only default, and then directory entries come back with
-  // a trailing slash.
   completePaths(prefix: string, includeFiles: boolean): Promise<string[]>;
 }
 
@@ -79,133 +54,102 @@ function requireClient(): AppwireClientLike {
   return client;
 }
 
-const GLOBAL_LAYER_PARAMS = { cwd: "/", layer: "global" } as const;
+// The marketplaces, installed-plugins and global launch-layer stores proper
+// live in the package; these are the app's one instance of each, over a
+// client port that resolves connectionStore's CURRENT client at request time.
+// They publish into extensionsStore (below the store) so the sections keep
+// reading one store; the path helpers are still written here.
 
-// The marketplaces store proper lives in the package; this is the app's one
-// instance, over a client port that resolves connectionStore's CURRENT client
-// at request time. It publishes into extensionsStore (below the store) so the
-// sections keep reading one store; the plugins and launch-layer slices are
-// still written here.
-const marketplaces = createMarketplacesStore({
+// onHubConfigNotification delivers the config notifications THIS hub's fetches
+// are about. The controller's own arrive plainly. A host's own arrive wrapped
+// in evener/host/notification tagged with the host that owns them
+// (cmd/evener-hub/app_host_admin.go's relayHostNotifications, one fan-out per
+// remote host, over the remoteHostConfigNotifications allowlist), and every
+// fetch reached from here - evener/marketplace/list, evener/plugin/list,
+// evener/launch/getLayer - reads this hub over the plain connection, so
+// another host's change is no evidence about any of them and goes no further.
+// A wrapper tagged with the controller itself is this hub's own change, and is
+// delivered unwrapped: indistinguishable from the plain notification. The one
+// thing a remote host's plugin change does move is pluginRevision (below).
+function onHubConfigNotification(handler: (n: AnyNotification) => void): () => void {
+  return onConnectionNotification((n) => {
+    if (n.method !== "evener/host/notification") {
+      handler(n);
+      return;
+    }
+    if (!isLocalHost(n.params.host)) return;
+    handler({ method: n.params.method, params: n.params.params } as AnyNotification);
+  });
+}
+
+const hubClient = {
   request: (method, params, opts) => requireClient().request(method, params, opts),
-  onNotification: onConnectionNotification,
-});
+  onNotification: onHubConfigNotification,
+} satisfies MarketplacesClient & PluginsClient & LaunchLayerClient;
+const marketplaces = createMarketplacesStore(hubClient);
 marketplaces.start();
+const plugins = createPluginsStore(hubClient);
+plugins.start();
+const launchLayer = createLaunchLayerStore(hubClient);
+launchLayer.start();
 
-export const extensionsStore = createStore<ExtensionsStoreState>((set) => ({
+// The hub broadcasts a change to every CONNECTED client, so a change made
+// while this browser was disconnected reaches it as nothing at all: the
+// notification each core follows cannot recover it, and the reconnect can.
+// Each core re-reads its list when this connection is ready again - only if
+// something has read it already, so a section the user never opened still
+// sends nothing.
+function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): void {
+  marketplaces.connectionChanged(state.client, state.state);
+  plugins.connectionChanged(state.client, state.state);
+  launchLayer.connectionChanged(state.client, state.state);
+}
+connectionStore.subscribe(syncConnection);
+export const extensionsStore = createStore<ExtensionsStoreState>(() => ({
   ...marketplaces.getState(),
+  ...plugins.getState(),
+  ...launchLayer.getState(),
 
-  plugins: null,
-  pluginRevision: 0,
-  pluginsLoading: false,
-  pluginsError: null,
-
-  async fetchPlugins() {
-    set({ pluginsLoading: true, pluginsError: null });
-    try {
-      const client = requireClient();
-      const resp = await client.request("evener/plugin/list", {});
-      set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
-    } catch (err) {
-      set({ pluginsLoading: false, pluginsError: errorText(err) });
-    }
-  },
-
-  async installPlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/install", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
-
-  async upgradePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/upgrade", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
-
-  async removePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/remove", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
-
-  async enablePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/enable", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
-
-  async disablePlugin(plugin, marketplace) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/disable", { plugin, marketplace });
-    set({ plugins: resp.plugins });
-  },
-
-  async setPluginAutoUpgrade(plugin, marketplace, autoUpgrade) {
-    const client = requireClient();
-    const resp = await client.request("evener/plugin/setAutoUpgrade", { plugin, marketplace, autoUpgrade });
-    set({ plugins: resp.plugins });
-  },
-
-  launchLayer: null,
-  launchLayerLoading: false,
-  launchLayerError: null,
-
-  async fetchLaunchLayer() {
-    set({ launchLayerLoading: true, launchLayerError: null });
-    try {
-      const client = requireClient();
-      const layer = await client.request("evener/launch/getLayer", GLOBAL_LAYER_PARAMS);
-      set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null });
-    } catch (err) {
-      set({ launchLayerLoading: false, launchLayerError: errorText(err) });
-    }
-  },
-
-  async setLaunchLayer(next) {
-    const client = requireClient();
-    // setLayer's response is a LaunchConfigResolved (effective + a
-    // per-layer map), not the plain layer this store tracks - and
-    // FromWire/ToWire (cmd/evener-hub/internal/launchconfig/wire.go) are a
-    // straight field-for-field copy with no server-side normalization, so
-    // `next` (what was just successfully saved) IS the new global layer.
-    // Trusting our own outgoing payload avoids taking a dependency on the
-    // resolved response's internal layer-name keying, which nothing in
-    // this store otherwise needs to know.
-    await client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
-    set({ launchLayer: next });
-  },
-
-  async validatePath(path, kind) {
-    const client = requireClient();
-    return client.request("evener/path/validate", { path, kind });
-  },
-
-  async createDirectory(path) {
-    await requireClient().request("evener/dirs/create", { path });
-  },
-
-  async completePaths(prefix, includeFiles) {
-    const client = requireClient();
-    const resp = await client.request("evener/paths/complete", { prefix, includeFiles });
-    // Defence in depth against a null `data`. The hub sends [] and the wire type
-    // says string[], but a null here would reach every PathField on the page and
-    // a form must not come down over an empty directory listing.
-    return resp.data ?? [];
-  },
+  // The three filesystem RPCs are the launch-config gateway's
+  // (stores/launchConfig.ts over the package's createLaunchConfigStore), named
+  // once there for every surface that picks a path. They stay on this store's
+  // state because the sections reach them through it.
+  validatePath: (path, kind) => launchConfigStore.getState().validatePath(path, kind),
+  createDirectory: (path) => launchConfigStore.getState().createDirectory(path),
+  completePaths: (prefix, includeFiles) => launchConfigStore.getState().completePaths(prefix, includeFiles),
 }));
 
-// Each marketplaces publish lands here synchronously, as the fields it
-// changed: a whole-snapshot copy would make the core the owner of every
-// marketplaces field and overwrite a value written straight into this store
-// (the section tests seed their fixtures that way).
-marketplaces.subscribe((state, previous) => {
-  const changed: Partial<MarketplacesState> = {};
-  for (const key of Object.keys(state) as (keyof MarketplacesState)[]) {
-    if (state[key] !== previous[key]) Object.assign(changed, { [key]: state[key] });
-  }
-  extensionsStore.setState(changed);
-});
+// Each core's publish lands here synchronously, as the fields it changed: a
+// whole-snapshot copy would make the core the owner of every one of its
+// fields and overwrite a value written straight into this store (the section
+// tests seed their fixtures that way).
+function publishChangedFields<S extends Partial<ExtensionsStoreState>>(core: {
+  subscribe(listener: (state: S, previous: S) => void): () => void;
+}): void {
+  core.subscribe((state, previous) => {
+    const changed: Partial<ExtensionsStoreState> = {};
+    for (const key of Object.keys(state) as (keyof S & keyof ExtensionsStoreState)[]) {
+      if (state[key] !== previous[key]) Object.assign(changed, { [key]: state[key] });
+    }
+    extensionsStore.setState(changed);
+  });
+}
+publishChangedFields(marketplaces);
+publishChangedFields(plugins);
+publishChangedFields(launchLayer);
+
+// And the connection that already exists. This module is lazily loaded, so
+// initializing after the client is ready is the common case: without this pass
+// the cores' first sight of the connection is the NEXT transition, which they
+// read as a first connection - invalidating nothing and moving no revision,
+// exactly when a disconnection has just hidden changes from them. Same shape
+// as stores/credentials.ts's own initial pass.
+//
+// Last in the module, after the store and its mirrors exist: the pass can
+// reach a core's state (a recovery read for a list something has already read,
+// which cannot be true at first load but is one refactor away from being), and
+// whatever a core publishes has to have somewhere to land.
+syncConnection(connectionStore.getState());
 
 export function useExtensionsStore(): ExtensionsStoreState;
 export function useExtensionsStore<T>(selector: (state: ExtensionsStoreState) => T): T;
@@ -216,119 +160,50 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
   return selector ? useStore(extensionsStore, selector) : useStore(extensionsStore);
 }
 
-// --- notification-triggered refetch --------------------------------------
+// A REMOTE host's plugin change moves pluginRevision, and nothing else here.
 //
-// The hub BroadcastAlls these notifications to every connected client after a
-// successful mutation from ANY of them - the cross-client staleness gap this
-// store had until now (a change made in one browser tab never reached any
-// other tab's already-loaded plugins/launchLayer until a manual re-open of
-// the section). Mirrors the navigation store's identical wiring for the
-// sidebar's REST-backed refetch, applied here to this store's RPC-backed
-// fetches - independent debounced channels (not one shared one like
-// tree.ts's) since the lists are unrelated fetches that should each coalesce
-// their own bursts without waiting on each other; the marketplaces store
-// runs its own channel inside the package. The notifications' generated
-// payload types are empty ({}) in protocol/types.gen.ts, so there is nothing
-// to apply directly and a debounced re-fetch of the affected list is the
-// only option, exactly like evener/navigation/invalidated's own "just
-// refetch" contract. On the wire evener/plugin/updated genuinely sends an
-// empty map (notifyPluginUpdated, cmd/evener-hub/app_rpc.go:663), while
-// evener/launch/updated carries {cwd, layer} (notifyLaunchUpdated,
-// app_rpc.go:772-775) whose fields the generated type drops because codegen
-// can't see into Go's untyped map[string]string; this refetch is
-// payload-agnostic either way.
-const REFETCH_DEBOUNCE_MS = 250;
-
-let pluginRefetchTimer: ReturnType<typeof setTimeout> | undefined;
-let launchLayerRefetchTimer: ReturnType<typeof setTimeout> | undefined;
-
-function schedulePluginRefetch(): void {
-  clearTimeout(pluginRefetchTimer);
-  pluginRefetchTimer = setTimeout(() => {
-    void extensionsStore.getState().fetchPlugins();
-  }, REFETCH_DEBOUNCE_MS);
-}
-
-function scheduleLaunchLayerRefetch(): void {
-  clearTimeout(launchLayerRefetchTimer);
-  launchLayerRefetchTimer = setTimeout(() => {
-    void extensionsStore.getState().fetchLaunchLayer();
-  }, REFETCH_DEBOUNCE_MS);
-}
-
+// pluginRevision is the revision the HOST-SCOPED plugin consumers key their
+// requests on: usePluginPreview and useSpawnSlashCatalog build their logical
+// key from it and then issue their own evener/plugin/preview /
+// evener/spawn/slashCatalog against the SELECTED host through
+// evener/host/request. Without the bump a plugin enabled or disabled on that
+// host is never observed, so the spawn form keeps rendering the pre-change
+// list - and a plugin reconciled from that stale preview is sent as a
+// thread/start launchOverride the host no longer has. So the revision moves
+// for a remote host's update exactly as it does for the controller's own, which
+// the plugins core moves from its own subscription.
+//
+// The core's list refetch is a different matter, and is why this is written
+// here rather than delivered to the core: evener/plugin/list reads THIS hub
+// over the plain connection, and a remote host's change is no evidence about
+// this hub's plugins.
 onConnectionNotification((n) => {
-  if (n.method === "evener/plugin/updated") {
-    extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
-    schedulePluginRefetch();
-  } else if (n.method === "evener/launch/updated") {
-    scheduleLaunchLayerRefetch();
-  } else if (n.method === "evener/host/notification") {
-    handleHostNotification(n.params);
-  }
+  if (n.method !== "evener/host/notification") return;
+  if (n.params.method !== "evener/plugin/updated" || isLocalHost(n.params.host)) return;
+  plugins.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
 });
 
-// handleHostNotification consumes a REMOTE host's config notification, which the
-// hub re-emits to this browser wrapped in evener/host/notification tagged with
-// the host that owns it (cmd/evener-hub/app_host_admin.go's
-// relayHostNotifications, broadcast to every client for every subscribed host,
-// over the remoteHostConfigNotifications allowlist that names both
-// evener/plugin/updated and evener/launch/updated).
-//
-// The plugin half is load-bearing for the spawn form. pluginRevision is the
-// revision the HOST-SCOPED plugin consumers key their requests on:
-// usePluginPreview and useSpawnSlashCatalog build their logical key from it and
-// then issue their own evener/plugin/preview / evener/spawn/slashCatalog against
-// the SELECTED host through evener/host/request. Without the bump a plugin
-// enabled or disabled on that host is never observed, so the form keeps
-// rendering the pre-change list - and a plugin reconciled from that stale
-// preview is sent as a thread/start launchOverride the host no longer has. The
-// bump therefore happens for a wrapped update exactly as it does for the
-// controller's own (component 07b review, round three).
-//
-// The refetches are a different matter: evener/plugin/list and
-// evener/launch/getLayer read THIS hub over the plain connection, so they stay
-// gated to a notification the controller emitted itself. A remote host's change
-// is not evidence about this hub's plugins, and its launch layer has no
-// host-scoped consumer here at all - the only launchLayer readers are the
-// controller-scoped settings sections (dirListSetting/mcp).
-function handleHostNotification(n: HostNotificationParams): void {
-  if (n.method === "evener/plugin/updated") {
-    extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
-    if (isLocalHost(n.host)) schedulePluginRefetch();
-  } else if (n.method === "evener/launch/updated") {
-    if (isLocalHost(n.host)) scheduleLaunchLayerRefetch();
-  }
-}
-
-// resetExtensionsStoreForTests resets the store to its initial state,
-// including the module-private wiring/debounce bookkeeping above.
-// extensions.ts is a singleton store shared by the whole app, so
+// resetExtensionsStoreForTests resets the store and every core behind it to
+// their initial state. extensions.ts is a singleton store shared by the whole app, so
 // extensions.test.ts must reset it between tests to keep them isolated - no
 // production code should ever call this (mirrors threads.ts/tree.ts's own
 // reset*StoreForTests precedent).
 export function resetExtensionsStoreForTests(): void {
   marketplaces.reset();
-  clearTimeout(pluginRefetchTimer);
-  pluginRefetchTimer = undefined;
-  clearTimeout(launchLayerRefetchTimer);
-  launchLayerRefetchTimer = undefined;
-  // The marketplaces fields are written here as well as by the core's reset:
-  // the mirror above forwards only what the core changed, so a value a test
-  // seeded straight into this store, over a core already at its initial
-  // state, would otherwise survive the reset.
+  plugins.reset();
+  launchLayer.reset();
+  // The cores' fields are written here as well as by their resets: the mirror
+  // above forwards only what a core changed, so a value a test seeded
+  // straight into this store, over a core already at its initial state,
+  // would otherwise survive the reset.
   extensionsStore.setState({
-    marketplaces: null,
-    marketplacesLoading: false,
-    marketplacesError: null,
-    browseCatalogs: new Map(),
-    plugins: null,
-    pluginRevision: 0,
-    pluginsLoading: false,
-    pluginsError: null,
-    launchLayer: null,
-    launchLayerLoading: false,
-    launchLayerError: null,
+    ...marketplaces.getInitialState(),
+    ...plugins.getInitialState(),
+    ...launchLayer.getInitialState(),
   });
+  // A fresh module load reads the connection that already exists; a reset puts
+  // this singleton back the way that load leaves it, so it reads it too.
+  syncConnection(connectionStore.getState());
 }
 
 /** Directory actions shared by settings fields; the widget stays wire-free. */
