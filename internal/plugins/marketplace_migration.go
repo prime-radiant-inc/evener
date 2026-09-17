@@ -119,12 +119,10 @@ func (m *Manager) migrateMarketplaceNames() (changes StoreChanges, err error) {
 	// its record names. A merge records none.
 	owners := registryKeyOwners(reg, mk)
 	changes.Marketplaces = true
-	for _, name := range names {
-		for _, owner := range owners {
-			if owner == name {
-				changes.Plugins = true
-				break
-			}
+	for _, owner := range owners {
+		if slices.Contains(names, owner) {
+			changes.Plugins = true
+			break
 		}
 	}
 	recordedThisRun := map[recordedAlias]string{}
