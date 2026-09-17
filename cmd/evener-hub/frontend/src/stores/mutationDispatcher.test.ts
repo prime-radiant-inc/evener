@@ -137,7 +137,10 @@ describe("MutationDispatcher", () => {
     client.on("notes/human/set", () => {
       throw new Error("connection lost");
     });
-    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client, onHumanNoteResponse });
+    const dispatcher = new MutationDispatcher(outbox, {
+      getClient: () => client,
+      prepareHumanNoteResponse: (record) => (response) => onHumanNoteResponse(record, response),
+    });
     await dispatcher.dispatchTargets(["ref-a"]);
     const independent = storage(indexedDB, "notes-retry", []);
     expect((await independent.getOutbox(record.clientMutationId))?.payload).toEqual(record.payload);

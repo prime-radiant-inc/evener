@@ -27,7 +27,6 @@ export interface MutationDispatcherOptions<A extends MutationAttachmentRef = Mut
   onStorageChange?: (targetRefs: string[]) => void;
   onBlockedMutation?: (targetRef: string, client: AppwireClientLike) => void;
   onClearResponse?: (targetRef: string, response: ThreadClearResponse) => void;
-  onHumanNoteResponse?: (record: MutationOutboxRecord<A>, response: NotesHumanSetResponse) => void;
   // Capture response authority immediately before each transport attempt,
   // after any reconnect hydration, rather than once at durable enqueue.
   prepareHumanNoteResponse?: (record: MutationOutboxRecord<A>) => (response: NotesHumanSetResponse) => void;
@@ -51,8 +50,7 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
     this.#onStorageChange = options.onStorageChange ?? (() => undefined);
     this.#onBlockedMutation = options.onBlockedMutation ?? (() => undefined);
     this.#onClearResponse = options.onClearResponse ?? (() => undefined);
-    this.#prepareHumanNoteResponse =
-      options.prepareHumanNoteResponse ?? ((record) => (response) => options.onHumanNoteResponse?.(record, response));
+    this.#prepareHumanNoteResponse = options.prepareHumanNoteResponse ?? (() => () => undefined);
     this.#onHumanNoteReconciled = options.onHumanNoteReconciled ?? (() => undefined);
   }
 
