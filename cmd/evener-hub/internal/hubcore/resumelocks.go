@@ -220,37 +220,31 @@ var ErrResumeInvalidated = errors.New("session recovery changed before resume ow
 // ActiveResume is only the lifetime of an in-flight hub Resume. It has no
 // durable identity and is removed when cleanup and ownership release finish.
 type ActiveResume struct {
-	owner          *ResumeLocks
-	target         string
-	aliases        []string
-	ctx            context.Context
-	cancel         context.CancelFunc
-	done           chan struct{}
-	cleanupErr     error // guarded by owner.mu, including after done closes
-	handlerDone    bool
-	childPrepared  bool
-	childReaped    bool
-	launchFinished bool
-	launchFailed   bool
-	proofSettled   bool
-	proofErr       error
-	proof          map[string]SessionRecoveryState
-	cleanupDone    chan struct{}
+	owner         *ResumeLocks
+	aliases       []string
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
+	cleanupErr    error // guarded by owner.mu, including after done closes
+	handlerDone   bool
+	childPrepared bool
+	childReaped   bool
+	launchFailed  bool
+	cleanupDone   chan struct{}
 }
 
 func (a *ActiveResume) Context() context.Context { return a.ctx }
 
-// CleanupDone closes after failed child cleanup and its recovery proof have
-// settled, or after a successful handoff. It is not the handler completion edge.
+// CleanupDone closes once the handler has completed and any failed launch's
+// child has been confirmed reaped, or after a successful handoff. It is not the
+// handler completion edge.
 func (a *ActiveResume) CleanupDone() <-chan struct{} { return a.cleanupDone }
 
 // BeforeLaunch runs immediately before Start, while the caller owns all aliases.
-// A previous process's exit proof must never describe this new child, including
-// when this hub dies before the child publishes a rendezvous entry.
+// It refuses to launch while another in-flight operation on the same aliases has
+// unconfirmed child cleanup.
 func (a *ActiveResume) BeforeLaunch() error {
 	r := a.owner
-	r.persistenceMu.Lock()
-	defer r.persistenceMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := a.ctx.Err(); err != nil {
@@ -259,124 +253,13 @@ func (a *ActiveResume) BeforeLaunch() error {
 	for _, alias := range a.aliases {
 		for other := range r.active[alias] {
 			if other != a {
-				if err := errors.Join(other.cleanupErr, other.proofErr); err != nil {
+				if err := other.cleanupErr; err != nil {
 					return err
 				}
 			}
 		}
 	}
-	proof, err := r.beginLaunchProofLocked(a.target, a.aliases)
-	if err != nil {
-		if len(proof) != 0 {
-			// Start will not run. Retain an uncertain invalidation until the
-			// old, still-valid exit proof can be durably restored.
-			a.proof = proof
-			a.childPrepared, a.childReaped = true, true
-			a.launchFinished, a.launchFailed = true, true
-			a.proofErr = err
-		}
-		return err
-	}
-	a.proof = proof
 	a.childPrepared = true
-	return nil
-}
-
-// beginLaunchProofLocked is the durable half of BeforeLaunch. It invalidates the
-// prior owner's exit proof for every verified alias in the group, which is what
-// stops a previous process's proof from describing the child about to start.
-// Both registry locks are held. The returned proof is non-empty exactly when
-// the invalidation may already be durable, so a caller whose commit failed can
-// still restore the proof it replaced.
-func (r *ResumeLocks) beginLaunchProofLocked(target string, aliases []string) (map[string]SessionRecoveryState, error) {
-	proof := make(map[string]SessionRecoveryState)
-	for _, alias := range aliases {
-		state := r.recovery[alias]
-		if !state.ResumeRequired {
-			continue
-		}
-		if !state.ExitConfirmed {
-			return nil, errors.New("resume owner exit is unconfirmed; verify the existing process before launching a replacement")
-		}
-		if state.group == nil || state.ResumeSessionID != target || state.group != r.recovery[target].group {
-			return nil, errors.New("resume recovery authority changed before launch")
-		}
-		for _, member := range state.group.aliases {
-			current := r.recovery[member]
-			if !slices.Contains(aliases, member) || current.group != state.group || current.durableGroup != state.durableGroup || current.ResumeSessionID != target || !current.ResumeRequired || !current.ExitConfirmed {
-				return nil, errors.New("resume recovery aliases changed before launch")
-			}
-			proof[member] = current
-		}
-	}
-	if len(proof) == 0 {
-		return nil, nil
-	}
-	if r.store != nil {
-		next := maps.Clone(r.store.state)
-		for alias, state := range proof {
-			authority := next[alias]
-			if authority.Group != state.durableGroup || authority.SessionID != target || !authority.ExitConfirmed {
-				return nil, errors.New("durable resume recovery authority changed before launch")
-			}
-			authority.ExitConfirmed = false
-			next[alias] = authority
-		}
-		committed, err := r.store.commit(next)
-		if err != nil {
-			if committed {
-				for alias := range proof {
-					state := r.recovery[alias]
-					state.ExitConfirmed = false
-					r.recovery[alias] = state
-				}
-				return proof, err
-			}
-			return nil, err
-		}
-	}
-	for alias := range proof {
-		state := r.recovery[alias]
-		state.ExitConfirmed = false
-		r.recovery[alias] = state
-	}
-	return proof, nil
-}
-
-// restoreLaunchProofLocked re-confirms the exit proof a launch invalidated once
-// that launch has produced no child, so the ordinary confirmed-stopped resume
-// and force-stop paths can run again. A
-// changed group, target, or membership means a newer authority owns the
-// aliases: it is left completely untouched. Both registry locks are held.
-func (r *ResumeLocks) restoreLaunchProofLocked(proof map[string]SessionRecoveryState, target string) error {
-	matching := true
-	for alias, previous := range proof {
-		current := r.recovery[alias]
-		if current.group != previous.group || current.durableGroup != previous.durableGroup || current.ResumeSessionID != target || !current.ResumeRequired || !slices.Equal(current.group.aliases, previous.group.aliases) {
-			matching = false
-		}
-	}
-	if matching && r.store != nil && len(proof) != 0 {
-		next := maps.Clone(r.store.state)
-		for alias, previous := range proof {
-			authority := next[alias]
-			if authority.Group != previous.durableGroup || authority.SessionID != target {
-				return errors.New("durable resume cleanup authority changed")
-			}
-			authority.ExitConfirmed = true
-			next[alias] = authority
-		}
-		if _, err := r.store.commit(next); err != nil {
-			return err
-		}
-	}
-	if matching {
-		for alias := range proof {
-			state := r.recovery[alias]
-			state.ExitConfirmed = true
-			r.recovery[alias] = state
-		}
-	}
 	return nil
 }
 
@@ -400,26 +283,18 @@ func (a *ActiveResume) LaunchFinished(failed bool, cleanupErr error) error {
 	defer r.persistenceMu.Unlock()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	a.launchFinished, a.launchFailed = true, failed
+	a.launchFailed = failed
 	a.cleanupErr = errors.Join(a.cleanupErr, cleanupErr)
 	a.settleLocked()
-	return errors.Join(a.cleanupErr, a.proofErr)
+	return a.cleanupErr
 }
 
-// settleLocked holds both registry locks in persistenceMu -> mu order. Stop's
-// temporary epochs do not change process identity. A changed group, target, or
-// membership does: in that case the new authority is left completely untouched.
+// settleLocked releases alias ownership once the handler has completed and any
+// failed launch's child has been confirmed reaped. Stop's temporary epochs do
+// not change process identity.
 func (a *ActiveResume) settleLocked() {
 	r := a.owner
-	if a.childPrepared && a.launchFinished && a.launchFailed && a.childReaped && !a.proofSettled {
-		if err := r.restoreLaunchProofLocked(a.proof, a.target); err != nil {
-			a.proofErr = err
-			return
-		}
-		a.proofSettled = true
-		a.cleanupErr, a.proofErr = nil, nil
-	}
-	if !a.handlerDone || (a.childPrepared && a.launchFailed && !a.proofSettled) {
+	if !a.handlerDone || (a.childPrepared && a.launchFailed && !a.childReaped) {
 		return
 	}
 	for _, alias := range a.aliases {
@@ -443,7 +318,7 @@ func (a *ActiveResume) Complete(cleanupErr error) {
 	defer a.owner.persistenceMu.Unlock()
 	a.owner.mu.Lock()
 	defer a.owner.mu.Unlock()
-	if a.cleanupErr == nil && !a.proofSettled {
+	if a.cleanupErr == nil {
 		a.cleanupErr = cleanupErr
 	}
 	a.handlerDone = true
@@ -452,8 +327,7 @@ func (a *ActiveResume) Complete(cleanupErr error) {
 	a.settleLocked()
 }
 
-// ResumeCleanupError reports retained child failures to fresh connections. A
-// failed durable re-confirmation can be retried here, but never before reaping.
+// ResumeCleanupError reports retained child failures to fresh connections.
 func (r *ResumeLocks) ResumeCleanupError(aliases []string) error {
 	r.persistenceMu.Lock()
 	defer r.persistenceMu.Unlock()
@@ -462,8 +336,7 @@ func (r *ResumeLocks) ResumeCleanupError(aliases []string) error {
 	for _, alias := range aliases {
 		for active := range r.active[alias] {
 			if active.handlerDone {
-				active.settleLocked()
-				if err := errors.Join(active.cleanupErr, active.proofErr); err != nil {
+				if err := active.cleanupErr; err != nil {
 					return err
 				}
 			}
@@ -493,7 +366,7 @@ func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases
 	for _, alias := range aliases {
 		state := r.recovery[alias]
 		for active := range r.active[alias] {
-			if err := errors.Join(active.cleanupErr, active.proofErr); err != nil {
+			if err := active.cleanupErr; err != nil {
 				return nil, err
 			}
 		}
@@ -502,7 +375,7 @@ func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases
 		}
 	}
 	opCtx, cancel := context.WithCancel(ctx)
-	a := &ActiveResume{owner: r, target: target, aliases: aliases, ctx: opCtx, cancel: cancel, done: make(chan struct{}), cleanupDone: make(chan struct{})}
+	a := &ActiveResume{owner: r, aliases: aliases, ctx: opCtx, cancel: cancel, done: make(chan struct{}), cleanupDone: make(chan struct{})}
 	if r.active == nil {
 		r.active = make(map[string]map[*ActiveResume]struct{})
 	}
@@ -531,7 +404,7 @@ func (s *ResumeStop) Wait(ctx context.Context) error {
 		case <-active.done:
 			_ = active.owner.ResumeCleanupError(active.aliases)
 			active.owner.mu.Lock()
-			cleanupErr = errors.Join(cleanupErr, active.cleanupErr, active.proofErr)
+			cleanupErr = errors.Join(cleanupErr, active.cleanupErr)
 			active.owner.mu.Unlock()
 		}
 	}

@@ -652,21 +652,6 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 			t.Errorf("%s launched a replacement before child reaping: launches=%d", method, launches.Load())
 		}
 	}
-	recreated, err := hubcore.NewPersistentResumeLocks(recoveryRoot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state := recreated.RecoveryState(sessionID); state.ExitConfirmed {
-		t.Error("hub recreation retained obsolete exit proof for the newly launched child")
-	}
-	if stopped, err := confirmedStoppedWithoutClaim(t.Context(), hubcore.WebConfig{RunDir: runDir, ResumeLocks: recreated}, sessionID, false); err != nil || stopped {
-		t.Errorf("recreated hub fabricated stopped proof: stopped=%t err=%v", stopped, err)
-	}
-	recreatedCfg := cfg
-	recreatedCfg.ResumeLocks = recreated
-	if _, err := hubThreadResume(t.Context(), recreatedCfg, nil, appwire.ThreadResumeParams{Ref: "local:" + sessionID}); err == nil || launches.Load() != 1 {
-		t.Errorf("recreated hub admitted unconfirmed replacement: launches=%d err=%v", launches.Load(), err)
-	}
 	releaseChild()
 	<-reaped
 	<-active.CleanupDone()
