@@ -184,9 +184,16 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       retire: (string | undefined)[],
     ): Promise<void> {
       const revision = listRevision.next();
-      const issued = generation;
-      const resp = await request();
-      if (issued !== generation) return;
+      const issuedIn = generation;
+      let resp: { marketplaces: MarketplaceEntry[] };
+      try {
+        resp = await request();
+      } catch (err) {
+        // Nothing to publish, so nothing to own: see listRevision's retract.
+        listRevision.retract(revision);
+        throw err;
+      }
+      if (issuedIn !== generation) return;
       set((s) => ({
         // The same three fields a read's success writes; see plugins.ts's
         // mutate for why a committing response owns all three.

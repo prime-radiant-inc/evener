@@ -96,7 +96,14 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
      * revision has committed since. Rejects as the request does. */
     async function mutate(request: () => Promise<PluginListResponse>): Promise<void> {
       const revision = listRevision.next();
-      const resp = await request();
+      let resp: PluginListResponse;
+      try {
+        resp = await request();
+      } catch (err) {
+        // Nothing to publish, so nothing to own: see listRevision's retract.
+        listRevision.retract(revision);
+        throw err;
+      }
       // The same three fields a read's success writes. A response that
       // commits is the store's newest word on the list, so it owns the error
       // and the loading flag too - a read this one outran writes none of the

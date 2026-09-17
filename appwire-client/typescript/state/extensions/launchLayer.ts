@@ -112,7 +112,13 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
         // Trusting our own outgoing payload avoids taking a dependency on the
         // resolved response's internal layer-name keying, which nothing here
         // otherwise needs to know.
-        await client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
+        try {
+          await client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
+        } catch (err) {
+          // Nothing to publish, so nothing to own: see listRevision's retract.
+          listRevision.retract(revision);
+          throw err;
+        }
         if (listRevision.commit(revision)) set({ launchLayer: next });
       },
     };
