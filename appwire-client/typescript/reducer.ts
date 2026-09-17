@@ -382,9 +382,14 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-// Empty-is-a-value, exactly as imagesToItemImagesForSession above: a tool
-// whose output images were cleared says so with [], and an older page must
-// not replay the ones it had.
+// The OPPOSITE rule to imagesToItemImagesForSession above, and deliberately so.
+// Output images are the one image list the hub can clear: it sends `[]` to say
+// the tool's output images are gone (#1614 — `omitzero` on OutputImages, and the
+// hub's merge and clone sites preserve an empty list rather than folding it into
+// nil), so an empty list here is a value the model must hold and an older page
+// must not replay what it had. Input images have no such signal — an empty list
+// there means "nothing said" (see above) — so the two functions read the same
+// shape differently on purpose.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images) return undefined;
   if (images.length === 0) return [];
