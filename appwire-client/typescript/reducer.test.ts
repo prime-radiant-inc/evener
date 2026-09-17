@@ -2684,13 +2684,17 @@ test("a settle carrying an explicitly empty output-image list takes the removal"
 });
 
 // An INPUT image list that arrives empty says nothing about the item's images:
-// the hub's own merges keep whatever list it already had when the incoming one
-// is empty (`server/appwire_turns.go:884-886` and
-// `internal/apptranscript/logical_turn.go:309`, both `len(incoming.Images) == 0`,
-// and the wire field is `omitempty`), and a real fixture sends exactly that —
+// the hub keeps whatever list it already had when the incoming one is empty
+// (`server/appwire_turns.go`'s and `internal/apptranscript/logical_turn.go`'s
+// `len(incoming.Images) == 0` branches), and a real fixture sends exactly that —
 // `fixtures/tool-and-jobs.jsonl:4`, a steering notification with `images: []`.
 // Reading it as "the images are gone" erases an older page's input images on
-// merge. Output images are the opposite case and keep their own rule below.
+// merge.
+//
+// OUTPUT images are the opposite case and keep their own rule below: there an
+// explicit empty list is the removal signal, which is a contract the wire states
+// (`OutputImages` marshalled so an empty list survives, merge sites keeping nil
+// apart from empty) rather than something the input list can express.
 test("an empty input-image list says nothing, so the images already known survive", () => {
   const thread = testThread({
     turns: [
