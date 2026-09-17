@@ -150,6 +150,15 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 		t.Helper()
 		return runShell(t, "sh", nativeDir)
 	}
+	// runShellIn is runShell with an explicit child working directory, so a
+	// relative EVENER_NATIVE_DIR can be driven from the directory it is
+	// relative to.
+	runShellIn := func(t *testing.T, dir, shell, nativeDir string) (string, error) {
+		t.Helper()
+		env := installTestEnv(t, t.TempDir(), map[string]string{"EVENER_NATIVE_DIR": nativeDir})
+		out, err := combinedOutputRetryingETXTBSY(dir, env, shell, script)
+		return string(out), err
+	}
 	// assertRefusal requires the refusal to name each of want.
 	assertRefusal := func(t *testing.T, out string, want ...string) {
 		t.Helper()
@@ -345,6 +354,48 @@ func TestNativePreflightRefusesUnreadyInstalls(t *testing.T) {
 		}
 		if strings.Contains(out, "ERROR") {
 			t.Fatalf("healthy shared symlink produced a refusal:\n%s", out)
+		}
+	})
+
+	t.Run("healthy shared symlink with a relative EVENER_NATIVE_DIR", func(t *testing.T) {
+		parent := t.TempDir()
+		shared := filepath.Join(parent, "shared-install")
+		work := filepath.Join(parent, "work")
+		write(t, shared, "package-lock.json", sameLock, 0o644)
+		write(t, shared, "node_modules/.bin/expo", fakeExpo, 0o755)
+		setMtime(t, filepath.Join(shared, "node_modules"), time.Now().Add(2*time.Hour))
+		write(t, work, "package-lock.json", sameLock, 0o644)
+		symlink(t, "../shared-install/node_modules", filepath.Join(work, "node_modules"))
+
+		// The override is relative and the child starts in the directory it is
+		// relative to, so the relative symlink target must resolve the same way
+		// an absolute override's would.
+		out, err := runShellIn(t, parent, "sh", "work")
+		if err != nil {
+			t.Fatalf("preflight refused a matching shared symlink behind a relative override: %v\n%s", err, out)
+		}
+		if strings.Contains(out, "ERROR") {
+			t.Fatalf("healthy shared symlink behind a relative override produced a refusal:\n%s", out)
+		}
+	})
+
+	t.Run("mismatched relative setup still refuses", func(t *testing.T) {
+		parent := t.TempDir()
+		shared := filepath.Join(parent, "shared-install")
+		work := filepath.Join(parent, "work")
+		write(t, shared, "package-lock.json", "{\"shared\":true}\n", 0o644)
+		write(t, shared, "node_modules/.bin/expo", fakeExpo, 0o755)
+		setMtime(t, filepath.Join(shared, "node_modules"), time.Now().Add(2*time.Hour))
+		write(t, work, "package-lock.json", "{\"worktree\":true}\n", 0o644)
+		symlink(t, "../shared-install/node_modules", filepath.Join(work, "node_modules"))
+
+		out, err := runShellIn(t, parent, "sh", "work")
+		if err == nil {
+			t.Fatalf("preflight accepted a mismatched relative symlink:\n%s", out)
+		}
+		assertRefusal(t, out, filepath.Join(shared, "package-lock.json"))
+		if strings.Contains(out, "../shared-install") {
+			t.Errorf("refusal names a relative shared path:\n%s", out)
 		}
 	})
 }

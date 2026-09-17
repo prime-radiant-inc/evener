@@ -12476,6 +12476,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginPreview,
 		// Component 07a's remote-admin proxy.
 		appwire.MethodEvenerHostRequest,
+		// Component 06's explicit attach trigger (component 08's Connect).
+		appwire.MethodEvenerHostAttach,
 		appwire.MethodEvenerDaemonList,
 		appwire.MethodEvenerDaemonRetire,
 	}
