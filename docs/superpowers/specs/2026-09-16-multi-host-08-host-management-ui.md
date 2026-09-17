@@ -140,16 +140,29 @@ opaque `mutationId` (non-empty, at most 128 bytes, no required structure —
 the same rules as client operation IDs). The staged commit persists a durable
 mutation receipt in two writes — the single explicit receipt write point (extending
 the round-ten receipt): the step-(2) sidecar write carries a transient
-`pendingMutation` marker (the scoped key plus `stagedAt`; a single object,
-never a map — at most one staged commit holds the mutation lock), and the
+`pendingMutation` marker (the scoped key plus `stagedAt` plus the staged
+finalized-receipt payload — outcome, row, generation, and `remnantId` when the
+commit staged a remnant; a single object, never a map — at most one staged
+commit holds the mutation lock), and the
 post-commit write replaces the marker with the finalized mutation receipt —
 the scoped key, the outcome, the resulting row, and the resulting generation
 (row schema in Persistence + hot-apply, below) — and a replay carrying a
 known key returns the recorded finalized receipt without re-applying: a retried `add`
 cannot duplicate, a retried `remove` cannot fail not-found, and a retried
 `update` cannot double-apply or double-bump the generation. A replay naming
-a still-`pendingMutation` key fails fast with the transient busy form (retry
-with backoff), never a re-apply. **Crash-window recovery:** a crash between
+a still-`pendingMutation` key never re-applies: while the original commit
+holds the mutation lock the replay fails fast with the transient busy form
+(retry with backoff); once the lock is free and the marker persists — the
+post-commit write failed or its response was lost while the process stayed
+alive — the replay finalizes the receipt from the marker's staged payload in
+one atomic sidecar write and returns the finalized receipt (outcome as staged:
+`committed`, or `committed-with-teardown-failure` with the staged `remnantId`
+when the commit staged one), so retries converge instead of reporting busy
+forever. Any mutation-path write that finds a marker it did not stage
+finalizes that marker first under the same lock before its own stage — a live
+process never accumulates an orphaned marker — and `list` already shows the
+committed row (disk holds the entry), so read-after-unknown converges even
+before finalization lands. **Crash-window recovery:** a crash between
 the step-(2) persist and the post-commit write leaves the marker with no
 receipt — boot finalizes it (the disk wins: the runtime rebuilds from the
 on-disk sidecar, so the mutation is committed; no remnant is minted because
@@ -783,20 +796,23 @@ controller-side operation records; this component defines a
  remnants are dropped in the same atomic write that mints the new generation, so the
   sections stay bounded by the live host set plus at most one superseded
  generation per name. **Remnant gate (extending the round-eight commit
- point): re-add of a name with an open remnant is refused with the typed
-`remnant-open` busy form (carrying the blocking `remnantId` — extending the
-round-eleven re-add gate: the gate refusal finally has its own contract
-value rather than borrowing `teardown-unknown-key`'s shape) — the operator first resumes the
- named teardown through `evener/host/teardown-retry` (which runs it to
- completion for that generation), and only then does the re-add mint the new
- generation and purge the cleared remnant — so a new incarnation can never
- start while the old lifecycle still owns supervisors, channels, or fan-outs.
- **Open remnants pin their generation:** while a remnant is open for a name,
- no path advances that name past the remnant's generation — re-add stays
- refused by the gate above, and a boot-merge collision involving a
- remnant-gated name leaves the open remnant resumable by `remnantId` (the
- collision-bump assigns the live host its above-mark generation without
- invalidating the remnant) — so later updates can never strand a remnant.
+ point): any mutation that would advance or remove the affected name while it
+ holds an open remnant — re-add, `update` of the remnant's name, and `remove`
+ of the remnant's name — is refused with the typed `remnant-open` busy form
+ (carrying the blocking `remnantId` — extending the round-eleven re-add gate:
+ the gate refusal finally has its own contract value rather than borrowing
+ `teardown-unknown-key`'s shape) — the operator first resumes the named
+ teardown through `evener/host/teardown-retry` (which runs it to completion
+ for that generation), and only then does the mutation proceed: re-add mints
+ the new generation and purges the cleared remnant — so a new incarnation can
+ never start while the old lifecycle still owns supervisors, channels, or
+ fan-outs. **Open remnants pin their generation:** while a remnant is open
+ for a name, no path advances that name past the remnant's generation —
+ re-add, `update`, and `remove` on that name all stay refused by the gate
+ above, and a boot-merge collision involving a remnant-gated name leaves the
+ open remnant resumable by `remnantId` (the collision-bump assigns the live
+ host its above-mark generation without invalidating the remnant) — so no
+ mutation can strand a remnant by opening a second one for the same name.
  Retention expiry likewise never purges a tombstone whose name still holds an
  open remnant (see the expiry mechanism in data flow).** Tombstone-purge semantics decide the rest (see L2):
   while a tombstone is retained its name's receipts stay readable for
@@ -843,10 +859,11 @@ value rather than borrowing `teardown-unknown-key`'s shape) — the operator fir
 mutation (params `{remnantId: string}`, response the outcome union in
 Protocol types)
  resumes ONLY that named teardown: it looks up the remnant by the opaque
- `remnantId` (unknown ID or already-cleared remnant → typed
-`teardown-unknown-key` not-found — the remnant carries its own pinned
-teardown target, so lookup never requires a current live entry and later
-mutations cannot strand it (see the remnant schema above)), try-acquires
+ `remnantId` (unknown or purged ID → typed `teardown-unknown-key` not-found;
+ a cleared-remnant marker still present returns the `already-cleared` success
+ arm, never not-found — the remnant carries its own pinned teardown target,
+ so lookup never requires a current live entry and later mutations cannot
+ strand it (see the remnant schema above)), try-acquires
   the host's per-host gate (held → typed busy, same classes as `restart`),
  runs the remnant's pinned teardown to completion (never against a live or
  re-added entry — the open-remnant gate above guarantees no newer
@@ -917,9 +934,10 @@ mutations cannot strand it (see the remnant schema above)), try-acquires
   Add button.
 - **Add / Edit dialog:** fields exactly the `HostConfig` schema — `name`,
   `ssh`, `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
-  `config.go:32-46`) — all seven fields, none invented, none hidden; each with
-  its validation message mapped from the backend response. Edit does not
-  offer `name` (immutable).
+  `config.go:32-46` — TOML-file spellings; the wire carries `evenerPath` /
+  `configPath` per Protocol types) — all seven fields, none invented, none
+  hidden; each with its validation message mapped from the backend response.
+  Edit does not offer `name` (immutable).
 - **Connect state machine:** offline → connecting (in-flight, driven by the
   `attach` response or the host-notification stream) → online (the sources
   manifest's online flag flips; the rail and picker update through the
@@ -999,7 +1017,10 @@ operation-record bindings, not request fields — keep `host`.)
 
 - `evener/host/list`: params `{}`; response `{hosts: HostRow[]}`. `HostRow`
   is the full effective `HostConfig` fields (`name`, `ssh`, `user`,
-  `evener_path`, `config_path`, `addr`, `roots`) plus live state:
+  `evenerPath`, `configPath`, `addr`, `roots`) plus live state — wire JSON is
+ lowerCamel throughout (`evenerPath`, `configPath`); snake_case
+ (`evener_path`, `config_path`) is the TOML-file spelling only (`config.go`
+ TOML tags), never the wire:
   `attached: bool`, `installedVersion?: string`,
   `installedVersionAgeSec?: number`, `osArch?: string`,
   `lastAttachError?: string`, `lastAttachErrorAgeSec?: number`,
@@ -1020,16 +1041,20 @@ operation-record bindings, not request fields — keep `host`.)
   `HostConfig` fields>, mutationId?: string}`; response is the
  mutation-result union below.
 - `evener/host/remove`: params `{name: string, mutationId?: string}` (defined once —
- the same optional idempotency key as `add`/`update`); response `{name: string,
- removed: true, retainedRows: number} on the clean path, or the
- mutation-result union below when its own rebind phase fails. A replay carrying a known
+ the same optional idempotency key as `add`/`update`); response the
+ mutation-result union below — the clean path returns `{outcome: "committed",
+ name, removed: true, retainedRows}`, and only the union's failure arm
+ describes the failed-rebind shape. A replay carrying a known
   key returns the recorded receipt without re-applying.
 **Mutation-result union (add/update/remove — the round-seven protocol-types
 contract is authoritative for codegen):** every add/update/remove handler
 returns either `{outcome: "committed", host: HostRow}` (remove's clean path
 substitutes `{outcome: "committed", name, removed: true, retainedRows}`) or
-the error-envelope form `{outcome: "committed-with-teardown-failure", seam:
-string, remnantId: string, host: HostRow}` — the `remnantId` is mandatory on
+the failure arm `{outcome: "committed-with-teardown-failure", seam:
+string, remnantId: string, host: HostRow}` — a normal result-union response,
+never an AppWire error-envelope throw (pre-commit failures throw typed error
+envelope codes; post-commit outcomes return through the union — the failure
+arm names a committed mutation whose teardown needs forward retry) — the `remnantId` is mandatory on
 the failure arm, `seam` names the failed rebind step, and the committed
 `HostRow` is always present so the UI renders the row with a teardown-retry
 affordance. The catalog + regenerated TypeScript client carry both arms
@@ -1106,23 +1131,33 @@ on the failure arm fails the protocol-shapes test.
   ProgressEntry[], result?: {ok: bool, message: string}, createdAt: string,
   updatedAt: string, hostRemoved: bool}`. `ProgressEntry` is `{ts: string
   (RFC3339), message: string}`, bounded per record.
-- Typed errors ride the existing AppWire error envelope with stable `code`
-  strings: `host-not-found`, `host-busy-operation` (names the operation id),
-  `host-busy-transient` (no operation reference), `stale-entry` (entry,
-  target, generation, or `hub.toml`-fingerprint mismatch),
-  `token-missing` / `token-mismatched` / `token-superseded` /
-  `token-expired`, `conflicting-operation-id`, `conflicting-mutation-id`, `too-many-hosts`
-  (`ErrTooManyHosts`), `swap-failed` (names the seam),
-  `host-detached` (deploy's channel-gone refusal — token unconsumed, no
-  record; UI Connects and re-plans),
-  `committed-with-teardown-failure` (names the seam; the mutation is durable
-  and the pending teardown is named for forward retry — not a failed
-  mutation), `teardown-unknown-key` (unknown or already-cleared remnant),
-  `remnant-open` (re-add refused: names the blocking `remnantId`; resume it
-  through `teardown-retry` first),
-  `session-unavailable`
-  (the #1603 attach classifier); `interrupted` is a terminal record state
-  (outcome unknown), not a thrown error.
+- Typed errors ride the existing AppWire error envelope — the numeric `code`
+  (`appwire/errors.go`: `CodeInvalidParams` -32602, `CodeConflict` -32013,
+  `CodeUnavailable` -32014, `CodeInternalError` -32603, `CodeInvalidRequest`
+  -32600) with the stable discriminator in `data.evenerErrorInfo` plus the
+  error-specific data fields — and the regenerated TypeScript client branches
+  on the `evenerErrorInfo` discriminator (with data fields), never on the
+  numeric `code` alone; the catalog pins the exact numeric code per
+  discriminator, and the protocol-shapes test asserts the pair.
+  Discriminators: `host-not-found` (not-found class),
+  `host-busy-operation` (busy class; data names the operation id),
+  `host-busy-transient` (busy class; no operation reference),
+  `stale-entry` (conflict class; data names which of entry, target,
+  generation, or `hub.toml`-fingerprint mismatched), `token-missing` /
+  `token-mismatched` / `token-superseded` / `token-expired` (conflict class),
+  `conflicting-operation-id` / `conflicting-mutation-id` (conflict class),
+  `too-many-hosts` (conflict class; the `ErrTooManyHosts` refusal),
+  `swap-failed` (internal class; data names the seam), `host-detached`
+  (unavailable class; deploy's channel-gone refusal — token unconsumed, no
+  record; UI Connects and re-plans), `teardown-unknown-key` (not-found class;
+  unknown or purged `remnantId` — never a present-but-cleared remnant, which
+  returns the `already-cleared` success arm), `remnant-open` (conflict class;
+  any remnant-gated mutation refused: data names the blocking `remnantId`;
+  resume it through `teardown-retry` first), `session-unavailable` (the #1603
+  attach classifier); `interrupted` is a terminal record state (outcome
+  unknown), not a thrown error. `committed-with-teardown-failure` is NOT an
+  error-envelope code — it is the mutation-result union's failure arm (a
+  normal result response; see Protocol types).
 - The **operation store**: a small durable store (records keyed by operation
   id, **dedup index on client operation ID scoped by (host, kind, host
   generation), with the
@@ -1333,11 +1368,15 @@ name-keyed cache entry can never republish rows for the new host.
  **Commit-point tests: a committed-with-teardown-failure persists the
  remnant with its opaque `remnantId` in the response, replaying the original
  `mutationId` stays a no-op receipt return, and `teardown-retry` completes
-only the named teardown (unknown ID → `teardown-unknown-key` not-found;
-already-cleared ID → the `already-cleared` success arm; retrying the
-original `mutationId` after resolution returns the resolved receipt;
-remnant-gated re-add refused with `remnant-open` until the retry
-completes).**
+ only the named teardown (unknown/purged ID → `teardown-unknown-key`
+ not-found; present-but-cleared ID → the `already-cleared` success arm;
+ retrying the original `mutationId` after resolution returns the resolved
+ receipt; any remnant-gated mutation — re-add, `update`, or `remove` on the
+ remnant's name — refused with `remnant-open` until the retry completes).
+ Pending-marker tests: a post-commit receipt write lost while the process
+ stays alive leaves the `pendingMutation` marker staged — a replay finalizes
+ and returns the staged receipt (never busy forever), and the next
+ mutation-path write finalizes a foreign marker before its own stage.**
  **Lock-free `list` tests: `list` takes no mutation lock and prunes nothing
  durably; expiry filtering is in-memory only and the durable prune lands on
  the next mutation-path write. Remnant-gate tests: re-add and retention expiry
