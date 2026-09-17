@@ -192,8 +192,15 @@ one atomic sidecar write and returns the finalized receipt (`committed`, or
 re-run actually failed — never the staged provisional outcome on its own),
 so retries converge instead of reporting busy
 forever. Any mutation-path write that finds a marker it did not stage
-finalizes that marker first under the same lock — including the pinned-teardown
-re-run above, so the foreign commit is durably recoverable (receipt plus real
+finalizes that marker first — with the pinned-teardown re-run above executed
+OUTSIDE the mutation lock (extending the round-eighteen marker work and the
+round-fifteen lock work — r18 finalized the foreign marker, pinned teardown
+included, while holding the process-wide lock, blocking every host mutation
+through a potentially slow supervisor/channel teardown): the finder takes the
+lock only for the marker/receipt state transitions (read the marker, run the
+pinned teardown with no lock held under the marker's generation/incarnation
+guards, re-take the lock to persist the finalized receipt plus real remnant),
+so the foreign commit is durably recoverable (receipt plus real
 remnant) before the new mutation stages — before its own stage — a live
 process never accumulates an orphaned marker — and `list` already shows the
 committed row (disk holds the entry), so read-after-unknown converges even
@@ -435,7 +442,13 @@ cannot produce those fields), keyed by the host's registry generation
   classified and admitted as one): body `{name}`. Builds a **fresh plan from
   the current facts and configuration** and returns the plan plus a
   **controller-minted confirmation token**: single-use, **expiring (token
-  TTL: 10 minutes by default, owner-adjustable)**, bound to
+  TTL: 5 minutes by default, owner-adjustable, never above the plan freshness
+  bound below — extending the round-eighteen TTL work, which left the 10-
+  minute default above the 5-minute deploy freshness re-check so any token
+  older than 5 minutes always failed stale and the advertised window was
+  unreachable: the effective deploy window is the TTL, and a token past the
+  freshness bound at deploy time is a `stale-entry` re-plan refusal (the UI
+  re-plans from fresh facts rather than retrying the token))**, bound to
   (host name, the host's registry generation at mint time, a hash of the resolved host entry, **a fingerprint (content
   hash) of the controller's `hub.toml` file bytes as they are on disk at
   plan time**, the preflight revision the plan was built from, the resolved
@@ -472,12 +485,19 @@ cannot produce those fields), keyed by the host's registry generation
   delete/invalidate plus the sidecar generation the intent belongs to);
   (2) the store write applies it and the follow-up sidecar atomic write
   clears the intent. Token deletion therefore lands only after the sidecar
-  commit is durable, and boot reconciles both directions before serving:
+  commit is durable, and boot reconciles both directions before serving
+  (extending the round-eighteen intent work — r18 re-applied and dropped but
+  never cleared a stale intent after convergence, so intents lingered across
+  restarts):
   an intent whose store rows are still present is re-applied (the sidecar
   committed, the store lagged), and store rows with no covering intent whose
   sidecar generation already advanced past them are dropped (the store
   committed, the sidecar's compensation already restored — the rows belong to
-  the compensated-away incarnation). A crash between the files therefore
+  the compensated-away incarnation) — and once sidecar and store agree (the
+  intent's store rows are already gone, including the store-already-applied
+  no-op where a re-applied intent finds nothing to delete), the boot pass
+  clears the stale intent in its own follow-up sidecar atomic write, so no
+  converged intent survives its boot. A crash between the files therefore
   converges to exactly the committed sidecar's view, never a restored sidecar
   beside a committed revocation, and compensation never resurrects a token
   its own sidecar restore invalidated.** `plan`
@@ -620,7 +640,9 @@ cannot produce those fields), keyed by the host's registry generation
   `factsCapturedAt` against the same 5-minute plan freshness bound): facts
   older than the bound at deploy time are a `stale-entry` re-plan refusal
   (token unconsumed, no record — the UI re-plans), so a token presented at
-  minute 9 never deploys on 9-minute-old OS/arch/target-writability facts**
+  minute 4 never deploys on 4-minute-old OS/arch/target-writability facts
+  past the 5-minute bound at deploy time (and no token lives past 5 minutes
+  to present at minute 9 — see the TTL above)**
   (a sidecar edit, a manual `hub.toml` edit — caught
   by the fingerprint, the only way a hand edit is visible without a restart
   — a facts refresh, a target change, a running-build or running-health
@@ -795,41 +817,70 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   record still in `pending`/`running` transitions to `interrupted` (a
   terminal unknown outcome) with a note naming the crash; a retry with the
   same operation ID gets the `interrupted` record back, and a new operation
-  ID starts a fresh operation. **The same boot pass, after the sidecar is
-  **Orphan cleanup + remote fencing (extending the round-sixteen interrupted
+  ID starts a fresh operation. **Orphan cleanup + remote fencing (extending the round-sixteen interrupted
   transition): an abrupt crash can leave SSH subprocesses (`Manager.preflight`
   one-shots, deploy pushes, remote deploy/restart commands) or a remote
   deploy/restart running with no live worker to own them — "no live handles
   survive restart" means no *in-process* handles, never that the OS or the
-  remote stopped too. So before the interrupted transition the boot pass (1)
+  remote stopped too. Boot itself performs no SSH: the local reap below runs
+  at boot before the interrupted transition, and remote fencing is lazy — it
+  lands at the next operation's guard advance, after the store is already
+  serving `interrupted` records (extending the round-eighteen fencing timing
+  — r18 left boot-time vs next-op fencing ambiguous; boot never blocks on
+  unreachable hosts). So before the interrupted transition the boot pass (1)
   reaps local orphans: every worker SSH subprocess is spawned in its own
   process group with parent-death cleanup (`Pdeathsig` / process-group kill on
   shutdown where the platform supports it), and boot kills any residual group
-  members by the recorded group id — and the group id is persisted in the
-  operation-store file alongside the record BEFORE the worker spawns (never
+  members only through an ownership-verifiable handle — never the group id
+  alone (extending the round-eighteen group-id reap — r18 reaped by the
+  recorded group id, which is reusable by unrelated work after the original
+  group exits): each member's pidfd (or the platform equivalent — cgroup
+  membership, job-object handle) plus a server-generated per-spawn nonce is
+  persisted in the operation-store file alongside the record BEFORE the worker
+  spawns (never
   after: a crash between spawn and persist would leave an unreapable group;
-  a group that no longer exists is already clean — never an error); (2)
-  fences the remote side per host with enforcement on both ends (extending
-  the round-seventeen epoch — r17 defined the epoch but neither its
-  remote-side enforcement nor the durable local group id): each worker
+  the pre-spawn persist is a `pending-spawn` intent carrying the nonce,
+  matched post-spawn, so a not-yet-created id can never authorize a kill);
+  boot validates the nonce through the handle before signaling — a pidfd that
+  no longer resolves, or members failing the nonce check, are already clean
+  — never an error, never a kill of unrelated work; (2)
+  fences the remote side per host with enforcement on both ends and inside
+  every mutating step (extending
+  the round-seventeen epoch and the round-eighteen start-gating — r17 defined
+  the epoch but neither its remote-side enforcement nor the durable local
+  ownership handle, and r18 gated only command start plus terminal tag
+  filtering, which cannot stop an already-running orphan from finishing a
+  mutation after the new operation started): each worker
   carries a durable fencing epoch (controller boot id + per-host monotonic
   op sequence, persisted in the operation-store file alongside the record
   before the worker launches), and the epoch is presented to the remote on
   every SSH command the worker runs — corroborated by a remote-side epoch
-  guard file on the target host (written by the worker's first command under
-  the epoch): a remote command whose presented epoch is older than the guard
-  file's epoch refuses to start server-side (the guard write is
-  compare-and-advance — an older epoch never overwrites a newer one, so a
-  late orphan cannot move the guard backward), and a superseded remote
-  command already running is superseded controller-side — its completion
-  never marks the new record: terminal verification reads only results
-  tagged with the current epoch. Until the guard-file write succeeds the new
+  guard file on the target host holding a totally ordered fencing sequence
+  (the guard file's own monotonic sequence, advanced only by remote
+  compare-and-swap — the guard-file sequence is the total order across
+  controller restarts, never the (boot id, per-host sequence) pair alone,
+  which has no defined cross-restart order): the worker's first commands
+  under the new epoch kill and wait for exit of the superseded epoch's
+  already-running commands (remote kill of the prior epoch's tracked PIDs
+  from the per-host remote lease file, with exit confirmation) and only then
+  advance the guard (compare-and-advance — an older epoch never
+  overwrites a newer one, so a
+  late orphan cannot move the guard backward); every mutating remote step
+  after the advance re-presents the epoch and re-checks it against the guard
+  immediately before its irreversible action — a step whose presented epoch
+  no longer equals the guard refuses server-side and aborts the operation.
+  A superseded remote command already running is therefore killed before the
+  new operation mutates — never merely ignored controller-side while its
+  remote side effects land: terminal verification reading only results
+  tagged with the current epoch is the backstop, not the fence. Until the
+  fenced guard advance succeeds the new
   operation performs no mutating remote step (it may probe and stage locally,
-  but the first remote mutation is the guard advance itself), so an orphan
+  but the first remote mutation follows the kill/wait + guard advance itself), so an orphan
   that survived the crash cannot finish a mutation after the new operation
   started and overwrite its state. A new operation ID on a host with an
   interrupted record therefore starts only after local reaping completes and
-  under a fresh fencing epoch with the guard advanced, so it can never
+  under a fresh fencing epoch with the guard advanced past a kill/wait of the
+  superseded epoch, so it can never
   overlap orphaned local or remote work from the crashed incarnation.**
   **The same boot pass, after the sidecar is
   loaded and after the interrupted transition, applies every loaded
@@ -860,16 +911,25 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   operation-store mark are two separate durable writes (different files), so
   a crash between them leaves the mark to be reconstructed here — the
   never-match rule holds via the live mark OR this boot reconciliation.
-  **Cross-file commit marker (extending the round-fifteen boot fingerprint):
+  **Cross-file commit marker (extending the round-fifteen boot fingerprint
+  and the round-eighteen mirror preservation — r18 scoped the store-newer
+  rollback but left the sidecar-newer direction unsynchronized, so a crash
+  after the sidecar write and before the mirror write booted with a stale
+  mirror and a later sidecar delete let a re-add reuse an old generation):
   every sidecar commit that also advances a mirrored store-side generation
   writes a commit marker — the (name, sidecar generation, store-mirror
   generation) triple — into the sidecar's atomic write; boot recovery orders
   sidecar load first, then the tombstone-derived `host-removed` pass above,
-  then generation-mirror reconciliation: a store mirror newer than the sidecar
+  then bidirectional generation-mirror reconciliation before serving any
+  request: a store mirror newer than the sidecar
   mark for the same name with no matching sidecar commit marker (a store write
   that survived its sidecar's compensation) is rolled back to the sidecar mark
   before any token/record validation, so a compensated mutation can never boot
-  with an advanced generation invalidating valid tokens and records — and the
+  with an advanced generation invalidating valid tokens and records — and a
+  sidecar mark newer than the store mirror for the same name (a crash after
+  the sidecar write but before the mirror write) is durably pushed forward
+  into the store mirror in the same boot pass, so the mirror is never left
+  stale behind the sidecar — and the
   rollback applies ONLY when the sidecar carries a live entry or tombstone
   for the name with a valid marker triple to roll back to (extending the
   round-sixteen commit marker and the round-seventeen cross-file work — r16
@@ -879,7 +939,11 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   name the sidecar never knew), the store mirror is PRESERVED — never rolled
   back, and the max-of-both restoration below reads the surviving mirror as
   the high-water mark — so discarding a corrupt sidecar can never discard the
-  surviving high-water mark and let a re-added host reuse an old generation.**
+  surviving high-water mark and let a re-added host reuse an old generation.
+  Both durable stores therefore converge to the maximum recovered value for
+  every known name before the store serves; the only exception is the
+  no-sidecar-mark case above, where the surviving mirror alone is
+  authoritative.**
   Records reach the store only through the
   atomic consume-and-create write, so no crash window can consume a token
   without leaving a recoverable record. No record can stay stuck forever.
@@ -1073,18 +1137,34 @@ the TTL read as `teardown-unknown-key` not-found instead of
   sections stay bounded by the live host set plus at most one superseded
   generation per name for removed names; active (live, never-removed) hosts
   compact superseded receipts the same way (extending the round-fourteen
-  receipt schema — r14 defined the receipt but no active-host rule, and r16
-  covered cleared markers only): the same atomic sidecar write that finalizes
+  receipt schema and the round-eighteen per-key bound — r14 defined the
+  receipt but no active-host rule, r16
+  covered cleared markers only, and r18 kept one superseded receipt per
+  unique mutationId with no bound, so an active host's repeated updates grew
+  the sidecar without bound): the same atomic sidecar write that finalizes
   a mutation receipt drops that name's receipts pinned to earlier generations
   — the live set keeps the current generation's receipts (at most one
-  finalized receipt per (mutationId, kind) at current generation) plus the
-  newest same-key superseded receipt per key for outcome recovery (see the
-  superseded-receipt rule in mutation idempotency), never the full per-
+  finalized receipt per (mutationId, kind) at current generation) plus at
+  most 8 newest same-key superseded receipts per name (owner-adjustable
+  count bound; a same-key superseded receipt older than the owner-set
+  superseded-receipt TTL compacts the same way), never the full per-
   generation history, so repeated updates cannot grow the sidecar without
-  bound. A replay naming a pruned receipt is not a hit: it commits fresh
-  under the normal scoping rule (a same-key `remove` retry after the prune is
-  therefore a fresh apply — the UI's `expectedGeneration` guard, not the
-  receipt, is what protects the re-added incarnation past the prune).**
+  bound. A replay naming a pruned receipt is not a hit — EXCEPT a replay
+  naming a pruned same-key superseded generation is refused with the typed
+  `stale-entry` (pruned-generation) refusal instead of fresh-applying
+  (extending the round-eighteen prune rule and the round-seventeen receipt
+  pruning — r17 pruned, and r18 fresh-applied past the prune, so a
+  mutationId-only `remove` retry past the prune destroyed the re-added
+  incarnation): the newest same-key superseded receipt per name is retained
+  until that name's tombstone expires (never pruned by the count/TTL bound
+  above while the tombstone lives), and once even that receipt is gone with
+  the tombstone, a same-key replay naming its pruned generation refuses as
+  stale — a same-key `remove` retry after the prune therefore never
+  fresh-applies against the re-added incarnation; the UI's
+  `expectedGeneration` guard is the first line, this refusal the backstop.
+  Past the TTL/count prune of a non-newest superseded receipt, a keyed replay
+  naming the pruned generation likewise refuses as stale rather than
+  committing fresh.**
  **Remnant gate (extending the round-eight commit
  point): any non-replay mutation (a same-key replay matching a
  current-generation receipt returns before this gate — see the fixed ordering
@@ -1192,16 +1272,18 @@ Protocol types)
  so lookup never requires a current live entry and later mutations cannot
  strand it (see the remnant schema above)), try-acquires
   the host's per-host gate (held → typed busy, same classes as `restart`) —
- and the clearance runs as one sidecar read-modify-write under the
- process-wide mutation lock (the same lock as `add`/`update`/`remove`, so a
- concurrent mutation cannot interleave with it),
- runs the remnant's pinned teardown to completion (never against a live or
+ and the clearance holds the process-wide mutation lock only for the
+ marker/remnant/receipt state transitions (the same lock as
+ `add`/`update`/`remove`, so a concurrent mutation cannot interleave with
+ them) — never across the teardown itself (the M4 companion to the foreign-
+ marker rule above):
+ runs the remnant's pinned teardown to completion with no mutation lock held (never against a live or
  re-added entry — the open-remnant gate above guarantees no newer
  incarnation exists while the remnant is open, and the retry re-checks the
- remnant's generation against the registry's current generation under that
- gate before acting (incarnation-scoped teardown, see the remnant gate
- above)), clears the
-  remnant in the same atomic sidecar write — the same write records the
+ remnant's generation AND incarnation id against the registry's current
+ values before acting (incarnation-scoped teardown, see the remnant gate
+ above)), then re-takes the mutation lock and clears the
+  remnant in one atomic sidecar write — the same write records the
   remnant resolution on the original mutation receipt (outcome becomes
   `committed` with `remnantResolvedAt`, extending the round-eleven
   receipt/remnant work: a replay of the original mutationId after resolution
@@ -1367,15 +1449,21 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
   runtime by their discriminator (`outcome`, `reason`), never as a
   generated TS union — the 08b catalog defines one named Go struct per arm
   so each generates its own interface field-for-field. **That is the
-  round-seventeen answer to the union question (extending the round-fifteen
-  mapping and the round-sixteen `outcome`-discriminator / `RemovedRow`
-  work): no generator change is needed — the contract already requires one
-  named Go struct per arm (mutation-result arms, `plan`'s planned vs
-  no-token arms, `teardown-retry`'s four `outcome` x `hostKind` arms), each generating its
-  own interface, with the 08b protocol-shapes test pinning the wire shapes
+  round-seventeen answer to the union-emission question (extending the
+  round-fifteen mapping and the round-sixteen `outcome`-discriminator /
+  `RemovedRow` work, and narrowing the round-eighteen wording — r18's "no
+  generator change is needed" read as covering registration too, which the
+  next paragraph contradicts): no generator change is needed for TS
+  discriminated/literal-union emission — the contract's one-named-Go-struct-
+  per-arm rule (mutation-result arms, `plan`'s planned vs
+  no-token arms, `teardown-retry`'s four `outcome` x `hostKind` arms) exists
+  only so each arm generates its own interface, with the 08b
+  protocol-shapes test pinning the wire shapes
   and the `outcome` discriminator on both `plan` arms; the frontend selects
   arms at runtime on the discriminator (see `plan` and the mutation-result
-  union), never on a generated TS union. **Arm registration (extending the
+  union), never on a generated TS union — while union *registration* (how
+  those arm structs reach the generated client at all) is the Arm
+  registration paragraph below, which 08b changes. **Arm registration (extending the
   round-seventeen answer with the new per-arm specific — r17 settled that no
   TS union emission is needed; this settles how all N arm structs reach the
   generated client when the catalog holds exactly one `Result` value per
@@ -1404,7 +1492,12 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
   `installedVersionAgeSec?: number`, `osArch?: string`,
   `lastAttachError?: string`, `lastAttachErrorAgeSec?: number`,
   `midEnsure: bool`, `origin: "hub.toml" | "sidecar"`, `removed: bool`,
-  `retainedRows?: number` (tombstone rows only), `generation: number`.
+  `retainedRows?: number` (tombstone rows only), `generation: number`,
+  `escalationAgeSec?: number` (present only on tombstone rows whose name
+  holds an open remnant past the escalation bound — the escalation age the
+  expiry-escalation rule promises; absent everywhere else per the
+  absent-when-unknown rule — extending the round-eighteen escalation work,
+  which promised the surfacing without defining the field).
   **Tombstone values:** a tombstone row renders from retained effective
   `HostConfig` with `attached: false`, `midEnsure: false`, and the removed
   entry's `origin` and `generation`; `installedVersion?`,
@@ -1440,10 +1533,12 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
  response the
  mutation-result union below — the clean path returns `{outcome: "committed",
 host: RemovedRow}`, and only the union's failure arm
-describes the failed-rebind shape (`RemovedRow` is the dedicated removed-row
-arm — `{name, removed: true, retainedRows}` plus the tombstone's retained
+  describes the failed-rebind shape (`RemovedRow` is the dedicated removed-row
+  arm — `{name, removed: true, retainedRows}` plus the tombstone's retained
 effective `HostConfig` fields, `attached: false`, `midEnsure: false`, and the
-removed entry's `origin` and `generation` per `list` tombstone values — and is
+  removed entry's `origin` and `generation` per `list` tombstone values, plus
+  the same optional `escalationAgeSec?: number` as `HostRow` (present only
+  when the row's name holds an escalated open remnant) — and is
 NOT a `HostRow`: the catalog + regenerated client carry it as its own
 interface). A replay carrying a known
   key returns the recorded receipt without re-applying.
@@ -1531,7 +1626,11 @@ pins the `outcome` discriminator on both arms. `HostPlan` is `{host, generation,
  `runningHealthy`.
 - `evener/host/teardown-retry` (mutation): params `{remnantId: string}`;
   response `{outcome: "teardown-complete" | "already-cleared", hostKind:
-  "live" | "removed", host: HostRow | RemovedRow, remnantId: string}` —
+  "live" | "removed", host: HostRow | RemovedRow, remnantId: string,
+  escalationAgeSec?: number}` (present when the named remnant was past the
+  escalation bound at execution — the escalation age the expiry-escalation
+  rule promises on `teardown-retry` responses; absent otherwise per the
+  absent-when-unknown rule) —
   resumes and clears the named remnant, or
   typed not-found / busy (never stale-entry: the remnant executes its pinned
   target, see the commit point); `hostKind: "live"` pairs with `host:
