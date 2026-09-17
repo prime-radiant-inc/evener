@@ -7,6 +7,7 @@ import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { IDBDatabase, IDBFactory } from "fake-indexeddb";
+import { useLayoutEffect } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
@@ -29,6 +30,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { getToasts, resetToastStoreForTests } from "../../../widgets/toast/store";
+import { editorCursor, replaceEditorText, selectEditorText } from "../testing/editor";
 import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
@@ -481,7 +483,7 @@ test("clicking the current goal fills and focuses an empty composer with an edit
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
 
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
   expect(document.activeElement).toBe(textarea());
   expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
 });
@@ -495,27 +497,27 @@ test("clicking the current goal confirms before replacing an existing draft", as
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
-  expect(textarea().value).toBe("Unsent draft");
+  expect(textarea().textContent).toBe("Unsent draft");
 
   await user.click(screen.getByRole("button", { name: "Keep draft" }));
   expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
-  expect(textarea().value).toBe("Unsent draft");
+  expect(textarea().textContent).toBe("Unsent draft");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
   expect(document.activeElement).toBe(textarea());
 });
 
 test("editing the goal confirms before replacing whitespace-only draft text", async () => {
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
-  fireEvent.change(textarea(), { target: { value: " \n\t" } });
+  replaceEditorText(textarea(), " \n\t");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
 
   expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
-  expect(textarea().value).toBe(" \n\t");
+  expect(textarea().textContent).toBe(" \n\t");
 });
 
 test("editing the goal confirms before replacing a draft that contains only attachments", async () => {
@@ -523,7 +525,7 @@ test("editing the goal confirms before replacing a draft that contains only atta
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
   act(() => pastePngInto(textarea()));
-  fireEvent.change(textarea(), { target: { value: "" } });
+  replaceEditorText(textarea(), "");
   expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
@@ -538,12 +540,12 @@ test("confirmed goal replacement clears settled attachments and persists an ordi
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
   act(() => pastePngInto(textarea()));
   await screen.findByRole("button", { name: "View shot.png" });
-  fireEvent.change(textarea(), { target: { value: "" } });
+  replaceEditorText(textarea(), "");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
 
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
   expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
@@ -553,16 +555,16 @@ test("confirmed goal replacement invalidates pending attachments without later c
   const user = userEvent.setup();
   await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
   act(() => pastePngInto(textarea()));
-  fireEvent.change(textarea(), { target: { value: "" } });
+  replaceEditorText(textarea(), "");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
 
   await act(async () => {
     await gate.release();
   });
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
   expect(screen.queryAllByRole("button", { name: /^Remove/ })).toHaveLength(0);
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
@@ -579,13 +581,15 @@ test("a recovery that leaves the text unchanged does not move the caret on the n
   // recovered draft is empty: only that path removes the durable row.
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   expect(screen.queryByRole("button", { name: "Edit message" })).toBeNull();
-  expect(textarea().value).toBe("");
+  const editor = textarea();
+  expect(editor.textContent).toBe("");
 
-  fireEvent.change(textarea(), { target: { value: "h" } });
+  const user = userEvent.setup();
+  selectEditorText(editor, 0);
+  await user.keyboard("h");
 
-  expect(textarea().value).toBe("h");
-  expect(textarea().selectionStart).toBe(1);
-  expect(textarea().selectionEnd).toBe(1);
+  expect(editor.textContent).toBe("h");
+  expect(editorCursor(editor)).toBe(1);
 });
 
 test("confirmed goal replacement exits recovery without deleting its durable recovery row", async () => {
@@ -598,13 +602,13 @@ test("confirmed goal replacement exits recovery without deleting its durable rec
     evener: currentWorkEvener({ goal: true }),
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("recover this later");
+  expect(textarea().textContent).toBe("recover this later");
 
   await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
   await user.click(screen.getByRole("button", { name: "Replace draft" }));
   await flushPendingTurnsProjectionForTests();
 
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
   expect(screen.getByText("recover this later")).toBeTruthy();
@@ -649,7 +653,7 @@ test("goal replacement preserves both recovery rows while a merged source discar
     evener: currentWorkEvener({ goal: true }),
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("first recovery");
+  expect(textarea().textContent).toBe("first recovery");
   const sourceRow = screen.getByText("second recovery").closest("li");
   if (!sourceRow) throw new Error("missing second recovery row");
   await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
@@ -711,7 +715,7 @@ test("goal replacement focus waits until an ended follow-up textarea mounts", as
   });
 
   await waitFor(() => expect(document.activeElement).toBe(textarea()));
-  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
 });
 
 test("clicking the current task twice keeps one Tasks pane open and focuses it", async () => {
@@ -828,8 +832,8 @@ afterEach(() => {
   globalThis.indexedDB = new IDBFactory();
 });
 
-function textarea(): HTMLTextAreaElement {
-  return screen.getByRole("textbox", { name: /^message$/i }) as HTMLTextAreaElement;
+function textarea(): HTMLDivElement {
+  return screen.getByRole("textbox", { name: /^message$/i }) as HTMLDivElement;
 }
 
 // The composer's controls are addressed by their stable data-testid, not by
@@ -855,6 +859,11 @@ function stopButton(): HTMLButtonElement {
 test("renders a textarea with an accessible name", async () => {
   await mountComposer("ref_a");
   expect(textarea()).toBeTruthy();
+  // One editable, one textbox: a wrapper that is itself a textbox would nest
+  // the role and hand assistive tech an editable that owns no content.
+  // Counted without a name filter on purpose: an unnamed wrapper textbox would
+  // hide from an accessible-name query and this guard has to see it.
+  expect(screen.getAllByRole("textbox")).toHaveLength(1);
 });
 
 // --- mount autofocus ---------------------------------------------------------
@@ -952,7 +961,7 @@ test("a saved notLoaded session with sending enabled discovers activity while it
 test("restores a stored draft into the textarea on mount", async () => {
   localStorage.setItem("evener.composer.draft.v1.ref_a", "unsent thought");
   await mountComposer("ref_a");
-  expect(textarea().value).toBe("unsent thought");
+  expect(textarea().textContent).toBe("unsent thought");
 });
 
 test("typing persists the draft under this ref's storage key", async () => {
@@ -971,12 +980,42 @@ test("typing persists the draft under this ref's storage key", async () => {
 // from the Composer side only: they never render SelectionQuote, just call
 // requestQuoteInsert directly, the same way the real bar would.
 
+test("a controlled replacement over a leading chip replaces it rather than merging text", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_replace_with_chip";
+  writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref, { evener: currentWorkEvener({ goal: true }) });
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+
+  expect(textarea().textContent).toBe("/goal Keep the session focused");
+  expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+  expect(readComposerDraft(ref)).toEqual({ text: "/goal Keep the session focused", skillNames: [] });
+});
+
+test("a quote inserted before a leading chip leaves the chip whole and adds only its own text", async () => {
+  const ref = "ref_inline_prefix_quote";
+  writeComposerDraft(ref, { text: "/cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  act(() => {
+    requestQuoteInsert(ref, "/review ", "prefix");
+  });
+
+  await waitFor(() => expect(textarea().textContent).toBe("/review /cleanup"));
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "/review /cleanup", skillNames: ["cleanup"] });
+});
+
 test("a quote-insert request writes the quoted markdown into an empty composer and focuses it", async () => {
   await mountComposer("ref_a");
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
-  await waitFor(() => expect(textarea().value).toBe("> quoted line\n\n"));
+  await waitFor(() => expect(textarea().textContent).toBe("> quoted line\n\n"));
   expect(document.activeElement).toBe(textarea());
 });
 
@@ -987,7 +1026,7 @@ test("a quote-insert request appends after a blank line, keeping whatever the us
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n");
   });
-  await waitFor(() => expect(textarea().value).toBe("my own note\n\n> quoted line\n\n"));
+  await waitFor(() => expect(textarea().textContent).toBe("my own note\n\n> quoted line\n\n"));
 });
 
 test("a quote-insert request for a DIFFERENT ref never reaches this composer", async () => {
@@ -998,7 +1037,7 @@ test("a quote-insert request for a DIFFERENT ref never reaches this composer", a
   await act(async () => {
     await flushPendingTurnsProjectionForTests();
   });
-  expect(textarea().value).toBe("");
+  expect(textarea().textContent).toBe("");
 });
 
 test("the composer persists the quote-inserted text as this ref's draft", async () => {
@@ -1019,29 +1058,29 @@ test("the composer persists the quote-inserted text as this ref's draft", async 
 test("placement 'append' on a seeded draft matches the unqualified default: appended after a blank line", async () => {
   localStorage.setItem(draftStorageKey("ref_a"), "my own note");
   await mountComposer("ref_a");
-  expect(textarea().value).toBe("my own note");
+  expect(textarea().textContent).toBe("my own note");
 
   act(() => {
     requestQuoteInsert("ref_a", "> quoted line\n\n", "append");
   });
 
-  await waitFor(() => expect(textarea().value).toBe("my own note\n\n> quoted line\n\n"));
-  expect(textarea().selectionStart).toBe(textarea().value.length);
+  await waitFor(() => expect(textarea().textContent).toBe("my own note\n\n> quoted line\n\n"));
+  expect(editorCursor(textarea())).toBe((textarea().textContent ?? "").length);
 });
 
 test("placement 'prefix' on a seeded draft inserts the addition BEFORE the existing text, with no separator", async () => {
   localStorage.setItem(draftStorageKey("ref_a"), "my own note");
   await mountComposer("ref_a");
-  expect(textarea().value).toBe("my own note");
+  expect(textarea().textContent).toBe("my own note");
 
   act(() => {
     requestQuoteInsert("ref_a", "/p:review ", "prefix");
   });
 
-  await waitFor(() => expect(textarea().value).toBe("/p:review my own note"));
+  await waitFor(() => expect(textarea().textContent).toBe("/p:review my own note"));
   // The cursor lands right after the inserted invocation, not at the very
   // end of the merged text - see Composer.tsx's own comment on the effect.
-  expect(textarea().selectionStart).toBe("/p:review ".length);
+  expect(editorCursor(textarea())).toBe("/p:review ".length);
 });
 
 // --- composer-focus seam (composerFocus.ts) ---------------------------------
@@ -1356,7 +1395,7 @@ test("the unchanged submitted payload clears as soon as its local outbox commit 
   await user.type(textarea(), "hello");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
@@ -1371,13 +1410,13 @@ test("text edited while the local outbox commit is pending survives that commit"
   fireEvent.click(submitButton());
   await storage.commitStarted;
 
-  fireEvent.change(textarea(), { target: { value: "original plus more" } });
+  replaceEditorText(textarea(), "original plus more");
   expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 
   storage.release();
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
 
-  expect(textarea().value).toBe("original plus more");
+  expect(textarea().textContent).toBe("original plus more");
   expect(readComposerDraft("ref_a")).toEqual({ text: "original plus more", skillNames: [] });
 });
 
@@ -1392,7 +1431,7 @@ test("a local outbox failure leaves the composer untouched and sends no RPC", as
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/send failed/i)).toBeTruthy());
-  expect(textarea().value).toBe("hello");
+  expect(textarea().textContent).toBe("hello");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -1405,11 +1444,11 @@ test("a lost response never restores submitted content over a newer composer dra
 
   await user.type(textarea(), "submitted");
   await user.click(submitButton());
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   await user.type(textarea(), "new draft");
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
-  expect(textarea().value).toBe("new draft");
+  expect(textarea().textContent).toBe("new draft");
   expect(screen.queryByText(/reload before retrying/i)).toBeNull();
 });
 
@@ -1807,7 +1846,7 @@ test("bare Enter does not submit when enterToSend is off (default)", async () =>
 
   await user.type(textarea(), "line one{Enter}");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
-  expect(textarea().value).toBe("line one\n");
+  expect(textarea().textContent).toBe("line one\n");
 });
 
 // IME guard: while an IME composition is in progress (e.g. finishing a
@@ -1819,7 +1858,7 @@ test("Enter is ignored while an IME composition is in progress, even with enterT
   await mountComposer("ref_a");
   const requestSubmitSpy = vi.spyOn(HTMLFormElement.prototype, "requestSubmit").mockImplementation(() => {});
 
-  fireEvent.change(textarea(), { target: { value: "composing" } });
+  replaceEditorText(textarea(), "composing");
   fireEvent.keyDown(textarea(), { key: "Enter", isComposing: true });
 
   expect(requestSubmitSpy).not.toHaveBeenCalled();
@@ -1841,6 +1880,30 @@ test("bare Enter submits when enterToSend is on", async () => {
 
   await user.type(textarea(), "go{Enter}");
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+});
+
+test("bare Enter with enterToSend dispatches the message and leaves nothing behind", async () => {
+  prefsStore.getState().setEnterToSend(true);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "go");
+  await user.keyboard("{Enter}");
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
+  // The keystroke sent the message; it must not also reach the editor as a
+  // literal newline, which would leave the sent text behind in the composer.
+  await waitFor(() => expect(textarea().textContent).toBe(""));
+  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
 });
 
 test("Shift+Enter with an empty queue and text steers instead of submitting", async () => {
@@ -1866,6 +1929,77 @@ test("Shift+Enter with an empty queue and text steers instead of submitting", as
   expect(call?.params).toMatchObject({ ref: "ref_a" });
 });
 
+test("undo still works after an attachment inserts its marker", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+  const editor = textarea();
+
+  await user.click(editor);
+  await user.type(editor, "hello");
+  expect(editor.textContent).toBe("hello");
+
+  selectEditorText(editor, "hello".length);
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(editor.textContent).toBe("hello[image 1]");
+
+  // The marker arrives through the controlled value, so it is not itself an
+  // undo step - but applying it must not destroy the history either. Undo has
+  // to keep working, rather than becoming a no-op from the first attachment on.
+  await user.keyboard("{Control>}z{/Control}");
+  expect(editor.textContent).toBe("[image 1]");
+
+  await user.keyboard("{Control>}{Shift>}z{/Control}{/Shift}");
+  expect(editor.textContent).toBe("hello[image 1]");
+});
+
+test("a plain typed mention stays prose through a programmatic attachment insert", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_inline_prose_reparse";
+  writeComposerDraft(ref, { text: "Run /cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  // A second, plainly typed mention is prose, not a selection.
+  await selectEditorText(editor, "Run /cleanup".length);
+  await user.keyboard(" then /cleanup");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup", skillNames: ["cleanup"] });
+
+  // A programmatic edit (the attachment marker) must not turn that prose into
+  // a second chip behind the user's back.
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /cleanup then /cleanup[image 1]", skillNames: ["cleanup"] });
+});
+
+test("Shift+Enter steering dispatches the draft and leaves nothing behind", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "active" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+  });
+  fake.on("turn/steer", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+  }));
+
+  await user.type(textarea(), "steer this");
+  await user.keyboard("{Shift>}{Enter}{/Shift}");
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/steer")).toBe(true));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
+  expect(readComposerDraft("ref_a")).toEqual({ text: "", skillNames: [] });
+});
+
 test("with enterToSend on, Shift+Enter is a literal newline and does not steer", async () => {
   prefsStore.getState().setEnterToSend(true);
   const user = userEvent.setup();
@@ -1886,7 +2020,7 @@ test("with enterToSend on, Shift+Enter is a literal newline and does not steer",
   await user.keyboard("{Shift>}{Enter}{/Shift}");
 
   expect(fake.calls.filter((c) => c.method === "turn/steer")).toHaveLength(0);
-  expect(textarea().value).toBe("abc\n");
+  expect(textarea().textContent).toBe("abc\n");
 });
 
 // The chord a hint advertises has to track the preference that actually fires
@@ -1975,7 +2109,7 @@ test("a successful classic steer also clears the textarea and its draft (contrac
   await user.type(textarea(), "steer this");
   await user.click(steerButton());
 
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   expect(localStorage.getItem("evener.composer.draft.v1.ref_a")).toBeNull();
 });
 
@@ -2189,7 +2323,7 @@ test("submit after the pending send cleared in the same task routes to send on t
   await user.type(textarea(), "second");
   await user.click(submitButton());
   await waitFor(async () => expect(await routeOf("second")).toBe("turn/queue"));
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   // The next message renders in the same queue mode; its pending send clears
   // in the same task as the press, so the press has to read the store.
   await user.type(textarea(), "third");
@@ -2416,7 +2550,7 @@ test("an explicit rejection returns to the sole Composer textarea", async () => 
   await user.type(textarea(), "rejected draft");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().value).toBe("rejected draft"));
+  await waitFor(() => expect(textarea().textContent).toBe("rejected draft"));
   expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
   expect(screen.queryByText("Recovery drafts")).toBeNull();
   expect(screen.queryByRole("textbox", { name: "Recovered message" })).toBeNull();
@@ -2434,12 +2568,12 @@ test("an occupied Composer is not overwritten by a later rejection", async () =>
 
   await user.type(textarea(), "rejected draft");
   await user.click(submitButton());
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   await user.type(textarea(), "current work");
   act(() => rejection.reject(notAcceptedError(clientMutationId)));
 
   await waitFor(() => expect(screen.getByText("rejected draft")).toBeTruthy());
-  expect(textarea().value).toBe("current work");
+  expect(textarea().textContent).toBe("current work");
 });
 
 test("editing a rejected queue row merges it through the normal Composer", async () => {
@@ -2458,7 +2592,7 @@ test("editing a rejected queue row merges it through the normal Composer", async
   await user.click(within(row).getByRole("button", { name: "Edit message" }));
 
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("current work\n\nrejected draft");
+  expect(textarea().textContent).toBe("current work\n\nrejected draft");
   expect(screen.getAllByRole("textbox")).toEqual([textarea()]);
   expect(screen.queryByText("rejected draft")).toBeNull();
 });
@@ -2488,7 +2622,7 @@ test("sending recovered text uses current Composer routing and consumes the reco
   }));
 
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("retry me");
+  expect(textarea().textContent).toBe("retry me");
   await user.click(submitButton());
   await flushPendingTurnsProjectionForTests();
 
@@ -2502,6 +2636,118 @@ test("sending recovered text uses current Composer routing and consumes the reco
   });
 });
 
+test.each(["automatic", "Edit message"] as const)(
+  "restored selections: recovery via %s preserves only visible selections with prose and attachments",
+  async (activation) => {
+    // fake-indexeddb uses native structuredClone, which cannot preserve jsdom
+    // Blob bytes. Use the real native Blob for this durable-byte assertion.
+    const { Blob: NodeBlob } = await vi.importActual<{ Blob: typeof Blob }>("node:buffer");
+    vi.stubGlobal("Blob", NodeBlob);
+    try {
+      const storage = new MutationOutboxIndexedDB();
+      setMutationStorageForTests(storage);
+      if (activation === "Edit message") writeComposerDraft("ref_a", { text: "Current work", skillNames: [] });
+      const input = [
+        { type: "text", text: "Use /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)" },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+        { type: "skill", name: "simplify" },
+        { type: "skill", name: "plugin:visible" },
+      ];
+      const outbox = await storage.enqueueIntent({
+        targetRef: "ref_a",
+        threadId: "thread_a",
+        method: "turn/start",
+        payload: { ref: "ref_a", input },
+        attachments: [
+          {
+            presentationId: "presentation-1",
+            marker: 1,
+            name: "proof.png",
+            mediaType: "image/png",
+            blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+          },
+        ],
+        optimisticDisplay: { method: "turn/start", input },
+        composerText: "Use /plugin:visible, then /plugin:visible; /unselected [image 1]",
+      });
+      const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+      if (!recovered) throw new Error("failed to seed selected recovery");
+      const user = userEvent.setup();
+      const fake = await mountComposer("ref_a", {
+        evener: {
+          ref: "ref_a",
+          capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+          mutationStateAuthoritative: true,
+          queue: { revision: 0 },
+        },
+      });
+      fake.on("turn/start", (params) => ({
+        receipt: {
+          clientMutationId: params.clientMutationId,
+          disposition: "applied",
+          threadId: "thread_a",
+          projectionState: "reflected",
+        },
+        turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+      }));
+      await flushPendingTurnsProjectionForTests();
+      if (activation === "Edit message") {
+        expect(textarea().textContent).toBe("Current work");
+        await user.click(screen.getByRole("button", { name: "Edit message" }));
+        await flushPendingTurnsProjectionForTests();
+      }
+      const expectedComposerText =
+        activation === "automatic"
+          ? "Use /plugin:visible, then /plugin:visible; /unselected [image 1]"
+          : "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected [image 1]";
+      expect(textarea().textContent).toBe(expectedComposerText);
+      expect(
+        within(textarea())
+          .getAllByTestId("composer-skill-chip")
+          .map((chip) => chip.textContent),
+      ).toEqual(["/plugin:visible", "/plugin:visible"]);
+      expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+      const persisted = await storage.getRecovery(recovered.clientMutationId);
+      expect(persisted?.composerText).toBe(expectedComposerText);
+      const expectedPersistedInput = [
+        { type: "text", text: expectedComposerText },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+        { type: "skill", name: "plugin:visible" },
+      ];
+      const expectedSubmittedInput = [
+        {
+          type: "text",
+          text:
+            activation === "automatic"
+              ? "Use /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)"
+              : "Current work\n\nUse /plugin:visible, then /plugin:visible; /unselected (attached image 1: proof.png)",
+        },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+        { type: "skill", name: "plugin:visible" },
+      ];
+      // Recovery edits keep marker anchors; only composerMutationIntent translates
+      // them to attachment prose at submission (threads.ts's boundary contract).
+      expect(persisted?.payload.input).toEqual(expectedPersistedInput);
+      expect(persisted?.optimisticDisplay).toEqual({ method: "turn/start", input: expectedPersistedInput });
+      expect(persisted?.attachments).toHaveLength(1);
+      expect(persisted?.attachments[0]).toMatchObject({ marker: 1, name: "proof.png", mediaType: "image/png" });
+      expect(await persisted?.attachments[0]?.blob.arrayBuffer()).toEqual(new Uint8Array([1, 2, 3]).buffer);
+
+      await user.click(submitButton());
+      await flushPendingTurnsProjectionForTests();
+      await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+      expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+        input: expectedSubmittedInput,
+      });
+      expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
+      expect(textarea().textContent).toBe("");
+      expect(screen.queryByRole("button", { name: "Remove proof.png" })).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);
+
 test("a losing cross-tab recovered send does not issue a second request", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -2509,7 +2755,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
   const user = userEvent.setup();
   const fake = await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("one winner");
+  expect(textarea().textContent).toBe("one winner");
   const otherTab = new MutationOutboxIndexedDB();
   await otherTab.resendRecovery(recovered.clientMutationId, {
     targetRef: "ref_a",
@@ -2525,7 +2771,7 @@ test("a losing cross-tab recovered send does not issue a second request", async 
 
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(getToasts().map((toast) => toast.kind)).toEqual(["info"]);
   otherTab.close();
@@ -2542,7 +2788,7 @@ test("a recovered draft nobody is touching stops writing itself back to IndexedD
   await seedRejectedRecovery(storage, "ref_a", "sitting still");
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("sitting still");
+  expect(textarea().textContent).toBe("sitting still");
 
   const afterActivation = storage.recoveryInputWrites;
   await flushPendingTurnsProjectionForTests();
@@ -2560,11 +2806,11 @@ test("a slow recovery read still activates before the mount's projection work is
   setMutationStorageForTests(storage);
   await seedRejectedRecovery(storage, "ref_a", "slow to arrive");
   await mountComposer("ref_a", { status: { type: "idle" } });
-  expect(textarea().value).toBe("");
+  expect(textarea().textContent).toBe("");
 
   await flushPendingTurnsProjectionForTests();
 
-  expect(textarea().value).toBe("slow to arrive");
+  expect(textarea().textContent).toBe("slow to arrive");
 });
 
 test("a slow recovery write is durable before the edit's projection work is awaited out", async () => {
@@ -2574,7 +2820,8 @@ test("a slow recovery write is durable before the edit's projection work is awai
   const user = userEvent.setup();
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  await user.type(textarea(), "!");
+  selectEditorText(textarea(), "before".length);
+  await user.keyboard("!");
 
   await flushPendingTurnsProjectionForTests();
 
@@ -2590,7 +2837,7 @@ test("recovered edits and attachment removal survive Composer remount", async ()
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("edit me [image 1]");
+  expect(textarea().textContent).toBe("edit me [image 1]");
   expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
 
   await user.clear(textarea());
@@ -2604,7 +2851,7 @@ test("recovered edits and attachment removal survive Composer remount", async ()
 
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("edited");
+  expect(textarea().textContent).toBe("edited");
   // Any remove control at all, not one named for this file: a tile carries
   // its filename in labels rather than as a text node, so a text query would
   // report "gone" for an attachment still sitting there - and a query naming
@@ -2629,7 +2876,7 @@ test.each([
   fake.on("turn/start", () => new Promise<never>(() => undefined));
   await flushPendingTurnsProjectionForTests();
   const submittedText = image ? "edit me [image 1]" : "retry me";
-  expect(textarea().value).toBe(submittedText);
+  expect(textarea().textContent).toBe(submittedText);
 
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
@@ -2655,21 +2902,21 @@ test.each([
     await written;
     cleanup();
     render(<Composer ref="ref_a" focused={false} />);
-    await waitFor(() => expect(textarea().value).toBe(submittedText));
+    await waitFor(() => expect(textarea().textContent).toBe(submittedText));
     if (edit !== "unchanged") {
-      fireEvent.change(textarea(), { target: { value: "new draft" } });
-      if (edit === "same text") fireEvent.change(textarea(), { target: { value: submittedText } });
+      replaceEditorText(textarea(), "new draft");
+      if (edit === "same text") replaceEditorText(textarea(), submittedText);
     }
   } finally {
     await act(async () => hold?.release());
     await flushPendingTurnsProjectionForTests();
   }
   const expected = edit === "unchanged" ? "" : edit === "edited" ? "new draft" : image ? "edit me " : "retry me";
-  expect(textarea().value).toBe(expected);
+  expect(textarea().textContent).toBe(expected);
   expect(readDraft("ref_a")).toBe(expected);
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
   expect(screen.queryByRole("button", { name: "Remove proof.png" })).toBeNull();
-  fireEvent.change(textarea(), { target: { value: "follow up" } });
+  replaceEditorText(textarea(), "follow up");
   fireEvent.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   expect(await storage.listOutbox("ref_a")).toHaveLength(2);
@@ -2682,7 +2929,7 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
   const user = userEvent.setup();
   const first = await mountComposerWithHandle("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("discard me");
+  expect(textarea().textContent).toBe("discard me");
   await user.clear(textarea());
   await flushPendingTurnsProjectionForTests();
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeUndefined();
@@ -2690,7 +2937,7 @@ test("blanking an attachment-free recovered draft discards it durably", async ()
 
   await mountComposer("ref_a", { status: { type: "idle" } });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("");
+  expect(textarea().textContent).toBe("");
   expect(screen.queryByText("discard me")).toBeNull();
 });
 
@@ -2713,7 +2960,7 @@ test("draining an active recovery consumes its owner before the next submission"
     return new Promise<never>(() => undefined);
   });
   await flushPendingTurnsProjectionForTests();
-  expect(textarea().value).toBe("retry me");
+  expect(textarea().textContent).toBe("retry me");
   const transact = IDBDatabase.prototype.transaction;
   let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
   const committed = deferred<void>();
@@ -2741,8 +2988,8 @@ test("draining an active recovery consumes its owner before the next submission"
     await flushPendingTurnsProjectionForTests();
   }
   expect(await storage.getRecovery(recovery.clientMutationId)).toBeUndefined();
-  expect(textarea().value).toBe("");
-  fireEvent.change(textarea(), { target: { value: "follow up" } });
+  expect(textarea().textContent).toBe("");
+  replaceEditorText(textarea(), "follow up");
   fireEvent.click(submitButton());
   await flushPendingTurnsProjectionForTests();
   expect((await storage.listOutbox("ref_a")).map((record) => record.method)).toEqual([
@@ -2756,7 +3003,7 @@ test.each([false, true])(
   async (image) => {
     const fake = await mountComposer("ref_a");
     fake.on("turn/start", () => new Promise<never>(() => undefined));
-    fireEvent.change(textarea(), { target: { value: "send me" } });
+    replaceEditorText(textarea(), "send me");
     if (image) {
       installCanvasStubs();
       pastePngInto(textarea());
@@ -2766,7 +3013,7 @@ test.each([false, true])(
     const firstInput = textarea();
     const firstButton = submitButton();
     const second = render(<Composer ref="ref_a" focused={false} />);
-    const secondInput = within(second.container).getByRole<HTMLTextAreaElement>("textbox");
+    const secondInput = within(second.container).getByRole<HTMLDivElement>("textbox");
     await flushPendingTurnsProjectionForTests();
     const transact = IDBDatabase.prototype.transaction;
     let hold: ReturnType<typeof holdIndexedDBEvent> | undefined;
@@ -2782,13 +3029,13 @@ test.each([false, true])(
     try {
       fireEvent.click(firstButton);
       await committed.promise;
-      fireEvent.change(secondInput, { target: { value: "newer shared draft" } });
+      replaceEditorText(secondInput, "newer shared draft");
     } finally {
       await act(async () => hold?.release());
       await flushPendingTurnsProjectionForTests();
     }
-    expect(firstInput.value).toBe("");
-    expect(secondInput.value).toBe("newer shared draft");
+    expect(firstInput.textContent).toBe("");
+    expect(secondInput.textContent).toBe("newer shared draft");
     expect(readDraft("ref_a")).toBe("newer shared draft");
   },
 );
@@ -2803,7 +3050,7 @@ test("a remounted Composer does not activate a stale recovery projection", async
 
   try {
     await mountComposer("ref_a", { status: { type: "idle" } });
-    expect(textarea().value).toBe("");
+    expect(textarea().textContent).toBe("");
   } finally {
     storage.resume();
   }
@@ -2912,7 +3159,7 @@ const ENDED_STATUSES = ["ended", "closed", "notLoaded"] as const;
 test.each(ENDED_STATUSES)("a %s session's card rests as a bare invitation with no control row", async (type) => {
   await mountComposer("ref_a", { status: { type } });
   const card = screen.getByTestId("composer-input-card");
-  expect(textarea().getAttribute("placeholder")).toBe("Send a follow-up…");
+  expect(textarea().getAttribute("data-placeholder")).toBe("Send a follow-up…");
   expect(card.querySelectorAll("button")).toHaveLength(0);
   expect(screen.queryByTestId("composer-attach")).toBeNull();
   expect(screen.queryByTestId("session-chrome-inline")).toBeNull();
@@ -2981,31 +3228,23 @@ test("an ended session that still holds text keeps its control row after blur", 
   expect(screen.getByTestId("composer-submit")).toBeTruthy();
 });
 
-// One line at rest, opening to a real writing surface once focused. Driven from
-// React state rather than a :focus-within CSS rule because the floor has to
-// reach the field's own `rows` attribute to take effect at all (widgets/textarea
-// documents why), and only the prop can do that. Verified in Chrome too: before
-// the rows half of that fix, the collapsed field measured 39px - two lines - no
-// matter what the floor said.
+// The writing surface opens from one line to three when a follow-up is focused.
 test("an ended session's field rests at one line and opens to three on focus", async () => {
   await mountComposer("ref_a", { status: { type: "notLoaded" } });
-  expect(textarea().getAttribute("rows")).toBe("1");
-  expect(textarea().style.getPropertyValue("--textarea-min-lines")).toBe("1");
+  expect(textarea().style.minHeight).toBe("1lh");
 
   act(() => textarea().focus());
-  expect(textarea().getAttribute("rows")).toBe("3");
-  expect(textarea().style.getPropertyValue("--textarea-min-lines")).toBe("3");
+  expect(textarea().style.minHeight).toBe("3lh");
 
   act(() => textarea().blur());
-  expect(textarea().getAttribute("rows")).toBe("1");
+  expect(textarea().style.minHeight).toBe("1lh");
 });
 
 // A live session's field must NOT pick up the collapsed floor - it keeps the
-// widget's own MIN_ROWS default, so a running composer is a comfortable target.
+// editor's two-line default, so a running composer is a comfortable target.
 test("a live session's field keeps the widget's own default line floor", async () => {
   await mountComposer("ref_a", { status: { type: "idle" } });
-  expect(textarea().getAttribute("rows")).toBe("2");
-  expect(textarea().getAttribute("style") ?? "").not.toContain("--textarea-min-lines");
+  expect(textarea().style.minHeight).toBe("2lh");
 });
 
 test("an ended session can still be typed into and submitted with the Mod+Enter chord", async () => {
@@ -3099,11 +3338,16 @@ test("clicking Stop calls turn/interrupt", async () => {
 
 // --- attachments (paste -> tile -> submit) ----------------------------------
 
-function pastePngInto(el: HTMLElement, name = "shot.png"): void {
+function pastePngInto(el: HTMLElement, name = "shot.png", text = ""): void {
   const file = new File([new Uint8Array([1, 2, 3])], name, { type: "image/png" });
   const event = new Event("paste", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "clipboardData", {
-    value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    value: {
+      items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
+      files: [file],
+      types: ["Files", "text/plain"],
+      getData: (type: string) => (type === "text/plain" ? text : ""),
+    },
   });
   fireEvent(el, event);
 }
@@ -3171,8 +3415,75 @@ test("pasting an image renders a removable attachment tile and inserts its marke
   await mountComposer("ref_a");
 
   pastePngInto(textarea());
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
+});
+
+test("mixed image and text paste preserves both the marker and caption", async () => {
+  installCanvasStubs();
+  await mountComposer("ref_a");
+
+  pastePngInto(textarea(), "shot.png", "caption");
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]caption"));
+  expect(readComposerDraft("ref_a")).toEqual({ text: "[image 1]caption", skillNames: [] });
+  expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
+});
+
+test.each([
+  { kind: "image-only", image: true, caption: "", replacement: "[image 1]" },
+  { kind: "mixed image and text", image: true, caption: "caption", replacement: "[image 1]caption" },
+  { kind: "plain-text control", image: false, caption: "caption", replacement: "caption" },
+])("review regression: $kind paste replaces selected prose and skill atom", async ({ image, caption, replacement }) => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_selected_paste";
+  const before = "Keep before ";
+  const selected = "replace /cleanup and prose";
+  const after = " keep after";
+  writeComposerDraft(ref, { text: before + selected + after, skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getByTestId("composer-skill-chip").textContent).toBe("/cleanup");
+  expect(readComposerDraft(ref)).toEqual({ text: before + selected + after, skillNames: ["cleanup"] });
+
+  selectEditorText(editor, before.length, (before + selected).length);
+  expect(editor.ownerDocument.getSelection()?.toString()).toBe(selected);
+  if (image) {
+    pastePngInto(editor, "shot.png", caption);
+    await screen.findByRole("button", { name: "View shot.png" });
+  } else {
+    await user.paste(caption);
+  }
+
+  expect.soft(editor.textContent).toBe(before + replacement + after);
+  expect.soft(within(editor).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+  expect.soft(readComposerDraft(ref)).toEqual({ text: before + replacement + after, skillNames: [] });
+});
+
+test("same-text attachment removal consumes its cursor before the next native edit", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  await mountComposer("ref_a");
+  const editor = textarea();
+
+  pastePngInto(editor);
+  await screen.findByRole("button", { name: "View shot.png" });
+  replaceEditorText(editor, "");
+  // The tile remains after its marker was manually erased. Removing it writes
+  // the same empty text and cursor zero, but still commits the tile removal.
+  await user.click(screen.getByRole("button", { name: "Remove shot.png" }));
+  expect(screen.queryByRole("button", { name: "Remove shot.png" })).toBeNull();
+  expect(editor.textContent).toBe("");
+
+  selectEditorText(editor, 0);
+  await user.paste("abc");
+  expect(editor.textContent).toBe("abc");
+  expect(editorCursor(editor)).toBe("abc".length);
+  // Do not correct the selection between edits: a stale restoration would put
+  // this character at the start despite preserving the first insertion's text.
+  await user.keyboard("x");
+  expect(editor.textContent).toBe("abcx");
+  expect(readComposerDraft("ref_a")).toEqual({ text: "abcx", skillNames: [] });
 });
 
 test.each([
@@ -3214,7 +3525,7 @@ test.each([
     if (!recovery) pastePngInto(textarea(), "original.png");
     await flushPendingTurnsProjectionForTests();
     await waitFor(() => expect(actionButton().disabled).toBe(false));
-    const submittedText = textarea().value;
+    const submittedText = textarea().textContent;
     const originalAttachment = recovery ? "proof.png" : "original.png";
 
     const transact = IDBDatabase.prototype.transaction;
@@ -3237,20 +3548,20 @@ test.each([
       if (remount) {
         cleanup();
         render(<Composer ref="ref_a" focused={false} />);
-        fireEvent.change(textarea(), { target: { value: "" } });
+        replaceEditorText(textarea(), "");
         pastePngInto(textarea(), "replacement.png");
         await waitFor(() => expect(screen.getByRole("button", { name: "Remove replacement.png" })).toBeTruthy());
       } else if (edited) {
-        fireEvent.change(textarea(), { target: { value: `${submittedText} edited` } });
-        fireEvent.change(textarea(), { target: { value: submittedText } });
+        replaceEditorText(textarea(), `${submittedText} edited`);
+        replaceEditorText(textarea(), submittedText);
       }
-      expect(textarea().value).toBe(submittedText);
+      expect(textarea().textContent).toBe(submittedText);
     } finally {
       await act(async () => hold?.release());
       await flushPendingTurnsProjectionForTests();
     }
     const remainingText = remount ? submittedText : edited && recovery ? "edit me " : "";
-    expect(textarea().value).toBe(remainingText);
+    expect(textarea().textContent).toBe(remainingText);
     expect(readDraft("ref_a")).toBe(remainingText);
     const retainedAttachment = remount ? "replacement.png" : originalAttachment;
     expect(screen.queryByRole("button", { name: `Remove ${retainedAttachment}` }) !== null).toBe(remount);
@@ -3292,9 +3603,7 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
         fireEvent.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
         fireEvent.click(screen.getByRole("button", { name: "Replace draft" }));
       }
-      fireEvent.change(textarea(), {
-        target: { value: edit === "keep marker" ? "follow up [image 1]" : "follow up " },
-      });
+      replaceEditorText(textarea(), edit === "keep marker" ? "follow up [image 1]" : "follow up ");
       if (edit === "add attachment" || edit === "replace attachment") {
         const name = edit === "replace attachment" ? "original.png" : "replacement.png";
         pastePngInto(textarea(), name);
@@ -3315,11 +3624,11 @@ test.each(["keep marker", "delete marker", "add attachment", "replace attachment
     }
     expect(screen.queryByRole("button", { name: "Remove original.png" }) !== null).toBe(edit === "replace attachment");
     expect(screen.queryByRole("button", { name: "Remove replacement.png" }) !== null).toBe(edit === "add attachment");
-    expect(textarea().value).toContain("follow up");
+    expect(textarea().textContent).toContain("follow up");
     if (edit === "merge recovery") {
-      expect((await storage.listRecovery("ref_a"))[0]?.composerText).toBe(textarea().value);
+      expect((await storage.listRecovery("ref_a"))[0]?.composerText).toBe(textarea().textContent);
     } else {
-      expect(readDraft("ref_a")).toBe(textarea().value);
+      expect(readDraft("ref_a")).toBe(textarea().textContent);
     }
     fireEvent.click(submitButton());
     await flushPendingTurnsProjectionForTests();
@@ -3336,7 +3645,7 @@ test("the remove button names the specific attachment it removes", async () => {
   await mountComposer("ref_a");
 
   pastePngInto(textarea(), "shot.png");
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
 
   expect(screen.getByRole("button", { name: "Remove shot.png" })).toBeTruthy();
 });
@@ -3356,7 +3665,7 @@ test("a successful submit includes the pasted image as a base64 InputAttachment"
   }));
 
   pastePngInto(textarea());
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
   await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeTruthy());
 
   await user.click(submitButton());
@@ -3383,7 +3692,7 @@ test("submitting while an attachment is still mid-encode is blocked with a toast
   }));
 
   pastePngInto(textarea());
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/still processing/i)).toBeTruthy());
@@ -3396,7 +3705,7 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   await mountComposer("ref_a");
 
   pastePngInto(textarea(), "screenshot.png");
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
 
   // The whole thumbnail is the control that opens the lightbox, and it is
   // named for the file it shows.
@@ -3419,7 +3728,7 @@ test("pasted image renders as a thumbnail tile with dimensions, remove button, a
   // Assert clicking the ✕ removes the attachment
   const removeButton = screen.getByRole("button", { name: /remove screenshot\.png/i });
   await user.click(removeButton);
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
 });
 
 // kata edhz. The settled tile used to draw its image twice - <ImageGallery>,
@@ -3440,7 +3749,7 @@ test("a settled attachment tile draws exactly one image, not a stack of them (ka
   await mountComposer("ref_a");
 
   pastePngInto(textarea(), "screenshot.png");
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
   const openButton = await screen.findByRole("button", { name: "View screenshot.png" });
 
   const tile = openButton.parentElement as HTMLElement;
@@ -3581,20 +3890,20 @@ test("typing synchronously after a paste whose decode later fails survives - the
   act(() => {
     pastePngInto(textarea());
   });
-  expect(textarea().value).toBe("[image 1]");
+  expect(textarea().textContent).toBe("[image 1]");
 
   // Also synchronous (fireEvent, not user.type - no per-keystroke delay
   // that could yield to the microtask queue): types "hello" at the
   // (cursor-restored) end of the marker, landing entirely before the
   // decode's rejection settles.
-  fireEvent.change(textarea(), { target: { value: "[image 1]hello" } });
-  expect(textarea().value).toBe("[image 1]hello");
+  replaceEditorText(textarea(), "[image 1]hello");
+  expect(textarea().textContent).toBe("[image 1]hello");
   expect(readComposerDraft("ref_a")).toEqual({ text: "[image 1]hello", skillNames: [] });
 
   // Now let the decode's rejection actually settle.
   await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
 
-  expect(textarea().value).toBe("hello"); // typed text survives; only the failed marker is gone
+  expect(textarea().textContent).toBe("hello"); // typed text survives; only the failed marker is gone
   expect(readComposerDraft("ref_a")).toEqual({ text: "hello", skillNames: [] }); // draft matches, not stale
 });
 
@@ -3612,7 +3921,7 @@ test("two attachment gestures fired back-to-back with no intervening render stil
     pastePngInto(textarea(), "b.png");
   });
 
-  expect(textarea().value).toBe("[image 1][image 2]");
+  expect(textarea().textContent).toBe("[image 1][image 2]");
   await waitFor(() => expect(screen.getAllByRole("button", { name: /remove/i })).toHaveLength(2));
 });
 
@@ -3628,10 +3937,10 @@ test("removing a still-encoding attachment strips its marker from the textarea",
   await mountComposer("ref_a");
 
   pastePngInto(textarea());
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
 
   await user.click(screen.getByRole("button", { name: /remove/i }));
-  expect(textarea().value).toBe("");
+  expect(textarea().textContent).toBe("");
 });
 
 test("picking a file via the hidden input attaches it, same as paste/drop", async () => {
@@ -3647,7 +3956,7 @@ test("picking a file via the hidden input attaches it, same as paste/drop", asyn
   const input = document.querySelector('input[type="file"]') as HTMLInputElement;
   fireEvent.change(input, { target: { files: [file] } });
 
-  await waitFor(() => expect(textarea().value).toBe("[image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("[image 1]"));
   expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy();
 });
 
@@ -3687,7 +3996,7 @@ test('"/" at the start of an empty composer types a literal slash and opens the 
 
   await user.type(textarea(), "/");
 
-  expect(textarea().value).toBe("/");
+  expect(textarea().textContent).toBe("/");
   expect(paletteStore.getState().open).toBe(false);
   expect(screen.getByTestId("composer-slash-menu")).toBeTruthy();
 });
@@ -3723,6 +4032,103 @@ function slashMenu() {
 function slashOptions() {
   return within(slashMenu()).getAllByRole("option");
 }
+
+test("removing an attachment that joined a token to a chip keeps the editor and the draft agreeing", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_attachment_joined_chip";
+  writeComposerDraft(ref, { text: "Use /cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  // Stage an image directly against the chip, then type a token character
+  // after it: the marker keeps the chip's label whole, so nothing separates yet.
+  selectEditorText(editor, "Use /cleanup".length);
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  await user.keyboard("d");
+  expect(editor.textContent).toBe("Use /cleanup[image 1]d");
+
+  // Removing the tile strips the marker, which joins the token to the chip.
+  // The editor separates them again; the composer's value and draft must
+  // follow the document rather than keep describing the joined text.
+  await user.click(screen.getByRole("button", { name: "Remove shot.png" }));
+  await waitFor(() => expect(editor.textContent).toBe("Use /cleanup d"));
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+});
+
+test("a chip at the end of the draft does not reopen the slash menu when its separator is removed", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_chip_without_separator";
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  });
+  const editor = textarea();
+
+  await user.type(editor, "Run /skill-1");
+  await user.click(slashOptions()[0]!);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
+
+  // A chip is a selection, not typed prose: dropping its separator leaves the
+  // label as the last thing in the draft, and that must not read as a slash
+  // command the user just started.
+  await user.keyboard("{Backspace}");
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /skill-1", skillNames: ["skill-1"] });
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
+test("committing a skill during an IME composition leaves the menu open rather than losing it", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_skill_commit_composing";
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  });
+  const editor = textarea();
+
+  await user.type(editor, "Run /skill-1");
+  expect(slashOptions()).toHaveLength(1);
+
+  fireEvent.compositionStart(editor);
+  await user.click(slashOptions()[0]!);
+
+  // The editor refuses an insertion mid-composition; dismissing the menu over
+  // a token left as prose would claim a skill is staged that is not.
+  expect(slashOptions()).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /skill-1", skillNames: [] });
+  fireEvent.compositionEnd(editor);
+});
 
 test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
@@ -3800,7 +4206,7 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   ]);
 });
 
-test("a focused thread skill selection stages a canonical chip and submits the unchanged prose", async () => {
+test("skill completions keep indivisible chips in the sentence and submit both references", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_slash_skill", {
     evener: {
@@ -3810,8 +4216,15 @@ test("a focused thread skill selection stages a canonical chip and submits the u
       diagnostics: {
         skills: [
           {
-            name: "simplify",
-            description: "rewrite",
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+          {
+            name: "skill-2",
+            description: "second skill",
             disableModelInvocation: false,
             userInvocable: true,
             available: true,
@@ -3830,21 +4243,27 @@ test("a focused thread skill selection stages a canonical chip and submits the u
     turn: { id: "turn_1", status: "inProgress", itemsView: "" },
   }));
 
-  await user.type(textarea(), "Use /smp");
+  await user.type(textarea(), "Run /skill-1");
   expect(slashOptions()).toHaveLength(1);
-  expect(slashOptions()[0]?.textContent).toContain("/simplify");
+  expect(slashOptions()[0]?.textContent).toContain("/skill-1");
 
   await user.click(slashOptions()[0]!);
-  // The mandated selection contract: choosing a skill row removes ONLY the
-  // active completion token - no invocation prose is inserted - and stages
-  // the skill's canonical name as a chip, recorded in the structured draft.
-  expect(textarea().value).toBe("Use ");
-  expect(screen.getByTestId("composer-skill-chip").textContent).toContain("simplify");
-  expect(screen.getByRole("button", { name: /Remove skill simplify/ })).toBeTruthy();
-  expect(readComposerDraft("ref_slash_skill")).toEqual({ text: "Use ", skillNames: ["simplify"] });
-
-  await user.type(textarea(), "on this");
-  expect(textarea().value).toBe("Use on this");
+  expect(readComposerDraft("ref_slash_skill")).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
+  await user.type(textarea(), "and then /skill-2");
+  await user.keyboard("{Tab}");
+  expect(readComposerDraft("ref_slash_skill")).toEqual({
+    text: "Run /skill-1 and then /skill-2 ",
+    skillNames: ["skill-1", "skill-2"],
+  });
+  const chips = within(textarea()).getAllByTestId("composer-skill-chip");
+  expect(chips.map((chip) => chip.textContent)).toEqual(["/skill-1", "/skill-2"]);
+  expect(chips.every((chip) => chip.getAttribute("contenteditable") === "false")).toBe(true);
+  // Remove the completion's trailing separator; the wire preserves draft text.
+  await user.keyboard("{Backspace}");
+  expect(readComposerDraft("ref_slash_skill")).toEqual({
+    text: "Run /skill-1 and then /skill-2",
+    skillNames: ["skill-1", "skill-2"],
+  });
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
@@ -3852,10 +4271,219 @@ test("a focused thread skill selection stages a canonical chip and submits the u
   expect(call?.params).toMatchObject({
     ref: "ref_slash_skill",
     input: [
-      { type: "text", text: "Use on this" },
-      { type: "skill", name: "simplify" },
+      { type: "text", text: "Run /skill-1 and then /skill-2" },
+      { type: "skill", name: "skill-1" },
+      { type: "skill", name: "skill-2" },
     ],
   });
+});
+
+test("repeated inline skills survive remount and undo while deletion reconciles activation", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_repeat";
+  const original = "Run /skill-1 and /skill-1";
+  writeComposerDraft(ref, { text: original, skillNames: ["skill-1"] });
+  await mountComposer(ref);
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
+
+  await selectEditorText(textarea(), "Run /skill-1".length);
+  await user.keyboard("{Backspace}");
+  expect(readComposerDraft(ref)).toEqual({ text: "Run  and /skill-1", skillNames: ["skill-1"] });
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  await user.keyboard("{Control>}z{/Control}");
+  expect(readComposerDraft(ref)).toEqual({ text: original, skillNames: ["skill-1"] });
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
+
+  replaceEditorText(textarea(), "");
+  expect(readComposerDraft(ref)).toEqual({ text: "", skillNames: [] });
+  await user.keyboard("{Control>}z{/Control}");
+  expect(readComposerDraft(ref)).toEqual({ text: original, skillNames: ["skill-1"] });
+
+  cleanup();
+  render(<Composer ref={ref} focused={false} />);
+  expect(textarea().textContent).toBe(original);
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(2);
+});
+
+test("a token typed directly against a chip is separated so the reference stays whole", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_adjacent_token";
+  writeComposerDraft(ref, { text: "Use /cleanup ", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  // Step over the completion's own separator so the caret sits directly
+  // against the chip, then type a token character into that position.
+  await selectEditorText(editor, "Use /cleanup ".length);
+  await user.keyboard("{Backspace}");
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup", skillNames: ["cleanup"] });
+
+  await selectEditorText(editor, "Use /cleanup".length);
+  await user.keyboard("d");
+
+  // `/cleanupd` is not a reference to `cleanup`, so the two are separated: the
+  // label stays whole, the activation stays with it, and nothing typed is lost.
+  expect(editor.textContent).toBe("Use /cleanup d");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
+
+  // The same holds after a re-derivation, which re-reads the persisted value.
+  cleanup();
+  render(<Composer ref={ref} focused={false} />);
+  expect(textarea().textContent).toBe("Use /cleanup d");
+  expect(within(textarea()).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
+});
+
+test("one undo removes a typed character and the separator the chip needed with it", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_adjacent_undo";
+  writeComposerDraft(ref, { text: "Use /cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+
+  await selectEditorText(editor, "Use /cleanup".length);
+  await user.keyboard("d");
+  expect(editor.textContent).toBe("Use /cleanup d");
+
+  // The separator exists only because of the typed character, so one undo has
+  // to take both: leaving `/cleanupd` behind would be a state the parser reads
+  // as prose, and re-separating it would make the undo look like a no-op.
+  await user.keyboard("{Control>}z{/Control}");
+  expect(editor.textContent).toBe("Use /cleanup");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup", skillNames: ["cleanup"] });
+});
+
+test("a character that already bounds the reference is left exactly as typed", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_bounding_character";
+  writeComposerDraft(ref, { text: "Use /cleanup ", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+
+  await selectEditorText(editor, "Use /cleanup ".length);
+  await user.keyboard("{Backspace}");
+  await selectEditorText(editor, "Use /cleanup".length);
+  await user.keyboard(",");
+
+  expect(editor.textContent).toBe("Use /cleanup,");
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup,", skillNames: ["cleanup"] });
+});
+
+test.each([
+  { text: "Use ", skillNames: ["simplify"], chips: [], input: [{ type: "text", text: "Use " }] },
+  {
+    text: "Use /plugin:visible, then /plugin:visible; /plugin:hidden/extra and /unselected",
+    skillNames: ["plugin:hidden", "plugin:visible", "simplify"],
+    chips: ["/plugin:visible", "/plugin:visible"],
+    input: [
+      { type: "text", text: "Use /plugin:visible, then /plugin:visible; /plugin:hidden/extra and /unselected" },
+      { type: "skill", name: "plugin:visible" },
+    ],
+  },
+])("restored selections: persisted $text submits only complete visible selected references", async (fixture) => {
+  const ref = "ref_restored_selections";
+  writeComposerDraft(ref, { text: fixture.text, skillNames: fixture.skillNames });
+  const user = userEvent.setup();
+  const fake = await mountComposer(ref, {
+    evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "full", items: [] },
+  }));
+  expect(textarea().textContent).toBe(fixture.text);
+  expect(
+    within(textarea())
+      .queryAllByTestId("composer-skill-chip")
+      .map((chip) => chip.textContent),
+  ).toEqual(fixture.chips);
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({ input: fixture.input });
+});
+
+test.each(["before render", "before subscription"] as const)(
+  "restored selections: a selection-only draft arriving %s is never sendable",
+  async (arrival) => {
+    const ref = "ref_selection_only";
+    const draft = { text: "", skillNames: ["simplify"] };
+    const fake = connectFakeClient();
+    fake.on("thread/read", () =>
+      readResponse(ref, {
+        evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
+      }),
+    );
+    await threadsStore.getState().ensureThread(ref);
+    if (arrival === "before render") writeComposerDraft(ref, draft);
+    let initialSendDisabled: boolean | undefined;
+    function SeedBeforeSubscription() {
+      useLayoutEffect(() => {
+        if (arrival === "before subscription") writeComposerDraft(ref, draft);
+      }, []);
+      return null;
+    }
+    function ObserveFirstCommit() {
+      useLayoutEffect(() => {
+        initialSendDisabled = submitButton().disabled;
+      }, []);
+      return null;
+    }
+    render(
+      <>
+        <SeedBeforeSubscription />
+        <Composer ref={ref} focused={false} />
+        <ObserveFirstCommit />
+      </>,
+    );
+    await act(async () => {
+      await flushPendingTurnsProjectionForTests();
+    });
+    expect(textarea().textContent).toBe("");
+    expect(within(textarea()).queryAllByTestId("composer-skill-chip")).toHaveLength(0);
+    // First-commit state covers the lazy initializer independently of the
+    // subscription-time reread, which can synchronously schedule another render.
+    expect(initialSendDisabled).toBe(true);
+    expect(submitButton().disabled).toBe(true);
+    await userEvent.setup().click(submitButton());
+    await flushPendingTurnsProjectionForTests();
+    expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
+  },
+);
+
+test("a leading skill that shares a builtin name remains message input", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_inline_builtin";
+  writeComposerDraft(ref, { text: "/clear keep this reference", skillNames: ["clear"] });
+  const fake = await mountComposer(ref, {
+    evener: { ref, capabilities: { ...FULL_CAPABILITIES, skillInput: true }, queue: { revision: 0 } },
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await user.click(submitButton());
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "turn/start")?.params).toMatchObject({
+    input: [
+      { type: "text", text: "/clear keep this reference" },
+      { type: "skill", name: "clear" },
+    ],
+  });
+  expect(fake.calls.some((call) => call.method === "thread/clear")).toBe(false);
 });
 
 // model.skills mirrors thread.evener.diagnostics.skills, and the daemon only
@@ -3864,9 +4492,8 @@ test("a focused thread skill selection stages a canonical chip and submits the u
 // or "not user-invocable" diagnostic would describe a state the wire cannot
 // carry; the description is the whole tooltip.
 test("a selected skill's tooltip never invents an unavailable or non-user-invocable diagnostic", async () => {
-  const user = userEvent.setup();
   const ref = "ref_skill_tip_usable";
-  writeComposerDraft(ref, { text: "", skillNames: ["simplify"] });
+  writeComposerDraft(ref, { text: "/simplify", skillNames: ["simplify"] });
   await mountComposer(ref, {
     evener: {
       ref,
@@ -3886,20 +4513,15 @@ test("a selected skill's tooltip never invents an unavailable or non-user-invoca
     },
   });
 
-  // The Tooltip wraps the inner name span, so the pointer must land on that
-  // span (mouseenter does not fire for a child of the hovered element).
-  await user.hover(within(screen.getByTestId("composer-skill-chip")).getByText("simplify"));
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toBe("rewrite");
+  expect(within(textarea()).getByTestId("composer-skill-chip").getAttribute("title")).toBe("rewrite");
 });
 
 // The one diagnostic that CAN happen: the selection outlives the catalog
 // report that backed it, so the tooltip names the skill and says why it is
 // absent.
 test("a selected skill the catalog no longer reports says so in its tooltip", async () => {
-  const user = userEvent.setup();
   const ref = "ref_skill_tip_missing";
-  writeComposerDraft(ref, { text: "", skillNames: ["vanished"] });
+  writeComposerDraft(ref, { text: "/vanished", skillNames: ["vanished"] });
   await mountComposer(ref, {
     evener: {
       ref,
@@ -3909,9 +4531,9 @@ test("a selected skill the catalog no longer reports says so in its tooltip", as
     },
   });
 
-  await user.hover(within(screen.getByTestId("composer-skill-chip")).getByText("vanished"));
-  const tip = await screen.findByRole("tooltip");
-  expect(tip.textContent).toBe("vanished — no longer in this session's skill catalog");
+  expect(within(textarea()).getByTestId("composer-skill-chip").getAttribute("title")).toBe(
+    "vanished — no longer in this session's skill catalog",
+  );
 });
 
 test("a mid-word slash never opens the menu", async () => {
@@ -3967,8 +4589,8 @@ test("Tab commits the highlighted option: splices /name<space> at the token star
 
   await user.keyboard("{Tab}");
 
-  expect(textarea().value).toBe("hi /release ");
-  expect(textarea().selectionStart).toBe("hi /release ".length);
+  expect(textarea().textContent).toBe("hi /release ");
+  expect(editorCursor(textarea())).toBe("hi /release ".length);
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
   expect(document.activeElement).toBe(textarea());
 });
@@ -3996,8 +4618,8 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
 
   await user.keyboard("{Tab}");
 
-  expect(textarea().value).toBe("hi /p:review ");
-  expect(textarea().selectionStart).toBe("hi /p:review ".length);
+  expect(textarea().textContent).toBe("hi /p:review ");
+  expect(editorCursor(textarea())).toBe("hi /p:review ".length);
 });
 
 test("Enter commits the highlighted option and does NOT fall through to the composer's send routing", async () => {
@@ -4017,7 +4639,7 @@ test("Enter commits the highlighted option and does NOT fall through to the comp
 
   await user.keyboard("{Enter}");
 
-  expect(textarea().value).toBe("hi /review ");
+  expect(textarea().textContent).toBe("hi /review ");
   expect(fake.calls.filter((c) => c.method === "turn/start")).toHaveLength(0);
 });
 
@@ -4031,11 +4653,11 @@ test("Escape closes the menu without clearing the draft, and typing further reop
   await user.keyboard("{Escape}");
 
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
-  expect(textarea().value).toBe("hi /re"); // draft untouched
+  expect(textarea().textContent).toBe("hi /re"); // draft untouched
 
   await user.type(textarea(), "v");
 
-  expect(textarea().value).toBe("hi /rev");
+  expect(textarea().textContent).toBe("hi /rev");
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
 });
 
@@ -4060,7 +4682,7 @@ test("clicking an option commits it without ever blurring the textarea", async (
 
   await user.click(slashOptions()[2]!); // "release"
 
-  expect(textarea().value).toBe("hi /release ");
+  expect(textarea().textContent).toBe("hi /release ");
   expect(document.activeElement).toBe(textarea());
   expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
 });
@@ -4100,7 +4722,7 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
   await user.type(textarea(), "/goal fix the login bug");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   expect(goalCall).toEqual({ ref: "ref_builtin_goal", objective: "fix the login bug" });
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
   expect(localStorage.getItem("evener.composer.draft.v1.ref_builtin_goal")).toBeNull();
@@ -4132,7 +4754,7 @@ test("a failed built-in invocation preserves the draft and toasts a friendly mes
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText("Something went wrong.")).toBeTruthy());
-  expect(textarea().value).toBe("/goal fix the login bug");
+  expect(textarea().textContent).toBe("/goal fix the login bug");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4148,7 +4770,7 @@ test("an argless built-in invocation (/compact) runs and clears the draft", asyn
   await user.type(textarea(), "/compact");
   await user.click(submitButton());
 
-  await waitFor(() => expect(textarea().value).toBe(""));
+  await waitFor(() => expect(textarea().textContent).toBe(""));
   expect(compactCalled).toBe(true);
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
@@ -4166,7 +4788,7 @@ test("an unavailable built-in (/steer while idle) is refused with the unavailabl
   await user.click(submitButton());
 
   await waitFor(() => expect(screen.getByText(/\/steer is not available right now/i)).toBeTruthy());
-  expect(textarea().value).toBe("/steer go left");
+  expect(textarea().textContent).toBe("/steer go left");
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
@@ -4187,7 +4809,7 @@ test("an unknown /foo sends as a plain message - the escape hatch", async () => 
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
-  expect(textarea().value).toBe("");
+  expect(textarea().textContent).toBe("");
 });
 
 test("a plugin catalog command still sends as text - only BUILT-INS are intercepted", async () => {
@@ -4211,7 +4833,7 @@ test("a plugin catalog command still sends as text - only BUILT-INS are intercep
   await user.click(submitButton());
 
   await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
-  expect(textarea().value).toBe("");
+  expect(textarea().textContent).toBe("");
   expect(fake.calls.some((call) => call.method === "goal/set")).toBe(false);
 });
 
@@ -4231,7 +4853,7 @@ test("a message carrying an attachment is never read as a command invocation, ev
 
   await user.type(textarea(), "/goal fix it ");
   pastePngInto(textarea());
-  await waitFor(() => expect(textarea().value).toBe("/goal fix it [image 1]"));
+  await waitFor(() => expect(textarea().textContent).toBe("/goal fix it [image 1]"));
 
   await user.click(submitButton());
 

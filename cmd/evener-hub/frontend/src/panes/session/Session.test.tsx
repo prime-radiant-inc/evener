@@ -53,6 +53,7 @@ import * as ComposerModule from "./composer/Composer";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./composer/queue/testing/flushPendingTurnsProjection";
 import Session from "./Session";
+import "./testing/editorGeometry";
 import { writeSeenWatermark } from "./transcript/flow/seenWatermark";
 import * as useTranscriptScrollModule from "./transcript/flow/useTranscriptScroll";
 
