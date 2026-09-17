@@ -1136,6 +1136,19 @@ func (e renamePersistedError) Error() string { return e.err.Error() }
 
 func (e renamePersistedError) Unwrap() error { return e.err }
 
+// removePersistedError is a removal that reached the file: the config, the
+// registry and the credential the instance resolved are all in their
+// post-removal state, and what is unfinished is the copy the removal set the
+// OAuth record aside as. Every other client's list is stale by exactly as much
+// as it would be after a clean removal, so the RPC handler broadcasts on it and
+// still returns it, leaving the client that asked with the leftover to deal
+// with - the same shape as renamePersistedError, for the same reason.
+type removePersistedError struct{ err error }
+
+func (e removePersistedError) Error() string { return e.err.Error() }
+
+func (e removePersistedError) Unwrap() error { return e.err }
+
 // moveCredentials carries an instance's stored key and OAuth record to its
 // new name after a rename. It runs once providers.toml is written and
 // reloaded, with credMu held by the caller: the config is already renamed, so
@@ -1182,14 +1195,18 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 // stored credential a keyless instance holds, or - when it holds none and
 // needs none - that the row belongs to its provider.
 func removalRemedy(inst registry.Instance) string {
+	// The variable comes first: it is what supplies the credential the removal
+	// cannot take away, whether or not the scheme also resolves without one - a
+	// keyless gateway reading OLLAMA_API_KEY is refused for the variable it
+	// reads, not for the credential it does not need.
+	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		return fmt.Sprintf("unset %s instead", varName)
+	}
 	if keylessScheme(inst.Auth) {
 		if inst.CredentialSource == "store" {
 			return "clear the stored credential instead"
 		}
 		return "it comes back with its provider and holds no credential of its own to clear"
-	}
-	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
-		return fmt.Sprintf("unset %s instead", varName)
 	}
 	if inst.CredentialSource == "adc" {
 		return "remove the application-default credentials this host supplies instead"
@@ -1438,7 +1455,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// sweep at the top of the next removal reclaims the copy
 		// (reclaimOAuthAsides).
 		if err := c.auth.deleteAside(oauthAside); err != nil {
-			return fmt.Errorf("removed %s, but the copy its OAuth record was set aside as could not be deleted and is still on disk at %s (%w); delete that file to take the credential away", name, oauthAside, err)
+			return removePersistedError{fmt.Errorf("removed %s, but the copy its OAuth record was set aside as could not be deleted and is still on disk at %s (%w); delete that file to take the credential away", name, oauthAside, err)}
 		}
 	}
 	return nil
@@ -1473,28 +1490,34 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 // when the leftovers are reclaimed.
 const oauthAsideMarker = ".removing-"
 
-// isOAuthAsideName reports whether name is a copy a removal set aside. The aside
-// name is the record's whole path - its .json suffix included - plus a stamp, so
-// an instance whose own name holds the marker is not one: `x.removing-1`'s
-// record is `x.removing-1.json`, whose tail after the marker is not a number,
-// and no record a load would read is ever swept as debris.
-func isOAuthAsideName(name string) bool {
+// oauthAsideInstance returns the instance a copy was made from, and reports
+// whether name is a copy at all. The aside name is the record's whole path - its
+// .json suffix included - plus a stamp, so an instance whose own name holds the
+// marker is not one: `x.removing-1`'s record is `x.removing-1.json`, whose tail
+// after the marker is not a number, and no record a load would read is ever
+// taken for debris.
+func oauthAsideInstance(name string) (string, bool) {
 	i := strings.LastIndex(name, oauthAsideMarker)
 	if i < 0 {
-		return false
+		return "", false
 	}
 	record, stamp := name[:i], name[i+len(oauthAsideMarker):]
 	if !strings.HasSuffix(record, ".json") || stamp == "" {
-		return false
+		return "", false
 	}
-	return strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) < 0
+	if strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
+		return "", false
+	}
+	return strings.TrimSuffix(record, ".json"), true
 }
 
 // reclaimOAuthAsides deletes the copies earlier removals set aside and did not
 // manage to delete, and refuses the removal that finds one it still cannot
 // delete. A copy is the user's credential under a name no reader looks at;
 // nothing else in the hub reads, lists or collects those, so this sweep is what
-// keeps a failed cleanup from leaving one on disk for good.
+// keeps a failed cleanup from leaving one on disk for good. A copy is taken only
+// once its instance is gone, which is what makes the sweep safe to run over
+// every removal.
 func (c *hubInstancesController) reclaimOAuthAsides() error {
 	// Where the records live, asked of the function that places them, so the
 	// sweep cannot look somewhere a record never lands.
@@ -1510,7 +1533,18 @@ func (c *hubInstancesController) reclaimOAuthAsides() error {
 	}
 	var problems []string
 	for _, e := range entries {
-		if e.IsDir() || !isOAuthAsideName(e.Name()) {
+		inst, aside := oauthAsideInstance(e.Name())
+		if e.IsDir() || !aside {
+			continue
+		}
+		// Only once the instance is gone. A removal that failed after setting a
+		// record aside - and then could not put it back - leaves that instance
+		// authored and its record stranded, and the copy IS the credential the
+		// instance still needs: deleting it would turn a repairable file-level
+		// mishap into a forced sign-in. That failure was reported when it
+		// happened, so this copy is left for an explicit cleanup rather than
+		// taken by the next removal.
+		if _, exists := c.reg.Get().Instance(inst); exists {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())

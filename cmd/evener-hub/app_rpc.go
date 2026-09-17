@@ -1195,6 +1195,13 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Remove(params); err != nil {
+			// A removal that stood leaves every other client's list as stale as a
+			// clean removal does, so it is announced too; the error still goes back
+			// to the client that asked, which is the only one that can act on the
+			// copy the removal could not delete.
+			if _, persisted := errors.AsType[removePersistedError](err); persisted {
+				notifyInstanceUpdated(server)
+			}
 			return appwire.InstanceListResponse{}, err
 		}
 		notifyInstanceUpdated(server)

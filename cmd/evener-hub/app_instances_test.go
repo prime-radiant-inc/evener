@@ -788,6 +788,12 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "delete refused") {
 		t.Fatalf("Remove = %v, want the copy it could not delete reported", err)
 	}
+	// The removal itself stood, so the error is the one the RPC handler
+	// announces: without that, every other client keeps showing a row that is
+	// gone from the config.
+	if _, persisted := errors.AsType[removePersistedError](err); !persisted {
+		t.Fatalf("Remove = %v (%T), want a removePersistedError so the removal is still broadcast", err, err)
+	}
 	left := authDirEntries(t, f)
 	if len(left) != 1 {
 		t.Fatalf("the auth directory holds %v, want the one copy the removal set aside", left)
@@ -821,24 +827,30 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 
 // TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft: a copy an
 // earlier removal set aside and could not delete is a credential no reader ever
-// looks at, so the next removal collects it. What counts as a copy is the name
-// the removal builds - the record's path plus a numeric stamp - so an instance
-// whose own name holds the marker keeps its record.
+// looks at, so the next removal collects it - but only once the instance it
+// belonged to is gone, because a copy still attached to a live instance is the
+// credential that instance needs. What counts as a copy is the name the removal
+// builds - the record's path plus a numeric stamp - so an instance whose own
+// name holds the marker keeps its record.
 func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
+	// groq is the instance being removed; mistral is another one that still
+	// exists, with its own record stranded beside it by a removal that failed
+	// after setting the record aside.
 	leftovers := []string{
 		"openai-codex.json.removing-1700000000000000000",
-		"groq.json.removing-1",
+		"gone.json.removing-1",
 	}
 	kept := map[string]string{
 		// The record of an instance whose own name holds the marker: sweeping it
 		// would take a signed-in account away.
-		"x.removing-1.json": "{}",
-		"notes.txt":         "not a record at all",
+		"x.removing-1.json":       "{}",
+		"notes.txt":               "not a record at all",
+		"mistral.json.removing-9": `{"access_token":"stranded"}`,
 	}
 	for _, name := range leftovers {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"access_token":"secret"}`), 0o600); err != nil {
@@ -853,8 +865,14 @@ func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T
 	if err := f.store.Set("groq", "gk"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
+	if err := f.store.Set("mistral", "mk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
 	if err := f.ctl.auth.reloadRegistry(); err != nil {
 		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if !listedInstance(f.ctl.List(), "mistral") {
+		t.Fatal("fixture: mistral is not an instance, so its stranded record is not the case under test")
 	}
 
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
@@ -868,7 +886,7 @@ func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T
 	for name, body := range kept {
 		got, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			t.Fatalf("a removal swept %s, which is not a copy: %v", name, err)
+			t.Fatalf("a removal swept %s, which is a record some instance still needs (or is not a copy at all): %v", name, err)
 		}
 		if string(got) != body {
 			t.Fatalf("%s = %q, want %q", name, got, body)
@@ -910,6 +928,12 @@ func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
 			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"},
 			want:    "holds no credential of its own to clear",
 			refuses: []string{"clear the stored credential", "unset", "OAuth record"},
+		},
+		{
+			name:    "a keyless instance the environment supplies names its variable",
+			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:OLLAMA_API_KEY"},
+			want:    "unset OLLAMA_API_KEY instead",
+			refuses: []string{"holds no credential of its own to clear", "clear the stored credential"},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
