@@ -146,9 +146,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `connectionChanged` recovery (a list a host has read is read again when the
   connection is ready again, because the hub's broadcast only reaches clients
   that were connected) and the `start`/`reset`/`dispose` trio a host drives
-  from its screen. In every store
-  fetches record their failure in state and mutations reject. The subpath
-  resolves to `state/extensions/index.ts`, a barrel over the layer's modules.
+  from its screen. In every store fetches record their failure in state and
+  mutations reject. The subpath resolves to `state/extensions/index.ts`, a
+  barrel over the layer's modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:

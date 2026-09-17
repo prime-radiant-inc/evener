@@ -525,10 +525,9 @@ Promise.all([
 `,
     },
     // The extensions state layer - the marketplaces, installed-plugins and
-    // launch-layer stores - published as one subpath
-    // for the same
-    // reason state/navigation is: a layer both apps build their settings
-    // surfaces on, not part of the client surface every consumer takes.
+    // launch-layer stores - published as one subpath for the same reason
+    // state/navigation is: a layer both apps build their settings surfaces on,
+    // not part of the client surface every consumer takes.
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
