@@ -32,6 +32,7 @@ import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
+  ThreadModel,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -577,6 +578,17 @@ export function createConversationStore() {
   function releaseBoundedTextCache(): void {
     boundedText = new Map();
   }
+  // Whether a folded model can change a row. projectConversation reads exactly
+  // two of the model's own fields: `turns` — every turn, item, status and error
+  // a row is made of hangs off it — and `askPending`, the thread-level flag
+  // questionsPending ors with the live asks (which liveAskQuestions derives
+  // from turns alone). Every other field a frame moves (the status, the name,
+  // the queue, the jobs tree, the goal, and lastFrameAt, which moves on EVERY
+  // frame) changes no row.
+  function changesRows(previous: MobileConversation, applied: ThreadModel): boolean {
+    return applied.turns !== previous.turns || applied.askPending !== previous.askPending;
+  }
+
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
     const previous = boundedText;
     const next = new Map<string, string>();
@@ -1774,7 +1786,20 @@ export function createConversationStore() {
         // projection.
         const applied = applyThreadNotification(state.conversation, n);
         if (applied !== state.conversation) {
-          set({ conversation: capAndTruncate(projectConversation(applied)) });
+          if (changesRows(state.conversation, applied)) {
+            set({ conversation: capAndTruncate(projectConversation(applied)) });
+          } else {
+            // The model advanced — the frame is the authority on whatever it
+            // carried, and lastFrameAt moved — but no row changed, so the rows
+            // this conversation already published stand, by reference.
+            set({
+              conversation: {
+                ...applied,
+                items: state.conversation.items,
+                questionsPending: state.conversation.questionsPending,
+              },
+            });
+          }
         }
         if (state.ref === null) return;
         // evener/thread/resync is the authoritative refresh path (the store
@@ -1795,9 +1820,19 @@ export function createConversationStore() {
           n.method.startsWith("turn/") ||
           n.method === "warning" ||
           n.method === "evener/steering/injected";
+        // One exception, by the wire's own rule rather than by this window's
+        // contents: a warning that lands with no active turn is dropped in the
+        // reducer because warnings are never transcript-persisted (its
+        // "warning" case cites internal/apptranscript having no warning-item
+        // conversion), so the canonical read cannot carry that warning either.
+        // Nothing is missing from the transcript and there is nothing to fetch.
+        const droppedByTheWiresOwnRule =
+          n.method === "warning" && !state.conversation.activeTurnId;
         if (
           n.method === "evener/thread/resync" ||
-          (touchesTranscript && applied.turns === state.conversation.turns)
+          (touchesTranscript &&
+            !droppedByTheWiresOwnRule &&
+            applied.turns === state.conversation.turns)
         ) {
           requestRehydrate(state.ref);
         }

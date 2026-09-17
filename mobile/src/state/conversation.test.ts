@@ -2918,6 +2918,14 @@ describe("ConversationStore", () => {
         method: "evener/steering/injected",
         params: { threadId: "thread-1", ref: "ref-1", text: "go left", kind: "user", source: "user" },
       }],
+      ["a turn settle", {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turn: { id: "t-outside-window", status: "completed", itemsView: "" },
+        },
+      }],
     ] as const)("rereads when %s names an active turn this window does not hold", async (_label, frame) => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
@@ -2932,6 +2940,49 @@ describe("ConversationStore", () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+    });
+
+    // A warning that arrives while no turn is active is dropped by the wire's
+    // own rule, not by a gap: warnings are never transcript-persisted
+    // (reducer.ts's "warning" case cites internal/apptranscript having no
+    // warning-item conversion), so the canonical read cannot carry it either
+    // and asking for one buys nothing.
+    it("does not reread for a warning the wire drops because no turn is active", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+      const initialReads = service.readProjectionCalls.length;
+
+      store.getState().applyNotification({
+        method: "warning",
+        params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBe(initialReads);
+    });
+
+    // A burst of unplaceable frames is one read, not a storm: requestRehydrate
+    // goes through the drain scheduler keyed by the thread ref, which coalesces
+    // same-key requests (overwriting the effect, merging waiters) and runs one
+    // effect at a time — at most one read in flight plus one queued, however
+    // many frames land.
+    it("coalesces a burst of unplaceable deltas into one read", async () => {
+      const { store, service } = await openRunningTurn();
+      const initialReads = service.readProjectionCalls.length;
+      for (let i = 0; i < 10; i++) {
+        store.getState().applyNotification({
+          method: "item/agentMessage/delta",
+          params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "gone", delta: `d${i}` },
+        } as AnyNotification);
+      }
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
     // An item frame the reducer has no case for cannot be projected, so the
@@ -9282,6 +9333,36 @@ describe("ConversationStore", () => {
       expect(
         store.getState().conversation?.items.some((i) => i.id === "old"),
       ).toBe(true);
+    });
+  });
+
+  // The rows are a projection of the model, and the projection reads exactly
+  // two of the model's own fields: `turns` (every turn, item and status the
+  // rows are made of lives under it) and `askPending` (the thread-level flag
+  // questionsPending ors with the live asks). Every other field a frame moves
+  // — the status, the name, the queue, the jobs tree, lastFrameAt, which moves
+  // on EVERY frame — changes no row, so a frame that touches none of the two
+  // must publish the rows it already had, by reference: re-projecting and
+  // re-bounding hundreds of rows for a status change is work the reader never
+  // sees, and a fresh items array tells every list view the transcript moved.
+  describe("a frame that changes no projection input republishes the rows", () => {
+    it("publishes the same rows for a thread-level status frame, and still advances the model", async () => {
+      const { store } = await openRunningTurn([agentMessageItem("a1", "hello", "completed")]);
+      const before = store.getState().conversation;
+      expect(before?.items.length).toBeGreaterThan(0);
+
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
+
+      const after = store.getState().conversation;
+      // The model advanced: the frame is the authority on the thread's status.
+      expect(after?.status).toEqual({ type: "idle" });
+      expect(after).not.toBe(before);
+      // The rows did not: same array, same row objects.
+      expect(after?.items).toBe(before?.items);
+      expect(after?.questionsPending).toBe(before?.questionsPending);
     });
   });
 
