@@ -2502,6 +2502,116 @@ test("an empty input-images list on the wire leaves the item's images unset", ()
   expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
 });
 
+// One rule for both directions of the same fact: a settle that says nothing
+// about an item's images keeps the ones the item already has, exactly as the hub
+// keeps them on its own upsert (`len(incoming.Images) == 0` →
+// `incoming.Images = existing.Images`, server/appwire_turns.go:884-889). The wire
+// carries no "the input images are gone" signal, so a live item/completed whose
+// payload omits them — or carries an empty list, which reads the same — must not
+// clear the attachment row the reader is looking at. Closes #1656.
+test.each([
+  ["an empty list", [] as unknown],
+  ["no images field at all", undefined],
+])("a settle carrying %s keeps the images the item already had", (_case, images) => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "inProgress",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turnId: "turn_1",
+        item: {
+          id: "user-item",
+          turnId: "turn_1",
+          type: "userMessage",
+          text: "look",
+          status: "completed",
+          ...(images === undefined ? {} : { images }),
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 0).status).toBe("completed");
+});
+
+// The output side keeps its own rule, which is why it needs its own case: there
+// an explicit empty list IS the removal the hub sends (#1614), and only an
+// absent field means "nothing said".
+test("a settle carrying an explicitly empty output-image list takes the removal", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "default",
+        items: [
+          {
+            id: "tool-item",
+            turnId: "turn_1",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-1",
+            text: "",
+            status: "inProgress",
+            outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turnId: "turn_1",
+        item: {
+          id: "tool-item",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "shell",
+          callId: "call-1",
+          text: "",
+          status: "completed",
+          outputImages: [],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
+});
+
 // An INPUT image list that arrives empty says nothing about the item's images:
 // the hub's own merges keep whatever list it already had when the incoming one
 // is empty (`server/appwire_turns.go:884-886` and
@@ -2535,9 +2645,8 @@ test("an empty input-image list says nothing, so the images already known surviv
   let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
 
-  // A live frame carries an empty list: it says nothing about images, so the
-  // settled item carries none of its own (the settle merge takes the wire's
-  // fields; only a value could overwrite).
+  // A live frame carries an empty list: it says nothing, so the settle keeps the
+  // images the item already had (mergeItemImages).
   model = applyNotification(
     model,
     {
@@ -2560,10 +2669,9 @@ test("an empty input-image list says nothing, so the images already known surviv
     } as AnyNotification,
     2000,
   );
-  expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
 
-  // So the older page replaying the item is the only list anybody has, and the
-  // merge keeps it — this is the erasure the empty-is-a-value reading caused.
+  // And an older page replaying the item agrees: nothing ever denied them.
   const merged = mergeOlderItemPage(model, {
     data: [
       {

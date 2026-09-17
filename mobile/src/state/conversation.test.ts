@@ -1534,7 +1534,10 @@ describe("ConversationStore", () => {
       expect(rowById(store, "item-a")).toMatchObject({ kind: "assistant", markdown: "new text" });
     });
 
-    it("replaces same transcriptKey across wire IDs and removes obsolete images", async () => {
+    // The replacement carries the transcript key, so it IS the same message under
+    // a new wire id — and it says nothing about images, so the ones already known
+    // stay with it (mergeItemImages, the hub's own rule).
+    it("replaces the same transcriptKey across wire IDs, images and all", async () => {
       const { store } = await openRunningTurn([
         {
           type: "userMessage",
@@ -1566,7 +1569,11 @@ describe("ConversationStore", () => {
       expect(
         items.find((item) => item.transcriptKey === "stable-message")?.id,
       ).toBe("wire-new");
-      expect(items.some((item) => item.kind === "attachments")).toBe(false);
+      // One attachment row, carried onto the replacement rather than orphaned on
+      // the old wire id.
+      const attachments = items.filter((item) => item.kind === "attachments");
+      expect(attachments).toHaveLength(1);
+      expect(attachments[0]).toMatchObject({ items: [{ src: "https://hub.test/image" }] });
     });
   });
 
