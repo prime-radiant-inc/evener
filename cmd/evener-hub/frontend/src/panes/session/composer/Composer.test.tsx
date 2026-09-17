@@ -2199,6 +2199,61 @@ test("submit after the pending send cleared in the same task routes to send on t
   await waitFor(async () => expect(await routeOf("third")).toBe("turn/start"));
 });
 
+// Regression for the review finding on the reduced branch: ownPendingSend used
+// to drop blockedUnknown entries, so an uncertain FIRST send - its turn
+// possibly already accepted, its response lost - stopped counting for tier 6.
+// A second message then routed to turn/start and bounced with
+// Conflict("turn is already active") if that first send WAS applied, which is
+// exactly the bounce tier 6 exists to prevent. An uncertain send is still THIS
+// client's own send, so it forces queue mode until it settles.
+test("an uncertain own send still routes the next message to queue", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 } },
+    turns: [],
+  });
+  const receipt = (params: { clientMutationId: string }) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied" as const,
+      threadId: "thread_a",
+      projectionState: "reflected" as const,
+    },
+  });
+  fake.on("turn/queue", receipt);
+  fake.on("turn/start", (params) => ({
+    ...receipt(params),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+  await act(async () => {
+    const input = [{ type: "text", text: "first" }];
+    const outbox = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thread_a",
+      method: "turn/start",
+      payload: { ref: "ref_a", input },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input },
+    });
+    await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    await refreshPendingTurnsProjection("ref_a");
+    await flushPendingTurnsProjectionForTests();
+  });
+  await user.type(textarea(), "second");
+  await user.click(submitButton());
+  await waitFor(async () => {
+    const records = await storage.listOutbox("ref_a");
+    const second = records.find(
+      (record) => (record.payload.input as { text?: string }[] | undefined)?.[0]?.text === "second",
+    );
+    expect(second?.method).toBe("turn/queue");
+  });
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // Shift+Enter reaches the steer handler directly off the keydown event, so
 // it works whether or not the Steer BUTTON is on screen at all - exactly
 // mirroring legacy's own "keyboard equivalent of clicking the steer button"

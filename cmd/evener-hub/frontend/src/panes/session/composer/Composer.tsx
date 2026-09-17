@@ -869,8 +869,12 @@ export function Composer({ ref, focused }: ComposerProps) {
   // Reading routing off the presentation source therefore lost tier 6 for the
   // sender at exactly the moment the daemon confirmed it had the send - the
   // next message went to turn/start and bounced.
-  const ownPendingSend = (entries: readonly PendingTurnEntry[]) =>
-    entries.some((entry) => entry.fromThisClient && entry.state !== "blockedUnknown");
+  //
+  // blockedUnknown counts too: it is this client's own send whose response was
+  // lost, so the turn may already be running. Dropping it dropped tier 6 for
+  // exactly the uncertain window, and the next message bounced on the turn
+  // that send had applied.
+  const ownPendingSend = (entries: readonly PendingTurnEntry[]) => entries.some((entry) => entry.fromThisClient);
   const hasPendingSend = ownPendingSend(pendingSendEntries);
   // The Send/Queue availability of a model and this client's pending send: read
   // at render for the button and its tooltip, and again at submit from the

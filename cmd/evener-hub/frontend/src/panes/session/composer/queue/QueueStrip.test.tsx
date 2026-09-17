@@ -407,6 +407,25 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
+  // Regression for the review finding on the reduced branch: Retry's disabled
+  // state mirrored only restartRequired/notLoaded/authority, while
+  // retryBlockedMutation also refuses a ref carrying a restart-blocking
+  // obligation. An idle fenced session therefore offered an enabled Retry that
+  // always failed with the inline "Delivery still cannot be checked" error.
+  test("Retry stays blocked for an idle session with a restart-blocking obligation", async () => {
+    const fake = connectFakeClient();
+    await hydrate(fake, "ref_a", { status: { type: "idle" } });
+    await seedBlockedUnknown("uncertain input");
+    act(() => {
+      threadsStore.setState((state) => ({
+        restartBlockingObligations: new Map(state.restartBlockingObligations).set("ref_a", Symbol()),
+      }));
+    });
+    renderStrip(defaultProps());
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
   test("blocked unknown has Retry but no sendable action", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

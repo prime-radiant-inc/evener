@@ -130,10 +130,21 @@ function RestartRequiredNotice({
         if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
         const stopFence = resumeStopFence(sessionRef);
         const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopFence });
-        stopFence();
         refreshedRef = thread.evener.ref;
-        await threadsStore.getState().refreshThread(refreshedRef, stopFence);
-        stopFence();
+        // Resume may return a different identity. During the post-resume
+        // hydration the pane still shows the old ref (the navigate below has
+        // not run), so a Stop against EITHER ref must cancel it: the old ref is
+        // what the visible Stop names, the new one is what another holder of
+        // the resumed session names. A fence watches one ref's generation, so
+        // both are checked.
+        const refreshedStopFence = resumeStopFence(refreshedRef);
+        const identityFence = () => {
+          stopFence();
+          refreshedStopFence();
+        };
+        identityFence();
+        await threadsStore.getState().refreshThread(refreshedRef, identityFence);
+        identityFence();
         if (refreshedRef !== sessionRef) {
           const url = paneToURL("session", { ref: refreshedRef });
           if (url !== null) navigate(url, { replace: true });

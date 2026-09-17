@@ -171,6 +171,7 @@ export function QueueStrip({
 }: QueueStripProps): ReactNode {
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const mutationAuthority = useThreadsStore((s) => s.mutationAuthorityRefs.has(sessionRef));
+  const recoveryObligated = useThreadsStore((s) => s.restartBlockingObligations.has(sessionRef));
   const pendingQueueEntries = usePendingTurnEntries(sessionRef, "queue").filter(
     (entry) => entry.state !== "blockedUnknown",
   );
@@ -518,7 +519,12 @@ export function QueueStrip({
                       // so a recovery-fenced local session keeps Retry disabled
                       // until the explicit Resume action restores it.
                       model.status.type === "notLoaded" ||
-                      !mutationAuthority
+                      !mutationAuthority ||
+                      // A restart-blocking obligation (a Stop, or a snapshot
+                      // the daemon reports as restartRequired/resumeRequired)
+                      // is the third refusal in retryBlockedMutation; without
+                      // it an idle fenced row offers a Retry that always fails.
+                      recoveryObligated
                     }
                     onClick={() => void handleRetry(record)}
                   >

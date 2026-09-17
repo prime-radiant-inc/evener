@@ -912,6 +912,12 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 
 const userIntentStopGenerations = new Map<string, number>();
 
+// A retry a Stop canceled must stay canceled. Reconciliation reopens a blocked
+// record to submitting so the target can dispatch, so without this a later
+// lifecycle/discovery scan would resend the very mutation the Stop canceled.
+// The ref is released when the user explicitly retries it or enqueues new work.
+const stoppedRetryRefs = new Set<string>();
+
 function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, (userIntentStopGenerations.get(ref) ?? 0) + 1);
 }
@@ -938,6 +944,7 @@ export async function retryBlockedMutation(
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
+  stoppedRetryRefs.delete(record.targetRef);
   const savedTargetGeneration = stopGenerations.get(record.targetRef) ?? 0;
   const stoppedSinceBaseline = () => (userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration;
   const checkStopped = () => {
@@ -976,7 +983,19 @@ export async function retryBlockedMutation(
     // landed since it began.
     mode === "backgroundNote" ? () => false : () => !stoppedSinceBaseline(),
   );
-  if (checkStopped()) return false;
+  if (stoppedSinceBaseline()) {
+    // A Stop acknowledged while the reconciliation above was in flight must
+    // undo the reopen it performed: reconciling an uncertain record back to
+    // submitting is what arms dispatch, and leaving it armed lets a later
+    // lifecycle scan resend the very mutation the Stop canceled. Put the
+    // uncertainty back and take the target out of dispatch until the user
+    // retries explicitly.
+    await runtime.storage.markUnknown(clientMutationId, "blockedUnknown");
+    dispatchableMutationRefs.delete(record.targetRef);
+    stoppedRetryRefs.add(record.targetRef);
+    if (mode === "backgroundNote") return false;
+    throw new Error("Stop canceled this pending action; retry again when ready.");
+  }
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
   const current = await runtime.storage.getOutbox(clientMutationId);
@@ -1366,6 +1385,7 @@ async function enqueueMutationIntent(
   const ref = intent.targetRef;
   const client = requireClient();
   if (client.state !== "ready") throw new Error(`threads store: cannot enqueue mutation while ${client.state}`);
+  stoppedRetryRefs.delete(ref);
   const runtime = requireMutationRuntime();
   await runtime.start;
   // Enqueue schedules discovery before returning; preserve the hydrated replay
@@ -1669,7 +1689,8 @@ async function publishAndReconcileThreadHydration(
         if (
           !mutationStateAuthoritative ||
           published.status.type === "restartRequired" ||
-          published.status.type === "notLoaded"
+          published.status.type === "notLoaded" ||
+          stoppedRetryRefs.has(ref)
         ) {
           for (const record of await runtime.storage.listOutbox(ref)) {
             if (!current()) return;
@@ -2750,6 +2771,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       client = requireClient();
     } while (client.state !== "ready");
     await refreshTrackedThread(client, readyEpoch, ref, true, true, beforePublish);
+    // beforePublish was evaluated before publication, but reconciliation above
+    // runs asynchronously after it. A Stop acknowledged in that window must
+    // cancel the dispatch this refresh earned too, exactly as handleReady's
+    // targeted tail rechecks its own fence at the scheduling point.
+    beforePublish?.();
     const runtime = getMutationRuntime();
     if (runtime) scheduleMutationDispatch(runtime, [ref]);
   },
@@ -3159,6 +3185,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
+  stoppedRetryRefs.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();

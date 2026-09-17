@@ -41,6 +41,7 @@ import {
 import { resetWorkspaceStoreForTests, workspaceStore } from "../shell/workspace";
 import { connectionStore, useConnectionStore } from "./connection";
 import { editHumanNote, syncHumanNote, useHumanNoteDraft } from "./humanNoteDrafts";
+import { MutationDispatcher } from "./mutationDispatcher";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 import {
@@ -53,6 +54,7 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeStopFence,
   retryBlockedMutation,
   setMutationStorageForTests,
   subscribeMutationPersistence,
@@ -9373,6 +9375,118 @@ test("a Stop during the retry's reconciliation is not overtaken by its dispatch"
     await threadsStore.getState().shutdown("ref_a");
     reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
     await expect(retry).rejects.toThrow("Stop canceled this pending action");
+    await flushIndexedDBUntil(() => sends >= 2);
+    expect(sends).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// RoboRev finding on the reduced branch: refreshThread's beforePublish fence is
+// checked before publication, but the dispatch it schedules at its tail was
+// unconditional. reconcileIdentities is held open here so the Stop lands after
+// that fence has already passed; the dispatch must recheck it (as handleReady's
+// targeted tail does at the scheduling point) rather than run after a Stop.
+test("a Stop during refreshThread's reconciliation is not overtaken by its dispatch", async () => {
+  const storage = new MutationOutboxIndexedDB({ createMutationId: () => "refresh-stop" });
+  setMutationStorageForTests(storage);
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  let sends = 0;
+  fake.on("turn/start", (params) => {
+    sends += 1;
+    return {
+      receipt: mutationReceipt(params.clientMutationId),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  // Drain the initial hydration's own reconciliation before arming the gate, so
+  // the held call is unambiguously the refreshed read's.
+  await threadsStore.getState().refreshThread("ref_a");
+  await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thr_ref_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "pending" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "pending" }] },
+  });
+  const release = deferred<void>();
+  let reconciliationStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    reconciliationStarted = resolve;
+  });
+  const reconcile = MutationDispatcher.prototype.reconcileIdentities;
+  const spy = vi.spyOn(MutationDispatcher.prototype, "reconcileIdentities").mockImplementation(async function (
+    this: MutationDispatcher,
+    ...args
+  ) {
+    reconciliationStarted();
+    await release.promise;
+    return reconcile.apply(this, args);
+  });
+  try {
+    const fence = resumeStopFence("ref_a");
+    const refresh = threadsStore.getState().refreshThread("ref_a", fence);
+    await started;
+    // The Stop lands while the refreshed read's reconciliation is in flight,
+    // after its beforePublish fence has already been evaluated once.
+    await threadsStore.getState().shutdown("ref_a");
+    release.resolve();
+    await expect(refresh).rejects.toThrow("Stop canceled this pending action");
+    await flushIndexedDBUntil(() => sends >= 1);
+    expect(sends).toBe(0);
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// RoboRev finding on the reduced branch: a canceled retry suppresses only that
+// call's dispatch. Its reconciliation may already have reopened the
+// blockedUnknown record to submitting and marked the target dispatchable, so a
+// later lifecycle/discovery scan can resend the very mutation the Stop
+// canceled. A periodic discovery scan runs here after the canceled retry.
+test("a Stop canceled retry is not resent by a later discovery scan", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let reads = 0;
+    const reconciliationRead = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 1 ? readResponse("ref_a", { status: { type: "idle" } }) : reconciliationRead.promise;
+    });
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      if (sends === 1) throw new RequestTimeoutError("response lost");
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // An uncertain send left blockedUnknown by its lost response.
+    await threadsStore.getState().send("ref_a", "uncertain");
+    await flushIndexedDBUntil(() => sends === 1);
+    const uncertain = (await storage.listOutbox("ref_a"))[0];
+    if (!uncertain) throw new Error("missing uncertain send");
+    await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+    const retry = retryBlockedMutation(uncertain.clientMutationId);
+    await flushIndexedDBUntil(() => reads >= 2);
+    // The Stop lands while the retry's authoritative read is still in flight.
+    await threadsStore.getState().shutdown("ref_a");
+    reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
+    await expect(retry).rejects.toThrow("Stop canceled this pending action");
+    // The record the reconciliation reopened must not be resent by a scan.
+    await vi.advanceTimersByTimeAsync(2000);
     await flushIndexedDBUntil(() => sends >= 2);
     expect(sends).toBe(1);
   } finally {
