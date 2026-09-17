@@ -239,18 +239,18 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 	if _, _, err := m.Upgrade(ctx, "p", "m"); err == nil {
 		t.Fatal("upgrade lock")
 	}
-	if err := m.SetEnabled(context.Background(), "p", "m", true); err == nil {
+	if _, err := m.SetEnabled(context.Background(), "p", "m", true); err == nil {
 		t.Fatal("mutate lock")
 	}
-	if err := m.Remove(context.Background(), "p", "m"); err == nil {
+	if _, err := m.Remove(context.Background(), "p", "m"); err == nil {
 		t.Fatal("remove lock")
 	}
 	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	installLoadRegistry = func(string) (Registry, error) { return Registry{}, errInstallCoverage }
-	if err := m.mutateEntry(context.Background(), "p", "m", func(*InstallEntry) {}); err == nil {
+	if _, err := m.mutateEntry(context.Background(), "p", "m", func(*InstallEntry) {}); err == nil {
 		t.Fatal("mutate load")
 	}
-	if err := m.Remove(context.Background(), "p", "m"); err == nil {
+	if _, err := m.Remove(context.Background(), "p", "m"); err == nil {
 		t.Fatal("remove load")
 	}
 	if _, _, err := m.List(context.Background()); err == nil {
@@ -264,10 +264,10 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 		return Registry{Plugins: map[string][]InstallEntry{"p@m": {{InstallPath: filepath.Join(m.cacheDir(), "p"), Source: Source{Kind: SourceGitHub}}}, "empty@m": {}}}, nil
 	}
 	installSaveRegistry = func(string, Registry) error { return errInstallCoverage }
-	if err := m.SetEnabled(context.Background(), "p", "m", true); err == nil {
+	if _, err := m.SetEnabled(context.Background(), "p", "m", true); err == nil {
 		t.Fatal("mutate save")
 	}
-	if err := m.Remove(context.Background(), "p", "m"); err == nil {
+	if _, err := m.Remove(context.Background(), "p", "m"); err == nil {
 		t.Fatal("remove save")
 	}
 	installValidateDir = func(string) error { return errInstallCoverage }

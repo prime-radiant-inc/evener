@@ -75,7 +75,7 @@ func TestPlugins_MarketplaceAddWhoseListingFailedIsStillApplied(t *testing.T) {
 	src := writeDirMarketplace(t, "demo-market")
 	atPluginWriteBetween(t, func() { breakPluginStoreReads(t, root) })
 
-	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	_, _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Name:   "demo-market",
 		Source: appwire.MarketplaceSourceInput{Kind: string(plugins.SourceDirectory), Path: src},
 	})
@@ -94,7 +94,7 @@ func TestPlugins_EnableWhoseListingFailedIsStillApplied(t *testing.T) {
 	ctl := newHubPluginsController(root)
 	src := writeDirMarketplace(t, "demo-market")
 	ctx := context.Background()
-	if _, err := ctl.AddMarketplace(ctx, appwire.MarketplaceAddParams{
+	if _, _, err := ctl.AddMarketplace(ctx, appwire.MarketplaceAddParams{
 		Name:   "demo-market",
 		Source: appwire.MarketplaceSourceInput{Kind: string(plugins.SourceDirectory), Path: src},
 	}); err != nil {
@@ -105,7 +105,7 @@ func TestPlugins_EnableWhoseListingFailedIsStillApplied(t *testing.T) {
 	}
 	atPluginWriteBetween(t, func() { breakPluginStoreReads(t, root) })
 
-	_, err := ctl.Disable(ctx, appwire.PluginRefParams{Plugin: "demo", Marketplace: "demo-market"})
+	_, _, err := ctl.Disable(ctx, appwire.PluginRefParams{Plugin: "demo", Marketplace: "demo-market"})
 	if err == nil {
 		t.Fatal("Disable = nil, want the failed listing reported")
 	}
@@ -119,7 +119,7 @@ func TestPlugins_EnableWhoseListingFailedIsStillApplied(t *testing.T) {
 func TestPlugins_ARefusedWriteIsNotApplied(t *testing.T) {
 	ctl := newHubPluginsController(t.TempDir())
 
-	_, err := ctl.Remove(context.Background(), appwire.PluginRefParams{Plugin: "absent", Marketplace: "nowhere"})
+	_, _, err := ctl.Remove(context.Background(), appwire.PluginRefParams{Plugin: "absent", Marketplace: "nowhere"})
 	if err == nil {
 		t.Fatal("Remove(absent) = nil, want a refusal")
 	}
@@ -554,6 +554,41 @@ func TestHubRPCPluginListBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T
 
 	if _, err := client.PluginList(context.Background()); err != nil {
 		t.Fatalf("evener/plugin/list: %v", err)
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
+	}
+	if counts[appwire.NotifyEvenerPluginUpdated] != 1 {
+		t.Fatalf("evener/plugin/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerPluginUpdated], counts)
+	}
+}
+
+// #1699: AddMarketplace (like every other marketplace/plugin writer) takes
+// the store lock itself, so a legacy-name migration can land during THIS
+// call's own acquisition, independent of whatever AddMarketplace itself
+// does. Before this round the writers each discarded lockStore's own answer
+// (release, _, err := m.lockStore(...)), so this migration's plugin re-key
+// broadcast only through a later list/browse call, never through the write
+// that actually triggered it.
+func TestHubRPCMarketplaceAddBroadcastsBothStoresWhenLockStoreMigratesALegacyName(t *testing.T) {
+	pluginRoot := t.TempDir()
+	seedLegacyNamedMarketplaceWithPlugin(t, pluginRoot)
+	dir := writeDirMarketplace(t, "baz")
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if _, err := client.MarketplaceAdd(context.Background(), appwire.MarketplaceAddParams{
+		Name:   "baz",
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
+	}); err != nil {
+		t.Fatalf("evener/marketplace/add: %v", err)
 	}
 
 	counts := countBroadcasts(client, 200*time.Millisecond)

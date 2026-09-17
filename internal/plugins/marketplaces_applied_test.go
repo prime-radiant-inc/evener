@@ -43,7 +43,7 @@ func TestARefusalDoesNotReportTheStoreChanged(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 
-	if err := m.RemoveMarketplace(context.Background(), "nowhere"); err == nil {
+	if _, err := m.RemoveMarketplace(context.Background(), "nowhere"); err == nil {
 		t.Fatal("RemoveMarketplace(nowhere) = nil, want a refusal")
 	} else if errors.Is(err, ErrStoreChanged) {
 		t.Fatalf("err = %v, want a refusal that leaves the store as it was", err)

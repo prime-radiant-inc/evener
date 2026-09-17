@@ -75,7 +75,7 @@ func TestUpgrade_NoOpKeepsLiveDir(t *testing.T) {
 	makeGitRepo(t, mktRepo, "README.md", "x")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	first, _, err := m.Install(context.Background(), "widget", "acme")
@@ -117,7 +117,7 @@ func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {
 	makeGitRepo(t, mktRepo, "README.md", "x")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	first, _, err := m.Install(context.Background(), "bare-mcp", "acme")

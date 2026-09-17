@@ -77,7 +77,7 @@ func TestPluginMarketplaceRemove(t *testing.T) {
 
 	// Add a marketplace first
 	ctx := context.Background()
-	_, err := m.AddMarketplace(ctx, "test-marketplace", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir})
+	_, _, err := m.AddMarketplace(ctx, "test-marketplace", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir})
 	if err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestPluginMarketplaceBrowse_ListsPluginsAndNotesSkipped(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, err := m.AddMarketplace(ctx, "browse-mkt", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir}); err != nil {
+	if _, _, err := m.AddMarketplace(ctx, "browse-mkt", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestPluginMarketplaceBrowse_JSON(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	if _, err := m.AddMarketplace(ctx, "browse-json", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir}); err != nil {
+	if _, _, err := m.AddMarketplace(ctx, "browse-json", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestPluginMarketplaceList_WithJSON(t *testing.T) {
 
 	// Add a test marketplace
 	ctx := context.Background()
-	_, err := m.AddMarketplace(ctx, "test-mp", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir})
+	_, _, err := m.AddMarketplace(ctx, "test-mp", plugins.Source{Kind: plugins.SourceDirectory, Path: tmpDir})
 	if err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(marketplaceDir, ".claude-plugin", "marketplace.json"), []byte(marketplace), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := registry.AddMarketplace(context.Background(), "task3-market", plugins.Source{Kind: plugins.SourceDirectory, Path: marketplaceDir}); err != nil {
+	if _, _, err := registry.AddMarketplace(context.Background(), "task3-market", plugins.Source{Kind: plugins.SourceDirectory, Path: marketplaceDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := registry.Install(context.Background(), "enabled-plugin", "task3-market"); err != nil {
@@ -293,7 +293,7 @@ func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
 	if _, _, err := registry.Install(context.Background(), "disabled-plugin", "task3-market"); err != nil {
 		t.Fatalf("Install disabled: %v", err)
 	}
-	if err := registry.SetEnabled(context.Background(), "disabled-plugin", "task3-market", false); err != nil {
+	if _, err := registry.SetEnabled(context.Background(), "disabled-plugin", "task3-market", false); err != nil {
 		t.Fatalf("SetEnabled: %v", err)
 	}
 	explicitDir := t.TempDir()
@@ -385,7 +385,7 @@ func installDirectoryPluginForTest(t *testing.T, name, marketplace string) {
 
 	m := plugins.NewManager("")
 	ctx := context.Background()
-	if _, err := m.AddMarketplace(ctx, marketplace, plugins.Source{Kind: plugins.SourceDirectory, Path: mktDir}); err != nil {
+	if _, _, err := m.AddMarketplace(ctx, marketplace, plugins.Source{Kind: plugins.SourceDirectory, Path: mktDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := m.Install(ctx, name, marketplace); err != nil {
@@ -486,7 +486,7 @@ func TestPluginCheckNow_SkipsDirectorySourcePlugin(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	installDirectoryPluginForTest(t, "widget", "local")
 	m := plugins.NewManager("")
-	if err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "widget", "local", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 

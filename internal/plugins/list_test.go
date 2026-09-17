@@ -55,7 +55,7 @@ func TestUpdateAll_UpgradesGitBackedSkipsRelative(t *testing.T) {
 	makeGitRepo(t, mktRepo, "README.md", "x")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := m.Install(context.Background(), "gitwidget", "acme"); err != nil {

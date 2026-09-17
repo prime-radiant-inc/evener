@@ -130,13 +130,13 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	reset()
 
 	marketplaceAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, fail }
-	if _, err := m.AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: "p"}); err == nil {
+	if _, _, err := m.AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: "p"}); err == nil {
 		t.Fatal("add lock error accepted")
 	}
-	if err := m.RemoveMarketplace(context.Background(), "x"); err == nil {
+	if _, err := m.RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove lock error accepted")
 	}
-	if err := m.RefreshMarketplace(ctx, "x"); err == nil {
+	if _, err := m.RefreshMarketplace(ctx, "x"); err == nil {
 		t.Fatal("refresh lock error accepted")
 	}
 	reset()
@@ -162,25 +162,25 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	} {
 		mm := NewManager(t.TempDir())
 		mm.Now = m.Now
-		if _, err := mm.AddMarketplace(ctx, tc.name, tc.src); err != nil {
+		if _, _, err := mm.AddMarketplace(ctx, tc.name, tc.src); err != nil {
 			t.Fatalf("add directory: %v", err)
 		}
 	}
 	badRoot := t.TempDir()
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: badRoot}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: badRoot}); err == nil {
 		t.Fatal("bad catalog accepted")
 	}
 	emptyRoot := t.TempDir()
 	writeCatalog(emptyRoot, "")
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: emptyRoot}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: emptyRoot}); err == nil {
 		t.Fatal("nameless catalog accepted")
 	}
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "../bad", Source{Kind: SourceDirectory, Path: root}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "../bad", Source{Kind: SourceDirectory, Path: root}); err == nil {
 		t.Fatal("bad name accepted")
 	}
 
 	marketplaceGitClone = cloneErr
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
 		t.Fatal("add clone error accepted")
 	}
 	reset()
@@ -190,7 +190,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 		return copyDirForMarketplaceCoverage(staged, dest)
 	}
 	marketplaceRename = func(string, string) error { return fail }
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
 		t.Fatal("rename error accepted")
 	}
 	reset()
@@ -198,7 +198,7 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 		return copyDirForMarketplaceCoverage(staged, dest)
 	}
 	marketplaceReadFile = func(string) ([]byte, error) { return nil, fail }
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
 		t.Fatal("non-directory load error accepted")
 	}
 	reset()
@@ -207,40 +207,40 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	}
 	marketplaceReadFile = func(string) ([]byte, error) { return []byte(`{}`), nil }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return fail }
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceURL, URL: "u"}); err == nil {
 		t.Fatal("non-directory save error accepted")
 	}
 	reset()
 
 	marketplaceReadFile = func(string) ([]byte, error) { return nil, fail }
-	if _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: root}); err == nil {
+	if _, _, err := NewManager(t.TempDir()).AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: root}); err == nil {
 		t.Fatal("add load error accepted")
 	}
-	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err == nil {
+	if _, err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove load error accepted")
 	}
-	if err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
+	if _, err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
 		t.Fatal("refresh load error accepted")
 	}
 	reset()
 
 	missing := NewManager(t.TempDir())
-	if err := missing.RemoveMarketplace(context.Background(), "x"); err == nil {
+	if _, err := missing.RemoveMarketplace(context.Background(), "x"); err == nil {
 		t.Fatal("remove missing accepted")
 	}
-	if err := missing.RefreshMarketplace(ctx, "x"); err == nil {
+	if _, err := missing.RefreshMarketplace(ctx, "x"); err == nil {
 		t.Fatal("refresh missing accepted")
 	}
 
 	dm := NewManager(t.TempDir())
 	dm.Now = m.Now
-	if _, err := dm.AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: root}); err != nil {
+	if _, _, err := dm.AddMarketplace(ctx, "x", Source{Kind: SourceDirectory, Path: root}); err != nil {
 		t.Fatal(err)
 	}
-	if err := dm.RefreshMarketplace(ctx, "x"); err != nil {
+	if _, err := dm.RefreshMarketplace(ctx, "x"); err != nil {
 		t.Fatal(err)
 	}
-	if err := dm.RemoveMarketplace(context.Background(), "x"); err != nil {
+	if _, err := dm.RemoveMarketplace(context.Background(), "x"); err != nil {
 		t.Fatal(err)
 	}
 	removeBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}, InstallLocation: "old"}})
@@ -249,35 +249,35 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
 	// The save (marketplaceAtomicWriteFile) succeeds, so the marketplace is
 	// already gone from the listing when the clone delete fails: an applied
-	// write the hub still owes a broadcast for (ErrStoreChanged), not the
-	// silent success this test pinned before round 4's #1602 fix.
-	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("remove clone-delete failure = %v, want ErrStoreChanged", err)
+	// write the hub still owes a broadcast for (changes.Marketplaces), not
+	// the silent success this test pinned before round 4's #1602 fix.
+	if changes, err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err == nil || !changes.Marketplaces {
+		t.Fatalf("remove clone-delete failure = (changes=%+v, err=%v), want an error and Marketplaces true", changes, err)
 	}
 	reset()
 
 	refreshBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}, InstallLocation: "old"}})
 	marketplaceReadFile = func(string) ([]byte, error) { return refreshBody, nil }
 	marketplaceGitPull = func(context.Context, string) error { return fail }
-	if err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
+	if _, err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
 		t.Fatal("pull error accepted")
 	}
 	reset()
 	unfetchedBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}}})
 	marketplaceReadFile = func(string) ([]byte, error) { return unfetchedBody, nil }
 	marketplaceGitClone = cloneErr
-	if err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
+	if _, err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
 		t.Fatal("refresh clone error accepted")
 	}
 	marketplaceGitClone = func(context.Context, string, string, string, string) error { return nil }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err != nil {
+	if _, err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err != nil {
 		t.Fatal(err)
 	}
 	reset()
 	marketplaceReadFile = func(string) ([]byte, error) { return dirBody, nil }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return fail }
-	if err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
+	if _, err := NewManager(t.TempDir()).RefreshMarketplace(ctx, "x"); err == nil {
 		t.Fatal("refresh save error accepted")
 	}
 	reset()

@@ -21,7 +21,14 @@ var (
 		_, err := plugins.NewManager("").SeedDefaultMarketplaces(ctx)
 		return err
 	}
-	hubPluginGC     = func(ctx context.Context) ([]string, error) { return plugins.NewManager("").Gc(ctx) }
+	hubPluginGC = func(ctx context.Context) ([]string, error) {
+		// changes is discarded: Gc runs on hub start and on demand, both
+		// outside any RPC request with a client to broadcast to (see
+		// pluginRefreshMarketplace in app_plugin_autoupgrade.go for the
+		// analogous, deliberate discard on the auto-upgrade daemon's path).
+		removed, _, err := plugins.NewManager("").Gc(ctx)
+		return removed, err
+	}
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
 		startPluginAutoUpgradeDaemon(ctx, plugins.NewManager(""), cfg.PluginAutoUpgradeInterval, web.appRPC)
 	}

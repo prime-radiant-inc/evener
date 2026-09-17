@@ -1273,34 +1273,33 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	// Add, Remove and Refresh all answer with the refreshed marketplace list
 	// and owe the same broadcast when their write applied; only Edit's is
 	// different (it can re-key installed plugins too), so it stays inline.
-	marketplaceBroadcastWrite := func(call func() (appwire.MarketplaceListResponse, error)) (appwire.MarketplaceListResponse, error) {
-		resp, err := call()
-		if writeDidApply(err) {
-			notifyMarketplaceUpdated(server)
-		}
+	// changes is each call's own answer - the manager call underneath takes
+	// the store lock itself, so a migration landing during THIS call's own
+	// acquisition broadcasts here, not just via a later list/browse call.
+	marketplaceBroadcastWrite := func(call func() (appwire.MarketplaceListResponse, plugins.StoreChanges, error)) (appwire.MarketplaceListResponse, error) {
+		resp, changes, err := call()
+		notifyStoreChanges(server, changes)
 		return resp, err
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
-		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, error) { return pluginsController.AddMarketplace(ctx, params) })
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, plugins.StoreChanges, error) {
+			return pluginsController.AddMarketplace(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, error) {
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, plugins.StoreChanges, error) {
 			return pluginsController.RemoveMarketplace(ctx, params)
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, error) {
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, plugins.StoreChanges, error) {
 			return pluginsController.RefreshMarketplace(ctx, params)
 		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceEdit, func(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.EditMarketplace(ctx, params)
-		if writeDidApply(err) {
-			// An edit can re-key installed plugins, so both lists refresh.
-			notifyMarketplaceUpdated(server)
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, plugins.StoreChanges, error) {
+			return pluginsController.EditMarketplace(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		resp, changes, err := pluginsController.Browse(ctx, params)
@@ -1326,49 +1325,45 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)
 	})
-	// Remove, Enable, Disable and SetAutoUpgrade all answer with the
-	// refreshed plugin list and owe the identical broadcast. Install and
-	// Upgrade own the same plugin broadcast too, but also a second,
-	// independent one (see below), so they call notifyPluginUpdated inline
-	// instead of going through this closure.
-	pluginBroadcastWrite := func(call func() (appwire.PluginListResponse, error)) (appwire.PluginListResponse, error) {
-		resp, err := call()
-		if writeDidApply(err) {
-			notifyPluginUpdated(server)
-		}
+	// Install, Upgrade, Remove, Enable, Disable and SetAutoUpgrade all answer
+	// with the refreshed plugin list and owe the identical broadcast: each
+	// manager call now reports its own StoreChanges (its own registry write
+	// included, not just lockStore's migration or a lazy fetch's backfill),
+	// so writeDidApply plays no further part in these decisions.
+	pluginBroadcastWrite := func(call func() (appwire.PluginListResponse, plugins.StoreChanges, error)) (appwire.PluginListResponse, error) {
+		resp, changes, err := call()
+		notifyStoreChanges(server, changes)
 		return resp, err
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, changes, err := pluginsController.Install(ctx, params)
-		// Install's first access to a seeded, unfetched marketplace persists
-		// its InstallLocation on top of whatever else this call does -
-		// success, a later catalog/plugin step failing, or the plugin
-		// simply not resolving. changes also covers lockStore's migration,
-		// which can re-key the registry independent of whether the install
-		// itself applied - the merge below is what makes that failure still
-		// broadcast the plugin change, not just writeDidApply's own.
-		notifyStoreChanges(server, changes.Merge(plugins.StoreChanges{Plugins: writeDidApply(err)}))
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, plugins.StoreChanges, error) {
+			return pluginsController.Install(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, changes, err := pluginsController.Upgrade(ctx, params)
-		// See Install above: the same lazy-fetch marketplace change, or the
-		// same migration, can accompany a successful or a failed upgrade
-		// alike.
-		notifyStoreChanges(server, changes.Merge(plugins.StoreChanges{Plugins: writeDidApply(err)}))
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, plugins.StoreChanges, error) {
+			return pluginsController.Upgrade(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Remove(ctx, params) })
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, plugins.StoreChanges, error) {
+			return pluginsController.Remove(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Enable(ctx, params) })
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, plugins.StoreChanges, error) {
+			return pluginsController.Enable(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Disable(ctx, params) })
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, plugins.StoreChanges, error) {
+			return pluginsController.Disable(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.SetAutoUpgrade(ctx, params) })
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, plugins.StoreChanges, error) {
+			return pluginsController.SetAutoUpgrade(ctx, params)
+		})
 	})
 }
 

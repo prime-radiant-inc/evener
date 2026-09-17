@@ -38,7 +38,7 @@ func TestSeedDefaultMarketplaces_FirstRunOnly(t *testing.T) {
 	}
 
 	// a user who removes a seeded marketplace and re-runs must not get it back
-	if err := m.RemoveMarketplace(context.Background(), "superpowers-marketplace"); err != nil {
+	if _, err := m.RemoveMarketplace(context.Background(), "superpowers-marketplace"); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	if _, err := m.SeedDefaultMarketplaces(context.Background()); err != nil {

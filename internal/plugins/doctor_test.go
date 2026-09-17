@@ -566,7 +566,7 @@ func TestDoctor_MarketplaceStaleWarns(t *testing.T) {
 	}
 	src := makeMarketplaceRepo(t, "acme")
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: src}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: src}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 

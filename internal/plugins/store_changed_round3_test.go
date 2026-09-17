@@ -39,21 +39,31 @@ func TestEditWhoseUndoFailedReportsTheStoreChanged(t *testing.T) {
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
 		return errors.New("the store file could not be written")
 	}
+	path := m.marketplaceDir("market-a")
 	marketplaceRename = func(from, to string) error {
-		if to == m.marketplaceDir("market-a") {
-			return errors.New("the rollback rename failed")
+		if to == path {
+			return &os.LinkError{Op: "rename", Old: from, New: to, Err: errors.New("permission denied")}
 		}
 		return originalRename(from, to)
 	}
 
-	_, err := m.EditMarketplace(context.Background(), "market-a", "market-b", nil)
+	_, changes, err := m.EditMarketplace(context.Background(), "market-a", "market-b", nil)
 	marketplaceAtomicWriteFile = originalWrite
 	marketplaceRename = originalRename
 	if err == nil {
 		t.Fatal("EditMarketplace = nil, want the failed write reported")
 	}
-	if !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("err = %v, want it to report the store changed so the hub still broadcasts", err)
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the rollback itself failed", changes)
+	}
+	// The rollback error's own text can carry this machine's absolute
+	// plugin-store path (os.Rename returns a *LinkError that names it), so
+	// storeChangeRollbackFailed logs it rather than returning it.
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "market-a") {
+		t.Fatalf("err = %v, want the marketplace named", err)
 	}
 }
 
@@ -67,7 +77,7 @@ func TestRefreshDirectorySourceWhoseRecordFailedReportsAPlainRefusal(t *testing.
 	m.Stderr = io.Discard
 	ctx := context.Background()
 	src := writeTestMarketplaceDir(t, "market-a")
-	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceDirectory, Path: src}); err != nil {
+	if _, _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceDirectory, Path: src}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	original := marketplaceAtomicWriteFile
@@ -76,7 +86,7 @@ func TestRefreshDirectorySourceWhoseRecordFailedReportsAPlainRefusal(t *testing.
 		return errors.New("the store file could not be written")
 	}
 
-	err := m.RefreshMarketplace(ctx, "market-a")
+	_, err := m.RefreshMarketplace(ctx, "market-a")
 	if err == nil {
 		t.Fatal("RefreshMarketplace = nil, want the failed record reported")
 	}
@@ -113,12 +123,12 @@ func TestRefreshGitSourceWhoseRecordFailedReportsTheStoreChanged(t *testing.T) {
 		return errors.New("the store file could not be written")
 	}
 
-	err := m.RefreshMarketplace(ctx, "market-a")
+	changes, err := m.RefreshMarketplace(ctx, "market-a")
 	if err == nil {
 		t.Fatal("RefreshMarketplace = nil, want the failed record reported")
 	}
-	if !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("err = %v, want it to report the store changed so the hub still broadcasts: the pull already ran", err)
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the pull already ran", changes)
 	}
 }
 
@@ -157,7 +167,7 @@ func TestRemoveWhoseRegistryWriteFailedKeepsThePluginInstalled(t *testing.T) {
 		return errors.New("the registry could not be written")
 	}
 
-	removeErr := m.Remove(ctx, "demo", "market-a")
+	_, removeErr := m.Remove(ctx, "demo", "market-a")
 	installSaveRegistry = original
 	if removeErr == nil {
 		t.Fatal("Remove = nil, want the failed registry write reported")
@@ -196,7 +206,7 @@ func TestAddMarketplaceWhoseSaveFailedRollsBackTheClone(t *testing.T) {
 		return errors.New("the store file could not be written")
 	}
 
-	_, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	_, _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
 	if err == nil {
 		t.Fatal("AddMarketplace = nil, want the failed save reported")
 	}
@@ -242,20 +252,17 @@ func TestAddMarketplaceWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.
 		return originalRemove(p)
 	}
 
-	_, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	_, changes, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
 	if err == nil {
 		t.Fatal("AddMarketplace = nil, want the failed save reported")
 	}
-	if !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("err = %v, want it to report the store changed: the rollback itself failed", err)
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the rollback itself failed", changes)
 	}
-	// The save error survives - it is why a rollback was attempted at all.
-	// The rollback error itself does not: rollbackFailed logs it (its own
-	// text can carry this machine's absolute plugin-store path) rather than
-	// returning it to the RPC caller.
-	if !strings.Contains(err.Error(), "the store file could not be written") {
-		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
-	}
+	// Neither the save error's nor the rollback error's own text survives:
+	// storeChangeRollbackFailed logs both (either can carry this machine's
+	// absolute plugin-store path) rather than returning them to the RPC
+	// caller.
 	if strings.Contains(err.Error(), path) {
 		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
 	}
@@ -355,9 +362,10 @@ func TestEnsureFetchedWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.T
 	if !changes.Marketplaces {
 		t.Fatalf("changes = %+v, want Marketplaces true: the rollback itself failed, so the clone stayed", changes)
 	}
-	if !strings.Contains(err.Error(), "the store file could not be written") {
-		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
-	}
+	// Neither the save error's nor the rollback error's own text survives:
+	// storeChangeRollbackFailed logs both (either can carry this machine's
+	// absolute plugin-store path) rather than returning them to the RPC
+	// caller.
 	if strings.Contains(err.Error(), path) {
 		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
 	}
@@ -397,7 +405,7 @@ func TestRemoveMarketplaceWhoseSaveFailedLeavesTheClone(t *testing.T) {
 	m.Stderr = io.Discard
 	ctx := context.Background()
 	src := makeMarketplaceRepo(t, "market-a")
-	ref, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	ref, _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
 	if err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
@@ -408,7 +416,7 @@ func TestRemoveMarketplaceWhoseSaveFailedLeavesTheClone(t *testing.T) {
 		return errors.New("the store file could not be written")
 	}
 
-	err = m.RemoveMarketplace(ctx, "market-a")
+	_, err = m.RemoveMarketplace(ctx, "market-a")
 	if err == nil {
 		t.Fatal("RemoveMarketplace = nil, want the failed save reported")
 	}
@@ -439,7 +447,7 @@ func TestRemoveMarketplaceWhoseCloneDeleteFailedReportsTheStoreChanged(t *testin
 	m.Stderr = io.Discard
 	ctx := context.Background()
 	src := makeMarketplaceRepo(t, "market-a")
-	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+	if _, _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
@@ -452,12 +460,12 @@ func TestRemoveMarketplaceWhoseCloneDeleteFailedReportsTheStoreChanged(t *testin
 		return original(path)
 	}
 
-	err := m.RemoveMarketplace(ctx, "market-a")
+	changes, err := m.RemoveMarketplace(ctx, "market-a")
 	if err == nil {
 		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
 	}
-	if !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("err = %v, want it to report the store changed: the save already applied", err)
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the save already applied", changes)
 	}
 	mk, loadErr := m.loadMarketplaces()
 	if loadErr != nil {
@@ -479,7 +487,7 @@ func TestRemoveMarketplaceWhoseCloneDeleteFailedNamesNoAbsolutePath(t *testing.T
 	m.Stderr = io.Discard
 	ctx := context.Background()
 	src := makeMarketplaceRepo(t, "market-a")
-	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+	if _, _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
@@ -492,7 +500,7 @@ func TestRemoveMarketplaceWhoseCloneDeleteFailedNamesNoAbsolutePath(t *testing.T
 		return original(path)
 	}
 
-	err := m.RemoveMarketplace(ctx, "market-a")
+	_, err := m.RemoveMarketplace(ctx, "market-a")
 	if err == nil {
 		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
 	}
@@ -548,7 +556,7 @@ func TestInstallWhoseCatalogLookupFailedOnAnAlreadyFetchedMarketplaceIsAPlainRef
 	}
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
@@ -576,7 +584,7 @@ func TestUpgradeWhoseSaveFailedAfterALazyFetchReportsTheMarketplaceStoreChanged(
 	mktRepo, pluginRepo := makeGitBackedMarketplace(t, "widget")
 	const name = "acme"
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := m.Install(context.Background(), "widget", name); err != nil {

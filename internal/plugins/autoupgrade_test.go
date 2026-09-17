@@ -81,7 +81,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	mktRepo, pluginRepo := makeGitBackedMarketplace(t, "widget")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	first, _, err := m.Install(context.Background(), "widget", "acme")
@@ -104,7 +104,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	}
 
 	// Now opt in — the next pass must upgrade it.
-	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 	updated, err = m.UpdateAutoUpgrade(context.Background())
@@ -124,7 +124,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	// Opt back out — a plugin that WAS auto-upgrade-enabled must stop being
 	// touched the moment the flag flips back off, not just when it was never
 	// enabled in the first place.
-	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", false); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "widget", "acme", false); err != nil {
 		t.Fatalf("SetAutoUpgrade(false): %v", err)
 	}
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v3")
@@ -149,13 +149,13 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 	mktRepo, _ := makeGitBackedMarketplace(t, "widget")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 
@@ -178,13 +178,13 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t) // "widget" is a "./plugins/widget" relative source
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := m.SetAutoUpgrade(context.Background(), "widget", name, true); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "widget", name, true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 
@@ -210,13 +210,13 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	mktRepo, brokenRepo, healthyRepo := makeGitBackedMarketplaceTwoPlugins(t, "broken", "healthy")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	if _, _, err := m.Install(context.Background(), "broken", "acme"); err != nil {
 		t.Fatalf("Install broken: %v", err)
 	}
-	if err := m.SetAutoUpgrade(context.Background(), "broken", "acme", true); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "broken", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade broken: %v", err)
 	}
 	advanceGitRepo(t, brokenRepo, "extra.txt", "v2")
@@ -225,7 +225,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install healthy: %v", err)
 	}
-	if err := m.SetAutoUpgrade(context.Background(), "healthy", "acme", true); err != nil {
+	if _, err := m.SetAutoUpgrade(context.Background(), "healthy", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade healthy: %v", err)
 	}
 	advanceGitRepo(t, healthyRepo, "extra.txt", "v2")
@@ -281,14 +281,14 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 	m1 := NewManager(root)
 	m2 := NewManager(root) // a second "client" contending for the same lock file
 
-	if _, err := m1.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m1.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	first, _, err := m1.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := m1.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
+	if _, err := m1.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")

@@ -196,7 +196,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entr
 	if err := m.saveRegistry(reg); err != nil {
 		return InstallEntry{}, changes, err
 	}
-	return entry, changes, nil
+	return entry, changes.Merge(StoreChanges{Plugins: true}), nil
 }
 
 // Upgrade re-resolves plugin from its marketplace. If the sha changed it
@@ -306,54 +306,57 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	if err := m.saveRegistry(reg); err != nil {
 		return InstallEntry{}, false, false, changes, err
 	}
-	return prev, true, false, changes, nil
+	return prev, true, false, changes.Merge(StoreChanges{Plugins: true}), nil
 }
 
-func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) error {
-	release, _, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) (changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
-		return err
+		return changes, err
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return err
+		return changes, err
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok || len(entries) == 0 {
-		return fmt.Errorf("%s: %w", key, ErrNotInstalled)
+		return changes, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	e := entries[0]
 	fn(&e)
 	reg.Plugins[key] = []InstallEntry{e}
-	return m.saveRegistry(reg)
+	if err := m.saveRegistry(reg); err != nil {
+		return changes, err
+	}
+	return changes.Merge(StoreChanges{Plugins: true}), nil
 }
 
-func (m *Manager) SetEnabled(ctx context.Context, plugin, marketplace string, enabled bool) error {
+func (m *Manager) SetEnabled(ctx context.Context, plugin, marketplace string, enabled bool) (StoreChanges, error) {
 	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.Enabled = enabled })
 }
 
-func (m *Manager) SetAutoUpgrade(ctx context.Context, plugin, marketplace string, on bool) error {
+func (m *Manager) SetAutoUpgrade(ctx context.Context, plugin, marketplace string, on bool) (StoreChanges, error) {
 	return m.mutateEntry(ctx, plugin, marketplace, func(e *InstallEntry) { e.AutoUpgrade = on })
 }
 
 // Remove deletes the registry entry and its cache dir. A plugin referenced in
 // place (directory-source marketplace) leaves the source untouched.
-func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error {
-	release, _, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) (changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
-		return err
+		return changes, err
 	}
 	defer release()
 	key := registryKey(plugin, marketplace)
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return err
+		return changes, err
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok {
-		return fmt.Errorf("%s: %w", key, ErrNotInstalled)
+		return changes, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	// The registry first, the files second. Deleting first made a failing save
 	// unrecoverable — the registry still named a plugin whose files were gone,
@@ -364,15 +367,16 @@ func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error 
 	// applied is announced, and this one either applies or changes nothing).
 	delete(reg.Plugins, key)
 	if err := m.saveRegistry(reg); err != nil {
-		return err
+		return changes, err
 	}
+	changes = changes.Merge(StoreChanges{Plugins: true})
 	if len(entries) > 0 {
 		p := entries[0].InstallPath
 		if strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
 			_ = installRemoveAll(p)
 		}
 	}
-	return nil
+	return changes, nil
 }
 
 type ListItem struct {

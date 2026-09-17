@@ -28,11 +28,15 @@ func (m *pluginManagerReplay) ListMarketplaces(context.Context) (plugins.Marketp
 	}
 	return plugins.Marketplaces{"local": {Source: plugins.Source{Kind: plugins.SourceDirectory, Path: "/tmp/local"}, InstallLocation: "/tmp/local", LastUpdated: time.Unix(0, 0)}}, plugins.StoreChanges{}, nil
 }
-func (m *pluginManagerReplay) AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error) {
-	return plugins.MarketplaceRef{InstallLocation: "/tmp/market"}, m.err
+func (m *pluginManagerReplay) AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, plugins.StoreChanges, error) {
+	return plugins.MarketplaceRef{InstallLocation: "/tmp/market"}, plugins.StoreChanges{}, m.err
 }
-func (m *pluginManagerReplay) RemoveMarketplace(context.Context, string) error  { return m.err }
-func (m *pluginManagerReplay) RefreshMarketplace(context.Context, string) error { return m.err }
+func (m *pluginManagerReplay) RemoveMarketplace(context.Context, string) (plugins.StoreChanges, error) {
+	return plugins.StoreChanges{}, m.err
+}
+func (m *pluginManagerReplay) RefreshMarketplace(context.Context, string) (plugins.StoreChanges, error) {
+	return plugins.StoreChanges{}, m.err
+}
 func (m *pluginManagerReplay) Browse(context.Context, string) (plugins.Catalog, plugins.StoreChanges, error) {
 	return plugins.Catalog{Name: "market", Plugins: []plugins.CatalogPlugin{{Name: "plug", Description: "desc"}}, SkippedPlugins: []string{"skip"}}, plugins.StoreChanges{}, m.err
 }
@@ -48,8 +52,12 @@ func (m *pluginManagerReplay) List(context.Context) ([]plugins.ListItem, plugins
 func (m *pluginManagerReplay) Install(context.Context, string, string) (plugins.InstallEntry, plugins.StoreChanges, error) {
 	return plugins.InstallEntry{Version: "1", InstallPath: "/tmp/plugin", Note: "note"}, plugins.StoreChanges{}, m.err
 }
-func (m *pluginManagerReplay) Remove(context.Context, string, string) error           { return m.err }
-func (m *pluginManagerReplay) SetEnabled(context.Context, string, string, bool) error { return m.err }
+func (m *pluginManagerReplay) Remove(context.Context, string, string) (plugins.StoreChanges, error) {
+	return plugins.StoreChanges{}, m.err
+}
+func (m *pluginManagerReplay) SetEnabled(context.Context, string, string, bool) (plugins.StoreChanges, error) {
+	return plugins.StoreChanges{}, m.err
+}
 func (m *pluginManagerReplay) UpdateAll(context.Context) ([]plugins.InstallEntry, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -62,17 +70,17 @@ func (m *pluginManagerReplay) UpdateAll(context.Context) ([]plugins.InstallEntry
 func (m *pluginManagerReplay) Upgrade(context.Context, string, string) (plugins.InstallEntry, plugins.StoreChanges, error) {
 	return plugins.InstallEntry{Version: "2"}, plugins.StoreChanges{}, m.err
 }
-func (m *pluginManagerReplay) SetAutoUpgrade(context.Context, string, string, bool) error {
-	return m.err
+func (m *pluginManagerReplay) SetAutoUpgrade(context.Context, string, string, bool) (plugins.StoreChanges, error) {
+	return plugins.StoreChanges{}, m.err
 }
-func (m *pluginManagerReplay) Gc(context.Context) ([]string, error) {
+func (m *pluginManagerReplay) Gc(context.Context) ([]string, plugins.StoreChanges, error) {
 	if m.err != nil {
-		return nil, m.err
+		return nil, plugins.StoreChanges{}, m.err
 	}
 	if m.empty {
-		return nil, nil
+		return nil, plugins.StoreChanges{}, nil
 	}
-	return []string{"/tmp/cache"}, nil
+	return []string{"/tmp/cache"}, plugins.StoreChanges{}, nil
 }
 func (m *pluginManagerReplay) Doctor() ([]plugins.DoctorFinding, error) {
 	return []plugins.DoctorFinding{{Level: plugins.LevelOK, Message: "healthy"}}, m.err

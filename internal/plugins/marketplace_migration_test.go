@@ -544,7 +544,7 @@ func TestMarketplaceNameMigration_UnfetchesAGitBackedTraversingName(t *testing.T
 		plantCatalog(t, dest)
 		return nil
 	}
-	if err := m.RefreshMarketplace(context.Background(), "escape"); err != nil {
+	if _, err := m.RefreshMarketplace(context.Background(), "escape"); err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
 	}
 	mustExist(t, filepath.Join(m.marketplaceDir("escape"), ".claude-plugin", "marketplace.json"))
@@ -715,7 +715,7 @@ func TestMarketplaceNameMigration_MovesTheOwnPluginCachesOfABlockedName(t *testi
 	mustExist(t, filepath.Join(m.marketplaceDir("a"), "b", ".claude-plugin", "marketplace.json"))
 	mustExist(t, pluginP)
 
-	removed, err := m.Gc(context.Background())
+	removed, _, err := m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
@@ -1183,7 +1183,7 @@ func TestMarketplaceNameMigration_ASecondLoadChangesNothing(t *testing.T) {
 		t.Fatalf("second ListMarketplaces: %v", err)
 	}
 	// Gc takes the store lock and writes nothing of its own.
-	if _, err := m.Gc(context.Background()); err != nil {
+	if _, _, err := m.Gc(context.Background()); err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
 	if writes != 0 {
@@ -1319,10 +1319,10 @@ func TestMarketplaceNameMigration_RunsUnderEveryStoreLock(t *testing.T) {
 		run  func(*Manager, string) error
 	}{
 		{"browse", func(m *Manager, name string) error { _, _, err := m.Browse(ctx, name); return err }},
-		{"refresh", func(m *Manager, name string) error { return m.RefreshMarketplace(ctx, name) }},
-		{"remove", func(m *Manager, name string) error { return m.RemoveMarketplace(ctx, name) }},
+		{"refresh", func(m *Manager, name string) error { _, err := m.RefreshMarketplace(ctx, name); return err }},
+		{"remove", func(m *Manager, name string) error { _, err := m.RemoveMarketplace(ctx, name); return err }},
 		{"edit", func(m *Manager, name string) error {
-			_, err := m.EditMarketplace(ctx, name, "renamed", nil)
+			_, _, err := m.EditMarketplace(ctx, name, "renamed", nil)
 			return err
 		}},
 		{"install", func(m *Manager, name string) error { _, _, err := m.Install(ctx, "widget", name); return err }},

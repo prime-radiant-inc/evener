@@ -71,7 +71,7 @@ func writeTestMarketplace(t *testing.T, dir string) {
 // the controller, failing the test on error.
 func addTestMarketplace(t *testing.T, ctl *hubPluginsController, dir string) {
 	t.Helper()
-	if _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	if _, _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
@@ -87,7 +87,7 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 	dir := t.TempDir()
 	writeTestMarketplace(t, dir)
 
-	addResp, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	addResp, _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	})
 	if err != nil {
@@ -112,7 +112,7 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 		t.Fatalf("ListMarketplaces = %+v, want 1 entry", listResp.Marketplaces)
 	}
 
-	removeResp, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
+	removeResp, _, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
 	if err != nil {
 		t.Fatalf("RemoveMarketplace: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestPlugins_Marketplace_AddListRemove(t *testing.T) {
 
 func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	_, _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Name:   "bad",
 		Source: appwire.MarketplaceSourceInput{Kind: "not-a-real-kind"},
 	})
@@ -134,7 +134,7 @@ func TestPlugins_Marketplace_AddInvalidKind_Errors(t *testing.T) {
 
 func TestPlugins_Marketplace_RemoveUnknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	_, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})
+	_, _, err := ctl.RemoveMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})
 	if err == nil {
 		t.Fatal("expected error removing unknown marketplace, got nil")
 	}
@@ -146,7 +146,7 @@ func TestPlugins_Marketplace_Refresh(t *testing.T) {
 	writeTestMarketplace(t, dir)
 	addTestMarketplace(t, ctl, dir)
 
-	resp, err := ctl.RefreshMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
+	resp, _, err := ctl.RefreshMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "acme"})
 	if err != nil {
 		t.Fatalf("RefreshMarketplace: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestPlugins_Marketplace_Refresh(t *testing.T) {
 
 func TestPlugins_Marketplace_RefreshUnknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	_, err := ctl.RefreshMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})
+	_, _, err := ctl.RefreshMarketplace(context.Background(), appwire.MarketplaceNameParams{Name: "nope"})
 	if err == nil {
 		t.Fatal("expected error refreshing unknown marketplace, got nil")
 	}
@@ -256,13 +256,13 @@ func TestPlugins_ConcurrentAddMarketplace_NoLostUpdate(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, errs[0] = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		_, _, errs[0] = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 			Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dirAcme},
 		})
 	}()
 	go func() {
 		defer wg.Done()
-		_, errs[1] = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+		_, _, errs[1] = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 			Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dirBeta},
 		})
 	}()
@@ -342,7 +342,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Error("InstalledAt not set")
 	}
 
-	disableResp, err := ctl.Disable(context.Background(), ref)
+	disableResp, _, err := ctl.Disable(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Disable: %v", err)
 	}
@@ -350,7 +350,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Error("entry still enabled after Disable")
 	}
 
-	enableResp, err := ctl.Enable(context.Background(), ref)
+	enableResp, _, err := ctl.Enable(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Enable: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Error("entry not enabled after Enable")
 	}
 
-	autoResp, err := ctl.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
+	autoResp, _, err := ctl.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "widget", Marketplace: "acme", AutoUpgrade: true})
 	if err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 		t.Fatalf("Upgrade response = %+v, want 1 entry", upgradeResp.Plugins)
 	}
 
-	removeResp, err := ctl.Remove(context.Background(), ref)
+	removeResp, _, err := ctl.Remove(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 
 func TestPlugins_Remove_Unknown_Errors(t *testing.T) {
 	ctl := newTestPluginsController(t)
-	_, err := ctl.Remove(context.Background(), appwire.PluginRefParams{Plugin: "nope", Marketplace: "nowhere"})
+	_, _, err := ctl.Remove(context.Background(), appwire.PluginRefParams{Plugin: "nope", Marketplace: "nowhere"})
 	if err == nil {
 		t.Fatal("expected error removing unknown plugin, got nil")
 	}
@@ -399,7 +399,7 @@ func TestPlugins_Marketplace_EditRenamesAndReturnsTheList(t *testing.T) {
 	writeTestMarketplace(t, dir)
 	addTestMarketplace(t, ctl, dir)
 
-	resp, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "acme2"})
+	resp, _, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "acme2"})
 	if err != nil {
 		t.Fatalf("EditMarketplace: %v", err)
 	}
@@ -421,7 +421,7 @@ func TestPlugins_Marketplace_EditReplacesTheSource(t *testing.T) {
 	moved := t.TempDir()
 	writeTestMarketplace(t, moved)
 
-	resp, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
+	resp, _, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
 		Name:   "acme",
 		Source: &appwire.MarketplaceSourceInput{Kind: "directory", Path: moved},
 	})
@@ -443,33 +443,33 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	addTestMarketplace(t, ctl, dir)
 	other := t.TempDir()
 	writeTestMarketplaceManifest(t, other, "beta", "[]")
-	if _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	if _, _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: other},
 	}); err != nil {
 		t.Fatalf("AddMarketplace beta: %v", err)
 	}
 
-	_, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "beta"})
+	_, _, err := ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "beta"})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 		t.Fatalf("rename onto a taken name = %v, want a Conflict wire error", err)
 	}
-	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "nope", NewName: "x"})
+	_, _, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "nope", NewName: "x"})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("unknown marketplace = %v, want an InvalidParams wire error", err)
 	}
-	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "../escape"})
+	_, _, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "../escape"})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("a traversing new name = %v, want an InvalidParams wire error", err)
 	}
-	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: ".old"})
+	_, _, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: ".old"})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 		t.Fatalf("a new name that is the edit's own scratch directory = %v, want an InvalidParams wire error", err)
 	}
 	// The store's own managed-clone directory, which newTestPluginsController
 	// puts under XDG_CONFIG_HOME the way production's default root resolution does.
 	marketplaces := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins", "marketplaces")
-	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
+	_, _, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
 		Name:   "acme",
 		Source: &appwire.MarketplaceSourceInput{Kind: "directory", Path: filepath.Join(marketplaces, "acme")},
 	})
@@ -478,7 +478,7 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	}
 	// The swap's scratch directory: inside the store, though it is no
 	// marketplace's clone.
-	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
+	_, _, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{
 		Name:   "acme",
 		Source: &appwire.MarketplaceSourceInput{Kind: "directory", Path: filepath.Join(marketplaces, ".old")},
 	})
@@ -490,7 +490,7 @@ func TestPlugins_Marketplace_EditRefusalsAreWireErrors(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(marketplaces, "gamma"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "gamma"})
+	_, _, err = ctl.EditMarketplace(context.Background(), appwire.MarketplaceEditParams{Name: "acme", NewName: "gamma"})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 		t.Fatalf("a leftover under the new name = %v, want a Conflict wire error", err)
 	}
@@ -510,7 +510,7 @@ func TestPlugins_Marketplace_AddRefusalsAreWireErrors(t *testing.T) {
 	marketplaces := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "evener", "plugins", "marketplaces")
 	inStore := filepath.Join(marketplaces, "acme")
 	writeTestMarketplaceManifest(t, inStore, "acme", "[]")
-	_, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	_, _, err := ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: inStore},
 	})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
@@ -521,7 +521,7 @@ func TestPlugins_Marketplace_AddRefusalsAreWireErrors(t *testing.T) {
 	// plugin from marketplace in an installed-plugin key.
 	dir := t.TempDir()
 	writeTestMarketplaceManifest(t, dir, "ac@me", "[]")
-	_, err = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
+	_, _, err = ctl.AddMarketplace(context.Background(), appwire.MarketplaceAddParams{
 		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
 	})
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
@@ -539,7 +539,7 @@ func TestPlugins_Marketplace_RemoveAndRefreshRefusalsAreWireErrors(t *testing.T)
 	ctx := context.Background()
 
 	t.Run("removing an unknown marketplace", func(t *testing.T) {
-		_, err := ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "nope"})
+		_, _, err := ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "nope"})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("RemoveMarketplace = %v, want an InvalidParams wire error", err)
@@ -547,7 +547,7 @@ func TestPlugins_Marketplace_RemoveAndRefreshRefusalsAreWireErrors(t *testing.T)
 	})
 
 	t.Run("refreshing an unknown marketplace", func(t *testing.T) {
-		_, err := ctl.RefreshMarketplace(ctx, appwire.MarketplaceNameParams{Name: "nope"})
+		_, _, err := ctl.RefreshMarketplace(ctx, appwire.MarketplaceNameParams{Name: "nope"})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("RefreshMarketplace = %v, want an InvalidParams wire error", err)
@@ -576,7 +576,7 @@ func TestPlugins_Marketplace_RemoveAndRefreshRefusalsAreWireErrors(t *testing.T)
 		if err := os.WriteFile(filepath.Join(store, "known_marketplaces.json"), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err = ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "../../escape"})
+		_, _, err = ctl.RemoveMarketplace(ctx, appwire.MarketplaceNameParams{Name: "../../escape"})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("RemoveMarketplace = %v, want an InvalidParams wire error", err)

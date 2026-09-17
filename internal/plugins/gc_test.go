@@ -9,7 +9,7 @@ import (
 
 func TestGc_NoCacheDirYet(t *testing.T) {
 	m := NewManager(t.TempDir())
-	removed, err := m.Gc(context.Background())
+	removed, _, err := m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("Gc on empty store: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 	mktRepo, pluginRepo := makeGitBackedMarketplace(t, "widget")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	first, _, err := m.Install(context.Background(), "widget", "acme")
@@ -47,7 +47,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 		t.Fatalf("test setup: old sha-dir missing before gc: %v", err)
 	}
 
-	removed, err := m.Gc(context.Background())
+	removed, _, err := m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 	}
 
 	// A second sweep with nothing new to reclaim is a no-op.
-	removed, err = m.Gc(context.Background())
+	removed, _, err = m.Gc(context.Background())
 	if err != nil {
 		t.Fatalf("second Gc: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestGc_DirectorySourceInstallPathNeverConsidered(t *testing.T) {
 	pluginDir := filepath.Join(mktRepo, "plugins", "widget")
 
 	m := NewManager(t.TempDir())
-	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: mktRepo}); err != nil {
+	if _, _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	entry, _, err := m.Install(context.Background(), "widget", name)
@@ -90,7 +90,7 @@ func TestGc_DirectorySourceInstallPathNeverConsidered(t *testing.T) {
 		t.Fatalf("InstallPath = %q, want %q (referenced in place)", entry.InstallPath, pluginDir)
 	}
 
-	if _, err := m.Gc(context.Background()); err != nil {
+	if _, _, err := m.Gc(context.Background()); err != nil {
 		t.Fatalf("Gc: %v", err)
 	}
 	if _, err := os.Stat(pluginDir); err != nil {

@@ -93,14 +93,14 @@ func autoUpgradeFixture(t *testing.T) (mgr *plugins.Manager, pluginRepo string, 
 
 	mgr = plugins.NewManager(t.TempDir())
 	ctx := context.Background()
-	if _, err := mgr.AddMarketplace(ctx, "", plugins.Source{Kind: plugins.SourceURL, URL: mktRepo}); err != nil {
+	if _, _, err := mgr.AddMarketplace(ctx, "", plugins.Source{Kind: plugins.SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 	first, _, err := mgr.Install(ctx, "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
-	if err := mgr.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
+	if _, err := mgr.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 	return mgr, pluginRepo, first.InstallPath

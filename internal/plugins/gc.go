@@ -45,31 +45,36 @@ func referencedInstallPaths(reg Registry) map[string]bool {
 // hub start (before any session exists) or on demand via `evener plugin gc`
 // when the user is idle. Gc itself does not enforce that; it runs under the
 // same flock as every other mutation, so it never races an install/upgrade.
-func (m *Manager) Gc(ctx context.Context) ([]string, error) {
-	release, _, err := m.lockStore(ctx, gcAcquireLock, 30*time.Second)
+// changes is lockStore's own answer - see ListMarketplaces for what a caller
+// owes when it names a change. Gc's own sweep never writes marketplaces.json
+// or the registry (only orphaned cache directories a save has already left
+// behind), so it never adds to changes beyond what lockStore's migration
+// itself contributed.
+func (m *Manager) Gc(ctx context.Context) (removed []string, changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, gcAcquireLock, 30*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, changes, err
 	}
 	defer release()
 
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return nil, err
+		return nil, changes, err
 	}
 	referenced := referencedInstallPaths(reg)
 
 	marketplaceEntries, err := gcReadDir(m.cacheDir())
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return []string{}, nil
+			return []string{}, changes, nil
 		}
-		return nil, fmt.Errorf("reading %s: %w", m.cacheDir(), err)
+		return nil, changes, fmt.Errorf("reading %s: %w", m.cacheDir(), err)
 	}
 
 	// Non-nil even when nothing is swept: callers (cmd/evener/plugincmd.go's
 	// `gc --json`) JSON-encode this directly, and a nil slice would encode as
 	// `null` instead of `[]`.
-	removed := []string{}
+	removed = []string{}
 	for _, mktEnt := range marketplaceEntries {
 		if !mktEnt.IsDir() {
 			continue
@@ -97,12 +102,12 @@ func (m *Manager) Gc(ctx context.Context) ([]string, error) {
 					continue
 				}
 				if err := gcRemoveAll(shaDir); err != nil {
-					return removed, fmt.Errorf("removing %s: %w", shaDir, err)
+					return removed, changes, fmt.Errorf("removing %s: %w", shaDir, err)
 				}
 				removed = append(removed, shaDir)
 			}
 		}
 	}
 	sort.Strings(removed)
-	return removed, nil
+	return removed, changes, nil
 }

@@ -24,7 +24,7 @@ func TestLockStore_ACorruptMarketplacesFileFailsARegistryOnlyMutation(t *testing
 		t.Fatal(err)
 	}
 
-	err := m.SetEnabled(context.Background(), "widget", "acme", false)
+	_, err := m.SetEnabled(context.Background(), "widget", "acme", false)
 	if err == nil {
 		t.Fatal("SetEnabled succeeded on a store whose marketplaces file cannot be parsed")
 	}
@@ -110,27 +110,32 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 			return err
 		}},
 		{"Remove", func(ctx context.Context, m *Manager) error {
-			return m.Remove(ctx, "plugin", "marketplace")
+			_, err := m.Remove(ctx, "plugin", "marketplace")
+			return err
 		}},
 		{"SetEnabled", func(ctx context.Context, m *Manager) error {
-			return m.SetEnabled(ctx, "plugin", "marketplace", false)
+			_, err := m.SetEnabled(ctx, "plugin", "marketplace", false)
+			return err
 		}},
 		{"SetAutoUpgrade", func(ctx context.Context, m *Manager) error {
-			return m.SetAutoUpgrade(ctx, "plugin", "marketplace", true)
+			_, err := m.SetAutoUpgrade(ctx, "plugin", "marketplace", true)
+			return err
 		}},
 		{"Gc", func(ctx context.Context, m *Manager) error {
-			_, err := m.Gc(ctx)
+			_, _, err := m.Gc(ctx)
 			return err
 		}},
 		{"AddMarketplace", func(ctx context.Context, m *Manager) error {
-			_, err := m.AddMarketplace(ctx, "marketplace", Source{Kind: SourceGitHub, Repo: "acme/plugins"})
+			_, _, err := m.AddMarketplace(ctx, "marketplace", Source{Kind: SourceGitHub, Repo: "acme/plugins"})
 			return err
 		}},
 		{"RemoveMarketplace", func(ctx context.Context, m *Manager) error {
-			return m.RemoveMarketplace(ctx, "marketplace")
+			_, err := m.RemoveMarketplace(ctx, "marketplace")
+			return err
 		}},
 		{"RefreshMarketplace", func(ctx context.Context, m *Manager) error {
-			return m.RefreshMarketplace(ctx, "marketplace")
+			_, err := m.RefreshMarketplace(ctx, "marketplace")
+			return err
 		}},
 		// Browse mutates too: it clones a marketplace that was only seeded as
 		// a pointer, so on a broken root it cloned into the working directory.
