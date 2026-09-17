@@ -501,11 +501,26 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 	var threads []appwire.Thread
 	complete := true
 	sources := make(map[string]hubcore.RemoteSourceSnapshot)
+	remoteHosts := remoteHostNames(s.cfg)
 	for _, source := range s.sources.All() {
 		if source.ID() == "local" {
 			continue
 		}
-		listed, listComplete := s.listRemoteSourceWithFallbackState(ctx, source)
+		// The background walk must not force attachment: an unattached remote host
+		// is skipped without a call, so the 30s ticker cannot dial every configured
+		// host (component 06, §"What already exists"). The gate is the attached-only
+		// lookup, not a check-then-Ensure: a host that drops between the check and
+		// the source's own (attached-only) resolution is skipped, never re-attached.
+		// A skipped host contributes no fresh rows but keeps the last-known-good
+		// rows it already contributed (none for a never-attached host), so its
+		// sessions do not blink out of the tree between ticks.
+		var listed remoteSourceFetch
+		var listComplete bool
+		if remoteSourceAttached(s.cfg, remoteHosts, source.ID()) {
+			listed, listComplete = s.listRemoteSourceWithFallbackState(ctx, source)
+		} else {
+			listed = remoteSourceFetch{threads: s.lastGoodThreadsForSource(source.ID())}
+		}
 		if !listComplete {
 			complete = false
 		}

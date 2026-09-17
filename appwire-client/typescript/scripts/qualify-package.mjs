@@ -274,6 +274,11 @@ assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: fa
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
+const projectorTurn = { id: "turn1", status: "completed", items: [{ id: "item1", type: "userMessage", text: "hi" }] };
+const projection = client.projectThread({ turns: [projectorTurn] }, displayConfig);
+assert.equal(projection.turns[0].entries[0].kind, "item");
+assert.equal(projection.turns[0].entries[0].id, "item1");
+assert.equal(typeof client.ACTION_SUMMARY_UNAVAILABLE, "string");
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
@@ -292,6 +297,20 @@ client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
+  // The eleven storage-port methods neither outbox fixture exercises: the
+  // type-use program and the smoke script embed this one definition and add the
+  // two calls each of them actually makes (enqueueIntent, listTargetRefs).
+  const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  getOptimistic: () => Promise.resolve(undefined),
+  listOptimistic: () => Promise.resolve([]),
+  getRecovery: () => Promise.resolve(undefined),
+  nextDispatchable: () => Promise.resolve(undefined),
+  markAttempted: () => Promise.resolve(false),
+  markUnknown: () => Promise.resolve(false),
+  settleReceipt: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(false),
+  restoreProvenAbsent: () => Promise.resolve([]),
+  transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off
   // its entry module below. A subpath with no entry here is not qualified,
@@ -333,6 +352,72 @@ assert.equal(
 assert.equal(client.docImageURL("https://hub.example", "s", "p"), "https://hub.example/doc/image?session=s&path=p");
 assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
+`,
+    },
+    // The connection state layer: the client-swap safety and
+    // notification-following a host's own connection store wraps, over an
+    // AppwireClientLike only - no handshake, no view binding, so a bare Node
+    // consumer needs no socket. AppwireClientLike and FeatureSet are root
+    // exports, not this barrel's own surface, so the type-use program imports
+    // them itself rather than relying on the generated import block.
+    "./state/connection": {
+      esmTypeUses: `import type { AppwireClientLike, FeatureSet } from "@evener/appwire-client";
+const fakeClient: AppwireClientLike = {
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} as FeatureSet }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "idle",
+  terminalReason: null,
+};
+const store: ConnectionStore = createConnectionStore();
+const state: ConnectionStoreState = store.getState();
+store.connect(fakeClient);
+void state;
+const stop = onConnectionNotification(store, () => undefined);
+stop();`,
+      cjsTypeUses: `const connectionState: client.ConnectionStoreState = client.createConnectionStore().getState(); void connectionState;`,
+      // A store with no client wired starts idle; connect() mirrors an
+      // already-"ready" client's state (a reconnect scenario) and wires its
+      // client-swap safety; onConnectionNotification follows the client the
+      // store holds - all without opening a socket.
+      smoke: `let notified = 0;
+const readyClient = {
+  stateChangeHandlers: new Set(),
+  notificationHandlers: new Set(),
+  state: "ready",
+  terminalReason: null,
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification(cb) {
+    this.notificationHandlers.add(cb);
+    return () => this.notificationHandlers.delete(cb);
+  },
+  onReady: () => () => undefined,
+  onStateChange(cb) {
+    this.stateChangeHandlers.add(cb);
+    return () => this.stateChangeHandlers.delete(cb);
+  },
+  retryNow: () => undefined,
+};
+const connectionStore = client.createConnectionStore();
+assert.equal(connectionStore.getState().state, "idle");
+assert.equal("connect" in connectionStore.getState(), false);
+connectionStore.connect(readyClient);
+assert.equal(connectionStore.getState().state, "ready");
+assert.equal(connectionStore.getState().client, readyClient);
+const stopNotifications = client.onConnectionNotification(connectionStore, () => {
+  notified += 1;
+});
+for (const cb of readyClient.notificationHandlers) cb({ method: "evener/plugin/updated", params: {} });
+assert.equal(notified, 1);
+stopNotifications();
 `,
     },
     // The navigation state layer, published as one subpath rather than through
@@ -467,6 +552,134 @@ marketplacesStore
   .then(() => {
     assert.deepEqual(marketplacesStore.getState().browseCatalogs.get("acme"), { status: "error", error: "offline" });
     marketplacesStore.dispose();
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+`,
+    },
+    // The mutation state layer: the durable record shapes both apps' outboxes
+    // store, the provenance rule their projections ask (did THIS client
+    // submit it), and the pure reconciliation that turns durable records plus
+    // a live model into the rows a composer's queue renders. Published as its
+    // own subpath because a host's storage and scheduling stay out of the
+    // package - this is the shape, the rule and the reconciliation alone.
+    // Every call here is synchronous, unlike the fetch-backed layers above:
+    // there is no client port to script.
+    "./state/mutation": {
+      esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
+const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
+const record: MutationRecord = { ...intent, version: 1, clientMutationId: "cmid", intentSequence: 0, createdAt: 0 };
+const outboxRecord: MutationOutboxRecord = { ...record, state: "submitting" };
+const optimisticRecord: MutationOptimisticRecord = { ...record, state: "accepted" };
+const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: "rejected" };
+const outboxState: MutationOutboxState = outboxRecord.state;
+const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
+const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+const pendingMethod: PendingMethod = "send";
+const pendingState: PendingTurnState = "submitting";
+const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
+const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
+const identity: ClientIdentity = createClientIdentity(storage, secureRandomSource);
+const outboxStorage: MutationOutboxStorage = {
+  enqueueIntent: () => Promise.resolve(outboxRecord),
+  listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
+${inertOutboxStorageMethods}
+};
+const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
+const reason: MutationDiscoveryReason = "enqueue";
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
+void pendingEntry; void identity; void secureRandomSource; void outbox; void reason;`,
+      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
+const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
+const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
+const identity: client.ClientIdentity = client.createClientIdentity(storage, secureRandomSource); void identity;
+const channel: client.MutationOutboxChannel = {
+  postMessage: () => undefined,
+  close: () => undefined,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+};
+void channel;`,
+      // createClientIdentity is a factory, not a module singleton: two
+      // instances over two storages get two identities, and one instance's
+      // identity is memoized across repeated calls. Both take their random
+      // source explicitly - no default to globalThis.crypto lives in the
+      // package. createSecureUUID is the same helper mutation ids use; a
+      // source with no randomUUID proves the getRandomValues fallback runs,
+      // and a source with neither proves the non-crypto fallback runs rather
+      // than throwing. reconcilePendingEntries needs no model to prove it
+      // runs: an absent one is the same "no live projection yet" case a
+      // fresh composer starts from.
+      smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
+const identityRandomSource = { getRandomValues: (array) => globalThis.crypto.getRandomValues(array) };
+const identityA = client.createClientIdentity(identityStorage, identityRandomSource);
+const identityB = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, identityRandomSource);
+const firstId = identityA.ownClientId();
+assert.equal(identityA.ownClientId(), firstId);
+assert.notEqual(identityB.ownClientId(), firstId);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
+assert.equal(identityA.isOwnMutationRecord({}), true);
+const noRandomSourceIdentity = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, {});
+assert.equal(typeof noRandomSourceIdentity.ownClientId(), "string");
+assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");
+const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array });
+assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+const insecureUUID = client.createSecureUUID({});
+assert.match(insecureUUID, /^insecure-/);
+assert.deepEqual(
+  client.reconcilePendingEntries("ref", [], undefined, new Set(), identityA.isOwnMutationRecord),
+  [],
+);
+// The outbox over a memory storage port: no channel, no lifecycle target and
+// no timer, which is exactly what a host without them passes. One enqueue
+// commits through the port and announces the ref it landed under, and stop()
+// awaits the discovery it queued — all of it synchronous in shape (one promise
+// chain, no timers), so a CommonJS consumer with no top-level await can prove
+// it.
+const enqueued = [];
+const discovered = [];
+const memoryOutbox = new client.MutationOutbox(
+  {
+    enqueueIntent(intent) {
+      const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+      enqueued.push(record);
+      return Promise.resolve(record);
+    },
+    listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+${inertOutboxStorageMethods}
+  },
+  {
+    isReady: () => true,
+    onDiscover: (targetRefs, reason) => {
+      discovered.push({ targetRefs, reason });
+    },
+  },
+);
+memoryOutbox
+  .start()
+  .then(() =>
+    memoryOutbox.enqueueIntent({
+      targetRef: "local:thread-1",
+      method: "turn/queue",
+      payload: {},
+      attachments: [],
+      optimisticDisplay: null,
+    }),
+  )
+  .then((record) => {
+    assert.equal(record.clientMutationId, "cmid-1");
+    return memoryOutbox.stop();
+  })
+  .then(() => {
+    assert.deepEqual(
+      discovered.map((entry) => entry.reason),
+      ["startup", "enqueue"],
+    );
+    assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
   })
   .catch((err) => {
     console.error(err);

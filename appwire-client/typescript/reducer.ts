@@ -94,6 +94,11 @@ function epochMsToISO(ms: number | undefined): string | undefined {
 // maintained per append), so the hot readers of a live view (settleItem,
 // AgentMessageItem's per-render markdown source) get the full text in O(1)
 // instead of paying the per-element Proxy-trap cost of a join.
+// Maintaining that join is not where the pre-fix quadratic cost lived,
+// though: `brand.text + delta` is the same flat-per-delta concatenation
+// item/toolOutput/delta's `output` uses — a rope on V8, a buffered primitive
+// on Hermes — so the array copy, not the string concat, is the one quadratic
+// shape appendChunk removes.
 //
 // Purity: the reducer's contract is immutable updates, and this preserves
 // it OBSERVATIONALLY. The one deliberate alias — new views share the
@@ -461,6 +466,29 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
     text: existing.text + (pending === undefined ? "" : pendingTextJoined(pending)),
   });
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
+}
+
+// A settle says nothing about images unless it carries them. `undefined` is what
+// both mappers produce for a field the payload left out, and for an empty list
+// too: imagesToItemImagesForSession and outputImagesToItemImages each read `[]` as
+// absence, the same rule the hub applies on its own upsert (`len(incoming.Images)
+// == 0` and `len(incoming.OutputImages) == 0` keep the existing list,
+// server/appwire_turns.go:884-889, and its twin at
+// internal/apptranscript/logical_turn.go:309). So `undefined` is the only signal
+// this merge ever sees for either list, and a settle must not erase images from
+// the item it replaces — exactly as mergePageItem already refuses to.
+function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (!existing) return settled;
+  const images = settled.images ?? existing.images;
+  const outputImages = settled.outputImages ?? existing.outputImages;
+  if (images === settled.images && outputImages === settled.outputImages) return settled;
+  // The text-presence marker is non-enumerable, so a spread drops it: carry it
+  // the way every other merge in this chain does.
+  return copyItemTextPresence(settled, {
+    ...settled,
+    ...(images === undefined ? {} : { images }),
+    ...(outputImages === undefined ? {} : { outputImages }),
+  });
 }
 
 // item/completed's settled wire item never carries observedStartedAt/
@@ -1219,16 +1247,18 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
-        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
-        // read/write disjoint fields off the same `old` reference, so
-        // composition order is free) — this branch has its own settled
-        // items rather than item/completed's single one, so it maps instead
-        // of a single mapItem call.
+        // below (mergeCompletedText/mergeItemImages/mergeReasoning/
+        // mergeArguments/mergeObservedTiming read/write disjoint fields off the
+        // same `old` reference, so composition order is free) — this branch has
+        // its own settled items rather than item/completed's single one, so it
+        // maps instead of a single mapItem call. "Full" replaces the item set,
+        // not every field: an image list a payload omits is kept off `old`,
+        // exactly as item/completed keeps it.
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
           return mergeObservedTiming(
-            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            mergeArguments(mergeReasoning(mergeItemImages(mergeCompletedText(identitySettled, old), old), old), old),
             old,
             now,
           );
@@ -1309,7 +1339,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             items: mapItemByIdentity(turn.items, incoming, (old) =>
               mergeObservedTiming(
                 mergeArguments(
-                  mergeReasoning(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                  mergeReasoning(
+                    mergeItemImages(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                    old,
+                  ),
                   old,
                 ),
                 old,
