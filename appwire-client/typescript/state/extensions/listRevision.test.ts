@@ -145,6 +145,22 @@ describe("the two conventions", () => {
     expect(published).toEqual(["rows", "failed"]);
   });
 
+  test("a write that will not publish its answer gives its revision back too", async () => {
+    const revisions = createListRevision();
+    const { published, write } = recorder();
+    const read = revisions.next();
+    // null is a store saying "this answer is not mine to publish" - a fence of
+    // its own ended the generation the write was issued in. Publishing nothing
+    // and keeping the list would strand the read underneath it.
+    await writeRevisioned(
+      revisions,
+      async () => "ignored",
+      () => null,
+    );
+    revisions.publish(read, write("read"));
+    expect(published).toEqual(["read"]);
+  });
+
   test("a write publishes its answer and rejects without owning anything when it fails", async () => {
     const revisions = createListRevision();
     const { published, write } = recorder();
