@@ -955,9 +955,24 @@ export function resumeStopFence(ref: string): () => void {
 // resume starts instead; the returned check fences any ref -- the old one the
 // pane still shows and the new one the resume returns -- against its
 // pre-resume baseline.
-export function resumeStopBaseline(): (ref: string) => void {
+//
+// Called with NO ref, the check fences globally: any generation that has
+// increased since the snapshot throws. beforeRequest runs before the resumed
+// identity is knowable, so a per-ref fence cannot name it -- any ref's
+// acknowledged Stop in the reconnect window suppresses the resume RPC. Values
+// only grow (the page-wide sequence), so an increased entry is exactly a
+// landed Stop; a release-pruned entry reads as no movement, which is correct
+// -- release is not a Stop.
+export function resumeStopBaseline(): (ref?: string) => void {
   const generations = new Map(userIntentStopGenerations);
-  return (ref: string) => {
+  return (ref?: string) => {
+    if (ref === undefined) {
+      for (const [stoppedRef, generation] of userIntentStopGenerations) {
+        if (generation > (generations.get(stoppedRef) ?? 0))
+          throw new Error("Stop canceled this pending action; send again when ready.");
+      }
+      return;
+    }
     if ((userIntentStopGenerations.get(ref) ?? 0) !== (generations.get(ref) ?? 0))
       throw new Error("Stop canceled this pending action; send again when ready.");
   };

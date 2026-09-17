@@ -2588,6 +2588,66 @@ test("a Stop on the resumed identity during the resume reconnect cancels the res
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
 });
 
+// RoboRev Medium on fee4eb8 (PR 1393): beforeRequest fenced only sessionRef,
+// so a Stop recorded against the resumed identity during the PRE-RPC
+// reconnect window never canceled the RPC - the post-resume identityFence
+// still caught the hydration, but the resume was already sent after the Stop
+// and won server-side. The resumed identity is unknowable before the RPC
+// returns, so the pre-resume baseline now fences GLOBALLY for the
+// beforeRequest check: any ref's acknowledged Stop in the window suppresses
+// the resume RPC.
+test("a Stop on the resumed identity before the resume RPC leaves suppresses the RPC", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) return readResponse(currentRef, { status: { type: "idle" } });
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => readResponse(currentRef, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already tracked by this tab (a prior load, a list
+  // row), so a Stop surface can name it before resumeThread resolves.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const resume = await screen.findByRole("button", { name: "Resume session" });
+  // The Stop lands in the reconnect window AFTER the click but BEFORE the
+  // resume RPC leaves: resumeThread's reconnect await (fakeClient's microtask
+  // hop) has not settled, so beforeRequest has not run yet. shutdown records
+  // its Stop synchronously, ahead of that guard - fireEvent, not userEvent,
+  // so the two calls share one synchronous turn.
+  act(() => {
+    fireEvent.click(resume);
+    void threadsStore.getState().shutdown(currentRef);
+  });
+  await act(async () => {});
+  // The guarded-out resume never sent the RPC - the guard's whole point.
+  expect(fake.calls.filter((call) => call.method === "thread/resume")).toEqual([]);
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+});
+
 test("offers explicit resume after restart even without pending messages", async () => {
   const fake = connectFakeClient();
   const resumeTransport = vi.spyOn(fake, "resumeThread");

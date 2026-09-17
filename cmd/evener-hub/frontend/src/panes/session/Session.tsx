@@ -134,7 +134,12 @@ function RestartRequiredNotice({
         // resolve would take that Stop as its baseline and never fire, so both
         // refs are checked against their pre-resume generations.
         const stopBaseline = resumeStopBaseline();
-        const stopFence = () => stopBaseline(sessionRef);
+        // beforeRequest runs before the resumed identity is knowable, so a
+        // per-ref fence cannot name it: a Stop acknowledged against ANY ref in
+        // the reconnect window (the resumed identity among them) suppresses
+        // the resume RPC. Once the RPC resolves and the new identity exists,
+        // the checks below name both refs exactly.
+        const stopFence = () => stopBaseline();
         const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopFence });
         refreshedRef = thread.evener.ref;
         // During the post-resume hydration the pane still shows the old ref

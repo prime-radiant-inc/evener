@@ -9446,6 +9446,34 @@ test("releasing a ref prunes its Stop generation, and a fence captured before th
   threadsStore.getState().releaseThread("ref_a");
 });
 
+// The no-ref form of the baseline is the beforeRequest fence: the resume RPC's
+// reconnect window ends before the resumed identity is knowable, so the check
+// cannot name a ref and instead fires on ANY Stop acknowledged since the
+// snapshot. Values only grow (the page-wide sequence), so an increased entry
+// is exactly a landed Stop; a ref whose entry simply pruned away reads as no
+// movement, which is correct - release is not a Stop.
+test("the global resume Stop baseline fires on any ref's Stop and on nothing else", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", (params) => readResponse(params.ref, { status: { type: "idle" } }));
+  fake.on("thread/shutdown", () => ({}));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().ensureThread("ref_b");
+  const baseline = resumeStopBaseline();
+  // Nothing moved: quiet.
+  baseline();
+  // A Stop against ANY ref - not just the one a fence could name - fires it.
+  await threadsStore.getState().shutdown("ref_b");
+  expect(() => baseline()).toThrow("Stop canceled this pending action");
+  // A baseline taken after that Stop is quiet again, and a bare release of an
+  // already-stopped ref does not move it.
+  const settled = resumeStopBaseline();
+  threadsStore.getState().releaseThread("ref_b");
+  settled();
+  threadsStore.getState().releaseThread("ref_a");
+});
+
 test("persistent journal failures wait for periodic recovery between attempts", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {
