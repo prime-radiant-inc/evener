@@ -106,16 +106,23 @@ export function KeybindingPreferencesScreen({
 		!!domain?.writeUncertain ||
 		!!domain?.storageUnavailable ||
 		!!domain?.confirmed?.loadError;
-	/** `requiresHub: false` for an operation that only touches this device, so
-	 * it still runs while disconnected: the shared store allows a local discard
-	 * offline, and refusing it here would leave an unreadable record with no way
-	 * to clear it. */
+	/** `requiresHub: false` for an operation that only touches this device, so it
+	 * still runs while disconnected. `requiresModel: false` for one that does not
+	 * go through the shared store at all - the unreadable-record escape hatch,
+	 * which exists precisely for the states where `model` is null (backgrounded,
+	 * reconnecting) and would otherwise be silently dropped by the guard below.
+	 * The hub-identity guard always applies: discarding must never clear a
+	 * different hub's record. */
 	const run = (
 		operation: () => Promise<unknown>,
 		success?: () => void,
-		{ requiresHub = true }: { requiresHub?: boolean } = {},
+		{
+			requiresHub = true,
+			requiresModel = true,
+		}: { requiresHub?: boolean; requiresModel?: boolean } = {},
 	) => {
-		if (!model || scope.hubId !== route.params.hubId) return;
+		if (scope.hubId !== route.params.hubId) return;
+		if (requiresModel && !model) return;
 		if (requiresHub && !scope.connected) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
@@ -199,7 +206,10 @@ export function KeybindingPreferencesScreen({
 									run(
 										() => preferences.discardUnreadableDraft("keybindings"),
 										undefined,
-										{ requiresHub: false },
+										// Neither a hub nor a live store: this is the one path out
+										// of an unreadable record, and `model` is null in exactly
+										// the states a user meets one in.
+										{ requiresHub: false, requiresModel: false },
 									)
 								}
 							>

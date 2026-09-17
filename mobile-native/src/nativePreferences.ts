@@ -137,6 +137,31 @@ function transcriptDomain(
 	};
 }
 
+/** The snapshot after a LOCAL discard cleared one section's unreadable record.
+ * Pure, so the provider's reachability table can be pinned without rendering a
+ * screen. Only the section discarded changes: one discard clears one record. */
+export function snapshotAfterLocalDiscard(
+	snapshot: NativePreferencesSnapshot,
+	section: "transcript" | "keybindings",
+): NativePreferencesSnapshot {
+	const key = section === "transcript" ? "transcriptMobile" : "keybindings";
+	const domain = snapshot[key];
+	if (!domain.draftUnreadable) return snapshot;
+	return {
+		...snapshot,
+		[key]: {
+			...domain,
+			draft: null,
+			draftUnreadable: false,
+			// The record was the only reason the port read as unavailable, and the
+			// restore failure was the only reason this section reported an error.
+			storageUnavailable: false,
+			conflict: false,
+			error: null,
+		},
+	};
+}
+
 export class NativePreferences {
 	private state: NativePreferencesSnapshot;
 	private readonly listeners = new Set<() => void>();

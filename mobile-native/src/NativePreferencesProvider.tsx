@@ -20,9 +20,10 @@ import {
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 } from "./nativePreferenceDrafts";
-import type {
-	NativePreferences,
-	NativePreferencesSnapshot,
+import {
+	type NativePreferences,
+	type NativePreferencesSnapshot,
+	snapshotAfterLocalDiscard,
 } from "./nativePreferences";
 
 interface Preferences {
@@ -36,8 +37,25 @@ interface Preferences {
 	 * reconnecting, and that is exactly when a user is stuck behind such a
 	 * record. With a live model the store does it and publishes the state; with
 	 * none the port is cleared directly. */
-	/** Rejects rather than throwing, so a screen routes a storage failure through
-	 * the same error handler as every other operation. */
+	/** Throws away a stored draft this build cannot read. Rejects rather than
+	 * throwing, so a screen routes a storage failure through the same error
+	 * handler as every other operation.
+	 *
+	 * This is the ONE path out of an unreadable record, and it must work in every
+	 * state the app can be in when a user meets one. Reachability, by state:
+	 *
+	 * | state                  | this method            | screen button          | via `run` |
+	 * |------------------------|------------------------|------------------------|-----------|
+	 * | live model             | store.discardDraft     | calls this method      | would run |
+	 * | no model, backgrounded | port clear + snapshot  | calls this method      | NO-OP     |
+	 * | no model, reconnecting | port clear + snapshot  | calls this method      | NO-OP     |
+	 * | no session (hubId null)| nothing to clear       | no hub, no screen      | NO-OP     |
+	 *
+	 * Every row with a record ends the same way: record removed, UI unlocked -
+	 * the store publishes that when it has one, and the snapshot projection
+	 * below does it when it does not. The `run` column is why neither screen's
+	 * unreadable-discard goes through `run`: its first guard early-exits on a
+	 * null model, which is exactly the state this exists for. */
 	discardUnreadableDraft(section: "transcript" | "keybindings"): Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);
@@ -106,6 +124,17 @@ export function NativePreferencesProvider({
 		if (section === "transcript")
 			discardStoredTranscriptDraft(nativeTranscriptDrafts(hubId, backend));
 		else discardStoredKeybindingDraft(nativeKeybindingDrafts(hubId, backend));
+		// No store to publish the result, so the exposed snapshot is projected
+		// here: without this the record is gone but the section still reports
+		// draftUnreadable and stays locked until the next connection.
+		setBound((previous) =>
+			previous && previous.hubId === hubId
+				? {
+						...previous,
+						snapshot: snapshotAfterLocalDiscard(previous.snapshot, section),
+					}
+				: previous,
+		);
 	};
 	return (
 		<Context.Provider

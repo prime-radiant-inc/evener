@@ -237,6 +237,48 @@ describe("native preference drafts", () => {
 		expect(() => discardStoredTranscriptDraft(storage)).toThrow("disk unavailable");
 	});
 
+	// One row per state in NativePreferencesProvider's reachability table. Every
+	// row with a record must end the same way: record removed. The screens' JSX
+	// gates stay untested per #1526; what is pinned here is the path each button
+	// calls, for each state the app can be in when a user meets such a record.
+	it.each([
+		["no model, backgrounded"],
+		["no model, reconnecting"],
+	])("%s: the port path removes the record", (_state) => {
+		const raw = new Map<string, string>();
+		const store = {
+			getItemSync: (key: string) => raw.get(key) ?? null,
+			setItemSync: (key: string, value: string) => {
+				raw.set(key, value);
+			},
+			removeItemSync: (key: string) => {
+				raw.delete(key);
+			},
+		};
+		const port = draftBackend(store, () => "id-1");
+		raw.set("evener.native.transcript-draft.hub", "{not json");
+		raw.set("evener.native.keybinding-draft.hub", "null");
+
+		// Exactly what the provider does with no model: no client, no store.
+		discardStoredTranscriptDraft(nativeTranscriptDrafts("hub", port));
+		discardStoredKeybindingDraft(nativeKeybindingDrafts("hub", port));
+
+		expect(raw.size).toBe(0);
+	});
+
+	it("no session: there is no hub key to clear, and nothing throws", () => {
+		// hubId null never reaches a port at all (the provider returns early), so
+		// the row has no record and no screen; the ports refuse a blank id.
+		const noop = {
+			getItemSync: () => null,
+			setItemSync: () => {},
+			removeItemSync: () => {},
+		};
+		expect(() => nativeTranscriptDrafts("", draftBackend(noop, () => "id-1"))).toThrow(
+			"A hub id is required",
+		);
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(
