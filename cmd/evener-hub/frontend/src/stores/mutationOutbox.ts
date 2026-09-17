@@ -1,7 +1,15 @@
+import type {
+  MutationAttachmentRef,
+  MutationIntent as PackageMutationIntent,
+  MutationOptimisticRecord as PackageMutationOptimisticRecord,
+  MutationOutboxRecord as PackageMutationOutboxRecord,
+  MutationRecord as PackageMutationRecord,
+  MutationRecoveryRecord as PackageMutationRecoveryRecord,
+} from "@evener/appwire-client/state/mutation";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
-export type MutationOutboxState = "submitting" | "blockedUnknown";
-export type MutationRecoveryKind = "rejected" | "orphaned";
+export type { MutationOutboxState, MutationRecoveryKind } from "@evener/appwire-client/state/mutation";
+
 export type MutationDiscoveryReason =
   | "startup"
   | "enqueue"
@@ -12,69 +20,19 @@ export type MutationDiscoveryReason =
   | "visibility"
   | "interval";
 
-// marker is the composer marker number this attachment was staged under. It
-// is what pairs the attachment back to its "[image N]" anchor in composerText
-// when a failed record is restored into a composer, so it is recorded rather
-// than re-derived from array position at restore time.
-export interface MutationAttachment {
-  presentationId: string;
-  marker: number;
-  name: string;
-  mediaType: string;
+// The web is the one host with attachment bytes to stage: the package's
+// record shapes carry only the identifying metadata (marker pairs an
+// attachment back to its "[image N]" composerText anchor), and this adds the
+// Blob no other host has.
+export interface MutationAttachment extends MutationAttachmentRef {
   blob: Blob;
 }
 
-export interface MutationIntent {
-  targetRef: string;
-  threadId?: string;
-  method: string;
-  payload: Record<string, unknown>;
-  attachments: MutationAttachment[];
-  optimisticDisplay: unknown;
-  // The composer's text exactly as typed, "[image N]" anchors intact. The
-  // payload's own text is not a substitute: composerMutationIntent translates
-  // every marker to prose at the submit boundary, so a payload restored
-  // straight into a composer would carry sentences about images in place of
-  // the anchors its tiles remove. Absent on intents no composer authored.
-  // Canonical skill selections need no sibling field here: they ride
-  // payload.input as {type: "skill", name} items (appended after the text
-  // and image items by buildComposerInput), so the outbox, optimistic, and
-  // recovery stores all carry them in the one record they already persist -
-  // there is no second outbox or recovery store for them.
-  composerText?: string;
-}
-
-export interface MutationRecord extends MutationIntent {
-  version: 1;
-  clientMutationId: string;
-  // Which client (page) submitted this mutation. The outbox is shared per
-  // origin, so without it every tab claims every other tab's records as its
-  // own; see mutationClientIdentity.ts. Optional because records written
-  // before the field existed carry none, and unattributed records stay
-  // claimable rather than losing their sender's tier-6 routing mid-deploy.
-  originClientId?: string;
-  intentSequence: number;
-  createdAt: number;
-}
-
-export interface MutationOutboxRecord extends MutationRecord {
-  state: MutationOutboxState;
-  attempted?: boolean;
-}
-
-export interface MutationOptimisticRecord extends MutationRecord {
-  state: "accepted";
-}
-
-export interface MutationRecoveryRecord extends MutationOutboxRecord {
-  recoveryKind: MutationRecoveryKind;
-  // Why the daemon refused, in its own words. Without it a recovery row can
-  // only say that something did not happen, which is kata 2f41: a Steer or
-  // Stop refused with nothing on screen explaining why. Optional because
-  // records written before this existed carry no reason, and because some
-  // recovery kinds (orphaned) have no daemon message to carry.
-  recoveryReason?: string;
-}
+export type MutationIntent = PackageMutationIntent<MutationAttachment>;
+export type MutationRecord = PackageMutationRecord<MutationAttachment>;
+export type MutationOutboxRecord = PackageMutationOutboxRecord<MutationAttachment>;
+export type MutationOptimisticRecord = PackageMutationOptimisticRecord<MutationAttachment>;
+export type MutationRecoveryRecord = PackageMutationRecoveryRecord<MutationAttachment>;
 
 interface BroadcastChannelLike extends EventTarget {
   postMessage(message: unknown): void;
