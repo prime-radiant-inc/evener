@@ -127,7 +127,16 @@ export function createConnectionStore(): ConnectionStore {
           store.setState(s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s });
         })
       : undefined;
-    publish(resolved);
+    // A swap or clear defaults `state` to the incoming client's own state (or
+    // "idle" with none - the store's own starting value, and the value every
+    // existing `client: null` reset already pairs it with) and drops the
+    // outgoing client's serverInfo/features, the same reset connect() always
+    // applied - but a caller's own partial still wins where it names one, so
+    // a swap that already knows its InitializeResponse can publish it in the
+    // same write. `client` is written explicitly and normalized to `null`,
+    // never left as whatever `resolved.client` happened to be (undefined is
+    // not a valid `client` value, just an easy partial to write by mistake).
+    publish({ state: client ? client.state : "idle", serverInfo: undefined, features: undefined, ...resolved, client });
     // See connectGeneration above: only claim the slot if this write is
     // still the latest one issued once its own publish returns.
     if (connectGeneration === generation) {
@@ -138,7 +147,7 @@ export function createConnectionStore(): ConnectionStore {
   };
 
   function connect(client: AppwireClientLike): void {
-    store.setState({ client, state: client.state, serverInfo: undefined, features: undefined });
+    store.setState({ client });
   }
 
   store.connect = connect;

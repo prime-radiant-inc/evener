@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../testing/fakeClient";
 import { createConnectionStore, onConnectionNotification } from "./core";
 
@@ -35,6 +35,15 @@ describe("createConnectionStore", () => {
     expect(store.getState().state).toBe("ready");
     client.emitStateChange("reconnecting");
     expect(store.getState().state).toBe("reconnecting");
+  });
+
+  test("connect() is a call to the same observable setState, not a bypass of it", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("ready");
+    const setStateSpy = vi.spyOn(store, "setState");
+    store.connect(client);
+    expect(setStateSpy).toHaveBeenCalledTimes(1);
+    expect(setStateSpy).toHaveBeenCalledWith({ client });
   });
 
   test("calling connect() again with the same client instance no-ops", () => {
@@ -165,26 +174,51 @@ describe("createConnectionStore", () => {
   test("a client swapped in through setState directly (bypassing connect()) still gets its own listener", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");
+    const firstTracking = trackStateChangeWiring(first);
     store.connect(first);
 
     // setState is the same write connect() makes, so a caller that replaces
     // `client` through it directly is wired exactly the same way.
     const second = new FakeClient("ready");
     store.setState({ client: second, state: second.state });
+    expect(firstTracking.detachments).toBe(1);
 
     // (a) the new client's own transitions must reach the store - nothing
     // else will ever wire a listener to it otherwise.
     second.emitStateChange("closed");
     expect(store.getState().state).toBe("closed");
 
-    // (b) the old client's transitions must not resurrect stale state - the
-    // identity check inside connect(first)'s listener closure guards this
-    // even though that listener itself was never detached.
+    // (b) first is detached, not merely guarded: its later transitions
+    // cannot resurrect stale state. The identity check inside its own
+    // listener closure is the backstop for the dispatch-in-flight case
+    // (see the module comment), not the reason this passes.
     first.emitStateChange("reconnecting");
     expect(store.getState().state).toBe("closed");
   });
 
-  test("clearing the client to null through setState detaches the currently wired listener", () => {
+  test("a client swap through setState defaults state to the incoming client's own state and clears stale metadata", () => {
+    const store = createConnectionStore();
+    const first = new FakeClient("ready");
+    store.connect(first);
+    store.setState({ serverInfo: { name: "hub", version: "1.0.0" } });
+
+    const second = new FakeClient("connecting");
+    store.setState({ client: second });
+
+    expect(store.getState().state).toBe("connecting");
+    expect(store.getState().serverInfo).toBeUndefined();
+  });
+
+  test("a client swap through setState still honors state/serverInfo the same partial names", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("connecting");
+    store.setState({ client, state: "ready", serverInfo: { name: "hub", version: "1.0.0" } });
+
+    expect(store.getState().state).toBe("ready");
+    expect(store.getState().serverInfo).toEqual({ name: "hub", version: "1.0.0" });
+  });
+
+  test("clearing the client to null through setState detaches the currently wired listener and resets to idle", () => {
     const store = createConnectionStore();
     const client = new FakeClient("ready");
     const tracking = trackStateChangeWiring(client);
@@ -195,12 +229,22 @@ describe("createConnectionStore", () => {
 
     store.setState({ client: null });
     expect(tracking.detachments).toBe(1);
+    expect(store.getState().state).toBe("idle");
 
     // Detached, not merely guarded: the listener itself is gone, so a later
     // transition on the cleared client cannot even attempt to publish.
     client.emitStateChange("closed");
     expect(store.getState().client).toBeNull();
-    expect(store.getState().state).toBe("ready");
+    expect(store.getState().state).toBe("idle");
+  });
+
+  test("a client written as undefined is stored as null, never left as undefined", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("ready");
+    store.connect(client);
+
+    store.setState({ client: undefined as unknown as null });
+    expect(store.getState().client).toBeNull();
   });
 });
 
