@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { FakeClient } from "../../testing/fakeClient";
+import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceCatalogPlugin, MarketplaceEntry } from "../../types.gen";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesStore } from "./marketplaces";
 
@@ -14,28 +14,6 @@ type BrowseResult = { name: string; description?: string; plugins: MarketplaceCa
 function storeWithFake() {
   const fake = new FakeClient("ready");
   return { fake, store: createMarketplacesStore(fake) };
-}
-
-function failing(message: string): () => never {
-  return () => {
-    throw new Error(message);
-  };
-}
-
-// Scripts `method` to hang and hands back the resolver of the request in
-// flight. FakeClient.request() defers the handler by one microtask, so the
-// resolver exists only after that has flushed; the callers below await a
-// microtask before releasing.
-function defer<T>(fake: FakeClient, method: Parameters<FakeClient["on"]>[0]) {
-  let release!: (value: T) => void;
-  fake.on(
-    method,
-    () =>
-      new Promise<T>((resolve) => {
-        release = resolve;
-      }) as never,
-  );
-  return (value: T) => release(value);
 }
 
 describe("store shape", () => {
@@ -63,18 +41,6 @@ describe("store shape", () => {
     first.store.reset();
     expect(first.store.getState().marketplaces).toBeNull();
     expect(second.store.getState().marketplacesError).toBe("boom");
-  });
-
-  test("getInitialState is the state the store was created with, and setState notifies with new and previous", () => {
-    const { store } = storeWithFake();
-    const initial = store.getInitialState();
-    const seen: Array<[boolean, boolean]> = [];
-    store.subscribe((state, previous) => seen.push([state.marketplacesLoading, previous.marketplacesLoading]));
-
-    store.setState({ marketplacesLoading: true });
-    expect(seen).toEqual([[true, false]]);
-    expect(store.getInitialState()).toBe(initial);
-    expect(initial.marketplacesLoading).toBe(false);
   });
 });
 
@@ -139,6 +105,27 @@ describe("fetches never throw, mutations reject", () => {
   });
 });
 
+describe("a write that outruns a read", () => {
+  test("the mutation's list clears the loading flag the outrun read raised", async () => {
+    const { fake, store } = storeWithFake();
+    const releaseRead = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const reading = store.getState().fetchMarketplaces();
+    await Promise.resolve();
+    expect(store.getState().marketplacesLoading).toBe(true);
+
+    fake.on("evener/marketplace/remove", () => ({ marketplaces: [LOCAL] }));
+    await store.getState().removeMarketplace("acme");
+
+    releaseRead({ marketplaces: [ACME] });
+    await reading;
+    expect(store.getState()).toMatchObject({
+      marketplaces: [LOCAL],
+      marketplacesLoading: false,
+      marketplacesError: null,
+    });
+  });
+});
+
 describe("browse cache", () => {
   test("a second browse of a settled catalog sends nothing", async () => {
     const { fake, store } = storeWithFake();
@@ -150,7 +137,7 @@ describe("browse cache", () => {
 
   test("a browse for a catalog already in flight sends nothing and waits for it", async () => {
     const { fake, store } = storeWithFake();
-    const release = defer<BrowseResult>(fake, BROWSE);
+    const release = deferRequest<BrowseResult>(fake, BROWSE);
     const first = store.getState().browseMarketplace("acme");
     await Promise.resolve();
     let secondSettled = false;
@@ -173,7 +160,7 @@ describe("browse cache", () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, () => ({ name: "local", plugins: [{ name: "kept" }] }));
     await store.getState().browseMarketplace("local");
-    const release = defer<BrowseResult>(fake, BROWSE);
+    const release = deferRequest<BrowseResult>(fake, BROWSE);
     const stale = store.getState().browseMarketplace("acme");
     await Promise.resolve();
 
@@ -207,10 +194,96 @@ describe("browse cache", () => {
   });
 });
 
+describe("reset fences a mutation's side effects", () => {
+  // reset() is "forget everything this store read": a reply that started
+  // before it writes no list, and the catalogs it names must not be retired
+  // either. Retiring is monotonic WITHIN a generation - which is why an
+  // outrun mutation still retires its own names - but a reset ends the
+  // generation, and a browse started after it is about the state reset left
+  // behind, not the one the reply belongs to.
+  test("a mutation reply that lands after reset() retires nothing", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "linter" }] }));
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
+    const removing = store.getState().removeMarketplace("acme");
+    await Promise.resolve();
+
+    store.reset();
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
+
+    release({ marketplaces: [] });
+    await removing;
+    expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
+  });
+});
+
+describe("reconnect", () => {
+  // A store belongs to one hub - the web builds one for the app's single
+  // connection, native one per client under a screen keyed by hub - so a
+  // cached catalog is never another hub's. What it can be is a catalog
+  // browsed before the connection went away, whose evener/marketplace/updated
+  // never arrived because this client was not there to receive it. A ready
+  // connection therefore retires the catalogs exactly as that notification
+  // does, so the next browse asks the hub again instead of showing what the
+  // catalog held before.
+  test("a catalog browsed before a disconnect is read again, not shown again", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "ready");
+    fake.on(LIST, () => ({ marketplaces: [ACME] }));
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "linter" }] }));
+    await store.getState().fetchMarketplaces();
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
+
+    store.connectionChanged(fake, "reconnecting");
+    store.connectionChanged(fake, "ready");
+    expect(store.getState().browseCatalogs.size).toBe(0);
+
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "formatter" }] }));
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({
+      status: "loaded",
+      plugins: [{ name: "formatter" }],
+    });
+  });
+
+  // A replaced client fences the browse the same way it fences the list - see
+  // onFence - but the catalog entry a fenced browse wrote is "loading", not a
+  // list field, and nothing else was going to lower it. Left behind, it makes
+  // browseMarketplace's own settled-entry check ("Loaded, errored, or already
+  // in flight") true forever: the entry reads as in flight, browses.inFlight()
+  // finds no registration for it (retireInFlight() forgot it too), and the
+  // call resolves having sent nothing.
+  test("a browse still in flight when the client is replaced does not stick on loading", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "ready");
+    const release = deferRequest<BrowseResult>(fake, BROWSE);
+    const browsing = store.getState().browseMarketplace("acme");
+    await Promise.resolve();
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "loading" });
+
+    // "connecting", not "ready": isolates onFence's own cleanup from the
+    // reconnect-while-away path (onNotified), which retires every catalog
+    // regardless of status and would otherwise mask this finding.
+    store.connectionChanged(new FakeClient("connecting"), "connecting");
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+
+    release({ name: "acme", plugins: [{ name: "stale" }] });
+    await browsing;
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "fresh" }] }));
+    await store.getState().browseMarketplace("acme");
+    expect(fake.calls.filter((c) => c.method === BROWSE)).toHaveLength(2);
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "loaded", plugins: [{ name: "fresh" }] });
+  });
+});
+
 describe("list ordering", () => {
   test("a list that resolves after a newer mutation committed does not roll the list back", async () => {
     const { fake, store } = storeWithFake();
-    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
     const fetching = store.getState().fetchMarketplaces();
     await Promise.resolve();
     fake.on("evener/marketplace/remove", () => ({ marketplaces: [] }));
@@ -220,8 +293,9 @@ describe("list ordering", () => {
     release({ marketplaces: [ACME] });
     await fetching;
     expect(store.getState().marketplaces).toEqual([]);
-    // The outrun fetch's loading flag belongs to it as much as its list does.
-    expect(store.getState().marketplacesLoading).toBe(true);
+    // The outrun fetch writes none of its three fields, the flag it raised
+    // included; the mutation that outran it answers all three.
+    expect(store.getState().marketplacesLoading).toBe(false);
   });
 });
 
@@ -254,68 +328,32 @@ describe("notifications", () => {
     expect(store.getState().marketplaces).toEqual([ACME, LOCAL]);
     expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(2);
   });
-
-  test("a store that never started ignores the notification", async () => {
-    const { fake } = storeWithFake();
-    fake.on(LIST, () => ({ marketplaces: [ACME] }));
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
-    expect(fake.calls).toHaveLength(0);
-  });
-
-  test("dispose() unsubscribes, cancels a pending refetch and fences replies in flight", async () => {
-    const { fake, store } = storeWithFake();
-    store.start();
-    fake.on(LIST, () => ({ marketplaces: [ACME] }));
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
-    const fetching = store.getState().fetchMarketplaces();
-    await Promise.resolve();
-    const before = store.getState();
-
-    store.dispose();
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
-    fake.emitNotification({ method: "evener/marketplace/updated", params: {} });
-    await vi.advanceTimersByTimeAsync(MARKETPLACE_REFETCH_DEBOUNCE_MS);
-    release({ marketplaces: [ACME] });
-    await fetching;
-
-    expect(store.getState()).toBe(before);
-    expect(fake.calls.filter((c) => c.method === LIST)).toHaveLength(1);
-  });
 });
 
 describe("dispose fences mutations", () => {
-  test("a mutation that resolves after dispose() publishes nothing", async () => {
+  test("a mutation that resolves after dispose() leaves the catalogs it names alone", async () => {
     const { fake, store } = storeWithFake();
     fake.on(BROWSE, () => ({ name: "acme", plugins: [] }));
     await store.getState().browseMarketplace("acme");
-    const release = defer<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
     const removing = store.getState().removeMarketplace("acme");
     await Promise.resolve();
-    const before = store.getState();
-    let notified = 0;
-    store.subscribe(() => {
-      notified += 1;
-    });
 
     store.dispose();
     release({ marketplaces: [] });
     await removing;
 
-    expect(notified).toBe(0);
-    expect(store.getState()).toBe(before);
     expect(store.getState().browseCatalogs.has("acme")).toBe(true);
   });
 });
 
 describe("reset", () => {
-  test("reset() returns to the initial state and fences the list and browses still in flight", async () => {
+  test("reset() fences the list and the browses still in flight", async () => {
     const { fake, store } = storeWithFake();
-    const releaseList = defer<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
+    const releaseList = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, LIST);
     const fetching = store.getState().fetchMarketplaces();
     await Promise.resolve();
-    const releaseBrowse = defer<BrowseResult>(fake, BROWSE);
+    const releaseBrowse = deferRequest<BrowseResult>(fake, BROWSE);
     const browsing = store.getState().browseMarketplace("acme");
     await Promise.resolve();
 

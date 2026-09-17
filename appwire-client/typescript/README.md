@@ -134,10 +134,19 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a
   `request`/`onNotification` client port holding a hub's marketplace list and
-  one cached browse result per marketplace, where fetches record their failure
-  in state and mutations reject), with the installed-plugin and directory
-  stores to follow. The subpath resolves to `state/extensions/index.ts`, a
-  barrel over the layer's modules.
+  one cached browse result per marketplace), the installed-plugins store
+  (`createPluginsStore(client)`, the same port, holding a hub's installed
+  plugins, their six mutations and a `pluginRevision` that moves as the hub
+  announces a change), and the two pieces both are built over:
+  `createListRevision`, the fence on a list every response replaces whole, and
+  `createStoreLifecycle`, the notification subscription, debounced refetch,
+  `connectionChanged` recovery (a list a host has read is read again when the
+  connection is ready again, because the hub's broadcast only reaches clients
+  that were connected) and the `start`/`reset`/`dispose` trio a host drives
+  from its screen. In both stores
+  fetches record their failure in state and mutations reject. The directories store is to follow. The
+  subpath resolves to `state/extensions/index.ts`, a barrel over the layer's
+  modules.
 - `@evener/appwire-client/state/credentials` - the credentials state layer:
   `createCredentialInstancesStore({ ownClientId })` is the framework-free
   store core (`instances`) each app's Providers & credentials store adapts:
