@@ -226,6 +226,42 @@ describe("hub defaults", () => {
     expect(store.getState().hub.mobile).toEqual(hubDefault(1, proposed));
     expect(store.getState().loaded).toBe(true);
   });
+  test("a change arriving while the first read FAILS survives to the next successful read", async () => {
+    const client = new FakeClient("ready");
+    let reads = 0;
+    client.on(getMethod, () => {
+      reads += 1;
+      if (reads === 1) throw new Error("hub unreachable");
+      return {
+        desktop: toWireDefault(hubDefault(3, desktopConfig)),
+        mobile: toWireDefault(hubDefault(2, mobileConfig)),
+      };
+    });
+    const store = createTranscriptDisplayStore({ client });
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState()).toMatchObject({ loaded: false, hubError: "hub unreachable" });
+
+    // A change lands while nothing is confirmed. It is dropped - its revision
+    // predates whatever a read will confirm - and remembered.
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 9, config: toWireConfig(proposed) },
+    });
+    expect(store.getState().hub.mobile).toBeUndefined();
+
+    // The retry confirms, and the remembered change is honoured by it: one
+    // follow-up read, so nothing the response predates is lost.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(9, proposed)),
+    }));
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().loaded).toBe(true);
+    await vi.waitFor(() => expect(store.getState().hub.mobile).toEqual(hubDefault(9, proposed)));
+  });
+
   test("a change relayed before the first read is not lost: the read follows up once", async () => {
     const client = new FakeClient("ready");
     const first = deferred<TranscriptDisplayDefaults>();
