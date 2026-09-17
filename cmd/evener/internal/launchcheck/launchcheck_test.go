@@ -20,19 +20,9 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// launchCheckGateway starts a /models endpoint answering with status and body,
-// declares it as the "gw" instance in an isolated providers.toml, and installs
-// a client built from that file on the launchCheckLoadClient seam.
-//
-// The client is the real one — cmdutil.LoadRegistry over the real providers
-// file, no mocks — but its environment is a fixed table rather than the
-// machine's. That matters because launchCheckModels lists every visible
-// instance and implicit instances are conjured from the environment: an
-// ambient TOGETHER_API_KEY would otherwise put api.together.ai in the loop.
-// The one variable the table answers is OLLAMA_HOST, whose instance needs no
-// credential and is therefore always visible; it points at a closed port so
-// its listing fails instantly instead of reaching a real daemon.
-func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string) {
+// launchCheckGatewayServer starts a /models endpoint answering with status
+// and body.
+func launchCheckGatewayServer(t *testing.T, status int, body string) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasSuffix(r.URL.Path, "/models") {
@@ -44,10 +34,24 @@ func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
+	return srv
+}
 
+// launchCheckRegistry installs a client built from the given providers.toml
+// body on the launchCheckLoadClient seam.
+//
+// The client is the real one — cmdutil.LoadRegistry over the real providers
+// file, no mocks — but its environment is a fixed table rather than the
+// machine's. That matters because launchCheckModels lists every visible
+// instance and implicit instances are conjured from the environment: an
+// ambient TOGETHER_API_KEY would otherwise put api.together.ai in the loop.
+// The one variable the table answers is OLLAMA_HOST, whose instance needs no
+// credential and is therefore always visible; it points at a closed port so
+// its listing fails instantly instead of reaching a real daemon.
+func launchCheckRegistry(t *testing.T, cfg string) {
+	t.Helper()
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "providers.toml")
-	cfg := "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key  = \"test-key\"\n" + strings.Join(gwExtra, "")
 	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +72,57 @@ func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string
 		}
 		return cmdutil.NewRegistryClient(r, stateDir), nil
 	}
+}
+
+// launchCheckGateway starts a /models endpoint answering with status and body,
+// declares it as the keyed "gw" instance in an isolated providers.toml, and
+// installs a client built from that file on the launchCheckLoadClient seam.
+func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string) {
+	t.Helper()
+	srv := launchCheckGatewayServer(t, status, body)
+	cfg := "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key  = \"test-key\"\n" + strings.Join(gwExtra, "")
+	launchCheckRegistry(t, cfg)
+}
+
+// launchCheckKeylessInstance declares an explicit instance on the openai
+// preset with no key in the fixture's fixed environment: an explicit instance
+// stays visible without a credential, so its listing runs and fails at the
+// credential check before any request can leave the process.
+func launchCheckKeylessInstance(t *testing.T) {
+	t.Helper()
+	launchCheckRegistry(t, "[providers.gw]\nbase = \"openai\"\n")
+}
+
+// decodeDiagnostics runs the launch check for the models contract and decodes
+// the diagnostics it printed to stdout.
+func decodeDiagnostics(t *testing.T) []struct {
+	Provider string `json:"provider"`
+	Source   string `json:"source"`
+	Title    string `json:"title"`
+	Message  string `json:"message"`
+} {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{
+		"--protocol", appwire.ProtocolVersion,
+		"--models",
+		"--json",
+	}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
+	}
+	var out struct {
+		Diagnostics []struct {
+			Provider string `json:"provider"`
+			Source   string `json:"source"`
+			Title    string `json:"title"`
+			Message  string `json:"message"`
+		} `json:"diagnostics"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
+	}
+	return out.Diagnostics
 }
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
@@ -152,38 +207,52 @@ func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
 func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	launchCheckGateway(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
-	var stdout, stderr bytes.Buffer
-	err := RunLaunchCheck([]string{
-		"--protocol", appwire.ProtocolVersion,
-		"--models",
-		"--json",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
-	}
-	var out struct {
-		Diagnostics []struct {
-			Provider string `json:"provider"`
-			Source   string `json:"source"`
-			Title    string `json:"title"`
-			Message  string `json:"message"`
-		} `json:"diagnostics"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
-		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
-	}
-	var found bool
-	for _, got := range out.Diagnostics {
+	for _, got := range decodeDiagnostics(t) {
 		if got.Provider == "gw" {
-			found = true
-			if got.Source != "provider" || got.Title != "Provider error" || !strings.Contains(got.Message, "403") {
+			// The picker prints the message inline ("gw — <message>"), so a
+			// listing failure reports its class, not the endpoint's prose.
+			if got.Source != "provider" || got.Title != "Provider error" || got.Message != "HTTP 403" {
 				t.Fatalf("diagnostic=%+v", got)
 			}
+			return
 		}
 	}
-	if !found {
-		t.Fatalf("diagnostics missing the gw entry: %+v", out.Diagnostics)
+	t.Fatalf("diagnostics missing the gw entry")
+}
+
+// The picker prints a provider's listing diagnostic inline under the model
+// list. An endpoint that answers 404 with an HTML error page must not put
+// that page's content in the list: the line stops at the status.
+func TestLaunchCheckDiagnosticStopsA404PageAtTheStatusLine(t *testing.T) {
+	page := "<html><head><title>404 Not Found</title></head><body>nginx: no such path</body></html>"
+	launchCheckGateway(t, http.StatusNotFound, page)
+
+	for _, got := range decodeDiagnostics(t) {
+		if got.Provider == "gw" {
+			if got.Message != "HTTP 404" || strings.Contains(got.Message, "<html") {
+				t.Fatalf("diagnostic message=%q, want the status line without the page content", got.Message)
+			}
+			return
+		}
 	}
+	t.Fatalf("diagnostics missing the gw entry")
+}
+
+// A keyless explicit instance fails its listing at the credential check. The
+// diagnostic must report the class ("no credential"), not the registry's
+// whole remediation warning, which the picker would print under the list.
+func TestLaunchCheckDiagnosticCompactsAMissingCredential(t *testing.T) {
+	launchCheckKeylessInstance(t)
+
+	for _, got := range decodeDiagnostics(t) {
+		if got.Provider == "gw" {
+			if got.Message != "no credential" {
+				t.Fatalf("diagnostic message=%q, want the compact no-credential class", got.Message)
+			}
+			return
+		}
+	}
+	t.Fatalf("diagnostics missing the gw entry")
 }
 
 func TestLaunchCheckModelDiagnosticRedactsEnvSecrets(t *testing.T) {

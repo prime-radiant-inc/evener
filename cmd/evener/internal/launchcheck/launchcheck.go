@@ -3,10 +3,12 @@ package launchcheck
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 )
 
 // launchCheckLoadClient is the injectable hook for tests. Production code
@@ -152,7 +155,7 @@ func launchCheckModels() ([]launchCheckModel, []appwire.ModelListDiagnostic, err
 }
 
 func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDiagnostic {
-	message := redactLaunchCheckDiagnostic(err.Error())
+	message := launchCheckDiagnosticMessage(err)
 	info := diagnostic.FromFields(string(diagnostic.SourceProvider), "", "", message)
 	return appwire.ModelListDiagnostic{
 		Provider: provider,
@@ -161,6 +164,25 @@ func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDia
 		Message:  message,
 		Hint:     info.Hint,
 	}
+}
+
+// launchCheckDiagnosticMessage renders the one-line reason a provider's model
+// listing failed. The picker prints it inline under the model list
+// ("provider — reason"), so it must stop at the failure's class rather than
+// quote the failure: an endpoint that answers 404 with an HTML page puts that
+// page in the message otherwise, and a missing credential quotes the
+// registry's whole remediation warning. Both classes carry machine-readable
+// facts (the status code, the sentinel), so the line stays one short reason;
+// every other failure keeps its own — redacted — text.
+func launchCheckDiagnosticMessage(err error) string {
+	var llmErr llm.Error
+	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
+		return "HTTP " + strconv.Itoa(llmErr.StatusCode())
+	}
+	if errors.Is(err, llm.ErrNoCredential) {
+		return "no credential"
+	}
+	return redactLaunchCheckDiagnostic(err.Error())
 }
 
 func redactLaunchCheckDiagnostic(text string) string {
