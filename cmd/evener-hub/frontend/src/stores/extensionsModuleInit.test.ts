@@ -1,5 +1,5 @@
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { afterEach, expect, test, vi } from "vitest";
-import { FakeClient } from "../../../../../appwire-client/typescript/testing/fakeClient";
 
 afterEach(() => {
   vi.resetModules();
