@@ -199,6 +199,15 @@ describe("SkillEditor real ProseMirror view", () => {
     expect(result.value()).toEqual({ text: "/review please", skillNames: ["review"] });
   });
 
+  it("reports a non-collapsed selection's lower offset, as the textarea's selectionStart did", () => {
+    const result = mount({ text: "keep SELECTED tail", skillNames: [] });
+    act(() => result.ref.current?.setSelection(5, 13));
+    expect(result.ref.current?.getSelection()).toEqual({ start: 5, end: 13 });
+    // `getCursor` is the anchor attachment marker stripping uses, and the field
+    // it replaced reported the selection's start - not its focus end.
+    expect(result.ref.current?.getCursor()).toBe(5);
+  });
+
   it("does not submit Enter or insert a newline while composing", () => {
     const onKeyDown = vi.fn();
     const result = mount({ text: "", skillNames: [] }, { onKeyDown });

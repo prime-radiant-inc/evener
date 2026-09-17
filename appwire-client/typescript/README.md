@@ -108,8 +108,18 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
-- `@evener/appwire-client/state/navigation` - the navigation state layer both
-  apps' navigation stores are built on: the resource-key vocabulary and
+- `@evener/appwire-client/state/connection` - the connection state layer:
+  `createConnectionStore()` is a framework-free store holding one host's wired
+  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
+  settable `serverInfo`/`features` fields the host writes from its own
+  handshake read. `connect(client)` swaps the wired client with a reentrancy
+  guard and a detach of the outgoing client's connection-state listener, so a
+  replaced client never keeps a live subscription; `onConnectionNotification(store, handler)`
+  follows whichever client the store holds across a swap. No handshake, no
+  view binding. Resolves to `state/connection/index.ts`, a barrel.
+- `@evener/appwire-client/state/navigation` - the navigation state layer the
+  web app's navigation store is built on, adoptable by native if it ever
+  gains one: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
   merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
   matching a hub invalidation target to a loaded resource and the revision it
@@ -122,10 +132,11 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   the rail's expand state - over a `connect`/`request`/`onNotification`/`onReady`
   client port handed to `init(client)` and a `NavigationPersistence` port
   (`readExpansion`/`writeExpansion`) for expansion, with `projectNodeExpansionKey`
-  naming a project's row, and the selectors both apps read that state through
-  (`selectors`): launch sources, section and catalog rows with their remaining
-  counts and next offsets, pin-section summaries, the project catalog and a
-  session summary found by ref, each pure over `NavigationStoreState`. The subpath
+  naming a project's row, and the selectors the web app reads that state
+  through (`selectors`): launch sources, section rows with their remaining
+  count and next offset, pin-section summaries, the project catalog and a
+  session summary found by ref, each pure over `NavigationStoreState` and
+  adoptable by native if it ever gains a store. The subpath
   resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
