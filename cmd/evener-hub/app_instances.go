@@ -1174,6 +1174,15 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	return nil
 }
 
+// keylessScheme reports whether an auth scheme resolves without a credential, so
+// the registry derives the instance whether or not one is stored
+// (computeInstances): a keyless local endpoint (auth: none) and a gateway on the
+// optional-bearer scheme. Those instances come back with their provider, which
+// is what makes them the environment's rather than the user's.
+func keylessScheme(auth string) bool {
+	return auth == registry.AuthNone || auth == registry.AuthOptionalBearer
+}
+
 // environmentBacked reports whether an instance owes its existence to the
 // host's environment rather than to a credential the user added through the
 // UI. The two differ in what a removal can achieve: a stored key and a
@@ -1185,16 +1194,27 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 // entry shadows it, which includes the account a user signed in to
 // (client-side parity: fromEnvironment in the AppWire package's
 // credentialLabels).
+//
+// The Codex transport is exempt before the source is consulted, mirroring the
+// client: it reads only its OAuth record, and the instance exists because that
+// record file does - a record the hub cannot parse is still the user's, and the
+// status reports no usable source for it (openAIInstanceStatus) while the
+// registry reports the oauth source. Without the exemption a Codex row whose
+// status resolved no source (empty/none) would be offered Remove in the UI but
+// refused here. The client's other early return - true when the row needs no
+// credential - is already the keylessScheme branch: the wire's
+// CredentialRequired is exactly `Auth != AuthNone && Auth != AuthOptionalBearer`
+// (List, app_instances.go), so `!credentialRequired` is keylessScheme, and
+// keylessScheme returns true below. Verified against
+// appwire-client/typescript/credentialLabels.ts and this file's List entry.
 func environmentBacked(inst registry.Instance) bool {
 	if !inst.Implicit {
 		return false
 	}
-	// An instance whose scheme tolerates a missing credential is re-derived by
-	// the reload with or without one (computeInstances), so a removal would
-	// delete the credential and leave the row standing - with the badge the
-	// affordance just said it did not have. Those are refused, and clearing the
-	// credential is the action that describes what the user wants.
-	if inst.Auth == registry.AuthNone || inst.Auth == registry.AuthOptionalBearer {
+	if inst.Auth == registry.AuthOAuthOpenAICodex {
+		return false
+	}
+	if keylessScheme(inst.Auth) {
 		return true
 	}
 	return inst.CredentialSource != "store" && inst.CredentialSource != "oauth"

@@ -4420,3 +4420,32 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 		t.Fatalf("post-logout row = activeSource %q hasStoredFile %v, want the cleared generation", after.ActiveSource, after.HasStoredFile)
 	}
 }
+
+// TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn: the client's
+// fromEnvironment returns false for the Codex transport unconditionally, so the
+// server must agree whatever source the status resolved - the registry reports
+// the oauth source for a readable record while the status reports no usable
+// source for one the hub cannot read. The cases that must stay environment-backed
+// (and the credential-bearing ones that must not) are pinned beside it, so the
+// exemption cannot widen into "every implicit instance is the user's".
+func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		inst registry.Instance
+		want bool
+	}{
+		{"codex, no resolved source", registry.Instance{Implicit: true, Auth: registry.AuthOAuthOpenAICodex, CredentialSource: "none"}, false},
+		{"codex, empty source", registry.Instance{Implicit: true, Auth: registry.AuthOAuthOpenAICodex, CredentialSource: ""}, false},
+		{"codex, oauth source", registry.Instance{Implicit: true, Auth: registry.AuthOAuthOpenAICodex, CredentialSource: "oauth"}, false},
+		{"keyless local endpoint", registry.Instance{Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"}, true},
+		{"optional-bearer gateway", registry.Instance{Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:GATEWAY_KEY"}, true},
+		{"env-backed bearer", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "env:OPENAI_API_KEY"}, true},
+		{"application-default credentials", registry.Instance{Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"}, true},
+		{"stored curated key", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "store"}, false},
+		{"authored instance", registry.Instance{Implicit: false, Auth: registry.AuthBearer, CredentialSource: "env:OPENAI_API_KEY"}, false},
+	} {
+		if got := environmentBacked(tc.inst); got != tc.want {
+			t.Fatalf("environmentBacked(%+v) = %v, want %v (%s)", tc.inst, got, tc.want, tc.name)
+		}
+	}
+}
