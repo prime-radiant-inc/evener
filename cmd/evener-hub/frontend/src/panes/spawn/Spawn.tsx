@@ -2260,14 +2260,11 @@ function SpawnForm({
                 if (busyRef.current) return;
                 const next = event.target.value;
                 setSource(next);
-                // Selecting a remote host is not itself an attach request when
-                // the manifest already reports it online: that row is attached,
-                // and the call would only be a redundant dial. A host the
-                // manifest still reports offline needs the dial, but its option
-                // is disabled, so the Connect affordance below is the path that
-                // reaches it.
-                const chosen = displaySources.find((candidate) => candidate.id === next);
-                if (!isLocalHost(next) && chosen?.online !== true) connectHost(next);
+                // Selecting a host is never itself an attach request: an online
+                // row is already attached (a dial would only be redundant), and
+                // an offline row's option is disabled, so a select event cannot
+                // name it — the Connect affordance below is the single path that
+                // reaches an offline host.
               }}
             >
               {displaySources.map((candidate) => (

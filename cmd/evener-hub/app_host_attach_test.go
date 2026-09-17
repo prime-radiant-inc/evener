@@ -208,6 +208,60 @@ func TestHostAttachKeepsCallerCancellationRaw(t *testing.T) {
 	}
 }
 
+// A timed-out deployment still names the manager's deploy refusal: the error
+// carries the ErrDeploy sentinel wrapped with the deadline chain, so the
+// manager's terminal class must win over the source's generic deadline mapping
+// (SessionUnavailable) and reach the browser as the typed hubLaunch failure.
+// A genuine transport timeout — the deadline chain with no Deploy sentinel —
+// keeps the source's SessionUnavailable mapping. Before the fix the source's
+// MapAttachError ran first and returned SessionUnavailable for both, so
+// hostAttachWireError never saw the Deploy sentinel.
+func TestHostAttachTimedOutDeployIsHubLaunchError(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		attachErr error
+		info      appwire.ErrorInfo
+	}{
+		{
+			name:      "deploy wrapped with deadline chain",
+			attachErr: fmt.Errorf("%w: host %q build: %w", sshconn.ErrDeploy, "alpha", context.DeadlineExceeded),
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			name:      "genuine transport timeout",
+			attachErr: fmt.Errorf("attach alpha: %w", context.DeadlineExceeded),
+			info:      appwire.ErrorSessionUnavailable,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := hubcore.WebConfig{
+				RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+				RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+					return nil, tc.attachErr
+				},
+			}
+			// A real remote hub source: the precedence under test is between its
+			// own deadline mapping and the manager's terminal classes.
+			sources := appsource.NewRegistry()
+			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
+			hosts := hostAttachRegistry(t, cfg)
+
+			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("attach failure %T=%v, want a typed WireError", err, err)
+			}
+			data, _ := wire.Data.(appwire.ErrorData)
+			if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != tc.info {
+				t.Fatalf("attach failure wire=%+v, want code=%d info=%q", wire, appwire.CodeUnavailable, tc.info)
+			}
+			if !strings.Contains(wire.Message, "alpha") {
+				t.Fatalf("attach failure message %q does not name host alpha", wire.Message)
+			}
+		})
+	}
+}
+
 // A remote-originated request — one forwarded over a peer hub's attach bridge —
 // may not make this hub attach a host. The shared host-routing origin guard
 // refuses it typed before any Ensure-backed dial, so a peer cannot use this hub

@@ -6168,6 +6168,44 @@ test("a rapid double Connect dials the host once", async () => {
   await waitFor(() => expect(screen.queryByRole("button", { name: /Connecting offline-host/ })).toBeNull());
 });
 
+// Changing the host select never dials: an online row is already attached (a
+// dial would only be redundant), and an offline row's option is disabled, so a
+// select event cannot name it. The Connect button below is the single attach
+// path. Before the fix the onChange branch dialed any selected offline row, a
+// latent double-attach if the disabled rendering were ever relaxed.
+test("changing the host select issues no attach call", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  // An online selection moves the draft without an attach.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  expect(attachCalls(fake)).toEqual([]);
+
+  // Even a programmatic change to an offline row — unreachable through the
+  // disabled option in the real UI — still issues no attach: the Connect
+  // button owns that path.
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "offline-host" } });
+  await settled();
+  expect(attachCalls(fake)).toEqual([]);
+
+  // The Connect button still attaches the offline host.
+  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && (call.params as { host: string }).host === "offline-host",
+      ),
+    ).toBe(true),
+  );
+});
+
 // A never-attached host is listed offline with a disabled spawn option
 // (component 06b), so the picker must offer a concrete, enabled Connect
 // affordance for it — otherwise a configured [[hosts]] entry is dead UI. The

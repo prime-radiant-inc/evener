@@ -152,8 +152,22 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 // host that will never attach and must not be retried — so they are typed here
 // instead, rather than reaching the browser as a generic internal error through
 // appserver.WireError.
+//
+// The manager's deploy-family sentinels (ErrDeploy, ErrVersionMismatch,
+// ErrControllerDirty, ErrExecutableMissing) win over the source's generic
+// deadline mapping: a timed-out deployment still carries the deploy sentinel in
+// its chain, and it must reach the browser as the typed HubLaunchError the
+// Connect surface matches, not as SessionUnavailable. Every other error keeps
+// the source's mapping, so a genuine transport timeout (the deadline chain with
+// no deploy sentinel) still becomes SessionUnavailable.
 func classifyHostAttachError(sources *appsource.Registry, host string, err error) error {
 	mapped := err
+	// Preserve the manager's sentinel precedence before the source's
+	// transport mapping can claim the chain: a deploy-family error wrapped
+	// with a deadline still names a failed deploy, not a lost transport.
+	if wire, ok := hostAttachWireError(err).(appwire.WireError); ok {
+		return wire
+	}
 	if sources != nil {
 		if source, ok := sources.Source(host); ok {
 			if classifier, ok := source.(attachErrorClassifier); ok {
