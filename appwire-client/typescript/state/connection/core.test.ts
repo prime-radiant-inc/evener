@@ -55,6 +55,19 @@ describe("createConnectionStore", () => {
     expect(tracking.registrations).toBe(1);
   });
 
+  test("calling connect() again with the same client instance does not notify subscribers", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("ready");
+    store.connect(client);
+    let notifications = 0;
+    const stop = store.subscribe(() => {
+      notifications += 1;
+    });
+    store.connect(client);
+    stop();
+    expect(notifications).toBe(0);
+  });
+
   test("a client-changing write re-checks the client against a fresh read, not the snapshot the updater started from", () => {
     const store = createConnectionStore();
     const a = new FakeClient("ready");

@@ -153,6 +153,13 @@ export function createConnectionStore(): ConnectionStore {
   };
 
   function connect(client: AppwireClientLike): void {
+    // Unlike a direct setState({ client: same }) call - which still
+    // notifies, per the framework-free store's own documented contract of
+    // publishing every write even when nothing changed - a repeated
+    // connect() with the identical client is a caller re-declaring what is
+    // already true (an effect re-running under, say, React StrictMode's
+    // double-invocation) and should cost nothing.
+    if (store.getState().client === client) return;
     store.setState({ client });
   }
 
