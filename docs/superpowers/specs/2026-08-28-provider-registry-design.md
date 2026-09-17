@@ -976,15 +976,20 @@ A row the config layer disabled (`disabled = true` on the exact row or a
 matching glob, §10) fails `Resolve` with `ErrModelDisabled`, which every
 listing already drops as a resolve error: `Client.Models`, `launch-check
 --models`, the `model/list` RPC, and the session startup snapshot all omit
-it, and `FindModel` skips it. Aliases stay in lockstep with their target:
-disabling a target disables aliases resolving through it, and an alias's
-own exact-row or glob flags never apply — the flag lives on the target
-row alone. Toggling an alias writes through to its target
-(`Registry.AliasTarget`), and a region-prefixed or dated-suffix spelling
-of an alias id routes the same way (§7.2's steps 3-4 land on the alias
-row); a dangling alias, a glob id, and a cross-provider target are
-refusals. The sheet inventory lists no alias rows, so every toggle maps
-one-to-one onto the row it writes.
+it, and `FindModel` skips it. Alias rows follow their target, with one
+distinction. A same-provider alias is lockstep: the flag lives on the
+target row alone, so disabling a target disables every alias resolving
+through it and the alias's own exact-row or glob flags never apply. A
+cross-provider alias carries its own row on the instance that names it,
+and the verdict it inherits from the target is only the default: a flag on
+the alias's own row (exact row or glob) overrides it both ways, so each
+connection disables or re-enables the model without touching the record
+the alias points at. `Registry.AliasTarget` names the row a toggle writes —
+the target for a same-provider alias, the alias row itself across
+providers — and a region-prefixed or dated-suffix spelling of an alias id
+routes the same way (§7.2's steps 3-4 land on the alias row); a dangling
+alias and a glob id are refusals. The sheet inventory lists alias rows and
+every listed row is toggleable, so each switch maps onto the row it writes.
 `default_model`/`cheap_model` naming a disabled model get no
 special validation; they fail at use with the same error. There is no
 grandfathering: a session whose model is disabled afterwards errors on next
@@ -1748,6 +1753,9 @@ so a glob kill plus exact exceptions composes; later layers beat earlier
 ones, so user config always wins. The hub's `evener/instance/setModelDisabled`
 writes the explicit bool on the exact row — authoring the row when the model
 exists only as a curated entry — so the choice survives catalog refreshes.
+An alias row takes the flag per §7.2: a same-provider alias's toggle lands
+on its target, a cross-provider alias's on its own row on this instance,
+which is what lets each connection carry its own choice.
 
 Rules, enforced at load with errors that name the instance and key:
 
@@ -1895,9 +1903,11 @@ refused). The appwire types
 change shape (`appwire/types.go:2488-2523`): `InstanceEntry` drops `Type` and
 `APIStyle` and gains `Base`, `Protocol`, `Surface`, `Vars`, `Auth`,
 `Implicit`, and `Models` — the instance's known models (exact catalog rows
-plus cached live ids) with their effective disabled state
-(`InstanceModels`), which the sheet renders as one toggle per row driving
-`evener/instance/setModelDisabled`. The hub prefetches every instance's
+plus cached live ids, alias rows included) with their effective disabled
+state (`InstanceModels`), which the sheet renders as one toggle per row
+driving `evener/instance/setModelDisabled`; every listed row is toggleable,
+with a cross-provider alias toggling on that instance alone (§7.2). The
+hub prefetches every instance's
 live listing at startup and every few minutes after, so the sheet reads
 cached inventory; a Refresh button drives `evener/instance/refreshModels`
 for one instance on demand. Toggling a live-only id authors an
