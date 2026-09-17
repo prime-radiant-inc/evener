@@ -223,10 +223,61 @@ test("a cold load of the pane does not move the keyboard", async () => {
   expect(document.activeElement).toBe(document.body);
 });
 
-// The pane swaps its rows for the skeleton while a read is in flight, so a
-// refresh - not only a listing that loses a row - unmounts the control holding
-// the keyboard. That transition has to hand focus back to the pane as well.
-test("a refresh that swaps the rows for the skeleton keeps the keyboard in the pane", async () => {
+// A read in flight must not take the rows away: the list IS what the user is
+// reading, and swapping it for the skeleton on every background refresh makes it
+// flicker and unmounts the row the keyboard is on. The skeleton is for the state
+// it was written for - nothing to show yet - which is what the connection dialog
+// already does with its own rows.
+test("a background refresh keeps the rows mounted instead of swapping in the skeleton", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  await screen.findByRole("button", { name: /work/ });
+
+  const refresh = deferred<InstanceListResponse>();
+  fake.on("evener/instance/list", () => refresh.promise);
+  let inFlight!: Promise<boolean>;
+  await act(async () => {
+    inFlight = credentialsStore.getState().fetch();
+    await Promise.resolve();
+  });
+
+  // The read is in flight and the rows are still the ones on screen.
+  expect(credentialsStore.getState().loading).toBe(true);
+  expect(screen.getByRole("button", { name: /work/ })).toBeTruthy();
+  expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+
+  await act(async () => {
+    refresh.resolve(LIST);
+    await inFlight;
+  });
+  expect(screen.getByRole("button", { name: /work/ })).toBeTruthy();
+});
+
+// A failed refresh keeps the listing it already had (readListing works that way),
+// so the rows it kept are still the user's - the banner explains them rather than
+// replacing them.
+test("a failed refresh keeps the rows and shows the banner", async () => {
+  const fake = connectFakeClient();
+  fake.on("evener/instance/list", () => LIST);
+  render(<CredentialsSection sectionId="credentials" />);
+  const workRow = await screen.findByRole("button", { name: /work/ });
+  workRow.focus();
+
+  fake.on("evener/instance/list", () => {
+    throw new WireError("listing unavailable", -32000);
+  });
+  await act(async () => {
+    await credentialsStore.getState().fetch();
+  });
+
+  expect(screen.getByText(/Failed to load/)).toBeTruthy();
+  expect(screen.getByRole("button", { name: /work/ })).toBe(workRow);
+});
+
+// ...and the keyboard stays where the user put it, since nothing unmounted under
+// it.
+test("a background refresh keeps the keyboard in the pane", async () => {
   const fake = connectFakeClient();
   fake.on("evener/instance/list", () => LIST);
   render(<CredentialsSection sectionId="credentials" />);
@@ -242,17 +293,15 @@ test("a refresh that swaps the rows for the skeleton keeps the keyboard in the p
     await Promise.resolve();
   });
 
-  // The row really is gone for the duration of the read; the keyboard is not on
-  // <body>.
-  expect(screen.queryByRole("button", { name: /work/ })).toBeNull();
-  expect(document.activeElement).not.toBe(document.body);
-  expect(screen.getByRole("button", { name: "Connect provider" })).toBe(document.activeElement);
+  // The row stayed mounted through the read, so the keyboard never moved.
+  expect(screen.getByRole("button", { name: /work/ })).toBe(workRow);
+  expect(document.activeElement).toBe(workRow);
 
   await act(async () => {
     refresh.resolve(LIST);
     await inFlight;
   });
-  expect(await screen.findByRole("button", { name: /work/ })).toBeTruthy();
+  expect(screen.getByRole("button", { name: /work/ })).toBe(workRow);
 });
 
 // Warnings describe the listing that produced them - a providers.toml load
@@ -837,18 +886,27 @@ describe("credential verification", () => {
 // listing - never as a failure of the action the user asked for, and never in
 // the store's own words.
 describe("actions refused while the held listing belongs to a replaced connection", () => {
-  /** Renders the section with a listing on screen, replaces the client (as a
-   * reconnect does), and leaves the store in the window the guard refuses in:
-   * the rows on screen were read by the connection that is gone and this one's
-   * listing has not been applied. The marker is set the way the store sets it
-   * on a replacement (stores/credentials.ts's connectionStore subscription);
-   * holding the read open cannot express this state here, because a read in
-   * flight swaps the section's rows for its skeleton. */
-  async function renderWithReplacedConnection(): Promise<{ replacement: FakeClient }> {
+  /** Renders the section with a listing on screen, then replaces the client the
+   * way a reconnect does and holds its own read open: the rows on screen were
+   * read by the connection that is gone, this one's listing has not been applied,
+   * and the marker is set exactly as the store's own replacement path sets it
+   * (stores/credentials.ts's connectionStore subscription). The rows stay mounted
+   * through the read, so this is the real window rather than a seeded copy of it.
+   */
+  async function renderWithReplacedConnection(): Promise<{
+    replacement: FakeClient;
+    /** Answers the replacement's held listing read, the way a real reconnect's
+     * read lands, and waits for the marker it clears. */
+    release: () => Promise<void>;
+  }> {
     const first = connectFakeClient();
     first.on("evener/instance/list", () => LIST);
+    let finishRestore!: (value: InstanceListResponse) => void;
+    const restore = new Promise<InstanceListResponse>((resolve) => {
+      finishRestore = resolve;
+    });
     const replacement = new FakeClient("ready");
-    replacement.on("evener/instance/list", () => LIST);
+    replacement.on("evener/instance/list", () => restore);
     render(
       <>
         <CredentialsSection sectionId="credentials" />
@@ -857,14 +915,19 @@ describe("actions refused while the held listing belongs to a replaced connectio
     );
     await screen.findByText("work");
     await act(async () => connectionStore.getState().connect(replacement));
-    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
-    await act(async () => credentialsStore.setState({ listingFromPreviousConnection: true }));
+    expect(credentialsStore.getState().listingFromPreviousConnection).toBe(true);
     expect(screen.getByText("work")).toBeTruthy();
-    return { replacement };
+    return {
+      replacement,
+      release: async () => {
+        await act(async () => finishRestore(LIST));
+        await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+      },
+    };
   }
 
   test("a credential test is refused with the change, clears its pending state, and re-reads the listing", async () => {
-    const { replacement } = await renderWithReplacedConnection();
+    const { replacement, release } = await renderWithReplacedConnection();
     const user = userEvent.setup();
     const inspector = await openSheet(user, "work");
     await user.click(within(inspector).getByRole("button", { name: "Test credentials" }));
@@ -880,7 +943,7 @@ describe("actions refused while the held listing belongs to a replaced connectio
     );
     // The refusal asked for this connection's own listing, and that read is
     // what reopens the action.
-    await waitFor(() => expect(credentialsStore.getState().listingFromPreviousConnection).toBe(false));
+    await release();
 
     // The same action now goes out and is answered by this connection.
     replacement.on("evener/auth/test", () => ({
