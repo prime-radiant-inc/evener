@@ -19,9 +19,12 @@ import {
   encodeLocalConfig,
   type TranscriptDisplayStoreState as HubStoreState,
   type HubTranscriptDisplayDefault,
+  isViewportClass,
+  LAYOUTS,
   legacyWritesFromConfig,
   normalizeConfig,
   resolveEffectiveConfig,
+  type TranscriptDisplayChange,
   type TranscriptDisplayConfigV1,
   transcriptDisplaySupport,
   type ViewportClass,
@@ -55,13 +58,6 @@ const LEGACY_KEYS = [
 ] as const;
 
 type ConfigByLayout = Partial<Record<ViewportClass, TranscriptDisplayConfigV1>>;
-type HubByLayout = Partial<Record<ViewportClass, HubTranscriptDisplayDefault>>;
-
-export interface TranscriptDisplayChange {
-  layout: ViewportClass;
-  revision: number;
-  config: TranscriptDisplayConfigV1;
-}
 
 /** The hub fields the panes read, mirrored from the package store on every
  * transition it publishes. */
@@ -255,10 +251,6 @@ function broadcastLocal(layout: ViewportClass, encoded: string | null): void {
   }
 }
 
-function isLayout(value: unknown): value is ViewportClass {
-  return value === "desktop" || value === "mobile";
-}
-
 function isLocalMessage(value: unknown): value is LocalMessage {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
@@ -267,7 +259,7 @@ function isLocalMessage(value: unknown): value is LocalMessage {
     candidate.version !== 1 ||
     typeof candidate.sourceId !== "string" ||
     candidate.sourceId === "" ||
-    !isLayout(candidate.layout) ||
+    !isViewportClass(candidate.layout) ||
     !(candidate.config === null || typeof candidate.config === "string") ||
     !(candidate.fingerprint === null || typeof candidate.fingerprint === "string")
   )
@@ -417,13 +409,13 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
 // publish clears both (detachHub, a support drop, reset), and a layer left out
 // of the transition has its pending remount discarded as another layer's.
 hubStore.subscribe((next, previous) => {
-  const state = transcriptDisplayStore.getState();
   const mirrored = mirroredHubFields(next);
-  const changed = (["desktop", "mobile"] as const).filter((layout) => next.hub[layout] !== previous.hub[layout]);
+  const changed = LAYOUTS.filter((layout) => next.hub[layout] !== previous.hub[layout]);
   if (changed.length === 0) {
     transcriptDisplayStore.setState(mirrored);
     return;
   }
+  const state = transcriptDisplayStore.getState();
   publishEffectiveTransition(
     state,
     { ...state, hub: next.hub },
@@ -492,7 +484,7 @@ export function initTranscriptDisplay(): void {
   const migrated = migrateLegacyTranscriptDisplay();
   const local: ConfigByLayout = {};
   let migrationWriteOK = migrated === undefined;
-  for (const layout of ["desktop", "mobile"] as const) {
+  for (const layout of LAYOUTS) {
     const raw = readTranscriptDisplayLocal(layout);
     const config = decodeLocalConfig(raw);
     if (config !== undefined) local[layout] = config;
@@ -514,7 +506,7 @@ export function resetTranscriptDisplayStoreForTests(): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = null;
-  transcriptDisplayStore.setState({ ...initialState() });
+  transcriptDisplayStore.setState(initialState());
   hubStore.setSupport(transcriptDisplaySupport(connectionStore.getState().features));
 }
 
@@ -532,5 +524,3 @@ export function useTranscriptDisplayStore<T>(
   // biome-ignore lint/correctness/useHookAtTopLevel: both arms call the same hook
   return selector ? useStore(transcriptDisplayStore, selector) : useStore(transcriptDisplayStore);
 }
-
-export type { HubByLayout };

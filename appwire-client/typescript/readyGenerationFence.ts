@@ -123,3 +123,17 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
     },
   };
 }
+
+/** WHY a write's reply is not its own to land, because the two answers call
+ * for opposite things. LOST-HUB: the write's own claim is still intact and
+ * only support went away (the unknown window keeps the state and the
+ * in-flight work), so nothing else will ever settle this write and the
+ * editor must not be left mid-write. SUPERSEDED: a later write on this row,
+ * or a payload retirement, has taken over - whoever took over owns `saving`
+ * now, and this reply must touch nothing. `stillClaimed` is the caller's own
+ * per-row check (a layout's write token, in transcriptDisplayStore.ts; the
+ * store-wide one, in keybindingsStore.ts) - this fence knows only whether the
+ * generation itself is still current. */
+export function lostHub(fence: ReadyGenerationFence, generation: number, stillClaimed: boolean): boolean {
+  return stillClaimed && fence.isCurrent(generation);
+}

@@ -484,8 +484,8 @@ export {
   createTranscriptDisplayStore,
   discardStoredDraft as discardStoredTranscriptDraft,
   fromWireChange,
-  InvalidPatchResponseError,
   isViewportClass,
+  LAYOUTS,
   transcriptDisplaySupport,
 } from "./transcriptDisplayStore";
 export type {

@@ -28,6 +28,7 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
+import { createDraftRepository, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -35,7 +36,7 @@ import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./keybindingOverrides";
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
 import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
-import { createReadyGenerationFence } from "./readyGenerationFence";
+import { createReadyGenerationFence, lostHub } from "./readyGenerationFence";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -308,21 +309,10 @@ function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: numbe
   return draft !== null && draft.revision !== confirmedRevision;
 }
 
-/** What the port held is not a checkpoint this build can read. Distinct from
- * a port that could not be reached: the record is the problem, so the section
- * can still load the hub and can still throw the record away. */
-class UnreadableDraftError extends Error {}
-
-/** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
- * raw value goes straight back to the port, which matches its own bytes, so a
- * record no build can decode is still the record removed. A host whose store is
- * gone (no connection, so no client to build one from) needs this to clear an
- * unreadable record; a host with a live store uses discardDraft, which also
- * publishes the state. One implementation either way. */
-export function discardStoredDraft(storage: KeybindingDraftStorage): void {
-  const value = storage.load();
-  if (value !== null && value !== undefined) storage.removeIf(value as KeybindingDraftCheckpoint);
-}
+// discardStoredDraft is re-exported here (not just from draftCheckpointPort
+// directly) so index.ts's existing `discardStoredDraft as
+// discardStoredKeybindingDraft` import keeps working unchanged.
+export { discardStoredDraft } from "./draftCheckpointPort";
 
 function invalidDraft(): never {
   throw new UnreadableDraftError("Invalid keybinding draft.");
@@ -363,73 +353,6 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
     baseRevision: item.baseRevision,
     rules: keybindingRules(item.rules),
     writeUncertain: item.writeUncertain,
-  };
-}
-
-/** The draft port with every checkpoint normalized through draftCheckpoint in
- * BOTH directions. load() is the trust boundary (a malformed stored draft
- * surfaces as a storage failure, never as state); save() and removeIf() go
- * through the same constructor so a port that compares serialized bytes
- * (native compares JSON strings) sees one key order on both sides - a
- * checkpoint spread as `{ ...input, id }` and one rebuilt by load() would
- * otherwise differ only in where `id` sits, and removeIf would never match.
- *
- * draftCheckpoint only keeps the fields this build knows, so a record another
- * build wrote with extra fields decodes to a normalized checkpoint that is
- * not what the stored bytes actually hold - a byte-aware port's own compare
- * (matching what it read against what it is asked to remove) would then
- * refuse to remove a record it just handed back. rawFrom keeps load()'s raw
- * value beside the checkpoint built from it, so removeIf can still hand the
- * port back exactly what it read: the only thing a byte-aware port can name a
- * record by. A checkpoint removeIf is given that load() never produced (a
- * fresh save's own checkpoint, or one rebuilt from published state) has no
- * raw value to recover and falls back to draftCheckpoint's normalized one, as
- * before - such a checkpoint carries no unknown fields to begin with. */
-function draftRepository(storage: KeybindingDraftStorage) {
-  const rawFrom = new WeakMap<KeybindingDraftCheckpoint, unknown>();
-  // The raw value load() most recently classified as unreadable. Named by
-  // WHEN it was classified, not by discardUnreadable's own call: another
-  // store or a newer app version can replace the record between the two, and
-  // a fresh storage.load() at discard time would then name (and remove)
-  // whatever is there NOW - never the record the user was actually shown.
-  let lastUnreadable: unknown;
-  let hasLastUnreadable = false;
-  return {
-    createId: () => storage.createId(),
-    load(): KeybindingDraftCheckpoint | null {
-      const value = storage.load();
-      if (value === null || value === undefined) {
-        hasLastUnreadable = false;
-        return null;
-      }
-      try {
-        const checkpoint = draftCheckpoint(value);
-        hasLastUnreadable = false;
-        rawFrom.set(checkpoint, value);
-        return checkpoint;
-      } catch (error) {
-        lastUnreadable = value;
-        hasLastUnreadable = true;
-        throw error;
-      }
-    },
-    save: (checkpoint: KeybindingDraftCheckpoint) => storage.save(draftCheckpoint(checkpoint)),
-    removeIf: (checkpoint: KeybindingDraftCheckpoint) =>
-      storage.removeIf((rawFrom.get(checkpoint) ?? draftCheckpoint(checkpoint)) as KeybindingDraftCheckpoint),
-    /** Removes the record load() classified unreadable, by the identity of
-     * the bytes it was classified from - never a fresh reload, which could
-     * name a record another writer has since replaced. A byte-aware port's
-     * own compare (removeIf) then refuses on its own if that record is gone;
-     * this falls back to discardStoredDraft's fresh-reload behavior only when
-     * nothing has been classified yet (defensive: the store never calls this
-     * without classifying first). */
-    discardUnreadable(): void {
-      if (!hasLastUnreadable) {
-        discardStoredDraft(storage);
-        return;
-      }
-      storage.removeIf(lastUnreadable as KeybindingDraftCheckpoint);
-    },
   };
 }
 
@@ -643,7 +566,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     deps.registry === undefined
       ? verbatimReconciler()
       : registryReconciler(deps.registry, deps.characterKeyTriggers ?? (() => true));
-  const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
+  const drafts = createDraftRepository(deps.drafts ?? memoryDraftStorage(), draftCheckpoint);
 
   // Ready-generation wiring: every refresh, write and notification captures
   // the generation it started under and lands only through the shared fence.
@@ -716,7 +639,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * the state and the in-flight work), so nothing else will ever settle this
    * write and the editor must not be left mid-write. */
   function whyFenced(generation: number, token: number): "superseded" | "lost-hub" {
-    return token === fence.writeToken && fence.isCurrent(generation) ? "lost-hub" : "superseded";
+    return lostHub(fence, generation, token === fence.writeToken) ? "lost-hub" : "superseded";
   }
 
   /** Publishes the end of a write whose reply can never be settled by anything
@@ -1027,7 +950,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable && !getState().draftUnreadable) return;
+      const restored = getState();
+      if (restored.storageUnavailable && !restored.draftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -1196,12 +1120,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // An unreadable record is the one storage failure discarding can FIX, so
     // it is not a reason to refuse: throwing the record away is exactly what
     // the user is asking for.
-    if (
-      fence.disposed ||
-      state.saving ||
-      state.writeUncertain ||
-      (state.storageUnavailable && !getState().draftUnreadable)
-    )
+    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable))
       throw new Error(UNAVAILABLE_MESSAGE);
   }
 
@@ -1399,7 +1318,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).
       reconciler.unapplyAll();
-      setState({ ...initialState() });
+      setState(initialState());
     },
     dispose() {
       if (fence.disposed) return;
