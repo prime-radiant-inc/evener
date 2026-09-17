@@ -66,128 +66,97 @@ func plantInstalledPlugin(t *testing.T, m *Manager, plugin, marketplace string) 
 	}
 }
 
-func TestAddMarketplaceReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
+// TestWriterReportsAMigrationThatLandsDuringItsOwnLockAcquisition is one body
+// (legacyMigrationPending, an optional extra plant, the writer's own call,
+// then both StoreChanges fields) run per writer: AddMarketplace, RemoveMarketplace,
+// RefreshMarketplace, EditMarketplace, plugin Remove, SetEnabled and Gc.
+func TestWriterReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
+	cases := []struct {
+		name  string
+		plant func(t *testing.T, m *Manager)
+		call  func(t *testing.T, m *Manager) (StoreChanges, error)
+		why   string
+	}{
+		{
+			name: "AddMarketplace",
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				dir := writeTestMarketplaceDir(t, "baz")
+				_, changes, err := m.AddMarketplace(context.Background(), "baz", Source{Kind: SourceDirectory, Path: dir})
+				return changes, err
+			},
+			why: "AddMarketplace's own write and the migration's rename both touch Marketplaces; the migration's re-key touches Plugins independent of AddMarketplace's own operation",
+		},
+		{
+			name:  "RemoveMarketplace",
+			plant: func(t *testing.T, m *Manager) { plantDirectoryMarketplace(t, m, "baz") },
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				return m.RemoveMarketplace(context.Background(), "baz")
+			},
+			why: "the migration re-keyed the legacy name's plugin, independent of RemoveMarketplace's own target",
+		},
+		{
+			name:  "RefreshMarketplace",
+			plant: func(t *testing.T, m *Manager) { plantDirectoryMarketplace(t, m, "baz") },
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				return m.RefreshMarketplace(context.Background(), "baz")
+			},
+			why: "the migration re-keyed the legacy name's plugin, independent of RefreshMarketplace's own target",
+		},
+		{
+			name:  "EditMarketplace",
+			plant: func(t *testing.T, m *Manager) { plantDirectoryMarketplace(t, m, "baz") },
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				newDir := writeTestMarketplaceDir(t, "baz2")
+				_, changes, err := m.EditMarketplace(context.Background(), "baz", "", &Source{Kind: SourceDirectory, Path: newDir})
+				return changes, err
+			},
+			why: "the migration re-keyed the legacy name's plugin, independent of EditMarketplace's own target",
+		},
+		{
+			name:  "Remove",
+			plant: func(t *testing.T, m *Manager) { plantInstalledPlugin(t, m, "widget2", "baz") },
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				return m.Remove(context.Background(), "widget2", "baz")
+			},
+			why: "the migration renamed the legacy marketplace, independent of Remove's own target",
+		},
+		{
+			name:  "SetEnabled",
+			plant: func(t *testing.T, m *Manager) { plantInstalledPlugin(t, m, "widget2", "baz") },
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				return m.SetEnabled(context.Background(), "widget2", "baz", false)
+			},
+			why: "the migration renamed the legacy marketplace, independent of SetEnabled's own target - mutateEntry is also SetAutoUpgrade's mechanism",
+		},
+		{
+			name: "Gc",
+			call: func(t *testing.T, m *Manager) (StoreChanges, error) {
+				_, changes, err := m.Gc(context.Background())
+				return changes, err
+			},
+			why: "Gc's own sweep touches neither store file, so this is entirely the migration's own signal",
+		},
+	}
 
-	dir := writeTestMarketplaceDir(t, "baz")
-	_, changes, err := m.AddMarketplace(context.Background(), "baz", Source{Kind: SourceDirectory, Path: dir})
-	if err != nil {
-		t.Fatalf("AddMarketplace: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true: AddMarketplace's own write and the migration's rename both touch it", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true: the migration re-keyed the legacy name's plugin, independent of AddMarketplace's own operation", changes)
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := NewManager(t.TempDir())
+			m.Stderr = io.Discard
+			legacyMigrationPending(t, m)
+			if tc.plant != nil {
+				tc.plant(t, m)
+			}
 
-func TestRemoveMarketplaceReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
-	plantDirectoryMarketplace(t, m, "baz")
-
-	changes, err := m.RemoveMarketplace(context.Background(), "baz")
-	if err != nil {
-		t.Fatalf("RemoveMarketplace: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true: the migration re-keyed the legacy name's plugin, independent of RemoveMarketplace's own target", changes)
-	}
-}
-
-func TestRefreshMarketplaceReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
-	plantDirectoryMarketplace(t, m, "baz")
-
-	changes, err := m.RefreshMarketplace(context.Background(), "baz")
-	if err != nil {
-		t.Fatalf("RefreshMarketplace: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true: the migration re-keyed the legacy name's plugin, independent of RefreshMarketplace's own target", changes)
-	}
-}
-
-func TestEditMarketplaceReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
-	plantDirectoryMarketplace(t, m, "baz")
-
-	newDir := writeTestMarketplaceDir(t, "baz2")
-	_, changes, err := m.EditMarketplace(context.Background(), "baz", "", &Source{Kind: SourceDirectory, Path: newDir})
-	if err != nil {
-		t.Fatalf("EditMarketplace: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true: the migration re-keyed the legacy name's plugin, independent of EditMarketplace's own target", changes)
-	}
-}
-
-func TestPluginRemoveReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
-	plantInstalledPlugin(t, m, "widget2", "baz")
-
-	changes, err := m.Remove(context.Background(), "widget2", "baz")
-	if err != nil {
-		t.Fatalf("Remove: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true: the migration renamed the legacy marketplace, independent of Remove's own target", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true", changes)
-	}
-}
-
-func TestSetEnabledReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
-	plantInstalledPlugin(t, m, "widget2", "baz")
-
-	changes, err := m.SetEnabled(context.Background(), "widget2", "baz", false)
-	if err != nil {
-		t.Fatalf("SetEnabled: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true: the migration renamed the legacy marketplace, independent of SetEnabled's own target - mutateEntry is also SetAutoUpgrade's mechanism", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true", changes)
-	}
-}
-
-func TestGcReportsAMigrationThatLandsDuringItsOwnLockAcquisition(t *testing.T) {
-	m := NewManager(t.TempDir())
-	m.Stderr = io.Discard
-	legacyMigrationPending(t, m)
-
-	_, changes, err := m.Gc(context.Background())
-	if err != nil {
-		t.Fatalf("Gc: %v", err)
-	}
-	if !changes.Marketplaces {
-		t.Fatalf("changes = %+v, want Marketplaces true: Gc's own sweep touches neither store file, so this is entirely the migration's own signal", changes)
-	}
-	if !changes.Plugins {
-		t.Fatalf("changes = %+v, want Plugins true", changes)
+			changes, err := tc.call(t, m)
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			if !changes.Marketplaces {
+				t.Fatalf("changes = %+v, want Marketplaces true: %s", changes, tc.why)
+			}
+			if !changes.Plugins {
+				t.Fatalf("changes = %+v, want Plugins true: %s", changes, tc.why)
+			}
+		})
 	}
 }

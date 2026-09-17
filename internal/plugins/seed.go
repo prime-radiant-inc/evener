@@ -37,6 +37,8 @@ func (m *Manager) SeedDefaultMarketplaces(ctx context.Context) (bool, error) {
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return false, err
 	}
+	// changes is discarded: SeedDefaultMarketplaces runs on hub start, before
+	// any client is connected to broadcast to.
 	release, _, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return false, err
