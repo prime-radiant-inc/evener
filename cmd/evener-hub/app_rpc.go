@@ -366,10 +366,11 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	return newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	return server
 }
 
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) *appserver.Server {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -546,8 +547,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// hub's top-level lifecycle drains it unconditionally on the way out
 	// (main.go), not only on the tracing path, and does so before the SSH
 	// manager closes the transports these fan-outs read from.
-	registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server
+	// The returned controller owns the per-host fan-out wakeups: newWebServer
+	// (web.go) keeps the handle so main.go can bind hostAttached to the
+	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
+	// moment its host's fresh channel is installed.
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
+	return server, hostAdmin
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {

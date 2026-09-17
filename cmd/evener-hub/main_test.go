@@ -673,7 +673,7 @@ func TestHubSSHStateInvalidationPokesRemoteRefreshOnAttach(t *testing.T) {
 		{sshconn.EventState, false},
 	} {
 		pokes := 0
-		hubSSHStateInvalidation(nil, func() { pokes++ })(sshconn.Event{Kind: tc.kind})
+		hubSSHStateInvalidation(nil, func(string) { pokes++ })(sshconn.Event{Kind: tc.kind})
 		if got := pokes > 0; got != tc.wantPoke {
 			t.Fatalf("kind %q poked refresh=%v, want %v", tc.kind, got, tc.wantPoke)
 		}

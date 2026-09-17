@@ -415,6 +415,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// constructed before the WebServer it must invalidate, and it is only ever
 	// invoked once the background loops start attaching hosts.
 	var sshStateInvalidatedNavigation func()
+	// hostAttachedWakeup is late-bound like the navigation hook above: the
+	// host-admin controller (and its per-host fan-outs) is constructed with
+	// the WebServer below, after the SSH manager, and it is only ever invoked
+	// once the background loops start attaching hosts.
+	var hostAttachedWakeup func(host string)
 	sshManager := sshconn.New(hostRegistry, sshconn.Options{
 		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
 		OnEvent: hubSSHStateInvalidation(
@@ -430,10 +435,20 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			// same transition so an explicit evener/host/attach populates the tree
 			// immediately. remotePoke is buffered 1 and this send is non-blocking,
 			// so the sshconn event loop never blocks on a refresh already pending.
-			func() {
+			func(host string) {
 				select {
 				case remotePoke <- struct{}{}:
 				default:
+				}
+				// The same transition wakes the host-notification fan-out: a
+				// fan-out sleeping in backoff would otherwise wait up to 30s
+				// before subscribing while the new client's notification buffer
+				// fills undrained. The wakeup carries no client — the fan-out
+				// still resolves the fresh client through ClientIfAttached —
+				// and the send below is non-blocking for the same reason the
+				// poke above is: the sshconn event loop must never block.
+				if hostAttachedWakeup != nil {
+					hostAttachedWakeup(host)
 				}
 			},
 		),
@@ -507,6 +522,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		},
 		RemoteHostOnline: sshManager.Attached,
 	}, appwireTrace)
+	// Bind the host-notification wakeup now that the controller exists: the
+	// sshconn manager (built above) fires EventAttached once the fresh channel
+	// is installed, and the controller (built with the WebServer just above)
+	// owns the fan-outs. The wakeup rides that same attach event — alongside
+	// the navigation invalidation and the remote-thread poke wired into OnEvent
+	// above — rather than inventing a second path. A nil controller (no remote
+	// hosts) leaves the slot nil, which the callback already tolerates.
+	if web.hostAdmin != nil {
+		hostAttachedWakeup = web.hostAdmin.hostAttached
+	}
 	// Drain the AppWire RPC server on every exit path, tracing or not (round
 	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
 	// and Shutdown is what cancels it, so a hub that only stopped its HTTP
@@ -694,7 +719,7 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 // navigation tree until the refresher's next tick unless that transition pokes
 // it. Detach and terminal failure do not need the extra callback — the
 // last-known-good carry-forward already keeps a dropped host's rows.
-func hubSSHStateInvalidation(invalidate func(), onAttach func()) func(sshconn.Event) {
+func hubSSHStateInvalidation(invalidate func(), onAttach func(host string)) func(sshconn.Event) {
 	return func(ev sshconn.Event) {
 		switch ev.Kind {
 		case sshconn.EventAttached:
@@ -702,7 +727,7 @@ func hubSSHStateInvalidation(invalidate func(), onAttach func()) func(sshconn.Ev
 				invalidate()
 			}
 			if onAttach != nil {
-				onAttach()
+				onAttach(ev.Host)
 			}
 		case sshconn.EventDetached, sshconn.EventFailed:
 			if invalidate != nil {

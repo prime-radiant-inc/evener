@@ -940,6 +940,59 @@ func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHu
 	}
 }
 
+// TestHostAdminAttachWakesBackoffSleepingFanOut pins the round-seven M1
+// finding: an EventAttached must rebind the host-notification broker
+// immediately, not after its exponential backoff (up to 30s) expires. A
+// fan-out parked in backoff while its host is offline must subscribe — pinned
+// by observing the source's host-notification subscriber count, i.e. the
+// SubscribeHostNotifications registration that starts the fresh client's
+// drain — as soon as the attach event arrives and the host reports online.
+func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		controller.fanOut(ctx, source)
+	}()
+
+	// Let the fan-out enter backoff while the host reports offline: it must
+	// not subscribe before the attach.
+	time.Sleep(250 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
+	}
+
+	// The attach flips the host online and wakes the broker for it.
+	online.Store(true)
+	controller.hostAttached("m4")
+	waitForHostNotificationSubscribers(t, source, 1,
+		"the attach event did not wake the backoff-sleeping fan-out")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fanOut did not return after its context was canceled")
+	}
+}
+
 // TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck pins the ordering
 // of the fail-closed checks: a method the proxy may never forward is refused
 // with InvalidParams even when the host is offline, without consulting the
