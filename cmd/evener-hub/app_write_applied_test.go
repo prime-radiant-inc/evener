@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/auth/openai/oaitest"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/credentials"
@@ -247,4 +248,128 @@ func TestHubRPCInstanceRemoveBroadcastsWhenTheRollbackCouldNotBeWritten(t *testi
 		t.Fatalf("evener/instance/remove = %v, want the double failure this test is about", err)
 	}
 	waitForAuthUpdatedBroadcast(t, client, "a removal whose rollback could not be written")
+}
+
+// The cleanup's own failure can also fail to restore what it already
+// deleted: TestInstances_RemoveRestoresTheStoredKeyWhenTheOAuthRecordCannotBeDeleted
+// covers the OAuth delete failing after the stored key is already gone, with
+// a clean restore of that key. This is its double-failure sibling - putting
+// the key back also fails - so the key stays deleted even though [providers.work]
+// never moved, and every other client's credential status for it is stale.
+func TestInstances_RemoveMarksAppliedWhenTheDeletedCredentialCannotBeRestored(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	f.ctl.auth.deleteAuth = func(string, string) (bool, error) { return false, errors.New("delete refused") }
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the cleanup and restore failures reported")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted", err, err)
+	}
+}
+
+// TestInstances_RemoveRestoresCredentialsWhenTheConfigWriteFails covers the
+// config write failing with a clean credential restore. This is its
+// double-failure sibling: the credentials stay deleted even though
+// [providers.work] never moved, so every other client's credential status
+// for it is stale.
+func TestInstances_RemoveMarksAppliedWhenTheConfigWriteFailsAndTheCredentialCannotBeRestored(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	originalDelete := f.ctl.auth.deleteAuth
+	f.ctl.auth.deleteAuth = func(dir, name string) (bool, error) {
+		if err := os.Remove(f.tomlPath); err != nil {
+			t.Errorf("Remove(%s): %v", f.tomlPath, err)
+		}
+		if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+			t.Errorf("Mkdir(%s): %v", f.tomlPath, err)
+		}
+		return originalDelete(dir, name)
+	}
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the config write failure reported")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the credentials stayed deleted", err, err)
+	}
+}
+
+// TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload covers the
+// removal's reload failing, the config rollback landing, and the rollback's
+// own reload succeeding, with a clean credential restore - the removal never
+// applied, so that test wants a plain refusal. This is its double-failure
+// sibling: the credential restore itself fails, so the key stays deleted
+// even though [providers.work] is back, and every other client's credential
+// status for it is stale.
+func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCannotBeRestored(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// The layer the removal's reload is made to fail on: an entry that parses
+	// but cannot resolve an endpoint (#711), the same technique
+	// TestInstances_RemoveRestoresTheCredentialBeforeTheRollbackReload uses.
+	brokenPath := filepath.Join(filepath.Dir(f.tomlPath), "broken.toml")
+	if err := os.WriteFile(brokenPath, []byte("[providers.standalone]\nprotocol = \"openai-chat\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	var loads int
+	loadFn := func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		store, err := credentials.LoadStore(f.credsPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		path := f.tomlPath
+		if loads == 2 {
+			path = brokenPath
+		}
+		opts := append(
+			testProbeRegistryOptions(f.stateDir, store, func(string) (string, bool) { return "", false }),
+			registry.WithConfigPath(path),
+		)
+		r, err := registry.Load(append(opts, extra...)...)
+		return r, store, err
+	}
+	replacement := hubcore.NewProviderRegistry(loadFn)
+	f.ctl.reg = replacement
+	f.ctl.auth.reg = replacement
+	if err := replacement.Reload(); err != nil {
+		t.Fatalf("prime Reload: %v", err)
+	}
+	f.ctl.auth.setCredential = func(string, string) error { return errors.New("restore refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"})
+	if err == nil {
+		t.Fatal("Remove = nil, want the reload failure reported")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted despite the config rollback", err, err)
+	}
 }
