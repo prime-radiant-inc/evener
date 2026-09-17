@@ -926,6 +926,41 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
   });
 
+  test("a discard refuses and re-classifies when the READABLE record has been replaced", async () => {
+    // Classified readable at construction.
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+
+    // Another store or app version replaces the SAME record with a valid,
+    // newer checkpoint - under different storage bytes - between this
+    // store's load and the user's tap on discard.
+    const newer: TranscriptDraftCheckpoint = {
+      id: "d1",
+      layout: "desktop",
+      baseRevision: 3,
+      config: desktopConfig,
+      writeUncertain: false,
+    };
+    drafts.storage.save(newer);
+
+    // The discard must name the record this store actually loaded, not a
+    // fresh reload at discard time: it refuses, and the newer checkpoint
+    // survives - and is what the store now shows, never no draft at all.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toEqual(newer);
+    expect(store.getState().draftUnreadable).toBe(false);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig });
+  });
+
   test("a checkpoint without a layout is undecodable, like any other malformed one", async () => {
     // The shape the native host wrote before layouts were recorded. A
     // checkpoint that does not say which layer it proposes names no draft:

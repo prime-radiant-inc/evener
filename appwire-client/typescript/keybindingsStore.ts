@@ -67,14 +67,15 @@ export interface KeybindingDraftStorage {
   createId(): string;
   load(): unknown;
   save(checkpoint: KeybindingDraftCheckpoint): void;
-  /** Removes the stored checkpoint only if it is still this one. */
-  removeIf(checkpoint: KeybindingDraftCheckpoint): void;
+  /** Removes the stored checkpoint only if it is still this one; reports
+   * whether it did. */
+  removeIf(checkpoint: KeybindingDraftCheckpoint): boolean;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
  * store's state only and does not survive the instance. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf() {} };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false };
 }
 
 export interface KeybindingsStoreFields {
@@ -1260,29 +1261,24 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   /** Throwing a proposal away composes nothing and sends nothing, so it needs
    * no confirmed hub state - only that the proposal is not mid-flight and the
    * port is usable. Gating it on the editor's full contract would strand a
-   * restored draft on a store whose hub read failed. */
+   * restored draft on a store whose hub read failed. One shape whether the
+   * record is readable or not: remove what was classified, and check. */
   function discardDraft(): void {
     assertDiscardable();
-    if (getState().draftUnreadable) {
-      try {
-        drafts.discardUnreadable();
-      } catch {
-        setState({ storageUnavailable: true });
-        throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
-      }
-      // The removal above may have refused (the record it named is gone,
-      // replaced by something else): re-read what is actually there now
-      // rather than assume success, so a newer readable checkpoint surfaces
-      // instead of staying reported as the same unreadable record.
-      setState(restoreDraft(getState()));
-      return;
-    }
+    let removed: boolean;
     try {
-      const checkpoint = drafts.load();
-      if (checkpoint) drafts.removeIf(checkpoint);
+      removed = drafts.discardClassified();
     } catch {
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
+    }
+    if (!removed) {
+      // The record this store classified is gone, replaced by something
+      // else (another writer, another window): re-read what is actually
+      // there now rather than assume success, so a newer checkpoint surfaces
+      // instead of staying reported as discarded.
+      setState(restoreDraft(getState()));
+      return;
     }
     setState({
       draft: null,

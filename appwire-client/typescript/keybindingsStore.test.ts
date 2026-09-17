@@ -486,6 +486,33 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
   });
 
+  test("a discard refuses and re-classifies when the READABLE record has been replaced", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 3,
+      rules,
+      writeUncertain: false,
+    });
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+
+    // Another store or app version replaces the SAME record with a valid,
+    // newer checkpoint - under different storage bytes - between this
+    // store's load and the user's tap on discard.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    const newer: KeybindingDraftCheckpoint = { id: "d1", baseRevision: 3, rules: otherRules, writeUncertain: false };
+    drafts.storage.save(newer);
+
+    // The discard must name the record this store actually loaded, not a
+    // fresh reload at discard time: it refuses, and the newer checkpoint
+    // survives - and is what the store now shows, never no draft at all.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toEqual(newer);
+    expect(store.getState().draftUnreadable).toBe(false);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+  });
+
   test("a restored proposal is discardable while the hub read has failed", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.storage.save({ id: "d1", baseRevision: 2, rules, writeUncertain: false });

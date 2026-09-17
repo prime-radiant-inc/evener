@@ -48,7 +48,9 @@ export function memoryDraftStorage<Checkpoint extends { writeUncertain: boolean 
     removeIf: (checkpoint) => {
       calls.push("removeIf");
       lastRemoveIf = structuredClone(checkpoint);
-      if (JSON.stringify(checkpoint) === JSON.stringify(stored)) stored = null;
+      if (JSON.stringify(checkpoint) !== JSON.stringify(stored)) return false;
+      stored = null;
+      return true;
     },
   };
   return {
