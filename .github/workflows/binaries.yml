@@ -99,7 +99,21 @@ jobs:
           name: evener-snapshot-artifacts
           path: dist
 
+      # The concurrency group above only excludes overlapping runs; it does not
+      # order them, so an older run (a stale queued run, or a rerun of an old
+      # failure) can still take the group after a newer commit already
+      # published and move the tag backward. Skip here if main has moved on.
+      - name: Check this commit is still main's head
+        id: freshness
+        run: |
+          git fetch --depth=1 origin main
+          if [ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]; then
+            echo "snapshot: $GITHUB_SHA is no longer main's head; skipping publish"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Move snapshot tag
+        if: steps.freshness.outputs.stale != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -107,6 +121,7 @@ jobs:
           git push origin "refs/tags/snapshot" --force
 
       - name: Publish snapshot release
+        if: steps.freshness.outputs.stale != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
