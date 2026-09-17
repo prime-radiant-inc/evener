@@ -1,5 +1,6 @@
 import type { ClientIdentity, ClientIdentityStorage } from "@evener/appwire-client/state/mutation";
 import { createClientIdentity } from "@evener/appwire-client/state/mutation";
+import { browserRandomSource } from "./browserRandomSource";
 
 // sessionStorage is per-tab, stable across that tab's reloads, which is what
 // the durable mutation outbox's provenance rule (see the package) needs to
@@ -13,7 +14,7 @@ const sessionStorageAdapter: ClientIdentityStorage = {
   setItem: (key, value) => globalThis.sessionStorage?.setItem(key, value),
 };
 
-let instance: ClientIdentity = createClientIdentity(sessionStorageAdapter);
+let instance: ClientIdentity = createClientIdentity(sessionStorageAdapter, browserRandomSource());
 
 export function ownClientId(): string {
   return instance.ownClientId();
@@ -29,6 +30,6 @@ export function isOwnMutationRecord(record: { originClientId?: string }): boolea
 export function setMutationClientIdentityForTests(value: string | undefined): void {
   instance =
     value === undefined
-      ? createClientIdentity(sessionStorageAdapter)
-      : createClientIdentity({ getItem: () => value, setItem: () => undefined });
+      ? createClientIdentity(sessionStorageAdapter, browserRandomSource())
+      : createClientIdentity({ getItem: () => value, setItem: () => undefined }, browserRandomSource());
 }

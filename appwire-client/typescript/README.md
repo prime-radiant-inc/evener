@@ -134,30 +134,37 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   `MutationRecord`, `MutationOutboxRecord`, `MutationOptimisticRecord`,
   `MutationRecoveryRecord`), generic over the attachment type so a host's own
   attachment bytes (the web's `Blob`) never enter the package, and the client
-  provenance a shared outbox's readers need. `createClientIdentity(storage)`
-  is a factory, not a module singleton - the package names no browser global,
-  so a host builds one instance over its own `ClientIdentityStorage` port (the
-  web passes a lazy `sessionStorage` adapter; a host with none gets a
-  per-process identity) and gets back `{ ownClientId, isOwnMutationRecord }`,
-  each memoized per instance. `isOwnMutationRecord` claims an unattributed
-  record (written before the field existed) as well as this instance's own.
-  `createSecureUUID` (with its `SecureRandomSource` port) is the strong
-  identifier source both the record shapes' `clientMutationId` convention and
-  a generated client identity use. The layer also carries `MutationOutbox`,
-  the discovery half of an outbox: a class that enqueues through a
-  `MutationOutboxStorage` port (the 13 calls this layer and the dispatcher
-  make; the web's IndexedDB adapter implements it and stays in the app),
-  announces a commit to sibling clients, and re-scans when a host says a scan
-  is worth doing. Every host-shaped capability is an option - the channel, the
-  lifecycle and visibility targets, the timer - and none defaults to a browser
-  global, so no storage adapter, scheduling policy or DOM type lives here. It
-  carries `MutationDispatcher` too: one attempt at a time per target ref over
-  the same port, a receipt reconciled into storage before the next attempt, a
-  refusal turned into a recovery record with the daemon's own reason, and an
-  outcome nobody can vouch for left `blockedUnknown` rather than replayed - the
-  rule a client must not break after a lost connection. Every reaction to an
-  outcome (a blocked mutation, a clear's response, a shared note's authority)
-  is a callback the app supplies. Resolves to
+  provenance a shared outbox's readers need. `createClientIdentity(storage,
+  randomSource)` is a factory, not a module singleton - the package names no
+  browser global, so a host builds one instance over its own
+  `ClientIdentityStorage` port (the web passes a lazy `sessionStorage`
+  adapter; a host with none gets a per-process identity) and gets back
+  `{ ownClientId, isOwnMutationRecord }`, each memoized per instance.
+  `isOwnMutationRecord` claims an unattributed record (written before the
+  field existed) as well as this instance's own. `createSecureUUID(source)`
+  is the strong identifier source both the record shapes' `clientMutationId`
+  convention and a generated client identity use; both take their
+  `SecureRandomSource` (`randomUUID?`/`getRandomValues?`, both optional) as a
+  required parameter with no default - `globalThis.crypto` is named nowhere
+  in the package, so a host with no global Web Crypto (React Native without a
+  polyfill) passes its own source (the web's lazily-read, guarded `crypto`;
+  `expo-crypto` for native) rather than the package assuming one exists.
+  `createSecureUUID` documents its own fallback for a source with neither
+  method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
+  layer also carries `MutationOutbox`, the discovery half of an outbox: a class
+  that enqueues through a `MutationOutboxStorage` port (the 13 calls this layer
+  and the dispatcher make; the web's IndexedDB adapter implements it and stays
+  in the app), announces a commit to sibling clients, and re-scans when a host
+  says a scan is worth doing. Every host-shaped capability is an option - the
+  channel, the lifecycle and visibility targets, the timer - and none defaults
+  to a browser global, so no storage adapter, scheduling policy or DOM type
+  lives here. It carries `MutationDispatcher` too: one attempt at a time per
+  target ref over the same port, a receipt reconciled into storage before the
+  next attempt, a refusal turned into a recovery record with the daemon's own
+  reason, and an outcome nobody can vouch for left `blockedUnknown` rather than
+  replayed - the rule a client must not break after a lost connection. Every
+  reaction to an outcome (a blocked mutation, a clear's response, a shared
+  note's authority) is a callback the app supplies. Resolves to
   `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
