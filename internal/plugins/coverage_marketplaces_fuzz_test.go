@@ -247,8 +247,12 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	marketplaceReadFile = func(string) ([]byte, error) { return removeBody, nil }
 	marketplaceRemoveAll = func(string) error { return fail }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); err != nil {
-		t.Fatal(err)
+	// The save (marketplaceAtomicWriteFile) succeeds, so the marketplace is
+	// already gone from the listing when the clone delete fails: an applied
+	// write the hub still owes a broadcast for (ErrStoreChanged), not the
+	// silent success this test pinned before round 4's #1602 fix.
+	if err := NewManager(t.TempDir()).RemoveMarketplace(context.Background(), "x"); !errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("remove clone-delete failure = %v, want ErrStoreChanged", err)
 	}
 	reset()
 
