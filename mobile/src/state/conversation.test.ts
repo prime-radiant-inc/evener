@@ -9532,6 +9532,38 @@ describe("ConversationStore", () => {
     });
   });
 
+  // A page load republishes every retained row through the same bound. The row
+  // a reader sees carries its BOUNDED text, so re-bounding it means encoding 64
+  // KiB again per publish unless the cache answers — and the cache is what makes
+  // a page load cost only the page's own rows.
+  it("does not re-encode an unchanged oversized row when an older page lands", async () => {
+    const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+    const service = new FakeConversationService();
+    service.readProjectionResult = {
+      ...makeReadProjectionResult(runningTurnThread([agentMessageItem("a1", oversized, "completed")])),
+      olderCursor: "cursor-1",
+    };
+    service.olderItems = { items: [{ kind: "assistant", id: "old", markdown: "older row" }] };
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+    const row = rowById(store, "a1");
+    const bounded = row && "markdown" in row ? row.markdown : undefined;
+    if (bounded === undefined) throw new Error("no bounded row");
+    expect(bounded.endsWith(TRUNCATION_MARKER)).toBe(true);
+
+    const encode = vi.spyOn(TextEncoder.prototype, "encode");
+    try {
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "old")).toBeDefined();
+      // The page's own row is the new work.
+      expect(encode.mock.calls.some((call) => call[0] === "older row")).toBe(true);
+      // The row already on screen is not: its bounded text comes from the cache.
+      expect(encode.mock.calls.filter((call) => call[0] === bounded)).toHaveLength(0);
+    } finally {
+      encode.mockRestore();
+    }
+  });
+
   // The bound's cache belongs to the conversation: every string in it is held
   // by that conversation's model or its rows, so a conversation that has been
   // dropped must not leave its text behind in the cache. Observable without a
