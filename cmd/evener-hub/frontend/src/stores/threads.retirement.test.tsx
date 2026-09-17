@@ -36,6 +36,7 @@ import {
   subscribeComposerSubmissionCommitted,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { replaceEditorText } from "../panes/session/testing/editor";
 import { ClientProvider } from "../shell/clientContext";
 import { connectionStore } from "./connection";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
@@ -379,7 +380,7 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   });
 
   // Mount the real Composer (with ClientProvider) so the draft lifecycle is
-  // live, then enter the unsent draft through the native textarea.
+  // live, then enter the unsent draft through the editor itself.
   const { unmount } = render(
     <ClientProvider client={client}>
       <ComposerView ref={REF} focused={false} />
@@ -389,9 +390,9 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
   // Flush projection work so the pending-turns machinery is fully active.
   await flushPendingTurnsProjectionForTests();
 
-  const draftTextarea = screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
+  const draftEditor = screen.getByRole("textbox", { name: /message/i });
   await act(async () => {
-    fireEvent.change(draftTextarea, { target: { value: DRAFT_TEXT } });
+    replaceEditorText(draftEditor, DRAFT_TEXT);
   });
   await flushPendingTurnsProjectionForTests();
 
@@ -443,12 +444,12 @@ async function openRetirementClientFixture(): Promise<RetirementClientFixture> {
         });
       });
 
-      // The draft is already in the real textarea from the native input above;
-      // only re-enter it if the fixture was driven with different text.
-      const ta = screen.getByRole("textbox", { name: /message/i }) as HTMLTextAreaElement;
-      if (ta.value !== text) {
+      // The draft is already in the real editor from the gesture above; only
+      // re-enter it if the fixture was driven with different text.
+      const ta = screen.getByRole("textbox", { name: /message/i });
+      if (ta.textContent !== text) {
         await act(async () => {
-          fireEvent.change(ta, { target: { value: text } });
+          replaceEditorText(ta, text);
         });
       }
 

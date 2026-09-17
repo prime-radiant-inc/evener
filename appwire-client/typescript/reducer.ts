@@ -94,6 +94,11 @@ function epochMsToISO(ms: number | undefined): string | undefined {
 // maintained per append), so the hot readers of a live view (settleItem,
 // AgentMessageItem's per-render markdown source) get the full text in O(1)
 // instead of paying the per-element Proxy-trap cost of a join.
+// Maintaining that join is not where the pre-fix quadratic cost lived,
+// though: `brand.text + delta` is the same flat-per-delta concatenation
+// item/toolOutput/delta's `output` uses — a rope on V8, a buffered primitive
+// on Hermes — so the array copy, not the string concat, is the one quadratic
+// shape appendChunk removes.
 //
 // Purity: the reducer's contract is immutable updates, and this preserves
 // it OBSERVATIONALLY. The one deliberate alias — new views share the
