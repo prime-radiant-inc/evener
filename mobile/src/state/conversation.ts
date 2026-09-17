@@ -303,9 +303,22 @@ export const RETAINED_ITEM_CAP = 500;
 const textEncoder = new TextEncoder();
 const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
 
+// UTF-8 byte length without materialising the bytes: every publish asks this of
+// every retained row, and all but the oversized ones only need the answer, not the
+// encoding. Counting code points is O(length) with no allocation, where
+// TextEncoder.encode allocates a byte array as large as the text (and the row that
+// is 64 KiB of text allocates it on every publish).
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (const cp of text) {
+    const code = cp.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
 export function truncateText(text: string, maxBytes: number): string {
-  const encoded = textEncoder.encode(text);
-  if (encoded.length <= maxBytes) return text;
+  if (utf8Length(text) <= maxBytes) return text;
   // The byte limit is the hard contract: the marker is best effort. Every
   // publish re-applies this to whatever text a row carries, so a limit too
   // small to hold the marker yields the longest prefix that fits, with no
@@ -320,7 +333,7 @@ export function truncateText(text: string, maxBytes: number): string {
   let byteLen = 0;
   let cutIdx = 0;
   for (const cp of text) {
-    const cpBytes = textEncoder.encode(cp).length;
+    const cpBytes = utf8Length(cp);
     if (byteLen + cpBytes > targetBytes) break;
     byteLen += cpBytes;
     cutIdx += cp.length;

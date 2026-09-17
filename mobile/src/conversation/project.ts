@@ -491,19 +491,17 @@ function projectItem(
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
   // "unknown" for any item type the projection does not recognize.
+  const state = activityState(item, turn);
   return {
     kind: "activity",
     pre: {
-      family:
-        activityState(item, turn) === "failed"
-          ? `failed:${item.id}`
-          : `unknown:${item.type}`,
+      family: state === "failed" ? `failed:${item.id}` : `unknown:${item.type}`,
       item: {
         kind: "activity",
         id: item.id,
         label: "Activity",
         family: "unknown",
-        state: activityState(item, turn),
+        state,
         detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
@@ -548,48 +546,30 @@ function activityDetail(item: ItemModel): ActivityDetail {
 // if any member is running; otherwise completed (failed members never join a
 // run, so a cluster is never failed).
 
-function clusterActivities(
-  preItems: PreActivity[],
-): Extract<MobileTimelineItem, { kind: "activity" }>[] {
-  const result: Extract<MobileTimelineItem, { kind: "activity" }>[] = [];
-  let run: PreActivity[] = [];
-
-  const flush = () => {
-    if (run.length === 0) return;
-    const first = run[0]?.item;
-    if (first) {
-      if (run.length === 1) {
-        result.push(first);
-      } else {
-        const state: ActivityState = run.some((p) => p.item.state === "running")
-          ? "running"
-          : "completed";
-        const members: ActivityMember[] = run.map(({ item }) => ({
-          id: item.id,
-          label: item.label,
-          family: item.family,
-          state: item.state,
-          detail: item.detail,
-          ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
-          ...(item.position ? { position: item.position } : {}),
-        }));
-        result.push({ ...first, state, members });
-      }
-    }
-    run = [];
-  };
-
-  for (const pre of preItems) {
-    const last = run[run.length - 1];
-    if (last && last.family === pre.family) {
-      run.push(pre);
-    } else {
-      flush();
-      run = [pre];
-    }
-  }
-  flush();
-  return result;
+// One run of consecutive same-family activities becomes one row: its first
+// member's identity and detail, running if any member runs, with the members
+// carried for the renderer that expands them. A run of one is that row itself.
+// The caller groups by family (projectTimeline's flushActivityRun), so this is
+// handed a homogeneous run and does no regrouping of its own.
+function clusterActivityRun(
+  run: PreActivity[],
+): Extract<MobileTimelineItem, { kind: "activity" }> | undefined {
+  const first = run[0]?.item;
+  if (first === undefined) return undefined;
+  if (run.length === 1) return first;
+  const state: ActivityState = run.some((p) => p.item.state === "running")
+    ? "running"
+    : "completed";
+  const members: ActivityMember[] = run.map(({ item }) => ({
+    id: item.id,
+    label: item.label,
+    family: item.family,
+    state: item.state,
+    detail: item.detail,
+    ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
+    ...(item.position ? { position: item.position } : {}),
+  }));
+  return { ...first, state, members };
 }
 
 // --- timeline projection -----------------------------------------------------
@@ -674,6 +654,26 @@ function rowsForTurn(
   return entries;
 }
 
+// The attachments row that follows the row which produced it. It points back at
+// its source by transcript key, so a page or a reread that reissues the source
+// under a new wire id does not orphan its images. An activity's images name the
+// source's id when it has no key — a clustered member's row can be rebuilt around
+// a different member, and the id is then the only handle left — while any other
+// row leaves the field off and lets the reader of the row derive it from the
+// row's own id (state/conversation.ts's attachmentSourceId).
+function attachmentsRow(
+  source: MobileTimelineItem,
+  attachments: AttachmentRef[],
+  fallbackToId = false,
+): { id: string; items: AttachmentRef[]; sourceTranscriptKey?: string } {
+  const key = source.transcriptKey ?? (fallbackToId ? source.id : undefined);
+  return {
+    id: `${source.id}:attachments`,
+    items: attachments,
+    ...(key === undefined ? {} : { sourceTranscriptKey: key }),
+  };
+}
+
 export function projectTimeline(
   model: ThreadModel,
   // The answerable asks, when the caller has already derived them.
@@ -695,8 +695,8 @@ export function projectTimeline(
 
   const flushActivityRun = () => {
     if (activityRun.length === 0) return;
-    const clustered = clusterActivities(activityRun);
-    for (const a of clustered) items.push(a);
+    const clustered = clusterActivityRun(activityRun);
+    if (clustered !== undefined) items.push(clustered);
     for (const attachment of activityAttachments) {
       items.push({ kind: "attachments", ...attachment });
     }
@@ -714,11 +714,7 @@ export function projectTimeline(
         activityRun = [entry.pre];
       }
       if (entry.attachments && entry.attachments.length > 0) {
-        activityAttachments.push({
-          id: `${entry.item.id}:attachments`,
-          items: entry.attachments,
-          sourceTranscriptKey: entry.item.transcriptKey ?? entry.item.id,
-        });
+        activityAttachments.push(attachmentsRow(entry.item, entry.attachments, true));
       }
     } else {
       flushActivityRun();
@@ -730,14 +726,7 @@ export function projectTimeline(
       entry.attachments &&
       entry.attachments.length > 0
     ) {
-      items.push({
-        kind: "attachments",
-        id: `${entry.item.id}:attachments`,
-        items: entry.attachments,
-        ...(entry.item.transcriptKey
-          ? { sourceTranscriptKey: entry.item.transcriptKey }
-          : {}),
-      });
+      items.push({ kind: "attachments", ...attachmentsRow(entry.item, entry.attachments) });
     }
   }
   flushActivityRun();

@@ -9843,15 +9843,29 @@ describe("ConversationStore", () => {
   // a reader sees carries its BOUNDED text, so re-bounding it means encoding 64
   // KiB again per publish unless the cache answers — and the cache is what makes
   // a page load cost only the page's own rows.
-  it("does not re-encode an unchanged oversized row when an older page lands", async () => {
+  // Whether the bound cut a row whose text is made of `filler`: truncateText
+  // measures a text's byte length without allocating, and only the oversized path
+  // encodes — the candidate prefixes it weighs against the marker. So an encode
+  // call carrying that filler is the bound doing the work again.
+  function cutsOf(
+    encode: { mock: { calls: readonly unknown[][] } },
+    filler: string,
+  ): number {
+    return encode.mock.calls.filter(
+      (call) => typeof call[0] === "string" && call[0].length > 1_000 && call[0].startsWith(filler),
+    ).length;
+  }
+
+  it("does not re-cut an unchanged oversized row when an older page lands", async () => {
     const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+    const olderOversized = "y".repeat(MAX_ITEM_BYTES + 100);
     const service = new FakeConversationService();
     service.readProjectionResult = {
       ...makeReadProjectionResult(runningTurnThread([agentMessageItem("a1", oversized, "completed")])),
       olderCursor: "cursor-1",
     };
     service.olderItems = {
-      items: [{ kind: "assistant", id: "old", markdown: "older row", streaming: false }],
+      items: [{ kind: "assistant", id: "old", markdown: olderOversized, streaming: false }],
     };
     const store = createConversationStore();
     await store.getState().openProjected(service, createFakeSink(), "ref-1");
@@ -9860,14 +9874,16 @@ describe("ConversationStore", () => {
     if (bounded === undefined) throw new Error("no bounded row");
     expect(bounded.endsWith(TRUNCATION_MARKER)).toBe(true);
 
+    // Cutting a row's text encodes candidates to measure them; a row that comes
+    // out of the cache is not cut at all, so the encoder never sees its text.
     const encode = vi.spyOn(TextEncoder.prototype, "encode");
     try {
       await store.getState().loadOlder(service);
       expect(rowById(store, "old")).toBeDefined();
-      // The page's own row is the new work.
-      expect(encode.mock.calls.some((call) => call[0] === "older row")).toBe(true);
+      // The page's own oversized row is the new work.
+      expect(cutsOf(encode, "y")).toBeGreaterThan(0);
       // The row already on screen is not: its bounded text comes from the cache.
-      expect(encode.mock.calls.filter((call) => call[0] === bounded)).toHaveLength(0);
+      expect(cutsOf(encode, "x")).toBe(0);
     } finally {
       encode.mockRestore();
     }
@@ -9936,12 +9952,14 @@ describe("ConversationStore", () => {
   // conversation a settled row is not re-encoded, and a conversation opened
   // after the old one was dropped encodes its text again.
   describe("the display bound's cache belongs to the conversation", () => {
-    const settledText = "some settled text".repeat(20);
+    // Oversized, because that is the row the cache exists for: a row under the
+    // limit is measured without allocating and never reaches the encoder.
+    const settledText = "z".repeat(MAX_ITEM_BYTES + 100);
 
     function encodesOfSettledText(encode: {
       mock: { calls: readonly unknown[][] };
     }): number {
-      return encode.mock.calls.filter((call) => call[0] === settledText).length;
+      return cutsOf(encode, "z");
     }
 
     it.each([
