@@ -2478,7 +2478,7 @@ test("mergeOlderItemPage merges shared turns and transcript items in position or
 // arrives only once the hub emits one explicitly (a Go change of its own).
 // The client half is pinned here: an explicit [] on the wire is honoured as a
 // value, not folded to "absent".
-test("an explicitly empty images list on the wire is honoured as a value", () => {
+test("an empty input-images list on the wire leaves the item's images unset", () => {
   const thread = testThread({
     turns: [
       {
@@ -2499,16 +2499,18 @@ test("an explicitly empty images list on the wire is honoured as a value", () =>
     ],
   });
   const model = hydrateThread({ thread }, thread.evener.ref, 1000);
-  expect(itemAt(turnAt(model, 0), 0).images).toEqual([]);
+  expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
 });
 
-// An explicitly empty image list is a value the model must be able to hold:
-// "this item has no images any more" is what a live item/completed says when
-// the user's images were removed, and an older page replaying the same item
-// with its original attachment must not put them back. `undefined` is
-// reserved for a frame that carries no images field at all, where the page's
-// own list is the only one anybody has.
-test("mergeOlderItemPage keeps a live removal's empty image list over an older page's stale one", () => {
+// An INPUT image list that arrives empty says nothing about the item's images:
+// the hub's own merges keep whatever list it already had when the incoming one
+// is empty (`server/appwire_turns.go:884-886` and
+// `internal/apptranscript/logical_turn.go:309`, both `len(incoming.Images) == 0`,
+// and the wire field is `omitempty`), and a real fixture sends exactly that —
+// `fixtures/tool-and-jobs.jsonl:4`, a steering notification with `images: []`.
+// Reading it as "the images are gone" erases an older page's input images on
+// merge. Output images are the opposite case and keep their own rule below.
+test("an empty input-image list says nothing, so the images already known survive", () => {
   const thread = testThread({
     turns: [
       {
@@ -2533,7 +2535,9 @@ test("mergeOlderItemPage keeps a live removal's empty image list over an older p
   let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
 
-  // The live frame removes the images.
+  // A live frame carries an empty list: it says nothing about images, so the
+  // settled item carries none of its own (the settle merge takes the wire's
+  // fields; only a value could overwrite).
   model = applyNotification(
     model,
     {
@@ -2556,9 +2560,10 @@ test("mergeOlderItemPage keeps a live removal's empty image list over an older p
     } as AnyNotification,
     2000,
   );
-  expect(itemAt(turnAt(model, 0), 0).images).toEqual([]);
+  expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
 
-  // An older page replays the item as it first arrived, images and all.
+  // So the older page replaying the item is the only list anybody has, and the
+  // merge keeps it — this is the erasure the empty-is-a-value reading caused.
   const merged = mergeOlderItemPage(model, {
     data: [
       {
@@ -2581,7 +2586,7 @@ test("mergeOlderItemPage keeps a live removal's empty image list over an older p
     ],
     nextCursor: undefined,
   });
-  expect(itemAt(turnAt(merged, 0), 0).images).toEqual([]);
+  expect(itemAt(turnAt(merged, 0), 0).images).toHaveLength(1);
 });
 
 // The same rule for a tool call's output images.

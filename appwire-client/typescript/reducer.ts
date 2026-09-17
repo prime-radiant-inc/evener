@@ -319,17 +319,19 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
-// An empty list is a value, not an absence: a frame that says images: []
-// says "this item has no images", which mergePageItem's `newer.images ??
-// older.images` must keep over an older page still carrying the originals.
-// undefined is reserved for a frame with no images field at all, where the
-// other side's list is the only one anybody has.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
-  if (!images) return undefined;
-  if (images.length === 0) return [];
+  // An empty list says nothing about this item's input images, the same rule the
+  // hub applies on its own merges (`len(incoming.Images) == 0` keeps the
+  // existing list: server/appwire_turns.go:884-886,
+  // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
+  // `omitempty` implies. Real frames carry it — a steering notification with
+  // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
+  // erases an older page's images through mergePageItem. Output images are the
+  // opposite: there an explicit empty list IS the value (see below).
+  if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
   // when no server route is named, the bytes themselves are the src. Falling
