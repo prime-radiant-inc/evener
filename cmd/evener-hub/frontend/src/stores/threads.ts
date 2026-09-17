@@ -621,7 +621,9 @@ const wireSubscribedRefs = new Set<string>();
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
   dispatcher: MutationDispatcher;
-  outbox: MutationOutbox;
+  // The web's attachments carry bytes, so its outbox is the shared class bound
+  // to the record shape with a Blob in it.
+  outbox: MutationOutbox<MutationAttachment>;
   start: Promise<void>;
   active: boolean;
 }
@@ -863,7 +865,15 @@ function getMutationRuntime(): MutationRuntime | null {
     onDiscover: (targetRefs) => {
       if (runtime) handleDiscoveredMutations(runtime, targetRefs);
     },
-    createBroadcastChannel: createMutationBroadcastChannelForTests,
+    // The browser's own discovery capabilities, named here rather than reached
+    // for inside the shared class: sibling tabs over BroadcastChannel, the
+    // window's online/focus, the document's visibility, and a timer. A host
+    // without them passes nothing and the class does nothing with them.
+    createBroadcastChannel: createMutationBroadcastChannelForTests ?? ((name) => new BroadcastChannel(name)),
+    lifecycleWindow: typeof window === "undefined" ? undefined : window,
+    lifecycleDocument: typeof document === "undefined" ? undefined : document,
+    setInterval: (callback, milliseconds) => globalThis.setInterval(callback, milliseconds),
+    clearInterval: (intervalId) => globalThis.clearInterval(intervalId),
   });
   const initializedRuntime: MutationRuntime = {
     storage,
