@@ -114,10 +114,6 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
   // for invalidationMarker to read: see storeLifecycle.ts's LAUNCH_LAYER wiring.
 };
 
-/** One state a fence drives a replacement connection through, when the
- * caller doesn't need a sequence of its own (idle then ready, say). */
-const FENCE_TO_READY: readonly ConnectionState[] = ["ready"];
-
 /** The handful of things every ordering case in this suite needs from a fake
  * client and the store built over it: a read or a write that stays in flight
  * until the test settles it, a request that fails outright, and a replaced
@@ -136,9 +132,10 @@ interface LifecycleKit<S> {
    * request never reached the fake. land()/fail() settle it, defaulting to
    * the case's own mutationResponse and to "write refused". */
   gatedWrite(): Promise<{ promise: Promise<void>; land(response?: unknown): void; fail(message?: string): void }>;
-  /** Issues mutate() against a mutation scripted to fail immediately - no
-   * gate to release, since nothing needs to control when it lands. */
-  rejectWrite(message?: string): Promise<void>;
+  /** Issues mutate() against a mutation scripted to fail immediately with
+   * `message` - no gate to release, since nothing needs to control when it
+   * lands. */
+  rejectWrite(message: string): Promise<void>;
   /** Replaces the connection with a fresh, unrelated client, driving it
    * through each of `states` in order (just "ready" if none are given) - the
    * fence every "replacement" ordering case turns on. */
@@ -177,13 +174,13 @@ function createLifecycleKit<S>(lifecycle: LifecycleCase<S>): LifecycleKit<S> {
         fail: (message = "write refused") => reject(new Error(message)),
       };
     },
-    rejectWrite(message = "write refused") {
+    rejectWrite(message) {
       failRequests(fake, lifecycle.mutationMethod, message);
       return lifecycle.mutate(store.getState());
     },
     fence(...states: ConnectionState[]): FakeClient {
       const replacement = lifecycle.create().fake;
-      for (const state of states.length ? states : FENCE_TO_READY) store.connectionChanged(replacement, state);
+      for (const state of states.length ? states : (["ready"] as const)) store.connectionChanged(replacement, state);
       return replacement;
     },
   };
@@ -229,12 +226,11 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("dispose() unsubscribes, cancels a pending refetch and fences replies in flight", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, gatedRead } = createLifecycleKit(lifecycle);
       store.start();
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       lifecycle.notifyUpdated(fake);
-      const read = await kit.gatedRead();
+      const read = await gatedRead();
       const before = store.getState();
 
       store.dispose();
@@ -254,11 +250,10 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a mutation that resolves after dispose() publishes nothing", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, gatedWrite } = createLifecycleKit(lifecycle);
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
-      const write = await kit.gatedWrite();
+      const write = await gatedWrite();
       const before = store.getState();
       let notified = 0;
       store.subscribe(() => {
@@ -379,14 +374,13 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     // seam readRevisioned and writeRevisioned share (listRevision.ts's
     // hasLive) is what carries it.
     test("a write issued before any read still recovers a replaced connection's list", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, gatedWrite, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready");
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
-      const write = await kit.gatedWrite();
+      const write = await gatedWrite();
       expect(lifecycle.list(store.getState())).toBeNull();
 
-      kit.fence();
+      fence();
       await vi.advanceTimersByTimeAsync(0);
       expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
       expect(lifecycle.list(store.getState())).not.toBeNull();
@@ -396,8 +390,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a replacement client that arrives ready reads an established list", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready"); // the connection the host reports before anything reads
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
@@ -406,7 +399,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       await vi.advanceTimersByTimeAsync(0);
       expect(callsTo(fake, lifecycle.listMethod)).toBe(1); // the same connection, still ready: nothing to recover
 
-      kit.fence();
+      fence();
       await vi.advanceTimersByTimeAsync(0);
       expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
@@ -429,10 +422,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a read outrun before it lands writes nothing, not even the flag it raised", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
-      const older = await kit.gatedRead();
-      const newer = await kit.gatedRead();
+      const { fake, store, gatedRead } = createLifecycleKit(lifecycle);
+      const older = await gatedRead();
+      const newer = await gatedRead();
       expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
 
       // The older read answers first. The newer request is still pending and
@@ -448,16 +440,15 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a write that publishes nothing hands the state back to the read it outran", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { store } = kit;
-      const read = await kit.gatedRead();
+      const { store, gatedRead, rejectWrite } = createLifecycleKit(lifecycle);
+      const read = await gatedRead();
       expect(lifecycle.loading(store.getState())).toBe(true);
 
       // A write issued while the read is in flight fences it - and then fails,
       // publishing nothing. It must not keep what it fenced: otherwise the
       // read lands superseded, writes none of its three fields, and the flag
       // it raised stays up with nothing left to lower it.
-      await expect(kit.rejectWrite("write refused")).rejects.toThrow("write refused");
+      await expect(rejectWrite("write refused")).rejects.toThrow("write refused");
 
       read.land();
       await read.promise;
@@ -465,15 +456,14 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a reply from the connection that was replaced publishes nothing", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, gatedRead, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready");
-      const read = await kit.gatedRead();
+      const read = await gatedRead();
 
       // A different hub answers different questions, and this reply is the
       // previous one's answer: it describes a machine this store no longer
       // speaks to.
-      kit.fence();
+      fence();
       read.land();
       await read.promise;
 
@@ -484,10 +474,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a read that landed fenced is applied when the write that fenced it retracts", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { store } = kit;
-      const read = await kit.gatedRead();
-      const write = await kit.gatedWrite();
+      const { store, gatedRead, gatedWrite } = createLifecycleKit(lifecycle);
+      const read = await gatedRead();
+      const write = await gatedWrite();
 
       // The read answers first and is superseded, so it publishes nothing -
       // the flag it raised belongs to the write now.
@@ -509,17 +498,17 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       ["the newer", [1, 0]],
     ] as const) {
       test(`${name} of two failed writes failing first still lets the read it fenced land`, async () => {
-        const kit = createLifecycleKit(lifecycle);
-        const { fake, store } = kit;
-        const read = await kit.gatedRead();
-        const [first, second] = [await kit.gatedWrite(), await kit.gatedWrite()];
-        if (!first || !second) throw new Error("both writes must be in flight");
+        const { fake, store, gatedRead, gatedWrite } = createLifecycleKit(lifecycle);
+        const read = await gatedRead();
+        const first = await gatedWrite();
+        const second = await gatedWrite();
+        const writes = [first, second] as const;
         expect(callsTo(fake, lifecycle.mutationMethod)).toBe(2);
 
         // Whichever order the two writes fail in, neither published anything,
         // so neither may keep the read's answer from landing - and that answer
         // is the only thing left that can lower the flag the read raised.
-        for (const index of order) (index === 0 ? first : second).fail();
+        for (const index of order) writes[index].fail();
         await expect(first.promise).rejects.toThrow("write refused");
         await expect(second.promise).rejects.toThrow("write refused");
 
@@ -532,14 +521,13 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     }
 
     test("a notification from the client that was replaced schedules no read", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready");
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       store.start();
 
-      kit.fence();
+      fence();
       const reads = callsTo(fake, lifecycle.listMethod);
 
       lifecycle.notifyUpdated(fake);
@@ -566,10 +554,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a read a replacement interrupted is issued again", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, gatedRead, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready");
-      const read = await kit.gatedRead();
+      const read = await gatedRead();
       expect(lifecycle.loading(store.getState())).toBe(true);
       expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
 
@@ -579,7 +566,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       // asking happened on - the host's own loader is a one-shot and will not
       // ask again.
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
-      kit.fence();
+      fence();
       await vi.advanceTimersByTimeAsync(0);
 
       expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
@@ -589,10 +576,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("a replacement named before it is ready still gets the read it interrupted", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
+      const { fake, store, gatedRead, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready");
-      const read = await kit.gatedRead();
+      const read = await gatedRead();
       expect(lifecycle.loading(store.getState())).toBe(true);
       answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
 
@@ -601,7 +587,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       // is still idle. That call fences the read and settles the flag, so by
       // the time ready arrives the state carries no trace of the read - the
       // intent has to outlive the call that observed it.
-      kit.fence("idle", "ready");
+      fence("idle", "ready");
       await vi.advanceTimersByTimeAsync(0);
 
       expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
@@ -642,9 +628,8 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     });
 
     test("reset() returns to the initial state and fences the list still in flight", async () => {
-      const kit = createLifecycleKit(lifecycle);
-      const { fake, store } = kit;
-      const read = await kit.gatedRead();
+      const { fake, store, gatedRead } = createLifecycleKit(lifecycle);
+      const read = await gatedRead();
 
       store.reset();
       expect(store.getState()).toMatchObject(lifecycle.initial);
