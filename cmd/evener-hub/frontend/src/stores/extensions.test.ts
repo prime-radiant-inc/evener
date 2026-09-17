@@ -716,6 +716,36 @@ describe("browseMarketplace", () => {
     await drainMicrotasks();
     expect(waiterWoke).toEqual({ status: "loaded", description: undefined, plugins: [{ name: "fresh" }] });
   });
+
+  // A real reconnect's first event is a REPLACED client whose own `state` is
+  // "connecting" (AppwireClient.connect() enters "connecting" before
+  // "ready"), not "ready" itself - so this fences the browse still on the
+  // wire without also running the reconnect-while-away refetch that a
+  // "ready" transition would, which retires every catalog regardless of
+  // status and would otherwise hide this from the package's own store.
+  test("a browse still in flight when the connection is replaced does not stick on loading", async () => {
+    const fake = connectFakeClient();
+    const release = deferBrowse(fake);
+    const browsing = extensionsStore.getState().browseMarketplace("acme-plugins");
+    await drainMicrotasks();
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({ status: "loading" });
+
+    const replacement = new FakeClient("connecting");
+    connectionStore.getState().connect(replacement);
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    release({ name: "acme-plugins", plugins: [{ name: "stale" }] });
+    await browsing;
+    expect(extensionsStore.getState().browseCatalogs.has("acme-plugins")).toBe(false);
+
+    replacement.on("evener/marketplace/browse", () => ({ name: "acme-plugins", plugins: [{ name: "fresh" }] }));
+    replacement.emitStateChange("ready");
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+    expect(extensionsStore.getState().browseCatalogs.get("acme-plugins")).toEqual({
+      status: "loaded",
+      plugins: [{ name: "fresh" }],
+    });
+  });
 });
 
 describe("fetchPlugins", () => {

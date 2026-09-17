@@ -247,6 +247,37 @@ describe("reconnect", () => {
       plugins: [{ name: "formatter" }],
     });
   });
+
+  // A replaced client fences the browse the same way it fences the list - see
+  // onFence - but the catalog entry a fenced browse wrote is "loading", not a
+  // list field, and nothing else was going to lower it. Left behind, it makes
+  // browseMarketplace's own settled-entry check ("Loaded, errored, or already
+  // in flight") true forever: the entry reads as in flight, browses.inFlight()
+  // finds no registration for it (retireInFlight() forgot it too), and the
+  // call resolves having sent nothing.
+  test("a browse still in flight when the client is replaced does not stick on loading", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "ready");
+    const release = deferRequest<BrowseResult>(fake, BROWSE);
+    const browsing = store.getState().browseMarketplace("acme");
+    await Promise.resolve();
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "loading" });
+
+    // "connecting", not "ready": isolates onFence's own cleanup from the
+    // reconnect-while-away path (onNotified), which retires every catalog
+    // regardless of status and would otherwise mask this finding.
+    store.connectionChanged(new FakeClient("connecting"), "connecting");
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+
+    release({ name: "acme", plugins: [{ name: "stale" }] });
+    await browsing;
+    expect(store.getState().browseCatalogs.has("acme")).toBe(false);
+
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "fresh" }] }));
+    await store.getState().browseMarketplace("acme");
+    expect(fake.calls.filter((c) => c.method === BROWSE)).toHaveLength(2);
+    expect(store.getState().browseCatalogs.get("acme")).toEqual({ status: "loaded", plugins: [{ name: "fresh" }] });
+  });
 });
 
 describe("list ordering", () => {
