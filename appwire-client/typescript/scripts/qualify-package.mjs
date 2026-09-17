@@ -471,12 +471,14 @@ marketplacesStore
     },
     // The mutation state layer: the durable record shapes both apps' outboxes
     // store, the provenance rule their projections ask (did THIS client
-    // submit it), and the pure reconciliation that turns durable records plus
-    // a live model into the rows a composer's queue renders. Published as its
-    // own subpath because a host's storage and scheduling stay out of the
-    // package - this is the shape, the rule and the reconciliation alone.
-    // Every call here is synchronous, unlike the fetch-backed layers above:
-    // there is no client port to script.
+    // submit it), the pure reconciliation that turns durable records plus a
+    // live model into the rows a composer's queue renders, and the
+    // pending-turns projection store built on that reconciliation. Published
+    // as its own subpath because a host's storage and scheduling stay out of
+    // the package - this is the shape, the rule, the reconciliation and the
+    // store alone. Every call here is synchronous apart from the store's own
+    // triple, and the store's ports are fakes: there is no client port to
+    // script.
     "./state/mutation": {
       esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
 const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
@@ -490,16 +492,32 @@ const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => und
 const pendingMethod: PendingMethod = "send";
 const pendingState: PendingTurnState = "submitting";
 const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
-void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry;`,
+const threadsPort: PendingTurnsThreadsPort = { getThreadModel: () => undefined };
+const draftPort: PendingTurnsDraftPort = {
+  readDraftRevision: () => 0,
+  readComposerDraft: () => ({ text: "", skillNames: [] }),
+  clearDraft: () => undefined,
+};
+const pendingTurnsStore: PendingTurnsStore = createPendingTurnsStore({ threads: threadsPort, draft: draftPort });
+const pendingTurnsState: PendingTurnsState = pendingTurnsStore.getState();
+const submittedDraft: SubmittedDraft = { draftRevisionAtStart: 0, text: "hi", skillNames: [] };
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry; void pendingTurnsState; void submittedDraft;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
-const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;`,
+const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
+const pendingTurnsState: client.PendingTurnsState = client.createPendingTurnsStore({
+  threads: { getThreadModel: () => undefined },
+  draft: { readDraftRevision: () => 0, readComposerDraft: () => ({ text: "", skillNames: [] }), clearDraft: () => undefined },
+}).getState(); void pendingTurnsState;`,
       // ownClientId is memoized per process (one client, one identity), so
       // setMutationClientIdentityForTests resets it before the probe: two
       // reads against the same fake storage return the same identity, that
       // identity is what makes a record isOwnMutationRecord, another client's
       // is not, and an unattributed record stays claimable. reconcilePendingEntries
       // needs no model to prove it runs: an absent one is the same "no live
-      // projection yet" case a fresh composer starts from.
+      // projection yet" case a fresh composer starts from. The pending-turns
+      // store is built over fake threads/draft ports: beginSubmission's guard,
+      // its release and the empty-projection read all prove the store runs
+      // without a real thread store or composer-draft storage behind it.
       smoke: `client.setMutationClientIdentityForTests(undefined);
 const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
 const firstId = client.ownClientId(identityStorage);
@@ -509,6 +527,22 @@ assert.equal(client.isOwnMutationRecord({ originClientId: firstId }), true);
 assert.equal(client.isOwnMutationRecord({ originClientId: "someone-else" }), false);
 assert.equal(client.isOwnMutationRecord({}), true);
 assert.deepEqual(client.reconcilePendingEntries("ref", [], undefined, new Set()), []);
+const draftState = { revision: 0, text: "", skillNames: [] };
+const pendingTurnsStore = client.createPendingTurnsStore({
+  threads: { getThreadModel: () => undefined },
+  draft: {
+    readDraftRevision: () => draftState.revision,
+    readComposerDraft: () => ({ text: draftState.text, skillNames: draftState.skillNames }),
+    clearDraft: () => {
+      draftState.text = "";
+    },
+  },
+});
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), false);
+pendingTurnsStore.endSubmission("ref-a");
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
+assert.deepEqual(pendingTurnsStore.pendingTurnEntries("ref-a"), []);
 `,
     },
   };

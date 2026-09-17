@@ -137,13 +137,20 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   provenance a shared outbox's readers need (`ownClientId`, backed by a
   structural `ClientIdentityStorage` port defaulting to
   `globalThis.sessionStorage`, and `isOwnMutationRecord`, which a durable
-  record written before the field existed satisfies too), and the pure
+  record written before the field existed satisfies too), the pure
   reconciliation (`reconcilePendingEntries`) that turns those durable records
   plus a live `ThreadModel` into the `PendingTurnEntry` rows a composer's
   queue renders - identity-based, so an authoritative projection replaces the
-  same outbox entry rather than duplicating it. No storage, scheduling or DOM
-  type lives here - just the shape, the rule and the reconciliation. Resolves
-  to `state/mutation/index.ts`, a barrel.
+  same outbox entry rather than duplicating it - and the pending-turns
+  projection store built on that reconciliation: `createPendingTurnsStore({ threads, draft })`
+  is a framework-free store holding a host's own outbox/optimistic/recovery
+  records plus the submission bookkeeping (`submittingRefs`, `submittedHere`)
+  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`) and a
+  `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
+  clear), generic over the attachment type like the records above. No
+  storage, scheduling or DOM type lives here - just the shape, the rule, the
+  reconciliation and the store built on them. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure
