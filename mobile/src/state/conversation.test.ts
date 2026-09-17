@@ -28,6 +28,7 @@ import type {
   MobileTimelineItem,
 } from "../conversation/project";
 import { projectConversation } from "../conversation/project";
+import { pendingQuestions } from "../../../mobile-native/src/questionAnswers";
 import { projectNativeTranscript } from "../../../mobile-native/src/transcriptPresentation";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -9959,6 +9960,53 @@ describe("ConversationStore", () => {
       expect(olderParses).toHaveLength(0);
       // The deltas did land: the active turn's row grew.
       expect(rowById(store, "a1")).toMatchObject({ markdown: "d0d1d2d3d4d5d6d7d8d9" });
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  // liveAskQuestions (the package's deriveAskQuestions.ts) has "no memory of
+  // its own" by its own doc comment: every call re-parses every pending
+  // ask_user's argumentsJson. projectConversation's own default argument pays
+  // that scan once per publish; pendingQuestions (mobile-native's
+  // questionAnswers.ts) used to pay it again for the exact same conversation —
+  // same model, same turns, same answerable asks, computed twice. liveAsksFor
+  // shares the one scan between them, keyed on model.turns (the array
+  // projectConversation's spread carries onto the MobileConversation it
+  // returns), so a caller reading the conversation this publish already
+  // produced never re-parses it.
+  it("shares one askQuestionsByCall scan between projectConversation and pendingQuestions", async () => {
+    const askArgs =
+      '{"questions":[{"header":"MARK-1","question":"q","options":[{"label":"A","detail":""}]}]}';
+    const service = new FakeConversationService();
+    service.readProjectionResult = makeReadProjectionResult(
+      makeThread({
+        turns: [
+          makeTurn({ id: "t0", items: [userMessageItem("u0", "hi")] }),
+          makeTurn({ id: "t1", items: [askUserItem("ask-1", askArgs)] }),
+        ],
+        evener: evenerWith({ activeTurnId: "t1" }),
+      }),
+    );
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      parse.mockClear();
+      // No notification landed: this is the exact conversation openProjected
+      // already published, read the way screens.tsx reads it (repeatedly,
+      // across several call sites, on the same store snapshot).
+      pendingQuestions(store.getState().conversation);
+      pendingQuestions(store.getState().conversation);
+      const mark1Parses = parse.mock.calls.filter((call) =>
+        String(call[0]).includes("MARK-1"),
+      );
+      expect(mark1Parses).toHaveLength(0);
+      // The shared derivation still names the pending question correctly.
+      expect(pendingQuestions(store.getState().conversation)).toMatchObject([
+        { header: "MARK-1" },
+      ]);
     } finally {
       parse.mockRestore();
     }

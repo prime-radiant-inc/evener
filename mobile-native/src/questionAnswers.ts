@@ -2,11 +2,11 @@ import {
   type AskAnswerItem,
   type AskQuestionRef,
   composeAskAnswers,
-  liveAskQuestions,
 } from "@evener/appwire-client";
-import type {
-  BoundText,
-  MobileConversation,
+import {
+  type BoundText,
+  liveAsksFor,
+  type MobileConversation,
 } from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
@@ -16,11 +16,13 @@ export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
   // Asked of the MODEL, with the package's own rule — the same call the
-  // projection's question rows come from (project.ts's askQuestionsByCall). The
-  // refs are therefore canonical: composeQuestionAnswers names the header, the
-  // chosen labels and the ifUnanswered text exactly as the agent asked them,
-  // while the rows a reader scrolls carry the display bound's cut copies.
-  return conversation === null ? [] : liveAskQuestions(conversation);
+  // projection's question rows come from (project.ts's askQuestionsByCall,
+  // through liveAsksFor's shared scan). The refs are therefore canonical:
+  // composeQuestionAnswers names the header, the chosen labels and the
+  // ifUnanswered text exactly as the agent asked them, while the rows a
+  // reader scrolls carry the display bound's cut copies.
+  if (conversation === null) return [];
+  return [...liveAsksFor(conversation).values()].flat();
 }
 
 /** A question's prose and option text, bounded for the sheet a reader

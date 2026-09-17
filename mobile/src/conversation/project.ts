@@ -276,6 +276,31 @@ function askQuestionsByCall(model: ThreadModel): Map<string, AskQuestionRef[]> {
   return byCall;
 }
 
+// liveAskQuestions has no memory of its own (its own doc comment) — it rescans
+// every turn's items and re-parses every pending ask_user's argumentsJson on
+// every call. Keyed on model.turns, this reuses ONE scan for every caller that
+// shares that exact array: projectTimeline's own default argument below, and
+// pendingQuestions (mobile-native/src/questionAnswers.ts), which both run
+// against the same conversation within one publish. It does not make the scan
+// itself incremental — the reducer (reducer.ts's mapTurn/settleFirstMatchingTurn)
+// returns a new turns array on every fold, even when only the newest turn
+// changed, so a delta still pays for one scan; this removes paying for it twice
+// or more within that one delta.
+const asksByTurns = new WeakMap<
+  readonly TurnModel[],
+  ReadonlyMap<string, AskQuestionRef[]>
+>();
+
+export function liveAsksFor(
+  model: ThreadModel,
+): ReadonlyMap<string, AskQuestionRef[]> {
+  const cached = asksByTurns.get(model.turns);
+  if (cached !== undefined) return cached;
+  const asks = askQuestionsByCall(model);
+  asksByTurns.set(model.turns, asks);
+  return asks;
+}
+
 // --- single-item projection (pre-cluster) -----------------------------------
 // Returns either a MobileTimelineItem (final, not clusterable) or an activity
 // pre-item carrying a cluster family for the clustering pass, plus any
@@ -677,7 +702,7 @@ function attachmentsRow(
 export function projectTimeline(
   model: ThreadModel,
   // The answerable asks, when the caller has already derived them.
-  asks: ReadonlyMap<string, AskQuestionRef[]> = askQuestionsByCall(model),
+  asks: ReadonlyMap<string, AskQuestionRef[]> = liveAsksFor(model),
 ): MobileTimelineItem[] {
   // Project every item in order, preserving whether it is a final item or a
   // clusterable activity pre-item. Attachments emitted alongside an item
