@@ -85,8 +85,8 @@ func (m *pluginManagerReplay) Gc(context.Context) ([]string, plugins.StoreChange
 func (m *pluginManagerReplay) Doctor() ([]plugins.DoctorFinding, error) {
 	return []plugins.DoctorFinding{{Level: plugins.LevelOK, Message: "healthy"}}, m.err
 }
-func (m *pluginManagerReplay) UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, error) {
-	return m.updated, m.err
+func (m *pluginManagerReplay) UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, plugins.StoreChanges, error) {
+	return m.updated, plugins.StoreChanges{}, m.err
 }
 
 type pluginFailWriter struct{}

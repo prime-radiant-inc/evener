@@ -201,11 +201,11 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _, _ = corrupt.SetAutoUpgrade(context.Background(), appwire.PluginSetAutoUpgradeParams{Plugin: "x", Marketplace: "y"})
 
 	mgr := plugins.NewManager(filepath.Join(root, "auto"))
-	_, _ = runPluginAutoUpgradeTick(ctx, mgr, &bytes.Buffer{})
-	_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-list")), &bytes.Buffer{})
-	_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-refresh")), &bytes.Buffer{})
-	_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-update")), &bytes.Buffer{})
-	_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-updated")), &bytes.Buffer{})
+	_, _, _ = runPluginAutoUpgradeTick(ctx, mgr, &bytes.Buffer{})
+	_, _, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-list")), &bytes.Buffer{})
+	_, _, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-refresh")), &bytes.Buffer{})
+	_, _, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-update")), &bytes.Buffer{})
+	_, _, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(filepath.Join(root, "forced-updated")), &bytes.Buffer{})
 	server := appserver.NewServer(appserver.ServerConfig{ServerName: "fuzz"})
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(filepath.Join(root, "forced-updated")))
 	_, _ = server.Router().Dispatch(ctx, appwire.Request{ID: appwire.NewIntID(1), Method: appwire.MethodEvenerPluginCheckNow})
@@ -229,31 +229,31 @@ func fuzzExerciseUpgrade() {
 
 func FuzzPluginsFSPass3(f *testing.F) {
 	oldList, oldRefresh, oldUpdate := pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade
-	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
+	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, plugins.StoreChanges, error) {
 		switch filepath.Base(mgr.Root) {
 		case "forced-list":
-			return nil, errors.New("list")
+			return nil, plugins.StoreChanges{}, errors.New("list")
 		case "forced-refresh":
-			return plugins.Marketplaces{"b": {}, "a": {}}, nil
+			return plugins.Marketplaces{"b": {}, "a": {}}, plugins.StoreChanges{}, nil
 		default:
 			return oldList(ctx, mgr)
 		}
 	}
-	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
+	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) (plugins.StoreChanges, error) {
 		if filepath.Base(mgr.Root) == "forced-refresh" && name == "a" {
-			return errors.New("refresh")
+			return plugins.StoreChanges{}, errors.New("refresh")
 		}
 		if filepath.Base(mgr.Root) == "forced-refresh" {
-			return nil
+			return plugins.StoreChanges{}, nil
 		}
 		return oldRefresh(ctx, mgr, name)
 	}
-	pluginUpdateAutoUpgrade = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
+	pluginUpdateAutoUpgrade = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, plugins.StoreChanges, error) {
 		switch filepath.Base(mgr.Root) {
 		case "forced-update":
-			return nil, errors.New("update")
+			return nil, plugins.StoreChanges{}, errors.New("update")
 		case "forced-updated":
-			return []plugins.UpgradedPlugin{{Plugin: "widget", Marketplace: "acme"}}, nil
+			return []plugins.UpgradedPlugin{{Plugin: "widget", Marketplace: "acme"}}, plugins.StoreChanges{}, nil
 		default:
 			return oldUpdate(ctx, mgr)
 		}

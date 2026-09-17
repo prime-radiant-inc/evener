@@ -29,24 +29,13 @@ var newPluginAutoUpgradeTicker = func(interval time.Duration) pluginAutoUpgradeT
 var pluginAutoUpgradeTick = runPluginAutoUpgradeTick
 
 var (
-	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
-		// The auto-upgrade daemon already refreshes every known marketplace
-		// up front each tick, so a migration here is not the interactive
-		// path's unbroadcast-change gap; migrated is discarded rather than
-		// marked (see the RPC handlers in app_rpc.go for the interactive path).
-		mk, _, err := mgr.ListMarketplaces(ctx)
-		return mk, err
+	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, plugins.StoreChanges, error) {
+		return mgr.ListMarketplaces(ctx)
 	}
-	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
-		// The auto-upgrade daemon already refreshes every known marketplace
-		// up front each tick, so a migration here is not the interactive
-		// path's unbroadcast-change gap (see pluginListMarketplaces above and
-		// the RPC handlers in app_rpc.go for the interactive path); changes
-		// is discarded for the same reason.
-		_, err := mgr.RefreshMarketplace(ctx, name)
-		return err
+	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) (plugins.StoreChanges, error) {
+		return mgr.RefreshMarketplace(ctx, name)
 	}
-	pluginUpdateAutoUpgrade = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
+	pluginUpdateAutoUpgrade = func(ctx context.Context, mgr *plugins.Manager) ([]plugins.UpgradedPlugin, plugins.StoreChanges, error) {
 		return mgr.UpdateAutoUpgrade(ctx)
 	}
 )
@@ -59,15 +48,21 @@ var (
 // marketplace or plugin never blocks the others (failure-isolated; the
 // per-plugin isolation is inherited from plugins.Manager.UpdateAutoUpgrade).
 //
+// changes folds the listing, every refresh and the upgrade sweep's own
+// answers into one: the daemon and checkNow (both callers) broadcast on it
+// whether or not anything was actually upgraded, because a migration or a
+// lazy-fetch backfill can change a store on its own.
+//
 // Factored out as a plain function (no ticker, no goroutine) so it is
 // unit-testable without spinning a real timer: construct a Manager against a
 // temp root, install fixtures, call this once, and assert on the result.
-func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr io.Writer) (updated []plugins.UpgradedPlugin, errs []string) {
-	mk, err := pluginListMarketplaces(ctx, mgr)
+func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr io.Writer) (updated []plugins.UpgradedPlugin, changes plugins.StoreChanges, errs []string) {
+	mk, mkChanges, err := pluginListMarketplaces(ctx, mgr)
+	changes = changes.Merge(mkChanges)
 	if err != nil {
 		msg := fmt.Sprintf("listing marketplaces: %v", err)
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
-		return nil, []string{msg}
+		return nil, changes, []string{msg}
 	}
 
 	names := make([]string, 0, len(mk))
@@ -76,33 +71,34 @@ func runPluginAutoUpgradeTick(ctx context.Context, mgr *plugins.Manager, stderr 
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		if err := pluginRefreshMarketplace(ctx, mgr, name); err != nil {
+		refreshChanges, err := pluginRefreshMarketplace(ctx, mgr, name)
+		changes = changes.Merge(refreshChanges)
+		if err != nil {
 			msg := fmt.Sprintf("refreshing marketplace %q: %v", name, err)
 			errs = append(errs, msg)
 			_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %s\n", msg)
 		}
 	}
 
-	updated, err = pluginUpdateAutoUpgrade(ctx, mgr)
+	var upgradeChanges plugins.StoreChanges
+	updated, upgradeChanges, err = pluginUpdateAutoUpgrade(ctx, mgr)
+	changes = changes.Merge(upgradeChanges)
 	if err != nil {
 		errs = append(errs, err.Error())
 		_, _ = fmt.Fprintf(stderr, "[hub] plugin auto-upgrade: %v\n", err)
 	}
-	return updated, errs
+	return updated, changes, errs
 }
 
 // startPluginAutoUpgradeDaemon runs runPluginAutoUpgradeTick once immediately
 // (the design's "plus once on hub start") and then every interval until ctx is
-// canceled, broadcasting evener/plugin/updated for each plugin actually
-// upgraded. Meant to be launched with `go` from main, mirroring the hub's
-// other ticker goroutines (roster watch, past-index rebuild, attention
-// watcher).
+// canceled, broadcasting whichever store the tick actually changed. Meant to
+// be launched with `go` from main, mirroring the hub's other ticker
+// goroutines (roster watch, past-index rebuild, attention watcher).
 func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, interval time.Duration, server *appserver.Server) {
 	tick := func() {
-		updated, _ := pluginAutoUpgradeTick(ctx, mgr, os.Stderr)
-		if len(updated) > 0 {
-			notifyPluginUpdated(server)
-		}
+		_, changes, _ := pluginAutoUpgradeTick(ctx, mgr, os.Stderr)
+		notifyStoreChanges(server, changes)
 	}
 	tick()
 	ticker := newPluginAutoUpgradeTicker(interval)
@@ -125,14 +121,12 @@ func startPluginAutoUpgradeDaemon(ctx context.Context, mgr *plugins.Manager, int
 // owns the auto-upgrade tick.
 func registerPluginAutoUpgradeHandlers(server *appserver.Server, mgr *plugins.Manager) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginCheckNow, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginCheckNowResponse, error) {
-		updated, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
+		updated, changes, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
 		refs := make([]string, len(updated))
 		for i, u := range updated {
 			refs[i] = u.Plugin + "@" + u.Marketplace
 		}
-		if len(updated) > 0 {
-			notifyPluginUpdated(server)
-		}
+		notifyStoreChanges(server, changes)
 		return appwire.PluginCheckNowResponse{Updated: refs, Errors: errs}, nil
 	})
 }

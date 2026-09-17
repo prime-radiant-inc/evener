@@ -565,6 +565,40 @@ func TestHubRPCPluginListBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T
 	}
 }
 
+// evener/plugin/checkNow's own tick runs the auto-upgrade daemon's listing,
+// refresh and upgrade sweep synchronously (runPluginAutoUpgradeTick). The
+// planted plugin's own source (directory, relative) is ineligible for
+// auto-upgrade, so the sweep upgrades nothing - this isolates the migration's
+// own signal, landing during the listing step, from any upgrade the tick
+// might also report.
+func TestHubRPCPluginCheckNowBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T) {
+	pluginRoot := t.TempDir()
+	seedLegacyNamedMarketplaceWithPlugin(t, pluginRoot)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.PluginCheckNowResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerPluginCheckNow, appwire.EmptyParams{}, &resp); err != nil {
+		t.Fatalf("evener/plugin/checkNow: %v", err)
+	}
+	if len(resp.Updated) != 0 {
+		t.Fatalf("checkNow Updated = %v, want none (the planted plugin's source is ineligible)", resp.Updated)
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
+	}
+	if counts[appwire.NotifyEvenerPluginUpdated] != 1 {
+		t.Fatalf("evener/plugin/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerPluginUpdated], counts)
+	}
+}
+
 // #1699: AddMarketplace (like every other marketplace/plugin writer) takes
 // the store lock itself, so a legacy-name migration can land during THIS
 // call's own acquisition, independent of whatever AddMarketplace itself

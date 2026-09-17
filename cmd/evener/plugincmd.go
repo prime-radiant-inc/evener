@@ -31,7 +31,7 @@ type pluginManager interface {
 	SetAutoUpgrade(context.Context, string, string, bool) (plugins.StoreChanges, error)
 	Gc(context.Context) ([]string, plugins.StoreChanges, error)
 	Doctor() ([]plugins.DoctorFinding, error)
-	UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, error)
+	UpdateAutoUpgrade(context.Context) ([]plugins.UpgradedPlugin, plugins.StoreChanges, error)
 }
 
 type pluginLaunchResolver interface {
@@ -629,7 +629,10 @@ func runPluginCheckNow(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	updated, upgradeErr := newPluginManager().UpdateAutoUpgrade(context.Background())
+	// changes is discarded: check-now is the CLI's client-less path, with no
+	// server to broadcast the sweep's own StoreChanges on (see the hub's
+	// checkNow RPC handler for the reachable-from-a-server counterpart).
+	updated, _, upgradeErr := newPluginManager().UpdateAutoUpgrade(context.Background())
 	refs := make([]string, len(updated))
 	for i, u := range updated {
 		refs[i] = u.Plugin + "@" + u.Marketplace

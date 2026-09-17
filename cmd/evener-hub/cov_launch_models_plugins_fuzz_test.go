@@ -156,7 +156,7 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_, _, _ = pctl.Disable(context.Background(), ref)
 
 		mgr := plugins.NewManager(pluginRoot)
-		_, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
+		_, _, errs := runPluginAutoUpgradeTick(ctx, mgr, os.Stderr)
 		if len(errs) == 0 {
 			t.Fatal("broken manager must report an error")
 		}
@@ -167,22 +167,24 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		if err := os.RemoveAll(marketDir); err != nil {
 			t.Fatal(err)
 		}
-		_, _ = runPluginAutoUpgradeTick(ctx, refreshCtl.mgr, os.Stderr)
+		_, _, _ = runPluginAutoUpgradeTick(ctx, refreshCtl.mgr, os.Stderr)
 		if err := os.WriteFile(filepath.Join(refreshCtl.mgr.Root, "installed_plugins.json"), []byte("{"), 0o600); err == nil {
-			_, _ = runPluginAutoUpgradeTick(ctx, refreshCtl.mgr, os.Stderr)
+			_, _, _ = runPluginAutoUpgradeTick(ctx, refreshCtl.mgr, os.Stderr)
 		}
 		oldList, oldRefresh, oldUpdate := pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade
 		t.Cleanup(func() {
 			pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade = oldList, oldRefresh, oldUpdate
 		})
-		pluginListMarketplaces = func(context.Context, *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
-			return map[string]plugins.MarketplaceRef{"broken": {}}, nil
+		pluginListMarketplaces = func(context.Context, *plugins.Manager) (map[string]plugins.MarketplaceRef, plugins.StoreChanges, error) {
+			return map[string]plugins.MarketplaceRef{"broken": {}}, plugins.StoreChanges{}, nil
 		}
-		pluginRefreshMarketplace = func(context.Context, *plugins.Manager, string) error { return errors.New("refresh") }
-		pluginUpdateAutoUpgrade = func(context.Context, *plugins.Manager) ([]plugins.UpgradedPlugin, error) {
-			return nil, errors.New("update")
+		pluginRefreshMarketplace = func(context.Context, *plugins.Manager, string) (plugins.StoreChanges, error) {
+			return plugins.StoreChanges{}, errors.New("refresh")
 		}
-		_, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(t.TempDir()), os.Stderr)
+		pluginUpdateAutoUpgrade = func(context.Context, *plugins.Manager) ([]plugins.UpgradedPlugin, plugins.StoreChanges, error) {
+			return nil, plugins.StoreChanges{}, errors.New("update")
+		}
+		_, _, _ = runPluginAutoUpgradeTick(ctx, plugins.NewManager(t.TempDir()), os.Stderr)
 		pluginListMarketplaces, pluginRefreshMarketplace, pluginUpdateAutoUpgrade = oldList, oldRefresh, oldUpdate
 
 		ticker := &covPluginTicker{c: make(chan time.Time, 1)}
@@ -200,8 +202,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 		_ = realTicker.Chan()
 		realTicker.Stop()
 		oldTick := pluginAutoUpgradeTick
-		pluginAutoUpgradeTick = func(context.Context, *plugins.Manager, io.Writer) ([]plugins.UpgradedPlugin, []string) {
-			return []plugins.UpgradedPlugin{{Plugin: "p", Marketplace: "m"}}, nil
+		pluginAutoUpgradeTick = func(context.Context, *plugins.Manager, io.Writer) ([]plugins.UpgradedPlugin, plugins.StoreChanges, []string) {
+			return []plugins.UpgradedPlugin{{Plugin: "p", Marketplace: "m"}}, plugins.StoreChanges{}, nil
 		}
 		t.Cleanup(func() { pluginAutoUpgradeTick = oldTick })
 		notifyCtx, notifyCancel := context.WithCancel(ctx)

@@ -117,7 +117,7 @@ func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T)
 	hubTestAdvanceGitRepo(t, pluginRepo, "extra.txt", "v2")
 
 	var stderr bytes.Buffer
-	updated, errs := runPluginAutoUpgradeTick(context.Background(), mgr, &stderr)
+	updated, changes, errs := runPluginAutoUpgradeTick(context.Background(), mgr, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("runPluginAutoUpgradeTick errs = %v, stderr=%s", errs, stderr.String())
 	}
@@ -129,6 +129,9 @@ func TestRunPluginAutoUpgradeTick_UpgradesAutoUpgradeEnabledPlugin(t *testing.T)
 	}
 	if _, err := os.Stat(firstInstallPath); err != nil {
 		t.Fatal("old sha-dir was deleted; the daemon must never delete")
+	}
+	if !changes.Plugins {
+		t.Fatalf("changes = %+v, want Plugins true: the upgrade sweep repointed the registry", changes)
 	}
 
 	items, _, err := mgr.List(context.Background())
@@ -148,7 +151,10 @@ func TestRunPluginAutoUpgradeTick_NoOpWhenUpstreamUnchanged(t *testing.T) {
 	mgr, _, _ := autoUpgradeFixture(t)
 
 	var stderr bytes.Buffer
-	updated, errs := runPluginAutoUpgradeTick(context.Background(), mgr, &stderr)
+	// changes is discarded: RefreshMarketplace always advances LastUpdated on
+	// a successful refresh, so it is Marketplaces:true here regardless of
+	// this test's own no-op concern (upstream unchanged).
+	updated, _, errs := runPluginAutoUpgradeTick(context.Background(), mgr, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("runPluginAutoUpgradeTick errs = %v", errs)
 	}
@@ -159,15 +165,20 @@ func TestRunPluginAutoUpgradeTick_NoOpWhenUpstreamUnchanged(t *testing.T) {
 
 // TestRunPluginAutoUpgradeTick_NoMarketplacesIsNoOp exercises the empty-store
 // path with no git dependency: a fresh manager with nothing registered yet.
+// Nothing here writes either store file, so changes must come back false -
+// a tick against an untouched hub must never broadcast.
 func TestRunPluginAutoUpgradeTick_NoMarketplacesIsNoOp(t *testing.T) {
 	mgr := plugins.NewManager(t.TempDir())
 	var stderr bytes.Buffer
-	updated, errs := runPluginAutoUpgradeTick(context.Background(), mgr, &stderr)
+	updated, changes, errs := runPluginAutoUpgradeTick(context.Background(), mgr, &stderr)
 	if len(errs) != 0 {
 		t.Fatalf("runPluginAutoUpgradeTick errs = %v", errs)
 	}
 	if len(updated) != 0 {
 		t.Fatalf("runPluginAutoUpgradeTick updated = %+v, want none", updated)
+	}
+	if changes.Marketplaces || changes.Plugins {
+		t.Fatalf("changes = %+v, want neither field set: an empty store has nothing to migrate or refresh", changes)
 	}
 }
 
