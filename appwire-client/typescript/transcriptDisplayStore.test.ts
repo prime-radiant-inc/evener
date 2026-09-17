@@ -498,6 +498,43 @@ describe("the direct write", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
+  test("an older save's late reply does not clear a newer save's saving flag", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const first = deferred<TranscriptDisplayPatchResponse>();
+    const second = deferred<TranscriptDisplayPatchResponse>();
+    let sends = 0;
+    client.on(patchMethod, () => (++sends === 1 ? first.promise : second.promise));
+
+    const one = store.getState().saveDraft("mobile", proposed);
+    await vi.waitFor(() => expect(sends).toBe(1));
+
+    // A transient disconnect retires the payload, which frees the editor while
+    // the first request is STILL OUT - that is what lets a second save start.
+    store.endReadyGeneration();
+    expect(store.getState().saving).toBe(false);
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
+    store.getState().rebaseDraft(2);
+
+    const two = store.getState().saveDraft("mobile", mobileConfig);
+    await vi.waitFor(() => expect(sends).toBe(2));
+    expect(store.getState().saving).toBe(true);
+
+    // The first write's reply finally lands. It was superseded, not fenced by a
+    // support flip, so it may not report the write the editor IS waiting on as
+    // finished.
+    first.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await one;
+    expect(store.getState().saving).toBe(true);
+
+    second.resolve(patchAnswer("mobile", hubDefault(3, mobileConfig)));
+    await two;
+    expect(store.getState().saving).toBe(false);
+  });
+
   test("a rejection arriving after support went unknown still clears saving", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDrafts();
@@ -585,6 +622,32 @@ describe("the direct write", () => {
     store.beginReadyGeneration();
     await store.getState().refreshHubDefaults();
     expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a new generation's lower-revision read still invalidates a contradicted preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(7, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    // The hub goes away with the reply still out, then comes back RESTARTED,
+    // numbering from its own 3. The preview was composed against revision 7 of
+    // a hub that no longer exists, so revision is no guide at all here.
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(8, proposed)));
+    await write;
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, mobileConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, mobileConfig));
     expect(store.getState().drafts.mobile).toBeUndefined();
   });
 

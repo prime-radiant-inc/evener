@@ -313,6 +313,17 @@ function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: numbe
  * can still load the hub and can still throw the record away. */
 class UnreadableDraftError extends Error {}
 
+/** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
+ * raw value goes straight back to the port, which matches its own bytes, so a
+ * record no build can decode is still the record removed. A host whose store is
+ * gone (no connection, so no client to build one from) needs this to clear an
+ * unreadable record; a host with a live store uses discardDraft, which also
+ * publishes the state. One implementation either way. */
+export function discardStoredDraft(storage: KeybindingDraftStorage): void {
+  const value = storage.load();
+  if (value !== null && value !== undefined) storage.removeIf(value as KeybindingDraftCheckpoint);
+}
+
 function invalidDraft(): never {
   throw new UnreadableDraftError("Invalid keybinding draft.");
 }
@@ -375,8 +386,7 @@ function draftRepository(storage: KeybindingDraftStorage) {
      * the port, which matches its own bytes, so a record this build cannot
      * decode is still the record removed - the port needs no clear(). */
     discardUnreadable(): void {
-      const value = storage.load();
-      if (value !== null && value !== undefined) storage.removeIf(value as KeybindingDraftCheckpoint);
+      discardStoredDraft(storage);
     },
   };
 }
@@ -655,6 +665,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
+  }
+
+  /** WHY a reply is not ours, because the two answers call for opposite things.
+   * SUPERSEDED: a later write, or a payload retirement, has taken over - it
+   * owns `saving` now and this reply must touch nothing. LOST-HUB: this write's
+   * own claim is intact and only support went away (the unknown window keeps
+   * the state and the in-flight work), so nothing else will ever settle this
+   * write and the editor must not be left mid-write. */
+  function whyFenced(generation: number, token: number): "superseded" | "lost-hub" {
+    return token === fence.writeToken && fence.isCurrent(generation) ? "lost-hub" : "superseded";
+  }
+
+  /** Publishes the end of a write whose reply can never be settled by anything
+   * else. A superseded reply publishes nothing: its successor owns the flags. */
+  function settleUnsettleableWrite(why: "superseded" | "lost-hub"): void {
+    if (why === "lost-hub" && getState().saving) setState({ saving: false, writeUncertain: true });
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
@@ -1201,11 +1227,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
       if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
-      // Fenced by something that did NOT retire the payload - a support flip to
-      // unknown keeps the state and the in-flight work but makes this reply not
-      // ours. Nothing else will settle this write, so the editor may not be
-      // left mid-write.
-      else if (getState().saving) setState({ saving: false, writeUncertain: true });
+      else settleUnsettleableWrite(whyFenced(generation, token));
       throw error;
     }
     // The reply is back. What follows is ONE ordered sequence with no side
@@ -1235,11 +1257,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     //     with the port marked unavailable, and never turns a confirmed write
     //     back into an unknown outcome.
     if (!stillMine()) {
-      // Whatever fenced this reply out, the editor may not be left mid-write:
-      // the retirement sites already publish saving false, and this makes the
-      // fenced branch say so itself rather than depend on the site that
-      // superseded it.
-      if (getState().saving) setState({ saving: false, writeUncertain: true });
+      settleUnsettleableWrite(whyFenced(generation, token));
       const state = getState();
       return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
     }

@@ -324,6 +324,17 @@ function decodePatchReply(
  * can still load the hub and can still throw the record away. */
 class UnreadableDraftError extends Error {}
 
+/** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
+ * raw value goes straight back to the port, which matches its own bytes, so a
+ * record no build can decode is still the record removed. A host whose store is
+ * gone (no connection, so no client to build one from) needs this to clear an
+ * unreadable record; a host with a live store uses discardDraft, which also
+ * publishes the state. One implementation either way. */
+export function discardStoredDraft(storage: TranscriptDraftStorage): void {
+  const value = storage.load();
+  if (value !== null && value !== undefined) storage.removeIf(value as TranscriptDraftCheckpoint);
+}
+
 function invalidDraft(): never {
   throw new UnreadableDraftError("Invalid transcript preference draft.");
 }
@@ -376,8 +387,7 @@ function draftRepository(storage: TranscriptDraftStorage) {
      * the port, which matches its own bytes, so a record this build cannot
      * decode is still the record removed - the port needs no clear(). */
     discardUnreadable(): void {
-      const value = storage.load();
-      if (value !== null && value !== undefined) storage.removeIf(value as TranscriptDraftCheckpoint);
+      discardStoredDraft(storage);
     },
   };
 }
@@ -406,15 +416,21 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   /** The direct write's token per layout: a later write on the same layout
    * supersedes an earlier one's reply. Bumped for every layout by retirement. */
   const patchTokens = new Map<ViewportClass, number>();
-  /** The confirmed revision each direct write's preview was composed against.
-   * A preview is a GUESS at what its layer will hold. A confirmed payload
-   * NEWER than the guess's base that CONTRADICTS it has settled the layer at
-   * something else, so the guess must not keep sitting on top of it - that is
-   * true however the write's own reply ended up, including never landing. A
-   * newer payload that MATCHES it is left alone: the host still has an
-   * unacknowledged write to report, and the preview is what it reports about.
-   * A reconnect read re-confirming the same revision says nothing new either
-   * way. Not part of `drafts`, which is the host's published shape. */
+  /** What each direct write's preview was composed against: the hub generation
+   * and the confirmed revision. A preview is a GUESS at what its layer will
+   * hold. A confirmed payload that CONTRADICTS the guess has settled the layer
+   * at something else, so the guess must not keep sitting on top of it - true
+   * however the write's own reply ended up, including never landing. A payload
+   * that MATCHES it is left alone: the host still has an unacknowledged write to
+   * report, and the preview is what it reports about.
+   *
+   * The comparison is revision INEQUALITY, not "newer", because revision
+   * numbering is the hub's: a reconnect to a RESTARTED hub legitimately numbers
+   * LOWER, and a payload at a different number from the one the guess was
+   * composed against has decided the layer whichever direction it moved. Only
+   * an EQUAL revision says nothing new - the same decision re-stated, which is
+   * what a reconnect to the same hub re-reads. Not part of `drafts`, which is
+   * the host's published shape. */
   const previewBases = new Map<ViewportClass, number>();
   let patchSerial = 0;
   const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
@@ -478,6 +494,23 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * here. */
   function writeStillMine(generation: number, layout: ViewportClass, token: number): boolean {
     return fence.liveHub(generation) && patchTokens.get(layout) === token;
+  }
+
+  /** WHY a reply is not ours, because the two answers call for opposite things.
+   * SUPERSEDED: a later write on this layer, or a payload retirement, has taken
+   * over - whoever took over owns `saving` now, and this reply must touch
+   * nothing. LOST-HUB: this write's own claim is intact and only support went
+   * away (the unknown window keeps the state and the in-flight work), so
+   * nothing else will ever settle this write and the editor must not be left
+   * mid-write. */
+  function whyFenced(generation: number, layout: ViewportClass, token: number): "superseded" | "lost-hub" {
+    return patchTokens.get(layout) === token && fence.isCurrent(generation) ? "lost-hub" : "superseded";
+  }
+
+  /** Publishes the end of a write whose reply can never be settled by anything
+   * else. A superseded reply publishes nothing: its successor owns the flags. */
+  function settleUnsettleableWrite(why: "superseded" | "lost-hub"): void {
+    if (why === "lost-hub" && getState().saving) setState({ saving: false, writeUncertain: true });
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
@@ -546,8 +579,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const contradictsPreview =
       previewBase !== undefined &&
       preview !== undefined &&
-      value.revision > previewBase &&
-      configFingerprint(value.config) !== configFingerprint(preview);
+      configFingerprint(value.config) !== configFingerprint(preview) &&
+      value.revision !== previewBase;
     if (contradictsPreview) previewBases.delete(layout);
     const drafts = { ...state.drafts };
     if (contradictsPreview) delete drafts[layout];
@@ -931,11 +964,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       });
     } catch (error) {
       if (!stillMine()) {
-        // Fenced by something that did NOT retire the payload - a support flip
-        // to unknown keeps the state and the in-flight work but makes this
-        // reply not ours. Nothing else will settle this write, so the editor
-        // may not be left mid-write.
-        if (getState().saving) setState({ saving: false, writeUncertain: true });
+        settleUnsettleableWrite(whyFenced(generation, layout, token));
         throw error;
       }
       const canonical = conflictCurrent(error, layout);
@@ -975,11 +1004,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     //     view with the port marked unavailable, and never turns a confirmed
     //     write back into an unknown outcome.
     if (!stillMine()) {
-      // Whatever fenced this reply out, the editor may not be left mid-write:
-      // the retirement sites already publish saving false, and this makes the
-      // fenced branch say so itself rather than depend on the site that
-      // superseded it.
-      if (getState().saving) setState({ saving: false, writeUncertain: true });
+      settleUnsettleableWrite(whyFenced(generation, layout, token));
       return getState().hub[layout] ?? confirmed;
     }
     let value: HubTranscriptDisplayDefault;

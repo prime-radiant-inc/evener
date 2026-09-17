@@ -384,6 +384,42 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
+  test("an older save's late reply does not clear a newer save's saving flag", async () => {
+    const client = clientServing(3);
+    const drafts = memoryKeybindingDraftStorage();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const first = deferred<KeybindingsOverrides>();
+    const second = deferred<KeybindingsOverrides>();
+    let sends = 0;
+    client.on(patchMethod, () => (++sends === 1 ? first.promise : second.promise));
+
+    const one = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(sends).toBe(1));
+
+    // A transient disconnect retires the payload, which frees the editor while
+    // the first request is STILL OUT - that is what lets a second save start.
+    store.endReadyGeneration();
+    expect(store.getState().saving).toBe(false);
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
+    store.getState().rebaseDraft(3);
+
+    const two = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(sends).toBe(2));
+    expect(store.getState().saving).toBe(true);
+
+    // Superseded, not fenced by a support flip: it may not report the write the
+    // editor IS waiting on as finished.
+    first.resolve(payload(4, rules));
+    await one;
+    expect(store.getState().saving).toBe(true);
+
+    second.resolve(payload(4, rules));
+    await two;
+    expect(store.getState().saving).toBe(false);
+  });
+
   test("a rejection arriving after support went unknown still clears saving", async () => {
     const client = clientServing(3);
     const drafts = memoryKeybindingDraftStorage();
