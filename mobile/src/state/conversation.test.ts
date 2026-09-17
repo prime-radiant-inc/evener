@@ -7009,6 +7009,96 @@ describe("ConversationStore", () => {
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
     });
 
+    it("drops a page-owned attachment once the snapshot re-emits its source's attachment under the same wire id", async () => {
+      // Case (c) of the state table below: the snapshot's attachment row has
+      // the SAME own identity as the page's, so ownTimelineIdentities alone
+      // already catches it — this pins that the existing behavior holds once
+      // (d), below, adds a second path to the same drop.
+      const { store, service } = await openRunningTurn([]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "attachments",
+            id: "wire-Z:attachments",
+            items: [{ id: "att-Z", src: "https://example.com/z.png" }],
+            sourceTranscriptKey: "key-Z",
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "wire-Z",
+            transcriptKey: "key-Z",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+            outputImages: [{ source: "z", url: "https://example.com/z.png" }],
+          },
+        },
+      } as AnyNotification);
+
+      // The snapshot's own "wire-Z:attachments" supersedes the page's.
+      expect(rows(store).filter((item) => item.id === "wire-Z:attachments")).toHaveLength(1);
+    });
+
+    it("drops a page-owned attachment once the snapshot re-emits its source's attachment under a new wire id", async () => {
+      // Case (d): the hub reissues the source's wire id while its transcript
+      // key stands (loadOlder's own admission rule, F10 above, dedupes
+      // exactly this). The page's "old-wire-Z:attachments" and the snapshot's
+      // "new-wire-Z:attachments" share source "key-Z" but no own identity, so
+      // the own-identity check alone would keep both — one page-owned image
+      // row and one fresh one, for the same message.
+      const { store, service } = await openRunningTurn([]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "attachments",
+            id: "old-wire-Z:attachments",
+            items: [{ id: "att-old", src: "https://example.com/old.png" }],
+            sourceTranscriptKey: "key-Z",
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).some((item) => item.id === "old-wire-Z:attachments")).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "new-wire-Z",
+            transcriptKey: "key-Z",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+            outputImages: [{ source: "new", url: "https://example.com/new.png" }],
+          },
+        },
+      } as AnyNotification);
+
+      const ids = rows(store).map((item) => item.id);
+      // The page's superseded copy is gone, not kept alongside the fresh one.
+      expect(ids).not.toContain("old-wire-Z:attachments");
+      expect(ids).toContain("new-wire-Z:attachments");
+    });
+
     it("carries no page history across a reread when the cap already trimmed it", async () => {
       const service = new FakeConversationService();
       const initialThreadItems: ThreadItem[] = [];

@@ -708,10 +708,21 @@ export function createConversationStore() {
     const identities = new Set(
       projected.items.flatMap((item) => [...timelineIdentities(item)]),
     );
+    // Sources the snapshot has its OWN attachment row for — narrower than
+    // `identities`, which a source row alone (no attachment yet) also
+    // populates. A page-owned attachment is superseded only once the
+    // snapshot re-emits an attachment for its source, under any wire id (the
+    // hub reissues the source's id while its transcript key stands, so the
+    // new attachment row's own id can differ from the page's).
+    const projectedAttachmentSources = new Set(
+      projected.items
+        .map((row) => attachmentSourceIdentity(row))
+        .filter((id): id is string => id !== null),
+    );
     const pageRows: MobileTimelineItem[] = [];
     for (const item of previous.items) {
       if (!pageOwnedIds.has(timelineIdentity(item))) continue;
-      const retained = retainedPageRow(item, identities);
+      const retained = retainedPageRow(item, identities, projectedAttachmentSources);
       if (retained !== null) pageRows.push(retained);
     }
     if (pageRows.length === 0) return projected;
@@ -729,20 +740,27 @@ export function createConversationStore() {
   // the state is running when any member runs, and a single member is a plain
   // activity row rather than a cluster of one).
   //
-  // duplicates() reads ownTimelineIdentities, not timelineIdentities: a
-  // page-owned attachment's OWN identity is what makes it a duplicate, never
-  // its source's. timelineIdentities also carries an attachment's source
-  // identity (so a reader deduping by "every identity this row touches"
-  // treats an attachment as inseparable from its message) — the wrong rule
-  // here, where the projected snapshot can hold the source row without yet
-  // holding its attachment; matching on the source would discard a page's
-  // only copy of an attachment the snapshot has not caught up to.
+  // duplicates() has two clauses, mirroring loadOlder's own admission rule
+  // (F10, above): ownTimelineIdentities decides every row's own identity —
+  // a page-owned attachment's OWN identity is what makes it a duplicate,
+  // never its source's, since the projected snapshot can hold the source row
+  // without yet holding its attachment. A SECOND, explicit check then asks
+  // whether the snapshot carries its own attachment for this row's source at
+  // all, under ANY wire id: the hub reissues a source's id while its
+  // transcript key stands, so a reissued attachment's own identity never
+  // matches the page's, and the first clause alone would keep both — one
+  // page-owned image row and one fresh one, for the same message.
   function retainedPageRow(
     item: MobileTimelineItem,
     identities: ReadonlySet<string>,
+    projectedAttachmentSources: ReadonlySet<string>,
   ): MobileTimelineItem | null {
-    const duplicates = (candidate: MobileTimelineItem): boolean =>
-      [...ownTimelineIdentities(candidate)].some((id) => identities.has(id));
+    const duplicates = (candidate: MobileTimelineItem): boolean => {
+      if ([...ownTimelineIdentities(candidate)].some((id) => identities.has(id)))
+        return true;
+      const sourceId = attachmentSourceIdentity(candidate);
+      return sourceId !== null && projectedAttachmentSources.has(sourceId);
+    };
     if (item.kind !== "activity" || item.members === undefined) {
       return duplicates(item) ? null : item;
     }
