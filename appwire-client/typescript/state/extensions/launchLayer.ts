@@ -25,8 +25,8 @@ import type { AppwireClient } from "../../client";
 import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { LaunchConfigLayer } from "../../types.gen";
-import { createListRevision } from "./listRevision";
-import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
+import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type LaunchLayerClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -93,26 +93,20 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
       launchLayerLoading: false,
       launchLayerError: null,
 
-      async fetchLaunchLayer() {
-        const revision = listRevision.next();
+      fetchLaunchLayer() {
         set({ launchLayerLoading: true, launchLayerError: null });
-        try {
-          const layer = await client.request("evener/launch/getLayer", GLOBAL_LAYER_PARAMS);
-          // The loading flag and the error belong to this answer as much as
-          // the layer does, so an outrun read writes none of the three: its
-          // success would clear an error a newer read posted or hide a read
-          // still running, and its failure would put "Failed to load" over a
-          // newer write's layer.
-          listRevision.publish(revision, () =>
-            set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null }),
-          );
-        } catch (err) {
-          listRevision.publish(revision, () => set({ launchLayerLoading: false, launchLayerError: errorText(err) }));
-        }
+        // The loading flag and the error belong to this answer as much as
+        // the layer does, so an outrun read writes none of the three: its
+        // success would clear an error a newer read posted or hide a read
+        // still running, and its failure would put "Failed to load" over a
+        // newer write's layer.
+        return readRevisioned(listRevision, () => client.request("evener/launch/getLayer", GLOBAL_LAYER_PARAMS), {
+          onAnswer: (layer) => () => set({ launchLayer: layer, launchLayerLoading: false, launchLayerError: null }),
+          onFailure: (err) => () => set({ launchLayerLoading: false, launchLayerError: errorText(err) }),
+        });
       },
 
-      async setLaunchLayer(next) {
-        const revision = listRevision.next();
+      setLaunchLayer: (next): Promise<void> =>
         // setLayer's response is a LaunchConfigResolved (effective + a
         // per-layer map), not the plain layer this store tracks - and
         // FromWire/ToWire (cmd/evener-hub/internal/launchconfig/wire.go) are a
@@ -121,18 +115,13 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
         // Trusting our own outgoing payload avoids taking a dependency on the
         // resolved response's internal layer-name keying, which nothing here
         // otherwise needs to know.
-        try {
-          await client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next });
-        } catch (err) {
-          // Nothing to publish, so nothing to own: see listRevision's retract.
-          listRevision.retract(revision);
-          throw err;
-        }
-        listRevision.publish(revision, () => set({ launchLayer: next }));
-      },
+        writeRevisioned(
+          listRevision,
+          () => client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next }),
+          () => () => set({ launchLayer: next }),
+        ),
     };
   });
 
-  const { start, connectionChanged, reset, dispose } = lifecycle;
-  return { ...store, start, connectionChanged, reset, dispose };
+  return attachLifecycle(store, lifecycle);
 }
