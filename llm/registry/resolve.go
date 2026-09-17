@@ -958,23 +958,29 @@ func (r *Registry) FindModel(id string) []Ref {
 // takes it as the default its own flag overrides. Cheap enough for browse
 // paths like FindModel that must not pay for a full resolve per candidate.
 func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
+	altID := ""
+	if hit.rowID != "" && hit.rowID != ref.Model {
+		altID = hit.rowID
+	}
 	// A cross-provider alias carries its own flag on this instance, so the
 	// verdict it inherits from its target is only the default: it stands when
-	// the alias's own rows set nothing in the replay below.
+	// the alias's own rows set nothing in the replay below. Globs replay
+	// against the reference and the target's row id the way resolveOn's
+	// altID does, so a provider-scoped glob written for the model the alias
+	// names applies here too and the two answers cannot drift.
 	var inherited *bool
 	if hit.rowID != "" {
 		if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
-			if v, same, ok := r.aliasTargetVerdict(rec, aliasOf); ok {
+			if v, same, targetID, ok := r.aliasTargetVerdict(rec, aliasOf); ok {
 				if same {
 					return v
 				}
 				inherited = &v
+				if altID == "" {
+					altID = targetID
+				}
 			}
 		}
-	}
-	altID := ""
-	if hit.rowID != "" && hit.rowID != ref.Model {
-		altID = hit.rowID
 	}
 	var disabled, set bool
 	// Mirror resolveOn's interleave: missing tags replay at their true
@@ -1031,16 +1037,17 @@ func (r *Registry) modelDisabled(rec *record, ref Ref, hit lookupHit) bool {
 // target — the target row's own effective replay — and whether that target
 // lives on the same record. A same-provider alias follows the verdict
 // outright; a cross-provider one treats it as the default its own flag
-// overrides. It answers ok=false for a dangling alias, whose own replay then
-// applies as before. Acceptance matches resolveAliasTarget (an exact
-// non-alias row, same provider or provider-id/id) but without paying for a
-// full resolve.
-func (r *Registry) aliasTargetVerdict(rec *record, aliasOf string) (disabled, same, ok bool) {
+// overrides. targetID names the target row, which the caller needs to match
+// the same globs the full replay does. It answers ok=false for a dangling
+// alias, whose own replay then applies as before. Acceptance matches
+// resolveAliasTarget (an exact non-alias row, same provider or
+// provider-id/id) but without paying for a full resolve.
+func (r *Registry) aliasTargetVerdict(rec *record, aliasOf string) (disabled, same bool, targetID string, ok bool) {
 	target, id, ok := r.aliasTargetRow(rec, aliasOf)
 	if !ok {
-		return false, false, false
+		return false, false, "", false
 	}
-	return r.modelDisabled(target, Ref{Instance: target.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"}), target == rec, true
+	return r.modelDisabled(target, Ref{Instance: target.name, Model: id}, lookupHit{rowID: id, wireID: id, step: "row"}), target == rec, id, true
 }
 
 // AliasTarget resolves a model id to the row a toggle writes: the id
@@ -1165,12 +1172,13 @@ func (r *Registry) recordMayDisableSeen(rec *record, seen map[*record]bool) bool
 // family aliases gpt-5.6-sol/terra/luna onto openai's rows), and the picker
 // offers those names - so the list of what can be toggled has to carry them
 // too. Every listed row is toggleable: AliasTarget names the row a toggle
-// writes. A same-provider alias writes its target, so every spelling of one
-// model on one connection shares one flag. A cross-provider alias writes its
-// own row on this instance instead, so each connection carries its own
-// choice; the row below reports what that choice comes to (modelDisabled):
-// the target's verdict is the default, and a flag on the alias's own row
-// overrides it.
+// writes. A dangling alias — the target is gone, so load hides the row —
+// stays out, because no row a toggle could write exists for it. A
+// same-provider alias writes its target, so every spelling of one model on
+// one connection shares one flag. A cross-provider alias writes its own row
+// on this instance instead, so each connection carries its own choice; the
+// row below reports what that choice comes to (modelDisabled): the target's
+// verdict is the default, and a flag on the alias's own row overrides it.
 //
 // A toggle on a live-only id authors an exact config row, which precedes live
 // lookup, so the exception takes effect.
@@ -1183,6 +1191,18 @@ func (r *Registry) InstanceModels(instance string) ([]InstanceModel, error) {
 	mayDisable := r.recordMayDisable(rec)
 	for _, id := range ids {
 		hit := r.lookupRow(rec, id)
+		if hit.rowID != "" {
+			if aliasOf := rec.head.Models[hit.rowID].AliasOf; aliasOf != "" {
+				if _, _, ok := r.aliasTargetRow(rec, aliasOf); !ok {
+					// A dangling alias — load hides the row, with a warning —
+					// names nothing a toggle could write: AliasTarget refuses
+					// it, so listing it would render a switch that can only
+					// fail. The row is not a model the provider serves, so it
+					// stays out of the inventory.
+					continue
+				}
+			}
+		}
 		disabled := false
 		if mayDisable {
 			disabled = r.modelDisabled(rec, Ref{Instance: instance, Model: id}, hit)

@@ -989,7 +989,8 @@ the target for a same-provider alias, the alias row itself across
 providers — and a region-prefixed or dated-suffix spelling of an alias id
 routes the same way (§7.2's steps 3-4 land on the alias row); a dangling
 alias and a glob id are refusals. The sheet inventory lists alias rows and
-every listed row is toggleable, so each switch maps onto the row it writes.
+every listed row is toggleable, so each switch maps onto the row it writes —
+a dangling alias stays out of it, since it names no row a toggle could write.
 `default_model`/`cheap_model` naming a disabled model get no
 special validation; they fail at use with the same error. There is no
 grandfathering: a session whose model is disabled afterwards errors on next

@@ -470,6 +470,54 @@ func TestInstanceModels_EveryListedRowIsToggleable(t *testing.T) {
 	}
 }
 
+func TestInstanceModels_SkipsDanglingAliasRows(t *testing.T) {
+	// A curated dangling alias — its target is gone upstream, so load hides
+	// the row with a warning — names nothing a toggle could write: AliasTarget
+	// refuses it. Listing it would render a switch that can only fail, so the
+	// inventory leaves it out and every row it does list stays toggleable.
+	r := fixtureLoad(t, nil, "", WithOverlay(overlayWith("[providers.anthropic.models.\"gone\"]\nalias_of = \"claude-nope\"\n")))
+	models, err := r.InstanceModels("anthropic")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	if slices.ContainsFunc(models, func(m InstanceModel) bool { return m.ID == "gone" }) {
+		t.Fatalf("dangling alias listed in the inventory: %+v", models)
+	}
+	for _, m := range models {
+		if _, err := r.AliasTarget("anthropic", m.ID); err != nil {
+			t.Errorf("AliasTarget(%q) = %v; every listed row must be toggleable", m.ID, err)
+		}
+	}
+	if _, err := r.AliasTarget("anthropic", "gone"); err == nil {
+		t.Fatal("AliasTarget(dangling alias) must still refuse the write")
+	}
+}
+
+func TestInstanceModels_CrossProviderAliasMatchesTargetIDGlob(t *testing.T) {
+	// Globs replay against the reference and the target row id (spec §4.1
+	// order), which is what gives a provider's shaping glob to its aliases.
+	// The light browse replay has to match the same set, or the sheet reports
+	// the opposite of what Resolve does.
+	r := fixtureLoad(t, nil, "[providers.mine]\nbase = \"openai-codex\"\napi_key = \"sk\"\n[providers.mine.models.\"house-model\"]\nalias_of = \"openai/gpt-5.6\"\n[providers.mine.models.\"gpt-5.6*\"]\ndisabled = true\n")
+	if _, err := r.Resolve("mine/house-model"); !errors.Is(err, ErrModelDisabled) {
+		t.Fatalf("Resolve(alias under target-id glob) = %v, want ErrModelDisabled", err)
+	}
+	if got := r.FindModel("house-model"); len(got) != 0 {
+		t.Fatalf("FindModel(house-model) = %v, want no serving instance", got)
+	}
+	models, err := r.InstanceModels("mine")
+	if err != nil {
+		t.Fatalf("InstanceModels: %v", err)
+	}
+	byID := map[string]InstanceModel{}
+	for _, m := range models {
+		byID[m.ID] = m
+	}
+	if !byID["house-model"].Disabled {
+		t.Fatalf("inventory says enabled while Resolve fails: %+v", byID["house-model"])
+	}
+}
+
 func TestInstanceModels_IncludesLiveOnlyIDs(t *testing.T) {
 	r := fixtureLoad(t, nil, "[providers.anthropic.models.\"claude-*\"]\ndisabled = true\n")
 	r.ApplyLive("anthropic", []Model{{ID: "claude-live-new"}, {ID: "embedding-thing"}})
