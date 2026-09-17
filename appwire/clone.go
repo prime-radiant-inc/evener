@@ -64,7 +64,7 @@ func cloneThreadItems(items []ThreadItem) []ThreadItem {
 
 func cloneThreadItem(item ThreadItem) ThreadItem {
 	item.Images = cloneInputItems(item.Images)
-	item.OutputImages = append([]OutputImage(nil), item.OutputImages...)
+	item.OutputImages = CloneOutputImages(item.OutputImages)
 	if item.Position != nil {
 		position := *item.Position
 		item.Position = &position

@@ -772,7 +772,7 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone.DurationMS = cloneInt64(item.DurationMS)
 	clone.ExitCode = cloneInt64(item.ExitCode)
 	clone.Raw = append(json.RawMessage(nil), item.Raw...)
-	clone.OutputImages = append([]appwire.OutputImage(nil), item.OutputImages...)
+	clone.OutputImages = appwire.CloneOutputImages(item.OutputImages)
 	clone.Images = make([]appwire.InputItem, len(item.Images))
 	for i := range item.Images {
 		clone.Images[i] = item.Images[i]
@@ -881,12 +881,11 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	if incoming.Delta == "" {
 		incoming.Delta = existing.Delta
 	}
+	// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
 	}
-	if len(incoming.OutputImages) == 0 {
-		incoming.OutputImages = existing.OutputImages
-	}
+	incoming.OutputImages = appwire.MergeOutputImages(existing.OutputImages, incoming.OutputImages)
 	if incoming.ToolName == "" {
 		incoming.ToolName = existing.ToolName
 	}
