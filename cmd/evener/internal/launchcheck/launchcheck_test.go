@@ -248,6 +248,34 @@ func TestLaunchCheckDiagnosticFindsAStatusUnderAConfigurationWrapper(t *testing.
 	}
 }
 
+// An exhausted allowance is its own class, more specific than the status it
+// arrives on (429, or a provider's 403 billing-cycle exhaustion): the line
+// names the spent allowance, and the distinct title must survive the
+// compaction too.
+func TestLaunchCheckDiagnosticNamesAnExhaustedAllowance(t *testing.T) {
+	body := []byte(`{"error":{"code":"usage_limit_reached","message":"The usage limit has been reached"}}`)
+	err := llm.ClassifyHTTPError("models.list", http.StatusTooManyRequests, nil, body, registry.Resolved{Instance: "gw"})
+
+	diag := launchCheckModelDiagnostic("gw", err)
+	if diag.Message != "usage limit reached" {
+		t.Fatalf("diagnostic message=%q, want the exhausted-allowance class", diag.Message)
+	}
+	if diag.Title != "Usage limit reached" {
+		t.Fatalf("diagnostic title=%q, want the distinct usage-limit title", diag.Title)
+	}
+}
+
+// The quota class must not swallow every 429: an ordinary rate limit keeps
+// the bare status, or a throttled listing would read as a spent allowance.
+func TestLaunchCheckDiagnosticKeepsAnOrdinaryRateLimitAtTheStatus(t *testing.T) {
+	body := []byte(`{"error":{"code":"rate_limit_exceeded","message":"Rate limit reached for gpt-4o"}}`)
+	err := llm.ClassifyHTTPError("models.list", http.StatusTooManyRequests, nil, body, registry.Resolved{Instance: "gw"})
+
+	if got := launchCheckModelDiagnostic("gw", err).Message; got != "HTTP 429" {
+		t.Fatalf("diagnostic message=%q, want the bare status for an ordinary rate limit", got)
+	}
+}
+
 func TestLaunchCheckModelDiagnosticRedactsEnvSecrets(t *testing.T) {
 	oaitest.IsolateOpenAIAuth(t)
 	t.Setenv("OPENAI_API_KEY", "sk-launch-secret")

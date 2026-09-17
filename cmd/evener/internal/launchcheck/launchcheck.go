@@ -171,10 +171,18 @@ func launchCheckModelDiagnostic(provider string, err error) appwire.ModelListDia
 // ("provider — reason"), so it must stop at the failure's class rather than
 // quote the failure: an endpoint that answers 404 with an HTML page puts that
 // page in the message otherwise, and a missing credential quotes the
-// registry's whole remediation warning. Both classes carry machine-readable
-// facts (the status code, the sentinel), so the line stays one short reason;
-// every other failure keeps its own — redacted — text.
+// registry's whole remediation warning. The classes carry machine-readable
+// facts (the spent-allowance category, the status code, the sentinel), so
+// the line stays one short reason; every other failure keeps its own —
+// redacted — text.
 func launchCheckDiagnosticMessage(err error) string {
+	// An exhausted allowance keeps its class ahead of the bare status: it
+	// arrives as 429 (or a provider's 403 billing-cycle exhaustion), and the
+	// category on the typed error is the specific fact; the status alone
+	// would read as a transient throttle.
+	if llm.Kind(err) == llm.KindQuotaExceeded {
+		return "usage limit reached"
+	}
 	if status := launchCheckHTTPStatus(err); status != 0 {
 		return "HTTP " + strconv.Itoa(status)
 	}
