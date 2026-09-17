@@ -2930,6 +2930,93 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	}
 }
 
+// TestHubRelayPublicationSkipsWhenTargetAliasIsHeld pins Medium 3: the
+// per-frame publication guard must not park on a target alias held by a
+// deletion or a long-running Resume. The broadcast is best-effort — its error
+// is discarded — so the guard acquires the alias non-blockingly and skips the
+// frame instead of stalling the fan-out and the publicationDone drain.
+func TestHubRelayPublicationSkipsWhenTargetAliasIsHeld(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const threadID = "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	thread := appwire.Thread{
+		ID:        threadID,
+		SessionID: threadID,
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: ref},
+	}
+	deliveries := make(chan appsource.RelayDelivery, 1)
+	source := &relaySessionTestSource{
+		thread: thread,
+		lease: &scriptedRelaySessionLease{
+			readResult: appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+				Handoff:  &recordingRelayHandoff{committed: make(chan struct{}), aborted: make(chan struct{})},
+			},
+			deliveries: deliveries,
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	locks := hubcore.NewResumeLocks()
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot:  t.TempDir(),
+		Past:          hubcore.NewPastIndex(""),
+		DeletionStore: store,
+		ResumeLocks:   locks,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:       ref,
+		Subscribe: true,
+	}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	// Hold the alias exactly as a long-running Resume request does. The
+	// subscription above must have released it first.
+	held := locks.For(threadID)
+	if !held.TryLock() {
+		t.Fatal("relay subscription retains the target alias; fixture cannot isolate the publication guard")
+	}
+	release := sync.OnceFunc(held.Unlock)
+	defer release()
+	acknowledged := make(chan struct{})
+	deliveries <- appsource.RelayDelivery{
+		Notification: appwire.Notification{
+			Method: appwire.NotifyAgentMessageDelta,
+			Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+				ThreadID: threadID,
+				Ref:      ref,
+				TurnID:   "turn-held",
+				ItemID:   "item-held",
+				Delta:    "must not park",
+			}),
+		},
+		Acknowledge: func() { close(acknowledged) },
+	}
+	select {
+	case <-acknowledged:
+	case <-time.After(time.Second):
+		release()
+		<-acknowledged
+		t.Fatal("relay publication parked on a held target alias instead of skipping the best-effort broadcast")
+	}
+	select {
+	case notification := <-client.Notifications():
+		t.Fatalf("held target alias published notification %+v", notification)
+	default:
+	}
+}
+
 type relaySessionTestSource struct {
 	relayLifecycleSource
 	id    string

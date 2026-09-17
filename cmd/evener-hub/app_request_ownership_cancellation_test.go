@@ -297,3 +297,73 @@ func TestHubRPCProjectDeleteCanceledAliasWaitReleasesAcquiredPrefix(t *testing.T
 		synctest.Wait()
 	})
 }
+
+// TestHubRPCProjectDeleteRetryCanceledPropagatesCancellation pins the retry
+// boundary of Medium 1: a request canceled while acquiring a later target on
+// the existing-deletion resume path must propagate the cancellation unchanged.
+// A successful response that merely lists a skipped target reports the resume
+// as done when it never ran.
+func TestHubRPCProjectDeleteRetryCanceledPropagatesCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		root, workDir := t.TempDir(), t.TempDir()
+		project, err := identifier.ResolveProject(workDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stateDir := filepath.Join(root, "projects", project.ID)
+		first, second := projectDeleteCanonicalSessionIDs[0], projectDeleteCanonicalSessionIDs[1]
+		buildRPCSessionWithWorkingDir(t, stateDir, first, workDir)
+		buildRPCSessionWithWorkingDir(t, stateDir, second, workDir)
+		locks := hubcore.NewResumeLocks()
+		web := NewWebServer(hubcore.WebConfig{
+			StateDir: root, HubStateRoot: t.TempDir(), LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(),
+			Past: hubcore.NewPastIndex(filepath.Join(root, "projects", "*")), ResumeLocks: locks,
+			CredsStore: newTestCredentialsStore(t),
+		})
+		// A committed record selects the existing-deletion resume path.
+		if _, err := web.cfg.DeletionStore.Begin(project.ID, []hubcore.DeletionTarget{
+			{Ref: "local:" + first, ThreadID: first}, {Ref: "local:" + second, ThreadID: second},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := web.cfg.DeletionStore.DeletingProject(project.ID); !ok {
+			t.Fatal("fixture did not commit a deletion record for the retry path")
+		}
+		blocked := locks.For(second)
+		blocked.Lock()
+		release := sync.OnceFunc(blocked.Unlock)
+		defer release()
+		params, err := json.Marshal(appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: workDir})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		type result struct {
+			response any
+			err      error
+		}
+		completed := make(chan result, 1)
+		go func() {
+			response, err := web.appRPC.Router().Dispatch(ctx, appwire.Request{Method: appwire.MethodEvenerProjectDelete, Params: params})
+			completed <- result{response, err}
+		}()
+		synctest.Wait()
+		if locks.For(first).TryLock() {
+			locks.For(first).Unlock()
+			t.Fatal("retry deletion did not acquire the earlier target before waiting for the later one")
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case got := <-completed:
+			if !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("canceled retry deletion error = %v, want context.Canceled (response %+v)", got.err, got.response)
+			}
+		default:
+			t.Error("canceled retry deletion still waits for the later target")
+		}
+		release()
+		synctest.Wait()
+	})
+}

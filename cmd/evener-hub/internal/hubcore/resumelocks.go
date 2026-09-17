@@ -419,7 +419,6 @@ func (s *ResumeStop) Wait(ctx context.Context) error {
 		case <-ctx.Done():
 			return errors.Join(cleanupErr, ctx.Err())
 		case <-active.done:
-			_ = active.owner.ResumeCleanupError(active.aliases)
 			active.owner.mu.Lock()
 			cleanupErr = errors.Join(cleanupErr, active.cleanupErr)
 			active.owner.mu.Unlock()

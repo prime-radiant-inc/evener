@@ -704,11 +704,17 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cfg.RelayHooks.AfterCanonicalPublishEntry != nil {
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
-				_, publicationErr := withDeletionTargetOwnership(context.Background(), cfg, target.ref, target.threadID, "", func() (struct{}, error) {
-					server.Broadcast(target.relayKey, notification.Method, notification.Params)
-					return struct{}{}, nil
-				})
-				_ = publicationErr
+				// The guard is best-effort: it only keeps a frame from being
+				// published while the target is being deleted, and its error was
+				// already discarded. Acquire the alias without blocking so a
+				// deletion or a long-running Resume holding it cannot park this
+				// fan-out and stall the publicationDone drain.
+				if release, owned := tryLockDeletionTarget(cfg, target.ref, target.threadID); owned {
+					if deletionFenceError(cfg, target.ref, target.threadID, "") == nil {
+						server.Broadcast(target.relayKey, notification.Method, notification.Params)
+					}
+					release()
+				}
 				var closeHandle bool
 				relayMu.Lock()
 				target.state.publications--

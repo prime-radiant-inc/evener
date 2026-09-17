@@ -153,6 +153,12 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 	if record, ok := s.cfg.DeletionStore.DeletingProject(project.ID); ok {
 		releaseOwnership, ownerErr := s.acquireProjectDeletionOwnership(ctx, record, nil)
 		if ownerErr != nil {
+			// Cancellation while acquiring a later target is not a skipped
+			// target: the resume never ran, so it must not be reported as a
+			// successful deletion outcome.
+			if err := ctx.Err(); err != nil {
+				return appwire.ProjectDeleteResponse{}, err
+			}
 			skipped := []projectDeleteSkip{{ID: ownerErr.ThreadID, Reason: ownerErr.Error()}}
 			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
 				skipped = appendProjectDeleteLiveSkip(nil, ownerErr.ThreadID)

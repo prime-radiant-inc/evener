@@ -33,7 +33,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		}
 	}
 	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
-		return err
+		return forceStopResumeStopError(err)
 	} else if stopped {
 		refreshAfterForceStop(ctx, cfg)
 		return nil
@@ -117,7 +117,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// any operation that entered that window before waiting for ownership.
 	releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 	if err != nil {
-		return err
+		return forceStopResumeStopError(err)
 	}
 	defer releaseResumes()
 	if sources != nil {

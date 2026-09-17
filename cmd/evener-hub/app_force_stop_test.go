@@ -2052,6 +2052,95 @@ func TestForceStopResumeCleanupFailureIsUnavailable(t *testing.T) {
 	})
 }
 
+// TestForceStopConfirmedStoppedCleanupFailureIsUnavailable pins the second
+// stop/cleanup boundary. confirmedStoppedWithoutClaim cancels and drains the
+// recovery group's in-flight Resume; when that retained child cleanup cannot be
+// confirmed, the error must reach the RPC layer as retryable Unavailable, not
+// raw. The Resume is registered on a sibling alias so the top-of-function stop
+// cannot see it and this path owns the failure.
+func TestForceStopConfirmedStoppedCleanupFailureIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		sibling := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID, sibling})
+		if err := locks.PersistForceStop([]string{sessionID, sibling}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish(true)
+		active, err := locks.RegisterResume(t.Context(), sibling, []string{sibling}, map[string]uint64{sibling: locks.RecoveryState(sibling).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait() // force stop reached the recovery group's cleanup wait
+		active.Complete(&resumeCleanupError{cause: errors.New("fixture child cleanup denied")})
+		err = <-stopped
+		if err == nil {
+			t.Fatal("unconfirmed cleanup reported success")
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("confirmed-stopped cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cleanup classification replaced a context error: %v", err)
+		}
+	})
+}
+
+// TestForceStopPostDiscoveryCleanupFailureIsUnavailable pins the post-discovery
+// cancelActiveResumes boundary. A Resume that registered during process
+// discovery is reached through the verified entry's aliases, not the requested
+// ref alias; its retained child cleanup failure must classify as retryable
+// Unavailable, not raw.
+func TestForceStopPostDiscoveryCleanupFailureIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		stable := hubtest.SessionID(t)
+		current := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4242, SessionID: current, ThreadID: current,
+			WorkspaceRef: "local:" + stable, StateDir: t.TempDir(),
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		locks := hubcore.NewResumeLocks()
+		// Registered on the entry's current alias, so the top-of-function stop
+		// on the requested stable alias sees no active Resume.
+		active, err := locks.RegisterResume(t.Context(), current, []string{current}, map[string]uint64{current: locks.RecoveryState(current).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var events []string
+		cfg := hubcore.WebConfig{
+			RunDir: runDir, ResumeLocks: locks,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				return &forceStopProcess{events: &events}, nil
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + stable}, nil)
+		}()
+		synctest.Wait() // force stop reached the post-discovery cleanup wait
+		active.Complete(&resumeCleanupError{cause: errors.New("fixture child cleanup denied")})
+		err = <-stopped
+		if err == nil {
+			t.Fatal("unconfirmed cleanup reported success")
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("post-discovery cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+	})
+}
+
 // TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping pins Low 3:
 // for the ordinary shutdown caller (!stopResumes) a transient strict-discovery
 // failure must fall through to the tolerant source attempt rather than failing
