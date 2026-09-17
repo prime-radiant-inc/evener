@@ -2547,6 +2547,46 @@ describe("ConversationStore", () => {
       for (const text of texts) expect(bounded(text)).toBe(true);
     });
 
+    // Every text an activity row renders, top-level and per member: the label
+    // (the row's disclosure line and its accessibility label) and the
+    // description (the summary line a collapsed row shows) are read exactly as
+    // the arguments and output are.
+    it.each([
+      ["top-level", false],
+      ["clustered member", true],
+    ])("bounds an activity's label and description on a %s row", async (_where, clustered) => {
+      const activity = {
+        kind: "activity" as const,
+        id: "r",
+        label: oversized,
+        family: "tool" as const,
+        state: "completed" as const,
+        detail: { description: oversized, output: "small" },
+      };
+      const row = clustered
+        ? {
+            ...activity,
+            members: [
+              { ...activity, id: "r:0" },
+              { ...activity, id: "r:1" },
+            ],
+          }
+        : activity;
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ items: [row as unknown as MobileTimelineItem] });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const published = store.getState().conversation?.items.find((item) => item.id === "r");
+      if (published === undefined || published.kind !== "activity") throw new Error("row not published");
+      const texts = [
+        published.label,
+        published.detail.description,
+        ...(published.members ?? []).flatMap((member) => [member.label, member.detail.description]),
+      ].filter((text): text is string => text !== undefined);
+      expect(texts.length).toBe(clustered ? 6 : 2);
+      for (const text of texts) expect(bounded(text)).toBe(true);
+    });
+
     // An attachment's src is the image itself (a data: URI for composer bytes),
     // not prose a reader scrolls: cutting it mid-payload yields an image that
     // cannot decode, so it is left whole. The wire bounds image payloads at the

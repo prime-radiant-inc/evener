@@ -345,12 +345,16 @@ export function truncateText(text: string, maxBytes: number): string {
 // One text field, cut to the display bound.
 type BoundText = (text: string) => string;
 
-// Apply the bound to an activity detail's text-bearing fields (arguments,
-// output, error). Shared by an activity's own top-level detail and each of
-// its clustered members' details, so both are bounded the same way.
+// Apply the bound to an activity detail's text-bearing fields (description,
+// arguments, output, error). Shared by an activity's own top-level detail and
+// each of its clustered members' details, so both are bounded the same way. The
+// description is the summary line a collapsed row shows
+// (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
+// as much as the output is.
 function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
   return {
     ...detail,
+    description: detail.description ? bound(detail.description) : detail.description,
     arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
     output: detail.output ? bound(detail.output) : detail.output,
     error: detail.error ? bound(detail.error) : detail.error,
@@ -392,13 +396,18 @@ function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelin
         })),
       };
     case "activity":
+      // The label is rendered twice on the phone — the disclosure line and its
+      // accessibility label (mobile-native/src/TimelineItem.tsx) — so it is
+      // bounded like the detail it heads, for the row and for every member.
       return {
         ...item,
+        label: bound(item.label),
         detail: truncateActivityDetail(item.detail, bound),
         ...(item.members
           ? {
               members: item.members.map((member) => ({
                 ...member,
+                label: bound(member.label),
                 detail: truncateActivityDetail(member.detail, bound),
               })),
             }
