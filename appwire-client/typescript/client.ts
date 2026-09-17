@@ -114,7 +114,7 @@ interface PendingRequest {
   method: MethodName;
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
-  timer: ReturnType<typeof setTimeout> | undefined;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 const INITIALIZE_RESPONSE_KEYS = ["serverInfo", "protocolVersion", "sourceId", "features"] as const;
@@ -420,13 +420,10 @@ export class AppwireClient {
       opts?.timeoutMs ?? (method === "thread/resume" ? RESUME_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
-      const timer =
-        timeoutMs === undefined
-          ? undefined
-          : setTimeout(() => {
-              this.pending.delete(id);
-              reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
-            }, timeoutMs);
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
       this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
       try {
         socket.send(JSON.stringify({ id, method, params }));
