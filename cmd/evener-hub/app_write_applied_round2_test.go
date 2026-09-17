@@ -17,23 +17,17 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// The hub's classifier is what carries the manager's answer to the handler: a
-// store the manager changed is an applied write, and a refusal is not. Without
-// this the marketplace rename that leaves the store between the two names
-// (internal/plugins, ErrStoreChanged) reaches the handler as a plain error and
-// nothing is broadcast, so every client keeps a listing the store no longer
-// matches. marketplaceRefusalToWire only reclassifies the manager's refusal
-// sentinels into their wire class; plugins.ErrStoreChanged is none of those,
-// so it passes through unchanged and writeDidApply reads it directly.
-func TestMarketplaceRefusalToWireKeepsAChangedStoreApplied(t *testing.T) {
+// marketplaceRefusalToWire only reclassifies the manager's refusal sentinels
+// into their wire class; a plain failure that also left the store changed
+// (internal/plugins, ErrStoreChanged) is none of those, so it passes through
+// unreclassified, and the caller's own StoreChanges - not this error - is
+// what tells the RPC handler whether to broadcast (notifyStoreChanges).
+func TestMarketplaceRefusalToWireKeepsAChangedStoreUnreclassified(t *testing.T) {
 	changed := marketplaceRefusalToWire(errors.Join(errors.New("saving known_marketplaces.json failed"), plugins.ErrStoreChanged))
-	if !writeDidApply(changed) {
-		t.Fatalf("marketplaceRefusalToWire(store changed) = %v, want an applied write", changed)
+	if _, ok := errors.AsType[appwire.WireError](changed); ok {
+		t.Fatalf("marketplaceRefusalToWire(store changed) = %v (%T), want the plain error kept, not reclassified", changed, changed)
 	}
 	refusal := marketplaceRefusalToWire(plugins.ErrMarketplaceNotFound)
-	if writeDidApply(refusal) {
-		t.Fatalf("marketplaceRefusalToWire(refusal) = %v, want a refusal that is not announced", refusal)
-	}
 	// The refusal class still reaches the wire through the same call.
 	if _, ok := errors.AsType[appwire.WireError](refusal); !ok {
 		t.Fatalf("marketplaceRefusalToWire(refusal) = %v (%T), want the wire refusal class kept", refusal, refusal)

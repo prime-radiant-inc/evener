@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/internal/plugins"
 )
 
 // A hub write that applied is announced to every client, whatever the step
@@ -36,9 +35,7 @@ func writeApplied(err error) error {
 // writeDidApply answers the handlers' one question: is there a change the
 // other clients need to hear about? A nil error is the ordinary applied
 // write; hubcore.ErrWriteApplied marks a hub write or a hubcore store's
-// (keybindings, transcript-display) that landed before a later step failed;
-// plugins.ErrStoreChanged is the plugin store's own answer to the same
-// question.
+// (keybindings, transcript-display) that landed before a later step failed.
 func writeDidApply(err error) bool {
-	return err == nil || errors.Is(err, hubcore.ErrWriteApplied) || errors.Is(err, plugins.ErrStoreChanged)
+	return err == nil || errors.Is(err, hubcore.ErrWriteApplied)
 }
