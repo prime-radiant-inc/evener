@@ -6,8 +6,9 @@
 // forever, and Chrome keeps a failed module fetch by URL (see
 // connectDialogChunk.ts).
 //
-// The spawn pane's below-the-fold dialog opens this module's lazy chunk
-// (ConnectProviderDialog plus its instance-credential editors).
+// Two callers mount this module's lazy chunk (ConnectProviderDialog plus its
+// instance-credential editors): the spawn pane's below-the-fold dialog and the
+// credentials section's full editor.
 import {
   Component,
   type JSX,

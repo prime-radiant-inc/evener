@@ -1361,12 +1361,12 @@ test("connection handoff shows the actual instance models and preserves draft un
       instances: saved ? [{ ...row, activeSource: "store", hasStoredFile: true }] : [],
       availableProviders: [
         {
-          id: "team-local",
+          id: row.providerId,
           name: "Team local",
           protocol: row.protocol,
           auth: row.auth,
-          implicit: false,
-          authModes: ["apiKey"],
+          implicit: row.implicit,
+          authModes: row.authModes,
           setup: row,
         },
       ],

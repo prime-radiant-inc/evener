@@ -20,23 +20,6 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// launchCheckGatewayServer starts a /models endpoint answering with status
-// and body.
-func launchCheckGatewayServer(t *testing.T, status int, body string) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/models") {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write([]byte(body))
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // launchCheckRegistry installs a client built from the given providers.toml
 // body on the launchCheckLoadClient seam.
 //
@@ -58,9 +41,7 @@ func launchCheckRegistry(t *testing.T, cfg string) {
 	stateRoot := t.TempDir()
 	env := map[string]string{"OLLAMA_HOST": "127.0.0.1:1"}
 
-	old := launchCheckLoadClient
-	t.Cleanup(func() { launchCheckLoadClient = old })
-	launchCheckLoadClient = func(stateDir string) (*llm.Client, error) {
+	withLaunchCheckLoadClient(t, func(stateDir string) (*llm.Client, error) {
 		r, _, err := cmdutil.LoadRegistry(
 			registry.WithConfigPath(cfgPath),
 			registry.WithStateRoot(stateRoot),
@@ -71,7 +52,7 @@ func launchCheckRegistry(t *testing.T, cfg string) {
 			return nil, err
 		}
 		return cmdutil.NewRegistryClient(r, stateDir), nil
-	}
+	})
 }
 
 // launchCheckGateway starts a /models endpoint answering with status and body,
@@ -79,9 +60,17 @@ func launchCheckRegistry(t *testing.T, cfg string) {
 // installs a client built from that file on the launchCheckLoadClient seam.
 func launchCheckGateway(t *testing.T, status int, body string, gwExtra ...string) {
 	t.Helper()
-	srv := launchCheckGatewayServer(t, status, body)
-	cfg := "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \"" + srv.URL + "/v1\"\napi_key  = \"test-key\"\n" + strings.Join(gwExtra, "")
-	launchCheckRegistry(t, cfg)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/models") {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	launchCheckRegistry(t, "[providers.gw]\nbase     = \"openai-compatible\"\nbase_url = \""+srv.URL+"/v1\"\napi_key  = \"test-key\"\n"+strings.Join(gwExtra, ""))
 }
 
 // launchCheckKeylessInstance declares an explicit instance on the openai
@@ -95,12 +84,7 @@ func launchCheckKeylessInstance(t *testing.T) {
 
 // decodeDiagnostics runs the launch check for the models contract and decodes
 // the diagnostics it printed to stdout.
-func decodeDiagnostics(t *testing.T) []struct {
-	Provider string `json:"provider"`
-	Source   string `json:"source"`
-	Title    string `json:"title"`
-	Message  string `json:"message"`
-} {
+func decodeDiagnostics(t *testing.T) []appwire.ModelListDiagnostic {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
 	err := RunLaunchCheck([]string{
@@ -112,17 +96,25 @@ func decodeDiagnostics(t *testing.T) []struct {
 		t.Fatalf("runLaunchCheck: %v stderr=%s", err, stderr.String())
 	}
 	var out struct {
-		Diagnostics []struct {
-			Provider string `json:"provider"`
-			Source   string `json:"source"`
-			Title    string `json:"title"`
-			Message  string `json:"message"`
-		} `json:"diagnostics"`
+		Diagnostics []appwire.ModelListDiagnostic `json:"diagnostics"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
 		t.Fatalf("decode stdout %q: %v", stdout.String(), err)
 	}
 	return out.Diagnostics
+}
+
+// gwDiagnostic returns the gw row of the models contract's diagnostics,
+// failing the test when the listing produced none.
+func gwDiagnostic(t *testing.T) appwire.ModelListDiagnostic {
+	t.Helper()
+	for _, got := range decodeDiagnostics(t) {
+		if got.Provider == "gw" {
+			return got
+		}
+	}
+	t.Fatalf("diagnostics missing the gw entry")
+	return appwire.ModelListDiagnostic{}
 }
 
 func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
@@ -207,17 +199,12 @@ func TestLaunchCheckListsLiveModelsFromConfiguredProviders(t *testing.T) {
 func TestLaunchCheckReportsModelEnumerationDiagnostics(t *testing.T) {
 	launchCheckGateway(t, http.StatusForbidden, `{"error":"forbidden"}`)
 
-	for _, got := range decodeDiagnostics(t) {
-		if got.Provider == "gw" {
-			// The picker prints the message inline ("gw — <message>"), so a
-			// listing failure reports its class, not the endpoint's prose.
-			if got.Source != "provider" || got.Title != "Provider error" || got.Message != "HTTP 403" {
-				t.Fatalf("diagnostic=%+v", got)
-			}
-			return
-		}
+	got := gwDiagnostic(t)
+	// The picker prints the message inline ("gw — <message>"), so a listing
+	// failure reports its class, not the endpoint's prose.
+	if got.Source != "provider" || got.Title != "Provider error" || got.Message != "HTTP 403" {
+		t.Fatalf("diagnostic=%+v", got)
 	}
-	t.Fatalf("diagnostics missing the gw entry")
 }
 
 // The picker prints a provider's listing diagnostic inline under the model
@@ -227,15 +214,9 @@ func TestLaunchCheckDiagnosticStopsA404PageAtTheStatusLine(t *testing.T) {
 	page := "<html><head><title>404 Not Found</title></head><body>nginx: no such path</body></html>"
 	launchCheckGateway(t, http.StatusNotFound, page)
 
-	for _, got := range decodeDiagnostics(t) {
-		if got.Provider == "gw" {
-			if got.Message != "HTTP 404" || strings.Contains(got.Message, "<html") {
-				t.Fatalf("diagnostic message=%q, want the status line without the page content", got.Message)
-			}
-			return
-		}
+	if got := gwDiagnostic(t); got.Message != "HTTP 404" {
+		t.Fatalf("diagnostic message=%q, want the status line without the page content", got.Message)
 	}
-	t.Fatalf("diagnostics missing the gw entry")
 }
 
 // A keyless explicit instance fails its listing at the credential check. The
@@ -244,15 +225,9 @@ func TestLaunchCheckDiagnosticStopsA404PageAtTheStatusLine(t *testing.T) {
 func TestLaunchCheckDiagnosticCompactsAMissingCredential(t *testing.T) {
 	launchCheckKeylessInstance(t)
 
-	for _, got := range decodeDiagnostics(t) {
-		if got.Provider == "gw" {
-			if got.Message != "no credential" {
-				t.Fatalf("diagnostic message=%q, want the compact no-credential class", got.Message)
-			}
-			return
-		}
+	if got := gwDiagnostic(t); got.Message != "no credential" {
+		t.Fatalf("diagnostic message=%q, want the compact no-credential class", got.Message)
 	}
-	t.Fatalf("diagnostics missing the gw entry")
 }
 
 func TestLaunchCheckModelDiagnosticRedactsEnvSecrets(t *testing.T) {

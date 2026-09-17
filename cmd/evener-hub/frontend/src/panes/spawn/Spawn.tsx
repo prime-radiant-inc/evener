@@ -112,8 +112,7 @@ import { useSpawnSlashCatalog } from "./useSpawnSlashCatalog";
 // and loads on first open.
 //
 // A rejected chunk lands on ConnectProviderDialogBoundary from
-// settings/sections/credentials/ConnectProviderDialogBoundary (shared with the
-// session chrome's model-switch trigger, which opens the same dialog), scoped
+// settings/sections/credentials/ConnectProviderDialogBoundary, scoped
 // to the dialog so the lazy() rethrow does not bubble into this pane's own
 // workspace-failure boundary. The Suspense fallback is a real dialog reading
 // "Loading…": a null fallback would leave the click that opened the dialog

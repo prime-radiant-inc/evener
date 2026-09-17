@@ -78,6 +78,11 @@ func TestGCPADCReportsMissingCredentials(t *testing.T) {
 	if !strings.Contains(err.Error(), "store a credential JSON") {
 		t.Fatalf("err = %v, want the remedy to offer a stored credential JSON", err)
 	}
+	// The failure is the no-credential class: the sentinel rides the chain so
+	// a caller can classify it without parsing the remedy prose.
+	if !errors.Is(err, llm.ErrNoCredential) {
+		t.Fatalf("err = %v, want the ErrNoCredential class", err)
+	}
 	if req.Header.Get("Authorization") != "" {
 		t.Fatal("no header on failure")
 	}
