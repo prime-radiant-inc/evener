@@ -718,8 +718,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				// transient deletion or Resume ownership does not drop an
 				// acknowledged frame, while the fan-out and its publicationDone
 				// drain still cannot be parked indefinitely. On expiry the frame
-				// is skipped as before: the delivery was already consumed from the
-				// source and the subscriber resyncs.
+				// is skipped as before — an explicit Resume can hold the alias
+				// longer than the guard — but the delivery is acknowledged
+				// afterwards, so the skipped frame would be a silent gap in the
+				// subscriber's projection: broadcast a resync naming the target
+				// first, and the subscriber re-reads instead of missing an
+				// acknowledged notification.
 				guardCtx, cancelGuard := context.WithTimeout(context.Background(), relayPublicationGuardTimeout)
 				release, lockErr := lockDeletionTarget(guardCtx, cfg, target.ref, target.threadID)
 				cancelGuard()
@@ -728,6 +732,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						server.Broadcast(target.relayKey, notification.Method, notification.Params)
 					}
 					release()
+				} else {
+					server.Broadcast(target.relayKey, appwire.NotifyEvenerThreadResync, appwire.ThreadResyncParams{
+						ThreadID: target.threadID,
+						Ref:      target.ref,
+					})
 				}
 				var closeHandle bool
 				relayMu.Lock()
