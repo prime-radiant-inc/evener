@@ -18,6 +18,13 @@ export interface NativePreferenceDraftBackend {
 	/** Removes the stored record only if `checkpoint` still names it; reports
 	 * whether it did. */
 	deleteIf(key: string, checkpoint: NativePreferenceDraftCheckpoint): boolean;
+	/** Replaces the stored record with `next` only if `expected` still names
+	 * it; reports whether it did. The atomic twin of deleteIf. */
+	replaceIf(
+		key: string,
+		expected: NativePreferenceDraftCheckpoint,
+		next: NativePreferenceDraftCheckpoint,
+	): boolean;
 }
 
 /** The shape either section's storage has, over its own checkpoint type. */
@@ -29,6 +36,9 @@ interface SectionDraftStorage<Checkpoint> {
 	 * whether it did, so a refusal (the record it named is gone, replaced by
 	 * something else) is never mistaken for success. */
 	removeIf(checkpoint: Checkpoint): boolean;
+	/** Replaces the stored record with `next` only if `expected` still names
+	 * it; reports whether it did. */
+	replaceIf(expected: Checkpoint, next: Checkpoint): boolean;
 }
 
 /** One hub's drafts for one preference section, under that section's key
@@ -47,6 +57,7 @@ function nativeDraftStorage(
 		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
+		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
 	};
 }
 
@@ -122,6 +133,15 @@ export function retainingDraftStorage<Checkpoint>(
 			trackLoad(checkpoint);
 		},
 		removeIf: (checkpoint) => storage.removeIf(checkpoint),
+		replaceIf: (expected, next) => {
+			const replaced = storage.replaceIf(expected, next);
+			// What was just written IS now the classified record - the same
+			// reason save() tracks its own writes (round 19/20): a no-model
+			// discard right after a settle must name it, not the pre-settle
+			// bytes it replaced.
+			if (replaced) trackLoad(next);
+			return replaced;
+		},
 		discardLastLoaded: () => {
 			// Nothing has been classified through this wrapper yet (a caller
 			// that discards without ever having called load() first): fall back

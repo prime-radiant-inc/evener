@@ -15,6 +15,12 @@ export interface DraftPort<Checkpoint> {
   /** Removes the stored record only if `checkpoint` still names it; reports
    * whether it did. */
   removeIf(checkpoint: Checkpoint): boolean;
+  /** Replaces the stored record with `next` only if `expected` still names
+   * it; reports whether it did. The atomic twin of removeIf: a load-then-
+   * save pair has the identical race a load-then-remove pair would (the
+   * reason removeIf exists at all) - a concurrent writer's checkpoint landing
+   * between the two would be silently overwritten by an unconditional save. */
+  replaceIf(expected: Checkpoint, next: Checkpoint): boolean;
 }
 
 /** What the port held is not a checkpoint this build can read. Distinct from
@@ -41,6 +47,12 @@ export interface DraftRepository<Checkpoint> {
   save(checkpoint: Checkpoint): void;
   removeIf(checkpoint: Checkpoint): boolean;
   discardClassified(): boolean;
+  /** Settles the classified record onto `next` atomically against the
+   * identity load()/save() most recently classified. Reports whether it
+   * did; a refusal means another writer replaced the record while this
+   * store's write was in flight, and the caller must adopt that
+   * replacement (load() again) rather than overwrite it. */
+  replaceClassified(next: Checkpoint): boolean;
 }
 
 /** The draft port with every checkpoint normalized through `decode` in BOTH
@@ -60,14 +72,20 @@ export interface DraftRepository<Checkpoint> {
  * raw value to recover and falls back to `decode`'s normalized one, as
  * before - such a checkpoint carries no unknown fields to begin with.
  *
- * lastClassified keeps the raw value load() most recently classified -
- * readable or not - named by WHEN it was classified, not by
- * discardClassified's own call: another store or a newer app version can
- * replace the record between the two, and a fresh storage.load() at discard
- * time would then name (and remove) whatever is there NOW - never the record
- * the user was actually shown. One field for both cases, because a discard is
- * the same operation either way: remove the classified record, by its own
- * identity, and report whether that succeeded. */
+ * lastClassified keeps the raw value most recently classified - readable or
+ * not - named by WHEN it was classified, not by discardClassified's own
+ * call: another store or a newer app version can replace the record between
+ * the two, and a fresh storage.load() at discard time would then name (and
+ * remove) whatever is there NOW - never the record the user was actually
+ * shown. One field for both cases, because a discard is the same operation
+ * either way: remove the classified record, by its own identity, and report
+ * whether that succeeded.
+ *
+ * load() is not the only thing that classifies: save() writes a new record
+ * too, and if it left lastClassified pointing at the PRE-write bytes, an
+ * edit immediately followed by a discard would refuse (it would still be
+ * naming what the edit just replaced) and silently restore the edit instead
+ * of discarding it - the identity must track every write, not only reads. */
 export function createDraftRepository<Checkpoint>(
   storage: DraftPort<Checkpoint>,
   decode: (value: unknown) => Checkpoint,
@@ -90,7 +108,14 @@ export function createDraftRepository<Checkpoint>(
       return checkpoint;
     },
     save(checkpoint: Checkpoint): void {
-      storage.save(decode(checkpoint));
+      const decoded = decode(checkpoint);
+      storage.save(decoded);
+      // What was just written IS now the classified record: no raw bytes to
+      // recover (this build built it), so the decoded value is its own
+      // identity, the same fallback removeIf already uses for a checkpoint
+      // load() never produced.
+      lastClassified = decoded;
+      hasLastClassified = true;
     },
     removeIf(checkpoint: Checkpoint): boolean {
       return storage.removeIf((rawFrom.get(checkpoint as object) ?? decode(checkpoint)) as Checkpoint);
@@ -106,6 +131,24 @@ export function createDraftRepository<Checkpoint>(
     discardClassified(): boolean {
       if (!hasLastClassified) return discardStoredDraft(storage);
       return storage.removeIf(lastClassified as Checkpoint);
+    },
+    replaceClassified(next: Checkpoint): boolean {
+      const decoded = decode(next);
+      // Nothing classified yet: there is no identity to be atomic against
+      // (the defensive case discardClassified also falls back from) - the
+      // write itself is the first classification.
+      if (!hasLastClassified) {
+        storage.save(decoded);
+        lastClassified = decoded;
+        hasLastClassified = true;
+        return true;
+      }
+      const replaced = storage.replaceIf(lastClassified as Checkpoint, decoded);
+      if (replaced) {
+        lastClassified = decoded;
+        hasLastClassified = true;
+      }
+      return replaced;
     },
   };
 }

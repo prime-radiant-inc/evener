@@ -1473,9 +1473,10 @@ describe("keybindings store: support flap discards hub state", () => {
       features: { ...(await client.connect()).features, keybindingsSettings: false },
     });
     resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
-    const result = await patch;
-
-    expect(result.revision).toBe(0);
+    // The current hub (support now unsupported) never acknowledged this
+    // write; round 21 Medium 3 rejects rather than reporting the stale
+    // current state as this write's own outcome.
+    await expect(patch).rejects.toThrow(/hub connection changed/);
     expect(keybindingsStore.getState().revision).toBe(0);
     expect(keybindingsStore.getState().hubError).toBeNull();
     expect(bindingsFor(ACTIONS.paletteOpen).map((b) => b.id)).toEqual([
@@ -1566,9 +1567,9 @@ describe("keybindings store: support flap generation fence", () => {
     // The pre-flap patch's response lands now: composed against the pre-flap
     // revision, it must not re-apply over the refreshed state.
     resolvePatch?.(overridesPayload(4, [{ action: ACTIONS.paletteOpen, chord: "Control+Y" }]));
-    const result = await patch;
-
-    expect(result.revision).toBe(5);
+    // The flap fenced this write before its reply landed: the CURRENT hub
+    // never acknowledged it, so it rejects (round 21 Medium 3).
+    await expect(patch).rejects.toThrow(/hub connection changed/);
     const state = keybindingsStore.getState();
     expect(state.revision).toBe(5);
     expect(state.rawOverrides).toEqual([{ action: ACTIONS.composerFocus, chord: "Control+M" }]);
@@ -1620,7 +1621,9 @@ describe("keybindings store: support flap generation fence", () => {
     // flap - having sent no request, and (finding 22) without stamping
     // hubError onto the refreshed state.
     resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
-    await first;
+    // This write's reply is fenced out too (round 21 Medium 3): the
+    // CURRENT hub never acknowledged it.
+    await expect(first).rejects.toThrow(/hub connection changed/);
     await expect(second).rejects.toThrow(/unavailable/);
 
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1);
@@ -1853,7 +1856,9 @@ describe("keybindings store: write generation fence", () => {
     // against B's now-loaded state, pass every execution-time guard, and
     // land the A-era edit on B.
     resolvePatchA?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
-    await first;
+    // This write's reply is fenced out too (round 21 Medium 3): the
+    // CURRENT hub never acknowledged it.
+    await expect(first).rejects.toThrow(/hub connection changed/);
     await expect(second).rejects.toThrow(/unavailable/);
 
     expect(clientB.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
@@ -1900,7 +1905,9 @@ describe("keybindings store: write generation fence", () => {
     await waitFor(() => expect(keybindingsStore.getState().loaded).toBe(true));
 
     resolvePatchA?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
-    await first;
+    // This write's reply is fenced out too (round 21 Medium 3): the
+    // CURRENT hub never acknowledged it.
+    await expect(first).rejects.toThrow(/hub connection changed/);
     await expect(second).rejects.toThrow(/unavailable/);
 
     // The rejection belonged to the DEAD generation: setting hubError would
@@ -2099,7 +2106,9 @@ describe("keybindings store: unsupported write rejection", () => {
       features: { ...(await client.connect()).features, keybindingsSettings: false },
     });
     resolvePatch?.(overridesPayload(2, [{ action: ACTIONS.paletteOpen, chord: "Control+P" }]));
-    await first;
+    // This write's reply is fenced out too (round 21 Medium 3): the
+    // CURRENT hub never acknowledged it.
+    await expect(first).rejects.toThrow(/hub connection changed/);
     await expect(second).rejects.toThrow(/unavailable/);
     expect(client.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(1);
     expect(keybindingsStore.getState().hubError).toBeNull();

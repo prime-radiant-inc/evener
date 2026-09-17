@@ -52,6 +52,12 @@ export function memoryDraftStorage<Checkpoint extends { writeUncertain: boolean 
       stored = null;
       return true;
     },
+    replaceIf: (expected, next) => {
+      calls.push(`replaceIf:${next.writeUncertain ? "uncertain" : "settled"}`);
+      if (JSON.stringify(expected) !== JSON.stringify(stored)) return false;
+      stored = structuredClone(next);
+      return true;
+    },
   };
   return {
     storage,

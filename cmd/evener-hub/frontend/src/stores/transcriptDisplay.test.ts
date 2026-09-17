@@ -433,7 +433,11 @@ describe("effective transcript display state", () => {
     const active = transcriptDisplayStore.getState().patchHubDefault("desktop", newestDraft);
     await expect.poll(() => responses).toHaveLength(2);
     responses[0]?.resolve({ layout: "desktop", revision: 1000, config: toWireConfig(firstDraft) });
-    await fenced;
+    // A later write on the same layer superseded this one before its reply
+    // landed: the outcome is genuinely unknown (the hub may or may not have
+    // applied it), so it rejects rather than reporting an acknowledgement
+    // the current write never gave (round 21 Medium 3).
+    await expect(fenced).rejects.toThrow(/hub connection changed/);
     responses[1]?.resolve({ layout: "desktop", revision: 1001, config: toWireConfig(newestDraft) });
     await expect(active).rejects.toThrow("malformed");
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: confirmed });
@@ -600,7 +604,10 @@ describe("effective transcript display state", () => {
     });
     pendingPatch.resolve({ layout: "desktop", revision: 3, config: preset("full") });
     await firstGeneration;
-    await patch;
+    // The reconnect fenced this write before its reply landed: the CURRENT
+    // hub never acknowledged it, so it rejects (round 21 Medium 3) rather
+    // than reporting the stale current value as a success.
+    await expect(patch).rejects.toThrow(/hub connection changed/);
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("activity") });
     expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(preset("full"));
   });

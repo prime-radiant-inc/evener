@@ -45,6 +45,11 @@ function backend() {
 			values.delete(key);
 			return true;
 		},
+		replaceIf: (key, expected, next) => {
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
+			values.set(key, structuredClone(next));
+			return true;
+		},
 	};
 	return { port, keys: () => [...values.keys()].sort() };
 }
@@ -193,6 +198,7 @@ describe("native preference drafts", () => {
 			deleteIf: () => {
 				throw new Error("disk unavailable");
 			},
+			replaceIf: () => false,
 		});
 		// The provider awaits this inside an async function, so a throw here is
 		// the rejection its callers' error handlers already know how to show.
@@ -267,6 +273,41 @@ describe("native preference drafts", () => {
 		expect(disk.raw.get(key)).toBe(replacement);
 	});
 
+	// RoboRev round 21 Medium 1: the atomic twin of removeIf - a compare and
+	// write instead of a compare and remove, needed so settling an uncertain
+	// checkpoint cannot silently overwrite a concurrent writer's newer draft.
+	it("replaceIf writes the new record only if the expected identity still matches", () => {
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
+		const key = "evener.native.transcript-draft.hub";
+
+		disk.raw.set(key, JSON.stringify(transcriptCheckpoint));
+		const read = storage.load();
+
+		const next = { ...transcriptCheckpoint, baseRevision: 5 };
+		expect(storage.replaceIf(read as never, next as never)).toBe(true);
+		expect(disk.raw.get(key)).toBe(JSON.stringify(next));
+	});
+
+	it("replaceIf refuses once the classified record has been replaced under different bytes", () => {
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
+		const key = "evener.native.transcript-draft.hub";
+
+		disk.raw.set(key, '{\n  "id" : "a" ,\n  "baseRevision": -1\n}');
+		const read = storage.load();
+		expect(read).not.toBeNull();
+
+		// A concurrent writer replaces it with the SAME fields under DIFFERENT
+		// bytes - a write this store never read.
+		const replacement = '{"baseRevision":-1,"id":"a"}';
+		disk.raw.set(key, replacement);
+
+		const next = { id: "b", layout: "mobile" as const, baseRevision: 2, config, writeUncertain: false };
+		expect(storage.replaceIf(read as never, next as never)).toBe(false);
+		expect(disk.raw.get(key)).toBe(replacement);
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(
@@ -337,6 +378,26 @@ describe("native preference drafts", () => {
 
 		const edited = { ...transcriptCheckpoint, id: "t2", baseRevision: 5 };
 		storage.save(edited);
+
+		expect(storage.discardLastLoaded()).toBe(true);
+		expect(disk.raw.has(key)).toBe(false);
+	});
+
+	// RoboRev round 21 Medium 1's native twin: a live model settles an
+	// uncertain checkpoint through replaceIf (createDraftRepository.
+	// replaceClassified writes through this same wrapper), and the wrapper's
+	// own tracked identity must move with it exactly as save() now does, or a
+	// no-model discard right after names the PRE-settle bytes and refuses.
+	it("restore, settle via replaceIf, discard: the settled draft is gone on the first discard", () => {
+		const disk = deviceStore();
+		const key = "evener.native.transcript-draft.hub";
+		const storage = retainingDraftStorage(nativeTranscriptDrafts("hub", disk.port));
+
+		disk.raw.set(key, JSON.stringify(transcriptCheckpoint));
+		const loaded = storage.load();
+
+		const settled = { ...transcriptCheckpoint, writeUncertain: false };
+		expect(storage.replaceIf(loaded as never, settled as never)).toBe(true);
 
 		expect(storage.discardLastLoaded()).toBe(true);
 		expect(disk.raw.has(key)).toBe(false);

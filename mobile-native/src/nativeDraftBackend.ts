@@ -90,5 +90,21 @@ export function draftBackend(
 			if (matches) store.removeItemSync(key);
 			return matches;
 		},
+		replaceIf(key: string, expected: unknown, next: unknown): boolean {
+			// The atomic twin of deleteIf: the identical compare, a write instead
+			// of a removal - needed so settling an uncertain checkpoint cannot
+			// silently overwrite a concurrent writer's newer draft the way an
+			// unconditional save would.
+			const stored = store.getItemSync(key);
+			if (stored === null) return false;
+			const source = typeof expected === "object" && expected !== null ? decodedFrom.get(expected) : undefined;
+			const matches =
+				source !== undefined ? stored === source : stored === expected || sameRecord(stored, expected);
+			if (!matches) return false;
+			const encoded = JSON.stringify(next);
+			store.setItemSync(key, encoded);
+			if (typeof next === "object" && next !== null) decodedFrom.set(next, encoded);
+			return true;
+		},
 	};
 }
