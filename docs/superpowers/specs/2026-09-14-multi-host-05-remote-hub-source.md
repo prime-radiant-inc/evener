@@ -736,8 +736,9 @@ may attach. **Implementation status:** shipped. `hubThreadListWithSourceTimeout`
 (`app_threadlist.go`) skips a remote source for an empty filter when the
 attached-only lookup reports it not attached, and attaches an explicitly named
 remote host (`RemoteHostClient`, the `Ensure`-backed dial) before calling the
-source — the only remaining attach trigger besides the not-yet-shipped
-component-06 Connect action.
+  source — one of the two shipped attach triggers, alongside the component-06
+  Connect action (`evener/host/attach`, the browser-reachable explicit attach
+  handler in `app_host_attach.go`).
 
 **Every other remote call is non-dialing, not just the snapshot and the
 non-explicit list.** The gate above covers the background snapshot and the
@@ -870,10 +871,16 @@ Ref translation detail (`remote_hub_refs.go`):
     **role** (bridge marker present ⇒ *remote-originated*; marker absent ⇒
     *local*), and the routing seam stamps that role into the request context, so
     every handler can read `origin` (empty for a local request, non-empty for a
-    remote-originated one). **Implementation status:** neither the marker header,
-    the edge's role classification, nor the request-context `origin` exists
-    today (`cmd/evener-hub/web.go`, `cmd/evener-hub/internal/hubedge/auth_token.go`); this is
-    the design record, and the code delta is a tracked follow-up.
+    remote-originated one). **Implementation status:** shipped. `evener hub
+    attach --stdio` presents the marker (`cmd/evener-hub/attach.go`), the `/rpc`
+    edge classifies the role and stamps it into the request context
+    (`cmd/evener-hub/web.go`), and the guard refuses remote-originated remote
+    dispatch at its shared seams: the `Ensure`-backed dial
+    (`guardRemoteHostDial`) and the remote-hub client resolution every
+    `RemoteHubSource` call passes through (`appsource.guardRemoteDispatch`), so
+    a request arriving over a bridge cannot ride an already-attached source
+    either. The trust basis above is unchanged: the marker is cooperative-only
+    until the role is bound to a server-verifiable signal.
     The refusal is enforced at the **typed fan-out seam**, not by a check inside
     a handler: the multi-source fan-out (`hubThreadListWithSourceTimeout`,
     `app_threadlist.go`) — and any other path that routes a ref to more than one

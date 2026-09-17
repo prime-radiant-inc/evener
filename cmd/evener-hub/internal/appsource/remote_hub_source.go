@@ -245,8 +245,18 @@ func (s *RemoteHubSource) call(ctx context.Context, method string, params any, o
 // attach a dormant host or re-dial one that dropped between a check and the call
 // (component 05, §"Every other remote call is non-dialing"). With no lookup
 // installed (tests) it falls back to the wired RemoteHubClientFunc.
+//
+// It is also the shared remote-dispatch seam the host-routing origin guard
+// enforces (component 07, §"Host-routing origin guard"): every call the source
+// serves — read, mutation, subscription, admin forward, or probe — resolves its
+// client here, so a remote-originated request is refused typed before it can
+// dispatch to any host. A request this hub serves from its own cached state
+// never reaches this seam and is unaffected.
 func (s *RemoteHubSource) resolveClient(ctx context.Context) (*appwire.Client, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := guardRemoteDispatch(ctx); err != nil {
 		return nil, err
 	}
 	if s.clientIfAttached != nil {

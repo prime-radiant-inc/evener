@@ -106,7 +106,15 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			// making the browser show a failure toast for a host that is online.
 			return resp, nil
 		}
-		resp.ProtocolVersion = facts.ProtocolVersion
+		// The facts block owns the fields AppWire cannot report on an
+		// already-initialized connection, but it must not clobber the version the
+		// attach handshake just negotiated: ensureOnce explicitly tolerates an
+		// empty preflight ProtocolVersion, and writing that empty value over the
+		// handshake's would make the same host report different versions from
+		// attach and from probe (where the handshake is authoritative).
+		if facts.ProtocolVersion != "" {
+			resp.ProtocolVersion = facts.ProtocolVersion
+		}
 		resp.HubVersion = facts.HubVersion
 		resp.OS = facts.OS
 		resp.Arch = facts.Arch
@@ -151,10 +159,12 @@ func classifyHostAttachError(sources *appsource.Registry, host string, err error
 //     launch contract, unparseable preflight, unusable host address, unknown
 //     host, closed manager) → Unavailable (actionUnavailable): the host refused
 //     the controller, and no retry of this attach can change that.
-//   - deploy failures (ErrDeploy) and the dirty-controller deploy refusal
-//     (errControllerDirty), plus a version mismatch that a deploy would have to
-//     fix → HubLaunchError (hubLaunch): the controller could not install or
-//     match its build on the host.
+//   - deploy failures (ErrDeploy), the dirty-controller deploy refusal
+//     (ErrControllerDirty), a version mismatch a deploy would have to fix, and
+//     the missing-executable refusal a host with no deploy path produces
+//     (ErrExecutableMissing) → HubLaunchError (hubLaunch): the controller could
+//     not install or match its build on the host, so the host cannot be
+//     attached/launched.
 //
 // An unrecognized error is returned unchanged, so it still surfaces as an
 // internal error rather than being mislabelled as a typed refusal.
@@ -170,7 +180,8 @@ func hostAttachWireError(err error) error {
 		return appwire.Unavailable("host attach refused: " + err.Error())
 	case errors.Is(err, sshconn.ErrDeploy),
 		errors.Is(err, sshconn.ErrVersionMismatch),
-		errors.Is(err, sshconn.ErrControllerDirty):
+		errors.Is(err, sshconn.ErrControllerDirty),
+		errors.Is(err, sshconn.ErrExecutableMissing):
 		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
 	default:
 		return err

@@ -304,9 +304,16 @@ function SpawnForm({
   // navigation), so success needs no local bookkeeping beyond clearing the
   // pending marker; a failure is surfaced rather than leaving a dead row.
   const [connectingHosts, setConnectingHosts] = useState<ReadonlySet<string>>(() => new Set());
+  // The in-flight guard is a ref, not the state above: setConnectingHosts is
+  // asynchronous, so two activations in the same tick both read the pre-update
+  // `connectingHosts` set and double-dial. The ref is mutated synchronously, so
+  // the second activation sees the first one already in flight. The state stays
+  // for rendering (the Connect button's disabled state and label).
+  const connectingHostsRef = useRef<Set<string>>(new Set());
   const connectHost = useCallback(
     (host: string) => {
-      if (isLocalHost(host) || connectingHosts.has(host)) return;
+      if (isLocalHost(host) || connectingHostsRef.current.has(host)) return;
+      connectingHostsRef.current.add(host);
       setConnectingHosts((current) => new Set(current).add(host));
       void client
         .request("evener/host/attach", { host })
@@ -314,6 +321,7 @@ function SpawnForm({
           toasts.push("error", `Connect ${host} failed: ${friendlyLaunchErrorMessage(error)}`);
         })
         .finally(() => {
+          connectingHostsRef.current.delete(host);
           setConnectingHosts((current) => {
             if (!current.has(host)) return current;
             const next = new Set(current);
@@ -322,7 +330,7 @@ function SpawnForm({
           });
         });
     },
-    [client, connectingHosts, toasts],
+    [client, toasts],
   );
 
   // Every host-dependent discovery/validation call below is issued against
@@ -2250,11 +2258,14 @@ function SpawnForm({
                 if (busyRef.current) return;
                 const next = event.target.value;
                 setSource(next);
-                // Selecting a remote host is itself an attachment request: an
-                // online host is already attached so the call is idempotent,
-                // and this keeps the picker's selection and the attach trigger
-                // on one code path.
-                if (!isLocalHost(next)) connectHost(next);
+                // Selecting a remote host is not itself an attach request when
+                // the manifest already reports it online: that row is attached,
+                // and the call would only be a redundant dial. A host the
+                // manifest still reports offline needs the dial, but its option
+                // is disabled, so the Connect affordance below is the path that
+                // reaches it.
+                const chosen = displaySources.find((candidate) => candidate.id === next);
+                if (!isLocalHost(next) && chosen?.online !== true) connectHost(next);
               }}
             >
               {displaySources.map((candidate) => (

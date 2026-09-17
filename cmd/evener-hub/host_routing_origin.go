@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -22,24 +23,23 @@ const bridgeOriginHeader = "X-Evener-Bridge"
 // the attach bridge. Any non-empty origin marks a request remote-originated.
 const hostRoutingOriginBridge = "bridge"
 
-// hostRoutingOriginKey carries the request's routing origin through the
-// connection and request contexts. A request with no origin (an ordinary
-// browser, TUI, or CLI session of this hub) is local.
-type hostRoutingOriginKey struct{}
-
 // withHostRoutingOrigin stamps origin onto ctx. It is applied once, at the
 // hub's /rpc edge, from the bridge marker header; every handler context for
 // that connection inherits it (component 05, §"The origin signal is an explicit
 // bridge marker on the connection").
+//
+// The context plumbing lives in the remote-routing package
+// (appsource.WithHostRoutingOrigin) because the origin guard's shared dispatch
+// seam — every remote-hub client resolution — sits there, and both the dial
+// guard below and that seam have to read the same value.
 func withHostRoutingOrigin(ctx context.Context, origin string) context.Context {
-	return context.WithValue(ctx, hostRoutingOriginKey{}, origin)
+	return appsource.WithHostRoutingOrigin(ctx, origin)
 }
 
 // hostRoutingOrigin returns the request's routing origin, or "" for a
 // local-originated request.
 func hostRoutingOrigin(ctx context.Context) string {
-	origin, _ := ctx.Value(hostRoutingOriginKey{}).(string)
-	return origin
+	return appsource.HostRoutingOrigin(ctx)
 }
 
 // isBridgeOriginRequest reports whether r carries the bridge marker, i.e. it
@@ -55,6 +55,12 @@ func isBridgeOriginRequest(r *http.Request) bool {
 // attach a configured host, which would bypass the depth-1 topology cap
 // (component 06's Connect action and the explicit-SourceIDs thread/list attach
 // both dial through dialRemoteHost below).
+//
+// It is the dial half of the guard. The dispatch half lives at the remote-hub
+// client seam every RemoteHubSource call resolves through
+// (appsource.guardRemoteDispatch): without it a bridge-originated request could
+// forward a call over an already-attached source, reaching a second host
+// without ever dialing.
 func guardRemoteHostDial(ctx context.Context) error {
 	origin := hostRoutingOrigin(ctx)
 	if origin == "" {

@@ -315,6 +315,16 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 			code:      appwire.CodeUnavailable,
 			info:      appwire.ErrorHubLaunch,
 		},
+		{
+			// No deploy path exists and the host has no evener at the resolved
+			// path: like the dirty-controller refusal, the controller cannot
+			// install or match its build, so it is a typed hub-launch failure
+			// rather than a generic internal error.
+			name:      "executable missing with no deploy path",
+			attachErr: fmt.Errorf("%w: host %q", sshconn.ErrExecutableMissing, "alpha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := hubcore.WebConfig{
@@ -342,6 +352,41 @@ func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
 				t.Fatalf("attach failure message %q does not name host alpha", wire.Message)
 			}
 		})
+	}
+}
+
+// The attach handshake is authoritative for ProtocolVersion when the preflight
+// facts carry none: ensureOnce explicitly tolerates an empty facts
+// ProtocolVersion, and overwriting the negotiated version with that empty string
+// would make the same host report different versions from attach and from probe
+// (where the handshake wins). Before the fix the facts block clobbered it
+// unconditionally, discarding the version the handshake had just supplied.
+func TestHostAttachKeepsHandshakeProtocolVersionWhenFactsAreEmpty(t *testing.T) {
+	live := &appwire.Client{}
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			return live, nil
+		},
+		RemoteHostFacts: func(context.Context, string, *appwire.Client) (appsource.HostFacts, error) {
+			// An empty ProtocolVersion is the shape ensureOnce tolerates.
+			return appsource.HostFacts{HubVersion: "9.9.9"}, nil
+		},
+		RemoteHostHandshake: func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
+			return appwire.InitializeResponse{ProtocolVersion: "7", SourceID: "local"}, true
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if resp.ProtocolVersion != "7" {
+		t.Fatalf("ProtocolVersion = %q, want the handshake's negotiated version 7", resp.ProtocolVersion)
+	}
+	if resp.HubVersion != "9.9.9" {
+		t.Fatalf("HubVersion = %q, want the facts' build version", resp.HubVersion)
 	}
 }
 

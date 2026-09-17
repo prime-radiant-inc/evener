@@ -219,6 +219,13 @@ function modelListRequests(fake: FakeClient): ModelListParams[] {
   return fake.calls.filter((call) => call.method === "model/list").map((call) => call.params as ModelListParams);
 }
 
+/** Every evener/host/attach the pane issued, for the picker's attach assertions. */
+function attachCalls(fake: FakeClient): { host: string }[] {
+  return fake.calls
+    .filter((call) => call.method === "evener/host/attach")
+    .map((call) => call.params as { host: string });
+}
+
 function renderSpawn(client: FakeClient, focused = true) {
   return render(
     <ClientProvider client={client}>
@@ -6102,12 +6109,13 @@ test("host picker lists sources, preselects local, and disables offline hosts", 
   expect(offline.textContent).toContain("offline");
 });
 
-// Selecting a remote host is the picker's own attach trigger: the shipped
-// client must issue evener/host/attach for it, because nothing else the picker
-// does can attach a configured host (the snapshot and non-explicit list are
-// attached-only). Before the fix the selection changed only the draft and sent
-// no attach call at all.
-test("selecting a remote host issues evener/host/attach for it", async () => {
+// Selecting an already-online remote host is NOT an attach request: the
+// manifest reports the host online (its channel is attached), so the picker must
+// not spend a redundant evener/host/attach on it. Only a host the manifest
+// reports offline needs the dial, and that row's option is disabled, so the
+// Connect affordance below is the path that reaches it. Before the fix every
+// picker selection dialed, online or not.
+test("selecting an already-online remote host issues no attach call", async () => {
   seedSources([
     { id: "local", label: "Local", kind: "local", online: true },
     { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
@@ -6118,13 +6126,46 @@ test("selecting a remote host issues evener/host/attach for it", async () => {
 
   fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
 
-  await waitFor(() =>
-    expect(
-      fake.calls.some(
-        (call) => call.method === "evener/host/attach" && (call.params as { host: string }).host === "buildbox",
-      ),
-    ).toBe(true),
-  );
+  // The selection still moves the draft - and so the launch target - while
+  // issuing no attach call at all.
+  await waitFor(() => expect((screen.getByLabelText("Host") as HTMLSelectElement).value).toBe("buildbox"));
+  expect(attachCalls(fake)).toEqual([]);
+});
+
+// Two rapid activations of one Connect must dial once. The in-flight check
+// cannot read `connectingHosts` state: setConnectingHosts is asynchronous, so
+// two activations in the same batch both read the pre-update set and dial
+// twice. The guard is a ref, mutated synchronously before the request, so the
+// second activation sees the first one still in flight.
+test("a rapid double Connect dials the host once", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  // A never-resolving first dial keeps it in flight while the second activation
+  // is dispatched.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/attach", async () => {
+      await gate;
+      return { attached: true };
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
+  act(() => {
+    connect.click();
+    connect.click();
+  });
+
+  expect(attachCalls(fake)).toHaveLength(1);
+  release();
+  await waitFor(() => expect(screen.queryByRole("button", { name: /Connecting offline-host/ })).toBeNull());
 });
 
 // A never-attached host is listed offline with a disabled spawn option
