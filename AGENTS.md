@@ -48,18 +48,31 @@ formatting. Avoid `noNonNullAssertion` and array-index-key violations.
 The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental
 false` from `cmd/evener-hub/frontend`), which reads that directory's
 `tsconfig.json` and its `include` — `src` and `../../../appwire-client/typescript`
-— covering both trees in one program (measured: 1441 files, byte-identical
-between that invocation and a bare `tsc --noEmit -p tsconfig.json` from the
-same directory). `make test-web` runs this behind `web-preflight.sh`, which
-`npm ci`s the frontend install whenever `package-lock.json` is newer than
+— covering both trees in one program: this is the same file set a bare
+`tsc --noEmit -p tsconfig.json` from the same directory resolves (verified
+byte-identical as a point-in-time measurement on #1676; re-check with
+`tsc --listFilesOnly` rather than trusting that count to stay current).
+`make test-web` runs the typecheck behind `web-preflight.sh`, which `npm
+ci`s the frontend install whenever `package-lock.json` is newer than
 `node_modules`. A bare `tsc -p tsconfig.json` skips that check: right after a
 merge that changed `package-lock.json` but before an `npm ci`, it type-checks
 against a stale install and can report real-looking errors (missing types,
 unresolved modules) that are an artifact of the stale install, not of the
 code — `make test-web` never hits this because its preflight repairs the
-install first. To reproduce the gate by hand, run `npm ci` in
-`cmd/evener-hub/frontend` before `npm run typecheck` (or just run `make
-test-web`), rather than a bare `tsc -p tsconfig.json`.
+install first. Prefer `make test-web` to reproduce the gate by hand. If you
+run `npm ci` yourself instead, check `[ -L node_modules ]` first: an agent
+worktree's `node_modules` is often a symlink to a shared install other
+worktrees use, and `npm ci` deletes the existing `node_modules` before
+installing — through a symlink that deletes the shared install out from
+under everyone else. `web-preflight.sh` guards exactly this (comparing the
+symlink target's own `package-lock.json` instead of running `npm ci` through
+it); read it before reproducing its `npm ci` by hand. The same symlink risk
+applies to `appwire-client/typescript` (no preflight script owns its
+install; `make test-api-package` runs `npm run qualification` directly) and
+to `mobile-native` (`native-preflight.sh` checks the install's freshness and
+health but never runs `npm ci` itself, precisely to avoid this — it fails
+loudly and names the command instead). Never run `npm ci` through a
+symlinked `node_modules` in any of the three.
 
 ## Importing the AppWire TypeScript package
 
