@@ -2534,7 +2534,9 @@ test("a Stop on the resumed identity cancels the stale post-resume publish", asy
 // one that cancels. The reconnect window BEFORE beforeRequest is covered by
 // "a Stop on the resumed identity before the resume RPC leaves suppresses
 // the RPC" below.
-test("a Stop on the resumed identity while the resume RPC is in flight cancels the post-resume hydration", async ({ onTestFinished }) => {
+test("a Stop on the resumed identity while the resume RPC is in flight cancels the post-resume hydration", async ({
+  onTestFinished,
+}) => {
   onTestFinished(stubSessionSlots);
   const stableRef = "local:stable-a";
   const currentRef = "local:current-b";
