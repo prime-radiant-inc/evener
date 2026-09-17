@@ -969,3 +969,50 @@ test.each(["closed", "rejected"])("explicit Resume releases its waiters when %s"
   client.close();
   expect(vi.getTimerCount()).toBe(0);
 });
+
+test("a throwing beforeRequest sends no resume RPC, releases the resume, and keeps the primary ready", async () => {
+  const sockets: FakeSocket[] = [];
+  const client = new AppwireClient({
+    url: "ws://hub/rpc",
+    socketFactory: () => {
+      const socket = new FakeSocket({ autoInitialize: true });
+      sockets.push(socket);
+      return socket;
+    },
+  });
+  const connected = client.connect();
+  const primary = sockets[0];
+  if (!primary) throw new Error("missing primary");
+  primary.open();
+  await connected;
+  // The fence a Stop armed while the resume's reconnect was in flight.
+  const fence = new Error("Stop canceled this pending action");
+  const resumed = client.resumeThread("local:owner", {
+    beforeRequest: () => {
+      throw fence;
+    },
+  });
+  const rejected = expect(resumed).rejects.toBe(fence);
+  const replacement = sockets[1];
+  if (!replacement) throw new Error("missing replacement");
+  replacement.open();
+  await rejected;
+  // The throw ran after the reconnect settled and before the RPC: no resume
+  // frame ever went out, on either transport.
+  expect(sentFrames(replacement).some((frame) => frame.method === "thread/resume")).toBe(false);
+  expect(sentFrames(primary).some((frame) => frame.method === "thread/resume")).toBe(false);
+  // The reconnected primary is the healthy one the finally kept.
+  expect(client.state).toBe("ready");
+  // resumePending cleared: a subsequent resume starts instead of failing with
+  // "A session resume is already pending".
+  const retried = client.resumeThread("local:owner");
+  const secondReplacement = sockets[2];
+  if (!secondReplacement) throw new Error("missing second replacement");
+  secondReplacement.open();
+  await flushUntil(() => sentFrames(secondReplacement).some((frame) => frame.method === "thread/resume"));
+  secondReplacement.receive({ id: lastSentFrame(secondReplacement).id, result: {} });
+  await retried;
+  expect(client.state).toBe("ready");
+  client.close();
+  expect(vi.getTimerCount()).toBe(0);
+});

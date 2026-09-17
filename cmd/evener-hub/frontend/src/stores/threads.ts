@@ -922,34 +922,6 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 
 const userIntentStopGenerations = new Map<string, number>();
 
-// The mutations a Stop canceled, by clientMutationId. Reconciliation reopens a
-// blockedUnknown record to submitting so the target can dispatch, so without
-// this a later lifecycle/discovery scan would resend the very mutation the Stop
-// canceled. It is keyed by ID, not by ref: a ref-level flag released every
-// canceled mutation on a ref when any one was retried, so a background-note
-// retry reopened a sibling the same Stop had canceled. One ID is released only
-// by an explicit user retry of that ID; a fresh send gets a new ID and needs no
-// release.
-const canceledMutationIds = new Set<string>();
-
-// Record a ref's pending outbox records as canceled by the Stop just
-// acknowledged. In memory only: the hub's SessionRecoveryState stays the
-// durable authority, and the page re-derives from it on reload.
-async function recordCanceledMutations(ref: string): Promise<void> {
-  const runtime = getMutationRuntime();
-  if (!runtime) return;
-  await runtime.start;
-  for (const record of await runtime.storage.listOutbox(ref)) {
-    canceledMutationIds.add(record.clientMutationId);
-    // A reconciliation may have reopened this record in the window between the
-    // Stop's generation bump and this acknowledgment. The cancellation is known
-    // now, so put the uncertainty back: a record the Stop canceled must not stay
-    // armed for a later scan to resend. This is the same restoration the retry's
-    // inline undo performs, at the one moment the cancellation becomes known.
-    await runtime.storage.markUnknown(record.clientMutationId, "blockedUnknown");
-  }
-}
-
 function cancelPendingUserIntents(ref: string): void {
   userIntentStopGenerations.set(ref, (userIntentStopGenerations.get(ref) ?? 0) + 1);
 }
@@ -971,21 +943,10 @@ export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",
 ): Promise<boolean> {
-  const stopGenerations = new Map(userIntentStopGenerations);
   const runtime = requireMutationRuntime();
   await runtime.start;
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
-  const savedTargetGeneration = stopGenerations.get(record.targetRef) ?? 0;
-  const stoppedSinceBaseline = () => (userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration;
-  const checkStopped = () => {
-    if ((userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration) {
-      if (mode === "backgroundNote") return true;
-      throw new Error("Stop canceled this pending action; retry again when ready.");
-    }
-    return false;
-  };
-  if (checkStopped()) return false;
   // A background note save keeps its blocked draft when Stop wins; it must
   // neither resume a session nor retry another kind of mutation.
   if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
@@ -1005,35 +966,17 @@ export async function retryBlockedMutation(
   const epoch = dispatchReadyEpoch;
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
-  // An explicit user retry re-affirms exactly this mutation, so its canceled ID
-  // is released here, just before reconciliation may reopen it. A background
-  // note save re-affirms nothing of the kind and must not release a sibling.
-  if (mode === "user") canceledMutationIds.delete(clientMutationId);
   await handleReady(
     client,
     epoch,
     record.targetRef,
     // A background note save never dispatches (its own resend belongs to the
-    // outbox's lifecycle scan); a user retry dispatches only while no Stop has
-    // landed since it began.
-    mode === "backgroundNote" ? () => false : () => !stoppedSinceBaseline(),
+    // outbox's lifecycle scan); a user retry dispatches the whole target.
+    mode === "backgroundNote" ? () => false : undefined,
   );
-  if (stoppedSinceBaseline()) {
-    // A Stop acknowledged while the reconciliation above was in flight must
-    // undo the reopen it performed: reconciling an uncertain record back to
-    // submitting is what arms dispatch, and leaving it armed lets a later
-    // lifecycle scan resend the very mutation the Stop canceled. Put the
-    // uncertainty back and take the target out of dispatch until the user
-    // retries explicitly.
-    await runtime.storage.markUnknown(clientMutationId, "blockedUnknown");
-    dispatchableMutationRefs.delete(record.targetRef);
-    if (mode === "backgroundNote") return false;
-    throw new Error("Stop canceled this pending action; retry again when ready.");
-  }
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
   const current = await runtime.storage.getOutbox(clientMutationId);
-  if (checkStopped()) return false;
   return current?.state !== "blockedUnknown";
 }
 
@@ -1731,7 +1674,7 @@ async function publishAndReconcileThreadHydration(
           }
           notifyMutationPersistence([ref]);
         } else {
-          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds, canceledMutationIds);
+          await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
@@ -2252,12 +2195,10 @@ async function handleReady(
   targetRef?: string,
   // The targeted tail dispatches every dispatchable record of the target in
   // FIFO order, which is right when the caller is user intent on that session.
-  // A caller that must not do that - a background note save (which must not
-  // submit other pending mutations for the session) or a retry a Stop has
-  // canceled while its reconciliation was in flight - passes a fence; `false`
+  // A caller that must not do that - a background note save, which must not
+  // submit other pending mutations for the session - passes a fence; `false`
   // suppresses the schedule. Evaluated synchronously at the scheduling point,
-  // after every await, so a Stop acknowledged mid-reconciliation cannot be
-  // overtaken by a dispatch this call already earned.
+  // after every await.
   beforeScheduleTargetDispatch?: () => boolean,
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
@@ -2638,6 +2579,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     inflightHydrateEpochs.delete(ref);
     trackedHydrationCompletions.delete(ref);
     pendingThreadHydrations.delete(ref);
+    // The resume fence's Stop generation has no readers left once the last
+    // holder lets go; pruning keeps the map bounded by live refs. A fence
+    // captured before the release reads the reset as a changed generation and
+    // still cancels its pending action - release never reads as "no Stop".
+    userIntentStopGenerations.delete(ref);
     // A watched lifecycle may still hold this ref (watchRefCounts), and its
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
     // subscription when this was the last holder of either kind, so the hub
@@ -3057,7 +3003,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         .catch(() => {});
       throw error;
     }
-    await recordCanceledMutations(ref);
     threadsStore.setState((state) => ({
       restartBlockingObligations: new Map(state.restartBlockingObligations).set(ref, Symbol()),
     }));
@@ -3071,7 +3016,6 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     } catch (err) {
       throw mapConflict(err);
     }
-    await recordCanceledMutations(ref);
   },
 
   async forkFromTurn(ref, opts) {
@@ -3219,7 +3163,6 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
-  canceledMutationIds.clear();
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();

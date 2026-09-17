@@ -289,14 +289,8 @@ export class MutationOutboxIndexedDB {
   // Preserve the original mutation ID and entire payload so the daemon's
   // durable journal can replay its receipt, or the original instance fence
   // can reject a retry after a clear. Known IDs stay on the receipt path.
-  // A canceled ID is a mutation a Stop took back: it is never reopened, so a
-  // later lifecycle/discovery scan has nothing to send for it.
   // Returns the restored IDs.
-  async restoreProvenAbsent(
-    targetRef: string,
-    authoritativeIds: ReadonlySet<string>,
-    canceledIds?: ReadonlySet<string>,
-  ): Promise<string[]> {
+  async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
     return this.#write(OUTBOX_STORE, undefined, async (transaction) => {
       const store = transaction.objectStore(OUTBOX_STORE);
       const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
@@ -305,7 +299,6 @@ export class MutationOutboxIndexedDB {
         if (record.targetRef !== targetRef) continue;
         if (record.state !== "blockedUnknown") continue;
         if (authoritativeIds.has(record.clientMutationId)) continue;
-        if (canceledIds?.has(record.clientMutationId)) continue;
         await requestResult(store.put({ ...record, state: "submitting" }));
         restored.push(record.clientMutationId);
       }

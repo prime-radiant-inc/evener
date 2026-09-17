@@ -9327,56 +9327,18 @@ test("a background note save does not dispatch an unrelated pending mutation", a
     });
     await storage.markUnknown(note.clientMutationId, "blockedUnknown");
     expect(await retryBlockedMutation(note.clientMutationId, "backgroundNote")).toBe(true);
+    // The save's resync is fully awaited above; this drains anything it may
+    // have scheduled. The unrelated record must still be unsent...
     await flushIndexedDBUntil(() => sends >= 2);
     expect(sends).toBe(1);
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-// RoboRev finding on the reduced branch: retryBlockedMutation's Stop-generation
-// fence was only evaluated AFTER handleReady, but handleReady's targeted tail
-// schedules dispatch for the whole target - so a Stop acknowledged while the
-// retry's reconciliation was still in flight could be overtaken by a dispatch
-// the call had already earned, sending the very mutation the Stop canceled.
-test("a Stop during the retry's reconciliation is not overtaken by its dispatch", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  const storage = new MutationOutboxIndexedDB();
-  try {
-    setMutationStorageForTests(storage);
-    const fake = connectFakeClient("connecting");
-    let reads = 0;
-    const reconciliationRead = deferred<ThreadReadResponse>();
-    fake.on("thread/read", () => {
-      reads += 1;
-      return reads === 1 ? readResponse("ref_a", { status: { type: "idle" } }) : reconciliationRead.promise;
-    });
-    fake.on("thread/shutdown", () => ({}));
-    let sends = 0;
-    fake.on("turn/start", (params) => {
-      sends += 1;
-      if (sends === 1) throw new RequestTimeoutError("response lost");
-      return {
-        receipt: mutationReceipt(params.clientMutationId),
-        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-      };
-    });
-    fake.emitReady();
-    await threadsStore.getState().ensureThread("ref_a");
-    // An uncertain send left blockedUnknown by its lost response.
-    await threadsStore.getState().send("ref_a", "uncertain");
-    await flushIndexedDBUntil(() => sends === 1);
-    const uncertain = (await storage.listOutbox("ref_a"))[0];
-    if (!uncertain) throw new Error("missing uncertain send");
-    await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
-    const retry = retryBlockedMutation(uncertain.clientMutationId);
-    await flushIndexedDBUntil(() => reads >= 2);
-    // The Stop lands while the retry's authoritative read is still in flight.
-    await threadsStore.getState().shutdown("ref_a");
-    reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
-    await expect(retry).rejects.toThrow("Stop canceled this pending action");
+    // ...and that assertion is not vacuous: the record is still submitting (a
+    // lost response leaves it dispatchable - mutationDispatcher's bare "stop"),
+    // so the outbox's own periodic discovery scan resends it the moment its
+    // interval is advanced. The same drain proving the resend here is what
+    // would have proven a dispatch the save armed, had it armed one.
+    await vi.advanceTimersByTimeAsync(2000);
     await flushIndexedDBUntil(() => sends >= 2);
-    expect(sends).toBe(1);
+    expect(sends).toBe(2);
   } finally {
     vi.useRealTimers();
   }
@@ -9444,236 +9406,30 @@ test("a Stop during refreshThread's reconciliation is not overtaken by its dispa
   }
 });
 
-// RoboRev finding on the reduced branch: a canceled retry suppresses only that
-// call's dispatch. Its reconciliation may already have reopened the
-// blockedUnknown record to submitting and marked the target dispatchable, so a
-// later lifecycle/discovery scan can resend the very mutation the Stop
-// canceled. A periodic discovery scan runs here after the canceled retry.
-test("a Stop canceled retry is not resent by a later discovery scan", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  const storage = new MutationOutboxIndexedDB();
-  try {
-    setMutationStorageForTests(storage);
-    const fake = connectFakeClient("connecting");
-    let reads = 0;
-    const reconciliationRead = deferred<ThreadReadResponse>();
-    fake.on("thread/read", () => {
-      reads += 1;
-      return reads === 1 ? readResponse("ref_a", { status: { type: "idle" } }) : reconciliationRead.promise;
-    });
-    fake.on("thread/shutdown", () => ({}));
-    let sends = 0;
-    fake.on("turn/start", (params) => {
-      sends += 1;
-      if (sends === 1) throw new RequestTimeoutError("response lost");
-      return {
-        receipt: mutationReceipt(params.clientMutationId),
-        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-      };
-    });
-    fake.emitReady();
-    await threadsStore.getState().ensureThread("ref_a");
-    // An uncertain send left blockedUnknown by its lost response.
-    await threadsStore.getState().send("ref_a", "uncertain");
-    await flushIndexedDBUntil(() => sends === 1);
-    const uncertain = (await storage.listOutbox("ref_a"))[0];
-    if (!uncertain) throw new Error("missing uncertain send");
-    await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
-    const retry = retryBlockedMutation(uncertain.clientMutationId);
-    await flushIndexedDBUntil(() => reads >= 2);
-    // The Stop lands while the retry's authoritative read is still in flight.
-    await threadsStore.getState().shutdown("ref_a");
-    reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
-    await expect(retry).rejects.toThrow("Stop canceled this pending action");
-    // The record the reconciliation reopened must not be resent by a scan.
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushIndexedDBUntil(() => sends >= 2);
-    expect(sends).toBe(1);
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-// The per-ID set also closes the ref-level flag's leak. A Stop canceled the
-// sibling; the old flag protected the ref, but a background-note retry on a
-// different mutation deleted that flag, so the retry's reconciliation reopened
-// the sibling and a later scan resent it. A background-note retry re-affirms
-// only the mutation it names, so the sibling must stay blockedUnknown.
-test("a background-note retry does not release a sibling mutation canceled by the same Stop", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  const storage = new MutationOutboxIndexedDB();
-  try {
-    setMutationStorageForTests(storage);
-    const fake = connectFakeClient("connecting");
-    let reads = 0;
-    const reconciliationRead = deferred<ThreadReadResponse>();
-    fake.on("thread/read", () => {
-      reads += 1;
-      return reads === 2 ? reconciliationRead.promise : readResponse("ref_a", { status: { type: "idle" } });
-    });
-    fake.on("thread/shutdown", () => ({}));
-    fake.on("notes/human/set", (params) => ({
-      note: params.note ?? "",
-      receipt: {
-        clientMutationId: params.clientMutationId,
-        threadId: "thr_ref_a",
-        disposition: "applied",
-        projectionState: "notProjected",
-      },
-    }));
-    let sends = 0;
-    fake.on("turn/start", (params) => {
-      sends += 1;
-      if (sends === 1) throw new RequestTimeoutError("response lost");
-      return {
-        receipt: mutationReceipt(params.clientMutationId),
-        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-      };
-    });
-    fake.emitReady();
-    await threadsStore.getState().ensureThread("ref_a");
-    // The sibling the Stop will cancel: an uncertain send left blockedUnknown.
-    await threadsStore.getState().send("ref_a", "sibling");
-    await flushIndexedDBUntil(() => sends === 1);
-    const sibling = (await storage.listOutbox("ref_a"))[0];
-    if (!sibling) throw new Error("missing uncertain sibling");
-    await storage.markUnknown(sibling.clientMutationId, "blockedUnknown");
-    // A user retry of the sibling begins, then a Stop lands while its read is in
-    // flight. Under the old flag this is what set protection for the whole ref.
-    const retry = retryBlockedMutation(sibling.clientMutationId);
-    await flushIndexedDBUntil(() => reads >= 2);
-    await threadsStore.getState().shutdown("ref_a");
-    reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
-    await expect(retry).rejects.toThrow("Stop canceled this pending action");
-    // A background note save, itself blocked, appears afterwards on the same
-    // ref. Its own retry must not release the sibling the earlier Stop canceled.
-    const note = await storage.enqueueIntent({
-      targetRef: "ref_a",
-      method: "notes/human/set",
-      payload: { ref: "ref_a", note: "draft", expectedInstanceId: "thr_ref_a" },
-      attachments: [],
-      optimisticDisplay: null,
-    });
-    await storage.markUnknown(note.clientMutationId, "blockedUnknown");
-    await retryBlockedMutation(note.clientMutationId, "backgroundNote");
-    await vi.advanceTimersByTimeAsync(2000);
-    await flushIndexedDBUntil(() => sends >= 2);
-    expect(sends).toBe(1);
-    expect((await storage.getOutbox(sibling.clientMutationId))?.state).toBe("blockedUnknown");
-  } finally {
-    vi.useRealTimers();
-  }
-});
-
-// The per-ID release: an explicit user retry re-affirms exactly the mutation it
-// names, so its ID leaves the canceled set and reconciliation may reopen it.
-// Without the release a Stop-canceled record could never be resent, even on the
-// user's own retry.
-test("an explicit user retry after a Stop dispatches the canceled mutation", async () => {
-  const storage = new MutationOutboxIndexedDB();
-  setMutationStorageForTests(storage);
+// The resume fence's Stop generations are keyed by ref but read only by fences
+// a living pane captured. releaseThread already tears down every other per-ref
+// structure when the last holder lets go; the Stop generation goes with it, so
+// the map stays bounded by live refs instead of growing for every stopped ref
+// in the page's lifetime. A fence captured BEFORE the release must keep
+// firing afterwards: release never reads as "no Stop has landed".
+test("releasing a ref prunes its Stop generation, and a fence captured before the release still fires", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
   const fake = connectFakeClient("connecting");
   fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
   fake.on("thread/shutdown", () => ({}));
-  let sends = 0;
-  fake.on("turn/start", (params) => {
-    sends += 1;
-    if (sends === 1) throw new RequestTimeoutError("response lost");
-    return {
-      receipt: mutationReceipt(params.clientMutationId),
-      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-    };
-  });
   fake.emitReady();
   await threadsStore.getState().ensureThread("ref_a");
-  // An uncertain send left blockedUnknown by its lost response.
-  await threadsStore.getState().send("ref_a", "uncertain");
-  await flushIndexedDBUntil(() => sends === 1);
-  const uncertain = (await storage.listOutbox("ref_a"))[0];
-  if (!uncertain) throw new Error("missing uncertain send");
-  await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
-  // Stop cancels the pending record by ID.
   await threadsStore.getState().shutdown("ref_a");
-  // The user explicitly retries it: the release must let it dispatch.
-  expect(await retryBlockedMutation(uncertain.clientMutationId)).toBe(true);
-  await flushIndexedDBUntil(() => sends >= 2);
-  expect(sends).toBe(2);
-});
-
-// Cancellation is recorded at acknowledgment, but a hydration's reconciliation
-// can reopen a blockedUnknown record in the window between the Stop's
-// generation bump and that acknowledgment. Adding the ID alone is not enough
-// there - the record is already submitting - so the Stop must also restore the
-// uncertainty it carries. The shutdown RPC is held open; a plain refreshThread
-// reopens the record; the acknowledgment must put it back so no later scan
-// resends it.
-test("a Stop acknowledged after a hydration reopened a record puts it back to blockedUnknown", async () => {
-  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
-  const storage = new MutationOutboxIndexedDB();
-  try {
-    setMutationStorageForTests(storage);
-    const fake = connectFakeClient("connecting");
-    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
-    const stopAck = deferred<void>();
-    fake.on("thread/shutdown", async () => {
-      await stopAck.promise;
-      return {};
-    });
-    let sends = 0;
-    fake.on("turn/start", (params) => {
-      sends += 1;
-      if (sends === 1) throw new RequestTimeoutError("response lost");
-      return {
-        receipt: mutationReceipt(params.clientMutationId),
-        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
-      };
-    });
-    fake.emitReady();
-    await threadsStore.getState().ensureThread("ref_a");
-    await threadsStore.getState().send("ref_a", "uncertain");
-    await flushIndexedDBUntil(() => sends === 1);
-    const uncertain = (await storage.listOutbox("ref_a"))[0];
-    if (!uncertain) throw new Error("missing uncertain send");
-    await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
-    // Park the hydration's reopen so the Stop's acknowledgment lands in its wake.
-    const restore = storage.restoreProvenAbsent.bind(storage);
-    let reopened!: () => void;
-    const reopenedDone = new Promise<void>((resolve) => {
-      reopened = resolve;
-    });
-    const release = deferred<void>();
-    const spy = vi.spyOn(storage, "restoreProvenAbsent").mockImplementation(async (...args) => {
-      const result = await restore(...args);
-      if (result.length > 0) {
-        reopened();
-        await release.promise;
-      }
-      return result;
-    });
-    try {
-      // The Stop's generation bumps now, but its acknowledgment is in flight, so
-      // the canceled-ID set is not populated yet.
-      const stopping = threadsStore.getState().shutdown("ref_a");
-      // A plain hydration's reconcile reopens the stale blockedUnknown record.
-      const refreshing = threadsStore.getState().refreshThread("ref_a");
-      await reopenedDone;
-      expect((await storage.getOutbox(uncertain.clientMutationId))?.state).toBe("submitting");
-      // The acknowledgment arrives: it must put the reopened record back.
-      stopAck.resolve();
-      await stopping;
-      expect((await storage.getOutbox(uncertain.clientMutationId))?.state).toBe("blockedUnknown");
-      release.resolve();
-      await refreshing;
-      await vi.advanceTimersByTimeAsync(2000);
-      await flushIndexedDBUntil(() => sends >= 2);
-      expect(sends).toBe(1);
-      expect((await storage.getOutbox(uncertain.clientMutationId))?.state).toBe("blockedUnknown");
-    } finally {
-      spy.mockRestore();
-    }
-  } finally {
-    vi.useRealTimers();
-  }
+  // Captures the post-Stop generation; without pruning this reads the same
+  // generation after the release and never fires.
+  const staleFence = resumeStopFence("ref_a");
+  threadsStore.getState().releaseThread("ref_a");
+  // Pruned: a fresh fence starts from a zero baseline and stays quiet until
+  // the next Stop.
+  resumeStopFence("ref_a")();
+  // The fence captured before the release reads the reset as a changed
+  // generation and still cancels its pending action.
+  expect(staleFence).toThrow("Stop canceled this pending action");
 });
 
 test("persistent journal failures wait for periodic recovery between attempts", async () => {

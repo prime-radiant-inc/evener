@@ -3318,6 +3318,39 @@ test("a stopped local session offers no Send, only the explicit Resume action", 
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// Regression for the RoboRev finding on the fenced-session surface. The hub
+// stamps send:true on every notLoaded thread (pastThreadCapabilities), so a
+// stopped local session can advertise Send while a restart-blocking obligation
+// still fences it. availabilityFor refuses both routes for that snapshot, so an
+// ENABLED button here could only produce a refusal toast - the rendered Send
+// must be disabled, exactly as it is when the wire itself advertises send:false.
+test("a fenced stopped local session that advertises send renders a disabled Send", async () => {
+  const user = userEvent.setup();
+  const ref = "local:stopped-send-advertised";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      // send:true is the shape the finding is about: the hub's stamp for a cold
+      // thread, held beside the store's restart-blocking obligation.
+      capabilities: PAST_THREAD_CAPABILITIES,
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "one more thing");
+  expect(submitButton().disabled).toBe(true);
+  // The chord reaches the form by the same route the button does; it refuses too.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // --- interrupt ---------------------------------------------------------------
 
 test("clicking Stop calls turn/interrupt", async () => {

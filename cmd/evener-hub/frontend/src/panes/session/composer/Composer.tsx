@@ -863,17 +863,22 @@ export function Composer({ ref, focused }: ComposerProps) {
   // stores' live model and live pending entries, so a status frame or a
   // pending send that landed (or cleared) between the two routes the submit
   // rather than the render.
-  function availabilityFor(target: ThreadModel, pendingSend: boolean): { canSend: boolean; canQueue: boolean } {
+  //
+  // The recovery fence arrives as a parameter: the render passes the subscribed
+  // value (so the availability updates with the store instead of reading it
+  // behind the subscription's back), the submit passes a live store read like
+  // the rest of its re-derivation.
+  function availabilityFor(
+    target: ThreadModel,
+    pendingSend: boolean,
+    recoveryFenced: boolean,
+  ): { canSend: boolean; canQueue: boolean } {
     // A recovery-fenced local session has no send/queue until the user resumes
     // it. The wire already advertises send=false for this snapshot, but the
     // availability table's plain-send default for a notLoaded status would
     // otherwise route a turn/start - the implicit resume-on-Send this branch
     // removed. The explicit Resume action is the only thing that resumes it.
-    if (
-      target.ref.startsWith("local:") &&
-      target.status.type === "notLoaded" &&
-      threadsStore.getState().restartBlockingObligations.has(target.ref)
-    ) {
+    if (target.ref.startsWith("local:") && target.status.type === "notLoaded" && recoveryFenced) {
       return { canSend: false, canQueue: false };
     }
     const tableAvailability = deriveSendQueueAvailability({
@@ -900,7 +905,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       ? { canSend: true, canQueue: false }
       : tableAvailability;
   }
-  const availability = availabilityFor(model, hasPendingSend);
+  const availability = availabilityFor(model, hasPendingSend, recoveryRequired);
   const hasText = text.trim() !== "";
   const hasAttachments = attachments.items.length > 0;
   const hasContent = hasText || hasAttachments || skillNames.length > 0;
@@ -1315,6 +1320,7 @@ export function Composer({ ref, focused }: ComposerProps) {
       availability: availabilityFor(
         liveThreadModel(ref) ?? renderedModel,
         ownPendingSend(pendingTurnEntries(ref, "send")),
+        threadsStore.getState().restartBlockingObligations.has(ref),
       ),
     });
     if (route === "none") {
@@ -1685,7 +1691,14 @@ export function Composer({ ref, focused }: ComposerProps) {
                           // the authority there, the same way it is for whether
                           // this card renders at all - otherwise a session the hub
                           // will happily resume shows a permanently dead Send.
-                          disabled={actionPending || !hasContent || !(ended ? canSendWhenEnded : canCompose)}
+                          // The capability alone does not lift the recovery fence:
+                          // a fenced session whose snapshot still advertises
+                          // send:true renders a disabled Send, not a refusal toast.
+                          disabled={
+                            actionPending ||
+                            !hasContent ||
+                            !(ended ? canSendWhenEnded && !recoveryFencedLocal : canCompose)
+                          }
                         >
                           <span className={CLASS.submitLabel}>Send</span>
                         </Button>
