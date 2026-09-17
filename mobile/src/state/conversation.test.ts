@@ -24,6 +24,7 @@ import type {
 import type {
   ActivityMember,
   MobileConversation,
+  MobileQuestionRef,
   MobileTimelineItem,
 } from "../conversation/project";
 import { projectConversation } from "../conversation/project";
@@ -2493,32 +2494,6 @@ describe("ConversationStore", () => {
         (row: MobileTimelineItem) => (row.kind === "failure" ? [row.title, row.detail] : []),
       ],
       [
-        "question",
-        {
-          kind: "question",
-          id: "r",
-          questions: [
-            {
-              key: "call:0",
-              callId: "call",
-              header: "Choice",
-              question: oversized,
-              multiSelect: false,
-              options: [{ label: "A", detail: oversized }],
-              why: oversized,
-            },
-          ],
-        },
-        (row: MobileTimelineItem) =>
-          row.kind === "question"
-            ? row.questions.flatMap((q) => [
-                q.question,
-                ...(q.why === undefined ? [] : [q.why]),
-                ...q.options.map((option) => option.detail),
-              ])
-            : [],
-      ],
-      [
         "activity",
         {
           kind: "activity",
@@ -2545,6 +2520,74 @@ describe("ConversationStore", () => {
       const texts = read(published);
       expect(texts.length).toBeGreaterThan(0);
       for (const text of texts) expect(bounded(text)).toBe(true);
+    });
+
+    // A question row is the one kind with two readings of the same prose, so it
+    // has its own table below rather than a row in this one.
+
+    // A question row carries two readings of the same prose: the canonical
+    // values, which the composed answer must name exactly as the agent asked
+    // them, and a bounded display copy for the reader. Every prose field a
+    // renderer or the answer carries is in the bounded copy.
+    it.each([
+      ["header", (q: MobileQuestionRef) => q.display.header, (q: MobileQuestionRef) => q.header],
+      ["question", (q: MobileQuestionRef) => q.display.question, (q: MobileQuestionRef) => q.question],
+      ["why", (q: MobileQuestionRef) => q.display.why, (q: MobileQuestionRef) => q.why],
+      [
+        "ifUnanswered",
+        (q: MobileQuestionRef) => q.display.ifUnanswered,
+        (q: MobileQuestionRef) => q.ifUnanswered,
+      ],
+      [
+        "option label",
+        (q: MobileQuestionRef) => q.display.options[0]?.label,
+        (q: MobileQuestionRef) => q.options[0]?.label,
+      ],
+      [
+        "option detail",
+        (q: MobileQuestionRef) => q.display.options[0]?.detail,
+        (q: MobileQuestionRef) => q.options[0]?.detail,
+      ],
+    ] as const)("bounds a question's %s for display and keeps the canonical value", async (_field, read, canonical) => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "question",
+            id: "r",
+            questions: [
+              {
+                key: "call:0",
+                callId: "call",
+                header: oversized,
+                question: oversized,
+                multiSelect: false,
+                why: oversized,
+                ifUnanswered: oversized,
+                options: [{ label: oversized, detail: oversized }],
+                display: {
+                  header: oversized,
+                  question: oversized,
+                  why: oversized,
+                  ifUnanswered: oversized,
+                  options: [{ label: oversized, detail: oversized }],
+                },
+              },
+            ],
+          } as unknown as MobileTimelineItem,
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const published = store.getState().conversation?.items.find((item) => item.id === "r");
+      if (published === undefined || published.kind !== "question") throw new Error("row not published");
+      const question = published.questions[0];
+      if (question === undefined) throw new Error("no question");
+      const shown = read(question);
+      if (shown === undefined) throw new Error("display field missing");
+      expect(bounded(shown)).toBe(true);
+      // The canonical value is whole: the answer names what the agent asked.
+      expect(canonical(question)).toBe(oversized);
     });
 
     // Every text an activity row renders, top-level and per member: the label

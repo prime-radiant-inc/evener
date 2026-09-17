@@ -31,7 +31,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { buildComposerInput, humanizeState, parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
-import type { AskBatch } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -75,6 +74,7 @@ import {
 	pendingQuestions,
 	type QuestionSelections,
 } from "./questionAnswers";
+import type { MobileAskBatch } from "./questionBatches";
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
@@ -1652,7 +1652,10 @@ export function ConversationScreen({
 			);
 		else replace();
 	}
-	async function sendAnswers(batch: AskBatch, selections: QuestionSelections) {
+	async function sendAnswers(
+		batch: MobileAskBatch,
+		selections: QuestionSelections,
+	) {
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);
