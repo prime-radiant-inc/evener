@@ -80,3 +80,9 @@ test("isOwnMutationRecord refuses a record naming another client", () => {
   const identity = createClientIdentity(fakeStorage(), getRandomValuesSource());
   expect(identity.isOwnMutationRecord({ originClientId: "someone-else" })).toBe(false);
 });
+
+test("undefined storage gives a stable per-process identity", () => {
+  const identity = createClientIdentity(undefined, getRandomValuesSource());
+  expect(() => identity.ownClientId()).not.toThrow();
+  expect(identity.ownClientId()).toBe(identity.ownClientId());
+});
