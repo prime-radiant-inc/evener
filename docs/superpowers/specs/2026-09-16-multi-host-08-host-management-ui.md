@@ -251,8 +251,21 @@ losing the pinned repair target and leaving partially-torn-down resources
 behind): the step-(2) write persists a `teardownStarted` flag with the marker
 (false at stage time), and the commit flips it to true in its own atomic
 sidecar write after the swap and before the first teardown executes — under
-the mutation lock, before the M8 lock release across teardowns — so the
-first teardown runs only after that flip is durable. Boot finalizes each host entry by the
+the mutation lock, before the mutation lock is released across post-commit
+teardowns — so the
+first teardown runs only after that flip is durable. The staged sidecar write
+additionally persists a runtime phase with the marker (`staged` at stage
+time, flipped to `runtime-swapped` in the same atomic write that flips
+`teardownStarted` after a successful swap — extending the round-twenty-three
+marker, which persisted the teardown flag only after the swap, so a crash
+after the swap/rebind but before the flag write left the marker false and
+boot finalized without a remnant though the runtime transition had partially
+applied: what changes is the explicit phase persisted on both sides of the
+transition): a marker found in phase `runtime-swapped` (or in an unknown
+phase that follows the swap) recovers with the pinned teardown target even
+when `teardownStarted` reads false — the swap may have applied — while a
+phase-`staged` marker with `teardownStarted: false` is the only
+finalize-without-remnant case. Boot finalizes each host entry by the
 flag (a leftover `finalizingMutation` claim counts as teardown-started: the
 claim write sets the flag true, since a live claimant is about to run the
 torn-down under the claim): a
@@ -282,8 +295,18 @@ a commit-then-replay names the generation the commit actually landed and hits
  incarnation id (extending the round-twenty generation-only scope — r20 let
  a boot-merge collision that shares a generation with an open remnant also
  share dedup and receipts across incarnations). A replay matches only a
- receipt of the same name, kind, current generation, AND current incarnation
- id. A mutationId colliding with a current-generation
+  retained receipt of the same name, kind, and mutationId (one rule, three
+  arms — extending the round-twenty-three superseded clauses, which let the
+  "matches only current" sentence read as if a superseded receipt could never
+  hit: the first arm is the direct hit — same name, kind, mutationId, current
+  generation, AND current incarnation id — returning the recorded receipt;
+  the second arm is the superseded hit — the same key pinned to a superseded
+  generation or a different incarnation sharing the generation — returning the
+  recorded outcome for recovery only, never authorizing work; the third arm is
+  the pruned refusal — the same key whose receipt is gone with the count/TTL
+  prune (never the purge — the purge is clean-slate commits-fresh, see
+  below) — refusing as `stale-entry`, never fresh-applying). A mutationId colliding
+  with a current-generation
 receipt of a different name or kind is refused with the typed
 `conflicting-mutation-id` error — never a hit, never a re-apply under the
 colliding key (the operation store's conflicting-operation-ID rule, applied
@@ -300,15 +323,21 @@ pinned same-key receipt is always a hit for outcome recovery, never a fresh
  receipt pinned to the open remnant's incarnation returns its outcome
  against a live entry sharing the generation but carrying a different
  incarnation id, never a hit authorizing work against the live entry). A
- same-key replay whose superseded receipt has been pruned (past the count/TTL
- prune, or gone with its tombstone) is refused with the typed `stale-entry`
- (pruned-generation) refusal instead of fresh-applying — one rule, two arms,
- never fresh-apply: retained receipt present ⇒ return it, pruned ⇒
- stale-entry refusal (extending the round-twenty-one superseded-replay clauses
- and the round-twenty receipt work — r21 let the commits-fresh clause, the
- return-recorded-receipt clause, and the pruned-generation refusal overlap
- with no single winner; commits-fresh is scoped to different-key new mutations
- only and the superseded commits-fresh clause is deleted).
+ same-key replay whose superseded receipt was pruned by the count/TTL
+ compaction bound is refused with the typed `stale-entry`
+ (pruned-generation) refusal instead of fresh-applying — retained receipt
+ present ⇒ return it, count/TTL-pruned ⇒ stale-entry refusal (extending the
+ round-twenty-one superseded-replay clauses and the round-twenty receipt work
+ — r21 let the commits-fresh clause, the return-recorded-receipt clause, and
+ the pruned-generation refusal overlap with no single winner; commits-fresh
+ is scoped to different-key new mutations only and the superseded
+ commits-fresh clause is deleted). Purging the tombstone is the clean-slate
+ path (see retention below): the purge drops that name's receipts with the
+ tombstone, and a same-key replay after the purge commits fresh — there is no
+ retained tombstone left to distinguish it from a fresh key, so no stale-entry
+ arm survives the purge (extending the round-twenty-three prune rule, which
+ kept a post-purge pruned-refusal arm with no retained state to enforce it —
+ one rule survives: count/TTL-prune refuses stale, purge commits fresh).
  A mutation sent without a
 key whose response is lost reconciles read-after-unknown through `list`
 before any retry — `add` compares the listed entry hash for the name,
@@ -388,7 +417,22 @@ validation; only a non-replay proceeds into those checks.
  tombstones happens on the mutation path — every sidecar mutation prunes
  expired entries in its atomic write under the mutation lock — never on the
  read path, so the read-only contract holds and `list` cannot contend with
- `add`/`update`/`remove`.**
+ `add`/`update`/`remove`. The `hub.toml` fingerprint reconciliation below is
+ the one exception, and it is a separate pre-handler step, not part of the
+ read: before serving any admitted call — `list`/`status` included — the hub
+ compares the on-disk `hub.toml` fingerprint against the in-memory
+ fingerprint lock-free; on a match the read proceeds lock-free on the current
+ snapshot as specified here, while on a mismatch the pre-handler step takes
+ the mutation lock, runs the adopt-then-bump-then-clear sequence, publishes a
+ new snapshot, and only then hands the read the fresh snapshot to serve
+ lock-free (extending the round-twenty-three reconciliation, which took the
+ lock on mismatch inside the read path with no stated ordering — a slow
+ externally-edited file could therefore stall `list`/`status` under the lock
+ with no reconcile-then-read boundary: what changes is the explicit
+ pre-handler ordering, fingerprint-match fast path, and the gate rule that a
+ read arriving while a reconcile holds the lock waits on the gate with the
+ same busy semantics as a mutation-path wait, never serving a stale
+ snapshot).**
  **Read isolation:** "no mutation lock" does not mean "no synchronization"
  (extending the round-eleven lock-free `list`). Writers publish two
  immutable snapshots through atomic pointers: under the mutation lock every
@@ -818,13 +862,23 @@ cannot produce those fields), keyed by the host's registry (generation,
   readability check only: a concurrent `plan` can mint a newer token and
   supersede the presented one before the gate is acquired, so nothing is
   decided here. (3) Acquire the host's
-  per-host gate — **fail fast with the typed busy error if held** — and
-  under it **re-resolve the target, re-read the host entry, and re-hash the
+  per-host gate — but first probe gateless, then revalidate under the gate:
+  **fail fast with the typed busy error if the gate is held at acquisition
+  time** — **probe the running
+  build/health over the attached channel with no gate held (same explicit
+  probe timeout as `plan`'s probe), then acquire the gate and under it
+  re-resolve the target, re-read the host entry, and re-hash the
   `hub.toml` fingerprint at execution time and reject if any differs from
-  the token's bindings — and re-probe the running build/health over the
-  attached channel under the same explicit probe timeout as `plan`'s probe —
-  a probe failure or timeout releases the gate and refuses with the typed
-  `probe-failed` refusal — the unavailable-class envelope discriminator
+  the token's bindings — and re-validate the pre-acquisition probe result
+  (probe first, gate second —
+  extending the round-twenty-three deploy step, which probed while holding the
+  gate and reintroduced the same held-gate-across-network stall `plan` was
+  fixed to avoid: what changes is the probe-before-acquisition ordering, so a
+  slow probe never holds the gate busy against `update`/`remove`/`plan`/
+  concurrent `deploy`; a change between probe and acquisition fails the
+  post-acquisition revalidation with the same refusals) — a probe failure or
+  timeout refuses with the typed `probe-failed` refusal — the
+  unavailable-class envelope discriminator
   `probe-failed` (data names the host and whether the probe read failed, timed
   out, or was unauthenticated; see the typed-error catalog below; distinct
   from `plan`'s no-token `reason: "probe-failed"` value, which is a union arm,
@@ -1078,12 +1132,37 @@ returns distinguishable records and the current incarnation is selected by
   — an empty boundary, or members failing the nonce check, are already clean
   — never an error, never a kill of unrelated work. On Darwin the reap runs
   process-table enumeration of the persisted (pgid, session id) pair through
-  the same `agent/envctx` Darwin probe seam as `probes_darwin.go`, and fails
-  closed when that enumeration is unavailable — reap nothing, keep the
-  `pending-spawn` intent open, and mark the affected records with an
-  `orphan-unverified` note instead of transitioning them to servable
-  `interrupted` — so an unverifiable Darwin orphan is never silently adopted
-  as clean. A crash between the
+  the same `agent/envctx` Darwin probe seam as `probes_darwin.go`, and every
+  enumerated member is verified against a launcher-observed marker before
+  signaling: the worker's `setsid`-detached launcher persists the spawned
+  child's observed pid plus its process start time beside the nonce, and boot
+  signals only members whose (pid, start time) still matches the persisted
+  pair — a pid whose start time differs is a reused id naming a different
+  process, so the boundary reads as already clean and nothing is signaled
+  (extending the round-twenty-three Darwin boundary — r23 matched the (pgid,
+  session id) pair plus a nonce, but the nonce has no process-table
+  association, so a pair match after id reuse could not prove ownership and
+  "never kill unrelated work" was unimplementable: what changes is the
+  pid-plus-start-time comparison, which names the exact process instance —
+  the nonce stays as defense-in-depth on the Linux cgroup path, where
+  membership itself is kernel-enforced). When that enumeration is unavailable
+  boot fails closed — reap nothing, keep the `pending-spawn` intent open,
+  and mark the affected records with the durable `orphan-unverified` state
+  instead of transitioning them to servable `interrupted` — so an
+  unverifiable Darwin orphan is never silently adopted as clean.
+  `orphan-unverified` is a durable per-record state (a persisted flag on the
+  `pending-spawn` record, never a log-only note — the one exception to the
+  boot rule above that every other `pending`/`running` record becomes
+  `interrupted`): every subsequent boot retries the enumeration and resolves
+  the record once it succeeds (boundary empty or start-time mismatch → drop
+  the intent and transition to `interrupted`; verified members reaped →
+  `interrupted`), and the operator recovers manually without it — the
+  record's persisted boundary identity (pgid, session id, pid, start time)
+  is visible through the `operations` detail filter, so the operator kills
+  the listed members (or confirms them gone) and restarts the hub, and the
+  post-recovery enumeration resolves the record the same way — a newer
+  operation ID meanwhile starts fresh under a new epoch, never blocked by
+  the unverified record. A crash between the
   pre-spawn persist and the spawn leaves a persisted-but-empty boundary: boot
   enumerates it, finds no members, and drops the intent — never an orphan,
   never a reap of unrelated work; (2)
@@ -1110,10 +1189,22 @@ returns distinguishable records and the current incarnation is selected by
   survive the guard advance and mutate afterward): the wrapper atomically
   registers each command in the per-host remote lease file BEFORE its side
   effects start, performs the command's steps only through the wrapper, and
-  re-checks the presented epoch against the guard atomically with each
-  irreversible action — register, fence, and perform are one guarded unit
-  per mutation, and a step whose presented epoch no longer equals the guard
-  refuses server-side and aborts the operation. The wrapper's first commands
+  holds an exclusive per-host remote lease across the guard re-check and the
+  irreversible action it guards — the re-check and the side effect are one
+  atomic helper-mediated operation, never check-then-act as separable steps
+  (extending the round-twenty-three recheck — r23 re-checked immediately
+  before the action but held no lease across the two, so an old command could
+  pass the check, lose the guard to a new operation's advance, then still
+  perform its side effect): the guard advance takes the same exclusive lease,
+  so a re-check-plus-act and a concurrent advance are mutually exclusive —
+  whichever holds the lease first wins and the loser observes the winner
+  (advance-first makes the check refuse server-side and abort the operation;
+  check-first lands the side effect before the advance) — register, fence,
+  and perform are one guarded unit per mutation, and a step whose presented
+  epoch no longer equals the guard refuses server-side and aborts the
+  operation. The 08b fencing tests pin the interleaving (an old epoch's
+  check racing a new epoch's guard advance never lands a side effect past
+  the advance). The wrapper's first commands
   under the new epoch kill and wait for exit of the superseded epoch's
   already-running commands (remote kill of the prior epoch's lease-tracked
   entries with exit confirmation — each lease entry carries an ownership
@@ -1162,8 +1253,16 @@ returns distinguishable records and the current incarnation is selected by
  mutation, never an unfenced push and never an auto-install (the operator
  installs the helper out-of-band through the one-time migration path below,
  mirroring `handler-absent`); older helper → reinstall only after the
- kill/wait + guard advance, as a guarded mutating step under the new epoch
- through the wrapper itself, never before the advance. Migration: remotes first contacted by this
+kill/wait + guard advance, as a guarded step under the new epoch delivered by
+direct SSH — never through the old wrapper itself (extending the
+round-twenty-three reinstall, which routed the reinstall through the old
+wrapper after the guard advance while trusting that wrapper to enforce
+register/fence/perform with no version-compatibility rule: what changes is
+the delivery path — the old wrapper is untrusted for self-replacement, so the
+new epoch's worker writes the new helper bytes directly, verifies the new
+version string with the read-only pre-fence check, and only then routes
+further mutating steps through the wrapper), never before the advance.
+Migration: remotes first contacted by this
  component predate the helper, so deploy/restart on them refuses fail-closed
  until the operator installs the helper out-of-band (the next operation's
  pre-fence verification runs a helper self-test
@@ -1172,12 +1271,23 @@ returns distinguishable records and the current incarnation is selected by
  deploy/restart — reads and `plan` still serve — until the operator
  upgrades it out-of-band. Routing: EVERY mutating SSH command the
  controller issues to the host — deploy pushes, remote deploy/restart
- commands, `Manager.preflight` one-shots, and the 04b `Ensure`-triggered
+commands, and the 04b `Ensure`-triggered
  paths — runs through the wrapper under the worker's epoch (the 04b paths
  under the Ensure operation's own persisted epoch above, never a borrowed or
  unrecorded epoch); no direct-SSH
  mutating path survives alongside it (a command that cannot present an
- epoch is refused by the guard file rule above). A host without the
+epoch is refused by the guard file rule above — the two exceptions are the
+read-only pre-fence verification above and the direct-SSH helper reinstall
+just specified, both taken under the new epoch after the guard advance).
+`Manager.preflight` one-shots (`uname`/env-probe/`id -u`/`launch-check` over
+`runRemote` in `cmd/evener-hub/internal/sshconn/preflight.go` — strictly
+read-only, no remote state written) are exempt from the wrapper and from
+mutation fencing entirely: the gateless `plan` refresh runs them with no
+worker epoch and no operation lifecycle (extending the round-four preflight
+mechanism and the round-twenty-three fencing, which classified every
+preflight one-shot as a mutating SSH command requiring a worker epoch — that
+classification left `plan`'s gateless preflight with no valid execution
+model). A host without the
  installed helper therefore cannot accept a remote mutation at all — the
  no-overlap guarantee holds vacuously, never as an unfenced exception.**
   **The same boot pass, after the sidecar is
@@ -1475,14 +1585,15 @@ the TTL read as `teardown-unknown-key` not-found instead of
   `remove` retry past the prune destroyed the re-added
   incarnation): the newest same-key superseded receipt per name is retained
   until that name's tombstone expires (never pruned by the count/TTL bound
-  above while the tombstone lives), and once even that receipt is gone with
-  the tombstone, a same-key replay naming its pruned generation refuses as
-  stale — a same-key `remove` retry after the prune therefore never
-  fresh-applies against the re-added incarnation; the UI's
-  `expectedGeneration` guard is the first line, this refusal the backstop.
-  Past the TTL/count prune of a non-newest superseded receipt, a keyed replay
-  naming the pruned generation likewise refuses as stale rather than
-  committing fresh.**
+  above while the tombstone lives); a same-key `remove` retry naming a
+  count/TTL-pruned generation therefore never fresh-applies against the
+  re-added incarnation — the UI's `expectedGeneration` guard is the first
+  line, this refusal the backstop — and a keyed replay naming any pruned
+  generation likewise refuses as stale rather than committing fresh. The
+  tombstone purge is clean-slate: once the tombstone (and that name's
+  receipts with it) is gone, a same-key replay commits fresh by the
+  commits-fresh clause in mutation idempotency, above — see the single
+  superseded-receipt rule there.**
  **Remnant gate (extending the round-eight commit
  point): any non-replay mutation (a same-key replay matching a
  current-generation receipt returns before this gate — see the fixed ordering
@@ -1861,7 +1972,7 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
   `midEnsure: bool`, `origin: "hub.toml" | "sidecar"`, `removed: bool`,
   `retainedRows?: number` (tombstone rows only), `rowsTruncated?: bool`
   (present as `true` exactly on tombstone rows whose retained projection was
-  truncated at the M3 persist bound above; absent everywhere else per the
+  truncated at the 500-row/1 MiB persist bound above; absent everywhere else per the
   absent-when-unknown rule — the 08a tombstone tests pin both the bound and
   the indicator), `generation: number`,
   `escalationAgeSec?: number` (present only on tombstone rows whose name
@@ -1987,6 +2098,9 @@ pins the `outcome` discriminator on both arms. `HostPlan` is `{host, generation,
   a daemon pid on an incompatible protocol, or any condition that would make
   the hub report `ThreadStatusRestartRequired`, forces `healthy: false`);
   (3) the hub's durable state roots are writable (state-root write probe —
+  read-only filesystem metadata check (`access(W_OK)`-class writability
+  probe plus a free-space query against the state root — no file is created,
+  written, or mutated on the read path) —
   a read-only or full disk forces `healthy: false`, since the hub could
   neither persist an operation record nor a sidecar commit). Anything else —
   session counts, load, peer reachability, external dependency status —
@@ -2066,7 +2180,7 @@ for the controller-assigned record id — the busy payload's open/wait-able
 reference resolves through it directly — (all optional
 filters plus pagination; empty params lists the first page of the current
 generation); response
-  `{operations: OperationRecord[], generation: number, incarnationId: string, nextCursor?: string}` — `limit` defaults
+  `{operations: OperationRecord[], generation: number, incarnationId: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number}}, nextCursor?: string}` — `hostBoundaries` is present exactly on unfiltered cross-host pages (absent on host-pinned pages per the absent-when-unknown rule — the per-host boundary map M3's cursor encodes) — `limit` defaults
   to 50 and caps at 200; responses never exceed the cap, and an unfiltered
   call pages instead of returning the whole store. `OperationRecord` is `{id,
 clientOperationId, host, generation: number, incarnationId: string, kind: "deploy" | "restart", state:
@@ -2109,7 +2223,22 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   validates the cursor's `(generation, incarnationId)` pair against the request's
   `generation`/`incarnationId`
   filter (a mismatch is a typed `stale-entry` re-list refusal, never a mixed
-  page) and its `compactSeq` against the store's current sequence — a
+  page — callers echo the pinned pair from the first-page response with
+  `cursor` on every subsequent page, and an omitted filter on a later page
+  reads as the pinned-cursor window, never as a fresh unpinned query: omitted
+  means "continue the cursor's pin", so a generation advance between pages
+  keeps later pages on the pinned incarnation instead of silently re-pinning
+  to the new generation; a generation-pinned page requires `name` — an unfiltered cross-host
+  first page returns a per-host snapshot: the response's `generation`/
+  `incarnationId` pair pins the single host named by the request, while an
+  unfiltered response carries a per-host boundary map (one
+  `(generation, incarnationId, compactSeq)` triple per host present on the
+  page) and the cursor encodes that map alongside `(createdAt, id)`
+  (extending the round-twenty-three cursor, which carried a single pair even
+  for unfiltered cross-host queries, so later pages could not pin or validate
+  mixed-host results — a cursor minted for one pair validated against an
+  unfiltered query is a typed `stale-entry` re-list refusal) — and its
+  `compactSeq` against the store's current sequence — a
   compaction that removed rows at or before the cursor's position since the
   cursor was minted surfaces a typed cursor-invalidated refusal naming the
   compaction (the client restarts from the first page), so an advancing
@@ -2228,7 +2357,11 @@ removal timestamp — with a hard bound: at most 500 retained rows per
 tombstone and at most 1 MiB of serialized row bytes per tombstone
 (owner-adjustable knobs in the same family as the cleared-marker TTL; the
 defaults ship in the implementing PR) — removal persists a bounded projection
-(newest-first by the snapshot's row order, truncated past the bound) plus an
+(newest-first by each row's last-updated timestamp — never the snapshot's row
+order, which is tree order, not chronological, so truncating by it would keep
+stale rows and drop fresh ones while `retainedRows`/`rowsTruncated`
+misreported completeness (extending the round-twenty-three persist bound,
+which truncated by snapshot order) — truncated past the bound) plus an
 explicit `rowsTruncated: bool` on the tombstone, surfaced in the `list`
 tombstone row's `retainedRows` count and the tree merge below (truncated
 projections render their stale rows with the truncation indicator, never as a
@@ -2377,7 +2510,10 @@ while the hub ran left it active in the registry, manifest, and admin
 fan-outs indefinitely): every `evener/host/*` admission — mutations and
 `plan`/`deploy` alike, plus `list`/`status` at most once per admission — and
 every boot compares the on-disk `hub.toml` fingerprint against the
-in-memory fingerprint before serving the call: on mismatch the hub takes the
+in-memory fingerprint in a pre-handler step before serving the call (the
+`list`/`status` lock-free read itself stays lock-free — see `list`): on a
+fingerprint match the call proceeds on the current snapshot with no lock; on
+mismatch the pre-handler step takes the
 mutation lock and runs the same adopt-then-bump-then-clear sequence as the
 sibling reconciling commit (re-read the file, adopt added/changed declared
 entries into the running registry, drop declared hosts deleted from the file
@@ -2386,9 +2522,27 @@ declared host reads as not-found on all `evener/host/*` methods until
 re-declared, and its name-keyed caches clear — then bump affected
 generations and clear or rebind every name-keyed cache above), so no
 external edit — including a declared-host removal — survives past the next
-admission on any method, and all live consumers (registry, manager
+admission on any method: the step publishes a new snapshot under the lock and
+the admitted call then serves from it, and all live consumers (registry,
+manager
 bindings, sources, manifest, host-admin controller fan-outs, web-config
-view) update atomically under that lock before the admitted call proceeds.**
+view) update atomically under that lock before the admitted call proceeds
+(a read arriving while the reconcile holds the lock waits on the gate with
+the same busy semantics as a mutation-path wait, never serving a stale
+snapshot).**
+Navigation, source, and host-admin consumers outside `evener/host/*` do not
+run the admission step themselves — they reach those methods' snapshots only
+through the hub's common ingress or the live registry callback (see the
+staged sidecar's live-registry rewiring in `add`): every read of the live
+host set — registry, manager bindings, sources, manifest, host-admin
+controller fan-outs, web-config view — goes through that callback, which runs
+the same fingerprint-compare-then-reconcile pre-handler step before serving,
+so a deleted or changed declared host is invisible to every live consumer by
+its next read, not only after the next host-management request (extending the
+round-twenty-three reconciliation, which reconciled only on admitted
+`evener/host/*` methods while claiming all live consumers update on the next
+admission — navigation/source/host-admin consumers kept using deleted hosts
+until a host-management request arrived).
 The UI cannot remove or re-add these hosts; only the entry-change rule moves
 their generation. Token bindings
 reference these generations (see `plan`): validation requires the token's
@@ -2463,7 +2617,8 @@ name-keyed cache entry can never republish rows for the new host.
   tree + capabilities while the manifest's `sources` array drops the host;
   **tombstones survive a controller restart; the persist bound holds (a
   removal over 500 rows / 1 MiB persists the newest-first projection with
-  `rowsTruncated: true` on the tombstone and the `list` row, and the merge
+  `rowsTruncated: true` on the tombstone and the `list` row (newest-first by
+  row last-updated timestamp, never snapshot order), and the merge
   renders the indicator — never the full set silently);
   re-add purges, clears the name-keyed caches, and mints a new generation —
  publication from an obsolete generation is rejected**; **a refresh after
@@ -2543,8 +2698,11 @@ outcome is never returned as-is), and the next
  markers; foreign-host entries ride along untouched in the same atomic
  writes).**
  **Lock-free `list` tests: `list` takes no mutation lock and prunes nothing
- durably; expiry filtering is in-memory only and the durable prune lands on
- the next mutation-path write. Remnant-gate tests: re-add and retention expiry
+durably; expiry filtering is in-memory only and the durable prune lands on
+the next mutation-path write — the one lock-taking path is the
+`hub.toml`-fingerprint pre-handler step on mismatch (reconcile-then-read
+ordering with gate/busy semantics; fingerprint match serves lock-free).
+Remnant-gate tests: re-add and retention expiry
  skip names with open remnants. Config-path tests: a `--config` startup
  carries the canonical path into the web config and the sidecar + fingerprint
  derive from it. Collision tests: a tombstone/live collision restores the
@@ -2678,9 +2836,13 @@ origin rejection is asserted in 08a with its commit-point tests),
   re-list) and post-cursor compaction (`cursor-invalidated`) both surfaced as
   refusals, never silent page shifts)**,
   **Darwin orphan ownership (Linux reaps through the cgroup boundary; Darwin
-  reaps through the (pgid, session id) boundary plus nonce — never the group
-  id alone — and fails closed with `orphan-unverified` when enumeration is
-  unavailable)**), and the not-in-forwarded-allow-list assertion.
+  reaps through the (pgid, session id) boundary plus the launcher-observed
+  (pid, start time) marker — never the group id alone — with a pid whose
+  start time differs reading as already clean (never signaled), and fails
+  closed with durable `orphan-unverified` (resolved by retry at a later boot
+  or by operator recovery through the `operations` detail filter) when
+  enumeration is unavailable)**), and the not-in-forwarded-allow-list
+  assertion.
 - 08c: `make test-web`, browser gate (`env -u DBUS_SESSION_BUS_ADDRESS make
   test-web-browser`), `make lint-generated`; per-flow tests in the section's
   test files; the never-dial invariant of `list`/`status`/`operations`
