@@ -6211,7 +6211,5 @@ test("an empty input images list never erases the images an older page carries",
     nextCursor: "cursor_0",
   });
   const images = itemAt(turnAt(merged, 0), 0).images;
-  if (!images || images.length !== 1) {
-    throw new Error(`images=${JSON.stringify(images)}, want the older page's own input image kept`);
-  }
+  expect(images).toHaveLength(1);
 });
