@@ -54,7 +54,7 @@ sixteen shared terms below are identical in all three documents.
 
 **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
 
-**Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it.
+**Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 
 **Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 
@@ -96,9 +96,13 @@ renders, a staged-but-unpersisted change) is never an intent.
   cleanup (§6).
 - Pruned marker (`prunedReceipts`): the scoped key plus `{prunedAt}` a
   count/TTL compaction persists when it drops a superseded receipt (§6).
-- Cleared-remnant marker (`remnantId → clearedAt` in `teardownRemnants`): the
-  proof a remnant already cleared, so a lost-response retry returns
-  `already-cleared` (§6).
+- Cleared-remnant marker (a typed resolved-remnant record in `teardownRemnants`,
+  keyed by `remnantId`): the proof a remnant already cleared, so a lost-response
+  retry returns `already-cleared` or `recovered-cleared` (§6). Each record carries
+  the replay payload — `clearedAt`, the resolution kind (`retry` | `recover`), the
+  host kind (`live` | `removed`), the pinned host/name payload, and the recovery
+  attestation when the kind is `recover` — or the receipt reference holding them,
+  plus all replay metadata until expiry.
 
 **High-water mark.** The greatest generation a name ever carried, surviving
 removals, persisted in the sidecar alongside the tombstone (§15). Re-add
@@ -133,7 +137,7 @@ This table is the only place the three-document split is defined.
 | Non-union registry helpers | register immediately | — | — |
 | Hosts settings section, dialogs, stores, polling, deploy confirmation | — (lands with the pipeline PR's regenerated client) | ships (section + dialogs + stores + polling + UI acceptance) | consumes (resolve affordance) |
 | Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests ship in the pipeline PR where those handlers register) | — | — |
-| Pipeline tests (§16 of the pipeline spec) | — | ships | — |
+| Pipeline tests (§12 of the pipeline spec) | — | ships | — |
 | Fencing tests (§10 of the fencing spec) | — | — | ships |
 
 The pipeline stacks on the registry; fencing stacks on the pipeline.
@@ -220,7 +224,7 @@ registers) — thirteen new methods plus `attach` is fourteen.) The one directio
 `evener/host/running` peer probe: a controller-originated request issued only
 through `sshManager.ChannelIfAttached(name)` over a live channel peered by the
 #1603 handshake, admitted on the remote only over that same attached session
-(§4). The exception never admits a browser- or forwarded-origin request, the
+(deploy-pipeline spec §10). The exception never admits a browser- or forwarded-origin request, the
 probe is never forwarded onward to a third hub, and a missing or unverified
 handshake stays an unauthenticated-probe refusal — so the A→B→A chaining the
 #1603 guard closes stays closed.
@@ -443,9 +447,11 @@ mutation receipt in two writes — the single explicit receipt write point. The
 step-(2) sidecar write carries a transient staged-receipt marker: the scoped
 key plus `stagedAt`, a `swapStarted` intent (false at stage time, flipped true
 in its own atomic sidecar write under the mutation lock before the runtime
-transition begins; a finalizing claim carries it as true), a `teardownStarted`
+transition begins; a finalizing claim preserves the marker's persisted value,
+never forcing it true), a `teardownStarted`
 flag (false at stage time, flipped true in its own atomic write after the swap
-and before the first teardown; a finalizing claim carries the flag as true),
+and before the first teardown; a finalizing claim preserves the persisted flag
+the same way),
 the collision-reconcile armed intent (the validation-read `hub.toml`
 fingerprint the commit staged against; the post-commit write replaces the
 marker with the finalized receipt, clearing the armed intent with it, and the
@@ -483,13 +489,16 @@ on the same values):
   (`committed`, or `committed-with-teardown-failure` with the pre-minted
   `remnantId` when the re-run actually failed — never the staged provisional
   outcome on its own).
-- Phase `staged` with `swapStarted: false`: finalize as `committed` with no
-  remnant, without running any teardown (no runtime swap occurred, so there is
-  no swapped-out lifecycle to tear down — running the pinned teardown here
-  would destroy the still-live old runtime), but only after re-applying the
-  staged runtime set to the live handles first (the sidecar already holds the
-  new config, so a finalize that skips the swap strands the live process
-  against the new durable state).
+- Phase `staged` with `swapStarted: false`: re-apply the staged runtime set
+  to the live handles first (the sidecar already holds the new config, so the
+  live runtime must converge to it), then re-run the marker's pinned teardown
+  to completion, then finalize the receipt from that observed result
+  (`committed`, or `committed-with-teardown-failure` with the pre-minted
+  `remnantId` when the re-run actually failed — never the staged provisional
+  outcome on its own). No phase finalizes `committed` while old lifecycle
+  handles remain: for a `remove` or binding-changing `update` the pinned
+  teardown destroys the superseded supervisor/channel/fan-out, and where the
+  pinned target is empty the re-run is a no-op.
 - Phase `staged` with `swapStarted: true` (ambiguous — the crash landed
   between the intent flip and the non-atomic runtime transition, so the swap
   may or may not have applied): re-apply the staged runtime set first, then
@@ -509,9 +518,10 @@ marker with a finalizing claim carrying the same scoped key plus a
 server-generated opaque attempt token. Any other path finding a finalizing
 claim waits for or recovers the claim instead of re-finalizing; a live
 claimant re-runs to completion before responding busy, finalizing by the
-marker's persisted phase exactly like a live replay above (staged/unswapped
-markers finalize without a teardown; swapped or ambiguous markers re-run the
-pinned teardown). A dead claimant's claim (crashed or vanished holder) is
+marker's persisted phase exactly like a live replay above (every phase
+re-applies the staged runtime set first, then re-runs the pinned teardown to
+completion and finalizes from the observed result — no marker finalizes
+`committed` while old lifecycle handles remain). A dead claimant's claim (crashed or vanished holder) is
 adopted by running the same phase-aware recovery under the same
 generation/incarnation guards and finalizing under the claimant's attempt
 token. The finder try-acquires the remnant's host gate after claiming and
@@ -539,17 +549,19 @@ the marker (`staged` at stage time, flipped to `runtime-swapped` in the same
 atomic write that flips `teardownStarted` after a successful swap). A marker
 found in phase `runtime-swapped` (or in an unknown phase that follows the
 swap) recovers with the pinned teardown target even when `teardownStarted`
-reads false — the swap may have applied — while only a phase-`staged` marker
-with `teardownStarted: false` AND `swapStarted: false` finalizes without a
-remnant; every other post-intent state keeps the pinned remnant. Boot
-finalizes each host entry by the flag (a leftover finalizing claim counts as
-teardown-started: the claim write sets the flag true, since a live claimant is
-about to run the teardown under the claim): a marker with `teardownStarted:
-false` AND `swapStarted: false` finalizes as `committed` with no remnant —
-after re-applying the staged runtime set to the live handles first (no swap
-ran, so there is no swapped-out lifecycle to tear down — but the sidecar
+reads false — the swap may have applied — and a phase-`staged` marker with
+`teardownStarted: false` AND `swapStarted: false` re-applies the staged
+runtime set first and then re-runs the pinned teardown like every other phase,
+finalizing from the observed result; no phase finalizes `committed` while old
+lifecycle handles remain. Boot
+finalizes each host entry by the persisted phase and flags (a leftover finalizing
+claim preserves both: the claim write carries the marker's `teardownStarted`
+value and runtime phase over unchanged, and boot recovery decides by them —
+never by treating every claim as teardown-started): a marker with `teardownStarted:
+false` AND `swapStarted: false` re-applies the staged runtime set to the live handles first (the sidecar
 already holds the new config, so the live runtime must converge to it before
-the receipt finalizes) — and the receipt records `bootRecovered: true` (the
+the receipt finalizes), then re-runs the pinned teardown to completion and
+finalizes from the observed result — and the receipt records `bootRecovered: true` (the
 optional receipt field in §6); a marker with `teardownStarted: true` recovers
 as a durable teardown remnant — the pinned target plus the pre-minted
 `remnantId` become the remnant record, the receipt records
@@ -557,9 +569,8 @@ as a durable teardown remnant — the pinned target plus the pre-minted
 true`, and the operator resumes through `evener/host/teardown-retry` — so a
 lost-response retry after the crash returns the recovered receipt or the retry
 handle instead of re-applying, and a crash after teardown began never loses its
-repair target. Only staged-plus-unswapped-plus-unbegun finalizes without a
-remnant; every other post-intent state keeps its repair target so post-teardown
-crashes never lose the handle. Compensation's stash-restore removes the marker
+repair target. Every phase re-runs the pinned teardown to completion before
+finalizing, so post-teardown crashes never lose the handle. Compensation's stash-restore removes the marker
 with the prior bytes — pre-commit only: once the first teardown executes, the
 commit-point rule (§6) applies and the in-progress remnant is the forward-repair
 handle, never a stash restore.
@@ -616,16 +627,21 @@ and is a validation refusal, never a guarded update). Read-after-unknown
 compares only the effective `HostConfig` fields plus `generation`/`origin` —
 never volatile live state (`attached`, `midEnsure`, `lastAttachError`) or age
 counters (`installedVersionAgeSec`, `lastAttachErrorAgeSec`,
-`escalationAgeSec`): once the intended effective row (for a lost-response
-keyless `add`: the listed entry hash equals the intended entry; for `remove`:
-a missing name or a `removed: true` row — a keyed `remove` retry returns its
-receipt first) is observed, the retry treats the mutation as committed and
-does not retry at all — any intervening change to an effective field breaks
+`escalationAgeSec`): a keyed retry that observes its intended effective row
+(for a lost-response keyless `add`: the listed entry hash equals the intended
+entry; for `remove`: a missing name or a `removed: true` row — a keyed
+`remove` retry returns its receipt first) returns the recorded receipt, never a
+fresh apply. A keyless `add` retry that observes a matching listed row returns
+the explicit ambiguous outcome — the row may be the caller's committed
+mutation, a pre-existing identical row, or another client's remove/re-add, and
+the keyless retry cannot distinguish them — instead of claiming the mutation
+committed. Any intervening change to an effective field breaks
 the equality and forces the `stale-entry` path instead of guard omission. A
 keyless `add` retry that has not yet observed its intended row re-reads `list`
 and retries without `expectedGeneration` only while the mutation is still
 uncommitted — the row still absent — so retries converge without
-double-applying. `update` and `remove` take no keyless path at all: a
+double-applying; only a retry carrying `mutationId` may claim a committed
+mutation. `update` and `remove` take no keyless path at all: a
 lost-response `update`/`remove` retry always carries its original key and
 follows the single superseded-receipt rule, an `update`/`remove` carrying a
 fresh key against a superseded generation or a superseded incarnation refuses
@@ -765,7 +781,11 @@ on `collision-dropped` receipts — a replay renders the dropped arm from these
 receipt fields, so a lost-response retry, even after restart, reconstructs
 both what was dropped and which fingerprint won. `remnantId` is present
 exactly when the commit staged a remnant, `remnantResolvedAt` exactly after
-`teardown-retry` resolves it, `bootRecovered` (as `true`) exactly when boot
+`teardown-retry` or `teardown-recover` resolves it, `recoveryAttestation?`
+exactly on receipts resolved through `teardown-recover` (the `{operator,
+statement, observedAt}` attestation the recovery call validated — the audited
+recovery contract's durable record, pinned field-for-field by the
+protocol-shape test), `bootRecovered` (as `true`) exactly when boot
 finalized a crash-window staged-receipt marker (§5). `prunedReceipts` maps the
 full pruned scope key (mutationId, host name, mutation kind, pruned post-commit
 generation, pruned incarnation id) to `{prunedAt}` — the bounded markers the
@@ -775,8 +795,14 @@ opaque `remnantId` to `{host, kind, seam, pendingTeardown, generation,
 incarnationId, mutationKey, committedAt, cleanupHandle}`; `cleanupHandle` is
 the independently actionable ownership/remote-cleanup handle persisted at
 commit, resolvable without any live in-process handle. A cleared remnant
-persists as the cleared-remnant marker `remnantId → clearedAt` in the same
-section, purged only by the name's next re-add or the retention-expiry prune.
+persists as a typed resolved-remnant record in the same section, keyed by
+`remnantId` and carrying `{clearedAt, resolutionKind: "retry" | "recover",
+hostKind: "live" | "removed", host, name, attestation?}` plus the receipt
+reference the clearance recorded — the full replay payload a lost-response
+retry renders (`already-cleared` with its `hostKind` pairing, `recovered-cleared`
+with `clearedName`/`clearedAt`), reconstructable after restart without the live
+entry — and the record is purged only by the name's next re-add or the
+retention-expiry prune. `attestation` is present exactly on `recover` records.
 `pendingTeardown` is the self-contained generation-scoped teardown target —
 the staged supervisor/channel/fan-out teardown description pinned at commit,
 resolvable without the live entry; a remnant never depends on the live
@@ -784,12 +810,14 @@ registry to execute. The commit, the `teardown-retry` clearance, and the
 re-add purge are all single atomic writes with the same hard-startup-error
 posture on corrupt or schema-invalid content.
 
-Cleared-remnant markers carry their own bounded retention independent of
+Retry cleared-remnant records carry their own bounded retention independent of
 tombstones (owner-set cleared-marker TTL — a live host's repaired failures
-create no tombstone, so without this the markers accumulate forever): every
-boot and every sidecar mutation compacts cleared markers past the TTL in the
+create no tombstone, so without this the records accumulate forever): every
+boot and every sidecar mutation compacts retry records past the TTL in the
 same atomic write, and lost-response retries past the TTL read as
-`teardown-unknown-key` not-found instead of `already-cleared`.
+`teardown-unknown-key` not-found instead of `already-cleared`. Recovery
+(`recover`-kind) records are exempt from this TTL and compact only on the
+name's re-add or the retention-expiry purge.
 
 Retention: receipts and remnants are per-host and per-generation — re-add
 purges that name's superseded-generation receipts — except that name's newest
@@ -941,13 +969,16 @@ persist the committed receipt plus real remnant (verifying the claim's attempt
 token still owns the marker); (4) if the swap itself fails, compensate fully
 before responding: restore the prior sidecar bytes from the stash (atomic
 rename), then revert the runtime to the previous set, then report exactly
-which step failed. Compensation runs in persisted phases, tracked on the
-staged-receipt marker (deploy-pipeline spec §9 pins the phase field): the
-sidecar restore lands first, then the runtime revert, and the marker plus its
-stash reference persist until the runtime revert succeeds — so a runtime-revert
-failure or a crash between the two restores still names its restore source,
-and boot resumes the compensation from the persisted phase instead of
-reporting a diverged swap as compensated. A typed swap-failure response is
+which step failed. Compensation runs in persisted phases, tracked in the
+store-side compensation record (deploy-pipeline spec §9 pins the phase field)
+— which the sidecar restore cannot touch — never on the sidecar
+staged-receipt marker: the committer persists that record with the stash
+reference before the sidecar restore lands, the
+sidecar restore lands first, then the runtime revert, and the store-side record
+plus its stash reference persist until the runtime revert succeeds — so a
+runtime-revert failure or a crash between the two restores still names its
+restore source, and boot resumes the rollback plus stash cleanup from that
+durable record instead of reporting a diverged swap as compensated. A typed swap-failure response is
 sent only after both restores. The commit point is the start of the post-commit rebind phase: once
 the first planned teardown executes, the mutation is committed and there is no
 compensation path back — a failure at or after the commit point is reported as
@@ -971,14 +1002,14 @@ while a typed failure never diverges from what a restart would apply. Within a
 live process, staging failures change nothing. The stash is deleted once the
 commit reaches either outcome; a stash left by a crash is ignored (safe to
 prune) at boot — EXCEPT a stash named by a live `pendingCompensation` record's
-stash reference (deploy-pipeline spec §9) or by an open staged-receipt
-marker: that stash is the compensation's restore source, applied
-in phase order (sidecar first, rows second) before any prune. Boot reconciles
-both marker kinds before pruning any stash: a live compensation record or an
-open/unclaimed staged-receipt marker naming the stash preserves it, and only a
-stash named by neither — both the compensation record and the staged-receipt
-marker durably cleared — is prunable, so a registry-swap crash can never
-lose the rollback bytes an unfinished compensation still needs.
+stash reference (deploy-pipeline spec §9): that record is the compensation's
+sole durable authority, applied in phase order (sidecar first, rows second) before
+any prune. An open staged-receipt marker names the in-progress commit, never the
+compensation source. Boot reconciles the compensation record before pruning any
+stash: a live compensation record naming the stash preserves it, and only a
+stash named by no live record — the compensation record durably cleared — is
+prunable, so a registry-swap crash can never lose the rollback bytes an unfinished
+compensation still needs.
 
 Per-host lifecycle handles: every live host owns cancellable handles — its
 remote-source subscription, its host-admin fan-out (request forwarding plus
@@ -1095,12 +1126,14 @@ fields), keyed by the host's registry (generation, incarnation id) pair and
 updated on every successful preflight and every attach outcome. Pair-keying
 keeps removed-incarnation facts from surfacing under a re-added entry that
 reuses the generation. Every `plan` call publishes into it under the gate
-before returning — except the pre-acquisition no-token refusals
+before returning — except the pre-mint no-token refusals
 (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
-`handler-absent`), which occur before any
-acquisition and publish gateless, never by acquiring the gate to do so
-(holding the gate across the SSH preflight refresh or the running channel
-probe reintroduces the slow-probe busy-refusal bug): a refusal publishes its
+`handler-absent`): `unattached`, `refresh-failed`, and `remnant-open` occur
+before any acquisition and publish gateless, never by acquiring the gate to do
+so (holding the gate across the SSH preflight refresh reintroduces the
+slow-probe busy-refusal bug), while a gated-probe `probe-failed` or
+`handler-absent` publishes under the probe-window gate before releasing it:
+a refusal publishes its
 `{terminal, message}` as the pair's plan-time refusal (a later success clears
 it), and the `remnant-open` check runs before any gate acquisition — a
 remnant-fenced name refuses without ever try-acquiring the gate, so the remnant
@@ -1204,10 +1237,12 @@ documents and are cited, never restated):
   (the live entry's current incarnation id — the second half of the
   guarded-mutation pair `update`/`remove` require as `expectedIncarnationId`
   alongside `expectedGeneration`; the UI echoes both values from the
-  `list`/`status` row), `escalationAgeSec?: number` (present only on tombstone
-  rows whose name holds an open remnant past the escalation bound — the
-  escalation age the expiry-escalation rule promises; absent everywhere else
-  per the absent-when-unknown rule). Tombstone values: a tombstone row renders
+  `list`/`status` row), `openRemnantId?: string` (present exactly on rows — live
+  or tombstone — whose name holds an open remnant; the blocking remnant's id),
+  `escalationAgeSec?: number` (present only on rows — live or tombstone — whose
+  name holds an open remnant past the escalation bound — the escalation age
+  the expiry-escalation rule promises; absent everywhere else per the
+  absent-when-unknown rule). Tombstone values: a tombstone row renders
   from retained effective `HostConfig` with `attached: false`, `midEnsure:
   false`, and the removed entry's `origin`, `generation`, and
   `incarnationId`; `installedVersion?`, `installedVersionAgeSec?`, `osArch?`,
@@ -1318,9 +1353,10 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   `host: HostRow`, `hostKind: "removed"` pairs with `host: RemovedRow` (the
   same tombstone shape `remove`'s clean path returns). An already-cleared ID
   returns `{outcome: "already-cleared", ...}` with the same `hostKind` pairing
-  for idempotent lost-response retry — the cleared-remnant marker (remnantId
-  → `clearedAt`) persists in the sidecar past the clearance so a later
-  lost-response retry still returns `already-cleared`, and is purged only by
+  for idempotent lost-response retry — the typed resolved-remnant record persists
+  in the sidecar past the clearance carrying the replay payload (`clearedAt`,
+  `retry` kind, host kind, host/name payload) so a later lost-response retry,
+  even after restart, still returns `already-cleared`, and is purged only by
   the name's next re-add or retention-expiry prune (plus the cleared-marker
   TTL compaction in §6 — past the TTL the ID reads as
   `teardown-unknown-key`). When the remnant belongs to a `remove` there is no
@@ -1339,12 +1375,16 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   and `hostKind` names which row shape the cleared generation had (`"removed"`
   when the remnant belonged to a `remove`, `"live"` otherwise); the response
   carries no live row because the recover clears a remnant whose teardown never
-  produced one. The call persists a recovery marker (`remnantId →
-  clearedAt`, same marker shape as the retry's cleared-remnant marker in §6)
+  produced one. The call persists a typed resolved-remnant record (the
+  recovery marker — `remnantId` → the replay payload in §6, same record shape
+  as the retry's cleared-remnant record)
   in the same atomic sidecar write that clears the remnant, so a retry naming
   an already-recovered ID replays `{outcome: "recovered-cleared", remnantId,
-  clearedName, clearedAt}` from the marker — never a second clearance, never
-  not-found. The attestation is validated before admission completes and the
+  clearedName, clearedAt}` from the record — never a second clearance, never
+  not-found. Recovery markers are exempt from the generic cleared-marker TTL
+  in §6: a `recovered-cleared` replay stays replayable until the name's re-add
+  or the retention-expiry purge, so recovery retries never decay into
+  `teardown-unknown-key` while the generic TTL compacts retry markers. The attestation is validated before admission completes and the
   safety checks in §6 run before the clearing write; any failure refuses
   without clearing, naming the blocking check. The catalog pins the mutation
   classification plus the request/response shapes field-for-field.
@@ -1650,7 +1690,7 @@ rewrite the same file atomically under the mutation lock.
 Host generations: every `add` (including re-add) mints, and every `update`
 advances, a per-name generation that is durable: persisted in the managed
 sidecar alongside the host entries (including the per-name high-water mark for
-removed names) in the same atomic write as the entry mutation — `add` mints
+removed names — bounded below) in the same atomic write as the entry mutation — `add` mints
 generation 1 for a never-seen name, `update` advances the live generation by
 one, and re-add mints a generation strictly greater than any generation that
 name has ever carried, so a re-added byte-identical entry still invalidates
@@ -1675,7 +1715,15 @@ an identical host cannot restart its generation at 1 and adopt the old
 incarnation's records or tokens: the re-add mints above the mirrored
 high-water mark instead. Deleting both durable files is the only clean-slate
 path, and the spec names it as such — there is no silent history adoption
-either way. Boot-merge collision: when a retained tombstone collides at boot
+either way. High-water marks are bounded: a per-name high-water entry survives
+only while a live entry, tombstone, retained receipt, pruned marker, open
+remnant, resolved-remnant record, mirrored store generation, or outstanding
+token still names that generation; every sidecar mutation and every boot
+compacts entries with no surviving referrer in the same atomic write. Distinct
+names that churned and fully expired therefore leave no durable trace —
+re-add mints generation 1 for a name with no surviving mark and no live
+history — while any surviving token or replay record keeps its entry alive
+until it too expires. Boot-merge collision: when a retained tombstone collides at boot
 with a newly live `hub.toml` host (or a live sidecar entry from a re-add), the
 live host is treated as a new incarnation: its restored generation is set
 strictly above the tombstone's high-water mark before any historical
@@ -1726,8 +1774,8 @@ generation check against the new one. Live external reconciliation: every
 `list`/`status` at most once per admission (cached fingerprint check only —
 §4) — and every boot compares the on-disk `hub.toml` fingerprint against the
 in-memory fingerprint in a pre-handler step before serving the call (the
-`list`/`status` lock-free read itself stays lock-free and serves the last
-published snapshot on mismatch — §4): on a fingerprint match the call proceeds
+`list`/`status` lock-free read stays lock-free and serves the file-filtered
+view on mismatch — §4): on a fingerprint match the call proceeds
 on the current snapshot with no lock; on mismatch a mutation/`plan`/`deploy`
 admission takes the mutation lock synchronously and runs the same
 adopt-then-bump-then-clear sequence as the sibling reconciling commit (re-read
@@ -1858,7 +1906,8 @@ Registry tests (all bullets in this section ship with the registry PR):
   when no retained receipt survives for the key); `expectedGeneration`
   requires `mutationId` on the UI path and keyless `add` retries follow the
   effective-fields re-read rule (never an `expectedGeneration` without a key;
-  uncommitted `add` retries while the row is still absent, `stale-entry` once
+  uncommitted `add` retries while the row is still absent, the explicit ambiguous
+  outcome once a matching row is observed, `stale-entry` once
   an effective field changed; `update` takes no keyless path — missing either
   field is a validation refusal)), remote-origin rejection for
   `list`/`status` (the #1603 origin guard refuses
@@ -1893,9 +1942,11 @@ Registry tests (all bullets in this section ship with the registry PR):
   bootRecovered?}` (`incarnationId` the pinned incarnation — the commit-point
   test pins the full five-part scoped key, so a shared-generation boot-merge
   looks the receipt up under the right incarnation; `remnantId` while the
-  remnant is open, `remnantResolvedAt` after resolution, `bootRecovered`
-  exactly on boot-recovered receipts) and the cleared marker is `remnantId →
-  clearedAt` in `teardownRemnants`; a post-`remove` retry returns the tombstone
+  remnant is open, `remnantResolvedAt` after resolution, `recoveryAttestation`
+  exactly on `teardown-recover`-resolved receipts, `bootRecovered`
+  exactly on boot-recovered receipts) and the cleared marker is the typed
+  resolved-remnant record (`remnantId` → replay payload) in `teardownRemnants`;
+  a post-`remove` retry returns the tombstone
   removed-row shape, a post-add/update retry the live row; the retry validates
   against the remnant's pinned `(generation, incarnationId)` + `cleanupHandle`
   — the live entry may be absent or newer without blocking it — and never acts
@@ -1907,18 +1958,19 @@ protocol-shape tests pin the `changed-entry` refusal arm plus the
 an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
 retry path and clears only through `teardown-recover` — attestation
 validation, safety-check refusals naming the blocking check, the audited
-`recovered-cleared` receipt, and replay-after-recovery returning the same
+`recovered-cleared` receipt (the protocol-shape test pins the
+`recoveryAttestation` receipt fields field-for-field), and replay-after-recovery returning the same
 `recovered-cleared` response (`remnantId`, `clearedName`, `clearedAt`) from
 the persisted recovery marker, never not-found).
 Pending-marker tests: a post-commit receipt write
   lost while the process stays alive leaves the staged-receipt marker staged
   — a replay finalizes carrying the pre-minted `remnantId` and the pinned
-  teardown target — a replay by phase (a staged/unswapped marker finalizes as
-  `committed` with no remnant and no teardown run; a swapped or ambiguous
-  marker re-runs the pinned teardown and finalizes the observed outcome — a
-  real teardown failure surfaces `committed-with-teardown-failure` with the
-  remnant; a clean re-run returns `committed` with no remnant — the staged
-  provisional outcome is never returned as-is), and the next mutation-path
+  teardown target — a replay by phase (every phase re-applies the
+  staged runtime set first, then re-runs the pinned teardown to completion and
+  finalizes the observed outcome — a real teardown failure surfaces
+  `committed-with-teardown-failure` with the remnant; a clean re-run returns
+  `committed` with no remnant — the staged provisional outcome is never
+  returned as-is), and the next mutation-path
   write finalizes a foreign marker for its own host before its own stage,
   while a marker for another host never blocks it (per-host markers;
   foreign-host entries ride along untouched in the same atomic writes).
@@ -1938,7 +1990,7 @@ lost). Remnant-gate tests:
   (no-token `remnant-open` arm with `remnantId`, never a minted token), and
   attach all refuse with `remnant-open` naming the blocking `remnantId` — the
   fence is host-wide, never mutation-only. Status-after-refusal tests: `status`
-  renders the pair-scoped refusal after each gateless pre-acquisition refusal
+  renders the pair-scoped refusal after each pre-mint refusal
   reason (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
   `handler-absent`) — one case per reason, never stale data from a
   superseded pair. Config-path tests: a `--config`
@@ -1956,13 +2008,19 @@ lost). Remnant-gate tests:
   boots hard-error — hand-made); the same collision with no marker and no
   armed intent, or with a marker whose fingerprint no longer matches, boots
   into the hard startup error. Swap-window tests: a marker with `swapStarted:
-  false` and `teardownStarted: false` finalizes without a remnant only after
-  the staged runtime set is re-applied to the live handles (the sidecar
-  already holds the new config — a finalize that skips the swap diverges the
-  live process from durable state), while a marker with the intent written
-  (`swapStarted: true`) but the swap incomplete recovers by re-applying the
-  staged runtime set first and then recovering conservatively with the pinned
-  remnant — never a teardown-first mismatch, never without one. File-posture
+  false` and `teardownStarted: false` re-applies the staged runtime set to
+  the live handles first (the sidecar already holds the new config — a
+  finalize that skips the swap diverges the live process from durable state),
+  then re-runs the pinned teardown to completion and finalizes from the
+  observed outcome (a clean run returns `committed` with no remnant; a failed
+  run surfaces `committed-with-teardown-failure` with the remnant) — never
+  `committed` while old lifecycle handles remain — while a marker with the
+  intent written (`swapStarted: true`) but the swap incomplete recovers by
+  re-applying the staged runtime set first and then recovering conservatively
+  with the pinned remnant — never a teardown-first mismatch, never without
+  one. A leftover finalizing claim preserves the marker's `teardownStarted`
+  value and runtime phase, and boot decides by the persisted phase — never a
+  blanket teardown-started claim. File-posture
   tests: sidecar and store temp files are `0600`, renames preserve the mode,
   and startup refuses a file readable beyond its owner, and the stash gets the
 same coverage (stash temps `0600`, mode-preserving rename, owner-only

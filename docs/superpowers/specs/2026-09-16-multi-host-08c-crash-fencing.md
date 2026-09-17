@@ -16,7 +16,7 @@ Every later section uses these terms with exactly these meanings.
 
 **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
 
-**Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it.
+**Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 
 **Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 

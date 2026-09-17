@@ -17,7 +17,7 @@ Every later section uses these terms with exactly these meanings.
 - **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every generation the name ever carried. A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
 - **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 - **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
-- **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it.
+- **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 - **Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 - **Per-host gate.** The try-acquire (never wait) mutex serializing deploy/restart/`plan`/teardown work for one host name. A held gate fails new work fast with the typed busy error.
 - **Mutation lock.** The process-wide lock serializing sidecar read-modify-write only, never across a teardown. Outermost in the lock order; the store mutex is innermost.
@@ -73,8 +73,9 @@ this spec cites them and never restates them.
 `plan` mints the token. This is seam (a): what `plan` mints is the token plus its full
 binding list below.
 
-Mint runs gated. `plan` refreshes facts and probes running state with no gate held, then
-try-acquires the host gate, then validates and mints. The gate hold covers validation
+Mint runs gated. `plan` refreshes facts with no gate held, then runs the running-state
+probe under the try-acquired host gate for the probe window, then validates and mints
+under the gate. The gate hold covers the probe window plus validation
 plus the durable mint write only. `plan` releases the gate before returning. Mint under
 the gate replaces: the same atomic store write that persists the new token deletes the
 host's earlier unconsumed token rows.
@@ -129,14 +130,18 @@ Wall-clock rollback guard: every validate/consume pass and every facts-age check
 compares `now` against the store's durable high-water wall clock. A `now` more than 30
 seconds behind the mark (owner-adjustable tolerance; within tolerance reads as jitter
 and invalidates nothing) is a detected rollback. Only records whose own timestamps
-postdate `now` invalidate: a token row minted after `now` reads `token-expired`; a facts
-entry captured after `now` reads stale. While the rollback is active (`now < mark`),
-every `expiresAt` comparison and every `now - factsCapturedAt` age check substitutes the
-mark for `now`. A pre-rollback token keeps exactly the real-time lifetime its persisted
-`expiresAt` granted. A post-rollback capture anchors at `max(now, mark)`. The mark never
-moves backward. A rollback can only invalidate, never extend, a deadline. A forward jump
-past outstanding TTLs expires them through the existing `expiresAt` check. No special
-rule covers forward jumps.
+postdate `now` invalidate — the mark rejects only timestamps captured after the
+rollback, never shortens a pre-rollback deadline: a token row minted after `now` reads
+`token-expired`; a facts entry captured after `now` reads stale. Token TTL is monotonic
+elapsed time, never a comparison of `expiresAt` against a later high-water timestamp: a
+pre-rollback token keeps exactly the real-time lifetime its persisted `expiresAt`
+granted, expiring only when elapsed time since mint passes the minted TTL (equivalently
+when wall-clock time again reaches `expiresAt`). While the rollback is active (`now <
+mark`), every `now - factsCapturedAt` age check substitutes the mark for `now`, and a
+post-rollback capture anchors at `max(now, mark)`. The mark never moves backward. A
+rollback can only invalidate, never extend, a deadline. A forward jump past outstanding
+TTLs expires them through the existing `expiresAt` check. No special rule covers forward
+jumps.
 
 ## 4. Operation store
 
@@ -209,7 +214,14 @@ The `plan` and deploy-step-(3) and `restart` race scans compare sequence values 
 
 Retention and compaction: the store keeps at most 50 terminal records per host (tunable
 owner knob; default ships in the implementing PR) plus every non-terminal record
-regardless of count. Exceeding the cap compacts oldest-terminal-first in the same atomic
+regardless of count, within global bounds across all hosts: at most 500 terminal
+records store-wide, at most 64 MiB of serialized store bytes, and at most 30 days
+of terminal-record age (same owner-knob family; defaults ship in the implementing
+PR). A write that would exceed a global bound first compacts oldest-terminal-first
+across hosts until the new record fits; removed-host history compacts first once
+its replay horizon expires (past the tombstone bound in §4 — the documented,
+owner-visible horizon of the lost-response retry contract — a removed host's
+terminal records and tombstones compact before any live host's). Exceeding the cap compacts oldest-terminal-first in the same atomic
 write that lands the new terminal state. Compaction leaves a bounded store dedup
 tombstone per compacted record: the client operation ID with its (host, kind,
 generation, incarnation id) scope plus the full replay fields (controller-assigned id,
@@ -219,7 +231,11 @@ past the bound. A replay naming a tombstoned ID returns the full retained record
 `compacted: true` instead of opening a fresh operation, but only while the tombstone's
 pinned pair still equals the registry's current pair for the name. A tombstone pinned to
 a superseded pair never replays; the clean-slate re-add rule wins over the tombstone.
-Compaction never touches `host-removed` marks of retained records. Only past the
+Compaction never touches `host-removed` marks of retained records. Safe compaction
+of removed-host history: once a removed host's records sit past the tombstone bound
+in §4, its terminal records compact (leaving the bounded tombstones in §4, which
+replay with `compacted: true` while their pinned pair still equals current) and its
+older tombstones drop oldest-first. Only past the
 tombstone bound — the documented, owner-visible horizon of the lost-response retry
 contract — does a replay open fresh. Every compacting write advances the durable
 `compactSeq`, persisted in the store file. Pagination cursors pin it (§8, §10).
@@ -322,7 +338,8 @@ admitted as one. Params `{name}`. It builds a fresh plan from current facts and
 configuration and returns the plan plus a confirmation token (§3), or the no-token shape
 (§10).
 
-`plan` runs its two network round-trips with no gate held. First the unconditional
+`plan` runs its first network round-trip with no gate held, its second under the gate.
+First the unconditional
 facts refresh: a re-run of the same one-shot SSH preflight the deploy path uses,
 deadline-bounded, run with no gate held. The refresh is an SSH command execution, not
 an attach: it never initializes a channel, never starts or rebinds a supervisor, and
@@ -334,9 +351,12 @@ minted from fresh facts.
 
 Second the running-state probe: `evener/host/running` through
 `sshManager.ChannelIfAttached(name)` over the live channel (never a dial, never
-preflight), deadline-bounded with an explicit owner-adjustable probe timeout. On
-timeout `plan` returns the no-token `probe-failed` refusal with nothing to release: a
-hung remote holds no gate. The probe records the response's `buildRevision` as
+preflight), deadline-bounded with an explicit owner-adjustable probe timeout. The
+probe's remote write half runs classified under the fencing epoch and gate (§10):
+`plan` try-acquires the host gate for the probe window and presents the worker epoch,
+failing fast with the typed busy error when held. On
+timeout `plan` returns the no-token `probe-failed` refusal with nothing left held: a
+hung remote holds no gate past the probe window. The probe records the response's `buildRevision` as
 `runningVersion` and its `healthy` flag as `runningHealthy`, both as `HostPlan` fields,
 with the running revision bound into the token. A probed unverifiable revision (`dev`
 or dirty) always reads as outdated: restart follows. No timestamp comparison exempts
@@ -353,7 +373,7 @@ Under the gate it re-checks attachment, the registry generation of the resolved 
 and facts-freshness against the refreshed facts. It scans the operation store (local
 read, no network) for any operation on this host that reached a terminal state since
 the ungated reads started, identified by the state-transition sequence (§4): the worker
-records its pre-read sequence position before the gateless refresh and probe, and any
+records its pre-read sequence position before the gateless refresh and the gated probe, and any
 terminal operation with a higher transition sequence is a typed `stale-entry` re-plan
 refusal. A detach, mutation, facts advance, or completed operation landing between the
 ungated reads and acquisition is a typed refusal or a re-read, never a plan against the
@@ -362,7 +382,7 @@ superseded entry.
 Every `plan` call publishes into the last-known store. This is seam (c), first half:
 `status` reads the last-known store inputs (running-state and refusal snapshots)
 without dialing, and `plan` publishes them. Every `plan` publishes under the gate before
-returning, except the pre-acquisition no-token refusals (`unattached`,
+returning, except the pre-mint no-token refusals (`unattached`,
 `refresh-failed`, `probe-failed`, `remnant-open`, `handler-absent`), which
 publish pair-scoped gateless and never acquire the gate to do so. A refusal publishes its `{terminal, message}` as the pair's plan-time refusal; a
 later success clears it. Every completed probe — success or authenticated failure —
@@ -392,15 +412,16 @@ here. A fenced name never reaches the gate: an open teardown remnant refuses wit
 `remnant-open` (naming the `remnantId`) before any probe or acquisition, past the
 step-(1) dedup check. Remnant semantics are defined in the registry spec §6.
 
-(3) Probe gateless, then revalidate under the gate. Probe the running build and health
-over the attached channel with no gate held (same explicit probe timeout as `plan`'s
-probe). Then acquire the gate — fail fast with the typed busy error if held — and under
-it re-resolve the target, re-read the host entry, re-hash the `hub.toml` fingerprint at
-execution time, and re-validate the pre-acquisition probe result. Reject on any drift
-from the token's bindings. The pre-acquisition probe's running-state result is not
-re-probed under the gate. Instead the worker closes the probe-to-acquire window with a
+(3) Probe under the gate, then revalidate under the same gate. Probe the running build and health
+over the attached channel holding the try-acquired host gate for the probe window (same explicit probe timeout as `plan`'s
+probe; a held gate fails fast with the typed busy error before any probe write). Still holding
+that gate, the worker
+re-resolves the target, re-reads the host entry, re-hashes the `hub.toml` fingerprint at
+execution time, and re-validates the probe result taken under the same gate. Reject on any drift
+from the token's bindings. The probe result is not
+re-probed a second time. Instead the worker closes the probe window with a
 local scan: any operation on this host whose terminal transition sequence (§4) sits
-above the sequence position recorded before the gateless probe is a `stale-entry`
+above the sequence position recorded before the gated probe is a `stale-entry`
 re-plan refusal. Token unconsumed, no record. A probe failure or timeout refuses with
 the typed `probe-failed` envelope (data names the host and whether the read failed,
 timed out, or was unauthenticated) — token unconsumed, no record. The worker rejects if
@@ -428,8 +449,8 @@ re-hashes the on-disk `hub.toml` fingerprint immediately before each irreversibl
 one follows) and aborts with typed `stale-entry` on any drift from the token-bound
 fingerprint. The gate alone does not pin the file against external hand edits.
 
-Detached-during-deploy: if the channel is gone at the pre-acquisition probe, or the
-post-acquisition revalidation finds the channel dropped, `deploy` refuses with typed
+Detached-during-deploy: if the channel is gone at the gated probe, or a
+revalidation under the same gate finds the channel dropped, `deploy` refuses with typed
 `host-detached`. Token unconsumed, no record. The UI Connects and re-plans. `deploy`
 spends a single-use token, so it must not consume it to open a worker that then
 attach-firsts into an unvalidated channel.
@@ -455,7 +476,11 @@ post-acquisition entry re-read. A manual file edit between resolution and acquis
 a typed `stale-entry` refusal with a retry instruction. A mutation landing between
 resolution and gate acquisition is likewise a typed refusal. Under the gate `restart`
 runs the same terminal-operation scan as deploy step (3). It wraps the 04b restart path
-(user versus system unit decision, `waitHealthy` proven replacement).
+(user versus system unit decision, `waitHealthy` proven replacement). Immediately before
+the irreversible restart — after the scan, still holding the gate, before signaling
+or restarting — the worker re-reads the on-disk `hub.toml` fingerprint and compares
+it against the bound fingerprint; any drift aborts with typed `stale-entry` and no
+restart. No external edit landing after the under-gate check can drive a stale restart.
 
 Restart drops the attached channel by construction, and no supervisor or `Ensure`
 reattach can cover the worker: both need the gate the operation holds through terminal
@@ -632,7 +657,11 @@ sidecar bytes beside old store rows.
 `pendingCompensation`: the committer first persists a record holding the rows about to
 be purged (plus the stash reference and the sidecar generation the purge belongs to, in
 phase `compensating-armed`) into the operation-store file — which the stash restore
-cannot touch — in its own store-local write before the purge write. The purge write
+cannot touch, so a sidecar restore that overwrites the restorable sidecar bytes leaves
+this record intact — in its own store-local write before the purge write. Boot resumes
+the rollback plus stash cleanup from this record (never from bytes inside the restorable
+sidecar): a record still open means the swap compensation has not converged, and boot
+re-runs it by phase per the reconciliation arms below. The purge write
 advances the record past `armed`. The preimage persists before the purge, never after
 it. Past the commit point the committer clears the armed record in its own store write:
 the purge stands. Only on the failure path does the restorer run. The record carries
@@ -742,11 +771,18 @@ element type.
   condition is outstanding under the serving hub's dedicated local health predicate
   (evaluated from its local controller roster directly, never through the
   `restartRequiredDaemon` authenticated-probe path); (3) the hub's durable state roots
-  are writable (state-root write probe — a real atomic temp-plus-rename probe inside
-  the state dir with a uniquely named temp per probe, rename to a distinct probe
-  target in the same dir, fsync the dir, then remove, plus a free-space query against
-  the state root; a probe temp orphaned by a crash carries the probe-name prefix and
-  boot prunes prefix-matching strays before serving). Anything else — session counts,
+  are writable and not critically full: the predicate first runs a free-space query
+  against the state root and reports `healthy: false` when free space falls below the
+  owner-set minimum-free-space knob (default ships in the implementing PR); only above
+  that threshold does it run the state-root write probe — a real atomic temp-plus-rename
+  probe inside the state dir with a uniquely named temp per probe, rename to a distinct
+  probe target in the same dir, fsync the dir, then remove — which `plan`/`deploy`
+  execute under the host's fencing epoch and gate (the write probe is a classified
+  mutating step, never a gateless bypass: the probe call try-acquires the host gate for
+  the probe window and presents the worker epoch, failing fast with the typed busy error
+  when held); a probe temp orphaned by a crash carries the probe-name prefix and
+  boot prunes prefix-matching strays before serving. No probe temp survives the probe
+  window past its remove except a crash orphan the boot prune owns. Anything else — session counts,
   load, peer reachability, external dependency status — never feeds `healthy`.
   `healthy: false` is data, never a probe failure: each forced-false case returns
   `healthy: false` while the probe itself still succeeds. Admitted only over an
@@ -871,9 +907,10 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   4), expiry-across-the-wait (a token valid at the step-(2) provisional pass but past
   its TTL at the step-(4) consume is a `token-expired` refusal with no record),
   clock-rollback (a `now` behind the high-water mark by more than the 30-second
-  tolerance drops only the records whose own timestamps postdate `now`, until
-  wall-clock time again reaches the mark; post-rollback captures anchor at `max(now,
-  mark)`; a within-tolerance step invalidates nothing; all other expiry and age
+  tolerance drops only the records whose own timestamps postdate `now`; a pre-rollback
+  token keeps its minted real-time lifetime and expires only on elapsed TTL, never by
+  comparison against the later mark; post-rollback captures anchor at `max(now,
+  mark)`; a within-tolerance step invalidates nothing; facts-age
   checks run against `max(now, mark)` while the rollback is active), and
   supersede-between-validate-and-consume (a `plan` mint landing after step (2) but
   before step (4) is a `token-superseded` refusal with no record).
@@ -910,8 +947,8 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 - The running probe (`evener/host/running` handler): local revision plus health plus
   optional `processStartTime`; attached-session admission only; unauthenticated probe
   refusal; browser and forwarded requests refused; never forwarded onward (no A→B→A
-  chain); the ungated `plan` probe call with its explicit deadline (timeout yields
-  the no-token `probe-failed` refusal with no gate ever held); `HostPlan`
+  chain); the gated `plan` probe call with its explicit deadline (timeout yields
+  the no-token `probe-failed` refusal with nothing left held past the probe window); `HostPlan`
   `runningVersion` / `runningHealthy` placement; `handler-absent` named for
   pre-handler remotes with the one-time manual-upgrade migration path; the no-token
   `reason` discriminates all nine values with `terminal: true` exactly on the four
@@ -930,7 +967,9 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   preflight is channel-free under the same pin.
 - Execution-time re-resolution mismatch including the `hub.toml` fingerprint: a
   manual edit between plan and deploy refuses; a manual edit between restart's
-  resolution and its gate acquisition refuses. Post-acquisition entry re-read:
+  resolution and its gate acquisition refuses; a manual edit after the under-gate
+  check refuses at the final pre-restart fingerprint re-read with no restart.
+  Post-acquisition entry re-read:
   `restart` and Ensure-triggered work refuse or re-resolve when a mutation lands
   between resolution and gate acquisition.
 - (Host, kind, generation, incarnation id)-scoped operation-ID dedup including the
@@ -964,7 +1003,9 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   a plan refusal renders the refusal, never stale data.
 - The running-health definition: each forced-false condition returns `healthy: false`
   as data while the probe itself succeeds — evaluated by the serving hub's local
-  predicate, never the `restartRequiredDaemon` probe path.
+  predicate, never the `restartRequiredDaemon` probe path; the free-space floor is the
+  owner-set minimum-free-space knob, and the write-probe half runs classified under the
+  host gate and fencing epoch (§10), never as a gateless bypass.
 - Pinned pagination: stable `id`-ascending order for both sort and resume across
   concurrent terminal writes (`createdAt` display-only); a mid-pagination
   generation or presence advance rejects the continuation (`stale-entry`
