@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { WireError } from "./errors";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
@@ -222,6 +223,126 @@ describe("the checkpointed draft editor", () => {
       method: patchMethod,
       params: { expectedRevision: 3, config: { version: 1, rules } },
     });
+  });
+
+  // RoboRev round 21 High: the post-save cleanup discarded removeIf's
+  // result, so a checkpoint another writer replaced while the PATCH was in
+  // flight survived on disk (removeIf's own byte-aware compare already
+  // refuses to remove a non-matching record) while the store still reported
+  // no draft at all - the replacement was hidden rather than shown.
+  test("a successful save whose checkpoint was replaced while the PATCH was in flight adopts the replacement", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // Another window or app version replaces the SAME on-disk record with
+    // its own draft while this write is still out.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    const replacement: KeybindingDraftCheckpoint = {
+      id: "other",
+      baseRevision: 3,
+      rules: otherRules,
+      writeUncertain: false,
+    };
+    drafts.storage.save(replacement);
+
+    reply.resolve(payload(4, rules));
+    await save;
+
+    // The write succeeded, but the checkpoint it wrote is gone - replaced,
+    // not just removed. The replacement survives on disk, and the store
+    // adopts it rather than reporting no draft.
+    expect(drafts.stored()).toEqual(replacement);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+  });
+
+  // RoboRev round 21 Medium 1: settling an uncertain checkpoint used an
+  // unconditional save, so a concurrent writer's newer draft (landed while
+  // this write's outcome was unknown) would be silently overwritten by the
+  // stale one this store was about to settle.
+  test("settling an uncertain write after its checkpoint was replaced adopts the replacement instead of overwriting it", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+    await expect(store.getState().saveDraft(rules)).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // Another writer replaces the SAME on-disk record while the outcome is
+    // still unknown.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    const replacement: KeybindingDraftCheckpoint = {
+      id: "other",
+      baseRevision: 3,
+      rules: otherRules,
+      writeUncertain: false,
+    };
+    drafts.storage.save(replacement);
+
+    // An authoritative read settles the write - but the checkpoint it would
+    // settle onto is gone, replaced. It must adopt the replacement, never
+    // overwrite it with the stale (now-settled) checkpoint.
+    await store.getState().refreshOverrides();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toEqual(replacement);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+  });
+
+  // RoboRev round 21 Medium 2: saveDraft treated every rejection as an
+  // unknown outcome, unlike the direct write (patchOverrides), which uses
+  // rejectionPayload to tell a structured conflict/post-rename failure from
+  // a transport failure. A known refusal left writeUncertain true, and a
+  // known post-rename success was reported as a failed save.
+  test("a revision conflict during saveDraft is a KNOWN outcome: the canonical lands and the proposal stays for review", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        current: payload(6, [{ action: ACTIONS.railToggle, chord: "Control+R" }]),
+      });
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft(rules)).rejects.toThrow("revision conflict");
+
+    expect(store.getState()).toMatchObject({
+      revision: 6,
+      writeUncertain: false,
+      draftConflict: true,
+      draft: { rules },
+    });
+    expect(drafts.stored()?.writeUncertain).toBe(false);
+  });
+
+  test("a post-rename durable failure during saveDraft applies the carried canonical state instead of leaving the outcome unknown", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new WireError("sync keybindings state directory: boom", -32603, {
+        evenerErrorInfo: "keybindingsPostRename",
+        applied: payload(4, rules),
+      });
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const saved = await store.getState().saveDraft(rules);
+
+    expect(saved).toEqual(payload(4, rules));
+    expect(store.getState()).toMatchObject({
+      revision: 4,
+      writeUncertain: false,
+      saving: false,
+      draft: null,
+    });
+    expect(drafts.stored()).toBeNull();
   });
 
   test("a lost reply leaves the write uncertain and blocks edits until an authoritative read", async () => {
