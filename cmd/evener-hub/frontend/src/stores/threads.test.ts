@@ -9600,6 +9600,82 @@ test("an explicit user retry after a Stop dispatches the canceled mutation", asy
   expect(sends).toBe(2);
 });
 
+// Cancellation is recorded at acknowledgment, but a hydration's reconciliation
+// can reopen a blockedUnknown record in the window between the Stop's
+// generation bump and that acknowledgment. Adding the ID alone is not enough
+// there - the record is already submitting - so the Stop must also restore the
+// uncertainty it carries. The shutdown RPC is held open; a plain refreshThread
+// reopens the record; the acknowledgment must put it back so no later scan
+// resends it.
+test("a Stop acknowledged after a hydration reopened a record puts it back to blockedUnknown", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    const stopAck = deferred<void>();
+    fake.on("thread/shutdown", async () => {
+      await stopAck.promise;
+      return {};
+    });
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      if (sends === 1) throw new RequestTimeoutError("response lost");
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().send("ref_a", "uncertain");
+    await flushIndexedDBUntil(() => sends === 1);
+    const uncertain = (await storage.listOutbox("ref_a"))[0];
+    if (!uncertain) throw new Error("missing uncertain send");
+    await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+    // Park the hydration's reopen so the Stop's acknowledgment lands in its wake.
+    const restore = storage.restoreProvenAbsent.bind(storage);
+    let reopened!: () => void;
+    const reopenedDone = new Promise<void>((resolve) => {
+      reopened = resolve;
+    });
+    const release = deferred<void>();
+    const spy = vi.spyOn(storage, "restoreProvenAbsent").mockImplementation(async (...args) => {
+      const result = await restore(...args);
+      if (result.length > 0) {
+        reopened();
+        await release.promise;
+      }
+      return result;
+    });
+    try {
+      // The Stop's generation bumps now, but its acknowledgment is in flight, so
+      // the canceled-ID set is not populated yet.
+      const stopping = threadsStore.getState().shutdown("ref_a");
+      // A plain hydration's reconcile reopens the stale blockedUnknown record.
+      const refreshing = threadsStore.getState().refreshThread("ref_a");
+      await reopenedDone;
+      expect((await storage.getOutbox(uncertain.clientMutationId))?.state).toBe("submitting");
+      // The acknowledgment arrives: it must put the reopened record back.
+      stopAck.resolve();
+      await stopping;
+      expect((await storage.getOutbox(uncertain.clientMutationId))?.state).toBe("blockedUnknown");
+      release.resolve();
+      await refreshing;
+      await vi.advanceTimersByTimeAsync(2000);
+      await flushIndexedDBUntil(() => sends >= 2);
+      expect(sends).toBe(1);
+      expect((await storage.getOutbox(uncertain.clientMutationId))?.state).toBe("blockedUnknown");
+    } finally {
+      spy.mockRestore();
+    }
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("persistent journal failures wait for periodic recovery between attempts", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   try {

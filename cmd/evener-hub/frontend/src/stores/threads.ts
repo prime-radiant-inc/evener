@@ -931,6 +931,12 @@ async function recordCanceledMutations(ref: string): Promise<void> {
   await runtime.start;
   for (const record of await runtime.storage.listOutbox(ref)) {
     canceledMutationIds.add(record.clientMutationId);
+    // A reconciliation may have reopened this record in the window between the
+    // Stop's generation bump and this acknowledgment. The cancellation is known
+    // now, so put the uncertainty back: a record the Stop canceled must not stay
+    // armed for a later scan to resend. This is the same restoration the retry's
+    // inline undo performs, at the one moment the cancellation becomes known.
+    await runtime.storage.markUnknown(record.clientMutationId, "blockedUnknown");
   }
 }
 
