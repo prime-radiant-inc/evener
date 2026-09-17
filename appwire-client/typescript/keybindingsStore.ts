@@ -756,6 +756,20 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // this set so a rule validation skips survives an unrelated edit. Only a
     // successful reconcile advances it - a failed apply leaves the last good
     // raw set beside the last good revision.
+    // A draft restored before any ready generation existed is stamped
+    // generation: null (nothing to compare against yet at restore time) -
+    // round 23 High 1: left null forever, staleDraft's generation check never
+    // runs for it, so a LATER hub replacement reporting the identical
+    // revision by coincidence would read it as current. The first
+    // authoritative payload to land is what actually confirms the draft
+    // valid for a real generation, so the stamp happens HERE, before
+    // staleness is judged for this same payload, and folds into this same
+    // publish. A draft already stamped (an edit, or an earlier authoritative
+    // payload) is left alone.
+    const draft =
+      state.draft !== null && state.draft.generation === null
+        ? { ...state.draft, generation: fence.generation }
+        : state.draft;
     setState({
       ...reconciled,
       rawOverrides: rules,
@@ -777,7 +791,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       hubError: payload.loadError ?? null,
       loadError: payload.loadError ?? null,
       conflict: null,
-      draftConflict: staleDraft(state.draft, payload.revision, fence.generation),
+      draft,
+      draftConflict: staleDraft(draft, payload.revision, fence.generation),
       ...resolved,
     });
     return true;
