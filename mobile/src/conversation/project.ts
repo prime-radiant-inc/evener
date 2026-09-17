@@ -749,3 +749,211 @@ function failureItem(
     detail: parts.join("\n"),
   };
 }
+
+// --- row identity -------------------------------------------------------------
+// Which row is which, for every consumer that has to decide whether two rows are
+// the same row: the store's page merge and its cap bookkeeping, and any reader
+// deduping a reissued row. transcriptKey first, because the hub reissues an item
+// under a new wire id while its transcript key stands.
+
+export function attachmentSourceId(item: MobileTimelineItem): string | null {
+  return item.kind === "attachments" && item.id.endsWith(":attachments")
+    ? item.id.slice(0, -":attachments".length)
+    : null;
+}
+
+export function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
+  return item.kind === "attachments"
+    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
+    : null;
+}
+
+export function timelineIdentity(item: MobileTimelineItem): string {
+  return item.transcriptKey ?? item.id;
+}
+
+// The canonical identity of a clustered activity member — the same
+// transcriptKey-first rule timelineIdentity applies to a top-level row.
+export function activityIdentity(activity: ActivityMember): string {
+  return activity.transcriptKey ?? activity.id;
+}
+
+// The identities a row IS: its own, plus every clustered member's. Distinct
+// from timelineIdentities, which also carries the identity of the row an
+// attachment belongs to — an attachment is not a duplicate of its source.
+export function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = new Set([timelineIdentity(item)]);
+  if (item.kind === "activity" && item.members) {
+    for (const member of item.members) {
+      identities.add(activityIdentity(member));
+    }
+  }
+  return identities;
+}
+
+export function timelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = ownTimelineIdentities(item);
+  const source = attachmentSourceIdentity(item);
+  if (source !== null) identities.add(source);
+  return identities;
+}
+
+// --- display bounds -----------------------------------------------------------
+// What a row may cost the reader's device. The store applies these on every
+// publish; they live here with the row shape they cut.
+
+// --- limits and truncation helpers (centralized) ----------------------------
+
+export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
+export const TRUNCATION_MARKER = "… truncated";
+export const RETAINED_ITEM_CAP = 500;
+
+// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
+// once whenever the limit is large enough to hold the marker. Iterates
+// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
+// split and no U+FFFD replacement chars are produced. The result never
+// exceeds maxBytes.
+const textEncoder = new TextEncoder();
+const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
+
+// UTF-8 byte length without materialising the bytes: every publish asks this of
+// every retained row, and all but the oversized ones only need the answer, not the
+// encoding. Counting code points is O(length) with no allocation, where
+// TextEncoder.encode allocates a byte array as large as the text (and the row that
+// is 64 KiB of text allocates it on every publish).
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (const cp of text) {
+    const code = cp.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
+export function truncateText(text: string, maxBytes: number): string {
+  if (utf8Length(text) <= maxBytes) return text;
+  // The byte limit is the hard contract: the marker is best effort. Every
+  // publish re-applies this to whatever text a row carries, so a limit too
+  // small to hold the marker yields the longest prefix that fits, with no
+  // marker, rather than a marker that busts the limit.
+  const fitsMarker = maxBytes >= markerBytes.length;
+  const marker = fitsMarker ? TRUNCATION_MARKER : "";
+  const markerLength = fitsMarker ? markerBytes.length : 0;
+  const targetBytes = Math.max(0, maxBytes - markerLength);
+  // Iterate code points (for...of iterates Unicode scalar values) to find
+  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
+  // avoids splitting surrogate pairs and never produces U+FFFD.
+  let byteLen = 0;
+  let cutIdx = 0;
+  for (const cp of text) {
+    const cpBytes = utf8Length(cp);
+    if (byteLen + cpBytes > targetBytes) break;
+    byteLen += cpBytes;
+    cutIdx += cp.length;
+  }
+  // Trim code points until the result + marker fits within maxBytes.
+  // (May need to trim if a multibyte code point straddles the boundary.)
+  let truncated = text.slice(0, cutIdx);
+  let truncatedBytes = textEncoder.encode(truncated);
+  while (
+    truncatedBytes.length + markerLength > maxBytes &&
+    truncated.length > 0
+  ) {
+    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
+    const codePoints = [...truncated];
+    codePoints.pop();
+    truncated = codePoints.join("");
+    truncatedBytes = textEncoder.encode(truncated);
+  }
+  return truncated + marker;
+}
+
+// One text field, cut to the display bound.
+export type BoundText = (text: string) => string;
+
+// Apply the bound to an activity detail's text-bearing fields (description,
+// arguments, output, error). Shared by an activity's own top-level detail and
+// each of its clustered members' details, so both are bounded the same way. The
+// description is the summary line a collapsed row shows
+// (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
+// as much as the output is.
+function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
+  return {
+    ...detail,
+    description: detail.description ? bound(detail.description) : detail.description,
+    arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
+    output: detail.output ? bound(detail.output) : detail.output,
+    error: detail.error ? bound(detail.error) : detail.error,
+  };
+}
+
+// Apply the bound to every text a row carries for the reader. Native transcript
+// projection expands a clustered activity's members directly, so each member's
+// own detail is bounded too — not just the cluster's top-level detail (the first
+// member's). A pasted user message, a daemon notice and a tool failure's stack
+// are as large as anything that streams, so each kind that carries prose is here.
+export function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
+  switch (item.kind) {
+    case "user":
+      return { ...item, text: bound(item.text) };
+    case "assistant":
+      return { ...item, markdown: bound(item.markdown) };
+    case "notice":
+      return { ...item, text: bound(item.text) };
+    case "failure":
+      return { ...item, title: bound(item.title), detail: bound(item.detail) };
+    case "question":
+      // Every prose field a reader sees, bounded in place like any other row. The
+      // answer this client composes does NOT read these rows — it asks the model
+      // for the canonical refs (questionAnswers.ts's pendingQuestions →
+      // liveAskQuestions) — so a cut label here can never name a choice the agent
+      // did not offer.
+      return {
+        ...item,
+        questions: item.questions.map((question) => ({
+          ...question,
+          header: bound(question.header),
+          question: bound(question.question),
+          ...(question.why === undefined ? {} : { why: bound(question.why) }),
+          ...(question.ifUnanswered === undefined
+            ? {}
+            : { ifUnanswered: bound(question.ifUnanswered) }),
+          options: question.options.map((option) => ({
+            ...option,
+            label: bound(option.label),
+            ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
+          })),
+        })),
+      };
+    case "activity":
+      // The label is rendered twice on the phone — the disclosure line and its
+      // accessibility label (mobile-native/src/TimelineItem.tsx) — so it is
+      // bounded like the detail it heads, for the row and for every member.
+      return {
+        ...item,
+        label: bound(item.label),
+        detail: truncateActivityDetail(item.detail, bound),
+        ...(item.members
+          ? {
+              members: item.members.map((member) => ({
+                ...member,
+                label: bound(member.label),
+                detail: truncateActivityDetail(member.detail, bound),
+              })),
+            }
+          : {}),
+      };
+    default:
+      // attachments: an attachment's src IS the image (a data: URI for composer
+      // bytes), so cutting it yields something that cannot decode; the name is a
+      // filename. The wire bounds image payloads at the source instead.
+      return item;
+  }
+}
+
+// Enforce the 500-item retained cap. Always retains the NEWEST items (end
+// of array) so the live tail is preserved for interactive scrolling.
+export function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  if (items.length <= RETAINED_ITEM_CAP) return items;
+  return items.slice(items.length - RETAINED_ITEM_CAP);
+}
