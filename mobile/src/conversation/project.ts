@@ -1,6 +1,5 @@
 import type {
   AskQuestionRef,
-  ItemFailureSignals,
   ItemImage,
   ItemModel,
   ThreadModel,
@@ -27,7 +26,7 @@ import type {
 
 import {
   hasItemFailure,
-  isInProgressStatus,
+  isActiveItem,
   joinedReasoningParagraphs,
   liveAskQuestions,
   parseAskUserQuestions,
@@ -226,22 +225,11 @@ function isSystemMessage(item: ItemModel): boolean {
 // contains it is still running — a sparse running tool/reasoning row would
 // otherwise read as settled. Such an item is active exactly when its turn
 // is; an item that carries its own status always keeps it.
-function isActiveItem(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): boolean {
-  if (item.status !== undefined) return isInProgressStatus(item.status);
-  return isInProgressStatus(turnStatus);
-}
-
 // --- activity state ----------------------------------------------------------
 
-function activityState(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): ActivityState {
+function activityState(item: ItemModel, turn: Pick<TurnModel, "status">): ActivityState {
   if (hasItemFailure(item)) return "failed";
-  if (isActiveItem(item, turnStatus)) return "running";
+  if (isActiveItem(item, turn)) return "running";
   return "completed";
 }
 
@@ -351,7 +339,7 @@ function projectItem(
   // turn that keeps running stops saying "Writing…" at once. An item that
   // carries no status of its own is live exactly while its turn is.
   if (isAgentMessage(item)) {
-    const streaming = isActiveItem(item, turn.status);
+    const streaming = isActiveItem(item, turn);
     return {
       kind: "final",
       item: {
@@ -371,7 +359,7 @@ function projectItem(
   // "reasoning" regardless of any label text; a commandExecution whose
   // toolName is "Reasoning" is NOT routed here (it stays family "tool" below).
   if (isReasoning(item)) {
-    const state: ActivityState = isActiveItem(item, turn.status)
+    const state: ActivityState = isActiveItem(item, turn)
       ? "running"
       : "completed";
     return {
@@ -418,7 +406,7 @@ function projectItem(
           id: item.id,
           label: toolLabel(item),
           family: "tool",
-          state: activityState(item, turn.status),
+          state: activityState(item, turn),
           detail: activityDetail(item),
         },
       },
@@ -507,7 +495,7 @@ function projectItem(
     kind: "activity",
     pre: {
       family:
-        activityState(item, turn.status) === "failed"
+        activityState(item, turn) === "failed"
           ? `failed:${item.id}`
           : `unknown:${item.type}`,
       item: {
@@ -515,7 +503,7 @@ function projectItem(
         id: item.id,
         label: "Activity",
         family: "unknown",
-        state: activityState(item, turn.status),
+        state: activityState(item, turn),
         detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
