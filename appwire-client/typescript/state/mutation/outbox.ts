@@ -27,7 +27,6 @@
 // carries no clientMutationId, no targetRef, no payload, no sequence and no
 // persisted state, so nothing here aliases it; D25d is where native gains
 // records and this class is what notices them.
-import { tryOrUndefined } from "./secureUUID";
 import type {
   MutationAttachmentRef,
   MutationIntent,
@@ -37,6 +36,7 @@ import type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
+import { tryOrUndefined } from "./secureUUID";
 
 // Why discovery ran, carried through to the consumer so a scan can be
 // explained (and, in tests, asserted) rather than guessed at.
