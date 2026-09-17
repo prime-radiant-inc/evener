@@ -2823,60 +2823,6 @@ test("a full turn settle that omits image fields keeps the item's images", () =>
   expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
 });
 
-// Output images read the same way as input images (#1677 settled this on main:
-// both mappers treat `[]` as absence, matching the hub's own
-// `len(incoming.OutputImages) == 0` merge), so a settle that carries an empty
-// output list keeps what the item had rather than clearing it.
-test("a settle carrying an empty output-image list keeps the images the item had", () => {
-  const thread = testThread({
-    turns: [
-      {
-        id: "turn_1",
-        status: "inProgress",
-        itemsView: "default",
-        items: [
-          {
-            id: "tool-item",
-            turnId: "turn_1",
-            type: "commandExecution",
-            toolName: "shell",
-            callId: "call-1",
-            text: "",
-            status: "inProgress",
-            outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
-          },
-        ],
-      },
-    ],
-  });
-  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
-  expect(itemAt(turnAt(model, 0), 0).outputImages).toHaveLength(1);
-
-  model = applyNotification(
-    model,
-    {
-      method: "item/completed",
-      params: {
-        threadId: thread.id,
-        ref: thread.evener.ref,
-        turnId: "turn_1",
-        item: {
-          id: "tool-item",
-          turnId: "turn_1",
-          type: "commandExecution",
-          toolName: "shell",
-          callId: "call-1",
-          text: "",
-          status: "completed",
-          outputImages: [],
-        },
-      },
-    } as AnyNotification,
-    2000,
-  );
-  expect(itemAt(turnAt(model, 0), 0).outputImages).toHaveLength(1);
-});
-
 // An INPUT image list that arrives empty says nothing about the item's images:
 // the hub keeps whatever list it already had when the incoming one is empty
 // (`server/appwire_turns.go`'s and `internal/apptranscript/logical_turn.go`'s
@@ -2885,10 +2831,9 @@ test("a settle carrying an empty output-image list keeps the images the item had
 // Reading it as "the images are gone" erases an older page's input images on
 // merge.
 //
-// OUTPUT images are the opposite case and keep their own rule below: there an
-// explicit empty list is the removal signal, which is a contract the wire states
-// (`OutputImages` marshalled so an empty list survives, merge sites keeping nil
-// apart from empty) rather than something the input list can express.
+// OUTPUT images are a separate question this PR takes no position on: the wire
+// change that decides whether an empty output list is a value or an absence is
+// its own PR, and nothing here asserts either reading.
 test("an empty input-image list says nothing, so the images already known survive", () => {
   const thread = testThread({
     turns: [
@@ -2964,86 +2909,6 @@ test("an empty input-image list says nothing, so the images already known surviv
     nextCursor: undefined,
   });
   expect(itemAt(turnAt(merged, 0), 0).images).toHaveLength(1);
-});
-
-// The same rule for a tool call's output images (#1677): an empty list says
-// nothing, so an older page's list is the only one anybody has and it survives.
-test("an empty output-image list says nothing, so the older page's list survives", () => {
-  const thread = testThread({
-    turns: [
-      {
-        id: "shared-turn",
-        status: "completed",
-        itemsView: "fragment",
-        items: [
-          {
-            id: "tool-item",
-            transcriptKey: "tool-key",
-            position: { entry: 4, item: 0 },
-            turnId: "shared-turn",
-            type: "commandExecution",
-            toolName: "screenshot",
-            callId: "call-1",
-            status: "completed",
-            outputImages: [{ source: "fixture", url: "/s/sess/images/shot", name: "shot.png" }],
-          },
-        ],
-      },
-    ],
-  });
-  let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
-  expect(itemAt(turnAt(model, 0), 0).outputImages).toHaveLength(1);
-
-  model = applyNotification(
-    model,
-    {
-      method: "item/completed",
-      params: {
-        threadId: thread.id,
-        ref: thread.evener.ref,
-        turnId: "shared-turn",
-        item: {
-          id: "tool-item",
-          transcriptKey: "tool-key",
-          position: { entry: 4, item: 0 },
-          turnId: "shared-turn",
-          type: "commandExecution",
-          toolName: "screenshot",
-          callId: "call-1",
-          status: "completed",
-          outputImages: [],
-        },
-      },
-    } as AnyNotification,
-    2000,
-  );
-  // The live frame says nothing, so the settle keeps what the item had.
-  expect(itemAt(turnAt(model, 0), 0).outputImages).toHaveLength(1);
-
-  const merged = mergeOlderItemPage(model, {
-    data: [
-      {
-        id: "shared-turn",
-        status: "completed",
-        itemsView: "fragment",
-        items: [
-          {
-            id: "tool-item",
-            transcriptKey: "tool-key",
-            position: { entry: 4, item: 0 },
-            turnId: "shared-turn",
-            type: "commandExecution",
-            toolName: "screenshot",
-            callId: "call-1",
-            status: "completed",
-            outputImages: [{ source: "fixture", url: "/s/sess/images/shot", name: "shot.png" }],
-          },
-        ],
-      },
-    ],
-    nextCursor: undefined,
-  });
-  expect(itemAt(turnAt(merged, 0), 0).outputImages).toHaveLength(1);
 });
 
 test("mergeOlderItemPage preserves older settled payload and usage when the current same-key fragment omits them", () => {
