@@ -21,16 +21,36 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { PluginRefParams } from "@evener/appwire-client";
+import { createPluginsStore } from "@evener/appwire-client/state/extensions";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
-import { InstalledPlugins } from "./installedPlugins";
-import { MarketplaceBrowser } from "./MarketplaceBrowser";
+import {
+  INSTALLED_PLUGINS_FAILED,
+  MarketplaceBrowser,
+} from "./MarketplaceBrowser";
+import {
+  createPluginMutationGate,
+  PLUGIN_MUTATION_BUSY,
+  type PluginMutationGate,
+} from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function PluginsScreen({
   route,
 }: NativeStackScreenProps<Routes, "Plugins">) {
+  // One plugin mutation at a time, across this list AND the browser: switching
+  // tabs unmounts whichever one started it, so the gate lives here, at the
+  // screen's own top level - above the early returns below, which unmount and
+  // remount the ready-only child on every connection transition. A gate held
+  // inside that child would be destroyed mid-mutation by the same transition
+  // a write outlives, and a reopened screen would permit a second write
+  // beside the first. It belongs to this screen rather than to the client - a
+  // mutation outlives the store it was issued on, so a gate rebuilt per
+  // client would let the next one start beside it - and is held the way the
+  // credential store is (credentialStore.ts), as committed state a discarded
+  // render cannot leave behind.
+  const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, retry } = useConnection();
   if (activeProfile?.id !== route.params.hubId)
     return (
@@ -48,6 +68,7 @@ export function PluginsScreen({
       key={activeProfile.id}
       client={client}
       hubName={activeProfile.name}
+      gate={gate}
     />
   );
 }
@@ -55,14 +76,17 @@ export function PluginsScreen({
 function Plugins({
   client,
   hubName,
+  gate,
 }: {
   client: ConversationClientLike;
   hubName: string;
+  gate: PluginMutationGate;
 }) {
   const colors = useColors();
-  const model = useMemo(() => new InstalledPlugins(client), [client]);
-  const state = useSyncExternalStore(model.subscribe, model.getSnapshot);
+  const model = useMemo(() => createPluginsStore(client), [client]);
+  const state = useSyncExternalStore(model.subscribe, model.getState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
+  const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<PluginRefParams | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -82,11 +106,13 @@ function Plugins({
   );
   useEffect(() => {
     model.start();
+    void model.getState().fetchPlugins();
     return () => {
       editorVersion.current += 1;
       model.dispose();
     };
   }, [model]);
+  const listError = state.pluginsError === null ? null : INSTALLED_PLUGINS_FAILED;
   const close = useCallback(() => {
     editorVersion.current += 1;
     setSelected(null);
@@ -102,8 +128,10 @@ function Plugins({
     setActionError(null);
     setNotice(null);
     try {
-      await action();
-      if (version === editorVersion.current && success) setNotice(success);
+      const ran = await gate.run(action);
+      if (version !== editorVersion.current) return;
+      if (!ran) setActionError(PLUGIN_MUTATION_BUSY);
+      else if (success) setNotice(success);
     } catch {
       if (version === editorVersion.current)
         setActionError(
@@ -112,7 +140,7 @@ function Plugins({
     }
   }
   function remove() {
-    if (!selected || state.busy) return;
+    if (!selected || busy) return;
     const target = selected;
     const version = editorVersion.current;
     Alert.alert(
@@ -125,7 +153,9 @@ function Plugins({
           style: "destructive",
           onPress: () => {
             if (version === editorVersion.current)
-              void act(() => model.remove(target));
+              void act(() =>
+                state.removePlugin(target.plugin, target.marketplace),
+              );
           },
         },
       ],
@@ -155,6 +185,7 @@ function Plugins({
           client={client}
           hubName={hubName}
           installed={model}
+          gate={gate}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
@@ -168,9 +199,9 @@ function Plugins({
           }
           contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
-          refreshing={state.loading}
+          refreshing={state.pluginsLoading}
           onRefresh={() => {
-            void model.refresh();
+            void state.fetchPlugins();
           }}
           ListHeaderComponent={
             <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -188,11 +219,11 @@ function Plugins({
                   { color: colors.text, borderColor: colors.border },
                 ]}
               />
-              <ErrorMessage message={state.error} />
-              {state.error && (
+              <ErrorMessage message={listError} />
+              {listError && (
                 <Action
                   onPress={() => {
-                    void model.refresh();
+                    void state.fetchPlugins();
                   }}
                 >
                   Retry
@@ -201,7 +232,7 @@ function Plugins({
             </View>
           }
           ListEmptyComponent={
-            state.loading ? (
+            state.pluginsLoading ? (
               <ActivityIndicator accessibilityLabel="Loading installed plugins" />
             ) : state.plugins !== null ? (
               <Copy muted>
@@ -269,7 +300,7 @@ function Plugins({
               )}
               <ErrorMessage message={actionError} />
               {notice && <Copy>{notice}</Copy>}
-              {state.busy && (
+              {busy && (
                 <ActivityIndicator accessibilityLabel="Updating plugin" />
               )}
               <View style={[styles.row, { minHeight: 48, gap: 16 }]}>
@@ -279,11 +310,13 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Plugin enabled by default"
                   value={entry.enabled}
-                  disabled={state.busy}
+                  disabled={busy}
                   onValueChange={(enabled) => {
                     const target = selected;
                     void act(() =>
-                      enabled ? model.enable(target) : model.disable(target),
+                      enabled
+                        ? state.enablePlugin(target.plugin, target.marketplace)
+                        : state.disablePlugin(target.plugin, target.marketplace),
                     );
                   }}
                 />
@@ -295,19 +328,25 @@ function Plugins({
                 <Switch
                   accessibilityLabel="Automatic plugin upgrades"
                   value={entry.autoUpgrade}
-                  disabled={state.busy}
+                  disabled={busy}
                   onValueChange={(value) => {
                     const target = selected;
-                    void act(() => model.setAutoUpgrade(target, value));
+                    void act(() =>
+                      state.setPluginAutoUpgrade(
+                        target.plugin,
+                        target.marketplace,
+                        value,
+                      ),
+                    );
                   }}
                 />
               </View>
               <Action
-                disabled={state.busy}
+                disabled={busy}
                 onPress={() => {
                   const target = selected;
                   void act(
-                    () => model.upgrade(target),
+                    () => state.upgradePlugin(target.plugin, target.marketplace),
                     "Checked for upgrades.",
                   );
                 }}
@@ -329,7 +368,7 @@ function Plugins({
                   )}
                 </>
               )}
-              <Action disabled={state.busy} onPress={remove}>
+              <Action disabled={busy} onPress={remove}>
                 Remove plugin
               </Action>
             </ScrollView>

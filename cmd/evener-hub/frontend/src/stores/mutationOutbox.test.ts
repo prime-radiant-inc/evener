@@ -7,6 +7,16 @@ import { type MutationIntent, MutationOutbox } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 import { holdIndexedDBEvent } from "./testing/stalledIndexedDB";
 
+// stop() awaits discovery that is already RUNNING; it no longer executes work
+// that was only queued (a stopped outbox discovers nothing — outbox.ts's
+// #mayDiscover). A test that means "let the queued scan happen" therefore waits
+// for its effect and then stops, instead of leaning on stop() as a flush.
+async function discovered(check: () => boolean): Promise<void> {
+  await vi.waitFor(() => {
+    if (!check()) throw new Error("discovery has not landed yet");
+  });
+}
+
 const TARGET = "local:thread-1";
 
 function intent(text: string, targetRef = TARGET): MutationIntent {
@@ -576,6 +586,7 @@ describe("MutationOutbox discovery", () => {
     discoveries.length = 0;
 
     await tabA.enqueueIntent(intent("broadcast wake"));
+    await discovered(() => discoveries.some((entry) => entry.reason === "broadcast"));
     await tabA.stop();
     await tabB.stop();
     expect(discoveries).toContainEqual({ targets: [TARGET], reason: "broadcast" });
@@ -711,6 +722,7 @@ describe("MutationOutbox discovery", () => {
       expect(discoveries).toEqual(["startup"]);
       hold?.release();
       lifecycleWindow.dispatchEvent(new Event("focus"));
+      await discovered(() => discoveries.includes("focus"));
       await outbox.stop();
       expect(discoveries).toEqual(["startup", "focus"]);
       expect(await storage.getOutbox(record.clientMutationId)).toEqual(record);
@@ -742,6 +754,7 @@ describe("MutationOutbox discovery", () => {
     });
     await outbox.start();
     for (let index = 0; index < 20; index += 1) tick?.();
+    await discovered(() => discoveries.includes("interval"));
     await outbox.stop();
     expect(discoveries).toEqual(["startup", "interval"]);
     storage.close();
@@ -780,6 +793,7 @@ describe("MutationOutbox discovery", () => {
       createMutationId: idSequence("crashed-origin"),
     }).enqueueIntent(intent("committed without broadcast"));
     intervals[0]?.();
+    await discovered(() => discoveries.some((entry) => entry.reason === "interval"));
     await survivingTab.stop();
 
     expect(discoveries).toEqual([
@@ -788,6 +802,139 @@ describe("MutationOutbox discovery", () => {
       { targets: [TARGET], reason: "interval" },
     ]);
     expect(await storage.listOutbox(TARGET)).toHaveLength(1);
+  });
+
+  // Discovery is serialized, so "may I discover?" has to be asked when a scan
+  // RUNS, not only when it is queued: a scan can wait behind a slow one while the
+  // outbox stops or readiness is lost. Three ways in, one answer.
+  test("a scan queued before stop() discovers nothing once the queue drains", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    await storage.enqueueIntent(intent("waiting"));
+    const intervals: Array<() => void> = [];
+    const discoveries: string[] = [];
+    let releaseStartup: () => void = () => undefined;
+    const startupBlocked = new Promise<void>((resolve) => {
+      releaseStartup = resolve;
+    });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover: async (_targets, reason) => {
+        discoveries.push(reason);
+        if (reason === "startup") await startupBlocked;
+      },
+      setInterval(callback) {
+        intervals.push(callback);
+        return intervals.length;
+      },
+      clearInterval() {},
+    });
+    await outbox.start();
+    // The startup scan is running (and blocked); the interval scan queues behind it.
+    await discovered(() => discoveries.includes("startup"));
+    intervals[0]?.();
+    const stopped = outbox.stop();
+    releaseStartup();
+    await stopped;
+    expect(discoveries).toEqual(["startup"]);
+  });
+
+  test("connectionReady() after stop() discovers nothing", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    await storage.enqueueIntent(intent("waiting"));
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover: (_targets, reason) => {
+        discoveries.push(reason);
+      },
+    });
+    await outbox.start();
+    await outbox.stop();
+    discoveries.length = 0;
+    await outbox.connectionReady();
+    expect(discoveries).toEqual([]);
+  });
+
+  test("a scan queued while ready discovers nothing if readiness is lost first", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    await storage.enqueueIntent(intent("waiting"));
+    const intervals: Array<() => void> = [];
+    const discoveries: string[] = [];
+    let ready = true;
+    let releaseStartup: () => void = () => undefined;
+    const startupBlocked = new Promise<void>((resolve) => {
+      releaseStartup = resolve;
+    });
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => ready,
+      onDiscover: async (_targets, reason) => {
+        discoveries.push(reason);
+        if (reason === "startup") await startupBlocked;
+      },
+      setInterval(callback) {
+        intervals.push(callback);
+        return intervals.length;
+      },
+      clearInterval() {},
+    });
+    await outbox.start();
+    await discovered(() => discoveries.includes("startup"));
+    intervals[0]?.();
+    // The connection drops while the queued interval scan waits its turn.
+    ready = false;
+    releaseStartup();
+    await outbox.stop();
+    expect(discoveries).toEqual(["startup"]);
+  });
+
+  // A timer that outlives stop() keeps scanning a shut-down outbox. The pair is
+  // injected together (a host that can schedule can cancel), stop() cancels it,
+  // and a callback already in flight when stop() ran discovers nothing.
+  test("a stopped outbox runs no further scan, even from a timer callback that already fired", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    await storage.enqueueIntent(intent("waiting"));
+    const intervals: Array<() => void> = [];
+    const cleared: number[] = [];
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover: (_targets, reason) => {
+        discoveries.push(reason);
+      },
+      setInterval(callback) {
+        intervals.push(callback);
+        return intervals.length;
+      },
+      clearInterval(id) {
+        cleared.push(id);
+      },
+    });
+    await outbox.start();
+    await outbox.stop();
+    expect(cleared).toEqual([1]);
+
+    // The host's timer fired anyway — a callback can already be queued when
+    // clearInterval lands — and the stopped outbox does nothing with it.
+    discoveries.length = 0;
+    intervals[0]?.();
+    await outbox.stop();
+    expect(discoveries).toEqual([]);
   });
 
   test("startup, ready, online, focus, visibility, and two-second ready scans only discover durable work", async () => {
@@ -839,6 +986,9 @@ describe("MutationOutbox discovery", () => {
     lifecycleWindow.dispatchEvent(new Event("focus"));
     lifecycleDocument.dispatchEvent(new Event("visibilitychange"));
     intervals[0]?.callback();
+    // Each lifecycle scan queues behind the last; wait for the tail rather than
+    // leaning on stop(), which no longer runs work that has not started.
+    await discovered(() => discoveries.some(({ reason }) => reason === "interval"));
     await outbox.stop();
 
     expect(discoveries.map(({ reason }) => reason)).toEqual([
