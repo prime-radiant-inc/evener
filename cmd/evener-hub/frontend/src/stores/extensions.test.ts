@@ -998,6 +998,32 @@ describe("reconnect-triggered refetch", () => {
     expect(extensionsStore.getState().pluginRevision).toBe(1);
   });
 
+  // The cores subscribe through this store's port, not to a client directly,
+  // and the port follows connectionStore (onConnectionNotification re-wires on
+  // every client change). So a notification from a client that has been
+  // replaced must reach nothing: it describes a hub this browser no longer
+  // speaks to, and acting on it would retire the new hub's caches or move the
+  // revision its consumers key on.
+  test("a notification from a replaced client moves nothing", async () => {
+    const stale = connectFakeClient();
+    stale.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    stale.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
+    await extensionsStore.getState().fetchPlugins();
+    await extensionsStore.getState().fetchMarketplaces();
+    await extensionsStore.getState().browseMarketplace("acme-plugins");
+
+    const current = connectFakeClient();
+    const revision = extensionsStore.getState().pluginRevision;
+    const calls = current.calls.length;
+
+    stale.emitNotification({ method: "evener/plugin/updated", params: {} });
+    stale.emitNotification({ method: "evener/marketplace/updated", params: {} });
+    await drainMicrotasks();
+
+    expect(extensionsStore.getState().pluginRevision).toBe(revision);
+    expect(current.calls).toHaveLength(calls);
+  });
+
   test("a reconnect reads nothing for a section that was never opened", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));

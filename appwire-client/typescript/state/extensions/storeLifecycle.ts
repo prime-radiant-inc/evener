@@ -66,8 +66,17 @@ export interface StoreLifecycle<S> {
   dispose(): void;
 }
 
+/**
+ * `notifications` is where the store hears the hub. A host supplies either a
+ * real client, which it then names in connectionChanged - so a notification
+ * arriving through a client that is no longer the connection is stale, and
+ * ignored - or a port that follows the connection for it and therefore never
+ * appears in connectionChanged at all (the web's, which re-wires onto each new
+ * client and drops the previous one's subscription). Both are safe; the first
+ * is made safe here, the second by the port.
+ */
 export function createStoreLifecycle<S>(
-  client: Pick<AppwireClient, "onNotification">,
+  notifications: Pick<AppwireClient, "onNotification">,
   options: StoreLifecycleOptions<S>,
 ): StoreLifecycle<S> {
   let stopNotifications: (() => void) | undefined;
@@ -77,6 +86,10 @@ export function createStoreLifecycle<S>(
   // Whether this store has ever had a ready connection: what tells a
   // reconnection from a first connection.
   let hasBeenReady = false;
+  // Whether the host names the subscription as its connection; see the factory
+  // doc. Set the first time connectionChanged mentions it, which a host using
+  // a port never does.
+  let subscriptionIsTheConnection = false;
   // The store's own publish, guarded: kept so the fence can settle what the
   // requests it cancels would have answered.
   let guardedSet: FrameworkFreeStore<S>["setState"] | undefined;
@@ -93,6 +106,11 @@ export function createStoreLifecycle<S>(
     // that dispatch (AppwireClient.setState does exactly this), so the flag
     // is what actually ends this store's interest in the notification.
     if (disposed || n.method !== options.method) return;
+    // A change announced by a client that is no longer the connection is about
+    // a hub this store has stopped speaking to: acting on it would retire the
+    // current hub's caches, move the revision its consumers key on, and read a
+    // list from the connection that was replaced.
+    if (subscriptionIsTheConnection && connection.client !== notifications) return;
     // The notification names nothing, so a refetch of the whole list is the
     // only way to apply it.
     options.onNotified?.();
@@ -111,7 +129,7 @@ export function createStoreLifecycle<S>(
     },
     start() {
       if (disposed || stopNotifications) return;
-      stopNotifications = client.onNotification(handleNotification);
+      stopNotifications = notifications.onNotification(handleNotification);
     },
     reset() {
       if (disposed) return;
@@ -126,6 +144,7 @@ export function createStoreLifecycle<S>(
     },
     connectionChanged(client, state) {
       const previous = connection;
+      if (client === notifications) subscriptionIsTheConnection = true;
       // Not a transition. A host publishes its connection on every change it
       // makes to it, and most of those are metadata - the handshake's
       // serverInfo and features land as one, on the client and state the

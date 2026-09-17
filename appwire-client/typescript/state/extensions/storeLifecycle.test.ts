@@ -491,6 +491,22 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       });
     }
 
+    test("a notification from the client that was replaced schedules no read", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+      store.start();
+
+      const current = lifecycle.create().fake;
+      store.connectionChanged(current, "ready");
+      const reads = lifecycle.listCalls(fake);
+
+      lifecycle.notifyUpdated(fake);
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(lifecycle.listCalls(fake)).toBe(reads);
+    });
+
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
