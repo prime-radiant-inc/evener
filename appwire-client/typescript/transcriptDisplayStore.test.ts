@@ -443,13 +443,13 @@ describe("the direct write", () => {
     const write = store.getState().patchHubDefault("mobile", proposed);
     await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
 
-    // Same hub, momentarily unreachable: the value the user asked for may
-    // well have been applied, so the host keeps showing it.
+    // Retirement alone does not clear it: the value the user asked for may well
+    // have been applied, and nothing authoritative has said otherwise yet.
     store.endReadyGeneration();
     expect(store.getState().drafts.mobile).toEqual(proposed);
-    store.beginReadyGeneration();
-    await store.getState().refreshHubDefaults();
-    expect(store.getState().drafts.mobile).toEqual(proposed);
+
+    // (What the NEXT authoritative read does to it is decided by whether that
+    // payload matches the preview - the two tests above own that rule.)
 
     // A DIFFERENT hub: the preview describes a write sent to the old one and
     // says nothing about this one's value.
@@ -648,6 +648,32 @@ describe("the direct write", () => {
     store.beginReadyGeneration();
     await store.getState().refreshHubDefaults();
     expect(store.getState().hub.mobile).toEqual(hubDefault(3, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a new generation's EQUAL-revision read still invalidates a contradicted preview", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await write;
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+
+    // The new generation's first authoritative payload numbers the SAME as the
+    // preview's base but holds something else. The number says nothing across a
+    // generation boundary; the configuration is what decides.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(2, desktopConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, desktopConfig));
     expect(store.getState().drafts.mobile).toBeUndefined();
   });
 

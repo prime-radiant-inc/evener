@@ -424,14 +424,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * that MATCHES it is left alone: the host still has an unacknowledged write to
    * report, and the preview is what it reports about.
    *
-   * The comparison is revision INEQUALITY, not "newer", because revision
-   * numbering is the hub's: a reconnect to a RESTARTED hub legitimately numbers
-   * LOWER, and a payload at a different number from the one the guess was
-   * composed against has decided the layer whichever direction it moved. Only
-   * an EQUAL revision says nothing new - the same decision re-stated, which is
-   * what a reconnect to the same hub re-reads. Not part of `drafts`, which is
-   * the host's published shape. */
-  const previewBases = new Map<ViewportClass, number>();
+   * What decides is the CONFIGURATION, and the revision only says whether the
+   * number is comparable at all. Within the generation the guess was made in,
+   * numbering is the same hub's, so only a higher revision has decided anything
+   * and an equal one is the same decision re-stated. ACROSS a generation
+   * boundary the number is not comparable - a reconnect may reach a restarted
+   * hub numbering from its own 1, or the same hub at the same number - so the
+   * configuration alone decides: a first authoritative payload that contradicts
+   * the guess clears it whether it numbers lower, equal or higher. Not part of
+   * `drafts`, which is the host's published shape. */
+  const previewBases = new Map<ViewportClass, { generation: number; revision: number }>();
   let patchSerial = 0;
   const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
     ...initialState(),
@@ -580,7 +582,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       previewBase !== undefined &&
       preview !== undefined &&
       configFingerprint(value.config) !== configFingerprint(preview) &&
-      value.revision !== previewBase;
+      (previewBase.generation !== fence.generation || value.revision > previewBase.revision);
     if (contradictsPreview) previewBases.delete(layout);
     const drafts = { ...state.drafts };
     if (contradictsPreview) delete drafts[layout];
@@ -813,7 +815,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const token = claimLayoutWrite(layout);
     fence.claimWrite();
     const stillMine = () => writeStillMine(generation, layout, token);
-    previewBases.set(layout, confirmed.revision);
+    previewBases.set(layout, { generation, revision: confirmed.revision });
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
     const clearPreview = (): Partial<TranscriptDisplayStoreFields> => {
       previewBases.delete(layout);
