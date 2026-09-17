@@ -3,6 +3,7 @@ import type { ThreadModel } from "../../model";
 import type { PendingTurnsDraftPort, PendingTurnsThreadsPort } from "./pendingTurns";
 import { createPendingTurnsStore } from "./pendingTurns";
 import type { ClientIdentity, MutationOptimisticRecord, MutationOutboxRecord } from "./records";
+import { threadModel } from "./testing";
 
 // A fake ClientIdentity's isOwnMutationRecord half, over a fixed id rather
 // than createClientIdentity's own storage/random-source machinery - that
@@ -215,10 +216,7 @@ describe("createPendingTurnsStore", () => {
 
   describe("pendingTurnEntries", () => {
     test("reconciles this store's outbox and optimistic records against the injected thread model", () => {
-      const model: ThreadModel = {
-        turns: [],
-        pendingMutations: [],
-      } as unknown as ThreadModel;
+      const model = threadModel({ turns: [], pendingMutations: [] });
       const store = createPendingTurnsStore({
         threads: fakeThreadsPort({ "ref-a": model }),
         draft: fakeDraftPort(),
@@ -235,7 +233,7 @@ describe("createPendingTurnsStore", () => {
     });
 
     test("filters by method when one is given", () => {
-      const model: ThreadModel = { turns: [], pendingMutations: [] } as unknown as ThreadModel;
+      const model = threadModel({ turns: [], pendingMutations: [] });
       const store = createPendingTurnsStore({
         threads: fakeThreadsPort({ "ref-a": model }),
         draft: fakeDraftPort(),
@@ -253,7 +251,7 @@ describe("createPendingTurnsStore", () => {
     });
 
     test("reads the thread model through the injected port, not a parameter", () => {
-      const modelA: ThreadModel = { turns: [], pendingMutations: [] } as unknown as ThreadModel;
+      const modelA = threadModel({ turns: [], pendingMutations: [] });
       const store = createPendingTurnsStore({
         threads: fakeThreadsPort({ "ref-a": modelA, "ref-b": undefined }),
         draft: fakeDraftPort(),
