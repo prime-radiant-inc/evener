@@ -1,4 +1,4 @@
-import type { ClientIdentity, ClientIdentityStorage } from "@evener/appwire-client/state/mutation";
+import type { ClientIdentity, ClientIdentityStorage, SecureRandomSource } from "@evener/appwire-client/state/mutation";
 import { createClientIdentity } from "@evener/appwire-client/state/mutation";
 
 // sessionStorage is per-tab, stable across that tab's reloads, which is what
@@ -13,7 +13,24 @@ const sessionStorageAdapter: ClientIdentityStorage = {
   setItem: (key, value) => globalThis.sessionStorage?.setItem(key, value),
 };
 
-let instance: ClientIdentity = createClientIdentity(sessionStorageAdapter);
+// globalThis.crypto is read once, guarded: touching the property at all can
+// throw in a locked-down page, and this app's target has no other random
+// source to fall back to, so a throw here still hands createSecureUUID an
+// empty source (its own documented non-crypto id) instead of crashing.
+function browserRandomSource(): SecureRandomSource {
+  try {
+    const crypto = globalThis.crypto;
+    return {
+      randomUUID: typeof crypto?.randomUUID === "function" ? () => crypto.randomUUID() : undefined,
+      getRandomValues:
+        typeof crypto?.getRandomValues === "function" ? (array) => crypto.getRandomValues(array) : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
+let instance: ClientIdentity = createClientIdentity(sessionStorageAdapter, browserRandomSource());
 
 export function ownClientId(): string {
   return instance.ownClientId();
@@ -29,6 +46,6 @@ export function isOwnMutationRecord(record: { originClientId?: string }): boolea
 export function setMutationClientIdentityForTests(value: string | undefined): void {
   instance =
     value === undefined
-      ? createClientIdentity(sessionStorageAdapter)
-      : createClientIdentity({ getItem: () => value, setItem: () => undefined });
+      ? createClientIdentity(sessionStorageAdapter, browserRandomSource())
+      : createClientIdentity({ getItem: () => value, setItem: () => undefined }, browserRandomSource());
 }

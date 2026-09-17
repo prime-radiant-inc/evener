@@ -1,3 +1,4 @@
+import type { SecureRandomSource } from "./secureUUID";
 import { createSecureUUID } from "./secureUUID";
 
 // The durable shape of a mutation this client submitted, and the one question
@@ -109,11 +110,13 @@ export interface ClientIdentity {
 const STORAGE_KEY = "evener-hub.mutation-client-identity";
 
 // A fresh storeable identity, over the same secure-UUID helper mutation ids
-// use: createSecureUUID already prefers crypto.randomUUID and falls back to
-// an RFC4122-shaped id built from getRandomValues, so this module carries no
-// second, weaker fallback of its own.
-function newClientIdentity(): string {
-  return `mutation-client-${createSecureUUID()}`;
+// use: createSecureUUID already prefers randomUUID and falls back to an
+// RFC4122-shaped id built from getRandomValues, or, lacking either, its own
+// documented non-crypto id — so this module carries no second fallback of
+// its own, and no default source: a host's random capability (globalThis.crypto,
+// expo-crypto, none) is never this package's to assume.
+function newClientIdentity(randomSource: SecureRandomSource): string {
+  return `mutation-client-${createSecureUUID(randomSource)}`;
 }
 
 // One identity per instance, not a module singleton: the package names no
@@ -128,7 +131,10 @@ function newClientIdentity(): string {
 // storage becoming available later; reading storage again would switch
 // identity mid-life and make records stamped with the first one look like
 // another client's.
-export function createClientIdentity(storage: ClientIdentityStorage | undefined): ClientIdentity {
+export function createClientIdentity(
+  storage: ClientIdentityStorage | undefined,
+  randomSource: SecureRandomSource,
+): ClientIdentity {
   let identity: string | undefined;
 
   function ownClientId(): string {
@@ -142,7 +148,7 @@ export function createClientIdentity(storage: ClientIdentityStorage | undefined)
     } catch {
       // Best-effort: the identity below keeps this client consistent either way.
     }
-    identity = newClientIdentity();
+    identity = newClientIdentity(randomSource);
     try {
       storage?.setItem(STORAGE_KEY, identity);
     } catch {

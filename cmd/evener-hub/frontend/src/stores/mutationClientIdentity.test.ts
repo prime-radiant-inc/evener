@@ -12,7 +12,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  if (originalSessionStorage) Object.defineProperty(globalThis, "sessionStorage", originalSessionStorage);
+  if (originalSessionStorage) {
+    Object.defineProperty(globalThis, "sessionStorage", originalSessionStorage);
+  } else {
+    delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  }
+  vi.unstubAllGlobals();
 });
 
 test("the generated identity uses crypto.randomUUID when available", async () => {
