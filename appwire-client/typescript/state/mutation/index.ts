@@ -7,8 +7,6 @@
 // every React binding stay in the apps — this subpath is what a record IS, how
 // waiting work gets noticed, and how it reconciles, not where it lives.
 
-export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
-export { reconcilePendingEntries } from "./pendingEntries";
 export type {
   MutationDiscoveryReason,
   MutationLifecycleTarget,
@@ -18,6 +16,8 @@ export type {
   MutationVisibilityTarget,
 } from "./outbox";
 export { MutationOutbox } from "./outbox";
+export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
+export { reconcilePendingEntries } from "./pendingEntries";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
