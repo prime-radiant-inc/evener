@@ -5,8 +5,7 @@ import (
 	"testing"
 )
 
-// The one table for the rule every site now shares. Before this, the same three
-// cases were spelled out per site and each copy lost a different one.
+// The one table for the rule every site now shares.
 func TestMergeOutputImages(t *testing.T) {
 	images := []OutputImage{{Name: "shot.png", SHA: "abc"}}
 	replacement := []OutputImage{{Name: "other.png", SHA: "def"}}
@@ -16,24 +15,17 @@ func TestMergeOutputImages(t *testing.T) {
 		existing []OutputImage
 		incoming []OutputImage
 		want     []OutputImage
-		wantNil  bool
 	}{
 		{name: "an unsaid list keeps the existing images", existing: images, incoming: nil, want: images},
 		{name: "an empty list removes them", existing: images, incoming: []OutputImage{}, want: []OutputImage{}},
 		{name: "a fresh list replaces them", existing: images, incoming: replacement, want: replacement},
 		{name: "an empty list stands on an item that had none", existing: nil, incoming: []OutputImage{}, want: []OutputImage{}},
-		{name: "nothing said about an item that had none stays nothing", existing: nil, incoming: nil, wantNil: true},
+		{name: "nothing said about an item that had none stays nothing", existing: nil, incoming: nil, want: nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := MergeOutputImages(tc.existing, tc.incoming)
-			if tc.wantNil {
-				if got != nil {
-					t.Fatalf("merged = %+v, want nil", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("merged = nil, want %+v", tc.want)
+			if (got == nil) != (tc.want == nil) {
+				t.Fatalf("merged = %+v, want %+v", got, tc.want)
 			}
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("merged = %+v, want %+v", got, tc.want)

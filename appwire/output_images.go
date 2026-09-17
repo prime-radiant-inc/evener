@@ -11,11 +11,7 @@ import "slices"
 //     so, and the frame carries "outputImages": [].
 //   - non-empty: these are the images.
 //
-// The two helpers below are the whole rule. They exist because the rule was
-// spelled out five times — a clone here, a merge there, a make+copy in the item
-// pager — and each copy lost it differently: `append([]OutputImage(nil), …)`
-// flattens an empty list into a nil one, and `len(incoming) == 0` reads a
-// removal as "the later item said nothing" and puts the old images back.
+// The two helpers below are the whole rule.
 //
 // Input images need none of this: nothing removes them (they are what the user
 // sent) and Images is omitempty, so an empty list and an absent one encode

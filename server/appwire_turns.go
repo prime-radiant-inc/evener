@@ -881,10 +881,7 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	if incoming.Delta == "" {
 		incoming.Delta = existing.Delta
 	}
-	// Input images keep the length rule: nothing removes them (they are what the
-	// user sent), the field is omitempty, so an empty list and an absent one are
-	// the same thing on the wire. Output images have their own rule, which
-	// appwire.MergeOutputImages owns.
+	// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
 	}

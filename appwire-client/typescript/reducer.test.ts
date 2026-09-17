@@ -6246,11 +6246,9 @@ test("thread/status/changed carries askPending, and absence leaves it alone", ()
 });
 
 // The hub says "this item's output images are gone" with an explicit [] on the
-// item frame (appwire.ThreadItem.OutputImages is omitzero for exactly this).
-// The conversion collapsed that to undefined, so mergePageItem's
-// `newer.outputImages ?? older.outputImages` put the older page's images back
-// and the removal never reached the screen. An absent field still means "this
-// frame says nothing", where the other side's list is the only one anybody has.
+// item frame (appwire.ThreadItem.OutputImages is omitzero for exactly this). An
+// absent field still means "this frame says nothing", where the other side's
+// list is the only one anybody has.
 test("an explicit empty outputImages list removes the images an older page still carries", () => {
   const thread = testThread({
     turns: [
@@ -6350,13 +6348,7 @@ test("an absent outputImages field keeps the images the other page carries", () 
   expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
 });
 
-// Input images have ONE rule, and it is the length rule, matching the Go side of
-// the same wire: ThreadItem.Images is omitempty (nothing removes an item's input
-// images — they are what the user sent), so an empty list and an absent one are
-// the same thing and neither may erase what another page holds. The recorded
-// fixture sends "images": [] on a steering notification
-// (fixtures/tool-and-jobs.jsonl), so treating that as a removal erases real
-// input images from an older page. Only outputImages carries empty-is-a-value.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 test("an empty input images list never erases the images an older page carries", () => {
   const thread = testThread({
     turns: [

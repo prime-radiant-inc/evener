@@ -445,9 +445,7 @@ func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
 	if merged.Delta == "" {
 		merged.Delta = older.Delta
 	}
-	// Length, not nil: an empty input-image list says nothing about images (the
-	// wire has no removal for them), so it must not erase the older page's own.
-	// Output images below are the opposite, which is why they have their own rule.
+	// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 	if len(merged.Images) == 0 {
 		merged.Images = older.Images
 	}

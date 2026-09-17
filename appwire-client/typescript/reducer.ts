@@ -311,13 +311,7 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
-// Empty and absent are the SAME here, unlike outputImages below: nothing
-// removes an item's input images — they are what the user sent — so
-// ThreadItem.Images is omitempty on the wire and the hub's own merges fall back
-// on a zero-length list (server/appwire_turns.go, apptranscript's twin).
-// Answering [] would make mergePageItem's `newer.images ?? older.images` erase
-// an older page's real images whenever a frame carries images: [], which the
-// recorded steering notification in fixtures/tool-and-jobs.jsonl does.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
@@ -368,13 +362,9 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-// Empty IS a value here, unlike the input images above: a tool whose output
-// images were cleared says so with [] (appwire.ThreadItem.OutputImages is
-// omitzero for exactly this), and an older page must not replay the ones it
-// had. undefined stays "this frame said nothing about images".
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images) return undefined;
-  if (images.length === 0) return [];
   return images.map((img) => ({
     src: img.url ?? img.path ?? img.name ?? img.source,
     name: img.name,
@@ -480,22 +470,7 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
 }
 
-// A settle says nothing about images unless it carries them, and the two lists
-// differ in what "nothing" means.
-//
-// Input images: `undefined` is the only signal this merge sees.
-// imagesToItemImagesForSession answers it for a payload that left the field out
-// and for an empty list alike, because the wire has no removal for input images
-// — they are what the user sent — and the hub keeps the existing list for a
-// zero-length one (appwire.ThreadItem.Images is omitempty). So a settle can only
-// add them, never clear them.
-//
-// Output images: an explicit empty list IS the removal
-// (appwire.ThreadItem.OutputImages is omitzero, and appwire.MergeOutputImages
-// carries the rule on the Go side), so outputImagesToItemImages answers `[]` for
-// it and `undefined` only for a payload that carried no field. The `??` below
-// therefore lets that `[]` win over the images the item already had, while still
-// keeping them when the settle said nothing.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (!existing) return settled;
   const images = settled.images ?? existing.images;

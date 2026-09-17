@@ -6,10 +6,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// The rule is appwire.MergeOutputImages's, with its own table there. What this
-// package owes is that its merge — which mirrors the server twin's field
-// precedence, its doc comment says so — calls it rather than spelling out a
-// length check that reads a removal as silence.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 func TestMergeCallsTheSharedOutputImageRule(t *testing.T) {
 	existing := appwire.ThreadItem{
 		ID:           "item_1",

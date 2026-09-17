@@ -8,14 +8,11 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// An explicit empty image list is the hub's only way to say "the pictures are
-// gone" (appwire.ThreadItem.OutputImages). Every layer between the projector
-// and the socket therefore has to carry the difference between an empty list
-// and no list at all, and the two below are where it was lost.
+// output images: see appwire.MergeOutputImages; input images keep the length rule.
 
-// The clone flattened an empty non-nil output list to nil (append to a nil
-// slice yields nil), so it erased the removal the item announces; and nil input
-// must stay nil, or a clone announces a removal that never happened.
+// A clone must keep an explicit empty output list non-nil, and a nil input list
+// nil: either direction turns a removal into an absence, or an absence into a
+// removal that never happened.
 func TestCloneCarriesImageListNilnessBothWays(t *testing.T) {
 	removed := cloneAppThreadItem(appwire.ThreadItem{
 		ID:           "item_1",
@@ -93,12 +90,6 @@ func TestRecordedItemFrameCarriesTheExplicitEmptyOutputImageList(t *testing.T) {
 	settled, ok := findToolItem(cloned, "call_shot")
 	if !ok {
 		t.Fatal("the cloned snapshot has no item for the settled tool call")
-	}
-	if settled.OutputImages == nil {
-		t.Fatal("the cloned snapshot's item has no outputImages list, so the removal is lost on the read path")
-	}
-	if len(settled.OutputImages) != 0 {
-		t.Fatalf("the cloned snapshot's item carries %+v, want the empty list the frame announced", settled.OutputImages)
 	}
 	encoded, err := json.Marshal(settled)
 	if err != nil {

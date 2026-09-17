@@ -60,9 +60,7 @@ func TestToolResultImageDescriptorWaitsForItsBytes(t *testing.T) {
 	// Everything else has to match the item the client already has: this is a
 	// second item/completed for an id it settled, and clients replace a
 	// completed item wholesale rather than merging field by field.
-	// Both sides are normalised, not just one: the settled item carries an
-	// empty, non-nil list (the removal the client is told about) and the
-	// released one the restored descriptors, and DeepEqual tells those apart.
+	// Both sides are normalised: nil and an empty list are equal in length but not to DeepEqual.
 	released.OutputImages = nil
 	settled.OutputImages = nil
 	if !reflect.DeepEqual(released, settled) {

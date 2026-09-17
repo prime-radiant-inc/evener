@@ -9,9 +9,7 @@ import (
 // The rule is appwire.MergeOutputImages's, with its own table there. What this
 // package owes is that its page merge calls it: an empty list from the newer
 // item is the hub saying the images are gone and must win, while a list the
-// newer item says nothing about leaves the older page's own standing. Nothing
-// covered this site before — reverting it to a length check left this suite
-// green, which is why the test is here.
+// newer item says nothing about leaves the older page's own standing.
 func TestMergeHubItemCallsTheSharedOutputImageRule(t *testing.T) {
 	older := appwire.ThreadItem{
 		ID:           "item_1",
@@ -29,13 +27,7 @@ func TestMergeHubItemCallsTheSharedOutputImageRule(t *testing.T) {
 	}
 }
 
-// Input images follow the length rule, the same as everywhere else on this wire:
-// nothing removes an item's input images (they are what the user sent), so an
-// empty list and an absent one both mean "this page said nothing about images"
-// and neither may erase what the older page holds. The hub's own merges read it
-// that way (server/appwire_turns.go, internal/apptranscript/logical_turn.go), and
-// so does the TypeScript reducer; a nil-only check here made an explicit
-// images: [] erase the older item's images in the TUI alone.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 func TestMergeHubItemKeepsOlderInputImagesForAnEmptyList(t *testing.T) {
 	older := appwire.ThreadItem{
 		ID:     "item_1",
