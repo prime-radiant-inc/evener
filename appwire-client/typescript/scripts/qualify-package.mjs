@@ -274,6 +274,11 @@ assert.deepEqual(client.presetContent("chat"), { toolIntent: true, toolCalls: fa
 assert.deepEqual(client.decodeLocalConfig(client.encodeLocalConfig(displayConfig)), displayConfig);
 assert.equal(client.resolveEffectiveConfig({ local: null, hub: client.shippedDefault("desktop") }).content.level, "tools");
 assert.equal(client.visibleCategoryInventory(displayConfig).visible.includes("tokenCounts"), true);
+const projectorTurn = { id: "turn1", status: "completed", items: [{ id: "item1", type: "userMessage", text: "hi" }] };
+const projection = client.projectThread({ turns: [projectorTurn] }, displayConfig);
+assert.equal(projection.turns[0].entries[0].kind, "item");
+assert.equal(projection.turns[0].entries[0].id, "item1");
+assert.equal(typeof client.ACTION_SUMMARY_UNAVAILABLE, "string");
 assert.equal(client.legacyConfigFromValues({ transcriptHookExitsAll: "1" })?.advanced.hookExits, "all");
 assert.deepEqual(client.resolveScalars({ model: "openai/gpt-5", reasoningEffort: "low" }, { model: "anthropic/claude", reasoningEffort: "" }), { model: "anthropic/claude", reasoningEffort: "low" });
 assert.deepEqual(client.withPluginSelection({ enabledPlugins: ["old"], model: "m" }, { mode: "explicit", names: ["a", "b"] }), { model: "m", enabledPlugins: ["a", "b"] });
