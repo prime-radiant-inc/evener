@@ -5,7 +5,6 @@
 // adapter, the dispatcher's scheduling and every React binding stay in the
 // apps — this subpath is what a record IS and how waiting work gets noticed,
 // not where it lives.
-
 export type {
   MutationDiscoveryReason,
   MutationLifecycleTarget,

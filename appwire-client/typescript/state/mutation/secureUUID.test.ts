@@ -32,4 +32,34 @@ describe("createSecureUUID", () => {
     expect(first).toMatch(/^insecure-/);
     expect(first).not.toBe(second);
   });
+
+  it("falls back to a non-cryptographic id when randomUUID throws", () => {
+    const source = {
+      randomUUID: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(() => createSecureUUID(source)).not.toThrow();
+    expect(createSecureUUID(source)).toMatch(/^insecure-/);
+  });
+
+  it("falls back to a non-cryptographic id when getRandomValues throws", () => {
+    const source = {
+      getRandomValues: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(() => createSecureUUID(source)).not.toThrow();
+    expect(createSecureUUID(source)).toMatch(/^insecure-/);
+  });
+
+  it("treats a non-function truthy randomUUID as absent", () => {
+    // @ts-expect-error exercising a malformed source deliberately
+    expect(createSecureUUID({ randomUUID: "not-a-function" })).toMatch(/^insecure-/);
+  });
+
+  it("treats a non-function truthy getRandomValues as absent", () => {
+    // @ts-expect-error exercising a malformed source deliberately
+    expect(createSecureUUID({ getRandomValues: "not-a-function" })).toMatch(/^insecure-/);
+  });
 });

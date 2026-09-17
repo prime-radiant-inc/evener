@@ -94,6 +94,11 @@ function epochMsToISO(ms: number | undefined): string | undefined {
 // maintained per append), so the hot readers of a live view (settleItem,
 // AgentMessageItem's per-render markdown source) get the full text in O(1)
 // instead of paying the per-element Proxy-trap cost of a join.
+// Maintaining that join is not where the pre-fix quadratic cost lived,
+// though: `brand.text + delta` is the same flat-per-delta concatenation
+// item/toolOutput/delta's `output` uses — a rope on V8, a buffered primitive
+// on Hermes — so the array copy, not the string concat, is the one quadratic
+// shape appendChunk removes.
 //
 // Purity: the reducer's contract is immutable updates, and this preserves
 // it OBSERVATIONALLY. The one deliberate alias — new views share the
@@ -1438,6 +1443,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // "nobody counted": clearing it would blank a figure the hydrate
         // legitimately gave us. Absence at HYDRATE is where unknown lives.
         failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
+        // askPending is snapshot-authoritative and this is the wire refreshing
+        // it, not the reducer deriving it: the hub stamps the flag on the frame
+        // that goes with every clear of the pending set (a resolving user turn,
+        // an interrupt), so a client stops showing "question waiting" without a
+        // reread. Same absent-means-no-update rule as the count above; the ask
+        // dock's own in-tool signal is still separate and still not this.
+        askPending: n.params.askPending ?? model.askPending,
         // Capabilities are snapshot-only too, and two of them (send, queue)
         // are defined BY this very transition: the hub gates send on "no turn
         // in flight" and queue on "a turn in flight"

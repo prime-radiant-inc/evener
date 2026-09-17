@@ -335,6 +335,72 @@ assert.equal(client.DOC_FILE_MAX_BYTES, 512 * 1024);
 assert.equal(typeof client.readDocFile, "function");
 `,
     },
+    // The connection state layer: the client-swap safety and
+    // notification-following a host's own connection store wraps, over an
+    // AppwireClientLike only - no handshake, no view binding, so a bare Node
+    // consumer needs no socket. AppwireClientLike and FeatureSet are root
+    // exports, not this barrel's own surface, so the type-use program imports
+    // them itself rather than relying on the generated import block.
+    "./state/connection": {
+      esmTypeUses: `import type { AppwireClientLike, FeatureSet } from "@evener/appwire-client";
+const fakeClient: AppwireClientLike = {
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} as FeatureSet }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification: () => () => undefined,
+  onReady: () => () => undefined,
+  onStateChange: () => () => undefined,
+  retryNow: () => undefined,
+  state: "idle",
+  terminalReason: null,
+};
+const store: ConnectionStore = createConnectionStore();
+const state: ConnectionStoreState = store.getState();
+store.connect(fakeClient);
+void state;
+const stop = onConnectionNotification(store, () => undefined);
+stop();`,
+      cjsTypeUses: `const connectionState: client.ConnectionStoreState = client.createConnectionStore().getState(); void connectionState;`,
+      // A store with no client wired starts idle; connect() mirrors an
+      // already-"ready" client's state (a reconnect scenario) and wires its
+      // client-swap safety; onConnectionNotification follows the client the
+      // store holds - all without opening a socket.
+      smoke: `let notified = 0;
+const readyClient = {
+  stateChangeHandlers: new Set(),
+  notificationHandlers: new Set(),
+  state: "ready",
+  terminalReason: null,
+  connect: () => Promise.resolve({ serverInfo: { name: "q", version: "0" }, protocolVersion: "v", sourceId: "q", features: {} }),
+  request: () => Promise.reject(new Error("offline")),
+  forceStop: () => Promise.resolve(),
+  resumeThread: () => Promise.reject(new Error("offline")),
+  onNotification(cb) {
+    this.notificationHandlers.add(cb);
+    return () => this.notificationHandlers.delete(cb);
+  },
+  onReady: () => () => undefined,
+  onStateChange(cb) {
+    this.stateChangeHandlers.add(cb);
+    return () => this.stateChangeHandlers.delete(cb);
+  },
+  retryNow: () => undefined,
+};
+const connectionStore = client.createConnectionStore();
+assert.equal(connectionStore.getState().state, "idle");
+assert.equal("connect" in connectionStore.getState(), false);
+connectionStore.connect(readyClient);
+assert.equal(connectionStore.getState().state, "ready");
+assert.equal(connectionStore.getState().client, readyClient);
+const stopNotifications = client.onConnectionNotification(connectionStore, () => {
+  notified += 1;
+});
+for (const cb of readyClient.notificationHandlers) cb({ method: "evener/plugin/updated", params: {} });
+assert.equal(notified, 1);
+stopNotifications();
+`,
+    },
     // The navigation state layer, published as one subpath rather than through
     // the root: both apps' navigation stores are built on it, it is not part of
     // the client surface every consumer takes, and a barrel is the seam later
@@ -346,7 +412,8 @@ const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;
 const memoryExpansion = new Map<string, boolean>();
 const navigationPersistence: NavigationPersistence = { readExpansion: () => new Map(memoryExpansion), writeExpansion: () => undefined };
 const navigation: NavigationStore = createNavigationStore({ persistence: navigationPersistence });
-const navigationState: NavigationStoreState = navigation.getState(); void navigationState;`,
+const navigationState: NavigationStoreState = navigation.getState();
+const navigationSources: ReturnType<typeof selectSources> = selectSources(navigationState); void navigationSources;`,
       cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;
 const navigationStoreState: client.NavigationStoreState = client.createNavigationStore({ persistence: { readExpansion: () => new Map(), writeExpansion: () => undefined } }).getState(); void navigationStoreState;`,
       // One call per module: types (keyID, the offset rule), immutable (the
@@ -357,7 +424,8 @@ const navigationStoreState: client.NavigationStoreState = client.createNavigatio
       // generation), store (a store built over a memory persistence port
       // reads its expansion at creation, writes a toggle back through the
       // port, and re-reads the port on reset - with no client wired, so
-      // nothing opens a socket).
+      // nothing opens a socket), selectors (an unloaded store names no launch
+      // sources and no needs-you rows, and the row age formatter is pure).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -388,6 +456,9 @@ navigationStore.getState().toggleExpanded("projectnode:p");
 assert.equal(seededExpansion.get("projectnode:p"), false);
 navigationStore.reset();
 assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
+assert.deepEqual(client.selectSources(navigationStore.getState()), []);
+assert.equal(client.selectNeedsYouCount(navigationStore.getState()), 0);
+assert.equal(client.relativeAge(new Date().toISOString()), "now");
 `,
     },
     // The credentials state layer: the listing core each app's Providers &
