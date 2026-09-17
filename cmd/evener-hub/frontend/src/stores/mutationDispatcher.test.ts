@@ -3,7 +3,7 @@ import { RequestTimeoutError, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, test, vi } from "vitest";
-import { MutationDispatcher } from "./mutationDispatcher";
+import { MutationDispatcher, type QueueSnapshot } from "./mutationDispatcher";
 import type { MutationIntent, MutationOutboxRecord } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
@@ -635,7 +635,11 @@ describe("MutationDispatcher", () => {
   });
 });
 
-describe("retireConsumedQueueIntents", () => {
+function queueSnapshot(overrides: Partial<QueueSnapshot> = {}): QueueSnapshot {
+  return { ids: new Set(), revision: 1, authoritative: true, ...overrides };
+}
+
+describe("reconcileQueueSnapshot", () => {
   // A drain-as-steer consumes the whole server queue into one steering
   // message, but no push ever names the consumed queue intents' ids again
   // (queueChanged carries only the REMAINING entries; steering/injected only
@@ -658,7 +662,7 @@ describe("retireConsumedQueueIntents", () => {
     // The drain emptied the server's queue: the authoritative snapshot names
     // nothing (queueChanged's own clientMutationIds after a full drain). The
     // drain's own optimistic record is not a turn/queue intent and survives.
-    await dispatcher.retireConsumedQueueIntents("ref-a", new Set());
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set() }));
 
     expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
       drain.clientMutationId,
@@ -666,12 +670,13 @@ describe("retireConsumedQueueIntents", () => {
     outbox.close();
   });
 
-  // This method's own scope, not an end-to-end guarantee: a named id is
-  // simply left alone here. Whether it is ever settled - and when - is
-  // reconcileIdentities' call, fed the same clientMutationIds by
-  // notificationMutationIdentities/handleNotification; that path runs
-  // regardless of what this one does.
-  test("leaves a queue intent alone when its authoritative snapshot still names it", async () => {
+  // A queue intent the authoritative snapshot itself names is reflected by
+  // the live model now (pendingEntries.ts's own rule: "...until pendingMutations,
+  // queue, or transcript state replaces it"), so its durable copy's job -
+  // bridging "was this even accepted" - is done, same as reconcileIdentities
+  // already settles any other durable record a fresh authoritative feed
+  // names directly.
+  test("settles a queue intent the authoritative snapshot names, same as reconcileIdentities would", async () => {
     const indexedDB = new IDBFactory();
     const outbox = storage(indexedDB, "retire-keeps-named", ["queue-a"]);
     const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
@@ -680,8 +685,86 @@ describe("retireConsumedQueueIntents", () => {
     const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
     await dispatcher.dispatchTargets(["ref-a"]);
 
-    await dispatcher.retireConsumedQueueIntents("ref-a", new Set([queued.clientMutationId]));
+    const settled = await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set([queued.clientMutationId]) }),
+    );
 
+    expect(settled).toEqual([]); // named, not retired-as-absent - settled via reconcileIdentities instead
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+    outbox.close();
+  });
+
+  // RoboRev's High on #1705's first round: a legacy server push
+  // (session_queue.go's queueChangedDataLocked, reachable via pushQueueHead
+  // for a queue entry with no ClientMutationID - #174/interrupt-return path)
+  // never populates client_mutation_ids at all, so `?? []` treated "coverage
+  // unknown" as "authoritatively empty" and retired every accepted
+  // turn/queue record regardless of whether the server's queue actually
+  // still held them. `ids: undefined` must never retire anything.
+  test("undefined ids (unknown coverage) leaves every optimistic queue intent alone", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "unknown-coverage", ["queue-a"]);
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: undefined }));
+
+    expect(settled).toEqual([]);
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      queued.clientMutationId,
+    ]);
+    outbox.close();
+  });
+
+  // RoboRev's Medium 1 on #1705's first round: a stale or reordered snapshot
+  // processed after a newer one for the same target must not act on it.
+  test("a snapshot no newer than the last reconciled revision for the target is ignored", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "stale-revision", ["queue-a"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // Revision 2 first, naming nothing - this one applies and retires.
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 2 }));
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+
+    // A stale revision 1 arriving after it, re-enqueuing the same now-gone
+    // id: if this were acted on it would be a no-op here regardless, so
+    // prove staleness with a snapshot that WOULD retire something new were
+    // it processed.
+    const second = await outbox.enqueueIntent(queueIntent("ref-a", "queued after the stale snapshot"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 1 }));
+
+    expect(settled).toEqual([]);
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      second.clientMutationId,
+    ]);
+    outbox.close();
+  });
+
+  test("a non-authoritative snapshot (a saved or incompatible hydrate) settles and retires nothing", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "non-authoritative", ["queue-a"]);
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    const settled = await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set(), authoritative: false }),
+    );
+
+    expect(settled).toEqual([]);
     expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
       queued.clientMutationId,
     ]);
@@ -693,32 +776,44 @@ describe("retireConsumedQueueIntents", () => {
   // queue intent (lower sequence, created first) is accepted by the server
   // AFTER tab B's drain (higher sequence) - genuinely fresh work, not the
   // drain's leftovers. This method never reads intentSequence at all.
-  test("two tabs sharing one outbox: a lower-sequence queue intent accepted after another tab's drain is never retired", async () => {
+  test("two tabs sharing one outbox: a duplicate/replayed queueChanged that predates tab A's own accept must not retire it", async () => {
     const indexedDB = new IDBFactory();
     const tabA = storage(indexedDB, "two-tabs", ["queue-a", "drain-b"]);
     const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName: "two-tabs" });
-    const queued = await tabA.enqueueIntent(queueIntent("ref-a", "tab A's message"));
-    const drain = await tabB.enqueueIntent(drainIntent("ref-a"));
-    expect(queued.intentSequence).toBeLessThan(drain.intentSequence);
+    await tabB.enqueueIntent(drainIntent("ref-a"));
 
-    // Tab B's drain reaches the server first and is applied.
+    // Tab B's drain reaches the server and is applied. The queueChanged that
+    // follows (revision 1, empty) broadcasts to every client watching this
+    // thread, tab A's own included - this is what tab A's OWN dispatcher
+    // instance (not tab B's) processes, exactly as it would in the real
+    // system.
     const clientB = new FakeClient();
     clientB.on("turn/drainAsSteer", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
     await new MutationDispatcher(tabB, { getClient: () => clientB }).dispatchTargets(["ref-a"]);
-    // Tab A's own send only now reaches the server: the queue is empty, so
-    // this is accepted as brand new work, not a replay of anything drained.
     const clientA = new FakeClient();
     clientA.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
     const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
+    await dispatcherA.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 1 }));
+
+    // Tab A's own send only now reaches the server: the queue is empty, so
+    // this is accepted as brand new work, not a replay of anything drained.
+    const queued = await tabA.enqueueIntent(queueIntent("ref-a", "tab A's message"));
     await dispatcherA.dispatchTargets(["ref-a"]);
 
-    // The authoritative queue right now genuinely still names tab A's
-    // message - the server never consumed it.
-    await dispatcherA.retireConsumedQueueIntents("ref-a", new Set([queued.clientMutationId]));
+    // The SAME revision-1 queueChanged, reordered or simply delivered
+    // twice, reaches tab A's dispatcher again after its own accept. Its own
+    // per-target revision guard (not a cross-tab lease) is what a single
+    // instance needs to ignore a redelivery of something it already
+    // reconciled; the drain in this scenario was empty either time, so
+    // there is nothing further for tab B's own dispatcher to reconcile.
+    await dispatcherA.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 1 }));
 
-    expect((await tabA.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
-      queued.clientMutationId,
-    ]);
+    // The drain's own optimistic record (tab B's, method turn/drainAsSteer)
+    // is not a turn/queue intent and is untouched either way; tab A's
+    // message is what this assertion is actually about.
+    const optimistic = await tabA.listOptimistic("ref-a");
+    expect(optimistic.map((record) => record.clientMutationId)).toContain(queued.clientMutationId);
+    expect(optimistic.find((record) => record.clientMutationId === queued.clientMutationId)?.method).toBe("turn/queue");
     tabA.close();
   });
 });

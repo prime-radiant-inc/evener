@@ -9,6 +9,23 @@ import { mutationErrorData, WireError } from "@evener/appwire-client";
 import type { MutationOutboxRecord, MutationRecord } from "./mutationOutbox";
 import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
+// A caller's own fresh reading of the server's queue for one target ref,
+// translated from whatever wire shape it came from (a queueChanged push, a
+// thread/read hydrate). `ids` is the queue's full clientMutationId
+// membership when known - `undefined` means coverage is unknown (a legacy
+// server push that never populates it, still a real, reachable path: see
+// #1704/#1705) and reconcileQueueSnapshot must not guess, never treating
+// "unknown" as "empty". `revision` orders snapshots for the same target so
+// a stale or reordered one is ignored rather than acted on.
+// `authoritative` is the caller's own answer to "is this data source live
+// and trustworthy right now", separate from ids coverage - false for a
+// saved/incompatible/not-loaded hydrate snapshot.
+export interface QueueSnapshot {
+  ids: ReadonlySet<string> | undefined;
+  revision: number;
+  authoritative: boolean;
+}
+
 export interface MutationDispatcherOptions {
   getClient: (targetRef: string) => AppwireClientLike | null | undefined;
   onStorageChange?: (targetRefs: string[]) => void;
@@ -31,6 +48,8 @@ export class MutationDispatcher {
   readonly #onHumanNoteReconciled: NonNullable<MutationDispatcherOptions["onHumanNoteReconciled"]>;
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
+  readonly #queueReconciliations = new Map<string, Promise<unknown>>();
+  readonly #lastReconciledQueueRevision = new Map<string, number>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
     this.#storage = storage;
@@ -55,19 +74,38 @@ export class MutationDispatcher {
     if (restored.length > 0) this.#onStorageChange([targetRef]);
   }
 
-  // An applied drain consumes the whole server queue into one steering
-  // message, but no push ever names the consumed queue intents' ids
-  // (queueChanged carries only the remaining entries; steering/injected only
-  // the drain's own id) - so a same-client queue intent accepted before the
-  // drain sits in the optimistic store unreflected forever unless something
-  // retires it. `authoritativeQueueIds` is the caller's own fresh reading of
-  // what the server's queue holds right now (queueChanged's own
-  // clientMutationIds, most directly): a `turn/queue` record absent from it
-  // was consumed, regardless of which dispatcher instance sent the mutation
-  // that consumed it. History (an earlier, cross-tab-unsafe sequence-number
-  // rule this replaced) is in the commit message, not here; see #1704.
-  async retireConsumedQueueIntents(targetRef: string, authoritativeQueueIds: ReadonlySet<string>): Promise<string[]> {
-    const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", authoritativeQueueIds);
+  // The one entry point for a fresh queue reading, from either a live push
+  // or a hydrate (#1706's shape). An applied drain or a consumed queue
+  // intent leaves no push naming the ids it consumed - queueChanged carries
+  // only what remains, steering/injected only the drain's own id - so a
+  // same-client queue intent accepted before it sits in the optimistic
+  // store unreflected forever unless something retires it against a fresh
+  // reading of what the queue holds now. Settles this snapshot's own named
+  // ids (the durable copy's job is done once an authoritative feed shows the
+  // id directly) and retires `turn/queue` records absent from it - never
+  // guessing when `snapshot.ids` is undefined (unknown coverage; see
+  // QueueSnapshot). Serialized per target and gated on revision
+  // monotonicity: a snapshot no newer than the last one this target
+  // reconciled is ignored outright, closing the reorder/stale-read race
+  // #1705's second review round measured (a queueChanged processed after a
+  // concurrent, newer accept must not retire it). This does not, on its
+  // own, prove any one record predates the snapshot cut absent a per-record
+  // revision stamp - out of scope here, tracked with the rest of #1706.
+  async reconcileQueueSnapshot(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
+    const previous = this.#queueReconciliations.get(targetRef) ?? Promise.resolve();
+    const chained = previous.catch(() => undefined).then(() => this.#reconcileQueueSnapshotNow(targetRef, snapshot));
+    this.#queueReconciliations.set(targetRef, chained);
+    return chained;
+  }
+
+  async #reconcileQueueSnapshotNow(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
+    if (!snapshot.authoritative) return [];
+    const last = this.#lastReconciledQueueRevision.get(targetRef);
+    if (last !== undefined && snapshot.revision <= last) return [];
+    this.#lastReconciledQueueRevision.set(targetRef, snapshot.revision);
+    if (snapshot.ids === undefined) return [];
+    await this.reconcileIdentities(snapshot.ids);
+    const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", snapshot.ids);
     if (settled.length > 0) this.#onStorageChange([targetRef]);
     return settled;
   }
