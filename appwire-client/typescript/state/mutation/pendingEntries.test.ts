@@ -1,8 +1,8 @@
 import { expect, test } from "vitest";
-import type { ThreadModel } from "../../model";
 import type { InputItem, PendingMutation } from "../../types.gen";
 import { reconcilePendingEntries } from "./pendingEntries";
 import type { MutationOutboxRecord } from "./records";
+import { threadModel as model } from "./testing";
 
 function outbox(
   clientMutationId: string,
@@ -23,43 +23,6 @@ function outbox(
     payload: { ref: "ref_a", input, clientMutationId },
     attachments: [],
     optimisticDisplay: { method, input },
-  };
-}
-
-function model(overrides: Partial<ThreadModel> = {}): ThreadModel {
-  const { jobsTreeRevision = null, ...rest } = overrides;
-  return {
-    ref: "ref_a",
-    threadId: "thread_a",
-    name: "",
-    status: { type: "active" },
-    modelProvider: "",
-    model: "",
-    visionModel: "",
-    askPending: false,
-    pendingEscalations: [],
-    turns: [],
-    queue: { revision: 1 },
-    tasks: null,
-    jobsUpdatedAt: null,
-    lastFrameAt: 0,
-    capabilities: {} as ThreadModel["capabilities"],
-    goal: null,
-    humanNote: "",
-    agentNote: "",
-    sessionUrls: [],
-    contextUsed: 0,
-    contextWindow: 0,
-    contextPressure: 0,
-    usage: null,
-    workMillis: 0,
-    reasoningEffortLevels: [],
-    supportsReasoning: false,
-    cwd: "",
-    createdAt: "",
-    updatedAt: "",
-    ...rest,
-    jobsTreeRevision,
   };
 }
 
