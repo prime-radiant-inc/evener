@@ -2093,6 +2093,60 @@ func TestInstances_RemoveRestoresCredentialsWhenTheRollbackCannotBeWritten(t *te
 	}
 }
 
+// TestInstances_RemoveAsksTheCredentialSourceUnderTheCredentialLock: whether an
+// instance is the user's to remove is decided by the credential source it
+// resolves, and a credential write changes that source while holding credMu
+// alone. A source read before that lock is a source a writer may already have
+// flipped, so the removal asks under both locks. Here the removal starts while
+// credMu is held and a stored key lands before it is released: the instance is
+// the user's own by the time the removal looks, so the removal goes through
+// rather than refusing on the source it read earlier.
+func TestInstances_RemoveAsksTheCredentialSourceUnderTheCredentialLock(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"OPENAI_API_KEY": "env-key"})
+	// The premise: the variable is the credential this instance resolves, so
+	// the removal refuses it while nothing else holds the name.
+	inst, ok := f.ctl.reg.Get().Instance("openai")
+	if !ok || inst.CredentialSource != "env:OPENAI_API_KEY" {
+		t.Fatalf("fixture: openai = %+v (ok = %v), want an instance resolving the variable", inst, ok)
+	}
+
+	f.ctl.auth.credMu.Lock()
+	done := make(chan error, 1)
+	go func() { done <- f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai"}) }()
+	// A removal that decides on the source before credMu never waits for it: it
+	// refuses on the spot, which is the finding.
+	select {
+	case err := <-done:
+		f.ctl.auth.credMu.Unlock()
+		t.Fatalf("Remove returned (%v) while credMu was held, want the credential source read under the credential lock", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	// What a credential writer does while it holds credMu: a stored key
+	// outranks the variable (spec §10), so the instance is the user's own by the
+	// time the removal is let through.
+	if err := f.store.Set("openai", "sk-stored"); err != nil {
+		f.ctl.auth.credMu.Unlock()
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistryLocked(); err != nil {
+		f.ctl.auth.credMu.Unlock()
+		t.Fatalf("reloadRegistryLocked: %v", err)
+	}
+	f.ctl.auth.credMu.Unlock()
+
+	if err := <-done; err != nil {
+		t.Fatalf("Remove = %v, want the removal to act on the instance the credential lock leaves", err)
+	}
+	if v, _ := f.store.Get("openai"); v != "" {
+		t.Fatalf("the removed instance kept its stored key: %q", v)
+	}
+	// The removal took the credential, and the variable that makes the name an
+	// instance again is the environment's, not the removal's.
+	if after := entry(t, f.ctl.List(), "openai"); !after.Implicit || after.ActiveSource != "env:OPENAI_API_KEY" {
+		t.Fatalf("openai = %+v, want the environment-supplied implicit row back", after)
+	}
+}
+
 // TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath: the
 // record path is a name the removal sets aside by renaming and the sweep later
 // deletes, and a removal may do both to the hub's own record and not to
@@ -2142,6 +2196,178 @@ func TestInstances_RemoveRefusesSomethingOtherThanARecordAtTheRecordPath(t *test
 	}
 	if !listedInstance(f.ctl.List(), "groq") {
 		t.Fatal("the refused removal removed the instance")
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted: the
+// record a removal moved aside goes back when providers.toml still carries the
+// instance - the hub that died inside the removal's window, and the failed
+// removal whose rename-back did not land - with the bytes it had, and by a
+// rename, so a record the hub cannot read is put back as faithfully as any.
+func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := authopenai.AuthFilePath(f.stateDir, "work")
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	original, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// What the removal's window leaves: the record set aside, and the config
+	// write the removal never reached.
+	aside := path + oauthAsideMarker + "1757000000000000000"
+	if err := os.Rename(path, aside); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the record was not put back: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("restored bytes = %q, want the original %q", got, original)
+	}
+	if _, err := os.Lstat(aside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the copy is still on disk (Lstat = %v), want the record moved rather than copied", err)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut: an aside the
+// config no longer names belongs to a removal that stood - or to an instance
+// whose own record was what made it exist - so startup leaves it for that
+// name's next removal to collect, and a record filed under its own name again
+// is the record the instance has now, so a copy beside it stays as well. A
+// state root with no auth directory at all is nothing set aside, not a failure.
+func TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Nothing set aside yet, and no auth directory to look in.
+	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides with nothing set aside: %v", err)
+	}
+
+	// A copy of a name the config does not carry: the removal that made it
+	// unwanted stood.
+	committed := authopenai.AuthFilePath(f.stateDir, "gone") + oauthAsideMarker + "1757000000000000000"
+	// A copy of a name that has its record back: the user signed in after the
+	// removal that set this one aside.
+	live := authopenai.AuthFilePath(f.stateDir, "work") + oauthAsideMarker + "1757000000000000000"
+	if err := os.MkdirAll(filepath.Dir(committed), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	for _, path := range []string{committed, live} {
+		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", path, err)
+		}
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	record := authopenai.AuthFilePath(f.stateDir, "work")
+	current, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+
+	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	for _, path := range []string{committed, live} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("the copy at %s was taken (%v), want it left for the next removal", path, err)
+		}
+	}
+	got, err := os.ReadFile(record)
+	if err != nil || !bytes.Equal(got, current) {
+		t.Fatalf("the record in place = %q (%v), want the one the user signed in with", got, err)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy: one instance can hold
+// several copies - a removal strands one, a later sign-in writes the record
+// again, a second removal sets that one aside too - and the newest is the
+// record the instance had last, so that is the one that goes back. The older
+// stays for the next removal of the name.
+func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := authopenai.AuthFilePath(f.stateDir, "work")
+	older := path + oauthAsideMarker + "1757000000000000000"
+	newer := path + oauthAsideMarker + "1757000000000000001"
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(older, []byte("the sign-in before\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(newer, []byte("the sign-in the instance had last\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("the record was not put back: %v", err)
+	}
+	if string(got) != "the sign-in the instance had last\n" {
+		t.Fatalf("restored bytes = %q, want the newest copy", got)
+	}
+	if _, err := os.Lstat(newer); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the newest copy is still on disk (Lstat = %v), want it moved", err)
+	}
+	if _, err := os.Lstat(older); err != nil {
+		t.Fatalf("the older copy was taken (%v), want it left for the next removal", err)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload: putting the record
+// back is the whole of the recovery, because a registry resolves each
+// instance's credential from the state root as it builds its list
+// (registry.Instances). This pins that: the registry the hub already holds
+// reports the instance as resolving the restored record, with nothing between
+// the restore and the read. A reload after a restore would be dead weight, and
+// the startup pass is written without one.
+func TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	path := authopenai.AuthFilePath(f.stateDir, "work")
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := os.Rename(path, path+oauthAsideMarker+"1757000000000000000"); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	// The premise: the instance the interruption left behind resolves no
+	// credential of its own. The registry's own view is the observable, because
+	// that is what a reload rebuilds - the listing reads the stores itself.
+	if before, ok := f.ctl.reg.Get().Instance("work"); !ok || before.CredentialSource == "oauth" {
+		t.Fatalf("fixture: work = %+v (ok = %v), want the instance a set-aside record leaves credential-less", before, ok)
+	}
+
+	if err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	// No reload: the same registry object, read again.
+	if after, ok := f.ctl.reg.Get().Instance("work"); !ok || after.CredentialSource != "oauth" {
+		t.Fatalf("work = %+v (ok = %v), want the instance resolving the record that was put back, with no reload between", after, ok)
 	}
 }
 

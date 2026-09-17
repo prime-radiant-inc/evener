@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -1300,19 +1301,6 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	// The lookup names what this call deletes - the authored entry, the
-	// stored key and the OAuth record under this name - so it is made under
-	// the lock that holds the deletion, as Edit's are: a rename landing
-	// between the two would hand the deletion to whatever holds the name
-	// afterwards.
-	inst, ok := c.reg.Get().Instance(name)
-	if !ok {
-		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
-	}
-	if environmentBacked(inst) {
-		return fmt.Errorf("%s exists without an authored entry (%s), so deleting the instance is not what takes it away: %s", name, describeImplicit(inst), removalRemedy(inst))
-	}
-
 	// Read the authored layer before anything is deleted: this is a pure read,
 	// so a failure here leaves nothing to undo, and it happens inside c.mu, so
 	// the layer it returns is still the one this removal edits. before is an
@@ -1339,6 +1327,25 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// deleted.
 	c.auth.credMu.Lock()
 	defer c.auth.credMu.Unlock()
+
+	// The lookup names what this call deletes - the authored entry, the stored
+	// key and the OAuth record under this name - and what decides whether the
+	// instance is the user's to remove is the credential source it resolves, so
+	// it is asked here, under both locks. c.mu is what holds the deletion, as
+	// it is for Edit's: a rename landing between the two would hand the
+	// deletion to whatever holds the name afterwards. credMu is what a
+	// credential write holds - storing a key or signing the instance in
+	// changes the source it resolves without taking c.mu - so a source read
+	// before this lock is one a writer may already have flipped: an instance
+	// the user has just credentialed would be refused as the environment's,
+	// and one a writer has just taken over would be refused with it.
+	inst, ok := c.reg.Get().Instance(name)
+	if !ok {
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+	}
+	if environmentBacked(inst) {
+		return fmt.Errorf("%s exists without an authored entry (%s), so deleting the instance is not what takes it away: %s", name, describeImplicit(inst), removalRemedy(inst))
+	}
 
 	// The confirmation this removal carries names the row the client listed, so
 	// a name another client has re-pointed since (a removal and a recreation
@@ -1577,6 +1584,105 @@ func oauthAsideInstance(name string) (string, bool) {
 		return "", false
 	}
 	return strings.TrimSuffix(record, ".json"), true
+}
+
+// oauthAsideStampText returns the stamp an aside name carries. The name has
+// already been accepted by oauthAsideInstance, so its tail is all digits.
+func oauthAsideStampText(name string) string {
+	return name[strings.LastIndex(name, oauthAsideMarker)+len(oauthAsideMarker):]
+}
+
+// restoreUncommittedOAuthAsides puts back the OAuth records a removal set aside
+// for an instance providers.toml still carries, and reports what it could not
+// put back.
+//
+// A removal moves the record aside before it deletes anything, so a hub that
+// dies inside that window - or a failed removal whose rename-back did not land
+// (restoreFailedRemoval) - leaves a record under its aside name with the
+// instance still in the config. providers.toml is what says whether the removal
+// reached the file, so an aside goes back only when the config still names its
+// instance and the record's own path is free. The bytes are moved, never read,
+// so a record the hub cannot read is put back as faithfully as any other.
+//
+// Everything else is left exactly where it is. An aside whose instance the
+// config no longer names belongs to a removal that stood, or to an instance
+// whose record was what made it exist, and the copies a standing removal left
+// are that name's next removal to collect (reclaimOAuthAsides): taking them
+// here would delete the last credential of an instance a failed removal
+// stranded without the user asking for it. A record filed under its own name
+// again is the record the instance has now, so a copy beside it stays too.
+//
+// One instance can hold several copies - a removal strands one, a later sign-in
+// writes the record again, a second removal sets that one aside as well - so
+// the newest goes back and the rest stay: the newest is the record the instance
+// had last. A copy whose stamp cannot be ordered is left alone with them.
+//
+// No reload follows a restore. A registry resolves each instance's credential
+// from the state root as it builds its list (registry.Instances), so the one the
+// hub already holds reports the record as soon as it is back - measured, not
+// assumed: a reload here changes nothing a caller or a test can see.
+func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) error {
+	layer, _, err := registry.ReadConfigFile(providersConfigPath)
+	if err != nil {
+		return fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
+	}
+	// Where the records live, asked of the function that places them, so this
+	// cannot look somewhere a record never lands.
+	dir := filepath.Dir(authopenai.AuthFilePath(stateDir, "instance"))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// No directory is nothing set aside: a state root that never held a
+		// record has no copy of one.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
+	}
+	// The newest copy of each name the config carries, chosen before anything
+	// moves so the choice does not depend on the order the directory hands its
+	// entries back.
+	newest := make(map[string]string, len(entries))
+	stamps := make(map[string]int64, len(entries))
+	for _, e := range entries {
+		inst, aside := oauthAsideInstance(e.Name())
+		if e.IsDir() || !aside {
+			continue
+		}
+		if _, carried := layer.Providers[inst]; !carried {
+			continue
+		}
+		stamp, err := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
+		if err != nil {
+			// A stamp past an int64 is a name no removal wrote, and one that
+			// cannot be ordered against the copies beside it.
+			continue
+		}
+		if current, ok := stamps[inst]; !ok || stamp > current {
+			newest[inst] = e.Name()
+			stamps[inst] = stamp
+		}
+	}
+	var problems []string
+	for inst, name := range newest {
+		path := authopenai.AuthFilePath(stateDir, inst)
+		// A record filed under its own name again is the one the instance has
+		// now - it was written after the removal that set this copy aside - so
+		// the copy stays where it is.
+		if _, err := os.Lstat(path); err == nil {
+			continue
+		} else if !errors.Is(err, os.ErrNotExist) {
+			problems = append(problems, fmt.Sprintf("check %s before putting %s back (%v)", path, name, err))
+			continue
+		}
+		if err := os.Rename(filepath.Join(dir, name), path); err != nil {
+			problems = append(problems, fmt.Sprintf("put %s back as %s (%v)", name, path, err))
+			continue
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("a record a failed removal set aside could not be put back: %s", strings.Join(problems, ", "))
+	}
+	return nil
 }
 
 // reclaimOAuthAsides deletes the copies of one name's OAuth record that a

@@ -295,6 +295,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	if err := hubReg.Reload(); err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] providers config: %v — starting with implicit instances only\n", err)
 	}
+	// A record a removal set aside, under a name the config still carries, is
+	// put back here, once, before the web server is built - so no client can see
+	// the instance without the credential its own record holds, and no hub that
+	// has begun serving has a credential moved under it. Nothing stops startup:
+	// a state root this cannot recover from is one the hub starts on, the way an
+	// unreadable providers.toml is (spec §14.1). No reload follows a restore, and
+	// restoreUncommittedOAuthAsides says why.
+	if err := restoreUncommittedOAuthAsides(hubAuthStateRoot(hubReg), providersConfigPath); err != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
+	}
 	resolvedEvenerBinary := resolveEvenerBinaryPath(opts.evenerBinary, currentExecutable(), exec.LookPath)
 	if opts.evenerBinary == "" && resolvedEvenerBinary != "" && resolvedEvenerBinary != "evener" {
 		_, _ = fmt.Fprintf(os.Stderr, "[hub] resolved evener at %s\n", resolvedEvenerBinary)

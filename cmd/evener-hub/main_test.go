@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	authopenai "primeradiant.com/evener/auth/openai"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
@@ -416,6 +417,52 @@ func TestRunMainLeavesAnAbsentProvidersConfigAlone(t *testing.T) {
 // hub under test observes only the environment the test set up.
 func hermeticRegistryLoader(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
 	return cmdutil.LoadRegistry(append(extra, registry.WithOffline(true), registry.WithoutCache())...)
+}
+
+// TestRunMainPutsBackARecordAFailedRemovalSetAside: the startup pass is what
+// makes a crash inside a removal recoverable. The record is under its aside name
+// while providers.toml still carries the instance - what a hub that died
+// between the two leaves behind - and starting the hub puts it back, before
+// anything serves. runMain is driven end to end here, so it is the call site
+// itself that the assertions cover.
+func TestRunMainPutsBackARecordAFailedRemovalSetAside(t *testing.T) {
+	_, cfg, deps := newTraceMainTestDeps(t)
+	providersPath, none := cmdutil.ProvidersConfigPath()
+	if none || providersPath == "" {
+		t.Fatal("fixture: the providers config path must be the one newTraceMainTestDeps set")
+	}
+	if err := os.MkdirAll(filepath.Dir(providersPath), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(providersPath, []byte("[providers.work]\nbase = \"openai-codex\"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// The record is resolved by the same function the hub resolves it with, so
+	// the test places it where a removal would have set it aside.
+	record := authopenai.AuthFilePath(cmdutil.DefaultStateRoot(), "work")
+	if err := os.MkdirAll(filepath.Dir(record), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	aside := record + oauthAsideMarker + "1757000000000000000"
+	const content = "the sign-in the instance had\n"
+	if err := os.WriteFile(aside, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	var stderr bytes.Buffer
+	if err := runMain([]string{"-addr", cfg.Addr, "-evener", "/bin/evener"}, &stderr, deps); err != nil {
+		t.Fatalf("runMain: %v, stderr=%s", err, stderr.String())
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the record a failed removal set aside was not put back at startup: %v (stderr=%s)", err, stderr.String())
+	}
+	if string(got) != content {
+		t.Fatalf("restored bytes = %q, want %q", got, content)
+	}
+	if _, err := os.Lstat(aside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the copy is still on disk (Lstat = %v), want it moved back", err)
+	}
 }
 
 // TestRunMainDegradesOnAnOldSchemaProvidersConfig is spec §14.1's flag-day
