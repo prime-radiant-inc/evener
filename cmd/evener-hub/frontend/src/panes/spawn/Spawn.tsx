@@ -141,6 +141,23 @@ const NO_EFFORT_LEVELS: string[] = [];
 // opens the select.
 const CATALOG_SETTLE_MS = 250;
 
+// CONNECT_ATTACH_TIMEOUT_MS bounds the Connect action's `evener/host/attach`
+// RPC. The AppWire client's default request timeout is 30s
+// (DEFAULT_REQUEST_TIMEOUT_MS in appwire-client/typescript/client.ts), but the
+// Ensure seam behind the handler runs sequential bounded phases far beyond
+// that: up to three deployLimit phases (deploy + restart + launch-contract
+// refresh, 10 minutes each — deployLimit in
+// cmd/evener-hub/internal/sshconn/manager.go), up to three attemptLimit phases
+// (preflight, running-hub probe, hub-presence probe; 70s by default: 4x10s
+// connect + 30s init), and the attach handshake itself (initTimeout, 30s) —
+// about 34 minutes worst case. 35 minutes clears that server bound with
+// headroom, the same shape as hubUpdate's APPLY_TIMEOUT_MS over its server
+// bound: a slow but valid deploy resolves instead of failing the toast at 30s
+// while the server-side attach still succeeds. There is no attach-status RPC
+// to poll instead (adding one would touch the router catalog), so the explicit
+// long timeout is the whole fix.
+export const CONNECT_ATTACH_TIMEOUT_MS = 35 * 60_000;
+
 // The effort levels a catalog entry authorizes: the model's own named ladder
 // when it has one, an EMPTY list when the catalog says the model cannot
 // reason at all, and null when the hub can't say (enrichment failed, or the
@@ -316,7 +333,7 @@ function SpawnForm({
       connectingHostsRef.current.add(host);
       setConnectingHosts((current) => new Set(current).add(host));
       void client
-        .request("evener/host/attach", { host })
+        .request("evener/host/attach", { host }, { timeoutMs: CONNECT_ATTACH_TIMEOUT_MS })
         .catch((error: unknown) => {
           toasts.push("error", `Connect ${host} failed: ${friendlyLaunchErrorMessage(error)}`);
         })

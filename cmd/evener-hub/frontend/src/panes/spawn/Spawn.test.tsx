@@ -37,7 +37,7 @@ import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import Welcome from "../welcome/Welcome";
-import Spawn from "./Spawn";
+import Spawn, { CONNECT_ATTACH_TIMEOUT_MS } from "./Spawn";
 import { loadDefaultsBlob } from "./spawnDefaults";
 import { resetSpawnDraftsForTests, selectSpawnDirectory, setDraftField, spawnDraftsStore } from "./spawnDrafts";
 
@@ -6253,6 +6253,52 @@ test("a failed Connect surfaces the attach error", async () => {
 
   fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
   expect(await screen.findByText(/Connect offline-host failed/i)).toBeTruthy();
+});
+
+// The Connect action must survive a slow server-side attach: the Ensure seam
+// behind `evener/host/attach` spends sequential bounded phases (deploy,
+// restart, launch-contract refresh — 10 minutes each) that the AppWire
+// client's 30s default request timeout does not cover, so a deploy that would
+// succeed arrives after the client already rejected and the user sees a failed
+// toast for a host that is online. The Connect call therefore carries an
+// explicit attach timeout derived from the manager bound, and a slow attach
+// resolving inside it succeeds with no failure toast. Before the fix the call
+// passed no timeout option, so the default applied.
+test("a slow Connect attach resolves inside the attach timeout with no failure toast", async () => {
+  expect(CONNECT_ATTACH_TIMEOUT_MS).toBeGreaterThan(30_000);
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const fake = readyClient((f) => {
+    f.on("evener/host/attach", async () => {
+      // Gated past the assertion below, so on the old code — where the call
+      // carried no timeout option — the waitFor already failed before the
+      // server answers; on the fixed code the call carries the attach timeout
+      // and the late success clears the pending marker with no failure toast.
+      await gate;
+      return { attached: true };
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  // The attach RPC carries the explicit attach timeout, not the 30s default.
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && call.opts?.timeoutMs === CONNECT_ATTACH_TIMEOUT_MS,
+      ),
+    ).toBe(true),
+  );
+  release();
+  await waitFor(() => expect(screen.queryByRole("button", { name: /Connecting offline-host/ })).toBeNull());
+  expect(screen.queryByText(/Connect offline-host failed/i)).toBeNull();
 });
 
 test("no host picker renders when the manifest has only local", async () => {
