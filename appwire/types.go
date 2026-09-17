@@ -3113,13 +3113,16 @@ type InstanceEntry struct {
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
 	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids. Empty for an instance with no rows.
+	// rows plus cached live ids, alias rows included. Empty for an
+	// instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
 // InstanceModelEntry is one row of an instance's model inventory: the
-// catalog id and whether the config layer disabled it. The Providers pane's
-// instance sheet renders one toggle per row.
+// catalog id and whether the config layer disabled it, alias rows included.
+// The Providers pane's instance sheet renders one toggle per row; every
+// listed id names a row setModelDisabled can write, and a cross-provider
+// alias toggles on this instance without touching the provider it names.
 type InstanceModelEntry struct {
 	ID       string `json:"id"`
 	Disabled bool   `json:"disabled,omitempty"`
