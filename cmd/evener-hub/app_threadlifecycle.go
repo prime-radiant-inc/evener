@@ -405,8 +405,12 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 			epochs[id] = sessionRequestRecoveryEpoch(ctx, cfg, "", id)
 		}
 		epochs[requestedID] = epoch
+		// Registration now takes the same per-alias ownership tokens as the
+		// confirmed-stopped no-op, so the wait for those tokens can start here.
+		lockDone := trace.stage(ctx, "lock_wait")
 		active, err := cfg.ResumeLocks.RegisterResume(ctx, target, aliases, epochs)
 		if err != nil {
+			lockDone(err)
 			if errors.Is(err, hubcore.ErrResumeInvalidated) {
 				return appwire.ThreadResumeResponse{}, sessionRecoveryAdmissionError{appwire.Unavailable(err.Error())}
 			}
@@ -418,7 +422,6 @@ func resumeThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource
 		// defer has released ownership and the launcher has confirmed cleanup.
 		defer func() { active.Complete(cleanupErr) }()
 		// Use force stop's sorted ownership order, retaining the original mutexes.
-		lockDone := trace.stage(ctx, "lock_wait")
 		acquired := 0
 		var heldStarted time.Time
 		defer func() {
