@@ -1288,16 +1288,19 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
-        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
-        // read/write disjoint fields off the same `old` reference, so
-        // composition order is free) — this branch has its own settled
+        // below (mergeCompletedText/mergeItemImages/mergeReasoning/mergeArguments/
+        // mergeObservedTiming read/write disjoint fields off the same `old`
+        // reference, so composition order is free) — this branch has its own settled
         // items rather than item/completed's single one, so it maps instead
         // of a single mapItem call.
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
           return mergeObservedTiming(
-            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            mergeArguments(
+              mergeReasoning(mergeItemImages(mergeCompletedText(identitySettled, old), old), old),
+              old,
+            ),
             old,
             now,
           );

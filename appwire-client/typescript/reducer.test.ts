@@ -2559,6 +2559,77 @@ test.each([
   expect(itemAt(turnAt(model, 0), 0).status).toBe("completed");
 });
 
+// The same rule on the turn's own settle path: a turn/completed carrying
+// itemsView "full" restates the turn's items, and an item in that payload that
+// says nothing about images keeps the ones the model already holds — the merge
+// chain there is the same composition item/completed uses, so it must carry the
+// same fields.
+test("a full turn settle that omits image fields keeps the item's images", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "inProgress",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+          {
+            id: "tool-item",
+            turnId: "turn_1",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-1",
+            text: "",
+            status: "inProgress",
+            outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { id: "user-item", turnId: "turn_1", type: "userMessage", text: "look", status: "completed" },
+            {
+              id: "tool-item",
+              turnId: "turn_1",
+              type: "commandExecution",
+              toolName: "shell",
+              callId: "call-1",
+              text: "",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+});
+
 // The output side keeps its own rule, which is why it needs its own case: there
 // an explicit empty list IS the removal the hub sends (#1614), and only an
 // absent field means "nothing said".
