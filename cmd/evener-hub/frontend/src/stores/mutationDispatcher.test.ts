@@ -17,6 +17,21 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+// Drains real IndexedDB round trips against `reader`'s own database (not just
+// microtasks - fake-indexeddb settles its own requests on the macrotask
+// queue, so a plain `await Promise.resolve()` spin never lets one complete)
+// until `done()` reports true, or a bounded number of turns elapse so a
+// genuine hang fails fast instead of silently. Same idea as threads.test.ts's
+// own flushIndexedDBUntil, adapted to this file's own per-test IDBFactory
+// instances rather than the global fake-indexeddb it installs.
+async function flushIndexedDBUntil(
+  reader: { listTargetRefs(): Promise<string[]> },
+  done: () => boolean,
+  maxTurns = 30,
+): Promise<void> {
+  for (let turn = 0; turn < maxTurns && !done(); turn += 1) await reader.listTargetRefs();
+}
+
 function receipt(clientMutationId: string, disposition = "applied", projectionState = "reflected"): MutationReceipt {
   return {
     clientMutationId,
@@ -824,6 +839,51 @@ describe("reconcileQueueSnapshot", () => {
     outbox.close();
   });
 
+  // RoboRev's review round 3 Medium 1: "never stale against a DIFFERENT
+  // instance" is too permissive on its own - once a target has moved on to
+  // a new instance, a late snapshot from the OLD one (delayed in flight
+  // across the clear) must not act again either, however high its own
+  // revision reads. The wire gives no ordering across instances (measured:
+  // neither thread/queueChanged nor a thread/read response carries a
+  // sequence or generation number spanning a clear - that exists only for
+  // navigation invalidation, a separate subsystem), so this target's own
+  // dispatcher tracks which instances it has already moved past.
+  test("a late snapshot from a superseded instance is ignored even at a higher revision than the new instance's own", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "superseded-instance", ["queue-a", "queue-b"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "instance A"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // Instance A reconciles at revision 5, retiring nothing of its own.
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 5, instanceId: "A" }));
+
+    // thread/clear replaces the instance. Instance B's own first snapshot
+    // (revision 1) is accepted regardless of A's higher revision, and A is
+    // now superseded.
+    await outbox.enqueueIntent(queueIntent("ref-a", "instance B"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 1, instanceId: "B" }));
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+
+    // A's own revision-6 snapshot, in flight since before the clear,
+    // finally arrives. It must not retire anything B has since accepted.
+    const third = await outbox.enqueueIntent(queueIntent("ref-a", "still queued under B"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    const settled = await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set(), revision: 6, instanceId: "A" }),
+    );
+
+    expect(settled).toEqual([]);
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      third.clientMutationId,
+    ]);
+    outbox.close();
+  });
+
   // RoboRev's simplify-round Medium on #1705: the cursor advanced even when
   // the write that follows it fails, so a retry delivering the identical
   // revision again was discarded as stale despite nothing of it ever having
@@ -845,6 +905,77 @@ describe("reconcileQueueSnapshot", () => {
 
     expect(settled).toEqual([queued.clientMutationId]);
     expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+    outbox.close();
+  });
+
+  // RoboRev's review round 3 Medium 2 (#1717, measured there: MutationReceipt
+  // carries no revision to fence a record against): an accept's own
+  // optimistic write and a reconciliation's retire-scan are two independent
+  // async paths for the same target (the accept's write runs inside
+  // #attempt's own dispatch chain, #dispatching; the scan runs inside
+  // #queueReconciliations) - nothing stopped them interleaving, so a queue
+  // intent accepted between a snapshot's capture and the scan's read could
+  // be retired as though it had never existed. Closed by routing the
+  // accept's write through the SAME per-target chain the scan uses.
+  test("an accept for a target with an in-flight reconciliation is serialized behind it, never interleaved", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "accept-serialized-with-reconcile", ["existing", "fresh"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "existing"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // The scan is held open for the whole test until released at the end:
+    // without serialization, nothing blocks the accept's own write below,
+    // so it lands regardless of how long the scan stays gated.
+    const reconcileGate = deferred<void>();
+    const settleOptimisticAbsent = outbox.settleOptimisticAbsent.bind(outbox);
+    vi.spyOn(outbox, "settleOptimisticAbsent").mockImplementation(async (...args) => {
+      await reconcileGate.promise;
+      return settleOptimisticAbsent(...args);
+    });
+
+    // The snapshot names nothing, so it would retire "existing" - the
+    // reconciliation registers itself and starts its (gated) scan first.
+    const reconciling = dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set() }));
+
+    // A brand new intent is accepted for the SAME target while the scan is
+    // still gated. Its own network response is controlled separately so the
+    // moment it becomes free to write is known exactly, rather than left to
+    // however many IndexedDB round trips happen to take.
+    const fresh = await outbox.enqueueIntent(queueIntent("ref-a", "fresh"));
+    const freshResponse = deferred<TurnQueueResponse>();
+    client.on("turn/queue", (params) =>
+      params.clientMutationId === fresh.clientMutationId
+        ? freshResponse.promise
+        : { receipt: receipt(params.clientMutationId, "applied", "pending") },
+    );
+    const dispatching = dispatcher.dispatchTargets(["ref-a"]);
+    await flushIndexedDBUntil(outbox, () =>
+      queueCalls(client).some((params) => params.clientMutationId === fresh.clientMutationId),
+    );
+
+    // The response arrives - #attempt is now free to write, racing the
+    // still-gated reconciliation.
+    freshResponse.resolve({ receipt: receipt(fresh.clientMutationId, "applied", "pending") });
+    await flushIndexedDBUntil(outbox, () => false, 20); // let an UNSERIALIZED write have every chance to land
+
+    // Serialized: the accept's write has not landed while the scan is still
+    // blocked, however many turns pass.
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).not.toContain(
+      fresh.clientMutationId,
+    );
+
+    reconcileGate.resolve();
+    await Promise.all([reconciling, dispatching]);
+
+    // The scan ran (and could only ever see) the store before "fresh" was
+    // written, so it retired "existing" alone; "fresh" arrived only
+    // afterward, once the scan had already passed.
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      fresh.clientMutationId,
+    ]);
     outbox.close();
   });
 

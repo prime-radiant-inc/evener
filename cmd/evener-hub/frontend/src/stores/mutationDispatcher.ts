@@ -56,6 +56,7 @@ export class MutationDispatcher {
   readonly #requestedRuns = new Map<string, number>();
   readonly #queueReconciliations = new Map<string, Promise<unknown>>();
   readonly #lastReconciledQueue = new Map<string, { instanceId: string; revision: number }>();
+  readonly #supersededQueueInstances = new Map<string, Set<string>>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
     this.#storage = storage;
@@ -98,10 +99,25 @@ export class MutationDispatcher {
   // own, prove any one record predates the snapshot cut absent a per-record
   // revision stamp - out of scope here, tracked with the rest of #1706.
   async reconcileQueueSnapshot(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
+    return this.#serializedWithQueueReconciliation(targetRef, () =>
+      this.#reconcileQueueSnapshotNow(targetRef, snapshot),
+    );
+  }
+
+  // Shared per-target chain: a queue snapshot's own retire-scan
+  // (#reconcileQueueSnapshotNow) and an accepted turn/queue intent's own
+  // optimistic write (#attempt, below) are two otherwise-independent async
+  // paths for the same target - #1717's Medium 2 measured that a record
+  // accepted between a snapshot's capture and the scan's read could be
+  // retired as though it had never existed, since nothing serialized them
+  // against each other. Routing both through this one chain means whichever
+  // reaches it first runs to completion before the other's fn is even
+  // called, so a scan can never observe a write that lands mid-scan.
+  async #serializedWithQueueReconciliation<T>(targetRef: string, fn: () => Promise<T>): Promise<T> {
     const previous = this.#queueReconciliations.get(targetRef) ?? Promise.resolve();
     const chained = previous
       .catch(() => undefined)
-      .then(() => this.#reconcileQueueSnapshotNow(targetRef, snapshot))
+      .then(fn)
       .finally(() => {
         if (this.#queueReconciliations.get(targetRef) === chained) this.#queueReconciliations.delete(targetRef);
       });
@@ -111,6 +127,13 @@ export class MutationDispatcher {
 
   async #reconcileQueueSnapshotNow(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
     if (!snapshot.authoritative) return [];
+    // The wire gives no ordering across instances (no sequence or generation
+    // number on thread/queueChanged or a thread/read response spans a
+    // clear - that exists only for navigation invalidation, a separate
+    // subsystem), so once this target has moved on to a different instance,
+    // an in-flight snapshot from the one it left behind is rejected outright
+    // rather than compared: its own revision means nothing here any more.
+    if (this.#supersededQueueInstances.get(targetRef)?.has(snapshot.instanceId)) return [];
     const last = this.#lastReconciledQueue.get(targetRef);
     // A revision is only comparable within its own instance - see
     // QueueSnapshot's own comment on why a new instance's low revision is
@@ -121,6 +144,11 @@ export class MutationDispatcher {
     if (snapshot.ids === undefined) return [];
     await this.reconcileIdentities(snapshot.ids);
     const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", snapshot.ids);
+    if (last !== undefined && last.instanceId !== snapshot.instanceId) {
+      const superseded = this.#supersededQueueInstances.get(targetRef) ?? new Set<string>();
+      superseded.add(last.instanceId);
+      this.#supersededQueueInstances.set(targetRef, superseded);
+    }
     // Recorded only once every write above has succeeded: a failed
     // reconciliation must leave the cursor where it was so a retry at the
     // same revision is not discarded as stale.
@@ -217,7 +245,12 @@ export class MutationDispatcher {
           return "stop";
         applyHumanNoteResponse?.({ note: result.note, receipt });
       }
-      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
+      // Serialized against any in-flight queue reconciliation for this
+      // target (see #serializedWithQueueReconciliation): otherwise this
+      // write and a concurrent snapshot's retire-scan could interleave.
+      await this.#serializedWithQueueReconciliation(record.targetRef, () =>
+        this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState),
+      );
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {
