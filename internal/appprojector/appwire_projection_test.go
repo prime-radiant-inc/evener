@@ -3263,8 +3263,26 @@ func TestProjectToolCallEndDropsAnUnaddressableOutputImage(t *testing.T) {
 		OutputImages: []events.OutputImage{{Source: "tool-result", Name: "screenshot"}},
 	}})
 
-	if item := notificationThreadItem(t, out, appwire.NotifyItemCompleted); len(item.OutputImages) != 0 {
+	item := notificationThreadItem(t, out, appwire.NotifyItemCompleted)
+	if len(item.OutputImages) != 0 {
 		t.Fatalf("item.OutputImages=%+v, want the unaddressable descriptor dropped", item.OutputImages)
+	}
+	// Dropped, not removed: an item whose descriptors were all unaddressable
+	// never showed an image, so its frame must carry NO outputImages key rather
+	// than the empty list that means "the pictures are gone" (the rule on
+	// appwire.ThreadItem.OutputImages). A zero length cannot tell those apart —
+	// nil and an empty slice both have it — so this asserts the encoding, the
+	// way TestAnItemThatNeverHadImagesCarriesNoImageKeys does.
+	encoded, err := json.Marshal(item)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if raw, present := fields["outputImages"]; present {
+		t.Fatalf("the frame carries outputImages=%s, which announces a removal on an item that never showed an image", raw)
 	}
 }
 

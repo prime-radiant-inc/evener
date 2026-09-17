@@ -6549,6 +6549,160 @@ test("thread/status/changed carries askPending, and absence leaves it alone", ()
   expect(olderHub.askPending).toBe(true);
 });
 
+// The hub says "this item's output images are gone" with an explicit [] on the
+// item frame (appwire.ThreadItem.OutputImages is omitzero for exactly this). An
+// absent field still means "this frame says nothing", where the other side's
+// list is the only one anybody has.
+test("an explicit empty outputImages list removes the images an older page still carries", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            outputImages: [],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            outputImages: [{ url: "stale-image", source: "tool-result" }],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+  expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([]);
+});
+
+test("an absent outputImages field keeps the images the other page carries", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toBeUndefined();
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "commandExecution",
+            callId: "call_1",
+            outputImages: [{ url: "kept-image", source: "tool-result" }],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+  expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
+});
+
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+test("an empty input images list never erases the images an older page carries", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "live-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look at this",
+            images: [],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+  });
+  const model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
+
+  const merged = mergeOlderItemPage(model, {
+    data: [
+      {
+        id: "turn_1",
+        status: "completed",
+        itemsView: "full",
+        items: [
+          {
+            id: "old-k0",
+            transcriptKey: "k0",
+            position: { entry: 1, item: 1 },
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look at this",
+            images: [{ type: "image", mediaType: "image/png", data: "aGk=", name: "shot.png" }],
+            status: "completed",
+          },
+        ],
+      },
+    ],
+    nextCursor: "cursor_0",
+  });
+  const images = itemAt(turnAt(merged, 0), 0).images;
+  expect(images).toHaveLength(1);
+});
+
 // #1656: a settle says nothing about images unless it carries them. The wire has
 // no "the input images are gone" signal — an item's images are what the user
 // sent — so the hub keeps whatever list it already had whenever the incoming one
@@ -6814,4 +6968,59 @@ test("item/completed carrying a different outputImages list overrides the output
   expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
     { src: "/s/sess_t/images/capture", name: "capture.png", source: "tool-result" },
   ]);
+});
+
+// The removal on the settle path, which mergeItemImages owns: a later
+// item/completed carrying an explicit empty outputImages list clears the images
+// an earlier frame set, because that [] is the hub's only way to say the
+// pictures are gone (appwire.ThreadItem.OutputImages is omitzero for exactly
+// this). A settle that carries no field at all still keeps them — the two cases
+// this merge has to tell apart.
+test("item/completed carrying an explicit empty outputImages list clears the images a prior frame set", () => {
+  const settle = (outputImages: unknown, at: number, model: ThreadModel): ThreadModel =>
+    applyNotification(
+      model,
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          turnId: "turn_1",
+          item: {
+            type: "commandExecution",
+            id: "item_tool",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_1",
+            status: "completed",
+            ...(outputImages === undefined ? {} : { outputImages }),
+          },
+        },
+      } as AnyNotification,
+      at,
+    );
+
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = settle([{ source: "written-file", name: "plot.png", path: "out/plot.png" }], 1002, model);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  // A settle that says nothing keeps them.
+  model = settle(undefined, 1003, model);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  // An explicit empty list removes them.
+  model = settle([], 1004, model);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
 });

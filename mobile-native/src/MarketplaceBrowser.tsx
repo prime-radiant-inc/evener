@@ -47,9 +47,10 @@ export function MarketplaceBrowser({
   client: ConversationClientLike;
   hubName: string;
   installed: PluginsStore;
-  // The screen's plugin-mutation gate, shared with the installed list: an
-  // install started here keeps running after this view is gone, so the lock
-  // it takes has to outlive the view.
+  // The screen's plugin-mutation gate, shared with the installed list: a
+  // write started here keeps running after this view is gone, so the lock
+  // it takes has to outlive the view - and living at the screen means the
+  // installed list sees a marketplace write as busy too, and vice versa.
   gate: PluginMutationGate;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
@@ -57,12 +58,10 @@ export function MarketplaceBrowser({
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
-  const pluginBusy = useSyncExternalStore(gate.subscribe, gate.isBusy);
+  // Marketplace writes take the same gate an install does; see
+  // pluginMutationGate.ts for why the gate exists.
+  const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [selected, setSelected] = useState<string | null>(null);
-  // Marketplace writes (add, remove, refresh) are this view's own and end with
-  // it; the plugin install is the one that outlives it, so only that one takes
-  // the screen's gate.
-  const [mutating, setMutating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -106,40 +105,30 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
-  // A marketplace write is this view's own: it marks this view busy and ends
-  // with it.
+  // Every write goes through the gate; a refusal reads as busy, a throw as
+  // failure.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
-    setMutating(true);
     try {
-      await action();
+      const ran = await gate.run(action);
+      if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
     } catch {
       if (revision.current === version) setError(WRITE_FAILED);
-    } finally {
-      setMutating(false);
     }
   }
-  // An install is the write that outlives this view, so it takes the screen's
-  // gate rather than the flag above - the installed list disables on the same
-  // gate, and a tab switch cannot start a second one.
   function install(target: PluginRefParams) {
-    const version = revision.current;
-    setError(null);
-    void gate
-      .run(() => plugins.installPlugin(target.plugin, target.marketplace))
-      .then((ran) => {
-        if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
-      })
-      .catch(() => {
-        if (revision.current === version) setError(WRITE_FAILED);
-      });
+    void act(() => plugins.installPlugin(target.plugin, target.marketplace));
   }
   const marketplace = state.marketplaces?.find(
     (item) => item.name === selected,
   );
+  function refresh() {
+    if (!marketplace || busy) return;
+    void act(() => state.refreshMarketplace(marketplace.name));
+  }
   function remove() {
-    if (!marketplace || mutating) return;
+    if (!marketplace || busy) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -148,8 +137,8 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current === version)
-            void act(() => state.removeMarketplace(name));
+          if (revision.current !== version) return;
+          void act(() => state.removeMarketplace(name));
         },
       },
     ]);
@@ -183,15 +172,10 @@ export function MarketplaceBrowser({
           {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
           {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
-            <Action
-              disabled={mutating}
-              onPress={() => {
-                void act(() => state.refreshMarketplace(selected));
-              }}
-            >
+            <Action disabled={busy} onPress={refresh}>
               Refresh source
             </Action>
-            <Action disabled={mutating} onPress={remove}>
+            <Action disabled={busy} onPress={remove}>
               Remove marketplace
             </Action>
           </View>
@@ -229,11 +213,11 @@ export function MarketplaceBrowser({
           )}
         </>
       ) : (
-        <Action disabled={mutating} onPress={() => setAdding(true)}>
+        <Action disabled={busy} onPress={() => setAdding(true)}>
           Add marketplace
         </Action>
       )}
-      {(mutating || pluginBusy) && (
+      {busy && (
         <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" />
       )}
     </View>
@@ -282,9 +266,7 @@ export function MarketplaceBrowser({
                 {item.description && <Copy muted>{item.description}</Copy>}
                 {item.author && <Copy muted>{item.author}</Copy>}
                 <Action
-                  disabled={
-                    mutating || pluginBusy || !plugins.plugins || !!installedError
-                  }
+                  disabled={busy || !plugins.plugins || !!installedError}
                   label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
                   onPress={() => {
                     if (existing) onOpenPlugin(target);
@@ -340,7 +322,7 @@ export function MarketplaceBrowser({
           client={client}
           hubName={hubName}
           onClose={() => setAdding(false)}
-          onAdd={state.addMarketplace}
+          onAdd={(params) => gate.run(() => state.addMarketplace(params))}
         />
       )}
     </>
@@ -355,7 +337,9 @@ function AddMarketplace({
 }: {
   hubName: string;
   onClose(): void;
-  onAdd(params: MarketplaceAddParams): Promise<void>;
+  /** Resolves false when the add was refused (a mutation is already
+   * running); the modal stays open and shows the busy copy. */
+  onAdd(params: MarketplaceAddParams): Promise<boolean>;
   client: ConversationClientLike;
 }) {
   const colors = useColors();
@@ -377,7 +361,7 @@ function AddMarketplace({
     setError(null);
     const value = source.trim();
     try {
-      await onAdd({
+      const ran = await onAdd({
         name: name.trim(),
         source:
           kind === "github"
@@ -386,6 +370,10 @@ function AddMarketplace({
               ? { kind, path: value }
               : { kind, url: value },
       });
+      if (!ran) {
+        if (alive.current) setError(PLUGIN_MUTATION_BUSY);
+        return;
+      }
       if (alive.current) onClose();
     } catch {
       if (alive.current)
