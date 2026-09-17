@@ -13,6 +13,7 @@ import {
   composeQuestionAnswers,
   pendingQuestions,
   questionAdvanceTarget,
+  questionsIdentity,
   seedQuestionAnswers,
 } from "./questionAnswers";
 
@@ -282,6 +283,25 @@ it("bounds a question's display copy while the canonical refs stay uncut", () =>
       },
     }),
   ).toContain(huge);
+});
+
+it("bounds a question set's identity so a React key, the sheet's signature and its persisted draft never carry the full prose", () => {
+  const huge = "x".repeat(MAX_ITEM_BYTES * 50);
+  const oversized: AskQuestionRef = { ...question, header: huge };
+  const identity = questionsIdentity([oversized]);
+  // Bounded regardless of how oversized the input is — the identity does not
+  // scale with it.
+  expect(new TextEncoder().encode(identity).length).toBeLessThan(huge.length / 2);
+  // Stable for byte-identical input, but still distinguishes different
+  // (bounded) content — an identity that never changes could not tell a
+  // batch's questions apart across a real edit.
+  expect(questionsIdentity([oversized])).toBe(identity);
+  expect(
+    questionsIdentity([{ ...oversized, header: "different" }]),
+  ).not.toBe(identity);
+  // The canonical ref handed to questionsIdentity is untouched — composition
+  // still reads the exact, uncut prose the agent sent.
+  expect(oversized.header).toBe(huge);
 });
 
 it("offers nothing when nothing is answerable, whatever the wire's flag says", () => {

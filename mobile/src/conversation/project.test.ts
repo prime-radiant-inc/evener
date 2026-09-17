@@ -23,7 +23,12 @@ import type {
   MobileTimelineItem,
 } from "./project";
 import { applyNotification, hydrateThread } from "@evener/appwire-client";
-import { projectConversation } from "./project";
+import {
+  MAX_ITEM_BYTES,
+  projectConversation,
+  truncateItem,
+  truncateText,
+} from "./project";
 
 // The oracle drives the shim exactly as the service does: hydrate the wire
 // Thread through the package, then project the display rows.
@@ -1043,9 +1048,29 @@ describe("projectThread", () => {
 
       const first = projectThread(t).items.filter((item) => item.kind === "failure");
       const second = projectThread(t).items.filter((item) => item.kind === "failure");
-      expect(first.map((item) => item.id)).toEqual(["failure:turn-a:Provider error", "failure:turn-b:Provider error"]);
+      expect(first.map((item) => item.id)).toEqual(["failure:turn-a", "failure:turn-b"]);
       expect(new Set(first.map((item) => item.id)).size).toBe(2);
       expect(second).toEqual(first);
+    });
+
+    it("keeps the failure row id bounded even when the turn's error prose is oversized", () => {
+      const huge = "x".repeat(MAX_ITEM_BYTES + 5_000);
+      const t = thread([turn("turn-a", [])]);
+      const firstTurn = t.turns?.[0];
+      if (firstTurn) firstTurn.error = { message: huge, title: huge };
+
+      const f = projectThread(t).items.find((item) => item.kind === "failure");
+      if (f?.kind !== "failure") throw new Error("expected a failure row");
+      // The id never embeds the error's prose — only the turn it belongs to —
+      // so it stays bounded regardless of how large the title gets.
+      expect(f.id).toBe("failure:turn-a");
+      // The store's display bound (mobile/src/state/conversation.ts) cuts the
+      // rendered title separately; applying it here does not disturb the id.
+      const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+      const rendered = truncateItem(f, bound);
+      if (rendered.kind !== "failure") throw new Error("expected a failure row");
+      expect(new TextEncoder().encode(rendered.title).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
+      expect(rendered.id).toBe("failure:turn-a");
     });
   });
 

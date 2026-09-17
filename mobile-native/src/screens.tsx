@@ -73,6 +73,7 @@ import {
 	composeQuestionAnswers,
 	pendingQuestions,
 	type QuestionSelections,
+	questionsIdentity,
 } from "./questionAnswers";
 import type { AskBatch } from "@evener/appwire-client";
 import { QuestionBatches } from "./questionBatches";
@@ -1883,7 +1884,7 @@ export function ConversationScreen({
 			) : null}
 			{batches.map((batch, index) => (
 				<QuestionSheet
-					key={batch.id + JSON.stringify(batch.questions)}
+					key={batch.id + questionsIdentity(batch.questions)}
 					visible={questionsOpen && index === 0}
 					destination={{
 						hubId: route.params.hubId,

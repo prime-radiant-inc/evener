@@ -769,7 +769,13 @@ function failureItem(
   if (error.additionalDetails) parts.push(error.additionalDetails);
   return {
     kind: "failure",
-    id: `failure:${turnID}:${title}`,
+    // The id names the turn only, never the error's prose: rowsForTurn calls
+    // this once per turn (at most one error per turn), so turnID alone is
+    // already unique, and the display bound (mobile/src/state/conversation.ts)
+    // cuts title/detail but not id — an id built from unbounded prose would
+    // stay oversized forever in timelineIdentity, page-ownership sets, list
+    // keys and this row's own JSON serialization.
+    id: `failure:${turnID}`,
     title,
     detail: parts.join("\n"),
   };

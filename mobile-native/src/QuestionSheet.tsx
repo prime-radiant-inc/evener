@@ -10,26 +10,22 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
-import {
-  boundQuestion,
-  MAX_ITEM_BYTES,
-  truncateText,
-} from "../../mobile/src/conversation/project";
+import { boundQuestion } from "../../mobile/src/conversation/project";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {
+  boundQuestionText,
   composeQuestionAnswers,
   nextUnansweredQuestion,
   type QuestionSelections,
   questionAdvanceTarget,
+  questionsIdentity,
   seedQuestionAnswers,
 } from "./questionAnswers";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
-// The sheet's own rendered text, bounded the same as a timeline row
-// (mobile/src/conversation/project.ts). `questions` stays canonical below:
-// only a pair's `display` half is ever put on screen.
-const boundQuestionText = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+// `questions` stays canonical below: only a pair's `display` half (built
+// with boundQuestionText, questionAnswers.ts) is ever put on screen.
 export function QuestionSheet({
   visible,
   destination,
@@ -52,7 +48,9 @@ export function QuestionSheet({
   send: (selections: QuestionSelections) => Promise<void>;
 }) {
   const colors = useColors();
-  const signature = JSON.stringify(questions);
+  // Bounded: the sheet's own signature never carries a question's full,
+  // unbounded prose (questionsIdentity's own comment).
+  const signature = questionsIdentity(questions);
   function loadSelections() {
     try {
       const activeKey = nativeDrafts().readQuestionPosition(
