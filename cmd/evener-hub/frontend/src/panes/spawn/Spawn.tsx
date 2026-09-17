@@ -333,9 +333,8 @@ function SpawnForm({
     },
     [providerSetup.retry],
   );
-  // The shared chunk hook owns the lazy payload and its cache-busted retry
-  // state, so this pane and the model-switch trigger cannot drift apart on
-  // recovery behavior; see ConnectProviderDialogBoundary.tsx.
+  // The chunk hook owns the lazy payload and its cache-busted retry state;
+  // see ConnectProviderDialogBoundary.tsx.
   const {
     Dialog: ProviderDialog,
     retry: retryProviderDialog,
@@ -2325,7 +2324,6 @@ function SpawnForm({
                       loadCatalog={loadCatalog}
                       onPick={handleModelPickEntry}
                       connectionRequest={modelHandoff}
-                      onConnectProvider={openProviderSetup}
                       data-testid="spawn-model-trigger"
                       valueTestId="spawn-model-value"
                     />

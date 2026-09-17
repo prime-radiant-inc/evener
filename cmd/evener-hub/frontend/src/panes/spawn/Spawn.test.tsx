@@ -1341,49 +1341,70 @@ test("missing credentials surface setup in the composer without opening a dialog
 
 test("connection handoff shows the actual instance models and preserves draft until explicit Start", async () => {
   const user = userEvent.setup();
-  let available = false;
+  let saved = false;
+  const row = {
+    name: "team-local",
+    providerId: "team-local",
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    authModes: ["apiKey"],
+    baseUrl: "https://team.example/v1",
+    endpointFingerprint: "fp-team",
+  };
   const client = readyClient((fake) => {
     fake.on("evener/instance/list", () => ({
-      instances: [
+      instances: saved ? [{ ...row, activeSource: "store", hasStoredFile: true }] : [],
+      availableProviders: [
         {
-          name: "team-local",
-          providerId: "ollama",
-          protocol: "openai-chat",
-          auth: "none",
+          id: "team-local",
+          name: "Team local",
+          protocol: row.protocol,
+          auth: row.auth,
           implicit: false,
-          isDefault: false,
-          activeSource: "none",
-          hasStoredOAuth: false,
-          credentialRequired: false,
+          authModes: ["apiKey"],
+          setup: row,
         },
       ],
-      availableProviders: [],
     }));
     fake.on("model/list", () => ({
-      data: available
+      data: saved
         ? [
             { provider: "team-local", model: "served-model", displayName: "Served model" },
             { provider: "other", model: "unrelated", displayName: "Unrelated model" },
           ]
         : [],
     }));
+    fake.on("evener/auth/apiKey/set", ({ provider }) => {
+      saved = true;
+      return { provider, supported: true, signedIn: true, activeSource: "store", hasStoredOAuth: false };
+    });
     fake.on("evener/auth/test", ({ provider }) => ({ provider, status: "success", message: "" }));
     fake.on("evener/launch/resolve", () => ({ effective: {}, layers: {}, provenance: {} }));
   });
   connectionStore.getState().connect(client);
   renderSpawn(client);
+  await screen.findByRole("button", { name: "Connect provider" });
   await user.type(screen.getByRole("textbox", { name: "Prompt" }), "handoff-draft");
   await setWorkingDir(user, "/tmp/handoff-project");
-  await user.click(modelTrigger());
-  const connect = await screen.findByRole("button", { name: "Connect another provider" });
-  await user.click(connect);
+  await user.click(screen.getByRole("button", { name: "Connect provider" }));
   await act(async () => {
     await vi.dynamicImportSettled();
   });
-  await user.click(screen.getByText("Already configured access on this host?"));
-  await user.click(screen.getByRole("button", { name: "Manage existing connections" }));
-  available = true;
-  await user.click(await screen.findByRole("button", { name: "Test connection" }));
+  // team-local is not one of the curated providers the guided grid leads
+  // with, so the card shows under All providers.
+  await user.click(await screen.findByRole("button", { name: "All providers" }));
+  await user.click(await screen.findByRole("button", { name: "Team local" }));
+  await user.type(screen.getByLabelText("API key"), "fixture-only-key");
+  await user.click(screen.getByRole("button", { name: "Save and check" }));
+  await user.click(await screen.findByRole("button", { name: "Continue" }));
+  // The completed connection hands off to the picker, which reopens scoped to
+  // the connected instance: its models are offered, the unrelated provider's
+  // are not.
   const option = await screen.findByRole("option", { name: /Served model/ });
   expect(screen.queryByRole("option", { name: /Unrelated model/ })).toBeNull();
   expect(client.calls.filter((call) => call.method === "thread/start")).toEqual([]);
@@ -3799,8 +3820,7 @@ test("onboarding a second draft scope does not forget the first scope's explicit
   expect(modelTrigger().textContent).not.toContain("anthropic/claude-sonnet-4-5");
 });
 
-test("provider onboarding on an unmanaged harness does not require a model", async () => {
-  const user = userEvent.setup();
+test("an unmanaged harness with a resolved default model does not demand a model choice", async () => {
   window.history.pushState({}, "", "/new?dir=/tmp/unmanaged-draft");
   localStorage.setItem("evener-hub.spawn-defaults./tmp/unmanaged-draft", JSON.stringify({ harness: "external" }));
   const fake = readyClient((f) => {
@@ -3816,18 +3836,6 @@ test("provider onboarding on an unmanaged harness does not require a model", asy
   await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
   // The external harness carries its own model through unmanaged, so the
   // resolved default keeps the chip off the required state and Start live.
-  expect(modelTrigger().textContent).not.toContain("Choose a model");
-  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
-
-  await user.click(modelTrigger());
-  await user.click(await screen.findByRole("button", { name: "Connect another provider" }));
-  await act(async () => {
-    await vi.dynamicImportSettled();
-  });
-  await user.keyboard("{Escape}");
-
-  // Entering the connector and canceling it is not a model choice: the pane
-  // must not start demanding one for a harness whose model it never submits.
   expect(modelTrigger().textContent).not.toContain("Choose a model");
   expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 });
