@@ -31,7 +31,7 @@ import { useConnection } from "./ConnectionProvider";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { ProviderInstances, removalFailureMessage } from "./providerInstances";
+import { applyRemovalOutcome, ProviderInstances, removalFailureMessage } from "./providerInstances";
 import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -172,9 +172,11 @@ function Providers({
   }
   // removeInstance runs the removal through the model, which reconciles the
   // listing and resolves a removal that stood as "removedPersisted" rather than
-  // rejecting it. That outcome is reported the way the web pane reports it:
-  // close the removed instance and surface the hub's own message as a warning.
-  // Every other failure keeps the editor open and reports it as a failure.
+  // rejecting it. Every successful removal closes the editor - a name the
+  // environment also supplies survives as an implicit row, so the removed
+  // instance's selection would otherwise stay open holding its draft - and a
+  // removal that stood also surfaces the hub's own message as a warning. Every
+  // other failure keeps the editor open and reports it as a failure.
   async function removeInstance(name: string, expectedEndpointFingerprint?: string): Promise<void> {
     const version = editorVersion.current;
     setActionError(null);
@@ -182,10 +184,7 @@ function Providers({
     try {
       const outcome = await model.remove(name, expectedEndpointFingerprint);
       if (version !== editorVersion.current) return;
-      if (outcome.kind === "removedPersisted") {
-        close();
-        setWarning(outcome.message);
-      }
+      applyRemovalOutcome(outcome, close, setWarning);
     } catch (err) {
       if (version !== editorVersion.current) return;
       // A removal error carries the instance name and the endpoint fingerprint,

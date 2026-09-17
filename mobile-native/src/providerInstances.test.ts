@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type {
   AnyNotification,
+  InstanceEntry,
   InstanceListResponse,
 } from "@evener/appwire-client";
 import {
@@ -11,6 +12,7 @@ import { ErrorInstanceRemovePersisted, WireError } from "@evener/appwire-client"
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import {
+  applyRemovalOutcome,
   isInstanceRemovePersisted,
   ProviderInstances,
   removalFailureMessage,
@@ -473,4 +475,62 @@ it("surfaces the hub's removal-failure message and genericizes everything else",
   ).toBe("Remove failed: removing test was refused: check the endpoint");
   expect(removalFailureMessage(new Error("socket closed"))).toBe("Remove failed: Something went wrong.");
   expect(removalFailureMessage("socket closed")).toBe("Remove failed: Something went wrong.");
+});
+
+function entry(overrides: Partial<InstanceEntry> & Pick<InstanceEntry, "name" | "providerId">): InstanceEntry {
+  return {
+    protocol: "openai-chat",
+    auth: "bearer",
+    implicit: false,
+    isDefault: false,
+    activeSource: "none",
+    hasStoredOAuth: false,
+    credentialRequired: true,
+    ...overrides,
+  };
+}
+
+// The providers screen closes the editor for EVERY successful removal. A name
+// the environment also supplies survives its authored row's removal as an
+// implicit row, so the effect that drops a *removed* instance's selection never
+// fires - `instance` is still found by name - and without an explicit close the
+// editor stays open holding the removed instance's draft. A save from that
+// draft would author a new override against the replacement implicit row.
+it("closes the editor for a clean removal even when an environment-backed implicit row survives", async () => {
+  const { model, io } = boundary();
+  const authored = entry({ name: "test", providerId: "openai", activeSource: "store" });
+  const environmentBacked = entry({
+    name: "test",
+    providerId: "openai",
+    implicit: true,
+    activeSource: "env:OPENAI_API_KEY",
+  });
+  io.request = async (method) =>
+    method === "evener/instance/remove"
+      ? { instances: [environmentBacked], availableProviders: [] }
+      : { ...listing("authored"), instances: [authored] };
+  await model.refresh();
+  const outcome = await model.remove("test");
+  expect(outcome).toEqual({ kind: "removed" });
+  // The name did not leave the listing: it came back as an environment row, so
+  // the editor has no listing-driven reason to close itself.
+  expect(
+    model.getSnapshot().data?.instances.some((row) => row.name === "test" && row.implicit),
+  ).toBe(true);
+
+  const close = vi.fn();
+  const setWarning = vi.fn();
+  applyRemovalOutcome(outcome, close, setWarning);
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(setWarning).toHaveBeenCalledWith(null);
+});
+
+// The warning is specific to a removal that stood with a leftover copy; the
+// editor still closes for it.
+it("warns for a persisted removal while still closing the editor", () => {
+  const close = vi.fn();
+  const setWarning = vi.fn();
+  applyRemovalOutcome({ kind: "removedPersisted", message: "leftover copy" }, close, setWarning);
+  expect(close).toHaveBeenCalledTimes(1);
+  expect(setWarning).toHaveBeenCalledWith("leftover copy");
 });

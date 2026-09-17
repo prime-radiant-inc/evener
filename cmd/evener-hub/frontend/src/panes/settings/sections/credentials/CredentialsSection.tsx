@@ -451,6 +451,15 @@ export function CredentialsSection({
       if (kind === "remove" && isInstanceRemovePersisted(err)) {
         setPendingConfirm(null);
         setSelectedInstance(null);
+        // The RPC threw, so applyMutation installed nothing and the store still
+        // holds the listing it read before the removal - the removed row would
+        // stay on screen until an unrelated refetch. The removal is already
+        // established by the hub's discriminator, so this is not a confirmation
+        // gate: land the post-removal listing (the same reconciliation the
+        // confirmed clear/clear-stored-key paths do) before reporting, so the
+        // guided owner reacts to a listing that lost the row. A lost read is the
+        // connection banner's to report, not this removal's.
+        await refreshListingAfterMutation();
         onInstanceRemoved?.(name);
         toast.push("warning", friendlyErrorMessage(err));
         return;

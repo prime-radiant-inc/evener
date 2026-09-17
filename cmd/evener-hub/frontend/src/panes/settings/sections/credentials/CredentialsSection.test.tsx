@@ -605,6 +605,45 @@ describe("the detail sheet", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
   });
 
+  // The standing removal's RPC threw, so the store kept the listing it read
+  // before it (applyMutation installed nothing) - the removed row would stay on
+  // screen until an unrelated refetch. The branch must re-read the listing
+  // itself before it reports the removal: the removed row has to leave the
+  // listing the guided owner reacts to.
+  test("a persisted removal re-reads the listing so the removed row leaves it", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "removed personal, but a credential the removal set aside is still on disk, and deleting it is what takes it away: /state/auth/personal.json.removing-1 (delete refused)";
+    // The pre-removal read carries the row; every read after it is the hub's
+    // post-removal listing, without the authored row.
+    let reads = 0;
+    fake.on("evener/instance/list", () => {
+      reads += 1;
+      return reads === 1 ? LIST : { instances: [WORK], availableProviders: [] };
+    });
+    fake.on("evener/instance/remove", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRemovePersisted });
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/still on disk/);
+    // The listing was re-read: the removed row is gone, not left on a listing
+    // the store read before the removal.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /personal/ })).toBeNull());
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(1);
+  });
+
   // A refusal carries no such discriminator, so it stays the plain failure it
   // was, with the dialog left open exactly as today. Nothing is inferred from
   // the listing, which cannot tell a refusal from a standing removal for a

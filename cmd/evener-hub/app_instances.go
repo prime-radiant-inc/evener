@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
@@ -1889,12 +1890,38 @@ const maxAsideStamp int64 = 1<<63 - 1
 // destination, and the unlink that follows leaves the bytes under a single name.
 // A taken destination returns an error satisfying errors.Is(err, os.ErrExist), so
 // the caller can pick a fresh name or report the copy as uncarried.
+//
+// Filesystems that cannot hard-link a file (exFAT/FAT, some SMB/NFS configs)
+// refuse link(2) with ENOTSUP or EPERM, which would otherwise fail every caller
+// that must move a copy aside or onto its committed name: a removal could not
+// mark its copy committed (Remove rolls the whole removal back), and every
+// rename of an instance with a pending aside would report an un-carriable copy.
+// For exactly those two errors renameNoReplace falls back to rename(2). The
+// fallback preserves the no-replace guarantee the link provides, for two
+// reasons. First, link(2) reports a taken destination (EEXIST) before it reports
+// an unsupported filesystem, so a destination that already exists never reaches
+// the fallback. Second, every caller serializes under the same lock - Edit's and
+// Remove's credMu (see hubAuthController.credMu; the rename carry and the
+// removal both hold it across their moves), or startup before the hub serves
+// (restoreUncommittedOAuthAsides, run while the process holds hub.lock and
+// before the web server is built) - so no other writer can create the
+// destination between the failed link and the rename. Every other link error,
+// EEXIST above all, is returned unchanged.
 func renameNoReplace(src, dst string) error {
-	if err := os.Link(src, dst); err != nil {
-		return err
+	err := linkFile(src, dst)
+	if err == nil {
+		return os.Remove(src)
 	}
-	return os.Remove(src)
+	if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EPERM) {
+		return os.Rename(src, dst)
+	}
+	return err
 }
+
+// linkFile is os.Link behind a seam, so a test can make it fail the way a
+// filesystem without hard links does (ENOTSUP/EPERM) and pin renameNoReplace's
+// fallback for exactly those errors.
+var linkFile = os.Link
 
 // freeAsideName picks a path for an in-flight copy of name's record under the
 // given kind, carrying a stamp no name in dir already holds. want is the stamp
@@ -1948,39 +1975,37 @@ func freeAsideName(dir, name string, configBacked bool, want int64) (string, boo
 	}
 }
 
-// oauthCredentialOnlyAsideName returns the credential-only IN-FLIGHT name for an
-// in-flight copy, dropping a config-backed marker. Startup recovery restores a
-// credential-only in-flight copy while its record path is free; a config-backed
-// one whose name the config no longer carries is resolved forward and swept
-// (restoreUncommittedOAuthAsides). A name that carries no config-backed marker is
-// returned unchanged.
-func oauthCredentialOnlyAsideName(name string) string {
-	if i := strings.LastIndex(name, oauthConfigAsideMarker); i >= 0 {
-		return name[:i] + oauthAsideMarker + name[i+len(oauthConfigAsideMarker):]
-	}
-	return name
-}
-
 // remarkUncarriedOAuthAside re-files a copy a rename could not carry so startup
-// recovery restores it instead of deleting it, and returns the carry problem to
-// report. A copy the carry left under its old name is config-backed whenever the
-// old name had an authored entry, and the rename has already written
-// providers.toml with the new name - so recovery sees a config-backed copy whose
-// name the config no longer carries, resolves it forward, and the sweep deletes
-// what may be the renamed instance's only credential. Rewriting it to the
-// credential-only in-flight shape keeps it a copy recovery restores while the
-// record path is free; the alternative is deletion without the user asking. The
-// rewrite itself can fail, and then the report says the bytes are still filed
-// under the old name in a shape startup will not restore.
+// recovery restores it to the RENAMED instance instead of deleting it, and
+// returns the carry problem to report. providers.toml already names only the new
+// instance, so re-filing the copy under the OLD name - in any shape recovery
+// restores - would put its bytes at the old record path, which no instance uses:
+// the renamed instance would be left without the credential the carry was trying
+// to preserve. The copy is therefore filed under the NEW name as that name's
+// in-flight copy in the CREDENTIAL-ONLY shape (the shape recovery restores even
+// without a readable config), chosen the same collision-safe way the carry
+// chooses a destination (freeAsideName, which keeps the all-digits stamp
+// oauthAsideInstance requires) and landed without replacing anything
+// (renameNoReplace). Startup recovery then puts it back at the new record path
+// when that path is free. When even that cannot land, the report says plainly
+// that the bytes are still filed under the old name in a shape startup will not
+// restore.
 func remarkUncarriedOAuthAside(dir, name, newName string, cause error) string {
-	remarkBase := oauthCredentialOnlyAsideName(name)
-	if remarkBase == name {
-		return fmt.Sprintf("OAuth copy %q not carried to %q, but it is already in the credential-only in-flight shape startup recovery restores (%v)", name, newName, cause)
+	// The copy's own stamp is preferred, so the fallback orders the same way the
+	// carry would have. A stamp that cannot be ordered (past an int64) starts the
+	// search at zero and freeAsideName steps past whatever is taken.
+	var want int64
+	if s, perr := strconv.ParseInt(oauthAsideStampText(name), 10, 64); perr == nil {
+		want = s
 	}
-	if rerr := renameNoReplace(filepath.Join(dir, name), filepath.Join(dir, remarkBase)); rerr != nil {
-		return fmt.Sprintf("OAuth copy %q not carried to %q, and it could not be re-filed as %q, so its bytes are still filed under the old name in a shape startup will not restore (%v; %v)", name, newName, remarkBase, cause, rerr)
+	dst, ok := freeAsideName(dir, newName, false, want)
+	if !ok {
+		return fmt.Sprintf("OAuth copy %q not carried to %q, and no fresh credential-only aside name under %q was free to re-file it, so its bytes are still filed under the old name in a shape startup will not restore (%v)", name, newName, newName, cause)
 	}
-	return fmt.Sprintf("OAuth copy %q not carried to %q and re-filed as %q, which startup recovery restores rather than deleting the credential (%v)", name, newName, remarkBase, cause)
+	if rerr := renameNoReplace(filepath.Join(dir, name), dst); rerr != nil {
+		return fmt.Sprintf("OAuth copy %q not carried to %q, and it could not be re-filed under %q, so its bytes are still filed under the old name in a shape startup will not restore (%v; %v)", name, newName, filepath.Base(dst), cause, rerr)
+	}
+	return fmt.Sprintf("OAuth copy %q not carried to %q and re-filed under the new name as %q, which startup recovery restores to the renamed instance rather than deleting the credential (%v)", name, newName, filepath.Base(dst), cause)
 }
 
 // commitOAuthAside renames one in-flight copy to its committed shape and returns
@@ -2099,6 +2124,18 @@ func configCarriesName(l *registry.Layer, name string) bool {
 // failure is reported through the problems path, so a partial pass never reads
 // as clean. When the config reads, the pass is exactly as before.
 //
+// An EMPTY path is one of those unreadable configs. main.go passes "" when
+// EVENER_PROVIDERS_CONFIG is present and empty, which cmdutil reads as "no user
+// layer at all" (ProvidersConfigPath). registry.ReadConfigFile("") calls
+// os.ReadFile(""), which fails with os.ErrNotExist, and ReadConfigFile turns that
+// into an EMPTY layer with a NIL error - so an absent config would otherwise read
+// as authoritative evidence that the config carries no name, and every
+// config-backed in-flight copy would be resolved forward and deleted. That is
+// exactly the state a removal interrupted BEFORE its providers.toml write leaves
+// behind, so the absent config must be treated as no evidence at all: the
+// credential-only half still runs, every config-dependent copy is deferred
+// untouched, and the situation is reported.
+//
 // The forward resolution never overwrites a file already filed under the copy's
 // committed name (renameNoReplace): a partial prior rename can leave both paths
 // present, and rename(2) would silently destroy the bytes already there - a copy
@@ -2133,10 +2170,22 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// they are for a later pass with a readable config), and reports the failure
 	// so a partial pass is never read as clean. Deferring, never guessing, is what
 	// keeps an unrelated parse failure from deleting or resurrecting anything.
-	layer, _, cfgErr := registry.ReadConfigFile(providersConfigPath)
+	var (
+		layer  *registry.Layer
+		cfgErr error
+	)
+	if providersConfigPath == "" {
+		cfgErr = errors.New("there is no providers config path (EVENER_PROVIDERS_CONFIG is present and empty), so there is no config evidence to classify the config-backed copies against")
+	} else {
+		layer, _, cfgErr = registry.ReadConfigFile(providersConfigPath)
+	}
 	var problems []string
 	if cfgErr != nil {
-		problems = append(problems, fmt.Sprintf("read %s to classify the config-backed copies and sweep the committed ones, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched (%v)", providersConfigPath, cfgErr))
+		if providersConfigPath == "" {
+			problems = append(problems, fmt.Sprintf("%v, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched", cfgErr))
+		} else {
+			problems = append(problems, fmt.Sprintf("read %s to classify the config-backed copies and sweep the committed ones, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched (%v)", providersConfigPath, cfgErr))
+		}
 	}
 	// Where the records live, asked of the function that places them, so this
 	// cannot look somewhere a record never lands.

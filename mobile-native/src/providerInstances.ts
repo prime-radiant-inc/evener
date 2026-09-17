@@ -63,6 +63,22 @@ export type RemovalOutcome =
   | { kind: "removed" }
   | { kind: "removedPersisted"; message: string };
 
+// applyRemovalOutcome is what the providers screen does with a resolved
+// removal. The editor closes for EVERY successful removal - the authored entry
+// is gone, and for a name the environment also supplies the implicit row that
+// survives must open fresh rather than keep the removed instance's draft (a
+// save from that draft would author a new override against the replacement
+// row). Only a removal that stood with a leftover copy carries a warning; a
+// clean removal leaves the list-level warning silent.
+export function applyRemovalOutcome(
+  outcome: RemovalOutcome,
+  close: () => void,
+  setWarning: (message: string | null) => void,
+): void {
+  close();
+  setWarning(outcome.kind === "removedPersisted" ? outcome.message : null);
+}
+
 /** Provider data and operations for one hub's provider list: the credential
  * store it is handed, projected into the snapshot the list renders. The
  * core owns the listing, its ordering, the evener/auth/updated refetch, the

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -779,15 +780,19 @@ func TestInstances_EditRenameCarriesAnInFlightOAuthCopy(t *testing.T) {
 // a shape startup recovery resolves forward and deletes: the rename already wrote
 // providers.toml with the new name, so a CONFIG-BACKED copy still filed under the
 // old name would be resolved forward on the next start and swept, destroying what
-// may be the renamed instance's only credential. The carry re-files it to the
-// CREDENTIAL-ONLY in-flight shape instead, which recovery restores while the
-// record path is free - the alternative is deletion without the user asking.
+// may be the renamed instance's only credential. It must be re-filed under the
+// NEW name in the CREDENTIAL-ONLY in-flight shape, which recovery restores to the
+// renamed instance while its record path is free - the alternative is deletion
+// without the user asking, or bytes stranded under a name the config no longer
+// carries.
 //
 // The carry is refused the way the search refuses it: the copy's stamp is
-// MaxInt64 and the new name already holds a copy at that same stamp, so no fresh
-// stamp can be stepped to. A live record keeps the old record path occupied, so
-// the copy is carried rather than promoted. Startup recovery then runs and the
-// bytes must come back rather than be deleted.
+// MaxInt64 and the new name already holds a CONFIG-BACKED copy at that same
+// stamp, so no fresh config-backed name can be stepped to. A live record keeps the
+// old record path occupied, so the copy is carried rather than promoted. The
+// fallback files it under the new name at the copy's stamp; startup recovery then
+// puts it back at the new record path rather than deleting it or filing it under
+// the old name.
 func TestInstances_EditRenameReportsAnOAuthCopyItCouldNotCarry(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
@@ -801,15 +806,15 @@ func TestInstances_EditRenameReportsAnOAuthCopyItCouldNotCarry(t *testing.T) {
 	}
 	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
 	// The stamp no successor can pass, so freeAsideName cannot offer the carry a
-	// fresh name once the new name holds a copy at the same stamp.
+	// fresh config-backed name once the new name holds a copy at the same stamp.
 	const stamp = "9223372036854775807"
 	source := "work.json" + oauthConfigAsideMarker + stamp
 	const content = "the renamed instance's only credential copy\n"
 	if err := os.WriteFile(filepath.Join(dir, source), []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s): %v", source, err)
 	}
-	// The obstacle occupies the only candidate the fresh-stamp search can offer,
-	// so the carry cannot land rather than stepping past it.
+	// The obstacle occupies the only candidate the config-backed fresh-stamp
+	// search can offer, so the carry cannot land rather than stepping past it.
 	if err := os.Mkdir(filepath.Join(dir, "personal.json"+oauthConfigAsideMarker+stamp), 0o700); err != nil {
 		t.Fatalf("Mkdir(destination): %v", err)
 	}
@@ -821,31 +826,50 @@ func TestInstances_EditRenameReportsAnOAuthCopyItCouldNotCarry(t *testing.T) {
 	if _, persisted := errors.AsType[renamePersistedError](err); !persisted {
 		t.Fatalf("Edit = %v (%T), want a renamePersistedError", err, err)
 	}
-	remark := "work.json" + oauthAsideMarker + stamp
+	// The fallback must land under the NEW name: providers.toml names only
+	// personal, so bytes filed under work would be stranded at the old record
+	// path, which no instance uses.
+	remark := "personal.json" + oauthAsideMarker + stamp
 	if !strings.Contains(err.Error(), remark) {
-		t.Fatalf("Edit = %v, want it to name the copy re-filed as %s", err, remark)
+		t.Fatalf("Edit = %v, want it to name the copy re-filed under the new name as %s", err, remark)
 	}
 	if _, statErr := os.Lstat(filepath.Join(dir, source)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("the config-backed copy %s is still on disk (%v), want it re-filed to the credential-only shape", source, statErr)
+		t.Fatalf("the config-backed copy %s is still on disk (%v), want it re-filed under the new name", source, statErr)
+	}
+	inst, committed, configBacked, aside := oauthAsideInstance(remark)
+	if !aside || committed || configBacked || inst != "personal" {
+		t.Fatalf("oauthAsideInstance(%s) = (%q, committed=%v, configBacked=%v, aside=%v), want a credential-only in-flight copy of personal", remark, inst, committed, configBacked, aside)
+	}
+	if got, rerr := os.ReadFile(filepath.Join(dir, remark)); rerr != nil || string(got) != content {
+		t.Fatalf("the re-filed copy = %q (%v), want %q", got, rerr, content)
 	}
 	authoredEntry(t, f.tomlPath, "personal")
 
-	// Startup recovery reads the credential-only in-flight shape and restores the
-	// bytes under the old name's record path (the rename freed it), rather than
-	// resolving a config-backed copy forward and sweeping it away.
+	// The rename also carried the old record to personal.json, so the re-filed
+	// copy sits beside it. Remove that record to reach the state this fallback
+	// exists for - the copy is the renamed instance's only credential - and run
+	// startup recovery, which must put it back at the NEW record path rather than
+	// at the old name's or deleting it.
+	record := authopenai.AuthFilePath(f.stateDir, "personal")
+	if err := os.Remove(record); err != nil {
+		t.Fatalf("remove the carried record %s to leave the fallback copy as the only credential: %v", record, err)
+	}
 	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
 	if rerr != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
 	}
 	if !restored {
-		t.Fatal("startup did not restore the re-filed copy; the rename destroyed the renamed instance's only credential")
+		t.Fatal("startup did not restore the re-filed copy; the renamed instance lost its only credential")
 	}
-	got, rerr := os.ReadFile(authopenai.AuthFilePath(f.stateDir, "work"))
+	got, rerr := os.ReadFile(record)
 	if rerr != nil {
-		t.Fatalf("the re-filed bytes were not restored: %v", rerr)
+		t.Fatalf("the re-filed bytes were not restored to the renamed instance: %v", rerr)
 	}
 	if string(got) != content {
 		t.Fatalf("restored bytes = %q, want %q", got, content)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, remark)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the re-filed copy is still on disk (Lstat = %v), want it moved", statErr)
 	}
 }
 
@@ -888,6 +912,125 @@ func TestRestoreUncommittedOAuthAsidesPutsBackAConfigBackedCopyTheConfigStillCar
 	}
 	if _, err := os.Lstat(aside); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the copy is still on disk (Lstat = %v), want it moved", err)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesDefersConfigBackedCopiesWithoutAConfigPath:
+// main.go passes providersConfigPath == "" when EVENER_PROVIDERS_CONFIG is
+// present and empty, which the tri-state rule reads as "no user layer at all".
+// That is not evidence that a removal reached its providers.toml write, so
+// recovery must treat it exactly as a config it could not read: complete the
+// credential-only half, defer every config-dependent copy untouched, and report
+// the situation so the partial pass is never read as clean. Before the fix
+// ReadConfigFile("") returned an empty layer with a nil error, so every
+// config-backed in-flight copy was resolved forward and the sweep then deleted
+// it - permanently losing the bytes a removal interrupted before its config
+// write exists to recover.
+func TestRestoreUncommittedOAuthAsidesDefersConfigBackedCopiesWithoutAConfigPath(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const stamp = "1757000000000000000"
+	// A config-backed in-flight copy: without a config it cannot be classified,
+	// so it must not be resolved forward (which the sweep then deletes).
+	configBacked := filepath.Join(dir, "work.json"+oauthConfigAsideMarker+stamp)
+	const configBackedBytes = "an in-doubt removal's only credential\n"
+	if err := os.WriteFile(configBacked, []byte(configBackedBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", configBacked, err)
+	}
+	// A committed copy no config names: the sweep that deletes it needs the
+	// config, so it must not run without one.
+	swept := filepath.Join(dir, "retired.json"+oauthCommittedMarker+stamp)
+	if err := os.WriteFile(swept, []byte("a standing removal's copy\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", swept, err)
+	}
+	// A credential-only in-flight copy: its recovery does not consult the config,
+	// so the credential-only half must still complete.
+	record := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	credentialOnly := filepath.Join(dir, "openai-codex.json"+oauthAsideMarker+stamp)
+	const credentialBytes = "the credential-only instance's record\n"
+	if err := os.WriteFile(credentialOnly, []byte(credentialBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", credentialOnly, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, "")
+	if err == nil {
+		t.Fatal(`restoreUncommittedOAuthAsides(state, "") = nil, want the missing config path reported`)
+	}
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides = false, want the credential-only half completed without a config")
+	}
+	got, rerr := os.ReadFile(record)
+	if rerr != nil || string(got) != credentialBytes {
+		t.Fatalf("the credential-only record = %q (%v), want it put back without a config", got, rerr)
+	}
+	if b, rerr := os.ReadFile(configBacked); rerr != nil || string(b) != configBackedBytes {
+		t.Fatalf("the config-backed copy = %q (%v), want it deferred untouched without a config", b, rerr)
+	}
+	if _, statErr := os.Lstat(swept); statErr != nil {
+		t.Fatalf("the committed copy %s was swept (Lstat = %v), want the config-dependent sweep deferred", swept, statErr)
+	}
+}
+
+// TestRenameNoReplaceFallsBackWhenLinkIsUnsupported: on filesystems without
+// hard links (exFAT/FAT, some SMB/NFS configs) link(2) fails with ENOTSUP or
+// EPERM, so a removal could not mark its copy committed and every rename of an
+// instance with a pending aside would report an un-carriable copy. renameNoReplace
+// falls back to rename(2) for exactly those two errors. The fallback is safe
+// because every caller serializes under the same lock - Edit's and Remove's
+// credMu - or runs at startup before the hub serves, so no other writer can take
+// the destination between the failed link and the move; and link(2) reports a
+// taken destination (EEXIST) before it reports an unsupported filesystem, so a
+// non-empty destination never reaches the fallback.
+func TestRenameNoReplaceFallsBackWhenLinkIsUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	const content = "the only copy of the bytes\n"
+	if err := os.WriteFile(src, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(src): %v", err)
+	}
+	restore := linkFile
+	linkFile = func(oldPath, newPath string) error {
+		return &os.LinkError{Op: "link", Old: oldPath, New: newPath, Err: syscall.ENOTSUP}
+	}
+	t.Cleanup(func() { linkFile = restore })
+
+	if err := renameNoReplace(src, dst); err != nil {
+		t.Fatalf("renameNoReplace = %v, want the rename fallback for an unsupported link", err)
+	}
+	if b, rerr := os.ReadFile(dst); rerr != nil || string(b) != content {
+		t.Fatalf("destination bytes = %q (%v), want the source moved there", b, rerr)
+	}
+	if _, statErr := os.Lstat(src); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("source still on disk (Lstat = %v), want it moved", statErr)
+	}
+}
+
+// TestRenameNoReplaceRefusesATakenDestination: where link(2) works, the
+// no-replace guarantee stands - a taken destination is refused, never replaced,
+// and neither file's bytes change. This is the behavior the fallback must not
+// weaken on a filesystem that cannot hard-link.
+func TestRenameNoReplaceRefusesATakenDestination(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	dst := filepath.Join(dir, "dst")
+	if err := os.WriteFile(src, []byte("source bytes\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(src): %v", err)
+	}
+	if err := os.WriteFile(dst, []byte("destination bytes\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(dst): %v", err)
+	}
+	if err := renameNoReplace(src, dst); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("renameNoReplace = %v, want an os.ErrExist refusal for a taken destination", err)
+	}
+	if b, rerr := os.ReadFile(dst); rerr != nil || string(b) != "destination bytes\n" {
+		t.Fatalf("destination bytes = %q (%v), want the taken file left untouched", b, rerr)
+	}
+	if b, rerr := os.ReadFile(src); rerr != nil || string(b) != "source bytes\n" {
+		t.Fatalf("source bytes = %q (%v), want the source left in place", b, rerr)
 	}
 }
 
