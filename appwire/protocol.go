@@ -216,6 +216,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerSettingsAgentsDocSet, AgentsDocSetParams{}, AgentsDocResponse{}, ScopeHub, "Replaces the personal AGENTS.md whole (no precondition); broadcasts evener/settings/agentsDoc/changed."},
 	{MethodEvenerSandboxEscalationResolve, SandboxEscalationResolveParams{}, EmptyResponse{}, ScopeBoth, "Delivers a human's approve/deny decision for a pending sandbox-exemption escalation (M7); the daemon unblocks the waiting tool-exec goroutine, the hub relays."},
 	{MethodEvenerHostRequest, HostRequestParams{}, HostForwardedResult{}, ScopeHub, "Forwards one hub-scoped admin RPC to a named remote host's hub through the allow-listed proxy (component 07a); the result is the forwarded method's own result, verbatim — an opaque JSON object, not a wrapper, so a typed client must treat the result as unknown and cast it to the forwarded method's own result type (see HostForwardedResult)."},
+	{MethodEvenerHostAttach, HostAttachParams{}, HostAttachResponse{}, ScopeHub, "Explicitly attaches one configured remote host by name through the Ensure-backed dialing seam (component 06's Connect action); a mutation and the only browser-reachable attach trigger, idempotent while attached, returning the host's post-attach state."},
 }
 
 // ValidateMutationParams enforces the flag-day v2 identity and precondition
