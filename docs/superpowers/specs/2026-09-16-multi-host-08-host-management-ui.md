@@ -112,10 +112,11 @@ This table is the only place the three-document split is defined.
 | Method / artifact | Registry (this doc) | Pipeline (08b) | Fencing (08c) |
 |---|---|---|---|
 | `evener/host/list` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes | — |
-| `evener/host/add` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/update` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/remove` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/teardown-retry` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/add` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/update` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/remove` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/teardown-retry` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — (fenced: crash-fencing spec §8) |
+| `evener/host/teardown-recover` behavior + private hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — (fenced: crash-fencing spec §8) |
 | `evener/host/status` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes | consumes (refusal snapshots) |
 | `evener/host/plan` + token mint | — | ships (handler + catalog + client) | consumes |
 | `evener/host/deploy` | — | ships (handler + catalog + client) | consumes |
@@ -140,16 +141,19 @@ The router-vs-catalog test pins registration both ways
 (`cmd/evener-hub/appwire_catalog_test.go` — routed-but-uncataloged fails
 exactly like cataloged-but-unrouted), so a union-returning handler cannot
 land before its catalog entry and generated client. Hand-written Go
-request/response structs land in the same PR as their handlers so the backend
-contract is reviewable; union-returning handlers with their public catalog
-registration plus the regenerated client arrive together with the pipeline
-PR's generator work. No undocumented provisional types ship in any PR.
+request/response structs land in the registry PR as private (unexported,
+unregistered) types beside the behavior they describe, so the backend
+contract is reviewable with no router or catalog wiring; handler
+registration plus the public catalog entries plus the regenerated client
+for those handlers arrive together with the pipeline PR's generator work.
+No undocumented provisional types ship in any PR.
 
 ## 3. Scope and non-scope
 
-Scope: the six controller-side methods besides `attach` — `evener/host/list`,
-`add`, `update`, `remove`, `status`, and the `evener/host/teardown-retry`
-repair mutation — plus durable persistence of host entries with hot-apply,
+Scope: the seven controller-side methods besides `attach` — `evener/host/list`,
+`add`, `update`, `remove`, `status`, the `evener/host/teardown-retry`
+repair mutation, and the `evener/host/teardown-recover` recovery mutation (§6) —
+plus durable persistence of host entries with hot-apply,
 the Hosts settings contract (§13; files land in the pipeline PR per the §2
 table), and the catalog/client/registration work
 per the §2 table. `evener/host/plan`, `deploy`, `restart`, `operations`,
@@ -194,7 +198,7 @@ invoking controller-local or SSH-affecting methods by omitting the marker — is
 contained by token secrecy (0600 token file, loopback-only bridge dial,
 no-proxy handshake), not by the guard.
 
-Every `evener/host/*` request (all thirteen methods, `attach` included) passes
+Every `evener/host/*` request (all fourteen methods, `attach` included) passes
 through the shared origin guard: landed by #1603 at the dial seam
 (`guardRemoteHostDial`) and the remote-client dispatch seam
 (`guardRemoteDispatch`), and extended by the registry PR to the common
@@ -203,7 +207,7 @@ remote-originated, peer-forwarded requests are refused before admission —
 before dedup and before token validation on the phases where those stages
 exist — and before any handler runs. The mutating handlers (`attach`, `plan`,
 `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`,
-`orphan-resolve`) are unreachable to honestly-marked peer-forwarded requests; a
+`teardown-recover`, `orphan-resolve`) are unreachable to honestly-marked peer-forwarded requests; a
 markerless request is local-originated by construction and takes the full
 admission path. The reads (`list`/`status`/`operations`/`running`) are guarded
 equally because they disclose the controller's topology and operation state.
@@ -212,7 +216,7 @@ pins the guard orderings for its two registered handlers (`list`/`status`) and
 states the behavior for the four union handlers whose orderings pin in the
 pipeline PR where they register, the pipeline document its five, the fencing document
 its one (with `orphan-resolve` orderings in the fencing spec where that handler
-registers) — twelve new methods plus `attach` is thirteen.) The one direction-scoped exception is the
+registers) — thirteen new methods plus `attach` is fourteen.) The one direction-scoped exception is the
 `evener/host/running` peer probe: a controller-originated request issued only
 through `sshManager.ChannelIfAttached(name)` over a live channel peered by the
 #1603 handshake, admitted on the remote only over that same attached session
@@ -244,8 +248,9 @@ a channel or touch a supervisor.
 
 `evener/host/list` and `evener/host/status` are hub-side handlers registered
 like every other hub method (the router-vs-catalog test pins registration);
-`add`/`update`/`remove` behavior ships here behind hand-written request/response
-types with their handlers registering in the pipeline PR. All four are
+`add`/`update`/`remove`/`teardown-retry`/`teardown-recover` behavior ships
+here behind private hand-written request/response types with no router or
+catalog registration, with their handlers registering in the pipeline PR. All seven are
 classified as mutations where they mutate, admission-gated like the hub's other
 settings mutations, origin-guarded per §3, with catalog entries and regenerated
 clients per the §2 table and the exact shapes in §11.
@@ -1028,7 +1033,12 @@ newer incarnation (post-update) without blocking the retry — and refuses only
 when the remnant's own pinned target fails to resolve through its own handle
 (typed `teardown-unknown-key`), never because the registry moved on. An open remnant whose `cleanupHandle` cannot be resolved (backend reports the
 pinned target unresolvable) is recoverable only through the authenticated
-auditable `evener/host/teardown-recover` recovery mutation (params
+auditable `evener/host/teardown-recover` recovery mutation — a mutation
+admitted like every other `evener/host/*` request (origin-guarded per §3,
+never in `remoteHostAdminMethods` per §3, fenced by the remnant and orphan
+fences per the crash-fencing spec §8: an open orphan fence on the name
+refuses it with `orphan-fenced-busy`, never a clearance past an unverified
+orphan) — (params
 `{remnantId, attestation: {operator: string, statement: "teardown-verified-absent", observedAt: string (RFC3339)}}`;
 response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
 cleared `remnantId`): the call verifies the operator attestation is present and
@@ -1324,17 +1334,31 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
 - `evener/host/teardown-recover` (mutation): params `{remnantId: string,
   attestation: {operator: string, statement: "teardown-verified-absent",
   observedAt: string (RFC3339)}}`; response `{outcome: "recovered-cleared",
-  remnantId: string, clearedAt: string (RFC3339)}` plus the cleared name. The
-  attestation is validated before admission completes and the safety checks in
-  §6 run before the clearing write; any failure refuses without clearing,
-  naming the blocking check. The catalog pins the mutation classification plus
-  the request/response shapes field-for-field.
+  remnantId: string, clearedName: string, clearedAt: string (RFC3339),
+  hostKind: "live" | "removed"}` — `clearedName` is the remnant's pinned name
+  and `hostKind` names which row shape the cleared generation had (`"removed"`
+  when the remnant belonged to a `remove`, `"live"` otherwise); the response
+  carries no live row because the recover clears a remnant whose teardown never
+  produced one. The call persists a recovery marker (`remnantId →
+  clearedAt`, same marker shape as the retry's cleared-remnant marker in §6)
+  in the same atomic sidecar write that clears the remnant, so a retry naming
+  an already-recovered ID replays `{outcome: "recovered-cleared", remnantId,
+  clearedName, clearedAt}` from the marker — never a second clearance, never
+  not-found. The attestation is validated before admission completes and the
+  safety checks in §6 run before the clearing write; any failure refuses
+  without clearing, naming the blocking check. The catalog pins the mutation
+  classification plus the request/response shapes field-for-field.
 - `evener/host/status` changed-entry refusal: conflict class, discriminator
   `changed-entry`, data `{name: string}`. It fires exactly when the named
   entry's on-disk content changed under the cached fingerprint (§4); the
   response arm is otherwise the host's `HostRow` shape.
 - Mutation conflict: `conflicting-mutation-id` rides the same AppWire error
   envelope as `conflicting-operation-id` and is refused the same way.
+- `remnant-open` (conflict class): the remnant fence on every lifecycle and
+  attach path for the fenced name. Data carries `{remnantId: string}` naming
+  the blocking remnant. The envelope mechanics (numeric code, discriminator
+  wiring) are defined in the deploy-pipeline spec §11, which cites this
+  classification and never restates it.
 
 Pipeline shapes (`plan`, `deploy`, `restart`, `operations`, `running`) are
 defined in the deploy-pipeline spec §10. `orphan-resolve` and the
@@ -1367,10 +1391,21 @@ regenerated client; this section states the contract only): host rows with state
 offline / connecting / removed-retained), installed version + controller
 version, OS/arch, origin marker, actions: Connect, Deploy, Restart, Edit,
 Remove (each with the confirm pattern used elsewhere in settings), and the Add
-button. Rows with `removed: true` expose only re-add: Connect, Deploy,
-Restart, Edit, and Remove render disabled (never firing) on tombstone rows,
-and the section's UI test pins a removed row showing the re-add affordance
-with every live-host action disabled.
+button. Rows with `removed: true` expose re-add plus remnant repair: Connect,
+Deploy, Restart, Edit, and Remove render disabled (never firing) on tombstone
+rows, while a tombstone row whose name holds an open remnant carries a
+teardown-retry affordance and, past the escalation bound (§6, §15), a
+teardown-recover escalation affordance naming the attestation it requires.
+Live rows whose committed outcome left an open remnant carry the same
+teardown-retry affordance (escalating to teardown-recover past the bound)
+beside the rendered row. While an orphan fence is open on the name the repair
+affordance degrades to an orphan-must-resolve-first affordance naming the
+`orphan-resolve` next step (crash-fencing spec §8): the fence refuses the
+repair call, so the UI never directs the operator into a silently refused
+repair. The section's UI tests pin a removed row showing the re-add
+affordance with every live-host action disabled, a remnant-gated live row
+showing the retry affordance, an escalated row showing the recover
+affordance, and an orphan-fenced row showing the resolve-first affordance.
 
 Add / Edit dialog: fields exactly the `HostConfig` schema — `name`, `ssh`,
 `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
@@ -1438,8 +1473,9 @@ mutable module state.
   + atomic write.
 - `cmd/evener-hub/app_host_manage.go` (new) — the `list`/`status` handlers
   with router registration, catalog entries, and regenerated client, plus the
-  `add`/`update`/`remove`/`teardown-retry` behavior behind hand-written
-  request/response types (their handlers register in the pipeline PR),
+  `add`/`update`/`remove`/`teardown-retry`/`teardown-recover` behavior behind
+  private hand-written request/response types with no router or catalog
+  registration (their handlers register in the pipeline PR),
   mutation classification (`plan` is a mutation — it mints
   durable state; `list`/`status`/`operations` are reads), guarded by the
   shared origin guard — landed by #1603 at the dial + dispatch seams,
@@ -1453,8 +1489,9 @@ mutable module state.
   orderings where they ship — explicitly NOT in
   `remoteHostAdminMethods` (negative assertion in the allow-list tests).
 - AppWire protocol catalog entries for the registered methods + request/response
-  types (hand-written Go request/response structs in the same PR as the
-  handlers, so the backend contract is reviewable), with the shapes in §11
+  types (private hand-written Go request/response structs land in the registry
+  PR beside their behavior with no registration, so the backend contract is
+  reviewable), with the shapes in §11
   (the wire contract field-for-field; the generated client through the
   generator mapping named there) — `list`/`status` register with catalog
   plus regenerated client in the registry PR, while public AppWire catalog
@@ -1826,9 +1863,10 @@ Registry tests (all bullets in this section ship with the registry PR):
   field is a validation refusal)), remote-origin rejection for
   `list`/`status` (the #1603 origin guard refuses
   honestly-marked peer-forwarded requests before admission — the registry surface
-  only: `list`/`status` here, `add`/`update`/`remove`/`teardown-retry` origin
-  rejection alongside the pipeline-surface rejections where those handlers
-  register; `status` rejection is asserted here, never in the
+  only: `list`/`status` here, `add`/`update`/`remove`/`teardown-retry`/
+  `teardown-recover` origin rejection alongside the pipeline-surface
+  rejections where those handlers register; `status` rejection is asserted
+  here, never in the
   pipeline spec), and a wiring test mirroring the 05a registration
   tests for the registered `list`/`status` handlers. Mutation-idempotency tests (the operation store's cross-name rule,
   applied to mutations): cross-name/cross-kind `mutationId` replay is the
@@ -1869,8 +1907,9 @@ protocol-shape tests pin the `changed-entry` refusal arm plus the
 an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
 retry path and clears only through `teardown-recover` — attestation
 validation, safety-check refusals naming the blocking check, the audited
-`recovered-cleared` receipt, and replay-after-recovery returning the resolved
-receipt).
+`recovered-cleared` receipt, and replay-after-recovery returning the same
+`recovered-cleared` response (`remnantId`, `clearedName`, `clearedAt`) from
+the persisted recovery marker, never not-found).
 Pending-marker tests: a post-commit receipt write
   lost while the process stays alive leaves the staged-receipt marker staged
   — a replay finalizes carrying the pre-minted `remnantId` and the pinned

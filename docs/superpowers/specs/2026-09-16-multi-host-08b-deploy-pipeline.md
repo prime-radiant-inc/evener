@@ -84,7 +84,10 @@ factsCapturedAt + freshnessBound)`. Both terms are absolute wall-clock timestamp
 default TTL is 5 minutes, owner-adjustable. The default freshness bound is 5 minutes,
 owner-adjustable. An owner-set TTL above the bound clamps to the bound at mint. The
 minted `expiresAt` already reflects the refresh-to-mint interval, because
-`factsCapturedAt` predates it. Deploy never recomputes `expiresAt`. Freshness is
+`factsCapturedAt` predates it. When the remaining freshness is exhausted at
+mint time (`factsCapturedAt + freshnessBound` at or before now) mint refuses
+without minting — the no-token `refresh-failed` arm, never an
+already-expired token. Deploy never recomputes `expiresAt`. Freshness is
 immutable for the token lifetime: deploy enforces the minted `expiresAt`
 only, never the live owner knob. Lowering the bound affects only tokens
 minted after the change.
@@ -287,12 +290,18 @@ window holds the gate — which holds no operation-store record — the busy err
 typed transient form (`host busy (plan in progress)`) carrying no operation reference.
 The UI shows retry-with-backoff with no open/wait affordance for the transient form.
 
-Gate and mutation-lock ordering: `update`/`remove` check the gate under the process-wide
-mutation lock and fail fast if it is held. A gate is not grantable to a new operation
-while the mutation lock is held. A mutation that observes a free gate owns it through
-the staged commit. No operation can start under a mutation in flight. While a
-deploy/restart holds its host's gate, `update` and `remove` of that host fail fast (and
-`add` cannot collide — the held host exists, so its name refuses as a duplicate). The
+Gate and mutation-lock ordering: one order everywhere — the host gate first,
+the mutation lock second, never the reverse. A mutation reserves its host's
+gate (try-acquire, fail fast with the typed busy error if held) BEFORE taking
+the process-wide mutation lock, and holds that reservation through the staged
+commit; `update`/`remove` therefore never check the gate under the lock —
+they arrive already holding the reservation. A gate is not grantable to a new
+operation while the mutation lock is held, so no operation can start under a
+mutation in flight: `plan`/`deploy`/`restart`/`Ensure` try-acquire only with
+no mutation in flight, and a mutation that reserved a free gate owns it
+through the commit. While a deploy/restart holds its host's gate, `update`
+and `remove` of that host fail fast at the reservation step (and `add` cannot
+collide — the held host exists, so its name refuses as a duplicate). The
 gate pins the token-bound host entry and resolved target for the operation's lifetime.
 Mutation rebind ordering: `update`/`remove` rebind or cancel the supervisors and
 channels bound to the superseded entry as part of the staged commit, and the gate
@@ -338,7 +347,8 @@ with the discriminating `reason` field. The handshake version, ping liveness, an
 preflight on-disk facts feed the decision ladder but never substitute for the probe.
 None of them proves which build the live process runs.
 
-Then `plan` try-acquires the gate and fails fast with the typed busy error if held.
+Then `plan` try-acquires the gate (gate first per §5 — `plan` holds no mutation
+lock, so no order inversion is possible) and fails fast with the typed busy error if held.
 Under the gate it re-checks attachment, the registry generation of the resolved entry,
 and facts-freshness against the refreshed facts. It scans the operation store (local
 read, no network) for any operation on this host that reached a terminal state since
@@ -353,8 +363,8 @@ Every `plan` call publishes into the last-known store. This is seam (c), first h
 `status` reads the last-known store inputs (running-state and refusal snapshots)
 without dialing, and `plan` publishes them. Every `plan` publishes under the gate before
 returning, except the pre-acquisition no-token refusals (`unattached`,
-`refresh-failed`, `probe-failed`), which publish gateless and never acquire the gate to
-do so. A refusal publishes its `{terminal, message}` as the pair's plan-time refusal; a
+`refresh-failed`, `probe-failed`, `remnant-open`, `handler-absent`), which
+publish pair-scoped gateless and never acquire the gate to do so. A refusal publishes its `{terminal, message}` as the pair's plan-time refusal; a
 later success clears it. Every completed probe — success or authenticated failure —
 publishes the probed running revision and health plus the probed `processStartTime`
 when carried. The snapshots are keyed by the host's (generation, incarnation id) pair,
@@ -404,7 +414,8 @@ the gate protocol's post-acquisition check (§5).
 
 (4) Revalidate and atomically consume the current nonce under the store mutex, still
 holding the host's gate (gate-then-store-mutex, the same order as `plan`'s
-validation-plus-mint window), as one atomic store write. Re-read the host's current
+validation-plus-mint window; deploy never holds the mutation lock, so the §5
+gate-first order holds), as one atomic store write. Re-read the host's current
 token row and compare-and-consume its nonce against the presented token, and re-check
 `expiresAt` against the clock in that same transaction. An `expiresAt` at or before now
 is a `token-expired` refusal with no consumption and no record, even when the nonce
@@ -549,10 +560,11 @@ later record with an earlier `createdAt` can never move it before the cursor, be
 
 Cursor envelope: the cursor is a versioned base64url JSON envelope `{v: 2, pos: [id],
 bounds: {[host]: [generation, incarnationId, compactSeq, presenceEpoch] | "absent"},
-storeEpoch: number}`. It encodes the last row's durable sequence position (the
-controller-assigned `id`, which never rolls back — never a bare offset), plus the
-pinned generation, a snapshot and retention boundary per host, and the quarantine
-epoch. A cursor whose envelope version is not 2 is a typed `stale-entry` re-list
+quarantineEpoch: number}`. It encodes the last row's durable sequence position
+(`pos`, the controller-assigned `id`, which never rolls back — never a bare
+offset), plus a snapshot and retention boundary per host (`bounds`), plus the
+quarantine epoch (`quarantineEpoch`, the §4 counter — the envelope's only
+epoch field). A cursor whose envelope version is not 2 is a typed `stale-entry` re-list
 refusal, never a best-effort decode. A continuation whose pinned epoch no longer equals
 the live `quarantineEpoch` is a typed `stale-entry` re-list refusal before any boundary
 comparison. Sort and resume are the monotonic `id`; no timestamp is part of the resume
@@ -560,9 +572,10 @@ position.
 
 Boundaries: a host-pinned response carries the effective `generation` and
 `incarnationId` actually listed. Host-pinned callers pass both values back with
-`cursor` for subsequent pages. The handler validates the cursor's `(generation,
-incarnationId)` pair against the request's filters; a mismatch is a typed `stale-entry`
-re-list refusal, never a mixed page. An omitted filter on a later page reads as the
+`cursor` for subsequent pages. The handler validates each host's `bounds`
+entry — its `[generation, incarnationId, compactSeq, presenceEpoch]` tuple, or
+the `"absent"` marker — against the request's filters; a mismatch is a typed
+`stale-entry` re-list refusal, never a mixed page. An omitted filter on a later page reads as the
 pinned-cursor window, never as a fresh unpinned query. A generation or presence
 advance between pages rejects the continuation: later pages never serve the
 pinned incarnation past a boundary change; a newer generation's records appear
@@ -580,14 +593,18 @@ later pages skip its records. A newer host's records appear only on a fresh unpi
 read, never mid-pagination. A host removed after mint trips the stored-triple mismatch
 rule the same way.
 
-Refusals: a later page whose stored triple no longer matches the host's current
-boundary is a typed `stale-entry` re-list refusal, never a mixed page. A compaction
-that removed rows at or before the cursor's position since the cursor was minted
-surfaces a typed `cursor-invalidated` refusal naming the compacting `compactSeq` plus
-the cursor's pinned pair; the client restarts from the first page. A first page whose
+Refusals: a later page whose stored `bounds` entry no longer matches the host's
+current boundary is a typed `stale-entry` re-list refusal, never a mixed page.
+A compaction that removed rows at or before the cursor's `pos` since the cursor
+was minted surfaces a typed `cursor-invalidated` refusal naming the compacting
+`compactSeq` plus the affected host's `bounds` entry (`[generation,
+incarnationId, compactSeq, presenceEpoch]` as stored at mint, or `"absent"`);
+the client restarts from the first page. A host-pinned page names the single
+listed host's entry; an unfiltered cross-host page names the compacted host's
+entry. A first page whose
 boundary map would exceed the 8 KiB encoded cap refuses with typed `cursor-too-large`
 (data carries `{capBytes: 8192}`), never a truncated cursor. No cursor was minted, so
-there is no `compactSeq` and no pinned pair to name. The 63-host cap bounds the map, so
+there is no `compactSeq` and no stored `bounds` entry to name. The 63-host cap bounds the map, so
 the cap is reachable only with adversarial incarnation-id lengths, never in normal use.
 `limit` defaults to 50 and caps at 200. Responses never exceed the cap. `limit` with no
 `cursor` starts the pinned first page. An unfiltered call pages instead of returning
@@ -816,8 +833,9 @@ This spec's paths emit:
   Token unconsumed, no record. Distinct from `plan`'s no-token `reason:
   "probe-failed"` union-arm value, which is never an envelope.
 - `cursor-invalidated` (conflict class). The mid-pagination compaction refusal. Data
-  names the compacting `compactSeq` plus the cursor's pinned `(generation,
-  incarnationId)`. Distinct from `stale-entry`'s generation-mismatch re-list refusal.
+  names the compacting `compactSeq` plus the affected host's `bounds` entry as
+  stored at mint (`[generation, incarnationId, compactSeq, presenceEpoch]`, or
+  `"absent"`). Distinct from `stale-entry`'s generation-mismatch re-list refusal.
 - `cursor-too-large` (conflict class). The over-cap first-page refusal. Data carries
   `{capBytes: 8192}`, never a compacting `compactSeq`.
 - `too-many-hosts` (conflict class; the `ErrTooManyHosts` refusal). Emitted on the
@@ -828,6 +846,13 @@ Not emitted here, cited only: `concurrent-edit` belongs to the sidecar final che
 (defined in the registry spec §6). `fencing-failure`, `fencing-helper-absent`,
 `fencing-helper-untrusted`, and `orphan-fenced-busy` belong to the fencing spec. The
 `orphanBoundary` element shapes belong to the fencing spec §9.
+
+`remnant-open` (conflict class): emitted by `deploy`/`restart`/`Ensure`
+(§6 step 2) past the dedup check and before any probe or acquisition. The
+conflict class is pinned in the registry spec §12; the code-per-discriminator
+pair is pinned here. Data carries `{remnantId: string}` naming the blocking
+remnant, mirroring the `plan` no-token `remnant-open` arm's `remnantId`
+field-for-field.
 
 `committed-with-teardown-failure` is not an error-envelope code. It is the
 mutation-result union's failure arm (a normal result response, defined in the registry
@@ -943,19 +968,22 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 - Pinned pagination: stable `id`-ascending order for both sort and resume across
   concurrent terminal writes (`createdAt` display-only); a mid-pagination
   generation or presence advance rejects the continuation (`stale-entry`
-  re-list); cursor carries `(generation,
-  incarnationId, compactSeq, presenceEpoch, lastId)` in the `v: 2` envelope with
-  pair-mismatch (`stale-entry` re-list) and post-cursor compaction
-  (`cursor-invalidated`) both surfaced as refusals; host-pinned pages carry the
-  top-level pair while unfiltered cross-host pages omit it (`hostBoundaries`
-  authoritative — the shapes test pins the absence); the cursor pins every host in
-  the query at creation, including absent ones (absent encodes as the literal
-  `"absent"` string); a host advancing generations between pages is a `stale-entry`
-  re-list refusal; a host removed after mint (presence epoch advanced, triple
-  preserved) is a `stale-entry` re-list refusal the same way; a host created after
-  mint is skipped on later pages; the versioned base64url envelope is capped at 8
-  KiB encoded (over-cap first page refuses `cursor-too-large` with `{capBytes:
-  8192}`, pinned as its own discriminator).
+  re-list); cursor carries the `v: 2` envelope `{v, pos, bounds, quarantineEpoch}`
+  per §8 (`pos` the last row's controller-assigned `id`; `bounds` one
+  `[generation, incarnationId, compactSeq, presenceEpoch]` tuple per host in the
+  query, or `"absent"`) with entry-mismatch (`stale-entry` re-list) and
+  post-cursor compaction (`cursor-invalidated` naming the compacting `compactSeq`
+  plus the affected host's stored `bounds` entry) both surfaced as refusals;
+  host-pinned pages carry the top-level pair while unfiltered cross-host pages
+  omit it (`hostBoundaries` authoritative — the shapes test pins the absence);
+  the cursor pins every host in the query at creation, including absent ones
+  (absent encodes as the literal `"absent"` string); a host advancing
+  generations between pages is a `stale-entry` re-list refusal; a host removed
+  after mint (presence epoch advanced, tuple preserved) is a `stale-entry`
+  re-list refusal the same way; a host created after mint is skipped on later
+  pages; the versioned base64url envelope is capped at 8 KiB encoded (over-cap
+  first page refuses `cursor-too-large` with `{capBytes: 8192}`, pinned as its
+  own discriminator).
 - The not-in-forwarded-allow-list assertion.
 - Live E2E (strongly recommended, never yet exercised): one add → connect → deploy →
   restart → spawn-remote cycle against a disposable host before declaring the
