@@ -311,6 +311,7 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
@@ -361,8 +362,9 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
-  if (!images || images.length === 0) return undefined;
+  if (!images) return undefined;
   return images.map((img) => ({
     src: img.url ?? img.path ?? img.name ?? img.source,
     name: img.name,
@@ -468,15 +470,7 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
 }
 
-// A settle says nothing about images unless it carries them. `undefined` is what
-// both mappers produce for a field the payload left out, and for an empty list
-// too: imagesToItemImagesForSession and outputImagesToItemImages each read `[]` as
-// absence, the same rule the hub applies on its own upsert (`len(incoming.Images)
-// == 0` and `len(incoming.OutputImages) == 0` keep the existing list,
-// server/appwire_turns.go:884-889, and its twin at
-// internal/apptranscript/logical_turn.go:309). So `undefined` is the only signal
-// this merge ever sees for either list, and a settle must not erase images from
-// the item it replaces — exactly as mergePageItem already refuses to.
+// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (!existing) return settled;
   const images = settled.images ?? existing.images;
