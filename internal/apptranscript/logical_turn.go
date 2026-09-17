@@ -303,9 +303,7 @@ func mergeAppThreadItems(existing, incoming appwire.ThreadItem) appwire.ThreadIt
 	if incoming.ExitCode == nil {
 		incoming.ExitCode = existing.ExitCode
 	}
-	if len(incoming.OutputImages) == 0 {
-		incoming.OutputImages = existing.OutputImages
-	}
+	incoming.OutputImages = appwire.MergeOutputImages(existing.OutputImages, incoming.OutputImages)
 	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
 	}
