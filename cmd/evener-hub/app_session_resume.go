@@ -109,12 +109,10 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 // again under it, because a Resume can report the failure while shutdown
 // waits for the alias.
 func shutdownCleanupError(cfg hubcore.WebConfig, ref string) error {
-	parsed, err := appwire.ParseRef(ref)
-	if err != nil || parsed.SourceID != "local" || cfg.ResumeLocks == nil {
-		return nil
-	}
-	if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)); err != nil {
-		return appwire.Unavailable(err.Error())
+	if parsed, err := appwire.ParseRef(ref); err == nil && parsed.SourceID == "local" && cfg.ResumeLocks != nil {
+		if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)); err != nil {
+			return appwire.Unavailable(err.Error())
+		}
 	}
 	return nil
 }
