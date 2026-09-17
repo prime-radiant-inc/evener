@@ -116,14 +116,13 @@ it("walks forward then returns to an unanswered question before sending", () => 
   expect(questionAdvanceTarget([question], {}, 0)).toBeUndefined();
 });
 
-// What the phone offers to answer is what the projection found answerable in
-// this window, gated by the flag derived beside it: questionsPending, never the
-// wire's own askPending (which can be true for an ask whose item this window
-// does not hold, and there is nothing here to answer).
-it("offers the question rows' refs while questions are pending", () => {
+// What the phone offers to answer is exactly what the projection rendered as a
+// question row: the projector builds one only for an ask the package says is
+// answerable now, and the wire's thread-level askPending says nothing about what
+// THIS window can answer.
+it("offers the question rows' refs", () => {
   const conversation = {
     askPending: false,
-    questionsPending: true,
     items: [
       { kind: "user", id: "u1", markdown: "hi" },
       { kind: "question", id: "ask-1", questions: [question] },
@@ -132,11 +131,10 @@ it("offers the question rows' refs while questions are pending", () => {
   expect(pendingQuestions(conversation)).toEqual([question]);
 });
 
-it("offers nothing when no question is pending, whatever rows remain", () => {
+it("offers nothing when no row carries a question, whatever the wire's flag says", () => {
   const conversation = {
     askPending: true,
-    questionsPending: false,
-    items: [{ kind: "question", id: "ask-1", questions: [question] }],
+    items: [{ kind: "user", id: "u1", markdown: "hi" }],
   } as unknown as MobileConversation;
   expect(pendingQuestions(conversation)).toEqual([]);
   expect(pendingQuestions(null)).toEqual([]);

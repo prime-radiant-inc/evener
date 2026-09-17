@@ -1999,15 +1999,14 @@ it("counts a question row on screen as a pending question, without touching the 
       ]),
     ]),
   );
-  // The hub's own askPending is absent from this fixture: the answerable
-  // question the projection found is what makes a question pending, and the
-  // wire's field keeps the value the snapshot gave it.
+  // The answerable question the projection found is the whole signal; the wire's
+  // own askPending keeps whatever the snapshot gave it and means something else
+  // (an ask this window may not even hold).
   expect(projected.items.some((row) => row.kind === "question")).toBe(true);
-  expect(projected.questionsPending).toBe(true);
   expect(projected.askPending).toBe(false);
 });
 
-it("leaves the pending question flag false when nothing is answerable", () => {
+it("renders no question row when the ask arguments do not parse", () => {
   const projected = projectThread(
     thread([
       turn("t", [
@@ -2022,5 +2021,4 @@ it("leaves the pending question flag false when nothing is answerable", () => {
     ]),
   );
   expect(projected.items.some((row) => row.kind === "question")).toBe(false);
-  expect(projected.questionsPending).toBe(false);
 });

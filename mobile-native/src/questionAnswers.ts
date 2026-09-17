@@ -14,13 +14,13 @@ export type QuestionSelections = Record<
 export function pendingQuestions(
   conversation: MobileConversation | null,
 ): MobileQuestionRef[] {
-  // questionsPending, not the wire's askPending: what can be answered here is
-  // what the projection found answerable in this window (project.ts).
-  return conversation?.questionsPending
-    ? conversation.items.flatMap((item) =>
-        item.kind === "question" ? item.questions : [],
-      )
-    : [];
+  // The question rows themselves are the answer: the projection only builds one
+  // for an ask the package says is answerable now (project.ts's question branch
+  // over deriveAskQuestions), and the wire's thread-level askPending says nothing
+  // about what THIS window can answer.
+  return (conversation?.items ?? []).flatMap((item) =>
+    item.kind === "question" ? item.questions : [],
+  );
 }
 export function composeQuestionAnswers(
   questions: AskQuestionRef[],

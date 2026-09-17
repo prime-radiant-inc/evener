@@ -3216,7 +3216,6 @@ describe("ConversationStore", () => {
       await Promise.resolve();
       await Promise.resolve();
       expect(rowById(store, "ask-1")).toMatchObject({ kind: "question" });
-      expect(store.getState().conversation?.questionsPending).toBe(true);
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
@@ -5527,7 +5526,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       const conv = store.getState().conversation;
-      expect(conv?.questionsPending).toBe(true);
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeDefined();
       if (questionItem?.kind === "question") {
@@ -5539,11 +5537,11 @@ describe("ConversationStore", () => {
     });
 
     // The wire's askPending is the hub's own thread-level signal and stays
-    // exactly as the snapshot set it (the reducer's invariant); what the phone
-    // asks — "is there a question waiting on me right now" — is derived beside
-    // it on every publish, from the hub's flag OR the package's live-ask rule.
-    // Neither is written into the other, so nothing latches.
-    it("reports a pending ask the hub knows about but this window does not hold", async () => {
+    // exactly as the snapshot set it (the reducer's invariant), and it is not what
+    // the phone answers from: the question ROWS are, and the projection builds one
+    // only for an ask the package says is answerable now. Nothing derived is
+    // written back into the model, so nothing latches.
+    it("renders no question row for an ask the hub knows about but this window does not hold", async () => {
       // The ask's item is outside the loaded window: no question row can be
       // projected for it, and the wire flag is the only evidence there is.
       const store = await openProjectedThread(
@@ -5554,10 +5552,9 @@ describe("ConversationStore", () => {
       );
       expect(rows(store).some((row) => row.kind === "question")).toBe(false);
       expect(store.getState().conversation?.askPending).toBe(true);
-      expect(store.getState().conversation?.questionsPending).toBe(true);
     });
 
-    it("reports no pending ask once the question is answered, whatever the last snapshot said", async () => {
+    it("drops the question row once the answering message arrives, whatever the last snapshot said", async () => {
       const store = await openProjectedThread(
         makeThread({
           evener: evenerWith({ askPending: false, activeTurnId: "t2" }),
@@ -5567,7 +5564,6 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      expect(store.getState().conversation?.questionsPending).toBe(true);
       store.getState().applyNotification({
         method: "item/started",
         params: {
@@ -5577,7 +5573,6 @@ describe("ConversationStore", () => {
           item: userMessageItem("answer-1", "I choose A"),
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.questionsPending).toBe(false);
       // And it stays false as later frames fold: the flag is re-derived every
       // publish, never carried forward from the model the projection wrote.
       store.getState().applyNotification({
@@ -5589,7 +5584,6 @@ describe("ConversationStore", () => {
           item: userMessageItem("answer-1", "I choose A"),
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.questionsPending).toBe(false);
       // The wire's own flag is untouched by any of it.
       expect(store.getState().conversation?.askPending).toBe(false);
     });
@@ -5600,7 +5594,7 @@ describe("ConversationStore", () => {
     // than "no update". Both halves of the derivation go quiet: the answering
     // user message takes the ask out of the live-ask window, and the frame takes
     // the wire flag down. No reread, no heuristic.
-    it("reports no pending ask after the answer and the hub's own clear", async () => {
+    it("drops the question row after the answer and the hub's own clear", async () => {
       const store = await openProjectedThread(
         makeThread({
           evener: evenerWith({ askPending: true, activeTurnId: "t1" }),
@@ -5609,7 +5603,6 @@ describe("ConversationStore", () => {
           ],
         }),
       );
-      expect(store.getState().conversation?.questionsPending).toBe(true);
 
       store.getState().applyNotification({
         method: "item/completed",
@@ -5631,11 +5624,10 @@ describe("ConversationStore", () => {
       } as AnyNotification);
 
       expect(store.getState().conversation?.askPending).toBe(false);
-      expect(store.getState().conversation?.questionsPending).toBe(false);
       expect(rows(store).some((row) => row.kind === "question")).toBe(false);
     });
 
-    it("reports a live ask as pending before any snapshot says so", async () => {
+    it("renders a live ask's question row before any snapshot says so", async () => {
       const { store } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
       store.getState().applyNotification({
@@ -5648,7 +5640,6 @@ describe("ConversationStore", () => {
         },
       } as AnyNotification);
       expect(rowById(store, "ask-live")).toMatchObject({ kind: "question" });
-      expect(store.getState().conversation?.questionsPending).toBe(true);
       // The hub has said nothing yet; its flag is not this client's to write.
       expect(store.getState().conversation?.askPending).toBe(false);
     });
@@ -9835,15 +9826,15 @@ describe("ConversationStore", () => {
     });
   });
 
-  // The rows are a projection of the model, and the projection reads exactly
-  // two of the model's own fields: `turns` (every turn, item and status the
-  // rows are made of lives under it) and `askPending` (the thread-level flag
-  // questionsPending ors with the live asks). Every other field a frame moves
-  // — the status, the name, the queue, the jobs tree, lastFrameAt, which moves
-  // on EVERY frame — changes no row, so a frame that touches none of the two
-  // must publish the rows it already had, by reference: re-projecting and
-  // re-bounding hundreds of rows for a status change is work the reader never
-  // sees, and a fresh items array tells every list view the transcript moved.
+  // The rows are a projection of the model, and the projection reads exactly one
+  // of the model's own fields: `turns` — every turn, item and status the rows are
+  // made of lives under it, and the answerable asks come from it too. Every other
+  // field a frame moves — the status, the name, the queue, the jobs tree, the
+  // wire's askPending, lastFrameAt, which moves on EVERY frame — changes no row,
+  // so such a frame must publish the rows it already had, by reference:
+  // re-projecting and re-bounding hundreds of rows for a status change is work
+  // the reader never sees, and a fresh items array tells every list view the
+  // transcript moved.
   describe("a frame that changes no projection input republishes the rows", () => {
     it("publishes the same rows for a thread-level status frame, and still advances the model", async () => {
       const { store } = await openRunningTurn([agentMessageItem("a1", "hello", "completed")]);
@@ -9861,7 +9852,6 @@ describe("ConversationStore", () => {
       expect(after).not.toBe(before);
       // The rows did not: same array, same row objects.
       expect(after?.items).toBe(before?.items);
-      expect(after?.questionsPending).toBe(before?.questionsPending);
     });
   });
 

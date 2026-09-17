@@ -628,14 +628,13 @@ export function createConversationStore() {
     boundedText = new Map();
   }
   // Whether a folded model can change a row. projectConversation reads exactly
-  // two of the model's own fields: `turns` — every turn, item, status and error
-  // a row is made of hangs off it — and `askPending`, the thread-level flag
-  // questionsPending ors with the live asks (which liveAskQuestions derives
-  // from turns alone). Every other field a frame moves (the status, the name,
-  // the queue, the jobs tree, the goal, and lastFrameAt, which moves on EVERY
-  // frame) changes no row.
+  // one of the model's own fields: `turns` — every turn, item, status and error
+  // a row is made of hangs off it, and the answerable asks are derived from it
+  // too (deriveAskQuestions.ts reads turns alone). Every other field a frame
+  // moves (the status, the name, the queue, the jobs tree, the goal, the wire's
+  // askPending, and lastFrameAt, which moves on EVERY frame) changes no row.
   function changesRows(previous: MobileConversation, applied: ThreadModel): boolean {
-    return applied.turns !== previous.turns || applied.askPending !== previous.askPending;
+    return applied.turns !== previous.turns;
   }
 
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
@@ -1977,13 +1976,7 @@ export function createConversationStore() {
             // The model advanced — the frame is the authority on whatever it
             // carried, and lastFrameAt moved — but no row changed, so the rows
             // this conversation already published stand, by reference.
-            set({
-              conversation: {
-                ...applied,
-                items: state.conversation.items,
-                questionsPending: state.conversation.questionsPending,
-              },
-            });
+            set({ conversation: { ...applied, items: state.conversation.items } });
           }
         }
         if (state.ref === null) return;
