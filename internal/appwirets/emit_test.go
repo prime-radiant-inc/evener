@@ -815,3 +815,19 @@ func TestEmitsSkillInputContracts(t *testing.T) {
 		t.Fatalf("InputItem grew a skill-specific field:\n%s", inputItem)
 	}
 }
+
+// A slice tagged omitzero is absent when it is nil and an explicit [] when it
+// is empty, so it is as optional to a client as an omitempty one — and the
+// empty list is a value the client must be able to read (appwire.ThreadItem's
+// image lists use it to say the images are gone). A required field here would
+// have every consumer of a frame without the key fail to type-check.
+func TestEmitInterface_OmitzeroIsOptional(t *testing.T) {
+	type Sample struct {
+		Gone []string `json:"gone,omitzero"`
+	}
+	got := emitInterface("Sample", reflect.TypeFor[Sample]())
+	want := "export interface Sample {\n  gone?: string[];\n}\n"
+	if got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
