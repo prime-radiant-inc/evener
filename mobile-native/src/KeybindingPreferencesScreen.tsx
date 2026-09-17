@@ -182,19 +182,26 @@ export function KeybindingPreferencesScreen({
 							phone. Check the hub before making another change.
 						</Copy>
 					)}
-					{model && domain?.draftUnreadable && (
+					{domain?.draftUnreadable && (
 						<>
 							<Copy>
 								The shortcut draft saved on this phone could not be read.
 								Discard it to edit shortcuts again.
 							</Copy>
-							{/* Not gated on the section's `busy`, which the unreadable record
-							    itself sets, nor on the connection, nor on a live model: the
-							    client goes away while backgrounded or reconnecting, and that
-							    is exactly when a user is stuck behind such a record. The
-							    provider's path is local-only. */}
+							{/* Gated on the RECORD alone - not on `busy` (which the record
+							    itself sets), not on the connection, and not on a live model:
+							    the client goes away while backgrounded or reconnecting, which
+							    is exactly when a user is stuck behind such a record, and the
+							    snapshot still reports it. The provider's path is local-only,
+							    so it runs with no hub. */}
 							<Action
-								onPress={() => preferences.discardUnreadableDraft("keybindings")}
+								onPress={() =>
+									run(
+										() => preferences.discardUnreadableDraft("keybindings"),
+										undefined,
+										{ requiresHub: false },
+									)
+								}
 							>
 								Discard unreadable draft
 							</Action>
@@ -327,6 +334,8 @@ export function KeybindingPreferencesScreen({
 																run(
 																	() => model.discardKeybindingsDraft(),
 																	() => setReviewedRevision(null),
+																	// Local-only: no hub needed to drop a draft.
+																	{ requiresHub: false },
 																);
 														}}
 													>
@@ -349,7 +358,11 @@ export function KeybindingPreferencesScreen({
 											<Action
 												disabled={busy}
 												onPress={() => {
-													if (model) run(() => model.discardKeybindingsDraft());
+													if (model)
+														run(() => model.discardKeybindingsDraft(), undefined, {
+															// Local-only: no hub needed to drop a draft.
+															requiresHub: false,
+														});
 												}}
 											>
 												Discard changes

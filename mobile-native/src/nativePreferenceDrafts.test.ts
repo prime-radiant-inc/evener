@@ -222,6 +222,21 @@ describe("native preference drafts", () => {
 		expect(raw.has(key)).toBe(false);
 	});
 
+	it("a port failure during a local discard propagates, so a screen can show it", () => {
+		const storage = nativeTranscriptDrafts("hub", {
+			createId: () => "id-1",
+			get: () => "{not json",
+			set: () => {},
+			delete: () => {},
+			deleteIf: () => {
+				throw new Error("disk unavailable");
+			},
+		});
+		// The provider awaits this inside an async function, so a throw here is
+		// the rejection its callers' error handlers already know how to show.
+		expect(() => discardStoredTranscriptDraft(storage)).toThrow("disk unavailable");
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(

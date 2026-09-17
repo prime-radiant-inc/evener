@@ -36,7 +36,9 @@ interface Preferences {
 	 * reconnecting, and that is exactly when a user is stuck behind such a
 	 * record. With a live model the store does it and publishes the state; with
 	 * none the port is cleared directly. */
-	discardUnreadableDraft(section: "transcript" | "keybindings"): void;
+	/** Rejects rather than throwing, so a screen routes a storage failure through
+	 * the same error handler as every other operation. */
+	discardUnreadableDraft(section: "transcript" | "keybindings"): Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);
 const backend = draftBackend(Storage, () => Crypto.randomUUID());
@@ -89,14 +91,18 @@ export function NativePreferencesProvider({
 	}, [client, hubId]);
 	const selected = bound?.hubId === hubId ? bound : null;
 	const liveModel = selected?.client === client ? selected.model : null;
-	const discardUnreadableDraft = (section: "transcript" | "keybindings") => {
+	const discardUnreadableDraft = async (
+		section: "transcript" | "keybindings",
+	): Promise<void> => {
 		if (!hubId) return;
 		if (liveModel) {
-			void (section === "transcript"
+			await (section === "transcript"
 				? liveModel.discardTranscriptDraft()
 				: liveModel.discardKeybindingsDraft());
 			return;
 		}
+		// The port can throw; awaiting inside an async function turns that into a
+		// rejection the caller's error handler already knows how to show.
 		if (section === "transcript")
 			discardStoredTranscriptDraft(nativeTranscriptDrafts(hubId, backend));
 		else discardStoredKeybindingDraft(nativeKeybindingDrafts(hubId, backend));
