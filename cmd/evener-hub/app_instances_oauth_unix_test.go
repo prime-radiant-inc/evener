@@ -160,3 +160,68 @@ func TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked(t *te
 		t.Fatal("setAsideOAuthFile did not return: the aside-candidate loop is spinning while holding credMu")
 	}
 }
+
+// TestInstances_SetAsideOAuthFileRefusesWhenTheDirectoryCannotBeListed: the seed
+// for an aside's stamp steps past the copies already filed for the name, so it
+// cannot be trusted when the directory cannot be enumerated - a higher-stamped
+// copy already there plus a backward clock would order the copies wrongly, and
+// startup would restore the older credential instead of the current one. The
+// removal must refuse rather than guess, before anything is deleted.
+//
+// The directory is made write+execute but not readable: the record can still be
+// stat'ed and renamed by name, while the directory cannot be listed. The premise
+// is checked, so a process that still lists it (root) skips.
+func TestInstances_SetAsideOAuthFileRefusesWhenTheDirectoryCannotBeListed(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	path := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const content = "the record the removal must not lose\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(dir, 0o311); err != nil {
+		t.Fatalf("Chmod(%s): %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := os.ReadDir(dir); err == nil {
+		t.Skip("this process can list a 0311 directory (running as root?); the premise needs one it cannot")
+	}
+
+	aside, err := f.ctl.setAsideOAuthFile("openai-codex", false)
+	if err == nil || !strings.Contains(err.Error(), "to order its OAuth copies") {
+		t.Fatalf("setAsideOAuthFile = (%q, %v), want the refusal naming the directory that could not be listed", aside, err)
+	}
+	if b, rerr := os.ReadFile(path); rerr != nil || string(b) != content {
+		t.Fatalf("the record = %q (%v), want it left in place by the refusal", b, rerr)
+	}
+}
+
+// TestFreeAsideNameRefusesWhenTheDirectoryCannotBeListed: freeAsideName steps a
+// candidate past the stamps already filed for a name, so an unreadable directory
+// must make it report the copy as un-carriable rather than land a name that could
+// collide. The premise is checked, so a process that still lists the directory
+// (root) skips.
+func TestFreeAsideNameRefusesWhenTheDirectoryCannotBeListed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "openai-codex.json"+oauthAsideMarker+"7"), []byte("a copy\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(dir, 0o311); err != nil {
+		t.Fatalf("Chmod(%s): %v", dir, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := os.ReadDir(dir); err == nil {
+		t.Skip("this process can list a 0311 directory (running as root?); the premise needs one it cannot")
+	}
+
+	got, ok := freeAsideName(dir, "openai-codex", false, 7)
+	if ok {
+		t.Fatalf("freeAsideName = (%q, true), want a refusal when the directory cannot be listed", got)
+	}
+	if got != "" {
+		t.Fatalf("freeAsideName = (%q, false), want no candidate on a refusal", got)
+	}
+}

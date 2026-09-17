@@ -1208,12 +1208,30 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 		// problem is reported: the rename stands and the caller is told what was
 		// left reachable.
 		if promoted != "" {
-			dstBase := oauthRenamedAsideName(newName, promoted)
+			// File the promoted bytes under a recovery-recognized aside for
+			// the NEW name, kind and stamp preserved. The destination is chosen
+			// the same collision-safe way the carry above chooses one
+			// (freeAsideName steps past a taken stamp) and moved without
+			// replacing anything (renameNoReplace): a file already at the
+			// deterministic name is another credential's bytes and must survive.
+			// On a refusal the bytes stay where they are and the problem is
+			// reported the way the other carry problems are.
+			_, _, configBacked, _ := oauthAsideInstance(promoted)
+			var want int64
+			if s, perr := strconv.ParseInt(oauthAsideStampText(promoted), 10, 64); perr == nil {
+				want = s
+			}
 			recordPath := authopenai.AuthFilePath(c.auth.stateDir, oldName)
-			if rerr := os.Rename(recordPath, filepath.Join(filepath.Dir(recordPath), dstBase)); rerr != nil {
-				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and the copy %q it carried could not be filed as the recovery-recognized aside %q (%v)", err, promoted, dstBase, rerr))
-			} else {
-				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), so the copy %q it carried was filed as the recovery-recognized aside %q", err, promoted, dstBase))
+			dst, ok := freeAsideName(filepath.Dir(recordPath), newName, configBacked, want)
+			switch {
+			case !ok:
+				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and no fresh recovery-recognized aside name under %q was free to file the copy %q it carried, so those bytes are still at %q", err, newName, promoted, recordPath))
+			default:
+				if rerr := renameNoReplace(recordPath, dst); rerr != nil {
+					problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and the copy %q it carried could not be filed as the recovery-recognized aside %q (%v)", err, promoted, filepath.Base(dst), rerr))
+				} else {
+					problems = append(problems, fmt.Sprintf("OAuth record not read (%v), so the copy %q it carried was filed as the recovery-recognized aside %q", err, promoted, filepath.Base(dst)))
+				}
 			}
 		} else {
 			problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
@@ -1684,7 +1702,21 @@ func (c *hubInstancesController) setAsideOAuthFile(name string, configBacked boo
 	// recovery can decide whether to put it back without asking the registry.
 	marker := oauthAsideMarkerFor(configBacked)
 	stamp := c.auth.now().UnixNano()
-	if entries, err := os.ReadDir(filepath.Dir(path)); err == nil {
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// The stamps already filed for this record path are what orders the
+		// copies of a name, so a seed taken from the clock alone cannot be
+		// trusted when the directory cannot be listed: an unreadable directory
+		// that already holds a higher-stamped copy, together with a clock that
+		// stepped backward, would file this copy under a smaller stamp - and
+		// startup restores the newest copy, so the older credential would be
+		// the one put back while the current one sat as inert debris. Refused
+		// rather than guessed, before anything is deleted. A directory that does
+		// not exist is not this case: no copy can be filed somewhere that is
+		// not there.
+		return "", fmt.Errorf("remove %s: list %s to order its OAuth copies before setting one aside: %w", name, filepath.Dir(path), err)
+	}
+	if entries != nil {
 		var highest int64
 		var have bool
 		for _, e := range entries {
@@ -1868,15 +1900,6 @@ func oauthInFlightAsideName(name string) string {
 	return name
 }
 
-// oauthRenamedAsideName returns the in-flight aside name a copy takes under a
-// new instance name across a rename, preserving the copy's kind and stamp. It is
-// used when a promoted copy cannot be read back as the record, so its bytes stay
-// under a name startup recovery recognizes.
-func oauthRenamedAsideName(newName, aside string) string {
-	_, _, configBacked, _ := oauthAsideInstance(aside)
-	return newName + ".json" + oauthAsideMarkerFor(configBacked) + oauthAsideStampText(aside)
-}
-
 // maxAsideStamp is the largest stamp an aside name can carry. freeAsideName
 // refuses to step past it: a successor would wrap to a negative tail that
 // oauthAsideInstance does not parse, turning a copy into debris no recovery
@@ -1896,23 +1919,33 @@ const maxAsideStamp int64 = 1<<63 - 1
 // that must move a copy aside or onto its committed name: a removal could not
 // mark its copy committed (Remove rolls the whole removal back), and every
 // rename of an instance with a pending aside would report an un-carriable copy.
-// For exactly those two errors renameNoReplace falls back to rename(2). The
-// fallback preserves the no-replace guarantee the link provides, for two
-// reasons. First, link(2) reports a taken destination (EEXIST) before it reports
-// an unsupported filesystem, so a destination that already exists never reaches
-// the fallback. Second, every caller serializes under the same lock - Edit's and
-// Remove's credMu (see hubAuthController.credMu; the rename carry and the
+// For exactly those two errors renameNoReplace falls back to rename(2), which
+// replaces a destination that exists - so the fallback checks the destination
+// itself first and refuses a taken one with os.ErrExist, the same refusal link
+// gives, rather than leaning on link(2) reporting EEXIST before it reports an
+// unsupported filesystem (a Linux behavior, not a guarantee the platform makes).
+// Neither file moves on that refusal. The check and the move are safe against a
+// concurrent writer because every caller serializes under the same lock - Edit's
+// and Remove's credMu (see hubAuthController.credMu; the rename carry and the
 // removal both hold it across their moves), or startup before the hub serves
 // (restoreUncommittedOAuthAsides, run while the process holds hub.lock and
 // before the web server is built) - so no other writer can create the
-// destination between the failed link and the rename. Every other link error,
-// EEXIST above all, is returned unchanged.
+// destination between the failed link, the check and the rename. Every other
+// link error, EEXIST above all, is returned unchanged.
 func renameNoReplace(src, dst string) error {
 	err := linkFile(src, dst)
 	if err == nil {
 		return os.Remove(src)
 	}
 	if errors.Is(err, syscall.ENOTSUP) || errors.Is(err, syscall.EPERM) {
+		// The destination is checked rather than renamed onto: os.Rename would
+		// silently replace a file already there, and this fallback runs on
+		// exactly the filesystems where link(2) cannot report EEXIST for us.
+		if _, statErr := os.Lstat(dst); statErr == nil {
+			return &os.LinkError{Op: "rename", Old: src, New: dst, Err: os.ErrExist}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return statErr
+		}
 		return os.Rename(src, dst)
 	}
 	return err
@@ -1935,7 +1968,18 @@ var linkFile = os.Link
 func freeAsideName(dir, name string, configBacked bool, want int64) (string, bool) {
 	marker := oauthAsideMarkerFor(configBacked)
 	stamp := want
-	if entries, err := os.ReadDir(dir); err == nil {
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// The stamps already filed for name are what a candidate must step past,
+		// so without them a caller could land a copy on a stamp an existing one
+		// holds - and recovery orders copies by their stamps. A directory that
+		// cannot be listed is refused rather than guessed at, and the caller
+		// reports the copy as un-carriable. A directory that does not exist is
+		// the empty case: the move that follows reports whatever is really
+		// wrong.
+		return "", false
+	}
+	if entries != nil {
 		var highest int64
 		var have bool
 		for _, e := range entries {
@@ -2124,17 +2168,18 @@ func configCarriesName(l *registry.Layer, name string) bool {
 // failure is reported through the problems path, so a partial pass never reads
 // as clean. When the config reads, the pass is exactly as before.
 //
-// An EMPTY path is one of those unreadable configs. main.go passes "" when
+// An ABSENT config is one of those unreadable configs, and it has two
+// spellings. An EMPTY path is one: main.go passes "" when
 // EVENER_PROVIDERS_CONFIG is present and empty, which cmdutil reads as "no user
-// layer at all" (ProvidersConfigPath). registry.ReadConfigFile("") calls
-// os.ReadFile(""), which fails with os.ErrNotExist, and ReadConfigFile turns that
-// into an EMPTY layer with a NIL error - so an absent config would otherwise read
-// as authoritative evidence that the config carries no name, and every
-// config-backed in-flight copy would be resolved forward and deleted. That is
-// exactly the state a removal interrupted BEFORE its providers.toml write leaves
-// behind, so the absent config must be treated as no evidence at all: the
-// credential-only half still runs, every config-dependent copy is deferred
-// untouched, and the situation is reported.
+// layer at all" (ProvidersConfigPath). A path whose file does not exist is the
+// other: ReadConfigFile returns an EMPTY layer with a NIL error for ANY missing
+// file, so a fresh install, a broken symlink, or a config removed while the auth
+// directory kept its asides would otherwise read as authoritative evidence that
+// the config carries no name. Both would resolve every config-backed in-flight
+// copy forward and delete the sweep's committed copies - exactly the state a
+// removal interrupted BEFORE its providers.toml write leaves behind - so both
+// are treated as no evidence at all: the credential-only half still runs, every
+// config-dependent copy is deferred untouched, and the situation is reported.
 //
 // The forward resolution never overwrites a file already filed under the copy's
 // committed name (renameNoReplace): a partial prior rename can leave both paths
@@ -2177,7 +2222,18 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	if providersConfigPath == "" {
 		cfgErr = errors.New("there is no providers config path (EVENER_PROVIDERS_CONFIG is present and empty), so there is no config evidence to classify the config-backed copies against")
 	} else {
-		layer, _, cfgErr = registry.ReadConfigFile(providersConfigPath)
+		var exists bool
+		layer, exists, cfgErr = registry.ReadConfigFile(providersConfigPath)
+		if cfgErr == nil && !exists {
+			// ReadConfigFile reports ANY missing file as an empty layer with a
+			// nil error, which is not evidence that the config carries no name:
+			// a fresh install, a broken symlink, or a config removed while the
+			// auth directory kept its asides all read this way. Treat the absent
+			// file exactly as an unreadable config - defer every config-dependent
+			// copy and report it - so a removal interrupted before its config
+			// write is never resolved forward and deleted.
+			cfgErr = fmt.Errorf("there is no providers config file at %s", providersConfigPath)
+		}
 	}
 	var problems []string
 	if cfgErr != nil {
@@ -2221,6 +2277,31 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	newest := make(map[string]string, len(entries))
 	stamps := make(map[string]int64, len(entries))
 	var committed []committedCopy
+	// A committed copy is durable evidence that a removal's commit mark
+	// (markOAuthAsidesCommitted) landed. renameNoReplace moves a copy to its
+	// committed name by link-then-unlink, so a crash between those two
+	// operations leaves the SAME bytes under BOTH names - an in-flight copy and
+	// a committed copy of the same instance at the same stamp. A legitimate
+	// state cannot produce that pair: setAsideOAuthFile seeds every new copy's
+	// stamp one past the highest already filed for the name, in-flight and
+	// committed alike, so a later in-flight copy always outranks an earlier
+	// committed one. The pair therefore means the move was interrupted after the
+	// link, and the committed name is the proof the removal's durable work had
+	// landed. The in-flight twin must be treated as committed - never put back,
+	// and swept by exactly the rules that govern a committed copy - or recovery
+	// would restore a credential whose removal had already done its durable
+	// work. This is platform-agnostic and needs no new syscall.
+	paired := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		inst, isCommitted, _, aside := oauthAsideInstance(e.Name())
+		if !aside || !isCommitted {
+			continue
+		}
+		paired[inst+"\x00"+oauthAsideStampText(e.Name())] = true
+	}
 	// Committed names a forward resolution could not promote onto because the
 	// destination was already taken. They are held out of the sweep: the bytes
 	// already at the committed name are exactly what the no-replace move refused
@@ -2242,6 +2323,17 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			// neither restore the record nor return the copy to the in-flight shape
 			// leaves a committed copy of a removal that did not stand, and this
 			// sweep deletes it on the next start.
+			if cfgErr == nil && !configCarriesName(layer, inst) {
+				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
+			}
+			continue
+		}
+		if paired[inst+"\x00"+oauthAsideStampText(e.Name())] {
+			// The in-flight twin of a committed copy: the committed name proves
+			// the commit mark landed, so this is never restored. It is treated
+			// exactly as the committed copy is - swept with it when the config no
+			// longer carries the name, left beside it when it does - so nothing
+			// is left for a later pass to restore.
 			if cfgErr == nil && !configCarriesName(layer, inst) {
 				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
 			}
@@ -2530,8 +2622,7 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The rollback could not land, so the entry stays gone: the file on
 			// disk is still the one this removal wrote, and providers.toml carries
-			// the removal out. Only the credentials can be put back - under the
-			// name the caller re-authors once this removal is reported as standing.
+			// the removal out.
 			//
 			// The registry must be reloaded over that file, or the hub keeps
 			// serving the instance the config no longer has. The failure that
@@ -2543,18 +2634,33 @@ func (c *hubInstancesController) rollBackFailedRemoval(before *registry.Layer, n
 			// the registry agree. A reload that fails too is reported beside the
 			// failed write, so nobody reads a half-repaired hub as healthy.
 			//
-			// What is left is a persisted removal however the restore below
-			// ended: the RPC handler announces it and every other client drops
-			// the row, which is what keeps their lists from disagreeing with the
-			// file - and the caller from retrying a removal whose entry is
-			// already gone.
-			restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
-				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", cause, restoreErr),
-				"the entry is gone from the config")
-			if reloadErr := c.reg.Reload(); reloadErr != nil {
-				return removePersistedError{fmt.Errorf("%w; the registry could not be reloaded over the removal the config still carries either (%w)", restored, reloadErr)}
+			// What is left is a persisted removal however the credentials end:
+			// the RPC handler announces it and every other client drops the row,
+			// which is what keeps their lists from disagreeing with the file -
+			// and the caller from retrying a removal whose entry is already gone.
+			//
+			// An instance with an authored [providers.<name>] entry loses it with
+			// the config write, so nothing re-derives its row: the credentials go
+			// back, under the name the caller re-authors once this removal is
+			// reported as standing. An instance with NO authored entry existed
+			// only through the credential this removal deleted (a `default`
+			// pointer names it but does not make it exist), so restoring that
+			// credential would re-derive the row the caller was just told is gone
+			// - and the refreshed listing would still contain it. Its credential
+			// therefore stays deleted and its aside is reclaimed; the removal
+			// stands and the listing agrees with the file.
+			remnant := fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", cause, restoreErr)
+			if _, authored := before.Providers[name]; !authored {
+				if rerr := c.reclaimOAuthAsides(name); rerr != nil {
+					remnant = fmt.Errorf("%w; and the credentials this removal deleted could not be kept deleted (%w)", remnant, rerr)
+				}
+			} else {
+				remnant = c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside, remnant, "the entry is gone from the config")
 			}
-			return removePersistedError{restored}
+			if reloadErr := c.reg.Reload(); reloadErr != nil {
+				return removePersistedError{fmt.Errorf("%w; the registry could not be reloaded over the removal the config still carries either (%w)", remnant, reloadErr)}
+			}
+			return removePersistedError{remnant}
 		}
 	}
 	// The credentials go back before the reload below, because a load resolves
