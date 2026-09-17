@@ -42,9 +42,13 @@ const init = async (script: NavigationScript) => {
 // The package's own suite exercises the full manifest/section/location
 // reconnect fixture (testing/navigation.ts); this file only ever reconnects
 // against a manifest read, so a plain wireV2 manifest response stands in for
-// it instead of importing the whole apparatus.
-const reconnectManifestV2 = (params: NavigationReadParams): NavigationReadResponse =>
-  wireV2(params, emptyManifest({ revision: 11 }), '"manifest-v2"', 11, generation);
+// it instead of importing the whole apparatus. The generation is a
+// parameter, not the hardcoded default: a client booted with a capability
+// naming a different generation (a replacement, not a reconnect) needs its
+// manifest read to answer with that same generation, or the store's own
+// generation check rejects it and boot never installs anything.
+const reconnectManifestV2 = (params: NavigationReadParams, gen = generation): NavigationReadResponse =>
+  wireV2(params, emptyManifest({ revision: 11 }), '"manifest-v2"', 11, gen);
 
 afterEach(() => {
   resetNavigationStoreForTests();
@@ -58,7 +62,7 @@ afterEach(() => {
 test("expansion survives a client replacement", async () => {
   const oldClient = new FakeClient("ready");
   oldClient.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return reconnectManifestV2(params);
+    if (params.resource === "manifest") return reconnectManifestV2(params, "old");
     throw new Error(`unexpected old-client resource ${params.resource}`);
   });
   initNavigation(oldClient, capability("old"));
@@ -68,13 +72,15 @@ test("expansion survives a client replacement", async () => {
 
   const newClient = new FakeClient("ready");
   newClient.on("evener/navigation/read", (params) => {
-    if (params.resource === "manifest") return reconnectManifestV2(params);
+    if (params.resource === "manifest") return reconnectManifestV2(params, "new");
     throw new Error(`unexpected new-client resource ${params.resource}`);
   });
   initNavigation(newClient, capability("new"));
   await flush();
 
   try {
+    expect(navigationStore.getState().mode).toBe("v2");
+    expect(navigationStore.getState().manifest?.data).not.toBeNull();
     expect(navigationStore.getState().expanded).toBe(retainedExpansion);
     expect(navigationStore.getState().expanded.get("remembered-project")).toBe(true);
   } finally {
