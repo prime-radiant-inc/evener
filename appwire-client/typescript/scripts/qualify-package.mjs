@@ -692,17 +692,7 @@ memoryOutbox
       {
         enqueueIntent: () => Promise.reject(new Error("not used")),
         listTargetRefs: () => Promise.resolve(["local:thread-1"]),
-        getOutbox: () => Promise.resolve(undefined),
-        getOptimistic: () => Promise.resolve(undefined),
-        listOptimistic: () => Promise.resolve([]),
-        getRecovery: () => Promise.resolve(undefined),
-        nextDispatchable: () => Promise.resolve(undefined),
-        markAttempted: () => Promise.resolve(false),
-        markUnknown: () => Promise.resolve(false),
-        settleReceipt: () => Promise.resolve(false),
-        settleApplied: () => Promise.resolve(false),
-        restoreProvenAbsent: () => Promise.resolve([]),
-        transferToRecovery: () => Promise.resolve(undefined),
+${inertOutboxStorageMethods}
       },
       { getClient: () => null },
     );
