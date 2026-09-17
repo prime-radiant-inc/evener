@@ -372,16 +372,33 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
  * through the same constructor so a port that compares serialized bytes
  * (native compares JSON strings) sees one key order on both sides - a
  * checkpoint spread as `{ ...input, id }` and one rebuilt by load() would
- * otherwise differ only in where `id` sits, and removeIf would never match. */
+ * otherwise differ only in where `id` sits, and removeIf would never match.
+ *
+ * draftCheckpoint only keeps the fields this build knows, so a record another
+ * build wrote with extra fields decodes to a normalized checkpoint that is
+ * not what the stored bytes actually hold - a byte-aware port's own compare
+ * (matching what it read against what it is asked to remove) would then
+ * refuse to remove a record it just handed back. rawFrom keeps load()'s raw
+ * value beside the checkpoint built from it, so removeIf can still hand the
+ * port back exactly what it read: the only thing a byte-aware port can name a
+ * record by. A checkpoint removeIf is given that load() never produced (a
+ * fresh save's own checkpoint, or one rebuilt from published state) has no
+ * raw value to recover and falls back to draftCheckpoint's normalized one, as
+ * before - such a checkpoint carries no unknown fields to begin with. */
 function draftRepository(storage: KeybindingDraftStorage) {
+  const rawFrom = new WeakMap<KeybindingDraftCheckpoint, unknown>();
   return {
     createId: () => storage.createId(),
     load(): KeybindingDraftCheckpoint | null {
       const value = storage.load();
-      return value === null || value === undefined ? null : draftCheckpoint(value);
+      if (value === null || value === undefined) return null;
+      const checkpoint = draftCheckpoint(value);
+      rawFrom.set(checkpoint, value);
+      return checkpoint;
     },
     save: (checkpoint: KeybindingDraftCheckpoint) => storage.save(draftCheckpoint(checkpoint)),
-    removeIf: (checkpoint: KeybindingDraftCheckpoint) => storage.removeIf(draftCheckpoint(checkpoint)),
+    removeIf: (checkpoint: KeybindingDraftCheckpoint) =>
+      storage.removeIf((rawFrom.get(checkpoint) ?? draftCheckpoint(checkpoint)) as KeybindingDraftCheckpoint),
     /** Removes whatever is stored, readable or not. The raw value goes back to
      * the port, which matches its own bytes, so a record this build cannot
      * decode is still the record removed - the port needs no clear(). */

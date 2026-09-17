@@ -341,9 +341,11 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 
 import {
 	type NativePreferenceDraftCheckpoint,
+	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 } from "./nativePreferenceDrafts";
 import type { TranscriptDraftCheckpoint } from "@evener/appwire-client";
+import { draftBackend } from "./nativeDraftBackend";
 
 function draftStorage() {
 	const values = new Map<string, unknown>();
@@ -705,4 +707,109 @@ it("a change notification cannot hide a local recovery error", async () => {
 	});
 	expect(f.model.getSnapshot().transcriptMobile.error).toBe(error);
 	expect(f.model.getSnapshot().transcriptMobile.storageUnavailable).toBe(true);
+});
+
+// The fixture above compares two in-memory JS values, never real bytes. The
+// store's draftRepository rebuilds a checkpoint through draftCheckpoint on
+// every load and every removeIf, so the object it hands the port is never
+// the one the port decoded - only a byte-aware port (the real device
+// backend) can show whether a discard still names the stored record once
+// that rebuild has run.
+function realDraftStorage() {
+	const raw = new Map<string, string>();
+	const store = {
+		getItemSync: (key: string) => raw.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			raw.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			raw.delete(key);
+		},
+	};
+	return { raw, storage: nativeTranscriptDrafts("hub", draftBackend(store, () => "id-1")) };
+}
+const transcriptDraftKey = "evener.native.transcript-draft.hub";
+
+it("a stored draft carrying an unknown field is discarded and stays gone", async () => {
+	const disk = realDraftStorage();
+	// A checkpoint another build wrote, with a field this build's
+	// draftCheckpoint does not know about.
+	disk.raw.set(
+		transcriptDraftKey,
+		JSON.stringify({
+			id: "d0",
+			layout: "mobile",
+			baseRevision: 4,
+			config,
+			writeUncertain: false,
+			futureField: "written by a newer build",
+		}),
+	);
+	const f = persistedPreferences(disk.storage);
+	await f.model.refresh();
+	expect(f.model.getSnapshot().transcriptMobile.draft).toMatchObject({ revision: 4 });
+
+	await f.model.discardTranscriptDraft();
+
+	expect(disk.raw.has(transcriptDraftKey)).toBe(false);
+});
+
+it("a stored keybinding draft carrying an unknown field is discarded and stays gone", async () => {
+	const raw = new Map<string, string>();
+	const store = {
+		getItemSync: (key: string) => raw.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			raw.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			raw.delete(key);
+		},
+	};
+	const keybindingStorage = nativeKeybindingDrafts("hub", draftBackend(store, () => "id-1"));
+	const key = "evener.native.keybinding-draft.hub";
+	raw.set(
+		key,
+		JSON.stringify({
+			id: "d0",
+			baseRevision: 3,
+			rules: [{ action: "palette.open", chord: "Meta+P" }],
+			writeUncertain: false,
+			futureField: "written by a newer build",
+		}),
+	);
+	const client = fakeClient();
+	client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+	const model = new NativePreferences(
+		client,
+		{ keybindingsSettings: true, transcriptDisplaySettings: false },
+		undefined,
+		keybindingStorage,
+	);
+	await model.refresh();
+	expect(model.getSnapshot().keybindings.draft).not.toBeNull();
+
+	await model.discardKeybindingsDraft();
+
+	expect(raw.has(key)).toBe(false);
+});
+
+it("a stored draft with reordered keys is discarded and stays gone", async () => {
+	const disk = realDraftStorage();
+	disk.raw.set(
+		transcriptDraftKey,
+		JSON.stringify({
+			writeUncertain: false,
+			config,
+			baseRevision: 4,
+			layout: "mobile",
+			id: "d0",
+		}),
+	);
+	const f = persistedPreferences(disk.storage);
+	await f.model.refresh();
+	expect(f.model.getSnapshot().transcriptMobile.draft).toMatchObject({ revision: 4 });
+
+	await f.model.discardTranscriptDraft();
+
+	expect(disk.raw.has(transcriptDraftKey)).toBe(false);
 });
