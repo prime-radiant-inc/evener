@@ -12,10 +12,12 @@
 // - The store never auto-retries a user mutation. On conflict, it restores the
 //   draft (only if no new text was typed) and sets error.
 //
-// The store holds the MobileConversation projection (never the raw wire
-// Thread). Notifications update the projection in place; a re-read via
-// thread/read after evener/thread/resync is the authoritative refresh path
-// (triggered by the store-owned drain scheduler, not timers).
+// The store holds the package's ThreadModel (never the raw wire Thread) with
+// the phone's display rows projected from it: every notification folds through
+// reducer.applyNotification and the rows are re-projected from the model it
+// returns, so a frame and a snapshot produce rows through the one projector.
+// A re-read via thread/read after evener/thread/resync is the authoritative
+// refresh path (triggered by the store-owned drain scheduler, not timers).
 
 import { create } from "zustand";
 import {
@@ -29,19 +31,33 @@ import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
-  ThreadItem,
+  ThreadModel,
 } from "@evener/appwire-client";
 import type {
-  ActivityDetail,
+  BoundText,
   MobileConversation,
   MobileTimelineItem,
-  ActivityMember,
 } from "../conversation/project";
 import {
-  activityState,
-  clusterActivities,
-  isActiveItem,
-  projectItemAttachments,
+  activityIdentity,
+  attachmentSourceIdentity,
+  capItems,
+  MAX_ITEM_BYTES,
+  ownTimelineIdentities,
+  projectConversation,
+  RETAINED_ITEM_CAP,
+  timelineIdentities,
+  timelineIdentity,
+  truncateItem,
+  truncateText,
+} from "../conversation/project";
+// Re-exported where they have always been imported from: the bounds are the row
+// shape's, and project.ts owns that shape.
+export {
+  MAX_ITEM_BYTES,
+  RETAINED_ITEM_CAP,
+  TRUNCATION_MARKER,
+  truncateText,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -50,234 +66,6 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-
-function attachmentSourceId(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments" && item.id.endsWith(":attachments")
-    ? item.id.slice(0, -":attachments".length)
-    : null;
-}
-
-function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments"
-    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
-    : null;
-}
-
-function timelineIdentity(item: MobileTimelineItem): string {
-  return item.transcriptKey ?? item.id;
-}
-
-// The canonical identity of a clustered activity member — the same
-// transcriptKey-first rule timelineIdentity applies to a top-level row.
-function activityIdentity(activity: ActivityMember): string {
-  return activity.transcriptKey ?? activity.id;
-}
-
-// The identities a row IS: its own, plus every clustered member's. Distinct
-// from timelineIdentities, which also carries the identity of the row an
-// attachment belongs to — an attachment is not a duplicate of its source.
-function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = new Set([timelineIdentity(item)]);
-  if (item.kind === "activity" && item.members) {
-    for (const member of item.members) {
-      identities.add(activityIdentity(member));
-    }
-  }
-  return identities;
-}
-
-function timelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = ownTimelineIdentities(item);
-  const source = attachmentSourceIdentity(item);
-  if (source !== null) identities.add(source);
-  return identities;
-}
-
-function liveRevisionForItem(
-  item: MobileTimelineItem,
-  revisions: Map<string, number>,
-): number {
-  let revision = revisions.get(timelineIdentity(item)) ?? 0;
-  for (const identity of timelineIdentities(item)) {
-    revision = Math.max(revision, revisions.get(identity) ?? 0);
-  }
-  return revision;
-}
-
-function isLiveOwned(
-  item: MobileTimelineItem,
-  revisions: Map<string, number>,
-): boolean {
-  return [...timelineIdentities(item)].some((identity) => revisions.has(identity));
-}
-
-function projectActivityMembers(members: ActivityMember[]): MobileTimelineItem[] {
-  return clusterActivities(
-    members.map((member) => ({
-      family: member.state === "failed" ? `failed:${member.id}` : member.family,
-      item: { kind: "activity", ...member },
-    })),
-  );
-}
-
-function mergeLiveActivityMembers(
-  snapshot: Extract<MobileTimelineItem, { kind: "activity" }>,
-  currentItems: MobileTimelineItem[],
-  revisions: Map<string, number>,
-  entryRevision: number,
-): { rows: MobileTimelineItem[]; supersededIdentities: string[] } | undefined {
-  const liveMembers = new Map<string, ActivityMember>();
-  for (const candidate of currentItems) {
-    if (candidate.kind !== "activity") continue;
-    for (const member of candidate.members ?? [candidate]) {
-      const identity = activityIdentity(member);
-      if ((revisions.get(identity) ?? 0) > entryRevision) {
-        liveMembers.set(identity, member);
-      }
-    }
-  }
-  // Report which member identities the live side actually won, not the whole
-  // cluster: a member the snapshot still owns is answerable to the reread, and
-  // naming it superseded would carry its freeze forward for good.
-  const supersededIdentities: string[] = [];
-  const members = (snapshot.members ?? [snapshot]).map((member) => {
-    const identity = activityIdentity(member);
-    const current = liveMembers.get(identity);
-    if (current) supersededIdentities.push(identity);
-    return current ?? member;
-  });
-  if (supersededIdentities.length === 0) return undefined;
-  // Reuse the lifecycle projector so failed members retain their own rows.
-  return { rows: projectActivityMembers(members), supersededIdentities };
-}
-
-function itemsAbsentFromSnapshot(
-  items: MobileTimelineItem[],
-  snapshotIdentities: Set<string>,
-  snapshotRows: Set<string>,
-): MobileTimelineItem[] {
-  return items.flatMap((item) => {
-    if (item.kind !== "activity") {
-      return snapshotRows.has(timelineIdentity(item)) ? [] : [item];
-    }
-    const members = item.members ?? [item];
-    const omitted = members.filter(
-      (member) => !snapshotIdentities.has(member.transcriptKey ?? member.id),
-    );
-    return omitted.length === members.length ? [item] : projectActivityMembers(omitted);
-  });
-}
-
-function decorateLifecycleItem(
-  item: MobileTimelineItem,
-  source: ThreadItem,
-): MobileTimelineItem {
-  return {
-    ...item,
-    ...(source.transcriptKey ? { transcriptKey: source.transcriptKey } : {}),
-    ...(source.position ? { position: source.position } : {}),
-  };
-}
-
-// Snapshot/live-tail merging can introduce a companion after later messages.
-// Keep attachments beside their source whenever both rows are retained.
-function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  const sourceItems = items.filter((item) => item.kind !== "attachments");
-  const ids = new Set(sourceItems.flatMap((item) => [...timelineIdentities(item)]));
-  const companions = new Map<string, MobileTimelineItem>();
-  for (const item of items) {
-    const sourceId = attachmentSourceIdentity(item);
-    if (sourceId !== null && ids.has(sourceId)) companions.set(sourceId, item);
-  }
-  return items.flatMap((item) => {
-    const sourceId = attachmentSourceIdentity(item);
-    if (sourceId !== null) return companions.has(sourceId) ? [] : [item];
-    const attachments = [...timelineIdentities(item)].flatMap((identity) => {
-      const companion = companions.get(identity);
-      return companion ? [companion] : [];
-    });
-    return [item, ...attachments];
-  });
-}
-
-function activityClusterSegments(
-  cluster: Extract<MobileTimelineItem, { kind: "activity" }>,
-  updatedIndex: number,
-  updatedMember: ActivityMember,
-): MobileTimelineItem[] {
-  const members = cluster.members ? [...cluster.members] : [];
-  members[updatedIndex] = updatedMember;
-  return projectActivityMembers(members);
-}
-
-// The activity a live notification addresses by wire item id: either a
-// top-level row, or one member of a clustered row. Wire ids address members
-// directly, so every delta and the lifecycle handler resolve through this —
-// searching top-level rows alone leaves a later member unreachable (a reread)
-// and a first member stale behind the cluster's own detail.
-interface ActivityTarget {
-  row: Extract<MobileTimelineItem, { kind: "activity" }>;
-  rowIndex: number;
-  memberIndex: number | null;
-  activity: ActivityMember;
-}
-
-function findActivityTargetBy(
-  items: MobileTimelineItem[],
-  matches: (activity: ActivityMember) => boolean,
-): ActivityTarget | null {
-  for (const [rowIndex, row] of items.entries()) {
-    if (row.kind !== "activity") continue;
-    const memberIndex = (row.members ?? []).findIndex(matches);
-    const member = row.members?.[memberIndex];
-    if (member) return { row, rowIndex, memberIndex, activity: member };
-    if (matches(row)) {
-      return { row, rowIndex, memberIndex: null, activity: row };
-    }
-  }
-  return null;
-}
-
-// Deltas address their target by wire item id — they carry nothing else.
-function findActivityTarget(
-  items: MobileTimelineItem[],
-  itemId: string,
-): ActivityTarget | null {
-  return findActivityTargetBy(items, (activity) => activity.id === itemId);
-}
-
-// Lifecycle events carry a transcriptKey, which outlives a changing wire id;
-// this is the form that matches how they replace their target.
-function findActivityTargetByIdentity(
-  items: MobileTimelineItem[],
-  identity: string,
-): ActivityTarget | null {
-  return findActivityTargetBy(
-    items,
-    (activity) => activityIdentity(activity) === identity,
-  );
-}
-
-// Write a new detail onto the addressed activity. A clustered member is
-// replaced through the cluster projector, so every other member keeps its own
-// identity, output and truncation state, and the cluster's own top-level
-// fields (which mirror its first member) stay in step with it.
-function replaceActivityTargetDetail(
-  items: MobileTimelineItem[],
-  target: ActivityTarget,
-  detail: ActivityDetail,
-): MobileTimelineItem[] {
-  const replacement =
-    target.memberIndex === null
-      ? [{ ...target.row, detail }]
-      : activityClusterSegments(target.row, target.memberIndex, {
-          ...target.activity,
-          detail,
-        });
-  return items.flatMap((item, index) =>
-    index === target.rowIndex ? replacement : [item],
-  );
-}
 
 export type ConversationStatus =
   | "idle"
@@ -478,138 +266,6 @@ function createDrainScheduler(): DrainScheduler {
 // LiveActivityState (Coordinate B) implements LiveActivitySink directly.
 // Do not fabricate "applied" — use the real applyLiveNotification outcome.
 
-// --- limits and truncation helpers (centralized) ----------------------------
-
-export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
-export const TRUNCATION_MARKER = "… truncated";
-export const RETAINED_ITEM_CAP = 500;
-
-// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
-// once whenever the limit is large enough to hold the marker. Iterates
-// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
-// split and no U+FFFD replacement chars are produced. The result never
-// exceeds maxBytes.
-const textEncoder = new TextEncoder();
-const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
-
-export function truncateText(text: string, maxBytes: number): string {
-  const encoded = textEncoder.encode(text);
-  if (encoded.length <= maxBytes) return text;
-  // The byte limit is the hard contract: every caller judges an item by
-  // exceedsByteLimit against the same limit, and the truncation freeze
-  // assumes an already-truncated item sits within it. No caller requires the
-  // marker — truncation is tracked by item identity, never by the suffix — so
-  // a limit too small to hold the marker yields the longest prefix that fits,
-  // with no marker, rather than a marker that busts the limit.
-  const fitsMarker = maxBytes >= markerBytes.length;
-  const marker = fitsMarker ? TRUNCATION_MARKER : "";
-  const markerLength = fitsMarker ? markerBytes.length : 0;
-  const targetBytes = Math.max(0, maxBytes - markerLength);
-  // Iterate code points (for...of iterates Unicode scalar values) to find
-  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
-  // avoids splitting surrogate pairs and never produces U+FFFD.
-  let byteLen = 0;
-  let cutIdx = 0;
-  for (const cp of text) {
-    const cpBytes = textEncoder.encode(cp).length;
-    if (byteLen + cpBytes > targetBytes) break;
-    byteLen += cpBytes;
-    cutIdx += cp.length;
-  }
-  // Trim code points until the result + marker fits within maxBytes.
-  // (May need to trim if a multibyte code point straddles the boundary.)
-  let truncated = text.slice(0, cutIdx);
-  let truncatedBytes = textEncoder.encode(truncated);
-  while (
-    truncatedBytes.length + markerLength > maxBytes &&
-    truncated.length > 0
-  ) {
-    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
-    const codePoints = [...truncated];
-    codePoints.pop();
-    truncated = codePoints.join("");
-    truncatedBytes = textEncoder.encode(truncated);
-  }
-  return truncated + marker;
-}
-
-// Check if text exceeds the byte limit (for setting truncated flag in projections).
-export function exceedsByteLimit(text: string, maxBytes: number): boolean {
-  return textEncoder.encode(text).length > maxBytes;
-}
-
-// Check if an activity detail's arguments/output/error exceed the byte limit
-// — the same rule applies to a top-level activity detail and to each of a
-// cluster's member details.
-function exceedsActivityDetailLimit(detail: ActivityDetail): boolean {
-  return (
-    (detail.arguments !== undefined &&
-      exceedsByteLimit(detail.arguments, MAX_ITEM_BYTES)) ||
-    (detail.output !== undefined &&
-      exceedsByteLimit(detail.output, MAX_ITEM_BYTES)) ||
-    (detail.error !== undefined &&
-      exceedsByteLimit(detail.error, MAX_ITEM_BYTES))
-  );
-}
-
-// F12: Per-item truncation ownership. Instead of checking if the text ends
-// with the marker (which would freeze if genuine content ends with "…
-// truncated"), the store tracks which item IDs have been truncated in a
-// private set. This allows genuine marker suffixes in content without
-// freezing delta appends.
-
-// Apply truncation to an activity detail's text-bearing fields (arguments,
-// output, error). Shared by an activity's own top-level detail and each of
-// its clustered members' details, so both are bounded the same way.
-function truncateActivityDetail(detail: ActivityDetail): ActivityDetail {
-  return {
-    ...detail,
-    arguments: detail.arguments
-      ? truncateText(detail.arguments, MAX_ITEM_BYTES)
-      : detail.arguments,
-    output: detail.output
-      ? truncateText(detail.output, MAX_ITEM_BYTES)
-      : detail.output,
-    error: detail.error
-      ? truncateText(detail.error, MAX_ITEM_BYTES)
-      : detail.error,
-  };
-}
-
-// Apply truncation to an item's text-bearing fields (arguments, output, error,
-// markdown). Returns a new item with truncated fields. Native transcript
-// projection expands a clustered activity's members directly, so each
-// member's own detail is truncated too — not just the cluster's top-level
-// detail (the first member's).
-function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
-  switch (item.kind) {
-    case "assistant":
-      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
-    case "activity":
-      return {
-        ...item,
-        detail: truncateActivityDetail(item.detail),
-        ...(item.members
-          ? {
-              members: item.members.map((member) => ({
-                ...member,
-                detail: truncateActivityDetail(member.detail),
-              })),
-            }
-          : {}),
-      };
-    default:
-      return item;
-  }
-}
-
-// Enforce the 500-item retained cap. Always retains the NEWEST items (end
-// of array) so the live tail is preserved for interactive scrolling.
-function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  if (items.length <= RETAINED_ITEM_CAP) return items;
-  return items.slice(items.length - RETAINED_ITEM_CAP);
-}
-
 export interface ConversationState {
   readonly ref: string | null;
   readonly profileId: string | null;
@@ -672,11 +328,6 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
   ): Promise<void>;
-  // Plan3 host projection: returns a fresh immutable snapshot of the private
-  // truncatedItemIds set. The caller (live-concept projector) uses this to
-  // mark items truncated:true/false without suffix inference. The returned
-  // Set is a copy — mutating it cannot affect the store's internal ownership.
-  getTruncatedItemIds(): ReadonlySet<string>;
   // Task3: store-owned external error publication seam. The dispatcher passes
   // a generic sanitized message plus the exact ref and conversationGeneration
   // it captured when deciding to publish. The store writes the error ONLY when
@@ -731,92 +382,49 @@ function requireControl(
   }
 }
 
-// The incremental path has no Turn object, so a sparse item's containing
-// turn status is derived from the store's active turn: that is the only turn
-// that can still be inProgress, and an item naming a different turn is not in
-// it. Items that carry their own status never consult this.
-function containingTurnStatus(
-  conv: MobileConversation,
-  item: ThreadItem,
-): string | undefined {
-  if (conv.activeTurnId === undefined) return undefined;
-  if (item.turnId !== undefined && item.turnId !== conv.activeTurnId) {
-    return undefined;
+// Keep attachments beside their source whenever both rows are retained: a
+// page-owned attachment kept by withPageHistory can land far from wherever
+// its source ends up in the merged list (the source can be dropped as a
+// duplicate and reprojected elsewhere, or simply sit later in the projected
+// snapshot than the page's own front-of-list rows) — an attachment with no
+// source beside it reads as unrelated to any message.
+function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  const sourceItems = items.filter((item) => item.kind !== "attachments");
+  const ids = new Set(sourceItems.flatMap((item) => [...timelineIdentities(item)]));
+  const companions = new Map<string, MobileTimelineItem>();
+  for (const item of items) {
+    const sourceId = attachmentSourceIdentity(item);
+    if (sourceId !== null && ids.has(sourceId)) companions.set(sourceId, item);
   }
-  return "inProgress";
+  return items.flatMap((item) => {
+    const sourceId = attachmentSourceIdentity(item);
+    if (sourceId !== null) return companions.has(sourceId) ? [] : [item];
+    const attachments = [...timelineIdentities(item)].flatMap((identity) => {
+      const companion = companions.get(identity);
+      return companion ? [companion] : [];
+    });
+    return [item, ...attachments];
+  });
 }
 
-// Project a wire ThreadItem into a mobile timeline item for insertion from
-// item/started and item/completed notifications. This reuses the same field
-// mapping as the full projection but handles a single item in isolation.
-// F6: ask_user items (commandExecution with toolName "ask_user") are NOT
-// projected as generic activity — they return null to signal a reread, since
-// the canonical projector needs the full turn context (pendingAsks set) to
-// project them as question items. F7: precise subtype checks — wrong subtype
-// or missing context returns null to schedule a reread.
-// Task 2A-Ops-5: when askPending is true, a userMessage item also returns
-// null to trigger an authoritative reread — the canonical projector must
-// settle the pending question state (remove question rows, clear askPending)
-// based on the full turn context after a user-message answer lifecycle.
-function projectSingleItem(
-  item: ThreadItem,
-  askPending: boolean,
-  turnStatus: string | undefined,
-): MobileTimelineItem | null {
-  if (item.type === "userMessage") {
-    // Task 2A-Ops-5: if there's a pending ask_user, a user message is the
-    // answer lifecycle — trigger an authoritative reread to settle the
-    // pending question state according to canonical projection.
-    if (askPending) return null;
-    return { kind: "user", id: item.id, text: item.text ?? "", ...(item.transcriptEntryIndex !== undefined ? { transcriptEntryIndex: item.transcriptEntryIndex } : {}) };
-  }
-  if (item.type === "agentMessage") {
-    return {
-      kind: "assistant",
-      id: item.id,
-      markdown: `${item.text ?? ""}${item.delta ?? ""}`,
-      streaming: isActiveItem(item, turnStatus),
-    };
-  }
-  // F6: ask_user is a commandExecution with toolName "ask_user". The canonical
-  // projector handles ask_user with full turn context (pendingAsks, question
-  // parsing). We cannot replicate that from a single item notification, so
-  // return null to schedule an authoritative reread — never project as generic
-  // activity.
-  if (item.type === "commandExecution") {
-    if (item.toolName === "ask_user") {
-      return null; // F6: schedule reread for ask_user
-    }
-    return {
-      kind: "activity",
-      id: item.id,
-      label: item.toolName ?? item.description?.trim() ?? "Tool",
-      family: "tool",
-      state: activityState(item, turnStatus),
-      detail: {
-        arguments: item.argumentsJson,
-        description: item.description,
-        output: item.output,
-        error: item.error,
-        exitCode: item.exitCode,
-        durationMs: item.durationMs,
-        callId: item.callId,
-      },
-    };
-  }
-  if (item.type === "reasoning") {
-    return {
-      kind: "activity",
-      id: item.id,
-      label: "Reasoning",
-      family: "reasoning",
-      state: isActiveItem(item, turnStatus) ? "running" : "completed",
-      detail: { output: item.text },
-    };
-  }
-  // Unknown item types — return null to signal an unsupported transition
-  // that should trigger a coalesced rehydrate.
-  return null;
+// A candidate row is superseded by a set of identities when either: its OWN
+// identity is one of them (it duplicates a row that set already carries), or
+// — for an attachment — its source's identity is, which the hub reissuing
+// the source's wire id (its transcript key unchanged) makes a SEPARATE
+// check: a reissued attachment's own identity never equals the candidate's,
+// so the first clause alone would keep both, one holding the superseded
+// image set. loadOlder (F10, below) and withPageHistory's retainedPageRow
+// both ask this, each against its own pair of sets — see the one-line note
+// at each call site for why that call's second set is broad or narrow.
+function supersededBy(
+  candidate: MobileTimelineItem,
+  ownIdentities: ReadonlySet<string>,
+  attachmentSources: ReadonlySet<string>,
+): boolean {
+  if ([...ownTimelineIdentities(candidate)].some((id) => ownIdentities.has(id)))
+    return true;
+  const sourceId = attachmentSourceIdentity(candidate);
+  return sourceId !== null && attachmentSources.has(sourceId);
 }
 
 export function createConversationStore() {
@@ -853,51 +461,79 @@ export function createConversationStore() {
   // path. Nothing awaits between the response and the commit (the service's
   // readProjection and rehydrate below each await the read alone), so there
   // is no window to buffer for; the web's applyHydrationResponseCut drops its
-  // buffer at the same point for the same reason. Every item frame folds into
-  // this model too (dual-write, see applyNotification); liveOwnedRevs below
-  // survives only for the display rows until c-2b projects them from here.
+  // buffer at the same point for the same reason.
   //
-  // The package reducer over the conversation. Every reducer case spreads the
-  // model it was given, so the display rows (and anything else native keeps
-  // on the conversation) survive untouched.
+  // The package reducer over the conversation. The display rows are projected
+  // from the model it returns (applyNotification below), so the rows a frame
+  // produces and the rows a snapshot produces come from the one projector.
   function applyThreadNotification(
     conversation: MobileConversation,
     n: AnyNotification,
   ): MobileConversation {
     return applyNotification(conversation, n, Date.now()) as MobileConversation;
   }
-  // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
-  // (page-owned history). On rehydrate page-race merge, only these items are
-  // prepended as older history; current-only non-page items (live notifications
-  // that arrived during the await) are appended as the live tail, never moved
-  // to the oldest position where they'd be discarded by the 500-cap. Cleared
-  // on every conversation transition (open/close/reset/openProjected).
+  // I3: Page-owned item IDs — the item identities loadOlder pulled in as
+  // older history. A rehydrate's snapshot is authoritative for everything it
+  // carries; the page history it does not carry is prepended from here, so an
+  // older page loaded during the read is not lost. Cleared on every
+  // conversation transition (open/close/reset/openProjected). D23d moves the
+  // older pages into the model and deletes this.
   const pageOwnedIds = new Set<string>();
-  // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
-  // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
-  // last accepted live notification for that item. liveOwnerRev is a global
-  // monotonically increasing counter incremented on every accepted lifecycle
-  // insertion, replacement, delta, reset, and warning. Rejected/missing/wrong/
-  // frozen notifications do NOT increment or mark.
-  // Rehydrate captures entryLiveRev at entry. At commit:
-  // - If the reread contains an ID whose liveOwnedRevs revision > entryLiveRev,
-  //   the current (live-updated) version is newer than the reread's snapshot;
-  //   preserve the current version in the authoritative position and keep
-  //   ownership (do NOT delete from liveOwnedRevs).
-  // - If the reread contains an ID whose revision ≤ entryLiveRev (or not
-  //   live-owned), accept the reread's authoritative version and clear that
-  //   ID's ownership.
-  // - If the reread omits an ID that is genuinely live-owned, append the
-  //   current item as live tail.
-  // - Page IDs still prepend; unowned old history drops.
-  const liveOwnedRevs = new Map<string, number>();
-  let liveOwnerRev = 0;
-  // Mark an item as live-owned with the current global revision. Called from
-  // every accepted lifecycle insertion/replacement, delta, reset, warning.
-  function markLiveOwned(id: string): void {
-    liveOwnerRev += 1;
-    liveOwnedRevs.set(id, liveOwnerRev);
+  // The phone's two display bounds, as one pass over the projected rows: the
+  // newest RETAINED_ITEM_CAP rows, each text-bearing field cut to
+  // MAX_ITEM_BYTES with the marker. Every path that publishes a conversation
+  // runs it, so the bound is a property of what is displayed rather than of
+  // the sequence of frames that produced it. The model behind the rows keeps
+  // its full text (#1535 asks whether the package should bound that).
+  //
+  // The rows are rebuilt from the model on every frame, but the model hands
+  // back the SAME string reference for text no frame touched, so each bound
+  // string is cached under the source string it came from and reused until
+  // that reference changes: a transcript of settled rows is not re-encoded
+  // per delta. The cache is rebuilt from the rows of each publish (the
+  // previous one is read through, then dropped), so it holds only what is on
+  // screen and needs no invalidation of its own. The one item a delta is
+  // streaming into does re-encode once per frame, because its text really is
+  // new each time — #1535 is where that stops growing.
+  let boundedText = new Map<string, string>();
+  // The cache belongs to the conversation whose rows it bound: every string
+  // in it is held by that conversation's model or its rows, so once the
+  // conversation is dropped the cache is the only thing retaining them. Every
+  // transition that drops the conversation releases it. A suspend does not:
+  // the rows stay on screen for the resume, which republishes the same text.
+  function releaseBoundedTextCache(): void {
+    boundedText = new Map();
   }
+  // Whether a folded model can change a row. projectConversation reads exactly
+  // one of the model's own fields: `turns` — every turn, item, status and error
+  // a row is made of hangs off it, and the answerable asks are derived from it
+  // too (deriveAskQuestions.ts reads turns alone). Every other field a frame
+  // moves (the status, the name, the queue, the jobs tree, the goal, the wire's
+  // askPending, and lastFrameAt, which moves on EVERY frame) changes no row.
+  function changesRows(previous: MobileConversation, applied: ThreadModel): boolean {
+    return applied.turns !== previous.turns;
+  }
+
+  function capAndTruncate(conversation: MobileConversation): MobileConversation {
+    const previous = boundedText;
+    const next = new Map<string, string>();
+    const bound: BoundText = (text) => {
+      const cached = next.get(text) ?? previous.get(text);
+      const bounded = cached ?? truncateText(text, MAX_ITEM_BYTES);
+      next.set(text, bounded);
+      // A published row carries its BOUNDED text, so the next publish binds
+      // that string, not the one the model handed over. Bounding a bounded
+      // string is a no-op (truncateText never returns more than the limit), so
+      // record it as its own answer and the row costs one encode for its life
+      // rather than one more on every publish after the first.
+      if (bounded !== text) next.set(bounded, bounded);
+      return bounded;
+    };
+    const items = capItems(conversation.items).map((item) => truncateItem(item, bound));
+    boundedText = next;
+    return { ...conversation, items };
+  }
+
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
   // mutation owner changed during its await, it stores a deferred trailing
   // request with the EXACT binding snapshot captured at schedule time (not
@@ -1003,7 +639,6 @@ export function createConversationStore() {
   let suspendedService: LiveConversationService | null = null;
   let acceptedRehydrate: { generation: number; sink: LiveActivitySink } | null =
     null;
-  let liveNoticeSerial = 0;
   // I1: Binding epoch — incremented on every openProjected/open/close/reset so
   // a request queued for an older binding (serviceA+refA) can never run after
   // the store switched to a newer binding (serviceB+refB). Every request
@@ -1107,146 +742,103 @@ export function createConversationStore() {
   // a stale rehydrate (from an older operation) cannot overwrite a newer
   // rehydrate's state within the same generation.
   let rehydrateToken = 0;
-  // F12: Per-item truncation ownership — tracks which item IDs have been
-  // truncated to their byte limit. Once an item is truncated, later deltas
-  // cannot append (the marker appears exactly once). This is tracked by
-  // item ID, not by checking the text suffix, so genuine content that
-  // happens to end with "… truncated" does not freeze delta appends.
-  const truncatedItemIds = new Set<string>();
-
-  // Truncate items and record which item IDs were truncated (F12).
-  // Called from open/openProjected/rehydrate to seed the truncation set.
-  // Task 2A-Truncation: truncateAndRecord is PURE truncation — it no longer
-  // mutates truncatedItemIds. Authoritative paths call reconcileTruncationFrom
-  // (on the pre-truncation capped items) to rebuild the truncation set exactly:
-  // oversized originals are frozen, short originals unfreeze, omitted/capped
-  // IDs are removed, and already-frozen superseded live versions (truncated by
-  // a prior live delta) stay frozen. Family is required carried data on
-  // item.family (set by the projector from the wire type); it is never
-  // label-derived and not recorded here.
-  function truncateAndRecord(
-    items: MobileTimelineItem[],
-  ): MobileTimelineItem[] {
-    // Task 2A-Family: family is read directly from item.family (required,
-    // set by the projector from the wire type). No label inference, no
-    // side-channel family map.
-    return items.map((item) => truncateItem(item));
-  }
-
-  // Task 2A-Truncation: Exact reconciliation of truncation ownership from the
-  // FINAL retained/merged items (pre-truncation content). Replaces add-only
-  // frozen tracking on every authoritative install path
-  // (open/openProjected/rehydrate/loadOlder). Rebuilds truncatedItemIds and
-  // (no family map to rebuild — family is read from item.family directly):
-  //   - An item whose original content exceeds the byte limit → frozen.
-  //   - An item whose original content is short → unfrozen, even if it was
-  //     frozen before (authoritative short version unfreezes).
-  //   - An ID omitted/capped from the final set → removed (no stale freeze).
-  //   - An already-frozen item that remains in the final set (a current item
-  //     whose text was already truncated by a prior path — its text is ≤
-  //     MAX_ITEM_BYTES so exceedsByteLimit is false) stays frozen via
-  //     priorFrozenIds. This is critical for loadOlder: current items are
-  //     already truncated; without priorFrozenIds the reconciliation would
-  //     unfreeze them. Intersected with the final IDs so capped/removed
-  //     ownership drops.
-  //   - A superseded item (a live version that replaced the reread's version
-  //     during the rehydrate await — already truncated by a prior live delta,
-  //     so its text is ≤ MAX_ITEM_BYTES and exceedsByteLimit is false) stays
-  //     frozen via supersededFrozenIds. Only superseded IDs that are STILL in
-  //     truncatedItemIds at call time are passed — a short lifecycle/delta/reset
-  //     that removed the freeze stays unfrozen.
-  // `items` are the FINAL retained items BEFORE truncateItem runs (so
-  // exceedsByteLimit sees the original oversized content). `priorFrozenIds`
-  // is the set of IDs frozen before this call (captured by the caller before
-  // any live update); only IDs still in the final set are preserved.
-  // `supersededFrozenIds` is the set of superseded IDs that are still frozen
-  // (intersected with truncatedItemIds by the caller); only IDs in the final
-  // set are preserved.
-  function reconcileTruncationFrom(
-    items: MobileTimelineItem[],
-    priorFrozenIds: Set<string> = new Set(),
-    supersededFrozenIds: Set<string> = new Set(),
-  ): void {
-    const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
-    // An identity that was already frozen before this call (or by a
-    // superseded live version) keeps its freeze while it remains in the final
-    // set — its content is already truncated, so the byte check alone would
-    // unfreeze it. Members go through the same check as top-level rows:
-    // otherwise an already-truncated member lost its freeze on the next
-    // loadOlder/rehydrate and admitted deltas against truncated content.
-    const staysFrozen = (identity: string): boolean =>
-      (priorFrozenIds.has(identity) || supersededFrozenIds.has(identity)) &&
-      retainedIds.has(identity);
-    truncatedItemIds.clear();
-    for (const item of items) {
-      let needsTruncation = false;
-      if (item.kind === "assistant") {
-        needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
-      } else if (item.kind === "activity") {
-        needsTruncation = exceedsActivityDetailLimit(item.detail);
-      }
-      if (needsTruncation || staysFrozen(timelineIdentity(item))) {
-        truncatedItemIds.add(timelineIdentity(item));
-      }
-      // A clustered member's own oversized detail freezes under the
-      // member's own identity, independent of the top-level freeze above —
-      // native expands members directly, so each is bounded and guarded on
-      // its own.
-      if (item.kind === "activity" && item.members) {
-        for (const member of item.members) {
-          const identity = activityIdentity(member);
-          if (exceedsActivityDetailLimit(member.detail) || staysFrozen(identity)) {
-            truncatedItemIds.add(identity);
-          }
-        }
-      }
+  // The older pages live outside the model until D23d moves them into it, so
+  // every publish carries them: page-owned rows the projection does not
+  // contain are prepended, in front of the rows the model produced.
+  function withPageHistory(
+    previous: MobileConversation | null,
+    projected: MobileConversation,
+  ): MobileConversation {
+    if (previous === null || pageOwnedIds.size === 0) return projected;
+    const identities = new Set(
+      projected.items.flatMap((item) => [...timelineIdentities(item)]),
+    );
+    // Sources the snapshot has its OWN attachment row for — narrower than
+    // `identities`, which a source row alone (no attachment yet) also
+    // populates. A page-owned attachment is superseded only once the
+    // snapshot re-emits an attachment for its source, under any wire id (the
+    // hub reissues the source's id while its transcript key stands, so the
+    // new attachment row's own id can differ from the page's).
+    const projectedAttachmentSources = new Set(
+      projected.items
+        .map((row) => attachmentSourceIdentity(row))
+        .filter((id): id is string => id !== null),
+    );
+    const pageRows: MobileTimelineItem[] = [];
+    for (const item of previous.items) {
+      if (!pageOwnedIds.has(timelineIdentity(item))) continue;
+      const retained = retainedPageRow(item, identities, projectedAttachmentSources);
+      if (retained !== null) pageRows.push(retained);
     }
+    if (pageRows.length === 0) return projected;
+    // A retained page attachment and its source can end up apart: the
+    // source may be dropped here as a duplicate and sit, reprojected, inside
+    // `projected.items` rather than at the front where the page row was.
+    // attachToSources moves every attachment beside its source wherever that
+    // source lands in the concatenated list, not just within `pageRows`.
+    return {
+      ...projected,
+      items: attachToSources([...pageRows, ...projected.items]),
+    };
   }
 
-  // Task 2A-Items: truncate a single item and record its truncation state.
-  // Returns a non-undefined MobileTimelineItem (the input is known non-null).
-  // Used by item/started and item/completed for authoritative replacement —
-  // the caller removes any stale freeze entry first so the new content can
-  // accept future deltas; this re-freezes if the replacement is oversized.
-  // Family is required carried data on item.family (set by the projector from
-  // the wire type); it is never label-derived and not recorded here.
-  function truncateAndRecordSingle(
+  // What a paged row still owns once the projection has caught up with part of
+  // it. A row is one identity for most kinds — it duplicates the projection or it
+  // does not — but a clustered activity row IS its members, and the projection
+  // growing to hold ONE of them makes only that member a duplicate. Dropping the
+  // whole row would delete history nobody else has; keeping it whole would show
+  // that member twice. So the cluster is rebuilt from the members the projection
+  // does not hold, exactly the way the projector builds one (project.ts's
+  // clusterActivities: identity, label and detail come from the first member,
+  // the state is running when any member runs, and a single member is a plain
+  // activity row rather than a cluster of one).
+  //
+  // duplicates() asks supersededBy against `identities` (every projected
+  // row's own identity) and `projectedAttachmentSources` (narrow: only rows
+  // the snapshot has ALREADY reprojected as an attachment) — narrow because a
+  // source row the snapshot has reprojected with no attachment of its own yet
+  // must not supersede a page's only copy.
+  function retainedPageRow(
     item: MobileTimelineItem,
-  ): MobileTimelineItem {
-    let needsTruncation = false;
-    if (item.kind === "assistant") {
-      needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
-    } else if (item.kind === "activity") {
-      needsTruncation = exceedsActivityDetailLimit(item.detail);
+    identities: ReadonlySet<string>,
+    projectedAttachmentSources: ReadonlySet<string>,
+  ): MobileTimelineItem | null {
+    const duplicates = (candidate: MobileTimelineItem): boolean =>
+      supersededBy(candidate, identities, projectedAttachmentSources);
+    if (item.kind !== "activity" || item.members === undefined) {
+      return duplicates(item) ? null : item;
     }
-    if (needsTruncation) {
-      truncatedItemIds.add(timelineIdentity(item));
-    }
-    return truncateItem(item);
+    const members = item.members.filter(
+      (member) => !identities.has(activityIdentity(member)),
+    );
+    if (members.length === item.members.length) return duplicates(item) ? null : item;
+    const first = members[0];
+    if (first === undefined) return null;
+    // Every identity-bearing field comes from the new first member, including
+    // the absence of one: spreading `item` would keep the SUPERSEDED member's
+    // transcriptKey and position, which name what the projection now holds, so
+    // the next publish would read this row as a duplicate and drop the history
+    // it still carries.
+    return {
+      ...item,
+      id: first.id,
+      label: first.label,
+      family: first.family,
+      detail: first.detail,
+      state: members.some((member) => member.state === "running") ? "running" : "completed",
+      transcriptKey: first.transcriptKey,
+      position: first.position,
+      ...(members.length === 1 ? { members: undefined } : { members }),
+    };
   }
 
-  // Task 2A-Truncation residual fix round 2: Prune ownership maps for evicted
-  // IDs after an incremental append+cap path (item/started, item/completed,
-  // warning). When capItems trims the oldest items, any frozen/page/live
-  // entries for those evicted IDs are stale and must be removed so a later
-  // re-introduction (page load or lifecycle) independently judges the new
-  // content instead of inheriting a stale freeze.
+  // Prune page ownership for identities the displayed rows no longer carry:
+  // once the cap has trimmed a row, its page entry is stale and a later
+  // re-introduction must be judged on its own.
   function pruneEvictedIds(items: MobileTimelineItem[]): void {
-    // Member-inclusive: truncatedItemIds can now hold a clustered member's
-    // own identity (transcriptKey ?? id), not just a top-level one — a
-    // top-level-only retained set would prune a still-present member's
-    // freeze right after reconcileTruncationFrom sets it. pageOwnedIds and
-    // liveOwnedRevs only ever hold identities from this same union, so the
-    // richer set is a safe superset for them too.
     const retainedIds = new Set(items.flatMap((item) => [...timelineIdentities(item)]));
-    for (const id of [...truncatedItemIds]) {
-      if (!retainedIds.has(id)) truncatedItemIds.delete(id);
-    }
     for (const id of [...pageOwnedIds]) {
       if (!retainedIds.has(id)) pageOwnedIds.delete(id);
-    }
-    for (const id of [...liveOwnedRevs.keys()]) {
-      if (!retainedIds.has(id)) liveOwnedRevs.delete(id);
     }
   }
 
@@ -1296,8 +888,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedRevs.clear();
-        truncatedItemIds.clear();
+        releaseBoundedTextCache();
         set({
           status: "opening",
           ref,
@@ -1317,18 +908,8 @@ export function createConversationStore() {
           const conv = await service.open(ref);
           // Reject if a newer conversation generation was opened during the await.
           if (gen !== conversationGen) return;
-          // Task 2A-Truncation: cap the original items, reconcile truncation
-          // ownership exactly from the FINAL retained (capped) pre-truncation
-          // items (authoritative short versions unfreeze; omitted/capped IDs
-          // are removed), then truncate the text.
-          const openCapped = capItems(conv.items);
-          reconcileTruncationFrom(openCapped);
-          const openItems = truncateAndRecord(openCapped);
           set({
-            conversation: {
-              ...conv,
-              items: openItems,
-            },
+            conversation: capAndTruncate(conv),
             status: "open",
             olderCursor: null,
           });
@@ -1364,8 +945,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedRevs.clear();
-        truncatedItemIds.clear();
+        releaseBoundedTextCache();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1414,17 +994,8 @@ export function createConversationStore() {
           // atomically consistent under the same exact identity tuple.
           const accepted = sink.setLiveView(activity, identity);
           if (!accepted) return;
-          // Task 2A-Truncation: cap the original items, reconcile truncation
-          // ownership exactly from the FINAL retained (capped) pre-truncation
-          // items, then truncate the text.
-          const openProjCapped = capItems(conversation.items);
-          reconcileTruncationFrom(openProjCapped);
-          const openProjItems = truncateAndRecord(openProjCapped);
           set({
-            conversation: {
-              ...conversation,
-              items: openProjItems,
-            },
+            conversation: capAndTruncate(conversation),
             status: "open",
             olderCursor,
             hasEarlierItems: hasEarlierItems ?? false,
@@ -1629,11 +1200,6 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
-        // Fix round 1: Capture live-owner revision at entry. If an item's
-        // liveOwnedRevs revision advanced past this after entry, the live
-        // notification updated the item after the rehydrate's readProjection
-        // snapshot — the current version is newer and must be preserved.
-        const entryLiveRev = liveOwnerRev;
         activitySink = sink;
         boundService = service;
         boundSink = sink;
@@ -1675,139 +1241,26 @@ export function createConversationStore() {
             set({ draft: currentSnapshot.draft });
             return;
           }
-          // R2: If the same conversation instance has page-owned history,
-          // preserve that history/cursor while committing the reread
-          // conversation+activity. A replaced instance must start clean.
-          // Merge page items (from current conversation) into the reread's
-          // conversation items, deduping by source item identity, and keep
-          // the page's newer cursor.
-          // Fix round 1: Per-item live ownership with monotonic revision. For
-          // each item in the reread, if its liveOwnedRevs revision advanced
-          // past entryLiveRev, the live notification updated it after the
-          // reread's snapshot — preserve the current version in the
-          // authoritative position. Otherwise accept the reread's version.
-          // Items omitted from the reread that are genuinely live-owned are
-          // appended as the live tail. Page-owned items prepend. Unowned old
-          // history drops.
-          const rereadIds = new Set(conversation.items.map((i) => i.id));
-          const rereadKeys = new Set(conversation.items.map(timelineIdentity));
-          const rereadIdentities = new Set(
-            conversation.items.flatMap((item) => [...timelineIdentities(item)]),
-          );
+          // The snapshot is authoritative for every row it carries (the
+          // response-cut note by applyThreadNotification): a frame this store
+          // folded while the read was in flight is already in it. The one
+          // thing the snapshot cannot know about is older history this client
+          // paged in, so page-owned rows the snapshot omits are prepended and
+          // the page's own cursor is kept. D23d moves the pages into the model
+          // and this merge goes with them.
           const currentConvForMerge = currentSnapshot.conversation;
           const preservePageHistory =
             currentConvForMerge?.instanceId === conversation.instanceId &&
             (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
-          // Superseded: reread contains ID but current live revision > entry.
-          // Preserve the current (live-updated) version in the reread position.
-          const supersededIds = new Set<string>();
-          const supersededVersions = new Map<string, MobileTimelineItem[]>();
-          if (currentConvForMerge !== null) {
-            for (const item of conversation.items) {
-              const identity = timelineIdentity(item);
-              if (item.kind === "activity") {
-                const replacement = mergeLiveActivityMembers(item, currentConvForMerge.items, liveOwnedRevs, entryLiveRev);
-                if (replacement) {
-                  // Supersession is per member, like truncation and freezing.
-                  // Only the members the live side won are named: a cluster's
-                  // top-level identity IS its first member's, so adding it
-                  // whenever any member was won would freeze that first member
-                  // against an authoritative short reread. An unclustered item
-                  // is its own member, so it names itself here.
-                  for (const member of replacement.supersededIdentities) {
-                    supersededIds.add(member);
-                  }
-                  supersededVersions.set(identity, replacement.rows);
-                }
-                continue;
-              }
-              const current = currentConvForMerge.items.find(
-                (candidate) => candidate.kind === item.kind && timelineIdentity(candidate) === identity,
-              );
-              if (current && liveRevisionForItem(current, liveOwnedRevs) > entryLiveRev) {
-                supersededIds.add(identity);
-                supersededVersions.set(identity, [current]);
-              }
-            }
-          }
-          // Replace superseded items in the reread with the current version.
-          let mergedItems = conversation.items.flatMap((item) => {
-            // A newer whole-item notification can remove its attachment row.
-            // Use the retained source's revision so a stale snapshot cannot
-            // resurrect it, without keeping tombstones for evicted rows.
-            const sourceId = attachmentSourceIdentity(item);
-            if (sourceId !== null) {
-              const sourceRev = liveRevisionForItem(item, liveOwnedRevs);
-              if (
-                sourceRev !== undefined &&
-                sourceRev > entryLiveRev &&
-                !currentConvForMerge?.items.some(
-                  (current) => current.id === item.id,
-                )
-              ) {
-                return [];
-              }
-            }
-            return supersededVersions.get(timelineIdentity(item)) ?? [item];
-          });
-          const omittedItems = currentConvForMerge === null ? [] : itemsAbsentFromSnapshot(
-            currentConvForMerge.items, rereadIdentities, rereadKeys,
-          );
-          let mergedCursor = olderCursor;
-          if (preservePageHistory) {
-            if (currentConvForMerge !== null) {
-              // 1. Prepend only current-only pageOwned history (items in
-              //    pageOwnedIds that are not in the reread projection).
-              // 2. Commit the authoritative reread projection (with superseded
-              //    replacements applied).
-              // 3. Append only current-only liveOwned tail (items in
-              //    liveOwnedRevs that are not in the reread projection).
-              // 4. Drop current-only items owned by NEITHER (not pageOwned,
-              //    not liveOwned, not in reread) as omitted old history.
-              const pageOnlyItems = omittedItems.filter(
-                (i) =>
-                  pageOwnedIds.has(timelineIdentity(i)),
-              );
-              const liveTailItems = omittedItems.filter(
-                (i) =>
-                  !pageOwnedIds.has(timelineIdentity(i)) &&
-                  isLiveOwned(i, liveOwnedRevs),
-              );
-              // Page history first (oldest), then reread items, then live tail.
-              // Items owned by neither are dropped (omitted old history).
-              mergedItems = [
-                ...pageOnlyItems,
-                ...mergedItems,
-                ...liveTailItems,
-              ];
-            }
-            // Keep the page's newer cursor (the reread's cursor reflects the
-            // full readProjection, which may not include page-loaded items).
-            mergedCursor = currentSnapshot.olderCursor;
-          } else if (currentConvForMerge !== null) {
-            // No page race, but still append live-owned items omitted from the
-            // reread (live notifications that arrived during the await).
-            const liveTailItems = omittedItems.filter(
-              (i) =>
-                !pageOwnedIds.has(timelineIdentity(i)) &&
-                isLiveOwned(i, liveOwnedRevs),
-            );
-            if (liveTailItems.length > 0) {
-              mergedItems = [...mergedItems, ...liveTailItems];
-            }
-          }
-          // Accept a snapshot's removal of a companion when it also contains
-          // the source, unless a live event changed that group during the read.
-          mergedItems = mergedItems.filter((item) => {
-            const sourceId = attachmentSourceIdentity(item);
-            return (
-              sourceId === null ||
-              !rereadIdentities.has(sourceId) ||
-              rereadIds.has(item.id) ||
-              liveRevisionForItem(item, liveOwnedRevs) > entryLiveRev
-            );
-          });
-          mergedItems = attachToSources(mergedItems);
+          const merged = preservePageHistory
+            ? withPageHistory(currentConvForMerge, conversation)
+            : conversation;
+          // The page's cursor is the newer one when its history is kept: the
+          // reread's reflects the full readProjection, which does not include
+          // the paged rows.
+          const mergedCursor = preservePageHistory
+            ? currentSnapshot.olderCursor
+            : olderCursor;
           const identity: ActivityIdentity = {
             threadId: conversation.threadId,
             ref,
@@ -1826,58 +1279,11 @@ export function createConversationStore() {
           const errorUnchanged = entryErrorRev === errorOwnerRev;
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
-          // Task 2A-Truncation: cap the merged items, reconcile truncation
-          // ownership exactly from the FINAL retained (capped) pre-truncation
-          // items. mergedItems already contains superseded live/page
-          // replacements (newer versions preserved based on final actual
-          // content). I2: do NOT pass all superseded live IDs as frozen —
-          // only superseded IDs that are STILL in truncatedItemIds after the
-          // accepted live update. A short lifecycle/delta/reset that removed
-          // the freeze stays unfrozen; a superseded item still frozen (live
-          // delta made it oversized) stays frozen. I1: priorFrozenIds preserves
-          // freeze for already-frozen current-only items (live tail / page
-          // items not in the reread — already truncated, text ≤ limit). Reread
-          // IDs are authoritative: short content unfreezes, oversized freezes.
-          // The reread set is member-inclusive: a clustered member's freeze is
-          // as answerable to an authoritative short version as a top-level
-          // row's, and a top-level-only set would carry every member freeze
-          // forward for good.
-          const rehydratePriorFrozen = new Set<string>();
-          for (const id of truncatedItemIds) {
-            if (!rereadIdentities.has(id)) rehydratePriorFrozen.add(id);
-          }
-          const supersededFrozen = new Set<string>();
-          for (const id of supersededIds) {
-            if (truncatedItemIds.has(id)) supersededFrozen.add(id);
-          }
-          const rehydrateCapped = capItems(mergedItems);
-          reconcileTruncationFrom(
-            rehydrateCapped,
-            rehydratePriorFrozen,
-            supersededFrozen,
-          );
-          const committedItems = truncateAndRecord(rehydrateCapped);
           // The snapshot's thread-level fields are authoritative (see the
-          // response-cut note by applyThreadNotification); the rows are the
-          // live/page merge above.
-          const committedConversation: MobileConversation = {
-            ...conversation,
-            items: committedItems,
-          };
-          // Fix round 1: Reconcile liveOwnedRevs — for items in the
-          // authoritative reread projection that are NOT superseded (revision
-          // ≤ entryLiveRev or not live-owned), accept the reread and clear
-          // that ID's ownership. Superseded items (revision > entryLiveRev)
-          // keep their ownership — the live version is newer and may need
-          // to survive a future page merge. Live-owned items NOT in the reread
-          // stay in the map (still live-only / live tail).
-          for (const item of conversation.items) {
-            const rev = liveRevisionForItem(item, liveOwnedRevs);
-            if (rev === undefined || rev <= entryLiveRev) {
-              for (const identity of timelineIdentities(item)) liveOwnedRevs.delete(identity);
-            }
-          }
-          pruneEvictedIds(committedItems);
+          // response-cut note by applyThreadNotification); the rows are its
+          // own, plus the page history prepended above.
+          const committedConversation = capAndTruncate(merged);
+          pruneEvictedIds(committedConversation.items);
           const commitBase = {
             conversation: committedConversation,
             olderCursor: mergedCursor,
@@ -1961,7 +1367,13 @@ export function createConversationStore() {
           if (currentConv !== null) {
             // F10: Dedupe by source item identity — items from older pages
             // that already exist in the current conversation (same id) are
-            // dropped, keeping the newer (live tail) version.
+            // dropped, keeping the newer (live tail) version. `currentIds` (the
+            // conversation's own identities, frozen before this loop) is
+            // supersededBy's SECOND, attachment-source set here — broad,
+            // unlike retainedPageRow's: a bare source row already in the live
+            // conversation means the live model has moved past this position,
+            // so an older page's attachment for that source is stale even
+            // with no attachment row alongside it.
             // Task 2A-Items: also dedupe within the incoming page by updating
             // the seen set during traversal, preserving order and first
             // occurrence semantics.
@@ -1971,15 +1383,7 @@ export function createConversationStore() {
             const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
-              // A row is a duplicate when ANY identity it carries is already
-              // present — an incoming cluster can reintroduce a member under
-              // a brand-new top-level id.
-              const duplicate = [...ownTimelineIdentities(item)].some((id) =>
-                existingIds.has(id),
-              );
-              if (duplicate) continue;
-              const sourceId = attachmentSourceIdentity(item);
-              if (sourceId !== null && currentIds.has(sourceId)) continue;
+              if (supersededBy(item, existingIds, currentIds)) continue;
               // I3: Defense-in-depth — filter question rows at the state merge
               // boundary too, not only in the service's projectOlderTurns. A
               // pending ask cannot legitimately be older than newer continuation
@@ -1991,30 +1395,22 @@ export function createConversationStore() {
             // I3: Record page-owned item IDs — these are items loaded from
             // older pages. They are tracked so the rehydrate page-race merge
             // can distinguish page-owned history from live notifications.
+            // Every identity the row IS, members included: a cluster rebuilt
+            // around a later member (retainedPageRow) must still read as page
+            // history on the next publish.
             for (const item of deduped) {
-              pageOwnedIds.add(timelineIdentity(item));
+              for (const id of ownTimelineIdentities(item)) pageOwnedIds.add(id);
             }
             // Prepend older (deduped) items, then trim from the oldest (front)
-            // so the newest live tail is retained (finding 8).
-            // Task 2A-Truncation: cap the pre-truncation merged items, reconcile
-            // truncation ownership exactly from the FINAL retained (capped)
-            // items. I1: capture prior frozen IDs BEFORE reconciliation so
-            // already-frozen current items (already truncated, text ≤ limit,
-            // exceedsByteLimit false) stay frozen — intersect with current
-            // item IDs AND final IDs so capped/removed ownership drops.
-            // Incoming raw page items matching a stale frozen ID that is NOT
-            // in currentConv are independently judged from their raw content
-            // (exceedsByteLimit), NOT carried over as frozen.
-            const priorFrozen = new Set<string>();
-            for (const id of truncatedItemIds) {
-              if (currentIds.has(id)) priorFrozen.add(id);
-            }
-            const pageMerged = capItems([...deduped, ...currentConv.items]);
-            reconcileTruncationFrom(pageMerged, priorFrozen);
-            const merged = truncateAndRecord(pageMerged);
-            // Prune ownership maps for evicted IDs (IDs not in the final merged
-            // set). This prevents stale freeze/page/live entries from
-            // affecting future page loads or re-introductions.
+            // so the newest live tail is retained (finding 8); the same cap and
+            // byte bound every other publish applies.
+            const pageConversation = capAndTruncate({
+              ...currentConv,
+              items: [...deduped, ...currentConv.items],
+            });
+            const merged = pageConversation.items;
+            // Prune page ownership for IDs the cap dropped, so a later page
+            // load or re-introduction is judged on its own.
             pruneEvictedIds(merged);
             // F8: If we're at the cap and the merge trimmed older items,
             // disable further paging honestly — set cursor to null so
@@ -2027,7 +1423,7 @@ export function createConversationStore() {
             const atCap = merged.length >= RETAINED_ITEM_CAP;
             const nextCursor = atCap ? null : (result.nextCursor ?? null);
             set({
-              conversation: { ...currentConv, items: merged },
+              conversation: pageConversation,
               olderCursor: nextCursor,
               hasEarlierItems: atCap
                 ? false
@@ -2431,8 +1827,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedRevs.clear();
-        truncatedItemIds.clear();
+        releaseBoundedTextCache();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -2463,396 +1858,62 @@ export function createConversationStore() {
         // not about this thread. Silently drop everything else.
         if (!notificationTargetsThread(n, state.conversation)) return;
 
-        // Dual-write until c-2b. Every frame about this thread folds into the
-        // package reducer's model first — turns, pendingText and output, the
-        // failure count, modelRetry — and the cases below then update today's
-        // display rows from the wire frame, spreading that updated model. c-2b
-        // flips the rows to projectConversation(model) and deletes the row
-        // appliers: the same intermediate the web store had before its
-        // projector. A row applier that bails (a missing target, a frozen row,
-        // a reread request) still publishes the model half.
-        const conv = applyThreadNotification(state.conversation, n);
-        const publishModel = () => {
-          if (conv !== state.conversation) set({ conversation: conv });
-        };
-        switch (n.method) {
-          case "item/started":
-          case "item/completed": {
-            const params = n.params as { item: ThreadItem };
-            const projectedRaw = projectSingleItem(
-              params.item,
-              conv.askPending,
-              containingTurnStatus(conv, params.item),
+        // Every frame about this thread folds into the package reducer's
+        // model, and the display rows are a projection of that model: one
+        // rule for a frame and for a snapshot, so there is nothing for a row
+        // applier to disagree with. The two display bounds run after the
+        // projection.
+        const applied = applyThreadNotification(state.conversation, n);
+        if (applied !== state.conversation) {
+          if (changesRows(state.conversation, applied)) {
+            const projected = withPageHistory(
+              state.conversation,
+              projectConversation(applied),
             );
-            const projected =
-              projectedRaw === null
-                ? null
-                : decorateLifecycleItem(projectedRaw, params.item);
-            // A sparse completion carries no text, so the accumulated output
-            // must come from the row the event settles — which is a clustered
-            // member whenever this item runs beside its neighbours. Resolve it
-            // the way the replacement below resolves it: by canonical identity
-            // first, so a member whose wire id changed while its transcriptKey
-            // held keeps its output, then by wire id for a row that has no
-            // transcriptKey to be found under.
-            const eventIdentity = params.item.transcriptKey ?? params.item.id;
-            const existing = (
-              findActivityTargetByIdentity(conv.items, eventIdentity) ??
-              findActivityTarget(conv.items, params.item.id)
-            )?.activity;
-            const preservesReasoningOutput =
-              projected?.kind === "activity" &&
-              projected.family === "reasoning" &&
-              existing?.family === "reasoning" &&
-              params.item.text === undefined;
-            const projectedWithReasoning = preservesReasoningOutput
-              ? {
-                  ...projected,
-                  detail: {
-                    ...projected.detail,
-                    output: existing.detail.output,
-                  },
-                }
-              : projected;
-            if (projectedWithReasoning !== null) {
-              // Lifecycle events replace the whole source item, including any
-              // companion attachment row. An empty image list removes it.
-              if (!preservesReasoningOutput) {
-                truncatedItemIds.delete(timelineIdentity(projectedWithReasoning));
-              }
-              const replacement: MobileTimelineItem[] = [
-                truncateAndRecordSingle(projectedWithReasoning),
-              ];
-              const attachmentId = `${params.item.id}:attachments`;
-              const attachments = projectItemAttachments(params.item);
-              markLiveOwned(timelineIdentity(projectedWithReasoning));
-              if (attachments) {
-                replacement.push({
-                  kind: "attachments",
-                  id: attachmentId,
-                  items: attachments,
-                  ...(params.item.transcriptKey
-                    ? { sourceTranscriptKey: params.item.transcriptKey }
-                    : projectedWithReasoning.kind === "activity"
-                      ? { sourceTranscriptKey: params.item.id }
-                      : {}),
-                });
-                markLiveOwned(attachmentId);
-              }
-              const items: MobileTimelineItem[] = [];
-              let replaced = false;
-              const consumedAttachments = new Set<string>();
-              for (const item of conv.items) {
-                if (consumedAttachments.has(item.id)) continue;
-                if (
-                  item.kind === "activity" &&
-                  item.members &&
-                  projectedWithReasoning.kind === "activity"
-                ) {
-                  const memberIndex = item.members.findIndex(
-                    (member) =>
-                      (member.transcriptKey ?? member.id) === eventIdentity,
-                  );
-                  if (memberIndex >= 0) {
-                    const nextMember: ActivityMember = {
-                      id: projectedWithReasoning.id,
-                      label: projectedWithReasoning.label,
-                      family: projectedWithReasoning.family,
-                      state: projectedWithReasoning.state,
-                      detail: projectedWithReasoning.detail,
-                      ...(projectedWithReasoning.transcriptKey
-                        ? { transcriptKey: projectedWithReasoning.transcriptKey }
-                        : {}),
-                      ...(projectedWithReasoning.position
-                        ? { position: projectedWithReasoning.position }
-                        : {}),
-                    };
-                    const segments = activityClusterSegments(item, memberIndex, nextMember);
-                    // Rebuild companions beside their source segment. A
-                    // later member update must not move its image ahead of
-                    // earlier members' images or retain an obsolete image.
-                    const attachments = new Map<string, MobileTimelineItem>();
-                    const identities = new Set(
-                      item.members.map((member) => member.transcriptKey ?? member.id),
-                    );
-                    for (const candidate of conv.items) {
-                      const source = attachmentSourceIdentity(candidate);
-                      if (source && identities.has(source)) {
-                        consumedAttachments.add(candidate.id);
-                        attachments.set(source, candidate);
-                      }
-                    }
-                    attachments.delete(eventIdentity);
-                    if (replacement[1]) attachments.set(eventIdentity, replacement[1]);
-                    for (const segment of segments) {
-                      items.push(segment);
-                      if (segment.kind !== "activity") continue;
-                      for (const member of segment.members ?? [segment]) {
-                        const companion = attachments.get(member.transcriptKey ?? member.id);
-                        if (companion) items.push(companion);
-                      }
-                    }
-
-                    replaced = true;
-                    continue;
-                  }
-                }
-                const itemIdentity = timelineIdentity(item);
-                const attachmentIdentity = attachmentSourceIdentity(item);
-                if (
-                  itemIdentity === eventIdentity ||
-                  attachmentIdentity === eventIdentity ||
-                  item.id === attachmentId
-                ) {
-                  if (!replaced) items.push(...replacement);
-                  replaced = true;
-                } else {
-                  items.push(item);
-                }
-              }
-              if (!replaced) items.push(...replacement);
-              const cappedItems = capItems(items);
-              pruneEvictedIds(cappedItems);
-              set({ conversation: { ...conv, items: cappedItems } });
-            } else {
-              publishModel();
-              // Unsupported transitions require the canonical projection.
-              if (state.ref !== null) requestRehydrate(state.ref);
-            }
-            break;
+            const conversation = capAndTruncate(projected);
+            pruneEvictedIds(conversation.items);
+            set({ conversation });
+          } else {
+            // The model advanced — the frame is the authority on whatever it
+            // carried, and lastFrameAt moved — but no row changed, so the rows
+            // this conversation already published stand, by reference.
+            set({ conversation: { ...applied, items: state.conversation.items } });
           }
-
-          case "item/agentMessage/delta": {
-            const params = n.params as { itemId: string; delta: string };
-            const existing = conv.items.find(
-              (i) => i.id === params.itemId && i.kind === "assistant",
-            );
-            if (existing) {
-              // F12: Per-item truncation ownership — once an item is
-              // truncated, later deltas cannot append. Tracked by item ID,
-              // not by text suffix, so genuine content ending with the
-              // marker doesn't freeze.
-              if (truncatedItemIds.has(timelineIdentity(existing))) {
-                publishModel();
-                break;
-              }
-              const combined =
-                (existing.kind === "assistant" ? existing.markdown : "") +
-                params.delta;
-              const truncated = truncateText(combined, MAX_ITEM_BYTES);
-              if (truncated !== combined) {
-                truncatedItemIds.add(timelineIdentity(existing));
-              }
-              // Fix round 1: Mark as live-owned — accepted delta update.
-              markLiveOwned(timelineIdentity(existing));
-              set({
-                conversation: {
-                  ...conv,
-                  items: conv.items.map((item) =>
-                    item.kind === "assistant" && item.id === params.itemId
-                      ? { ...item, markdown: truncated }
-                      : item,
-                  ),
-                },
-              });
-            } else {
-              // Delta targeting missing item — trigger resync.
-              publishModel();
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
-            }
-            break;
-          }
-
-          case "item/agentMessage/reset": {
-            const params = n.params as { itemId: string };
-            const existing = conv.items.find(
-              (i) => i.id === params.itemId && i.kind === "assistant",
-            );
-            if (existing) {
-              // Task 2A-Truncation: explicitly unfreeze the ID before the empty
-              // reset so a later delta applies. The reset clears the markdown
-              // to "" (short content), so the item must no longer be frozen.
-              truncatedItemIds.delete(timelineIdentity(existing));
-              // Fix round 1: Mark as live-owned — accepted reset update.
-              markLiveOwned(timelineIdentity(existing));
-              set({
-                conversation: {
-                  ...conv,
-                  items: conv.items.map((item) =>
-                    item.kind === "assistant" && item.id === params.itemId
-                      ? { ...item, markdown: "" }
-                      : item,
-                  ),
-                },
-              });
-            } else {
-              publishModel();
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
-            }
-            break;
-          }
-
-          case "item/reasoning/summaryTextDelta": {
-            const params = n.params as { itemId: string; delta: string };
-            const target = findActivityTarget(conv.items, params.itemId);
-            // Task 2A-Family: exact delta family from required item.family
-            // (never label inference). Reasoning delta mutates only family=
-            // reasoning. Missing target, wrong family, or unknown family =>
-            // no mutation/live revision/freeze change, request authoritative
-            // reread.
-            if (target === null || target.activity.family !== "reasoning") {
-              publishModel();
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
-              break;
-            }
-            const identity = activityIdentity(target.activity);
-            // F12: Per-item truncation ownership — frozen guard.
-            if (truncatedItemIds.has(identity)) {
-              publishModel();
-              break;
-            }
-            const combined =
-              (target.activity.detail.output ?? "") + params.delta;
-            const truncated = truncateText(combined, MAX_ITEM_BYTES);
-            if (truncated !== combined) {
-              truncatedItemIds.add(identity);
-            }
-            // Mark live revision only on accepted exact update.
-            markLiveOwned(identity);
-            set({
-              conversation: {
-                ...conv,
-                items: replaceActivityTargetDetail(conv.items, target, {
-                  ...target.activity.detail,
-                  output: truncated,
-                }),
-              },
-            });
-            break;
-          }
-
-          case "item/toolOutput/delta": {
-            const params = n.params as {
-              itemId: string;
-              callId: string;
-              delta: string;
-            };
-            const target = findActivityTarget(conv.items, params.itemId);
-            // Task 2A-Family: exact delta family from required item.family
-            // (never label inference). Tool-output delta mutates only family=
-            // tool AND requires stored detail.callId and incoming params.callId
-            // both present strings and exactly equal. Missing target, missing
-            // either callId, mismatch, unknown family, or wrong family => no
-            // mutation/live revision/freeze change, request authoritative
-            // reread.
-            if (target === null) {
-              publishModel();
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
-              break;
-            }
-            if (target.activity.family !== "tool") {
-              // Wrong family or unknown family — not a tool item.
-              publishModel();
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
-              break;
-            }
-            {
-              const itemCallId = target.activity.detail.callId;
-              if (
-                typeof itemCallId !== "string" ||
-                typeof params.callId !== "string" ||
-                itemCallId !== params.callId
-              ) {
-                // Missing either callId, or mismatch — no mutation.
-                publishModel();
-                if (state.ref !== null) {
-                  requestRehydrate(state.ref);
-                }
-                break;
-              }
-            }
-            const identity = activityIdentity(target.activity);
-            // F12: Per-item truncation ownership — frozen guard.
-            if (truncatedItemIds.has(identity)) {
-              publishModel();
-              break;
-            }
-            const combined =
-              (target.activity.detail.output ?? "") + params.delta;
-            const truncated = truncateText(combined, MAX_ITEM_BYTES);
-            if (truncated !== combined) {
-              truncatedItemIds.add(identity);
-            }
-            // Mark live revision only on accepted exact update.
-            markLiveOwned(identity);
-            set({
-              conversation: {
-                ...conv,
-                items: replaceActivityTargetDetail(conv.items, target, {
-                  ...target.activity.detail,
-                  output: truncated,
-                }),
-              },
-            });
-            break;
-          }
-
-          case "warning": {
-            const params = n.params as { message?: string; title?: string };
-            const id = `warning:${params.title ?? params.message ?? "warning"}:${++liveNoticeSerial}`;
-            const failureItem: MobileTimelineItem = {
-              kind: "failure",
-              id,
-              title: params.title ?? "Warning",
-              detail: params.message ?? "",
-            };
-            // Residual 2: Mark as live-owned — created by an actual live
-            // notification.
-            markLiveOwned(id);
-            const warningCappedItems = capItems([...conv.items, failureItem]);
-            // Task 2A-Truncation residual fix round 2: prune evicted IDs
-            // from ownership maps after incremental append+cap.
-            pruneEvictedIds(warningCappedItems);
-            set({
-              conversation: {
-                ...conv,
-                items: warningCappedItems,
-              },
-            });
-            break;
-          }
-
-          // evener/thread/resync triggers a coalesced rehydrate via the store-owned
-          // drain scheduler. The store does not re-read on its own.
-          case "evener/thread/resync": {
-            publishModel();
-            if (state.ref !== null) {
-              requestRehydrate(state.ref);
-            }
-            break;
-          }
-
-          default: {
-            // Everything without a row applier above is the reducer's alone.
-            publishModel();
-            // An item/* transition the cases above do not handle needs the
-            // canonical projection; only those resync, not every unknown
-            // family, to avoid reread storms from unrelated notifications.
-            if (n.method.startsWith("item/") && state.ref !== null) {
-              requestRehydrate(state.ref);
-            }
-            break;
-          }
+        }
+        if (state.ref === null) return;
+        // evener/thread/resync is the authoritative refresh path (the store
+        // never re-reads on its own). Any frame about the transcript that the
+        // reducer could not place — an unknown method, one naming an item or
+        // turn this model does not hold, a warning or a steer whose active
+        // turn lies outside the loaded window — leaves `turns` untouched by
+        // reference (every applied fold rebuilds it through mapTurn, which
+        // hands back the same array when nothing matched), while the model
+        // itself is still a new object because the frame is evidence of
+        // liveness. That is the gap case: the transcript this client holds is
+        // missing what the frame was about, so it asks for the canonical read
+        // at once rather than showing an incomplete transcript until the next
+        // resync. Thread-level frames (a status, a name, the queue) never
+        // touch turns and are not gaps, so they are named out.
+        const touchesTranscript =
+          n.method.startsWith("item/") ||
+          n.method.startsWith("turn/") ||
+          n.method === "warning" ||
+          n.method === "evener/steering/injected";
+        // One exception, by the wire's own rule rather than by this window's
+        // contents: a warning that lands with no active turn is dropped in the
+        // reducer because warnings are never transcript-persisted (its
+        // "warning" case cites internal/apptranscript having no warning-item
+        // conversion), so the canonical read cannot carry that warning either.
+        // Nothing is missing from the transcript and there is nothing to fetch.
+        const droppedByTheWiresOwnRule =
+          n.method === "warning" && !state.conversation.activeTurnId;
+        if (
+          n.method === "evener/thread/resync" ||
+          (touchesTranscript &&
+            !droppedByTheWiresOwnRule &&
+            applied.turns === state.conversation.turns)
+        ) {
+          requestRehydrate(state.ref);
         }
       },
 
@@ -2869,8 +1930,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedRevs.clear();
-        truncatedItemIds.clear();
+        releaseBoundedTextCache();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
@@ -2892,12 +1952,6 @@ export function createConversationStore() {
           lastAcceptedMutation: null,
           conversationGeneration: conversationGen,
         });
-      },
-
-      // Plan3 host projection: fresh snapshot of the private truncatedItemIds.
-      // Returns a new Set so the caller cannot mutate internal ownership.
-      getTruncatedItemIds() {
-        return new Set(truncatedItemIds);
       },
 
       // Task3: store-owned external error publication seam. Writes the generic

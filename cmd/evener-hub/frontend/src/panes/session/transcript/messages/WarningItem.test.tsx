@@ -1,4 +1,5 @@
-import type { ItemModel, TurnModel } from "@evener/appwire-client";
+import type { AnyNotification, ItemModel, Thread, TurnModel } from "@evener/appwire-client";
+import { applyNotification, hydrateThread } from "@evener/appwire-client";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { ignoringTurn, itemRendererFor } from "../types";
@@ -53,5 +54,52 @@ test("title-only (no message, no hint) renders the title with no message/hint li
 
 test("nothing at all (no title, no text, no hint) renders nothing", () => {
   const { container } = render(<WarningItem item={item({ text: "" })} turn={turn} live={false} />);
+  expect(container.firstChild).toBeNull();
+});
+
+// Whitespace is not content: a title of spaces or a hint of newlines would
+// otherwise render a row whose text a reader sees as blank — the reading the
+// phone's projector already takes (mobile/src/conversation/project.ts's warning
+// branch filters parts on trimmed content).
+test.each([
+  ["a whitespace title", { text: "   ", warning: { title: "  " } }],
+  ["a whitespace hint", { text: " ", warning: { hint: "\n\t" } }],
+  ["whitespace everywhere", { text: "\n", warning: { title: " ", hint: "  " } }],
+])("%s renders nothing", (_case, overrides) => {
+  const { container } = render(<WarningItem item={item(overrides)} turn={turn} live={false} />);
+  expect(container.firstChild).toBeNull();
+});
+
+// End to end for the frame this PR changed: a `warning` notification that carries
+// no message anywhere folds to an item with empty text (the reducer used to fall
+// back to JSON.stringify(params), which rendered the routing envelope in the
+// transcript), and this renderer shows nothing for it. The row a reader would have
+// seen was `{"threadId":"…","ref":"…"}` — never prose, never actionable.
+test("a warning frame with no message anywhere renders nothing at all", () => {
+  const thread = {
+    id: "thr_1",
+    sessionId: "sess_1",
+    preview: "",
+    ephemeral: false,
+    modelProvider: "anthropic",
+    createdAt: 0,
+    updatedAt: 0,
+    status: { type: "idle" },
+    cwd: "",
+    cliVersion: "",
+    source: "",
+    turns: [{ id: "turn_1", status: "inProgress", itemsView: "default", items: [] }],
+    evener: { ref: "ref_1", activeTurnId: "turn_1" },
+  } as unknown as Thread;
+  const folded = applyNotification(
+    hydrateThread({ thread }, "ref_1", 0),
+    { method: "warning", params: { threadId: "thr_1", ref: "ref_1" } } as AnyNotification,
+    1_000,
+  );
+  const warning = folded.turns[0]?.items[0];
+  if (warning === undefined) throw new Error("the fold produced no warning item");
+  expect(warning.text).toBe("");
+
+  const { container } = render(<WarningItem item={warning} turn={folded.turns[0] as TurnModel} live={false} />);
   expect(container.firstChild).toBeNull();
 });

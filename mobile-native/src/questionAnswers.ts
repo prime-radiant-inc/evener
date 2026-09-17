@@ -3,7 +3,13 @@ import {
   type AskQuestionRef,
   composeAskAnswers,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import {
+  boundQuestion,
+  liveAsksFor,
+  MAX_ITEM_BYTES,
+  type MobileConversation,
+  truncateText,
+} from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
@@ -11,12 +17,38 @@ export type QuestionSelections = Record<
 export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
-  return conversation?.askPending
-    ? conversation.items.flatMap((item) =>
-        item.kind === "question" ? item.questions : [],
-      )
-    : [];
+  // Asked of the MODEL, with the package's own rule — the same call the
+  // projection's question rows come from (project.ts's askQuestionsByCall,
+  // through liveAsksFor's shared scan). The refs are therefore canonical:
+  // composeQuestionAnswers names the header, the chosen labels and the
+  // ifUnanswered text exactly as the agent asked them, while the rows a
+  // reader scrolls carry the display bound's cut copies.
+  if (conversation === null) return [];
+  return [...liveAsksFor(conversation).values()].flat();
 }
+
+// The sheet's own rendered text, bounded the same as a timeline row
+// (mobile/src/conversation/project.ts). Shared by questionsIdentity below and
+// QuestionSheet.tsx's own display copy, so the identity and what a reader
+// actually sees are cut exactly the same way.
+export const boundQuestionText = (text: string) =>
+  truncateText(text, MAX_ITEM_BYTES);
+
+// A question set's identity for everything that keys, signs or persists it —
+// a React key over a batch, the sheet's draft signature, and the definitions
+// that guard a persisted answer (draftRepository.ts's questionDefinitions).
+// None of those need pendingQuestions()'s canonical, uncut refs: they only
+// ever need to tell "the same questions" apart from "different questions",
+// same as a reader could from the screen. Serializing the bounded copy
+// (boundQuestion, the same cut QuestionSheet.tsx renders) keeps the identity
+// itself bounded, so an oversized ask_user payload can no longer be
+// re-serialized on every render or stored whole in a drafts row.
+export function questionsIdentity(questions: AskQuestionRef[]): string {
+  return JSON.stringify(
+    questions.map((question) => boundQuestion(question, boundQuestionText)),
+  );
+}
+
 export function composeQuestionAnswers(
   questions: AskQuestionRef[],
   selections: QuestionSelections,

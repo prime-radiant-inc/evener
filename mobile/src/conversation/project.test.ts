@@ -22,8 +22,13 @@ import type {
   MobileConversation,
   MobileTimelineItem,
 } from "./project";
-import { hydrateThread } from "@evener/appwire-client";
-import { projectConversation } from "./project";
+import { applyNotification, hydrateThread } from "@evener/appwire-client";
+import {
+  MAX_ITEM_BYTES,
+  projectConversation,
+  truncateItem,
+  truncateText,
+} from "./project";
 
 // The oracle drives the shim exactly as the service does: hydrate the wire
 // Thread through the package, then project the display rows.
@@ -1043,9 +1048,29 @@ describe("projectThread", () => {
 
       const first = projectThread(t).items.filter((item) => item.kind === "failure");
       const second = projectThread(t).items.filter((item) => item.kind === "failure");
-      expect(first.map((item) => item.id)).toEqual(["failure:turn-a:Provider error", "failure:turn-b:Provider error"]);
+      expect(first.map((item) => item.id)).toEqual(["failure:turn-a", "failure:turn-b"]);
       expect(new Set(first.map((item) => item.id)).size).toBe(2);
       expect(second).toEqual(first);
+    });
+
+    it("keeps the failure row id bounded even when the turn's error prose is oversized", () => {
+      const huge = "x".repeat(MAX_ITEM_BYTES + 5_000);
+      const t = thread([turn("turn-a", [])]);
+      const firstTurn = t.turns?.[0];
+      if (firstTurn) firstTurn.error = { message: huge, title: huge };
+
+      const f = projectThread(t).items.find((item) => item.kind === "failure");
+      if (f?.kind !== "failure") throw new Error("expected a failure row");
+      // The id never embeds the error's prose — only the turn it belongs to —
+      // so it stays bounded regardless of how large the title gets.
+      expect(f.id).toBe("failure:turn-a");
+      // The store's display bound (mobile/src/state/conversation.ts) cuts the
+      // rendered title separately; applying it here does not disturb the id.
+      const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+      const rendered = truncateItem(f, bound);
+      if (rendered.kind !== "failure") throw new Error("expected a failure row");
+      expect(new TextEncoder().encode(rendered.title).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
+      expect(rendered.id).toBe("failure:turn-a");
     });
   });
 
@@ -1871,4 +1896,154 @@ it("keeps failures of unknown activity types individually visible", () => {
       .filter((value) => value.kind === "activity")
       .map((value) => value.id),
   ).toEqual(["a", "b"]);
+});
+
+// --- what the live model carries into the rows (D23c-2b) ---------------------
+
+it("projects a warning item as a notice the phone reads as critical", () => {
+  // A warning only ever reaches the model through the reducer's own
+  // `case "warning"` fold, which stamps ItemModel.warning beside the text —
+  // warnings are not transcript-persisted, so no snapshot carries one.
+  const model = hydrateThread(
+    { thread: thread([turn("t", [item({ id: "item_warning_live_t_0", type: "warning", text: "Retrying the provider", status: "completed" })])]) },
+    "ref-1",
+    0,
+  );
+  const warning = model.turns[0]?.items[0];
+  if (!warning) throw new Error("expected the warning item");
+  warning.warning = { title: "Provider warning", hint: "attempt 2 of 3" };
+  expect(projectConversation(model).items).toMatchObject([
+    {
+      kind: "notice",
+      id: "item_warning_live_t_0",
+      origin: "system",
+      family: "warning",
+      tone: "warning",
+      text: "Provider warning\nRetrying the provider\nattempt 2 of 3",
+    },
+  ]);
+});
+
+// A warning with nothing in it is not a row. The web's own warning renderer
+// returns null for exactly this case (WarningItem: no title, no text, no
+// hint), and a blank critical notice on the phone is a red herring with no
+// content to explain itself.
+it("drops a warning that carries nothing at all", () => {
+  const projected = projectThread(
+    thread([turn("t", [item({ id: "w", type: "warning", text: "", status: "completed" })])]),
+  );
+  expect(projected.items).toEqual([]);
+});
+
+// Whitespace is not content either: a title of spaces or a hint of newlines
+// joins into a row whose text a reader sees as blank. The title and hint reach
+// the model only through the reducer's own live `warning` fold, so the fixture
+// folds one.
+it.each([
+  ["a whitespace title", { title: "   " }],
+  ["a whitespace hint", { hint: "\n\t" }],
+  ["whitespace everywhere", { title: " ", hint: "  " }],
+])("drops a warning carrying only %s", (_case, warning) => {
+  const model = applyNotification(
+    hydrateThread(
+      {
+        thread: thread([turn("t", [], { status: "inProgress" })], {
+          evener: evenerThread({ activeTurnId: "t" }),
+        }),
+      },
+      "ref-1",
+      0,
+    ),
+    {
+      method: "warning",
+      params: { threadId: "thread-1", ref: "ref-1", message: "  ", ...warning },
+    } as never,
+    1000,
+  );
+  expect(projectConversation(model).items).toEqual([]);
+});
+
+it("carries a warning that has no title of its own", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({ id: "w", type: "warning", text: "something happened", status: "completed" }),
+      ]),
+    ]),
+  );
+  expect(projected.items).toMatchObject([
+    { kind: "notice", family: "warning", tone: "warning", text: "something happened" },
+  ]);
+});
+
+it("reads a reasoning row from the per-summaryIndex chunks the model keeps", () => {
+  const model = hydrateThread(
+    { thread: thread([turn("t", [item({ id: "r", type: "reasoning", text: "seed", status: "inProgress" })], { status: "inProgress" })]) },
+    "ref-1",
+    0,
+  );
+  const reasoning = model.turns[0]?.items[0];
+  if (!reasoning) throw new Error("expected the reasoning item");
+  // The reducer accumulates one chunk list per summary index; the row joins
+  // them in order, one paragraph each.
+  reasoning.reasoningSummaries = [["first ", "thought"], ["second thought"]];
+  expect(projectConversation(model).items).toMatchObject([
+    {
+      kind: "activity",
+      family: "reasoning",
+      state: "running",
+      detail: { output: "first thought\n\nsecond thought" },
+    },
+  ]);
+});
+
+it("falls back to a reasoning item's own text when no chunks were kept", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [item({ id: "r", type: "reasoning", status: "completed" })]),
+    ]),
+  );
+  expect(projected.items).toMatchObject([
+    { kind: "activity", family: "reasoning", detail: { output: "" } },
+  ]);
+});
+
+it("counts a question row on screen as a pending question, without touching the wire flag", () => {
+  const askArgs =
+    '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({
+          id: "ask-1",
+          type: "commandExecution",
+          toolName: "ask_user",
+          status: "completed",
+          argumentsJson: askArgs,
+        }),
+      ]),
+    ]),
+  );
+  // The answerable question the projection found is the whole signal; the wire's
+  // own askPending keeps whatever the snapshot gave it and means something else
+  // (an ask this window may not even hold).
+  expect(projected.items.some((row) => row.kind === "question")).toBe(true);
+  expect(projected.askPending).toBe(false);
+});
+
+it("renders no question row when the ask arguments do not parse", () => {
+  const projected = projectThread(
+    thread([
+      turn("t", [
+        item({
+          id: "ask-bad",
+          type: "commandExecution",
+          toolName: "ask_user",
+          status: "completed",
+          argumentsJson: "{{not valid json",
+        }),
+      ]),
+    ]),
+  );
+  expect(projected.items.some((row) => row.kind === "question")).toBe(false);
 });

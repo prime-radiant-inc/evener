@@ -5,9 +5,10 @@
 // (parity-m5-composer.md §C: "a completed-but-unanswered ask gets both
 // anchor and dock; an ask followed by a reply gets only the settled line"):
 // scan every item in transcript order, and anything asked-and-acked AFTER
-// the most recent plain user message is still live; anything before it was
-// already answered (a reply resolves the WHOLE pending set at once, spec
-// §6.1).
+// the most recent resolution item (a plain user message, an interrupt, or a
+// user steer - isResolutionItem below) is still live; anything before it
+// was already answered (a resolution item settles the WHOLE pending set at
+// once, spec §6.1).
 //
 // This alone is not sufficient for the live, in-flight-submission case -
 // see appwire-client/typescript/reconcileBatches.ts's own comment for why a purely
@@ -52,24 +53,41 @@ function isAckedAskUserItem(item: ItemModel): boolean {
   );
 }
 
-// lastUserMessageIndex finds the position of the most recent plain user
-// message (type "userMessage" - the wire's literal string for both a plain
-// composer send and an ask-dock's own composed [answers] reply; either one
-// is a valid resolution, spec §6.1) in transcript order. -1 when none
-// exists yet (a fresh thread, or one that has never had a user turn).
-// Written as forEach-over-index rather than a reverse indexed loop so
-// `noUncheckedIndexedAccess` never needs an unnecessary bounds guard.
-function lastUserMessageIndex(items: readonly ItemModel[]): number {
+// An item resolves the whole pending ask set at once (spec §6.1): a plain
+// user message (type "userMessage" - the wire's literal string for both a
+// plain composer send and an ask-dock's own composed [answers] reply), or a
+// steering item the server itself treats as the user resolving it. The
+// server clears its own pending-ask bookkeeping (agent's askPending) in
+// exactly two places outside a plain user message: an interrupted turn
+// (session_lifecycle.go calls clearAskPending directly, then appends a
+// steering turn carrying SteeringKindInterrupted as the transcript's marker
+// of that boundary - "the user is demonstrably present") and an accepted
+// user steer (which enters the drain loop as EntryUserInput, the same
+// accepted-turn path that clears askPending for a plain user message; its
+// item carries source "user", the wire's SteeringSourceUser, never a
+// steeringKind). A daemon-originated steer with neither marker is not the
+// user speaking and resolves nothing.
+function isResolutionItem(item: ItemModel): boolean {
+  if (item.type === "userMessage") return true;
+  return item.type === "steering" && (item.steeringKind === "interrupted" || item.source === "user");
+}
+
+// lastResolutionIndex finds the position of the most recent resolution item
+// in transcript order. -1 when none exists yet (a fresh thread, or one that
+// has never had a user turn). Written as forEach-over-index rather than a
+// reverse indexed loop so `noUncheckedIndexedAccess` never needs an
+// unnecessary bounds guard.
+function lastResolutionIndex(items: readonly ItemModel[]): number {
   let last = -1;
   items.forEach((item, i) => {
-    if (item.type === "userMessage") last = i;
+    if (isResolutionItem(item)) last = i;
   });
   return last;
 }
 
 export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
   const items = model.turns.flatMap((turn) => turn.items);
-  const boundary = lastUserMessageIndex(items);
+  const boundary = lastResolutionIndex(items);
   const refs: AskQuestionRef[] = [];
   items.slice(boundary + 1).forEach((item) => {
     if (!isAckedAskUserItem(item)) return;

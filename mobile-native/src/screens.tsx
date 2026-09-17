@@ -31,7 +31,6 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { buildComposerInput, humanizeState, parseSlashToken, spliceSlashCommand } from "@evener/appwire-client";
-import type { AskBatch } from "@evener/appwire-client";
 import { createConversationService } from "../../mobile/src/services/conversation";
 import { createRosterService } from "../../mobile/src/services/roster";
 import { createActivityStore } from "../../mobile/src/state/activity";
@@ -74,7 +73,9 @@ import {
 	composeQuestionAnswers,
 	pendingQuestions,
 	type QuestionSelections,
+	questionsIdentity,
 } from "./questionAnswers";
+import type { AskBatch } from "@evener/appwire-client";
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
@@ -1883,7 +1884,7 @@ export function ConversationScreen({
 			) : null}
 			{batches.map((batch, index) => (
 				<QuestionSheet
-					key={batch.id + JSON.stringify(batch.questions)}
+					key={batch.id + questionsIdentity(batch.questions)}
 					visible={questionsOpen && index === 0}
 					destination={{
 						hubId: route.params.hubId,

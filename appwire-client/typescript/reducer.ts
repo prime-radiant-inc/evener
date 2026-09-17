@@ -268,6 +268,19 @@ export function pendingTextJoined(chunks: string[]): string {
   return chunks.join("");
 }
 
+// joinedReasoningParagraphs turns ItemModel.reasoningSummaries (string[][] —
+// per-summaryIndex chunk lists) into one string per summaryIndex, dropping
+// any paragraph that joins to nothing or to whitespace alone: a summary the
+// model opened but nothing ever streamed into is not a blank paragraph on
+// screen. Every per-summary join goes through pendingTextJoined, so a live
+// chunk view answers from its brand-cached text in O(1) rather than an
+// element-by-element Proxy walk on every render. THE reading of that field
+// for both hosts: the web's think block and native's reasoning row.
+export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
+  if (!summaries) return [];
+  return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
+}
+
 // Test-only white-box accessor: the backing array a view reads (undefined
 // for a plain array). The O(1) test discriminates append from copy by
 // asserting this reference is IDENTICAL across consecutive folds — the one
@@ -316,6 +329,14 @@ function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
 ): ItemImage[] | undefined {
+  // An empty list says nothing about this item's input images, the same rule the
+  // hub applies on its own merges (`len(incoming.Images) == 0` keeps the
+  // existing list: server/appwire_turns.go:884-886,
+  // internal/apptranscript/logical_turn.go:309) and the same reading the wire's
+  // `omitempty` implies. Real frames carry it — a steering notification with
+  // `images: []` (fixtures/tool-and-jobs.jsonl:4) — and treating it as a removal
+  // erases an older page's images through mergePageItem. Output images read the
+  // same way here — outputImagesToItemImages folds an empty list to absent too.
   if (!images || images.length === 0) return undefined;
   // A composer-attached image reaches the wire as inline bytes (mediaType +
   // data, no url/path — appwire_projection.go's projectUserInputImages), so
@@ -920,8 +941,15 @@ export function notificationTargetsThread(n: AnyNotification, model: ThreadModel
 }
 
 // Replaces the turn identified by turnId with `fn(turn)`; turns not matching
-// pass through unchanged (same reference).
+// pass through unchanged. Returns the SAME array when no turn matched: a frame
+// this fold could not place changed nothing, and handing back a fresh array
+// would tell every consumer the transcript moved. Most callers resolve the id
+// against model.turns first and always match; the two that cannot —
+// `warning` and `evener/steering/injected`, which take model.activeTurnId
+// straight off the wire snapshot — are exactly the ones this protects, because
+// that id can name a turn outside the window this client loaded.
 function mapTurn(turns: TurnModel[], turnId: string, fn: (turn: TurnModel) => TurnModel): TurnModel[] {
+  if (!turns.some((t) => t.id === turnId)) return turns;
   return turns.map((t) => (t.id === turnId ? fn(t) : t));
 }
 
@@ -977,6 +1005,12 @@ function resolveInsertTurnId(
 // the exact corruption this reducer must not produce.
 function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: TurnModel): TurnModel[] {
   const duplicateCount = turns.reduce((count, t) => (t.id === turnId ? count + 1 : count), 0);
+  // Nothing here to settle: the id names a turn outside the window this client
+  // loaded (activeTurnId comes off the wire snapshot). Hand the same array back,
+  // as mapTurn does — a fresh one would tell every consumer the transcript
+  // moved when it did not, and a host that detects an unplaceable frame by that
+  // reference would never ask for the read that fills the gap.
+  if (duplicateCount === 0) return turns;
   if (duplicateCount > 1) {
     console.error(
       `applyNotification: turn/completed turnId ${turnId} matches ${duplicateCount} turns in model.turns — settling only the first match (turn-id-uniqueness invariant violated)`,
@@ -1630,7 +1664,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            text: warningMessage(params) || JSON.stringify(params),
+            // No message means no message: the params are the routing
+            // envelope, not prose, and a renderer that prints the item's text
+            // would show the reader that envelope. An empty text is what the
+            // web's warning row treats as "nothing to show".
+            text: warningMessage(params),
             status: "completed",
             warning: { source: params.source, title: params.title, hint: params.hint },
           };

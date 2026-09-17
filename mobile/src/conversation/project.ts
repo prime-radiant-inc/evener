@@ -1,22 +1,17 @@
 import type {
   AskQuestionRef,
-  InputItem,
-  ItemFailureSignals,
   ItemImage,
   ItemModel,
-  OutputImage,
-  ThreadItem,
   ThreadModel,
   Turn,
   TurnModel,
 } from "@evener/appwire-client";
 // The native shim between the package's thread model and the phone timeline.
 // It shrinks as seam 2 lands (SDK migration plan, D21–D24): the conversation is
-// hydrated by reducer.hydrateThread (D22), D23 replaces the store's
-// notification appliers with reducer.applyNotification (the wire-item helpers
-// marked below exist for that live path until then), and D24 replaces the
-// display rows with transcriptDisplay/projector.ts entries and deletes this
-// file.
+// hydrated by reducer.hydrateThread (D22), every notification folds through
+// reducer.applyNotification and the rows are this file's projection of the
+// model it returns (D23c), and D24 replaces the display rows with
+// transcriptDisplay/projector.ts entries and deletes this file.
 //
 // projectConversation folds a ThreadModel's turns into the display rows. No
 // DOM, no network, no clock — given the same model it produces the same rows.
@@ -31,7 +26,8 @@ import type {
 
 import {
   hasItemFailure,
-  isInProgressStatus,
+  isActiveItem,
+  joinedReasoningParagraphs,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -40,11 +36,11 @@ import {
 // --- the conversation native holds -------------------------------------------
 
 // The package ThreadModel, as reducer.hydrateThread produces it, plus the
-// display rows this shim still projects from its turns; D24 removes `items`.
-// Item frames fold through reducer.applyNotification (state/conversation.ts)
-// before the store's row appliers run, so `turns` is live between rereads and
-// `items` is the dual-written display half until c-2b projects the rows from
-// the model.
+// display rows this shim projects from its turns; D24 removes `items`. Every
+// notification folds into the model (state/conversation.ts) and the rows are
+// re-projected from it, so `items` is always a function of `turns` — the
+// older pages loadOlder prepends are the one exception, until D23d moves
+// them into the model too.
 export type MobileConversation = ThreadModel & {
   items: MobileTimelineItem[];
 };
@@ -228,27 +224,12 @@ function isSystemMessage(item: ItemModel): boolean {
 // A live item can arrive without any status of its own while the turn that
 // contains it is still running — a sparse running tool/reasoning row would
 // otherwise read as settled. Such an item is active exactly when its turn
-// is; an item that carries its own status always keeps it. Exported so the
-// store's incremental projection applies the same rule against the turn
-// status it derives from the active turn.
-export function isActiveItem(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): boolean {
-  if (item.status !== undefined) return isInProgressStatus(item.status);
-  return isInProgressStatus(turnStatus);
-}
-
+// is; an item that carries its own status always keeps it.
 // --- activity state ----------------------------------------------------------
 
-// Exported so the store's incremental projection settles a tool item exactly
-// as the canonical projector does, instead of keeping a second copy.
-export function activityState(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): ActivityState {
+function activityState(item: ItemModel, turn: Pick<TurnModel, "status">): ActivityState {
   if (hasItemFailure(item)) return "failed";
-  if (isActiveItem(item, turnStatus)) return "running";
+  if (isActiveItem(item, turn)) return "running";
   return "completed";
 }
 
@@ -280,51 +261,6 @@ function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
   return undefined;
 }
 
-// The store's live path (item/started, item/completed) still holds a wire
-// ThreadItem, so it resolves image sources itself with the reducer's
-// precedence (url, inline bytes, path, name); D23 hands that path to the
-// package reducer and deletes this.
-function inlineImageSrc(img: InputItem): string | undefined {
-  if (
-    img.data === undefined ||
-    img.data === "" ||
-    img.mediaType === undefined ||
-    img.mediaType === ""
-  ) {
-    return undefined;
-  }
-  return `data:${img.mediaType};base64,${img.data}`;
-}
-
-function inputImage(img: InputItem): ItemImage {
-  return {
-    src: img.url ?? inlineImageSrc(img) ?? img.path ?? img.name ?? "",
-    name: img.name,
-  };
-}
-
-function outputImage(img: OutputImage): ItemImage {
-  return {
-    src: img.url ?? img.path ?? img.name ?? img.source ?? "",
-    name: img.name,
-  };
-}
-
-export function projectItemAttachments(
-  item: ThreadItem,
-): AttachmentRef[] | undefined {
-  if (
-    item.type === "userMessage" ||
-    (item.type === "steering" && item.source === "user")
-  ) {
-    return attachmentRows(item.id, item.images?.map(inputImage));
-  }
-  if (item.type === "commandExecution") {
-    return attachmentRows(item.id, item.outputImages?.map(outputImage), "out:");
-  }
-  return undefined;
-}
-
 // --- pending ask_user questions ---------------------------------------------
 
 // The package's rule for which ask_user calls are still answerable
@@ -338,6 +274,31 @@ function askQuestionsByCall(model: ThreadModel): Map<string, AskQuestionRef[]> {
     else byCall.set(ref.callId, [ref]);
   }
   return byCall;
+}
+
+// liveAskQuestions has no memory of its own (its own doc comment) — it rescans
+// every turn's items and re-parses every pending ask_user's argumentsJson on
+// every call. Keyed on model.turns, this reuses ONE scan for every caller that
+// shares that exact array: projectTimeline's own default argument below, and
+// pendingQuestions (mobile-native/src/questionAnswers.ts), which both run
+// against the same conversation within one publish. It does not make the scan
+// itself incremental — the reducer (reducer.ts's mapTurn/settleFirstMatchingTurn)
+// returns a new turns array on every fold, even when only the newest turn
+// changed, so a delta still pays for one scan; this removes paying for it twice
+// or more within that one delta.
+const asksByTurns = new WeakMap<
+  readonly TurnModel[],
+  ReadonlyMap<string, AskQuestionRef[]>
+>();
+
+export function liveAsksFor(
+  model: ThreadModel,
+): ReadonlyMap<string, AskQuestionRef[]> {
+  const cached = asksByTurns.get(model.turns);
+  if (cached !== undefined) return cached;
+  const asks = askQuestionsByCall(model);
+  asksByTurns.set(model.turns, asks);
+  return asks;
 }
 
 // --- single-item projection (pre-cluster) -----------------------------------
@@ -362,11 +323,24 @@ function itemMarkdown(item: ItemModel): string {
     : item.text;
 }
 
+// A reasoning item's text as the reader sees it: the package's own reading of
+// reasoningSummaries — one paragraph per summaryIndex, seeded from the item's
+// text at hydrate and extended by item/reasoning/summaryTextDelta — as one
+// string for the collapsed row. The model keeps those chunks across a settle
+// (reducer.ts's mergeReasoning), so a completion carrying no text of its own
+// shows what streamed in; an item with no chunks at all shows its text.
+function reasoningText(item: ItemModel): string {
+  const paragraphs = joinedReasoningParagraphs(item.reasoningSummaries);
+  return paragraphs.length === 0 ? item.text : paragraphs.join("\n\n");
+}
+
+// Returns null for an item with nothing to show — the timeline then carries
+// no row for it.
 function projectItem(
   item: ItemModel,
   turn: TurnModel,
   asks: ReadonlyMap<string, AskQuestionRef[]>,
-): PreResult {
+): PreResult | null {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
     const attachments = itemAttachments(item);
@@ -384,9 +358,13 @@ function projectItem(
     };
   }
 
-  // Assistant message — streaming while the turn is still in progress.
+  // Assistant message — streaming while the item itself is in flight. The
+  // item's own status is the per-item liveness signal (the web reads the same
+  // field: TurnBlock.tsx's isItemLive), so a message that settles inside a
+  // turn that keeps running stops saying "Writing…" at once. An item that
+  // carries no status of its own is live exactly while its turn is.
   if (isAgentMessage(item)) {
-    const streaming = isInProgressStatus(turn.status);
+    const streaming = isActiveItem(item, turn);
     return {
       kind: "final",
       item: {
@@ -406,7 +384,7 @@ function projectItem(
   // "reasoning" regardless of any label text; a commandExecution whose
   // toolName is "Reasoning" is NOT routed here (it stays family "tool" below).
   if (isReasoning(item)) {
-    const state: ActivityState = isActiveItem(item, turn.status)
+    const state: ActivityState = isActiveItem(item, turn)
       ? "running"
       : "completed";
     return {
@@ -419,7 +397,7 @@ function projectItem(
           label: "Reasoning",
           family: "reasoning",
           state,
-          detail: { ...activityDetail(item), output: item.text },
+          detail: { ...activityDetail(item), output: reasoningText(item) },
         },
       },
     };
@@ -453,7 +431,7 @@ function projectItem(
           id: item.id,
           label: toolLabel(item),
           family: "tool",
-          state: activityState(item, turn.status),
+          state: activityState(item, turn),
           detail: activityDetail(item),
         },
       },
@@ -502,23 +480,53 @@ function projectItem(
     };
   }
 
+  // A warning the reducer folded into the active turn (reducer.ts's `case
+  // "warning"`): its own item type, carrying the notice's title and hint
+  // beside the message text. It is a notice with a warning tone, like every
+  // other "something to know, not a failed turn" row here — the phone reads
+  // that tone as critical (timeline.ts's isCriticalNotice) and the web renders
+  // the same item as its own warning message, never as a turn failure.
+  if (item.type === "warning") {
+    const title = item.warning?.title;
+    const hint = item.warning?.hint;
+    // Whitespace is not content: a title of spaces or a hint of newlines reads
+    // as blank, so it is not a part and cannot make the row worth showing.
+    const text = [title, item.text, hint]
+      .filter((part) => part !== undefined && part.trim() !== "")
+      .join("\n");
+    // A warning carrying no title, no message and no hint has nothing to
+    // show: the web renders no row for it either (WarningItem returns null
+    // for exactly this case), and an empty notice here would be a blank
+    // bubble the reader cannot act on.
+    if (text === "") return null;
+    return {
+      kind: "final",
+      item: {
+        kind: "notice",
+        id: item.id,
+        origin: "system",
+        family: "warning",
+        tone: "warning",
+        text,
+      },
+    };
+  }
+
   // Unknown / forward-compatible item type — neutral collapsed activity, never
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
   // "unknown" for any item type the projection does not recognize.
+  const state = activityState(item, turn);
   return {
     kind: "activity",
     pre: {
-      family:
-        activityState(item, turn.status) === "failed"
-          ? `failed:${item.id}`
-          : `unknown:${item.type}`,
+      family: state === "failed" ? `failed:${item.id}` : `unknown:${item.type}`,
       item: {
         kind: "activity",
         id: item.id,
         label: "Activity",
         family: "unknown",
-        state: activityState(item, turn.status),
+        state,
         detail: { ...activityDetail(item), output: item.text || item.output },
       },
     },
@@ -563,113 +571,146 @@ function activityDetail(item: ItemModel): ActivityDetail {
 // if any member is running; otherwise completed (failed members never join a
 // run, so a cluster is never failed).
 
-export function clusterActivities(
-  preItems: PreActivity[],
-): Extract<MobileTimelineItem, { kind: "activity" }>[] {
-  const result: Extract<MobileTimelineItem, { kind: "activity" }>[] = [];
-  let run: PreActivity[] = [];
-
-  const flush = () => {
-    if (run.length === 0) return;
-    const first = run[0]?.item;
-    if (first) {
-      if (run.length === 1) {
-        result.push(first);
-      } else {
-        const state: ActivityState = run.some((p) => p.item.state === "running")
-          ? "running"
-          : "completed";
-        const members: ActivityMember[] = run.map(({ item }) => ({
-          id: item.id,
-          label: item.label,
-          family: item.family,
-          state: item.state,
-          detail: item.detail,
-          ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
-          ...(item.position ? { position: item.position } : {}),
-        }));
-        result.push({ ...first, state, members });
-      }
-    }
-    run = [];
-  };
-
-  for (const pre of preItems) {
-    const last = run[run.length - 1];
-    if (last && last.family === pre.family) {
-      run.push(pre);
-    } else {
-      flush();
-      run = [pre];
-    }
-  }
-  flush();
-  return result;
+// One run of consecutive same-family activities becomes one row: its first
+// member's identity and detail, running if any member runs, with the members
+// carried for the renderer that expands them. A run of one is that row itself.
+// The caller groups by family (projectTimeline's flushActivityRun), so this is
+// handed a homogeneous run and does no regrouping of its own.
+function clusterActivityRun(
+  run: PreActivity[],
+): Extract<MobileTimelineItem, { kind: "activity" }> | undefined {
+  const first = run[0]?.item;
+  if (first === undefined) return undefined;
+  if (run.length === 1) return first;
+  const state: ActivityState = run.some((p) => p.item.state === "running")
+    ? "running"
+    : "completed";
+  const members: ActivityMember[] = run.map(({ item }) => ({
+    id: item.id,
+    label: item.label,
+    family: item.family,
+    state: item.state,
+    detail: item.detail,
+    ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
+    ...(item.position ? { position: item.position } : {}),
+  }));
+  return { ...first, state, members };
 }
 
 // --- timeline projection -----------------------------------------------------
 
-export function projectTimeline(model: ThreadModel): MobileTimelineItem[] {
-  const asks = askQuestionsByCall(model);
+// One projected row before clustering, carrying whether it may still be merged
+// into a run and any attachments it emitted alongside itself.
+interface Ordered {
+  type: "final" | "activity";
+  item: MobileTimelineItem;
+  pre?: PreActivity;
+  attachments?: AttachmentRef[];
+}
 
-  // Project every item in order, preserving whether it is a final item or a
-  // clusterable activity pre-item. Attachments emitted alongside an item
-  // follow that item in the timeline.
-  interface Ordered {
-    type: "final" | "activity";
-    item: MobileTimelineItem;
-    pre?: PreActivity;
-    attachments?: AttachmentRef[];
+// One turn's rows, and what outside the turn they depended on.
+interface TurnRows {
+  entries: Ordered[];
+  // A turn's own items decide its rows, with one exception: whether an ask_user
+  // call is still answerable is a whole-model question (a later turn's user
+  // message answers an earlier ask — deriveAskQuestions.ts). Each entry records
+  // the calls this turn consumed and whether they were answerable, so the rows
+  // are reused only while that still holds.
+  askState: Array<[string, boolean]>;
+}
+
+// Per-turn rows, keyed on the TurnModel reference. The reducer hands a turn back
+// UNTOUCHED — by reference — when a frame did not change it (reducer.ts's mapTurn
+// and settleFirstMatchingTurn), so a delta into the newest turn leaves every older
+// turn's rows exactly as they were. Re-deriving them per frame is the transcript's
+// whole width of work, including a JSON parse per ask and two Date.parse calls per
+// timed tool call, for one item's text. A WeakMap so a dropped turn's rows go with
+// it.
+const turnRowCache = new WeakMap<TurnModel, TurnRows>();
+
+function rowsForTurn(
+  turn: TurnModel,
+  asks: ReadonlyMap<string, AskQuestionRef[]>,
+): Ordered[] {
+  const cached = turnRowCache.get(turn);
+  if (
+    cached !== undefined &&
+    cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
+  ) {
+    return cached.entries;
   }
-  const ordered: Ordered[] = [];
-
-  for (const turn of model.turns) {
-    for (const item of turn.items) {
-      const result = projectItem(item, turn, asks);
-      if (result.kind === "final") {
-        ordered.push({
-          type: "final",
-          item: {
-            ...result.item,
-            ...(item.transcriptKey
-              ? { transcriptKey: item.transcriptKey }
-              : {}),
-            ...(item.position ? { position: item.position } : {}),
-          },
-          attachments: result.attachments,
-        });
-      } else {
-        ordered.push({
-          type: "activity",
-          item: {
-            ...result.pre.item,
-            ...(item.transcriptKey
-              ? { transcriptKey: item.transcriptKey }
-              : {}),
-            ...(item.position ? { position: item.position } : {}),
-          },
-          pre: {
-            ...result.pre,
-            item: {
-              ...result.pre.item,
-              ...(item.transcriptKey
-                ? { transcriptKey: item.transcriptKey }
-                : {}),
-              ...(item.position ? { position: item.position } : {}),
-            },
-          },
-          attachments: result.attachments,
-        });
-      }
+  const entries: Ordered[] = [];
+  const askState: Array<[string, boolean]> = [];
+  for (const item of turn.items) {
+    if (isAskUser(item)) {
+      const callId = item.callId ?? item.id;
+      askState.push([callId, asks.has(callId)]);
     }
-    // A turn error produces a failure item at the end of that turn's items.
-    if (turn.error) {
-      ordered.push({
+    const result = projectItem(item, turn, asks);
+    if (result === null) continue;
+    const identity = {
+      ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
+      ...(item.position ? { position: item.position } : {}),
+    };
+    if (result.kind === "final") {
+      entries.push({
         type: "final",
-        item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+        item: { ...result.item, ...identity },
+        attachments: result.attachments,
+      });
+    } else {
+      const item_ = { ...result.pre.item, ...identity };
+      entries.push({
+        type: "activity",
+        item: item_,
+        pre: { ...result.pre, item: item_ },
+        attachments: result.attachments,
       });
     }
   }
+  // A turn error produces a failure item at the end of that turn's items.
+  if (turn.error) {
+    entries.push({
+      type: "final",
+      item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+    });
+  }
+  turnRowCache.set(turn, { entries, askState });
+  return entries;
+}
+
+// The attachments row that follows the row which produced it. It points back at
+// its source by transcript key, so a page or a reread that reissues the source
+// under a new wire id does not orphan its images. An activity's images name the
+// source's id when it has no key — a clustered member's row can be rebuilt around
+// a different member, and the id is then the only handle left — while any other
+// row leaves the field off and lets the reader of the row derive it from the
+// row's own id (state/conversation.ts's attachmentSourceId).
+function attachmentsRow(
+  source: MobileTimelineItem,
+  attachments: AttachmentRef[],
+  fallbackToId = false,
+): { id: string; items: AttachmentRef[]; sourceTranscriptKey?: string } {
+  const key = source.transcriptKey ?? (fallbackToId ? source.id : undefined);
+  return {
+    id: `${source.id}:attachments`,
+    items: attachments,
+    ...(key === undefined ? {} : { sourceTranscriptKey: key }),
+  };
+}
+
+export function projectTimeline(
+  model: ThreadModel,
+  // The answerable asks, when the caller has already derived them.
+  asks: ReadonlyMap<string, AskQuestionRef[]> = liveAsksFor(model),
+): MobileTimelineItem[] {
+  // Project every item in order, preserving whether it is a final item or a
+  // clusterable activity pre-item. Attachments emitted alongside an item
+  // follow that item in the timeline. Rows already derived for an unchanged turn
+  // come from the cache above; clustering then runs over the whole result,
+  // because a run of activities can span a turn boundary.
+  const ordered: Ordered[] = [];
+  for (const turn of model.turns) ordered.push(...rowsForTurn(turn, asks));
 
   // Second pass: cluster consecutive activity rows that share a family, then
   // rebuild the timeline in original order.
@@ -679,8 +720,8 @@ export function projectTimeline(model: ThreadModel): MobileTimelineItem[] {
 
   const flushActivityRun = () => {
     if (activityRun.length === 0) return;
-    const clustered = clusterActivities(activityRun);
-    for (const a of clustered) items.push(a);
+    const clustered = clusterActivityRun(activityRun);
+    if (clustered !== undefined) items.push(clustered);
     for (const attachment of activityAttachments) {
       items.push({ kind: "attachments", ...attachment });
     }
@@ -698,11 +739,7 @@ export function projectTimeline(model: ThreadModel): MobileTimelineItem[] {
         activityRun = [entry.pre];
       }
       if (entry.attachments && entry.attachments.length > 0) {
-        activityAttachments.push({
-          id: `${entry.item.id}:attachments`,
-          items: entry.attachments,
-          sourceTranscriptKey: entry.item.transcriptKey ?? entry.item.id,
-        });
+        activityAttachments.push(attachmentsRow(entry.item, entry.attachments, true));
       }
     } else {
       flushActivityRun();
@@ -714,14 +751,7 @@ export function projectTimeline(model: ThreadModel): MobileTimelineItem[] {
       entry.attachments &&
       entry.attachments.length > 0
     ) {
-      items.push({
-        kind: "attachments",
-        id: `${entry.item.id}:attachments`,
-        items: entry.attachments,
-        ...(entry.item.transcriptKey
-          ? { sourceTranscriptKey: entry.item.transcriptKey }
-          : {}),
-      });
+      items.push({ kind: "attachments", ...attachmentsRow(entry.item, entry.attachments) });
     }
   }
   flushActivityRun();
@@ -739,8 +769,252 @@ function failureItem(
   if (error.additionalDetails) parts.push(error.additionalDetails);
   return {
     kind: "failure",
-    id: `failure:${turnID}:${title}`,
+    // The id names the turn only, never the error's prose: rowsForTurn calls
+    // this once per turn (at most one error per turn), so turnID alone is
+    // already unique, and the display bound (mobile/src/state/conversation.ts)
+    // cuts title/detail but not id — an id built from unbounded prose would
+    // stay oversized forever in timelineIdentity, page-ownership sets, list
+    // keys and this row's own JSON serialization.
+    id: `failure:${turnID}`,
     title,
     detail: parts.join("\n"),
   };
+}
+
+// --- row identity -------------------------------------------------------------
+// Which row is which, for every consumer that has to decide whether two rows are
+// the same row: the store's page merge and its cap bookkeeping, and any reader
+// deduping a reissued row. transcriptKey first, because the hub reissues an item
+// under a new wire id while its transcript key stands.
+
+export function attachmentSourceId(item: MobileTimelineItem): string | null {
+  return item.kind === "attachments" && item.id.endsWith(":attachments")
+    ? item.id.slice(0, -":attachments".length)
+    : null;
+}
+
+export function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
+  return item.kind === "attachments"
+    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
+    : null;
+}
+
+export function timelineIdentity(item: MobileTimelineItem): string {
+  return item.transcriptKey ?? item.id;
+}
+
+// The canonical identity of a clustered activity member — the same
+// transcriptKey-first rule timelineIdentity applies to a top-level row.
+export function activityIdentity(activity: ActivityMember): string {
+  return activity.transcriptKey ?? activity.id;
+}
+
+// The identities a row IS: its own, plus every clustered member's. Distinct
+// from timelineIdentities, which also carries the identity of the row an
+// attachment belongs to — an attachment is not a duplicate of its source.
+export function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = new Set([timelineIdentity(item)]);
+  if (item.kind === "activity" && item.members) {
+    for (const member of item.members) {
+      identities.add(activityIdentity(member));
+    }
+  }
+  return identities;
+}
+
+export function timelineIdentities(item: MobileTimelineItem): Set<string> {
+  const identities = ownTimelineIdentities(item);
+  const source = attachmentSourceIdentity(item);
+  if (source !== null) identities.add(source);
+  return identities;
+}
+
+// --- display bounds -----------------------------------------------------------
+// What a row may cost the reader's device. The store applies these on every
+// publish; they live here with the row shape they cut.
+
+// --- limits and truncation helpers (centralized) ----------------------------
+
+export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
+export const TRUNCATION_MARKER = "… truncated";
+export const RETAINED_ITEM_CAP = 500;
+
+// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
+// once whenever the limit is large enough to hold the marker. Iterates
+// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
+// split and no U+FFFD replacement chars are produced. The result never
+// exceeds maxBytes.
+const textEncoder = new TextEncoder();
+const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
+
+// UTF-8 byte length without materialising the bytes: every publish asks this of
+// every retained row, and all but the oversized ones only need the answer, not the
+// encoding. Counting code points is O(length) with no allocation, where
+// TextEncoder.encode allocates a byte array as large as the text (and the row that
+// is 64 KiB of text allocates it on every publish).
+function utf8Length(text: string): number {
+  let bytes = 0;
+  for (const cp of text) {
+    const code = cp.codePointAt(0) ?? 0;
+    bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+  }
+  return bytes;
+}
+
+export function truncateText(text: string, maxBytes: number): string {
+  if (utf8Length(text) <= maxBytes) return text;
+  // The byte limit is the hard contract: the marker is best effort. Every
+  // publish re-applies this to whatever text a row carries, so a limit too
+  // small to hold the marker yields the longest prefix that fits, with no
+  // marker, rather than a marker that busts the limit.
+  const fitsMarker = maxBytes >= markerBytes.length;
+  const marker = fitsMarker ? TRUNCATION_MARKER : "";
+  const markerLength = fitsMarker ? markerBytes.length : 0;
+  const targetBytes = Math.max(0, maxBytes - markerLength);
+  // Iterate code points (for...of iterates Unicode scalar values) to find
+  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
+  // avoids splitting surrogate pairs and never produces U+FFFD.
+  let byteLen = 0;
+  let cutIdx = 0;
+  for (const cp of text) {
+    const cpBytes = utf8Length(cp);
+    if (byteLen + cpBytes > targetBytes) break;
+    byteLen += cpBytes;
+    cutIdx += cp.length;
+  }
+  // Trim code points until the result + marker fits within maxBytes.
+  // (May need to trim if a multibyte code point straddles the boundary.)
+  let truncated = text.slice(0, cutIdx);
+  let truncatedBytes = textEncoder.encode(truncated);
+  while (
+    truncatedBytes.length + markerLength > maxBytes &&
+    truncated.length > 0
+  ) {
+    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
+    const codePoints = [...truncated];
+    codePoints.pop();
+    truncated = codePoints.join("");
+    truncatedBytes = textEncoder.encode(truncated);
+  }
+  return truncated + marker;
+}
+
+// One text field, cut to the display bound.
+export type BoundText = (text: string) => string;
+
+// Apply the bound to an activity detail's text-bearing fields (description,
+// arguments, output, error). Shared by an activity's own top-level detail and
+// each of its clustered members' details, so both are bounded the same way. The
+// description is the summary line a collapsed row shows
+// (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
+// as much as the output is.
+function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
+  return {
+    ...detail,
+    description: detail.description ? bound(detail.description) : detail.description,
+    arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
+    output: detail.output ? bound(detail.output) : detail.output,
+    error: detail.error ? bound(detail.error) : detail.error,
+  };
+}
+
+// One question's prose and option text, bounded like every other row's:
+// header, question, why, ifUnanswered, and every option's label and detail
+// (AskUserOption.detail is a required string, never undefined). Shared by
+// truncateItem's "question" case below and the question sheet
+// (mobile-native/src/questionAnswers.ts, mobile-native/src/QuestionSheet.tsx),
+// so a row a reader scrolls and the sheet a reader answers from are cut the
+// same way. The answer this client composes does NOT read either bounded
+// copy — it asks the model for the canonical refs (questionAnswers.ts's
+// pendingQuestions, through liveAsksFor) — so a cut label here can never
+// name a choice the agent did not offer.
+export function boundQuestion(
+  question: AskQuestionRef,
+  bound: BoundText,
+): AskQuestionRef {
+  return {
+    ...question,
+    header: bound(question.header),
+    question: bound(question.question),
+    ...(question.why === undefined ? {} : { why: bound(question.why) }),
+    ...(question.ifUnanswered === undefined
+      ? {}
+      : { ifUnanswered: bound(question.ifUnanswered) }),
+    options: question.options.map((option) => ({
+      ...option,
+      label: bound(option.label),
+      detail: bound(option.detail),
+    })),
+  };
+}
+
+// Apply the bound to every text a row carries for the reader. Native transcript
+// projection expands a clustered activity's members directly, so each member's
+// own detail is bounded too — not just the cluster's top-level detail (the first
+// member's). A pasted user message, a daemon notice and a tool failure's stack
+// are as large as anything that streams, so each kind that carries prose is here.
+export function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
+  switch (item.kind) {
+    case "user":
+      return { ...item, text: bound(item.text) };
+    case "assistant":
+      return { ...item, markdown: bound(item.markdown) };
+    case "notice":
+      return { ...item, text: bound(item.text) };
+    case "failure":
+      return { ...item, title: bound(item.title), detail: bound(item.detail) };
+    case "question":
+      return {
+        ...item,
+        questions: item.questions.map((question) => boundQuestion(question, bound)),
+      };
+    case "activity":
+      // The label is rendered twice on the phone — the disclosure line and its
+      // accessibility label (mobile-native/src/TimelineItem.tsx) — so it is
+      // bounded like the detail it heads, for the row and for every member.
+      return {
+        ...item,
+        label: bound(item.label),
+        detail: truncateActivityDetail(item.detail, bound),
+        ...(item.members
+          ? {
+              members: item.members.map((member) => ({
+                ...member,
+                label: bound(member.label),
+                detail: truncateActivityDetail(member.detail, bound),
+              })),
+            }
+          : {}),
+      };
+    default:
+      // attachments: an attachment's src IS the image (a data: URI for composer
+      // bytes), so cutting it yields something that cannot decode; the name is a
+      // filename. The wire bounds image payloads at the source instead.
+      return item;
+  }
+}
+
+// Enforce the 500-item retained cap. Always retains the NEWEST items (end
+// of array) so the live tail is preserved for interactive scrolling.
+//
+// The projector always emits an attachment immediately after the row it
+// belongs to, so a source/attachment pair can only ever straddle the cut at
+// the front of the slice — an attachment kept while its source, one slot
+// earlier, was not. Dropping the source and leaving the attachment is worse
+// than dropping both: the orphan's lingering identity (timelineIdentities
+// exposes an attachment's source alongside its own) makes loadOlder treat a
+// genuine older-page copy of that source as an already-seen duplicate
+// (conversation.ts's F10 admission rule), permanently refusing to recover
+// it. Drop every leading attachment whose source did not survive the cut.
+export function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  if (items.length <= RETAINED_ITEM_CAP) return items;
+  const sliced = items.slice(items.length - RETAINED_ITEM_CAP);
+  const keptIds = new Set(sliced.flatMap((item) => [...ownTimelineIdentities(item)]));
+  let orphaned = 0;
+  while (orphaned < sliced.length) {
+    const sourceId = attachmentSourceIdentity(sliced[orphaned]);
+    if (sourceId === null || keptIds.has(sourceId)) break;
+    orphaned++;
+  }
+  return orphaned === 0 ? sliced : sliced.slice(orphaned);
 }
