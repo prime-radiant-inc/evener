@@ -615,6 +615,19 @@ export interface HarnessListResponse {
   data: HarnessDescriptor[];
 }
 
+export interface HostAttachParams {
+  name: string;
+}
+
+export interface HostAttachResponse {
+  attached: boolean;
+  protocolVersion?: string;
+  hubVersion?: string;
+  os?: string;
+  arch?: string;
+  features?: FeatureSet;
+}
+
 export interface HostForwardedResult {
 }
 
@@ -2510,6 +2523,7 @@ export const METHOD_NAMES = [
   "evener/settings/agentsDoc/set",
   "evener/sandbox/escalation/resolve",
   "evener/host/request",
+  "evener/host/attach",
 ] as const;
 
 export type MethodName = (typeof METHOD_NAMES)[number];
@@ -2712,6 +2726,7 @@ export interface MethodTypes {
   "evener/settings/agentsDoc/set": { params: AgentsDocSetParams; result: AgentsDocResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
   "evener/host/request": { params: HostRequestParams; result: HostForwardedResult };
+  "evener/host/attach": { params: HostAttachParams; result: HostAttachResponse };
 }
 
 export interface NotificationTypes {

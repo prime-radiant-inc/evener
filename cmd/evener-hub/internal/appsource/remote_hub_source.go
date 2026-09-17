@@ -88,10 +88,11 @@ type RemoteHubSource struct {
 	facts HostFactsFunc
 	// handshake is the optional component-04 attach-handshake seam: the
 	// InitializeResponse the live channel captured at attach, reached by host name
-	// (SetHostHandshake, backed by sshconn.Manager.HandshakeIfAttached). The probe
-	// reads ProtocolVersion/SourceID/Features from it; HubVersion stays
-	// preflight-owned. nil leaves those to the facts seam (tests); it is never
-	// dialed for.
+	// (SetHostHandshake, backed by the remoteHostHandshakeForChannel closure over
+	// sshconn.Manager.ChannelIfAttached with the client-identity guard at the call
+	// site). The probe reads ProtocolVersion/SourceID/Features from it; HubVersion
+	// stays preflight-owned. nil leaves those to the facts seam (tests); it is
+	// never dialed for.
 	handshake HostHandshakeFunc
 
 	// online is the optional availability signal: it reports whether the

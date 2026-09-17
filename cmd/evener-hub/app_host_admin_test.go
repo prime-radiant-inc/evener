@@ -389,13 +389,19 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// remote admin proxy, so both are denied deliberately rather than left
 		// undecided — an unlisted method is refused with appwire.InvalidParams
 		// and never forwarded.
-		"evener/daemon/list":     false,
-		"evener/daemon/retire":   false,
-		"evener/dirs/create":     true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":    false,
-		"evener/git/head":        true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list":  true, // discovery: the host's own harnesses
-		"evener/host/request":    false,
+		"evener/daemon/list":    false,
+		"evener/daemon/retire":  false,
+		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":   false,
+		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list": true, // discovery: the host's own harnesses
+		"evener/host/request":   false,
+		// evener/host/attach is controller-LOCAL: it dials a host this
+		// controller owns through the Ensure-backed seam. There is no host to
+		// forward to until the attach succeeds, so it is never a proxied call,
+		// and a peer hub must not be able to make this hub attach a new host by
+		// forwarding it.
+		"evener/host/attach":     false,
 		"evener/instance/create": true,
 		"evener/instance/edit":   true,
 		"evener/instance/list":   true,
@@ -1124,6 +1130,15 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		if _, ok := remoteHostAdminMethods[name]; !ok {
 			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
 		}
+	}
+	// evener/host/attach is a controller-local mutation, never a forwarded one:
+	// it must stay off both the allow-list and the forwarded-mutation set, so the
+	// proxy can never forward a dial request to a peer hub.
+	if _, ok := remoteHostAdminMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be on the remote-admin allow-list: it is a controller-local method", appwire.MethodEvenerHostAttach)
+	}
+	if _, ok := remoteHostAdminMutationMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be classified as a forwarded mutation: it is a controller-local method", appwire.MethodEvenerHostAttach)
 	}
 }
 

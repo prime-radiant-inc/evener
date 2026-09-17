@@ -203,6 +203,10 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("evener/spawn/slashCatalog", () => ({ commands: [], skills: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
+  // The explicit attach trigger (component 06's Connect): the picker fires
+  // evener/host/attach when a remote host is selected or its Connect action is
+  // tapped. Tests that assert the call override or inspect fake.calls.
+  fake.on("evener/host/attach", () => ({ attached: true }));
   // Host-routed discovery (component 07b): a selected remote host's calls go
   // through evener/host/request, so the same answers are wired here. Tests that
   // pin host-specific values override this handler in `configure`.
@@ -6096,6 +6100,80 @@ test("host picker lists sources, preselects local, and disables offline hosts", 
   expect(offline.disabled).toBe(true);
   // The reason is in the option's own accessible text, not only a tooltip.
   expect(offline.textContent).toContain("offline");
+});
+
+// Selecting a remote host is the picker's own attach trigger: the shipped
+// client must issue evener/host/attach for it, because nothing else the picker
+// does can attach a configured host (the snapshot and non-explicit list are
+// attached-only). Before the fix the selection changed only the draft and sent
+// no attach call at all.
+test("selecting a remote host issues evener/host/attach for it", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "buildbox", label: "buildbox", kind: "ssh", online: true },
+  ]);
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.change(screen.getByLabelText("Host"), { target: { value: "buildbox" } });
+
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && (call.params as { name: string }).name === "buildbox",
+      ),
+    ).toBe(true),
+  );
+});
+
+// A never-attached host is listed offline with a disabled spawn option
+// (component 06b), so the picker must offer a concrete, enabled Connect
+// affordance for it — otherwise a configured [[hosts]] entry is dead UI. The
+// Connect action issues the same evener/host/attach call.
+test("an offline host offers an enabled Connect action that attaches it", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+
+  const picker = screen.getByLabelText("Host") as HTMLSelectElement;
+  const offline = within(picker).getByRole("option", { name: /offline-host/ }) as HTMLOptionElement;
+  expect(offline.disabled).toBe(true);
+
+  const connect = screen.getByRole("button", { name: "Connect offline-host" }) as HTMLButtonElement;
+  expect(connect.disabled).toBe(false);
+  fireEvent.click(connect);
+
+  await waitFor(() =>
+    expect(
+      fake.calls.some(
+        (call) => call.method === "evener/host/attach" && (call.params as { name: string }).name === "offline-host",
+      ),
+    ).toBe(true),
+  );
+});
+
+// A Connect failure is surfaced, never a silent no-op: the row stays offline
+// and the user sees the manager's error.
+test("a failed Connect surfaces the attach error", async () => {
+  seedSources([
+    { id: "local", label: "Local", kind: "local", online: true },
+    { id: "offline-host", label: "offline-host", kind: "ssh", online: false },
+  ]);
+  const fake = readyClient((f) => {
+    f.on("evener/host/attach", () => {
+      throw new Error("host is unreachable");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  fireEvent.click(screen.getByRole("button", { name: "Connect offline-host" }));
+  expect(await screen.findByText(/Connect offline-host failed/i)).toBeTruthy();
 });
 
 test("no host picker renders when the manifest has only local", async () => {

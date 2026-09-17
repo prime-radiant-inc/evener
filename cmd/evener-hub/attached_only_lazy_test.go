@@ -131,6 +131,70 @@ func TestRefreshRemoteThreadSnapshotSkipsUnattachedSourceWithoutACall(t *testing
 	}
 }
 
+// A host that detaches between two snapshot ticks must not lose the rows it
+// already contributed. The skip branch serves last-known-good instead of an
+// empty list — in both fetch.threads (the flattened tree input) and
+// fetch.sources[id].Threads (the per-source manifest view) — and reports
+// Complete == false for that source so the manifest does not claim an
+// authoritative empty list. This pins the carry-forward behavior the round-two
+// snapshot gate ships; the reviewer found it untested, not broken.
+func TestRefreshRemoteThreadSnapshotKeepsLastKnownGoodWhenHostDetaches(t *testing.T) {
+	var attached atomic.Bool
+	attached.Store(true)
+	live := &appwire.Client{}
+	cfg := hubcore.WebConfig{
+		RemoteHosts:      []hostreg.Host{{Name: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) { return live, nil },
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) {
+			if attached.Load() {
+				return live, true
+			}
+			return nil, false
+		},
+	}
+	web := NewWebServer(cfg)
+	sources := appsource.NewRegistry()
+	source := &countingRemoteSource{scriptedAppSource: &scriptedAppSource{id: "alpha", thread: appwire.Thread{ID: "alpha-thread", Source: "alpha"}}}
+	sources.Add(source)
+	web.sources = sources
+
+	first := web.refreshRemoteThreadSnapshot(context.Background())
+	if got := source.calls.Load(); got != 1 {
+		t.Fatalf("attached source listed %d times; want 1", got)
+	}
+	if len(first.threads) != 1 || first.threads[0].ID != "alpha-thread" {
+		t.Fatalf("first snapshot threads = %+v, want the source's row", first.threads)
+	}
+	if !first.complete {
+		t.Fatal("first snapshot reported incomplete while the host was attached")
+	}
+	if snap, ok := first.sources["alpha"]; !ok || len(snap.Threads) != 1 || !snap.Complete {
+		t.Fatalf("first snapshot source alpha = %+v, ok=%v; want one complete row", snap, ok)
+	}
+
+	attached.Store(false)
+	second := web.refreshRemoteThreadSnapshot(context.Background())
+	if got := source.calls.Load(); got != 1 {
+		t.Fatalf("detached source was listed %d times; want no further call", got)
+	}
+	if len(second.threads) != 1 || second.threads[0].ID != "alpha-thread" {
+		t.Fatalf("carried-forward threads = %+v, want the previously listed row", second.threads)
+	}
+	snap, ok := second.sources["alpha"]
+	if !ok {
+		t.Fatal("snapshot dropped the detached source entirely")
+	}
+	if len(snap.Threads) != 1 || snap.Threads[0].ID != "alpha-thread" {
+		t.Fatalf("carried-forward source threads = %+v, want the previously listed row", snap.Threads)
+	}
+	if snap.Complete {
+		t.Fatal("detached source reported Complete while serving carried-forward rows")
+	}
+	if second.complete {
+		t.Fatal("snapshot reported complete with a detached source serving carried-forward rows")
+	}
+}
+
 // newHubSourceRegistry must install the attached-only lookups from WebConfig, so
 // a direct read against an unattached host is a typed unavailable error and
 // never a dial (component 06 acceptance criterion 13).

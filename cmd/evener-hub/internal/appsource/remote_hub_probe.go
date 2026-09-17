@@ -66,8 +66,10 @@ type HostFactsFunc func(ctx context.Context, host string, client *appwire.Client
 // preflight/buildinfo-owned. client is the exact generation the probe resolved
 // and ran its other reads on, so an implementation must answer from that
 // generation or report false rather than race a reconnect; a false answer makes
-// the probe refuse with the typed SessionUnavailable and cache nothing. It is
-// backed by sshconn.Manager.HandshakeIfAttached plus the channel-identity check.
+// the probe refuse with the typed SessionUnavailable and cache nothing. In
+// production it is backed by the remoteHostHandshakeForChannel closure over
+// sshconn.Manager.ChannelIfAttached, with the channel-identity check at the call
+// site rather than inside an accessor.
 type HostHandshakeFunc func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 
 // remoteHubProbe is one successful probe cached against the client it ran on.

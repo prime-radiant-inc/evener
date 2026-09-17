@@ -107,12 +107,14 @@ type WebConfig struct {
 	RemoteHostFacts func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error)
 	// RemoteHostHandshake returns the attach handshake facts (ProtocolVersion,
 	// ServerInfo, SourceID, Features) captured when a remote host's channel
-	// attached, ONLY while a live channel is installed, without dialing
-	// (component 04's Manager.HandshakeIfAttached). It takes client — the exact
-	// generation the probe resolved — and reports false when the installed
-	// channel is a different one, so the probe cannot pair one connection's wire
-	// reads with another's handshake. nil leaves those fields zero-valued
-	// (tests).
+	// attached, ONLY while a live channel is installed, without dialing. In
+	// production it is a closure over component 04's Manager.ChannelIfAttached
+	// with the client-identity guard at the call site, not
+	// Manager.HandshakeIfAttached (which has no production caller). It takes
+	// client — the exact generation the probe resolved — and reports false when
+	// the installed channel is a different one, so the probe cannot pair one
+	// connection's wire reads with another's handshake. nil leaves those fields
+	// zero-valued (tests).
 	RemoteHostHandshake func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
 	// RemoteHostOnline reports whether the controller's channel to host is
 	// currently attached (component 06). Nil leaves every remote host online

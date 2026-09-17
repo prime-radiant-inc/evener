@@ -144,6 +144,11 @@ const (
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
 	MethodEvenerHostRequest = "evener/host/request"
+	// MethodEvenerHostAttach explicitly attaches one configured remote host
+	// (component 06's Connect action, component 08's host management surface).
+	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
+	// seam; every other remote path is attached-only. See HostAttachParams.
+	MethodEvenerHostAttach = "evener/host/attach"
 )
 
 const (
@@ -3777,6 +3782,31 @@ type HostRequestParams struct {
 // not landed here. Read this marker as "an opaque JSON object the proxy passes
 // through", never as an empty result.
 type HostForwardedResult struct{}
+
+// HostAttachParams is the evener/host/attach payload (component 06's Connect
+// action): the component-03 source ID of one configured remote host to attach.
+//
+// Name is the host's configured name. The handler resolves it through the
+// controller's host registry, so an unknown name is InvalidParams, and calls
+// the Ensure-backed attach seam. Attaching an already-attached host is
+// idempotent and returns its current state.
+type HostAttachParams struct {
+	Name string `json:"name"`
+}
+
+// HostAttachResponse is evener/host/attach's result: the post-attach state of
+// one remote host. Attached is true once a live channel exists (always true on
+// a successful response). The remaining fields are the attach handshake's
+// facts, so the controller can render the row as online without a second probe;
+// they are omitted when the host's facts seam is not wired.
+type HostAttachResponse struct {
+	Attached        bool        `json:"attached"`
+	ProtocolVersion string      `json:"protocolVersion,omitempty"`
+	HubVersion      string      `json:"hubVersion,omitempty"`
+	OS              string      `json:"os,omitempty"`
+	Arch            string      `json:"arch,omitempty"`
+	Features        *FeatureSet `json:"features,omitempty"`
+}
 
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's

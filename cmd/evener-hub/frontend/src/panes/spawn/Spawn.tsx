@@ -187,6 +187,10 @@ const CLASS = {
   // per-option disabled flag, and an offline host must be RENDERED yet not
   // selectable (Component 06b). The class only borrows the visual treatment.
   hostSelect: requireClass(selectStyles.select, "select.module.css", "select"),
+  // The Connect affordance beside the picker: one button per offline remote
+  // host, an enabled control so a never-attached host is reachable rather
+  // than dead UI (component 06 §"Connecting a configured host").
+  hostConnectRow: requireClass(styles.hostConnectRow, "spawn.module.css", "hostConnectRow"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -288,6 +292,38 @@ function SpawnForm({
     // discard a persisted remote host that is merely still loading.
     if (sources.length > 0 && source !== hostChoice) setSource(hostChoice);
   }, [sources.length, source, hostChoice, setSource]);
+
+  // The explicit attach trigger (component 06's Connect action). A configured
+  // host with no live channel is listed offline and its spawn option is
+  // disabled, and every implicit path is attached-only by design (the snapshot
+  // walk and the non-explicit thread/list fan-out skip an unattached source),
+  // so nothing else the picker does can attach it. This is the one shipped
+  // client that issues `evener/host/attach`, the browser-reachable method that
+  // dials the host through the manager's Ensure seam. It is fire-and-forget:
+  // the hub's attach event flips the manifest's online flag (and invalidates
+  // navigation), so success needs no local bookkeeping beyond clearing the
+  // pending marker; a failure is surfaced rather than leaving a dead row.
+  const [connectingHosts, setConnectingHosts] = useState<ReadonlySet<string>>(() => new Set());
+  const connectHost = useCallback(
+    (host: string) => {
+      if (isLocalHost(host) || connectingHosts.has(host)) return;
+      setConnectingHosts((current) => new Set(current).add(host));
+      void client
+        .request("evener/host/attach", { name: host })
+        .catch((error: unknown) => {
+          toasts.push("error", `Connect ${host} failed: ${friendlyLaunchErrorMessage(error)}`);
+        })
+        .finally(() => {
+          setConnectingHosts((current) => {
+            if (!current.has(host)) return current;
+            const next = new Set(current);
+            next.delete(host);
+            return next;
+          });
+        });
+    },
+    [client, connectingHosts, toasts],
+  );
 
   // Every host-dependent discovery/validation call below is issued against
   // submittedSource (component 07b): remote hosts read models, harnesses,
@@ -2212,7 +2248,13 @@ function SpawnForm({
               disabled={busy}
               onChange={(event) => {
                 if (busyRef.current) return;
-                setSource(event.target.value);
+                const next = event.target.value;
+                setSource(next);
+                // Selecting a remote host is itself an attachment request: an
+                // online host is already attached so the call is idempotent,
+                // and this keeps the picker's selection and the attach trigger
+                // on one code path.
+                if (!isLocalHost(next)) connectHost(next);
               }}
             >
               {displaySources.map((candidate) => (
@@ -2221,6 +2263,26 @@ function SpawnForm({
                 </option>
               ))}
             </select>
+            {displayRemoteHosts.some((candidate) => !candidate.online) && (
+              <div className={CLASS.hostConnectRow}>
+                {displayRemoteHosts
+                  .filter((candidate) => !candidate.online)
+                  .map((candidate) => (
+                    <Button
+                      key={candidate.id}
+                      variant="quiet"
+                      size="xs"
+                      type="button"
+                      disabled={connectingHosts.has(candidate.id)}
+                      onClick={() => connectHost(candidate.id)}
+                    >
+                      {connectingHosts.has(candidate.id)
+                        ? `Connecting ${candidate.label}…`
+                        : `Connect ${candidate.label}`}
+                    </Button>
+                  ))}
+              </div>
+            )}
           </FormRow>
         )}
 

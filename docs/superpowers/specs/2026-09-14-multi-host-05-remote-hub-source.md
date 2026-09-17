@@ -336,8 +336,9 @@ provider; keep it out of the attach probe and expose it as an explicit refresh.
 component 04 must also expose the same facts for a host by name: a
 `RemoteHostHandshake func(host string, client *appwire.Client)
 (appwire.InitializeResponse, bool)` seam (backed by
-`Manager.HandshakeIfAttached`, component 04, §"Go surface"), installed as
-`SetHostHandshake` (§"Registration and default-source selection"). It carries
+`remoteHostHandshakeForChannel`, built on `Manager.ChannelIfAttached` with the
+client-identity guard at the call site; component 04, §"Go surface"), installed
+as `SetHostHandshake` (§"Registration and default-source selection"). It carries
 the client the probe resolved and reports `false` when the installed channel is
 a different generation, so the probe cannot pair one connection's wire reads
 with another's handshake (the shipped seam is the same shape as
@@ -400,13 +401,17 @@ The source's optional seams are installed once at registration, all from
   shape on the handshake facts).
 - `SetHostHandshake(cfg.RemoteHostHandshake)` — the attach handshake facts the
   capability probe needs (`ProtocolVersion`, `ServerInfo`, `SourceID`,
-  `Features`), backed by `Manager.HandshakeIfAttached` (component 04, §"Go
-  surface"). It returns the `InitializeResponse` for a host only while a live
-  channel is installed and only when that channel's client is the probe's
-  `client`, `(zero, false)` otherwise; the lookup itself takes the manager-wide
-  mutex, so it is safe from the `EventAttached` callback exactly like
-  `ClientIfAttached`. Without this seam the probe cannot populate those four
-  fields for a `RemoteHubSource` (see §"Capability probe").
+  `Features`), backed by `remoteHostHandshakeForChannel` in
+  `cmd/evener-hub/main.go` (component 04, §"Go surface"), which reads one
+  `Manager.ChannelIfAttached` value and applies the generation guard at the call
+  site (`ch.Client() == client`). It returns the `InitializeResponse` for a host
+  only while a live channel is installed and only when that channel's client is
+  the probe's `client`, `(zero, false)` otherwise; the lookup itself takes the
+  manager-wide mutex, so it is safe from the `EventAttached` callback exactly
+  like `ClientIfAttached`. `Manager.HandshakeIfAttached` exists but has no
+  production caller — the guard is deliberately not inside an accessor. Without
+  this seam the probe cannot populate those four fields for a
+  `RemoteHubSource` (see §"Capability probe").
 - `SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)` where
   `RemoteHostClientIfAttached` is `sshManager.ClientIfAttached` (component 04,
   §"Go surface") — the **non-dialing, attached-only client lookup**. It returns
@@ -769,9 +774,13 @@ no live channel, and never dials. The wired `RemoteHubClientFunc` is only the
 fallback for tests that inject a client function without the attached-only seam.
 The capability probe reads its handshake facts (`ProtocolVersion`, `ServerInfo`,
 `SourceID`, `Features`) through `hubcore.WebConfig.RemoteHostHandshake` /
-`SetHostHandshake` (backed by `Manager.HandshakeIfAttached`) and its preflight
-facts through `RemoteHostFacts` / `SetHostFacts` (backed by
-`Manager.ChannelIfAttached`).
+`SetHostHandshake` (backed by the `remoteHostHandshakeForChannel` closure over
+`Manager.ChannelIfAttached`, with the client-identity guard at the call site)
+and its preflight facts through `RemoteHostFacts` / `SetHostFacts` (backed by
+the `remoteHostFactsForChannel` closure over `Manager.ChannelIfAttached`). The
+generation guard (`ch.Client() == client`) lives in those closures, not inside
+`Manager.PreflightIfAttached` / `Manager.HandshakeIfAttached`, which have no
+production caller.
 
 Subscription lifetime is the other difference. `RemoteHubSource` must
 **reference-count subscriptions per remote thread ID** and issue the remote

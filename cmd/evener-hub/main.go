@@ -417,11 +417,26 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	var sshStateInvalidatedNavigation func()
 	sshManager := sshconn.New(hostRegistry, sshconn.Options{
 		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		OnEvent: hubSSHStateInvalidation(func() {
-			if sshStateInvalidatedNavigation != nil {
-				sshStateInvalidatedNavigation()
-			}
-		}),
+		OnEvent: hubSSHStateInvalidation(
+			func() {
+				if sshStateInvalidatedNavigation != nil {
+					sshStateInvalidatedNavigation()
+				}
+			},
+			// An attach is not only a liveness change: a host that was dormant
+			// contributes no fresh rows to the snapshot walk (it is skipped
+			// attached-only), so its threads stay absent from the navigation tree
+			// until the next ~30s tick. Poke the remote-thread refresher on the
+			// same transition so an explicit evener/host/attach populates the tree
+			// immediately. remotePoke is buffered 1 and this send is non-blocking,
+			// so the sshconn event loop never blocks on a refresh already pending.
+			func() {
+				select {
+				case remotePoke <- struct{}{}:
+				default:
+				}
+			},
+		),
 	})
 	// The manager owns every live SSH channel; tie their lifetime to this
 	// process so they die with the hub.
@@ -672,10 +687,24 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 // Manager.Attached: an attach, a detach, or a terminal attach failure.
 // Intermediate EventState transitions (preflighting, attaching, reconnecting)
 // never change the attached answer, so they do not force a rebuild.
-func hubSSHStateInvalidation(invalidate func()) func(sshconn.Event) {
+//
+// onAttach, when non-nil, runs only on EventAttached, alongside invalidate. It
+// exists because an attach is more than a liveness change: the snapshot walk is
+// attached-only, so a newly attached host's threads are absent from the
+// navigation tree until the refresher's next tick unless that transition pokes
+// it. Detach and terminal failure do not need the extra callback — the
+// last-known-good carry-forward already keeps a dropped host's rows.
+func hubSSHStateInvalidation(invalidate func(), onAttach func()) func(sshconn.Event) {
 	return func(ev sshconn.Event) {
 		switch ev.Kind {
-		case sshconn.EventAttached, sshconn.EventDetached, sshconn.EventFailed:
+		case sshconn.EventAttached:
+			if invalidate != nil {
+				invalidate()
+			}
+			if onAttach != nil {
+				onAttach()
+			}
+		case sshconn.EventDetached, sshconn.EventFailed:
 			if invalidate != nil {
 				invalidate()
 			}
