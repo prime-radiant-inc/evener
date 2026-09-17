@@ -55,6 +55,40 @@ describe("createConnectionStore", () => {
     expect(tracking.registrations).toBe(1);
   });
 
+  test("a client-changing write re-checks the client against a fresh read, not the snapshot the updater started from", () => {
+    const store = createConnectionStore();
+    const a = new FakeClient("ready");
+    const b = new FakeClient("ready");
+    const aTracking = trackStateChangeWiring(a);
+    const bTracking = trackStateChangeWiring(b);
+    store.connect(a);
+
+    // The updater synchronously wires b (a nested setState publishes it for
+    // real) and then returns the client its OWN parameter named - `a`, the
+    // snapshot taken before it ran, not what the store now actually holds.
+    // Deciding "did client change" against that stale snapshot would agree
+    // with the updater's own return value and skip rewiring, leaving the
+    // store reporting `a` while only b's listener is attached.
+    store.setState((state) => {
+      store.connect(b);
+      return { client: state.client };
+    });
+
+    expect(store.getState().client).toBe(a);
+    // a's first listener (from the top-level connect) was detached by the
+    // nested connect(b); this write's own correction re-registers a and
+    // retires b, so exactly one listener - a's second - ends up live.
+    expect(aTracking.registrations).toBe(2);
+    expect(aTracking.detachments).toBe(1);
+    expect(bTracking.registrations).toBe(1);
+    expect(bTracking.detachments).toBe(1);
+
+    // Proof by live event: only the published client's listener can reach
+    // the store.
+    a.emitStateChange("closed");
+    expect(store.getState().state).toBe("closed");
+  });
+
   test("detaches the stale client's state-change listener when a different client is wired", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");

@@ -106,8 +106,14 @@ export function createConnectionStore(): ConnectionStore {
   // (the overwhelming majority: no `client` key at all, including the
   // listener's own state-change publishes) passes straight through.
   store.setState = (partial) => {
+    const resolved = typeof partial === "function" ? partial(store.getState()) : partial;
+    // Read fresh here, not reused from the snapshot the updater above ran
+    // against: an updater can synchronously re-enter this same setState (or
+    // connect()) while it runs, wiring a different client for real before
+    // returning. Deciding "did client change" against the pre-call snapshot
+    // would compare the updater's return value to a client this write's own
+    // publish already made stale, missing a change that already happened.
     const current = store.getState();
-    const resolved = typeof partial === "function" ? partial(current) : partial;
     if (!("client" in resolved) || resolved.client === current.client) {
       publish(resolved);
       return;
