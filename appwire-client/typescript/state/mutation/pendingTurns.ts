@@ -46,11 +46,12 @@ export interface PendingTurnsDraftPort {
 export interface PendingTurnsStoreDeps {
   threads: PendingTurnsThreadsPort;
   draft: PendingTurnsDraftPort;
-  // The host's own ClientIdentity capability (createClientIdentity), not a
-  // package default: recordSubmittedHere and pendingTurnEntries both ask "is
-  // this record this client's own", and a caller with no identity handy
-  // should build one rather than this module silently assuming "unattributed
-  // only" the way reconcilePendingEntries's own default does.
+  // The host's own ClientIdentity capability (createClientIdentity):
+  // recordSubmittedHere and pendingTurnEntries both ask "is this record this
+  // client's own", and reconcilePendingEntries's own isOwnMutationRecord
+  // parameter is required, with no partial default - a caller with no
+  // identity handy has to build one rather than this module silently
+  // assuming "unattributed only" on its behalf.
   identity: Pick<ClientIdentity, "isOwnMutationRecord">;
 }
 
