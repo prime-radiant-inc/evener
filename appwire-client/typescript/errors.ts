@@ -44,22 +44,6 @@ export function isStaleCursorError(error: unknown): boolean {
   return error instanceof WireError && error.evenerErrorInfo === "transcriptItemCursorStale";
 }
 
-// ErrorInstanceRemovePersisted is the hub's discriminator for a provider-instance
-// removal that APPLIED - the authored entry left providers.toml - before it could
-// not finish; the error's message names what was left behind
-// (appwire.ErrorInstanceRemovePersisted, appwire/errors.go). Every client that
-// reports a standing removal recognizes it through this one value, and the
-// binding test (errors.test.ts) reads the Go constant, so a hub-side rename
-// breaks there instead of silently leaving the removal read as a plain failure.
-export const ErrorInstanceRemovePersisted = "instanceRemovePersisted";
-
-// ErrorInstanceRenamePersisted is the matching discriminator for a rename that
-// APPLIED before its credential move or reload failed (appwire.
-// ErrorInstanceRenamePersisted, appwire/errors.go); the hub's message names the
-// credential left behind, and clients steer to the new name rather than report a
-// failed save.
-export const ErrorInstanceRenamePersisted = "instanceRenamePersisted";
-
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

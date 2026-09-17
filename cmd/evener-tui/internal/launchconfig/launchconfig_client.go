@@ -176,11 +176,6 @@ type InstanceSetDefaultMsg struct {
 
 type InstanceRemoveMsg struct {
 	Name string
-	// EndpointFingerprint is the endpoint of the row the removal was confirmed
-	// against (InstanceEntry.endpointFingerprint). The request carries it so the
-	// hub can refuse removing a name another client has re-pointed since the row
-	// was listed, the way the web client's removal asserts the same value.
-	EndpointFingerprint string
 }
 
 type InstanceMutateResultMsg struct {
@@ -218,15 +213,12 @@ func CmdInstanceEdit(client *appwire.Client, params appwire.InstanceEditParams) 
 	}
 }
 
-func CmdInstanceRemove(client *appwire.Client, name, expectedEndpointFingerprint string) tea.Cmd {
+func CmdInstanceRemove(client *appwire.Client, name string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		var resp appwire.InstanceListResponse
-		// An empty fingerprint asserts nothing (InstanceRemoveParams), which is
-		// what a row the hub could not key carries.
-		params := appwire.InstanceRemoveParams{Name: name, ExpectedEndpointFingerprint: expectedEndpointFingerprint}
-		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, params, &resp)
+		err := client.Request(ctx, appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: name}, &resp)
 		return InstanceMutateResultMsg{List: resp, Err: err}
 	}
 }

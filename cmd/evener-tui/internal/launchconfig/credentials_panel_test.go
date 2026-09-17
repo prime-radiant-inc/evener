@@ -234,7 +234,7 @@ func TestCredentialsPanel_StarEmitsSetDefault(t *testing.T) {
 func TestCredentialsPanel_XEmitsRemove(t *testing.T) {
 	m := NewCredentialsPanel()
 	updated, _ := m.Update(InstanceListResultMsg{List: appwire.InstanceListResponse{Instances: []appwire.InstanceEntry{
-		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}, EndpointFingerprint: "fp-openai"},
+		{Name: "openai", ProviderID: "openai", ActiveSource: "oauth", AuthModes: []string{"apiKey"}},
 	}}})
 	_, cmd := updated.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
 	if cmd == nil {
@@ -247,9 +247,6 @@ func TestCredentialsPanel_XEmitsRemove(t *testing.T) {
 	}
 	if got.Name != "openai" {
 		t.Errorf("InstanceRemoveMsg.Name = %q, want openai", got.Name)
-	}
-	if got.EndpointFingerprint != "fp-openai" {
-		t.Errorf("InstanceRemoveMsg.EndpointFingerprint = %q, want the listed row's fingerprint fp-openai", got.EndpointFingerprint)
 	}
 }
 

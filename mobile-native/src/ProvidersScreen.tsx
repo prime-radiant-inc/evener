@@ -31,7 +31,7 @@ import { useConnection } from "./ConnectionProvider";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { applyRemovalOutcome, ProviderInstances, removalFailureMessage } from "./providerInstances";
+import { ProviderInstances } from "./providerInstances";
 import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -118,10 +118,6 @@ function Providers({
   const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
-  // A removal that stood but left an OAuth copy on disk is not a failure: the
-  // hub's message (it names the copy) is shown as a warning at the list level,
-  // where it survives the detail editor closing on the removed instance.
-  const [warning, setWarning] = useState<string | null>(null);
   const instance = state.data?.instances.find((item) => item.name === selected);
   useEffect(() => {
     model.start();
@@ -149,7 +145,6 @@ function Providers({
     setEditingCredential(null);
     setKey("");
     setActionError(null);
-    setWarning(null);
   }
   async function act(action: () => Promise<void>, secret = false) {
     const version = editorVersion.current;
@@ -168,30 +163,6 @@ function Providers({
           ? "Could not confirm the credential save. Check the connection and credential status before trying again."
           : "The operation could not be confirmed. Refresh and check the current state before trying again.",
       );
-    }
-  }
-  // removeInstance runs the removal through the model, which reconciles the
-  // listing and resolves a removal that stood as "removedPersisted" rather than
-  // rejecting it. Every successful removal closes the editor - a name the
-  // environment also supplies survives as an implicit row, so the removed
-  // instance's selection would otherwise stay open holding its draft - and a
-  // removal that stood also surfaces the hub's own message as a warning. Every
-  // other failure keeps the editor open and reports it as a failure.
-  async function removeInstance(name: string, expectedEndpointFingerprint?: string): Promise<void> {
-    const version = editorVersion.current;
-    setActionError(null);
-    setWarning(null);
-    try {
-      const outcome = await model.remove(name, expectedEndpointFingerprint);
-      if (version !== editorVersion.current) return;
-      applyRemovalOutcome(outcome, close, setWarning);
-    } catch (err) {
-      if (version !== editorVersion.current) return;
-      // A removal error carries the instance name and the endpoint fingerprint,
-      // never a secret, so the hub's own message (which names the refusal's
-      // remedy) is surfaced the way the web pane reports it - not the generic
-      // "could not be confirmed" copy the credential saves use.
-      setActionError(removalFailureMessage(err));
     }
   }
   function confirm(title: string, action: () => Promise<void>) {
@@ -232,7 +203,6 @@ function Providers({
               Add provider instance
             </Action>
             <ErrorMessage message={state.error} />
-            {warning && <Copy>{warning}</Copy>}
             {state.data?.diagnostics?.map((message) => (
               <Copy key={message}>{message}</Copy>
             ))}
@@ -504,7 +474,7 @@ function Providers({
                             disabled={state.busy || state.data?.writesRefused}
                             onPress={() =>
                               confirm("Remove provider instance?", () =>
-                                removeInstance(instance.name, instance.endpointFingerprint),
+                                model.remove(instance.name, instance.endpointFingerprint),
                               )
                             }
                           >

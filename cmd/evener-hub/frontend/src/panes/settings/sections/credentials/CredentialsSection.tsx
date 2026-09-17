@@ -27,14 +27,12 @@ import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
-  ErrorInstanceRemovePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
   groupByProvider,
   isEndpointConflict,
   safeCredentialTestResult,
-  WireError,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
@@ -71,16 +69,6 @@ const CLASS = {
   diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
 };
-
-// isInstanceRemovePersisted reads the hub's own discriminator for a removal that
-// stood in the config but could not finish
-// (appwire.ErrorInstanceRemovePersisted, exported by the AppWire package so every
-// client reads the one value its ErrorData carries, and bound to the Go constant
-// by that package's errors.test.ts). A refusal or any other failure carries no
-// such info, so it stays a plain failure and is never reported as a removal.
-function isInstanceRemovePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
-}
 
 type OpenEditor =
   | { kind: "add" }
@@ -438,30 +426,6 @@ export function CredentialsSection({
         // the listing that lands next has to capture it again, so the dialog
         // closes rather than carrying a stale assertion into the retry.
         setPendingConfirm(null);
-        return;
-      }
-      // A removal that stood in the config but could not finish comes back as an
-      // error carrying the hub's own discriminator for exactly that
-      // (isInstanceRemovePersisted): report the standing removal - close the
-      // dialog and the sheet, tell the guided owner, and surface the hub's
-      // message (it says what was left unfinished, and what to do about it) as
-      // a warning rather than a plain failure. Nothing else is inferred from
-      // the listing: a refusal is not a removal, and the listing cannot tell
-      // the two apart for a UI-credentialed instance with no authored entry.
-      if (kind === "remove" && isInstanceRemovePersisted(err)) {
-        setPendingConfirm(null);
-        setSelectedInstance(null);
-        // The RPC threw, so applyMutation installed nothing and the store still
-        // holds the listing it read before the removal - the removed row would
-        // stay on screen until an unrelated refetch. The removal is already
-        // established by the hub's discriminator, so this is not a confirmation
-        // gate: land the post-removal listing (the same reconciliation the
-        // confirmed clear/clear-stored-key paths do) before reporting, so the
-        // guided owner reacts to a listing that lost the row. A lost read is the
-        // connection banner's to report, not this removal's.
-        await refreshListingAfterMutation();
-        onInstanceRemoved?.(name);
-        toast.push("warning", friendlyErrorMessage(err));
         return;
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";

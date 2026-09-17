@@ -1482,31 +1482,6 @@ describe("the form", () => {
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
   });
 
-  // A rename that also clears the API-key environment field carries
-  // clearApiKeyEnv, which stands for the same entry field apiKeyEnv a value
-  // edit would name. If changedFields does not map it there, the comparison
-  // treats apiKeyEnv as an untouched identity field, the cleared value in the
-  // store's listing fails to match, and this save's own rename is rejected as
-  // someone else's listing change - a stale-save warning for a write that
-  // landed.
-  test("a superseded rename that also clears the API-key environment field is confirmed by the store's own listing", async () => {
-    const { fake, finish } = deferredEdit();
-    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
-    const user = userEvent.setup();
-    await user.type(field("Name"), "2");
-    await user.clear(field("API key environment variable"));
-    await user.click(saveButton());
-    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2", clearApiKeyEnv: true });
-
-    const renamed = { ...WORK, name: "work2", apiKeyEnv: "" };
-    await refreshList(fake, [renamed]);
-    await act(async () => finish({ instances: [renamed], availableProviders: [OPENAI] }));
-
-    expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
-    expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
-    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
-  });
-
   // A rename that also edits an endpoint-affecting field necessarily changes
   // the listing's endpointFingerprint: the digest is derived from the resolved
   // endpoint, which baseUrl/vars/protocol/surface are exactly what it resolves

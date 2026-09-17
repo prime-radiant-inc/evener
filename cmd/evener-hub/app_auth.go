@@ -36,12 +36,8 @@ type hubAuthController struct {
 	loadAuth          func(string, string) (authopenai.AuthRecord, error)
 	saveAuth          func(string, string, authopenai.AuthRecord) error
 	deleteAuth        func(string, string) (bool, error)
-	// deleteAside removes one of the paths a removal moved an OAuth record aside
-	// to (see hubInstancesController.setAsideOAuthFile). A seam like deleteAuth,
-	// so the fault that leaves a copy on disk is reachable from a test.
-	deleteAside     func(string) error
-	setCredential   func(string, string) error
-	clearCredential func(string) error
+	setCredential     func(string, string) error
+	clearCredential   func(string) error
 	// reg is the live registry every auth answer is derived from: which
 	// instances exist, how each authenticates, and which credential source
 	// resolved for it. Credentials and OAuth state are keyed by instance
@@ -147,7 +143,6 @@ func newHubAuthController(launchEnv ...map[string]string) *hubAuthController {
 		loadAuth:             authopenai.LoadAuth,
 		saveAuth:             authopenai.SaveAuth,
 		deleteAuth:           authopenai.DeleteAuth,
-		deleteAside:          os.Remove,
 		flows:                map[string]hubAuthFlow{},
 		deviceFlows:          map[string]deviceFlow{},
 		credentialTestLoader: loadCredentialTestClient,
@@ -192,7 +187,6 @@ func newHubAuthControllerWithStore(stateRoot string, store *credentials.Store) *
 		loadAuth:             authopenai.LoadAuth,
 		saveAuth:             authopenai.SaveAuth,
 		deleteAuth:           authopenai.DeleteAuth,
-		deleteAside:          os.Remove,
 		flows:                map[string]hubAuthFlow{},
 		deviceFlows:          map[string]deviceFlow{},
 		credentialTestLoader: loadCredentialTestClient,
