@@ -158,22 +158,43 @@ export function blurHumanNote(ref: string, owner: symbol): void {
       if (!active?.dirty || active.focusOwners.size || active.generation !== current.generation) return;
       if (current.submitted?.generation === current.generation && current.submitted.state === "blockedUnknown") {
         const blockedId = current.submitted.id;
-        if (await retryBlockedMutation(blockedId, "backgroundNote")) return;
-        // `false` is every way the retry can decline: this tab fenced by a Stop,
-        // a closed write gate, a stalled reconciliation, or the row simply no
-        // longer being blocked here. Only the last leaves this draft with
-        // nothing left to settle it, so that is the one question asked - of
-        // this ref's own records (readMutationPersistence), never a queue-wide
-        // freshen, and never a resave: the row's absence is not a canonical
-        // acknowledgement, so the dirty note stays exactly where it is and only
-        // its status changes.
+        await retryBlockedMutation(blockedId, "backgroundNote");
+        // The retry's boolean is not the settlement authority: `true` only
+        // means the row no longer reads blocked to THIS tab's final lookup,
+        // which also covers another connection settling or restoring the row
+        // mid-retry on the shared outbox - a change this tab is never notified
+        // about. `false` is every way the retry can decline: this tab fenced
+        // by a Stop, a closed write gate, a stalled reconciliation, or the row
+        // simply no longer being blocked here. Either way the question left is
+        // what this ref's own records say now, asked of them directly
+        // (readMutationPersistence), never a queue-wide freshen, and never a
+        // resave.
         const { outbox, recovery } = await readMutationPersistence(ref);
-        if ([...outbox, ...recovery].some((record) => record.clientMutationId === blockedId)) return;
+        const refused = recovery.find((record) => record.clientMutationId === blockedId);
+        const record = refused ?? outbox.find((record) => record.clientMutationId === blockedId);
         const latest = get(ref);
         // The same generation AND the same submitted identity: a newer edit, or
         // an acknowledgement that landed while the read ran, owns the status now.
-        if (!latest || latest.generation !== current.generation || latest.submitted?.id !== blockedId) return;
-        put(ref, { ...latest, error: SETTLED_ELSEWHERE_STATUS });
+        const submitted = latest?.submitted;
+        if (!latest || latest.generation !== current.generation || !submitted || submitted.id !== blockedId) return;
+        if (!record) {
+          // The row's absence is not a canonical acknowledgement, so the dirty
+          // note stays exactly where it is and only its status changes.
+          put(ref, { ...latest, error: SETTLED_ELSEWHERE_STATUS });
+          return;
+        }
+        // Still blocked here: nothing settled, and the draft's blocked status
+        // is already the truth.
+        if (!refused && record.state === "blockedUnknown") return;
+        // Present in another state: the draft takes the row's actual state
+        // rather than the retry's boolean - the same mapping refreshPersistence
+        // applies on a persistence notification.
+        put(ref, {
+          ...latest,
+          submitted: { ...submitted, state: refused ? "rejected" : record.state },
+          error: refused ? (refused.recoveryReason ?? "Note could not be saved") : null,
+          saved: false,
+        });
         return;
       }
       // The daemon's ExpectedInstanceID check is the authority on session

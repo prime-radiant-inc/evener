@@ -363,6 +363,114 @@ test("a background save reports a settled-elsewhere blocked row instead of its s
   expect(await storage.listRecovery(ref)).toEqual([]);
 });
 
+// RoboRev finding (PR 1393 head d7d4c62, issue #1568 follow-up): the test
+// above settles the row BEFORE the retry, so retryBlockedMutation declines at
+// its initial lookup and the save asks persistence. When another connection
+// settles the row between the retry's initial and final lookups instead, the
+// final lookup computes `current?.state !== "blockedUnknown"` on an absent row
+// and reports true - and the background save must not take that true as
+// canonical settlement. The draft ends in the same settled-elsewhere status.
+test("a background save whose blocked row settles elsewhere mid-retry ends in the settled-elsewhere status", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  const blockedStatus = result.current?.error;
+  expect(blockedStatus).toBeTruthy();
+  // Another connection settles the row after the retry's initial lookup reads
+  // it as blocked and before its final lookup re-reads it.
+  const getOutbox = storage.getOutbox.bind(storage);
+  let settledMidRetry = false;
+  const spy = vi.spyOn(storage, "getOutbox").mockImplementation(async (clientMutationId) => {
+    const record = await getOutbox(clientMutationId);
+    if (!settledMidRetry && record?.state === "blockedUnknown") {
+      settledMidRetry = true;
+      await storage.settleApplied(clientMutationId);
+    }
+    return record;
+  });
+  onTestFinished(() => spy.mockRestore());
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(settledMidRetry).toBe(true);
+  expect(result.current?.error).not.toBe(blockedStatus);
+  expect(result.current?.error).toContain("no longer pending in this tab");
+  expect(result.current).toMatchObject({ text: "retained blocked note", dirty: true, saved: false });
+  expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
+});
+
+// The same mid-retry window with the row still present but no longer blocked:
+// another connection reconciled it back to submitting, so its resend belongs
+// to that connection's outbox lifecycle. The draft must take the row's actual
+// state - the stale blocked status is as wrong here as the absent row's was.
+test("a background save whose blocked row is restored elsewhere mid-retry takes the row's actual state", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note");
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // Another connection reconciles the row back to submitting after the
+  // retry's initial lookup and before its final one.
+  const getOutbox = storage.getOutbox.bind(storage);
+  let restoredMidRetry = false;
+  const spy = vi.spyOn(storage, "getOutbox").mockImplementation(async (clientMutationId) => {
+    const record = await getOutbox(clientMutationId);
+    if (!restoredMidRetry && record?.state === "blockedUnknown") {
+      restoredMidRetry = true;
+      await storage.restoreProvenAbsent(ref, new Set());
+    }
+    return record;
+  });
+  onTestFinished(() => spy.mockRestore());
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(restoredMidRetry).toBe(true);
+  expect((await storage.getOutbox(original.clientMutationId))?.state).toBe("submitting");
+  expect(result.current).toMatchObject({
+    text: "retained blocked note",
+    dirty: true,
+    saved: false,
+    error: null,
+    submitted: { id: original.clientMutationId, state: "submitting" },
+  });
+  expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
+});
+
 // A resumeRequired session presents as a live, idle thread with the
 // SharedNotes read capability retained (appwire.ThreadCapabilities.SharedNotes
 // is not zeroed by the recovery fence), so the status/capability pair alone
