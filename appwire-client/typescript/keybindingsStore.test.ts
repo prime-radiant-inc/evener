@@ -102,7 +102,7 @@ describe("two stores share nothing", () => {
 
     expect(draftsA.stored()).toMatchObject({ baseRevision: 3, writeUncertain: false });
     expect(draftsB.stored()).toBeNull();
-    expect(storeA.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(storeA.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
     expect(storeB.getState().draft).toBeNull();
   });
 });
@@ -258,7 +258,7 @@ describe("the checkpointed draft editor", () => {
     // not just removed. The replacement survives on disk, and the store
     // adopts it rather than reporting no draft.
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
   });
 
   // RoboRev round 21 Medium 1: settling an uncertain checkpoint used an
@@ -292,7 +292,7 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshOverrides();
     expect(store.getState().writeUncertain).toBe(false);
     expect(drafts.stored()).toEqual(replacement);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
   });
 
   // RoboRev round 22 High: settledWrite reclassified the repository (the
@@ -654,7 +654,7 @@ describe("the checkpointed draft editor", () => {
     // actually there now, which is readable.
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
   });
 
   test("a discard refuses and re-classifies when the READABLE record has been replaced", async () => {
@@ -665,7 +665,8 @@ describe("the checkpointed draft editor", () => {
       writeUncertain: false,
     });
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    // Classified at construction, before the ready generation begins.
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
 
     // Another store or app version replaces the SAME record with a valid,
     // newer checkpoint - under different storage bytes - between this
@@ -681,7 +682,7 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toEqual(newer);
     expect(store.getState().draftUnreadable).toBe(false);
     expect(store.getState().storageUnavailable).toBe(false);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
   });
 
   test("restore, edit, discard: the edited draft is gone on the first discard", async () => {
@@ -692,7 +693,8 @@ describe("the checkpointed draft editor", () => {
       writeUncertain: false,
     });
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    // Classified at construction, before the ready generation begins.
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
 
     // The user edits the restored draft: save() writes a NEW checkpoint. The
     // repository's tracked identity must move with it, or a discard right
@@ -700,12 +702,35 @@ describe("the checkpointed draft editor", () => {
     // just wrote.
     const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
     store.getState().editDraft(otherRules);
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules, generation: 1 });
 
     // One discard call removes the edited draft - not two.
     store.getState().discardDraft();
     expect(drafts.stored()).toBeNull();
     expect(store.getState().draft).toBeNull();
+  });
+
+  // RoboRev round 22 Medium 1 (#1726): staleDraft compared revision alone,
+  // but hub revision numbering restarts on a hub replacement, so a NEW
+  // generation reporting the SAME revision by coincidence let a stale draft
+  // (composed against a DIFFERENT hub session) read as current - the
+  // textually identical gap transcriptDisplayStore.ts's own staleDraft
+  // closed in round 21 Medium 4.
+  test("a draft is flagged stale across a generation change even when the new generation happens to report the same revision", async () => {
+    const store = await readyStore(clientServing(3));
+    store.getState().editDraft(rules);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    // The connection drops and reconnects (a different hub, or the same hub
+    // restarted) - a new generation begins, and its own numbering happens to
+    // confirm the identical revision this draft was composed against.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState().revision).toBe(3);
+    expect(store.getState().draftConflict).toBe(true);
   });
 
   test("a restored proposal is discardable while the hub read has failed", async () => {
@@ -845,6 +870,13 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
     after: { writeUncertain: boolean; stored: "intact" | null; hubError: boolean };
     /** Brings the store back to a confirmed state the way its host would. */
     settle: (store: KeybindingsStore) => Promise<void>;
+    /** Whether the draft reads as conflicting once settle has run (default:
+     * false). A settle that crosses a ready-generation boundary (fenced out
+     * by the generation ending, or by support dropping and returning, both
+     * of which begin a NEW generation) never trusts the draft's revision
+     * against it - the same rule a hub replacement's restart follows - even
+     * though the checkpoint itself settled cleanly. */
+    draftConflictAfterSettle?: boolean;
   }
 
   const refresh = async (store: KeybindingsStore) => {
@@ -860,6 +892,9 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
         store.beginReadyGeneration();
         await refresh(store);
       },
+      // beginReadyGeneration always bumps the generation: the draft settles
+      // under a DIFFERENT generation than the one it was composed under.
+      draftConflictAfterSettle: true,
     },
     {
       name: "fenced out by support dropping before the reply lands",
@@ -870,6 +905,10 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
         store.setSupport("supported");
         await vi.waitFor(() => expect(store.getState().loaded).toBe(true));
       },
+      // Flapping back to supported begins a new ready generation too (the
+      // epoch bump fences pre-flap work), so this crosses a generation
+      // boundary exactly as the scenario above does.
+      draftConflictAfterSettle: true,
     },
     {
       // The oracle's wedge: the draft drops the override, and a foreign binding
@@ -909,7 +948,15 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
 
   test.each(scenarios)(
     "$name",
-    async ({ rules = proposed, arrange, reply = payload(4, rules), rejects, after, settle }) => {
+    async ({
+      rules = proposed,
+      arrange,
+      reply = payload(4, rules),
+      rejects,
+      after,
+      settle,
+      draftConflictAfterSettle = false,
+    }) => {
       const registry = registryWithDefaults();
       const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
       const client = clientServing(3, [applied]);
@@ -937,7 +984,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
       expect(store.getState()).toMatchObject({
         saving: false,
         writeUncertain: false,
-        draftConflict: false,
+        draftConflict: draftConflictAfterSettle,
         loaded: true,
       });
       expect(() => store.getState().editDraft([])).not.toThrow();
