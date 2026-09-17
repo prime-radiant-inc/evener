@@ -24,8 +24,9 @@ function backend() {
 			values.delete(key);
 		},
 		deleteIf: (key, value) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
+			values.delete(key);
+			return true;
 		},
 	};
 	return { port, values };
