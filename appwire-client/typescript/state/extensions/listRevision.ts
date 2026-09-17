@@ -1,8 +1,7 @@
 // The fence every extensions store puts on a list that each response replaces
 // whole (a hub's marketplaces, its installed plugins, its global launch
-// layer). Four review rounds reshaped this predicate, each time because the
-// previous shape was a rule about one ordering rather than about all of them,
-// so it is written out here as a state machine and implemented from the table.
+// layer). It is written out as a state machine and implemented from the table,
+// because a rule about one ordering is not a rule about all of them.
 //
 // ONE INVARIANT
 //   The owner is the highest revision that is still live. Only the owner's
@@ -28,7 +27,11 @@
 //   held       | (unchanged)    | (cannot happen: one   | -> retracted      | -> fenced
 //              |                |  answer per request)  |                   |
 //   published  | (unchanged)    | -                     | -                 | -
-//   retracted  | (unchanged)    | dropped               | -                 | -
+//   retracted  | (unchanged)    | dropped (defensive:   | -                 | -
+//              |                |  a request that        |                   |
+//              |                |  retracted has already |                   |
+//              |                |  failed, so no caller  |                   |
+//              |                |  reaches this)         |                   |
 //   fenced     | (unchanged)    | dropped               | -                 | -
 //
 // Published, retracted and fenced are terminal: a revision in any of them is

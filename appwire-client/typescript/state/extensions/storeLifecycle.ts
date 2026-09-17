@@ -18,10 +18,9 @@
 //
 // CONNECTION IDENTITY
 //
-// Three review rounds asked the same question in three shapes - a replaced
-// connection's in-flight replies, its notifications, and what a reset does to
-// both - so the answer is written out here and the predicate implemented from
-// it.
+// A replaced connection's in-flight replies, its notifications, and what a
+// reset does to both are one question, so the answer is written out here and
+// the predicate implemented from it.
 //
 // Two different things are easy to conflate:
 //   - the SOURCE: the object frames arrive through, `notifications`, fixed for

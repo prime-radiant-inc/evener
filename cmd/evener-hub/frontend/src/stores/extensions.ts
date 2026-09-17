@@ -251,9 +251,8 @@ onHubConfigNotification((n) => {
 // host is never observed, so the spawn form keeps rendering the pre-change
 // list - and a plugin reconciled from that stale preview is sent as a
 // thread/start launchOverride the host no longer has. So the revision moves
-// for a remote host's update exactly as it does for the controller's own
-// (component 07b review, round three), which the plugins core moves from its
-// own subscription.
+// for a remote host's update exactly as it does for the controller's own, which
+// the plugins core moves from its own subscription.
 //
 // The core's list refetch is a different matter, and is why this is written
 // here rather than delivered to the core: evener/plugin/list reads THIS hub

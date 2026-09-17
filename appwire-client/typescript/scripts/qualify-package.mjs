@@ -505,8 +505,9 @@ Promise.all([
 });
 `,
     },
-    // The extensions state layer - the marketplaces store, with the plugins
-    // and directories stores to follow - published as one subpath for the same
+    // The extensions state layer - the marketplaces and installed-plugins
+    // stores, with the directories store to follow - published as one subpath
+    // for the same
     // reason state/navigation is: a layer both apps build their settings
     // surfaces on, not part of the client surface every consumer takes.
     "./state/extensions": {
