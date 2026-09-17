@@ -29,9 +29,15 @@ const CLASS = {
 // a fresh turn object on every streaming delta targeting a DIFFERENT item
 // must not re-render an already-settled warning row.
 export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) {
-  const title = item.warning?.title;
-  const hint = item.warning?.hint;
-  const message = item.text;
+  // Whitespace is not content: a title of spaces or a hint of newlines renders a
+  // row whose text reads as blank, so it counts as absent here — the same reading
+  // the phone's projector takes (mobile/src/conversation/project.ts's warning
+  // branch joins parts filtered on trimmed content).
+  const present = (value: string | undefined): string | undefined =>
+    value !== undefined && value.trim() !== "" ? value : undefined;
+  const title = present(item.warning?.title);
+  const hint = present(item.warning?.hint);
+  const message = present(item.text) ?? "";
   if (!title && !message && !hint) return null; // nothing to show
 
   return (
