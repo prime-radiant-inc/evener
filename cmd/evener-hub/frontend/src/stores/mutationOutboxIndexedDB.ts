@@ -245,7 +245,7 @@ export class MutationOutboxIndexedDB {
     return true;
   }
 
-  // retireConsumedQueueIntents's own storage half (mutationDispatcher.ts): an
+  // reconcileQueueSnapshot's own storage half (mutationDispatcher.ts): an
   // optimistic record of `method` for `targetRef` absent from the caller's
   // fresh, authoritative snapshot was consumed server-side, same rule
   // settleApplied's callers already use for a single known id - this scans
