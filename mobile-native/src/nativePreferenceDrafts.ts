@@ -114,7 +114,13 @@ export function retainingDraftStorage<Checkpoint>(
 	return {
 		createId: () => storage.createId(),
 		load: () => trackLoad(storage.load()),
-		save: (checkpoint) => storage.save(checkpoint),
+		save: (checkpoint) => {
+			storage.save(checkpoint);
+			// What was just written IS now the classified record: a discard
+			// right after an edit must name it, not the pre-edit bytes this
+			// write replaced.
+			trackLoad(checkpoint);
+		},
 		removeIf: (checkpoint) => storage.removeIf(checkpoint),
 		discardLastLoaded: () => {
 			// Nothing has been classified through this wrapper yet (a caller
