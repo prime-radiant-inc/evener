@@ -990,7 +990,25 @@ export function truncateItem(item: MobileTimelineItem, bound: BoundText): Mobile
 
 // Enforce the 500-item retained cap. Always retains the NEWEST items (end
 // of array) so the live tail is preserved for interactive scrolling.
+//
+// The projector always emits an attachment immediately after the row it
+// belongs to, so a source/attachment pair can only ever straddle the cut at
+// the front of the slice — an attachment kept while its source, one slot
+// earlier, was not. Dropping the source and leaving the attachment is worse
+// than dropping both: the orphan's lingering identity (timelineIdentities
+// exposes an attachment's source alongside its own) makes loadOlder treat a
+// genuine older-page copy of that source as an already-seen duplicate
+// (conversation.ts's F10 admission rule), permanently refusing to recover
+// it. Drop every leading attachment whose source did not survive the cut.
 export function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
   if (items.length <= RETAINED_ITEM_CAP) return items;
-  return items.slice(items.length - RETAINED_ITEM_CAP);
+  const sliced = items.slice(items.length - RETAINED_ITEM_CAP);
+  const keptIds = new Set(sliced.flatMap((item) => [...ownTimelineIdentities(item)]));
+  let orphaned = 0;
+  while (orphaned < sliced.length) {
+    const sourceId = attachmentSourceIdentity(sliced[orphaned]);
+    if (sourceId === null || keptIds.has(sourceId)) break;
+    orphaned++;
+  }
+  return orphaned === 0 ? sliced : sliced.slice(orphaned);
 }

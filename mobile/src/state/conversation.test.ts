@@ -3714,6 +3714,76 @@ describe("ConversationStore", () => {
       expect(store.getState().olderCursor).toBeNull();
     });
 
+    it("does not orphan an attachment at the cap boundary, and lets loadOlder recover its source", async () => {
+      // capItems slices by row count with no source/attachment awareness. A
+      // turn with exactly 501 rows — [source, attachment, 499 filler] — caps
+      // to the newest 500 by dropping the source at index 0 while keeping the
+      // attachment at index 1: an image row with no message beside it. Its
+      // lingering identity is not cosmetic — timelineIdentities exposes an
+      // attachment's source alongside its own, so the orphan makes loadOlder
+      // treat a genuine older-page copy of "src-1" as an already-seen
+      // duplicate (F10 above) and refuse to admit it, permanently — a person
+      // scrolling up can never recover the message the orphaned image
+      // belongs to.
+      const filler: ThreadItem[] = [];
+      for (let i = 0; i < 499; i++) filler.push(userMessageItem(`filler-${i}`, ""));
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                {
+                  type: "commandExecution",
+                  id: "src-1",
+                  toolName: "shell",
+                  status: "completed",
+                  output: "done",
+                  outputImages: [{ source: "s", url: "https://example.com/img.png" }],
+                } as ThreadItem,
+                ...filler,
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      const ids = rows(store).map((item) => item.id);
+      expect(ids.length).toBe(499);
+      // No orphaned attachment: either both rows survived the cap or
+      // neither did, never the attachment alone. There is now exactly one
+      // free slot before the cap (500) bites again.
+      expect(ids).not.toContain("src-1:attachments");
+      expect(ids).not.toContain("src-1");
+
+      // The older page holds a genuine copy of the evicted source (its
+      // attachment is a separate page in this fixture, so recovering the
+      // message fits the one free slot without the cap immediately
+      // re-trimming what this call admits — the cap is a real, separate
+      // mechanism this test does not fight; only dedup is under test).
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "src-1",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "done" },
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      const recovered = rows(store).map((item) => item.id);
+      expect(recovered).toContain("src-1");
+    });
+
     it("stops offering earlier items once the cap nulls the cursor", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
