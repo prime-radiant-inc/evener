@@ -24,7 +24,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { PLUGIN_MUTATION_BUSY, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
-import { catalogToBrowse } from "./marketplaceBrowserModel";
+import { catalogToBrowse, refusesMarketplaceWrite } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -74,6 +74,12 @@ export function MarketplaceBrowser({
   // occasionally time out outright, instead of refusing at once with copy
   // that says why.
   const [mutating, setMutating] = useState(false);
+  // Mirrors the mutating state above for dispatchMutation's own live check:
+  // a ref, because that check runs at the moment a write actually dispatches
+  // - after a confirmation Alert or inside the add-marketplace modal - which
+  // can land long after the render that set mutating, on a stale closure
+  // that never sees a later render's value.
+  const mutatingRef = useRef(false);
   // Any of the three marketplace actions plus the installed-plugin gate: what
   // every write-disabling site below shares.
   const busy = mutating || pluginBusy;
@@ -120,18 +126,35 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
+  // The one path every marketplace write (refresh, remove, add) dispatches
+  // through, mirroring how gate.run() is installs' own single live-checked
+  // guard: refuses, live at dispatch time, if this view's own write or the
+  // screen's plugin-install gate is already running - a fresh read, not a
+  // render-time snapshot, because the gap between a button press and the
+  // actual dispatch (a confirmation Alert, an open modal) can outlive the
+  // render that last checked busy. Resolves true if it ran.
+  async function dispatchMutation(run: () => Promise<void>): Promise<boolean> {
+    if (refusesMarketplaceWrite(mutatingRef.current, gate.isBusy())) return false;
+    mutatingRef.current = true;
+    setMutating(true);
+    try {
+      await run();
+      return true;
+    } finally {
+      mutatingRef.current = false;
+      setMutating(false);
+    }
+  }
   // A marketplace write is this view's own: it marks this view busy and ends
-  // with it.
+  // with it, and surfaces a refusal the same way install() below does.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
-    setMutating(true);
     try {
-      await action();
+      const ran = await dispatchMutation(action);
+      if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
     } catch {
       if (revision.current === version) setError(WRITE_FAILED);
-    } finally {
-      setMutating(false);
     }
   }
   // An install is the write that outlives this view, so it takes the screen's
@@ -153,11 +176,11 @@ export function MarketplaceBrowser({
     (item) => item.name === selected,
   );
   function refresh() {
-    if (!marketplace || busy) return;
+    if (!marketplace) return;
     void act(() => state.refreshMarketplace(marketplace.name));
   }
   function remove() {
-    if (!marketplace || busy) return;
+    if (!marketplace) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -167,15 +190,6 @@ export function MarketplaceBrowser({
         style: "destructive",
         onPress: () => {
           if (revision.current !== version) return;
-          // busy is this render's snapshot, captured when the button that
-          // opened this dialog was still enabled; the confirm tap can land
-          // much later, so an install started while the dialog was up needs
-          // a live read - the same reason the revision check above is a
-          // fresh comparison rather than a captured boolean.
-          if (gate.isBusy()) {
-            setError(PLUGIN_MUTATION_BUSY);
-            return;
-          }
           void act(() => state.removeMarketplace(name));
         },
       },
@@ -361,6 +375,7 @@ export function MarketplaceBrowser({
           hubName={hubName}
           onClose={() => setAdding(false)}
           onAdd={state.addMarketplace}
+          dispatch={dispatchMutation}
         />
       )}
     </>
@@ -372,10 +387,17 @@ function AddMarketplace({
   hubName,
   onClose,
   onAdd,
+  dispatch,
 }: {
   hubName: string;
   onClose(): void;
   onAdd(params: MarketplaceAddParams): Promise<void>;
+  // The same live-checked guard the parent's own refresh/remove dispatch
+  // through: an install that started while this modal was open (it takes no
+  // time of its own to open, unlike the remove confirm's Alert, but can stay
+  // open for as long as the user takes to fill in the form) must still
+  // refuse the add rather than run it beside the install.
+  dispatch(run: () => Promise<void>): Promise<boolean>;
   client: ConversationClientLike;
 }) {
   const colors = useColors();
@@ -397,15 +419,21 @@ function AddMarketplace({
     setError(null);
     const value = source.trim();
     try {
-      await onAdd({
-        name: name.trim(),
-        source:
-          kind === "github"
-            ? { kind, repo: value }
-            : kind === "directory"
-              ? { kind, path: value }
-              : { kind, url: value },
-      });
+      const ran = await dispatch(() =>
+        onAdd({
+          name: name.trim(),
+          source:
+            kind === "github"
+              ? { kind, repo: value }
+              : kind === "directory"
+                ? { kind, path: value }
+                : { kind, url: value },
+        }),
+      );
+      if (!ran) {
+        if (alive.current) setError(PLUGIN_MUTATION_BUSY);
+        return;
+      }
       if (alive.current) onClose();
     } catch {
       if (alive.current)

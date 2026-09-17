@@ -13,3 +13,14 @@ export function catalogToBrowse(
   if (!selected || browseCatalogs.has(selected)) return null;
   return marketplaces?.some((item) => item.name === selected) ? selected : null;
 }
+
+/** Whether a marketplace write (add, remove, refresh) should refuse to
+ * dispatch: this view's own write is already running, or the screen's
+ * plugin-install gate is. The caller reads both live at dispatch time
+ * (a ref for its own write, gate.isBusy() for the gate) rather than off a
+ * render-time snapshot, because the gap between a button press and the
+ * actual dispatch - a confirmation Alert, an open modal - can outlive the
+ * render that last checked it. */
+export function refusesMarketplaceWrite(mutating: boolean, gateBusy: boolean): boolean {
+  return mutating || gateBusy;
+}
