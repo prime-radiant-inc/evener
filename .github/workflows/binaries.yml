@@ -85,7 +85,7 @@ jobs:
       contents: write
     concurrency:
       group: snapshot-publish
-      cancel-in-progress: true
+      cancel-in-progress: false
     steps:
       # The steps below run git (tag/push) and gh (release view/create/upload)
       # against this repository, and both need a checkout: git refuses to run
