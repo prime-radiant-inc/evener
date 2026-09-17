@@ -594,35 +594,19 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         )
           throw new InvalidPatchResponseError("Hub returned malformed transcript display PATCH response");
         const canonical = { revision: revision as number, config: canonicalConfig };
-        applyHubDefault(layout, canonical);
-        const drafts = { ...transcriptDisplayStore.getState().drafts };
-        delete drafts[layout];
-        transcriptDisplayStore.setState({
-          drafts,
-          hubError: null,
-          hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
-        });
+        adoptCanonical(layout, canonical);
         return canonical;
       } catch (error) {
-        const applied = postApplyApplied(error, layout);
+        const applied = rejectionPayload(error, layout, "transcriptDisplayPostApply", "applied");
         if (applied !== undefined) {
           // The write landed on the hub (the error carries the canonical
           // applied state, and the broadcast reconciles every other client);
           // treat it as the successful save it is instead of a rejected one -
           // clearing the draft and leaving hubError untouched, not set.
-          if (patchTokens.get(layout) === token && isCurrentReady(client, generation)) {
-            applyHubDefault(layout, applied);
-            const drafts = { ...transcriptDisplayStore.getState().drafts };
-            delete drafts[layout];
-            transcriptDisplayStore.setState({
-              drafts,
-              hubError: null,
-              hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
-            });
-          }
+          if (patchTokens.get(layout) === token && isCurrentReady(client, generation)) adoptCanonical(layout, applied);
           return transcriptDisplayStore.getState().hub[layout] ?? applied;
         }
-        const canonical = conflictCurrent(error, layout);
+        const canonical = rejectionPayload(error, layout, "conflict", "current");
         if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
           if (canonical !== undefined) applyHubDefault(layout, canonical);
           return transcriptDisplayStore.getState().hub[layout] ?? canonical ?? confirmed;
@@ -653,25 +637,41 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
   }),
 );
 
-function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || error.code !== -32013 || typeof error.data !== "object" || error.data === null)
-    return undefined;
+/** Extracts the canonical value a rejection carries under `key` when the
+ * rejection is the `evenerErrorInfo` kind named for this layout: the
+ * conflict rejection's "current" (the server's state after a lost revision
+ * race) and the post-apply durable failure's "applied" (the hub's rename
+ * already published the patch and only a follow-up step failed, so the
+ * write must be treated as applied - not as a hubError that reverts the
+ * draft over a config already live on the hub). The discriminator is
+ * WireError's own evenerErrorInfo string, never the code - siblings share a
+ * code (appwire-client/typescript/errors.ts already parses it off
+ * error.data, so this reads that instead of error.data directly). */
+function rejectionPayload(
+  error: unknown,
+  layout: ViewportClass,
+  info: string,
+  key: string,
+): HubTranscriptDisplayDefault | undefined {
+  if (!(error instanceof WireError) || error.evenerErrorInfo !== info) return undefined;
   const data = error.data as Record<string, unknown>;
-  if (data.evenerErrorInfo !== "conflict" || data.layout !== layout) return undefined;
-  return fromWireDefault(data.current);
+  if (data.layout !== layout) return undefined;
+  return fromWireDefault(data[key]);
 }
 
-/** Extracts the canonical applied state a post-apply durable failure carries
- * (evenerErrorInfo "transcriptDisplayPostApply"): the hub's rename already
- * published the new revision and only a follow-up step failed, so the patch
- * must be treated as applied - not as a hubError that reverts the draft over
- * bindings already live on the hub. */
-function postApplyApplied(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
-  if (!(error instanceof WireError) || error.code !== -32603 || typeof error.data !== "object" || error.data === null)
-    return undefined;
-  const data = error.data as Record<string, unknown>;
-  if (data.evenerErrorInfo !== "transcriptDisplayPostApply" || data.layout !== layout) return undefined;
-  return fromWireDefault(data.applied);
+/** Applies a confirmed hub payload: adopts it as the canonical value, clears
+ * the layout's draft, and clears any hubError - the outcome of both a
+ * successful PATCH response and a post-apply durable failure whose error
+ * carries the same canonical state (see rejectionPayload above). */
+function adoptCanonical(layout: ViewportClass, value: HubTranscriptDisplayDefault): void {
+  applyHubDefault(layout, value);
+  const drafts = { ...transcriptDisplayStore.getState().drafts };
+  delete drafts[layout];
+  transcriptDisplayStore.setState({
+    drafts,
+    hubError: null,
+    hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
+  });
 }
 
 connectionStore.subscribe(onConnectionChange);
