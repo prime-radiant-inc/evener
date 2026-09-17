@@ -58,8 +58,10 @@ ci`s the frontend install whenever `package-lock.json` is newer than
 merge that changed `package-lock.json` but before an `npm ci`, it type-checks
 against a stale install and can report real-looking errors (missing types,
 unresolved modules) that are an artifact of the stale install, not of the
-code — `make test-web` never hits this because its preflight repairs the
-install first. Prefer `make test-web` to reproduce the gate by hand rather
+code. `make test-web` avoids that specific case — a real, non-symlinked
+`node_modules` left behind by a `package-lock.json` change — because its
+preflight repairs the install first; the symlinked-install case has its own
+caveat below. Prefer `make test-web` to reproduce the gate by hand rather
 than running `npm ci` yourself: an agent worktree's `node_modules` is often
 a symlink to a shared install other worktrees use, and `npm ci` deletes the
 existing `node_modules` before installing — through a symlink that deletes
