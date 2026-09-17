@@ -28,13 +28,29 @@ import {
   INSTALLED_PLUGINS_FAILED,
   MarketplaceBrowser,
 } from "./MarketplaceBrowser";
-import { createPluginMutationGate, PLUGIN_MUTATION_BUSY } from "./pluginMutationGate";
+import {
+  createPluginMutationGate,
+  PLUGIN_MUTATION_BUSY,
+  type PluginMutationGate,
+} from "./pluginMutationGate";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 export function PluginsScreen({
   route,
 }: NativeStackScreenProps<Routes, "Plugins">) {
+  // One plugin mutation at a time, across this list AND the browser: switching
+  // tabs unmounts whichever one started it, so the gate lives here, at the
+  // screen's own top level - above the early returns below, which unmount and
+  // remount the ready-only child on every connection transition. A gate held
+  // inside that child would be destroyed mid-mutation by the same transition
+  // a write outlives, and a reopened screen would permit a second write
+  // beside the first. It belongs to this screen rather than to the client - a
+  // mutation outlives the store it was issued on, so a gate rebuilt per
+  // client would let the next one start beside it - and is held the way the
+  // credential store is (credentialStore.ts), as committed state a discarded
+  // render cannot leave behind.
+  const [gate] = useState(createPluginMutationGate);
   const { activeProfile, client, state, retry } = useConnection();
   if (activeProfile?.id !== route.params.hubId)
     return (
@@ -52,6 +68,7 @@ export function PluginsScreen({
       key={activeProfile.id}
       client={client}
       hubName={activeProfile.name}
+      gate={gate}
     />
   );
 }
@@ -59,22 +76,16 @@ export function PluginsScreen({
 function Plugins({
   client,
   hubName,
+  gate,
 }: {
   client: ConversationClientLike;
   hubName: string;
+  gate: PluginMutationGate;
 }) {
   const colors = useColors();
   const model = useMemo(() => createPluginsStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const [panel, setPanel] = useState<"installed" | "browse">("installed");
-  // One plugin mutation at a time, across this list AND the browser: switching
-  // tabs unmounts whichever one started it, so the gate lives here, above
-  // both. It belongs to this screen rather than to the client - a mutation
-  // outlives the store it was issued on, so a gate rebuilt per client would
-  // let the next one start beside it - and is held the way the credential
-  // store is (credentialStore.ts), as committed state a discarded render
-  // cannot leave behind.
-  const [gate] = useState(createPluginMutationGate);
   const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<PluginRefParams | null>(null);

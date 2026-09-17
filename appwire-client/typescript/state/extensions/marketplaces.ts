@@ -150,9 +150,19 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     onFence: (set) => {
       generation += 1;
       listRevision.fence();
-      browses.retireInFlight();
-      // Nothing is coming to lower it.
-      set({ marketplacesLoading: false });
+      const fenced = browses.retireInFlight();
+      // A fenced browse's catalog entry is "loading" - nothing else was going
+      // to answer it - and left behind it reads as settled: browseMarketplace
+      // would see it, find no live registration to wait on (retireInFlight
+      // just forgot it), and resolve having sent nothing. Dropping the entry
+      // here, in the fence path, is the same rule reset() and dispose() apply
+      // to the list itself.
+      set((s) => {
+        if (!fenced.length) return { marketplacesLoading: false };
+        const browseCatalogs = new Map(s.browseCatalogs);
+        for (const name of fenced) browseCatalogs.delete(name);
+        return { marketplacesLoading: false, browseCatalogs };
+      });
     },
     wantsList: (s) => s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading,
   });
