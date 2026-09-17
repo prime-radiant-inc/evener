@@ -2094,6 +2094,38 @@ func TestConfirmedStopNoOpInvalidatesWaitingResumeRegistration(t *testing.T) {
 	})
 }
 
+// TestShutdownConfirmedStoppedRefreshesRoster pins the confirmed-stopped
+// shutdown fast path's parity with the force-stop shortcut: returning success
+// while cfg.Roster still advertises the session leaves the frontend's
+// live/stopped projection stale until the next watcher pass, so the fast path
+// must run the same refresh before returning.
+func TestShutdownConfirmedStoppedRefreshesRoster(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	refreshed := false
+	original := hubRosterRefresh
+	hubRosterRefresh = func(context.Context, *hubcore.Roster) error {
+		refreshed = true
+		return nil
+	}
+	defer func() { hubRosterRefresh = original }()
+	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks, Roster: hubcore.NewRoster(t.TempDir(), nil)}
+	if err := shutdownThreadTolerateExited(t.Context(), cfg, appsource.NewRegistry(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("confirmed-stopped shutdown no-op: %v", err)
+	}
+	if !refreshed {
+		t.Fatal("confirmed-stopped shutdown fast path returned success without refreshing the roster")
+	}
+}
+
 // TestForceStopResumeCleanupFailureIsUnavailable pins the force-stop boundary
 // classification: a retained child-cleanup failure from stop.Wait is a
 // retryable "cleanup remains unconfirmed" state and must reach the RPC layer as

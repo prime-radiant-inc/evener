@@ -65,6 +65,10 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil); err != nil {
 			return err
 		} else if stopped {
+			// Match the force-stop shortcut: report the stopped session only
+			// after the roster re-lists, so the live/stopped projection does
+			// not stay stale until the next watcher pass.
+			refreshAfterForceStop(ctx, cfg)
 			return nil
 		}
 	}
