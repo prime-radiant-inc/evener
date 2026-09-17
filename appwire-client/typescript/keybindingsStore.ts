@@ -762,9 +762,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // valid for a real generation, so the stamp happens HERE, before
     // staleness is judged for this same payload, and folds into this same
     // publish. A draft already stamped (an edit, or an earlier authoritative
-    // payload) is left alone.
+    // payload) is left alone. Guarded on a LIVE generation (round 24
+    // Medium 3, this store's twin of transcriptDisplayStore's own fix): no
+    // call site reaches here before beginReadyGeneration wires the
+    // notification listener and every write/read is fence-gated, but the
+    // guard keeps the same shape as the store that does have a pre-ready
+    // entry point (a relayed change), rather than relying on that being true
+    // forever.
     const draft =
-      state.draft !== null && state.draft.generation === null
+      state.draft !== null && state.draft.generation === null && fence.generation >= 0
         ? { ...state.draft, generation: fence.generation }
         : state.draft;
     setState({

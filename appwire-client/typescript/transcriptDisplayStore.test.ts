@@ -1047,6 +1047,38 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draftConflict).toBe(true);
   });
 
+  // RoboRev round 24 Medium 3: a relay landing before any ready generation
+  // ever began (fence.generation === -1, the host seeding this store from
+  // its own cache before it connects) stamped the draft generation: -1 -
+  // itself non-null, so never restamped - and the first REAL generation's
+  // own read at the identical revision then read as a mismatch: a spurious
+  // conflict for a draft that was never actually stale. The stamp must
+  // guard on a live generation, not merely "not yet stamped".
+  test("a relay before any generation began does not stamp a spurious -1, so the first real generation's read at the same revision is not flagged stale", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
+
+    // A relay lands before the store has ever had a ready generation.
+    store.getState().applyHubChange({ layout: "mobile", revision: 2, config: mobileConfig });
+
+    // The first REAL generation begins and its own read confirms the SAME
+    // revision this draft was already composed against.
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().draftConflict).toBe(false);
+  });
+
   test("the draft editor stays open while a read is in flight; the older reply is discarded", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: memoryDraftStorage<TranscriptDraftCheckpoint>().storage });

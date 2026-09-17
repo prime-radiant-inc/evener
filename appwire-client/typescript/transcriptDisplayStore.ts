@@ -591,8 +591,14 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // generation, so the stamp happens HERE, before staleness is judged for
     // this same payload, and folds into this same publish. A draft already
     // stamped (an edit, or an earlier authoritative payload) is left alone.
+    // Guarded on a LIVE generation (round 24 Medium 3): a relay can land
+    // here before any ready generation has ever begun (fence.generation
+    // -1 - a host seeding this store from its own cache before it
+    // connects), and stamping THAT would lock in -1 forever - itself
+    // non-null, so never restamped - making the first real generation's own
+    // read at the identical revision misread as a mismatch.
     const draft =
-      state.draft !== null && state.draft.generation === null
+      state.draft !== null && state.draft.generation === null && fence.generation >= 0
         ? { ...state.draft, generation: fence.generation }
         : state.draft;
     setState({
