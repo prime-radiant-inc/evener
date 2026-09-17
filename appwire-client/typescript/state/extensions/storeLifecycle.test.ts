@@ -122,6 +122,11 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
   answerList: (fake) => fake.on("evener/launch/getLayer", () => ({})),
   listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/launch/getLayer").length,
+  gateList: (fake) => {
+    const releases: (() => void)[] = [];
+    fake.on("evener/launch/getLayer", () => new Promise((resolve) => releases.push(() => resolve({}))) as never);
+    return releases;
+  },
   deferList: (fake) => {
     const release = deferRequest<LaunchConfigLayer>(fake, "evener/launch/getLayer");
     return () => release({});
