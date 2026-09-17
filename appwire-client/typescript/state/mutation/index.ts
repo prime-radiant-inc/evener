@@ -16,6 +16,7 @@ export type {
 } from "./outbox";
 export { MutationOutbox } from "./outbox";
 export type {
+  ClientIdentity,
   ClientIdentityStorage,
   MutationAttachmentRef,
   MutationIntent,
@@ -26,4 +27,6 @@ export type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
-export { isOwnMutationRecord, ownClientId, setMutationClientIdentityForTests } from "./records";
+export { createClientIdentity } from "./records";
+export type { SecureRandomSource } from "./secureUUID";
+export { createSecureUUID } from "./secureUUID";

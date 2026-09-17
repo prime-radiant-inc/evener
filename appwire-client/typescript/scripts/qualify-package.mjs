@@ -485,6 +485,8 @@ const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: 
 const outboxState: MutationOutboxState = outboxRecord.state;
 const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
 const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+const identity: ClientIdentity = createClientIdentity(storage);
+const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
 const outboxStorage: MutationOutboxStorage = {
   enqueueIntent: () => Promise.resolve(outboxRecord),
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
@@ -504,28 +506,34 @@ const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: 
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void outbox; void reason;`,
-      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+void identity; void secureRandomSource; void outbox; void reason;`,
+      cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
+const identity: client.ClientIdentity = client.createClientIdentity(storage); void identity;
+const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
 const channel: client.MutationOutboxChannel = {
   postMessage: () => undefined,
   close: () => undefined,
   addEventListener: () => undefined,
   removeEventListener: () => undefined,
 };
-void storage; void channel;`,
-      // ownClientId is memoized per process (one client, one identity), so
-      // setMutationClientIdentityForTests resets it before the probe: two
-      // reads against the same fake storage return the same identity, that
-      // identity is what makes a record isOwnMutationRecord, another client's
-      // is not, and an unattributed record stays claimable.
-      smoke: `client.setMutationClientIdentityForTests(undefined);
-const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
-const firstId = client.ownClientId(identityStorage);
-const secondId = client.ownClientId(identityStorage);
-assert.equal(firstId, secondId);
-assert.equal(client.isOwnMutationRecord({ originClientId: firstId }), true);
-assert.equal(client.isOwnMutationRecord({ originClientId: "someone-else" }), false);
-assert.equal(client.isOwnMutationRecord({}), true);
+void channel;`,
+      // createClientIdentity is a factory, not a module singleton: two
+      // instances over two storages get two identities, and one instance's
+      // identity is memoized across repeated calls. createSecureUUID is the
+      // same helper mutation ids use; a source with no randomUUID proves the
+      // getRandomValues fallback runs.
+      smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
+const identityA = client.createClientIdentity(identityStorage);
+const identityB = client.createClientIdentity({ getItem: () => null, setItem: () => undefined });
+const firstId = identityA.ownClientId();
+assert.equal(identityA.ownClientId(), firstId);
+assert.notEqual(identityB.ownClientId(), firstId);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
+assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
+assert.equal(identityA.isOwnMutationRecord({}), true);
+assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");
+const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array });
+assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 // The outbox over a memory storage port: no channel, no lifecycle target and
 // no timer, which is exactly what a host without them passes. One enqueue
 // commits through the port and announces the ref it landed under, and stop()
