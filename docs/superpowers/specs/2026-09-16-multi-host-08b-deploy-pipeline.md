@@ -169,11 +169,25 @@ quarantined file can no longer prove — per-host fencing quarantines, open
 `orphan-unverified` records with their persisted boundaries, and per-name
 ownership (generation high-water marks plus incarnation ids) — into a
 quarantine-custody file beside the store (same atomic temp-plus-rename-plus-fsync
-write, mode `0600`, never inside the replaceable store file). The replacement
+write, mode `0600`, never inside the replaceable store file). The custody file
+schema is `{quarantineEpoch: number, quarantinedFile: string,
+custodiedAt: string (RFC3339), fences: {host: string, quarantine: bool,
+boundary: BoundaryEntry[]}[], ownership: {host: string, highWaterMark: number,
+incarnationId: string}[]}` — one fence entry per fenced host carrying the
+quarantined record's persisted boundary verbatim (element type in the
+crash-fencing spec §9), one ownership entry per name the corrupt file
+yielded. Every custody fence is resolvable: boot imports each fence entry as
+an `orphan-unverified` record in the replacement store (same id scope as
+§4 records, carrying the custodial boundary), so `orphan-resolve`
+(crash-fencing spec §§4–5) and the `operations` detail filter address it
+by record id like any other unverified record. When the corrupt file cannot
+yield a complete custody snapshot — unparseable fences, a boundary that fails
+schema validation, or ownership missing for a fenced name — boot fails startup
+rather than serving hosts past an unprovable fence. The replacement
 store opens at epoch + 1 with reset row IDs and `compactSeq` from zero, and
 every name the custody file names stays closed — no new lifecycle or mutation
 call past admission — until the operator resolves its quarantined state
-explicitly through `orphan-resolve` (crash-fencing spec §§4–5), which verifies
+explicitly through `orphan-resolve`, which verifies
 the custodial boundary before clearing. The store starts otherwise empty with
 zero outstanding tokens plus an operator-visible health signal naming the
 quarantined file. The quarantine advances the durable `quarantineEpoch` by exactly one,
@@ -251,7 +265,8 @@ surviving mirror as the high-water mark. The discarded generation is preserved a
 name's high-water mark in the same atomic sidecar write that performs the rollback, so
 no later mutation reuses it. Boot asserts the discarded generation owns no
 `OperationRecord` and backs no dedup key; any record or dedup entry naming it is a hard
-startup error, never a silent drop. Cursors are opaque client-held wire values, so boot
+startup error, never a silent drop. This section owns the mirrored-generation
+boot rule; the registry spec cites it and states no independent maximum. Cursors are opaque client-held wire values, so boot
 asserts nothing about cursor-pinned boundaries; a stale cursor is caught when presented
 (§8). Records reach the store only through the atomic consume-and-create write, so no
 crash window can consume a token without leaving a recoverable record.
@@ -822,10 +837,9 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 
 - Handler tests per method: validation, admission, classification including
   `plan`-as-mutation, and remote-origin rejection for `plan`/`deploy`/
-  `restart`/`operations`/`running` plus `orphan-resolve` (the fencing mutation's
-  guard-before-admission ordering is asserted here alongside the other
-  pipeline-surface rejections; the fencing spec owns only the resolve
-  behavior — guard-before-admission outranks dedup-first; the
+  `restart`/`operations`/`running` (the fencing mutation's
+  guard-before-admission ordering is asserted in the fencing spec where
+  `orphan-resolve` registers — guard-before-admission outranks dedup-first; the
   before-dedup and before-token-validation orderings are asserted where they ship).
 - The token matrix: missing, mismatched, expired, superseded, consumed-then-replayed
   with a new operation ID (pins to `token-missing`: consume deletes the row — §6 step
@@ -911,7 +925,11 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   tombstone-derived `host-removed` pass (a crash between a remove's sidecar commit
   and its live mark still never-matches at boot).
 - The corrupt operation-store boot quarantine (store quarantined aside; boot serves
-  empty with zero outstanding tokens plus the operator-visible health signal).
+  empty with zero outstanding tokens plus the operator-visible health signal;
+  custody-file schema pinned field-for-field; every custody fence imported as an
+  `orphan-unverified` record resolvable through `orphan-resolve`; truncated and
+  corrupt stores covered end-to-end — including the fail-startup posture when
+  custody is incomplete).
 - The cross-file intent (a crash between the sidecar commit and the store sync
   converges to the committed sidecar's view in both directions; the store purge lands
   only after swap success; swap-failure compensation re-inserts exactly the purged
@@ -948,7 +966,14 @@ the fencing spec. This spec's tests pin only their seams: the `remnant-open` fen
 before any probe or acquisition, the `orphanBoundary` wire presence rule (§10), and
 the `orphan-unverified` state surviving the interrupted transition.
 
-## 13. Acceptance criteria
+## 13. UI (Hosts settings section) and acceptance criteria
+
+This spec owns the Hosts settings section files (`panes/settings/sections/hosts/*`
+plus the settings section-map registration), the host-manager store, the
+`operations` polling, and the deploy confirmation — they land in the pipeline
+PR with the regenerated client they consume (registry spec §2). The section
+contract (rows, dialogs, Connect state machine, confirmation sourcing, stores)
+is stated in the registry spec §13 and cited here, never restated.
 
 1. Deploy from the UI: the confirmation renders the controller-minted plan
    (controller revision plus resolved remote target path) and cannot proceed without

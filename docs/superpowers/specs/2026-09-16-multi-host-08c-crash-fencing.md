@@ -1,4 +1,3 @@
-Protocol shapes: the `fencing-failure`, `fencing-helper-absent`, `fencing-helper-untrusted`, and `orphan-fenced-busy` catalog entries with their data shapes; the `orphanBoundary` per-member array (the `kind` discriminator on every entry, the local-linux arm's `pid`/`startTime` fields, the `local-markerless` and `remote-fencing` variants with per-entry `ownership`, the empty and absent cases, and a multi-member case); the `orphan-unverified` state. Remote-origin rejection for `orphan-resolve` is asserted in the deploy-pipeline spec §12 alongside the other pipeline-surface rejections.
 # Component spec 08c — Crash fencing (orphans, epochs, quarantine, helper, boot reaping)
 
 Status: not started. This spec is the hand-off for the implementing session.
@@ -157,7 +156,7 @@ A `teardown-retry` executing a boot-recovered remnant additionally runs as a fen
 
 Seam (b) — what quarantine blocks. While the quarantine marker is open for a host, that host admits no new lifecycle or mutation call past admission: `plan`, `deploy`, `restart`, `add`/`update`/`remove` for that name, `teardown-retry`, `attach`, and `Ensure`-triggered work all refuse with the typed fencing-failure form naming the quarantined host. The fence scopes to that host's name only. Only the read-only calls (`list`, `status`, `operations`, `running`) and the `orphan-resolve` way out bypass it. The single way out is the operator confirming the old remote command dead out-of-band and resolving through the authenticated `evener/host/orphan-resolve` mutation, which verifies the persisted remote boundary before clearing the marker in the same atomic write.
 
-The orphan-unverified fence scopes the same way with a different refusal. While any `orphan-unverified` record is open for a host, that host admits no new lifecycle or mutation call past admission: `plan`, `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`, `attach`, and `Ensure`-triggered work all refuse with the transient busy form, scoped to that host's name only. An `add` for a different name proceeds; one host's orphan never blocks operations on unrelated hosts. Local reaping stays incomplete until the boundary is verified. Only the read-only calls (`list`, `status`, `operations`, `running`) and the `orphan-resolve` way out itself bypass the persistent orphan fence.
+The orphan-unverified fence scopes the same way with a different refusal. While any `orphan-unverified` record is open for a host, that host admits no new lifecycle or mutation call past admission: `plan`, `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`, `attach`, and `Ensure`-triggered work all refuse with the transient busy form, scoped to that host's name only — except a record carrying the fencing-quarantine marker, which refuses with the quarantine `fencing-failure` form instead (precedence: quarantine refusal wins wherever the marker is present; transient busy is reserved for local-reap records with no quarantine marker). An `add` for a different name proceeds; one host's orphan never blocks operations on unrelated hosts. Local reaping stays incomplete until the boundary is verified. Only the read-only calls (`list`, `status`, `operations`, `running`) and the `orphan-resolve` way out itself bypass the persistent orphan fence.
 
 The fence's refusal on `teardown-retry` carries a distinct discriminator: typed `orphan-fenced-busy` naming the blocking `orphan-unverified` record id plus the `orphan-resolve` next step, never the generic transient busy form. Every other fenced call keeps the generic transient busy form. The deploy/plan UI's `remnant-open` teardown-retry affordance therefore degrades to an orphan-must-resolve-first affordance instead of directing the operator to a repair call the fence silently refuses.
 
@@ -189,13 +188,18 @@ Orphan ownership: Linux reaps through the cgroup boundary plus the launcher-obse
 
 Quarantine: fencing kill/wait run under bounded contexts. Kill/wait timeout produces the terminal fencing-failure outcome plus a durable per-host quarantine carrying the timed-out epoch's persisted remote boundary on an `orphan-unverified`-class record. The host admits no new mutation until the operator resolves through `orphan-resolve` (which verifies the persisted boundary before clearing). The next `deploy`/`restart` past the cleared marker converges the fencing with its kill/wait plus guard advance. The host is never stuck and never operable-but-unfenced.
 
+Guard-before-admission ordering: `orphan-resolve` refuses honestly-marked
+peer-forwarded requests before admission — before dedup and before any record
+lookup — pinned by ordering tests on the fencing surface (moved from the
+pipeline spec, where the handler does not yet exist).
+
 Store-quarantine custody: a corrupt operation store quarantines with its fences
 and boundaries persisted outside the replaceable file — the quarantine-custody
 file defined in the deploy-pipeline spec §4 — and every name the custody file
 names stays closed until its quarantined state resolves explicitly through
 `orphan-resolve`. This section cites that custody rule and never restates it.
 
-Protocol shapes: the `fencing-failure`, `fencing-helper-absent`, `fencing-helper-untrusted`, and `orphan-fenced-busy` catalog entries with their data shapes; the `orphanBoundary` per-member array (the `kind` discriminator on every entry, the local-linux arm's `pid`/`startTime` fields, the `local-markerless` and `remote-fencing` variants with per-entry `ownership`, the empty and absent cases, and a multi-member case); the `orphan-unverified` state. Remote-origin rejection for `orphan-resolve` is asserted alongside the other pipeline-surface rejections.
+Protocol shapes: the `fencing-failure`, `fencing-helper-absent`, `fencing-helper-untrusted`, and `orphan-fenced-busy` catalog entries with their data shapes; the `orphanBoundary` per-member array (the `kind` discriminator on every entry, the local-linux arm's `pid`/`startTime` fields, the `local-markerless` and `remote-fencing` variants with per-entry `ownership`, the empty and absent cases, and a multi-member case); the `orphan-unverified` state. Remote-origin rejection for `orphan-resolve` is asserted here — guard-before-admission ordering (before dedup, before any admission) on the fencing surface — since the handler, catalog entry, and client land in this spec's PR.
 
 ## 11. Acceptance criteria
 

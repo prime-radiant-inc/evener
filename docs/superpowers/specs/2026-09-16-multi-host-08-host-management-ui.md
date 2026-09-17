@@ -103,7 +103,7 @@ renders, a staged-but-unpersisted change) is never an intent.
 **High-water mark.** The greatest generation a name ever carried, surviving
 removals, persisted in the sidecar alongside the tombstone (§15). Re-add
 mints strictly above it. The operation store mirrors it (deploy-pipeline
-spec §4); boot takes the maximum of both.
+spec §4), which owns the mirrored-generation rule: on a store-newer/sidecar-older split with no matching commit marker boot rolls back to the sidecar mark and keeps the discarded value only as the high-water mark (deploy-pipeline spec §4). This document states no independent maximum rule.
 
 ## 2. PR sequence
 
@@ -111,12 +111,12 @@ This table is the only place the three-document split is defined.
 
 | Method / artifact | Registry (this doc) | Pipeline (08b) | Fencing (08c) |
 |---|---|---|---|
-| `evener/host/list` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/list` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes | — |
 | `evener/host/add` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
 | `evener/host/update` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
 | `evener/host/remove` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
 | `evener/host/teardown-retry` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
-| `evener/host/status` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | consumes (refusal snapshots) |
+| `evener/host/status` handler + catalog + regenerated client | ships (handler + catalog + client) | consumes | consumes (refusal snapshots) |
 | `evener/host/plan` + token mint | — | ships (handler + catalog + client) | consumes |
 | `evener/host/deploy` | — | ships (handler + catalog + client) | consumes |
 | `evener/host/restart` | — | ships (handler + catalog + client) | consumes |
@@ -127,11 +127,11 @@ This table is the only place the three-document split is defined.
 | Sidecar, staged commit, receipts, remnants, tombstones, generations | ships | mirrors generations in store | — |
 | Operation-store skeleton `remove` depends on (`host-removed` mark path, outstanding-token-row purge path, atomic writes, no pipeline behavior behind them) | ships as store-owned helpers | full store (records, dedup, tokens, reconciliation) | — |
 | Union-registration generator work (`internal/appwirets/emit.go`) | — | ships | — |
-| Origin guard pre-admission hook at request ingress | ships (hook + non-union surface orderings only) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship | — |
+| Origin guard pre-admission hook at request ingress | ships (hook + registry-surface orderings: `list`/`status` here; union-surface orderings in the pipeline PR where those handlers ship) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship | — |
 | Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc registers no handler and ships no catalog entry and no regenerated client for a union-shaped response) | ships | — |
 | Non-union registry helpers | register immediately | — | — |
-| Hosts settings section, dialogs, stores, polling, deploy confirmation | ships behind the pipeline client (section lands with the pipeline PR's regenerated client) | ships the client it consumes | consumes (resolve affordance) |
-| Registry tests (§16) | ships | — | — |
+| Hosts settings section, dialogs, stores, polling, deploy confirmation | — (lands with the pipeline PR's regenerated client) | ships (section + dialogs + stores + polling + UI acceptance) | consumes (resolve affordance) |
+| Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests ship in the pipeline PR where those handlers register) | — | — |
 | Pipeline tests (§16 of the pipeline spec) | — | ships | — |
 | Fencing tests (§10 of the fencing spec) | — | — | ships |
 
@@ -150,7 +150,8 @@ PR's generator work. No undocumented provisional types ship in any PR.
 Scope: the six controller-side methods besides `attach` — `evener/host/list`,
 `add`, `update`, `remove`, `status`, and the `evener/host/teardown-retry`
 repair mutation — plus durable persistence of host entries with hot-apply,
-the Hosts settings section (§13), and the catalog/client/registration work
+the Hosts settings contract (§13; files land in the pipeline PR per the §2
+table), and the catalog/client/registration work
 per the §2 table. `evener/host/plan`, `deploy`, `restart`, `operations`,
 the local `evener/host/running` probe handler, and the controller-side
 operation store are defined in the deploy-pipeline spec. The
@@ -207,8 +208,11 @@ markerless request is local-originated by construction and takes the full
 admission path. The reads (`list`/`status`/`operations`/`running`) are guarded
 equally because they disclose the controller's topology and operation state.
 (`attach`'s guard routing ships and is test-pinned with #1603; this document
-pins its six methods, the pipeline document its five, the fencing document
-its one — twelve new methods plus `attach` is thirteen.) The one direction-scoped exception is the
+pins the guard orderings for its two registered handlers (`list`/`status`) and
+states the behavior for the four union handlers whose orderings pin in the
+pipeline PR where they register, the pipeline document its five, the fencing document
+its one (with `orphan-resolve` orderings in the fencing spec where that handler
+registers) — twelve new methods plus `attach` is thirteen.) The one direction-scoped exception is the
 `evener/host/running` peer probe: a controller-originated request issued only
 through `sshManager.ChannelIfAttached(name)` over a live channel peered by the
 #1603 handshake, admitted on the remote only over that same attached session
@@ -238,11 +242,13 @@ preflight command executions over the manager's transport that never initialize
 a channel or touch a supervisor.
 ## 4. Host mutations: list, add, update, remove
 
-All four are hub-side handlers registered like every other hub method (the
-router-vs-catalog test pins registration), classified as mutations where they
-mutate, admission-gated like the hub's other settings mutations, origin-guarded
-per §3, with catalog entries and regenerated clients per the §2 table and the
-exact shapes in §11.
+`evener/host/list` and `evener/host/status` are hub-side handlers registered
+like every other hub method (the router-vs-catalog test pins registration);
+`add`/`update`/`remove` behavior ships here behind hand-written request/response
+types with their handlers registering in the pipeline PR. All four are
+classified as mutations where they mutate, admission-gated like the hub's other
+settings mutations, origin-guarded per §3, with catalog entries and regenerated
+clients per the §2 table and the exact shapes in §11.
 
 `evener/host/list` is a read: params `{}`; response `{hosts: HostRow[]}`. It
 never dials and never takes the mutation lock. Every configured host renders
@@ -279,8 +285,11 @@ content compare for names present in both:
 the re-read parses each still-present declared entry and compares its
 effective-entry content hash against the snapshot's persisted per-name
 fingerprint; a name whose content changed renders unavailable — its row omitted
-from `list`, its `status` a typed changed-entry refusal directing the caller to
-wait for the reconcile, never the old SSH/path config served as current), and
+from `list`, its `status` a typed changed-entry refusal (conflict class, discriminator
+`changed-entry`, data carrying the changed name; §11 pins the arm and §12
+the envelope pair, asserted by the protocol-shapes test) directing the caller
+to wait for the reconcile, never the old SSH/path config served as current),
+and
 the reconcile is scheduled asynchronously (debounced — at most one reconcile
 in flight, coalescing rapid successive edits). The async reconcile re-compares
 fingerprints on completion: a still-present mismatch reschedules another pass
@@ -382,7 +391,9 @@ live remote threads (host data on the remote is untouched). A lost-response
 `remove` retry landing after a re-add minted a new generation and carrying a
 fresh key refuses as stale instead of tearing down the new incarnation; a
 retry carrying the original key follows the superseded-receipt rule (§5) and
-returns the recorded `committed` receipt.
+returns the recorded `committed` receipt — the re-add purge retains that
+name's newest same-key superseded `remove` receipts (plus the purge-persisted
+pruned markers, §6) so the superseded arm stays satisfiable after the purge.
 
 `evener/host/attach` is unchanged by this component: it wraps the dialing
 closure, errors are classified through the #1603 attach classifier
@@ -685,7 +696,16 @@ sidecar duplicate in a follow-up atomic write under the same lock AND
 immediately rebuilds plus applies the merged runtime host set (registry,
 manager bindings, sources, controllers — the step-(3) swap with the re-read
 values, not a deferred pickup), so disk and live state agree before the
-mutation returns; other changes are picked up by the fingerprint-bound
+mutation returns; the runtime-apply half of that reconcile is a persisted
+sidecar phase on the reconcile marker (`reconcile-applied: false` at reconcile
+stage time, flipped true in the same atomic sidecar write that publishes the
+dropped-then-rebuilt set, before the receipt finalizes): a crash or
+runtime-apply error between the follow-up drop and the rebuild leaves the
+marker open, a lost-response retry re-runs the pending runtime-apply under the
+same marker before finalizing the `collision-dropped` receipt, and boot
+completes an open marker the same way it completes the drop (reconcile marker
+with a matching fingerprint finishes the rebuild, never the hard error); other
+changes are picked up by the fingerprint-bound
 invalidation at the next mutation or token validation. When the post-rename
 reconcile drops the just-committed sidecar entry as the colliding duplicate,
 the mutation's finalized receipt and response describe the authoritative
@@ -767,7 +787,11 @@ same atomic write, and lost-response retries past the TTL read as
 `teardown-unknown-key` not-found instead of `already-cleared`.
 
 Retention: receipts and remnants are per-host and per-generation — re-add
-purges that name's superseded-generation receipts and — only after that name's
+purges that name's superseded-generation receipts — except that name's newest
+same-key superseded `remove` receipts, which the purge retains so a
+lost-response `remove` retry after the re-add still returns its superseded
+receipt per §4 (a surviving pruned marker refuses `stale-entry` where no
+retained receipt survives) — and — only after that name's
 open remnants are resolved (remnant fence below) — its stale remnants are
 dropped in the same atomic write that mints the new generation, so the
 sections stay bounded by the live host set plus at most one superseded
@@ -837,8 +861,10 @@ remnant is open for a name, no path advances that name past the remnant's
 generation (the name stays tombstoned until the remnant resolves), and a
 boot-merge collision involving a remnant-gated name leaves the open remnant
 resumable by `remnantId`: the boot-collision above-mark bump is forbidden
-while a remnant is open for that name — boot keeps the live entry at the
-remnant's generation (no carve-out) until `teardown-retry` resolves it, so no
+while a remnant is open for that name — boot fails startup on a sidecar-held
+colliding live entry, or excludes a `hub.toml`-declared colliding entry from
+the live set as `blocked-pending-teardown` (never published live) until
+`teardown-retry` resolves it, so no
 live incarnation is ever created over an open remnant and no mutation strands
 a remnant by opening a second one for the same name.
 
@@ -940,8 +966,14 @@ while a typed failure never diverges from what a restart would apply. Within a
 live process, staging failures change nothing. The stash is deleted once the
 commit reaches either outcome; a stash left by a crash is ignored (safe to
 prune) at boot — EXCEPT a stash named by a live `pendingCompensation` record's
-stash reference (deploy-pipeline spec §9): that stash is the compensation's restore source, applied
-in phase order (sidecar first, rows second) before any prune.
+stash reference (deploy-pipeline spec §9) or by an open staged-receipt
+marker: that stash is the compensation's restore source, applied
+in phase order (sidecar first, rows second) before any prune. Boot reconciles
+both marker kinds before pruning any stash: a live compensation record or an
+open/unclaimed staged-receipt marker naming the stash preserves it, and only a
+stash named by neither — both the compensation record and the staged-receipt
+marker durably cleared — is prunable, so a registry-swap crash can never
+lose the rollback bytes an unfinished compensation still needs.
 
 Per-host lifecycle handles: every live host owns cancellable handles — its
 remote-source subscription, its host-admin fan-out (request forwarding plus
@@ -994,7 +1026,21 @@ remnant's recorded `(generation, incarnationId)` plus its persisted
 `cleanupHandle` — the live entry for the name may be absent (post-remove) or a
 newer incarnation (post-update) without blocking the retry — and refuses only
 when the remnant's own pinned target fails to resolve through its own handle
-(typed `teardown-unknown-key`), never because the registry moved on. It then
+(typed `teardown-unknown-key`), never because the registry moved on. An open remnant whose `cleanupHandle` cannot be resolved (backend reports the
+pinned target unresolvable) is recoverable only through the authenticated
+auditable `evener/host/teardown-recover` recovery mutation (params
+`{remnantId, attestation: {operator: string, statement: "teardown-verified-absent", observedAt: string (RFC3339)}}`;
+response the outcome union in §11 with `outcome: "recovered-cleared"` plus the
+cleared `remnantId`): the call verifies the operator attestation is present and
+well-formed, re-runs the safety checks (no live handle tagged with the
+remnant's `(generation, incarnationId)` pair exists, no supervisor or channel
+binding names the remnant's pinned target), and only then clears the remnant in
+one atomic sidecar write — recording the attestation (operator, statement,
+observedAt) on the original mutation receipt beside `remnantResolvedAt` — so
+the forced clearance is an explicit audited operator decision, never a silent
+drop. An attestation that fails validation or a safety check that still finds
+live state refuses without clearing, naming the blocking check.
+It then
 re-takes the mutation lock and clears the remnant in one atomic sidecar write
 — the same write records the remnant resolution on the original mutation
 receipt (outcome becomes `committed` with `remnantResolvedAt`) — and returns
@@ -1040,12 +1086,16 @@ updated on every successful preflight and every attach outcome. Pair-keying
 keeps removed-incarnation facts from surfacing under a re-added entry that
 reuses the generation. Every `plan` call publishes into it under the gate
 before returning — except the pre-acquisition no-token refusals
-(`unattached`, `refresh-failed`, `probe-failed`), which occur before any
+(`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
+`handler-absent`), which occur before any
 acquisition and publish gateless, never by acquiring the gate to do so
 (holding the gate across the SSH preflight refresh or the running channel
 probe reintroduces the slow-probe busy-refusal bug): a refusal publishes its
 `{terminal, message}` as the pair's plan-time refusal (a later success clears
-it), and every completed probe — success or authenticated failure — publishes
+it), and the `remnant-open` check runs before any gate acquisition — a
+remnant-fenced name refuses without ever try-acquiring the gate, so the remnant
+refusal takes precedence over a held-gate busy — and every completed probe
+— success or authenticated failure — publishes
 the probed running revision/health plus the probed `processStartTime` when
 carried (or their absence) as the pair's running-state snapshot, so `status`
 after a plan refusal renders the refusal and the probed state instead of stale
@@ -1063,12 +1113,12 @@ the new installed version once the operation reads `complete`.
 
 ## 11. Protocol types
 
-Every registry method gets its AppWire protocol catalog entry
-(`appwire/protocol.go`, `ScopeHub`) plus request/response structs
-(`appwire/types.go`) plus the regenerated TypeScript client — the hand-written
-structs in the same PR as the handlers, the public catalog registration plus
-the regenerated client in the pipeline PR with the union-registration generator
-work for the union-shaped methods (§14; non-union registry helpers register
+The registered `list`/`status` handlers get their AppWire protocol catalog
+entries (`appwire/protocol.go`, `ScopeHub`) plus request/response structs
+(`appwire/types.go`) plus the regenerated TypeScript client in the registry PR;
+the union-shaped methods get hand-written structs here with public catalog
+registration plus the regenerated client in the pipeline PR with the
+union-registration generator work (§14; non-union registry helpers register
 immediately).
 `evener/host/attach` keeps its shipped shapes (`HostAttachParams{host}`,
 `HostAttachResponse` identity fields) unchanged; every new type below follows
@@ -1271,6 +1321,18 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   live entry may be absent or newer without blocking it — and never acts
   against the live entry.
 
+- `evener/host/teardown-recover` (mutation): params `{remnantId: string,
+  attestation: {operator: string, statement: "teardown-verified-absent",
+  observedAt: string (RFC3339)}}`; response `{outcome: "recovered-cleared",
+  remnantId: string, clearedAt: string (RFC3339)}` plus the cleared name. The
+  attestation is validated before admission completes and the safety checks in
+  §6 run before the clearing write; any failure refuses without clearing,
+  naming the blocking check. The catalog pins the mutation classification plus
+  the request/response shapes field-for-field.
+- `evener/host/status` changed-entry refusal: conflict class, discriminator
+  `changed-entry`, data `{name: string}`. It fires exactly when the named
+  entry's on-disk content changed under the cached fingerprint (§4); the
+  response arm is otherwise the host's `HostRow` shape.
 - Mutation conflict: `conflicting-mutation-id` rides the same AppWire error
   envelope as `conflicting-operation-id` and is refused the same way.
 
@@ -1293,12 +1355,15 @@ swap compensates by restoring the prior sidecar bytes and reverting the
 runtime (both before the response), and the error carries which seam failed
 (registry / manager / source / admin controller / web view / persistence /
 decision-source validation). `evener/host/*` on an unknown host name: typed
-not-found.
+not-found. `changed-entry` and `teardown-unknown-key` ride the conflict class
+envelope with the `evenerErrorInfo` discriminator plus the data in §11; the
+protocol-shapes test asserts the code-plus-discriminator pair for each.
 
 ## 13. UI
 
-Hosts settings section (new `panes/settings/sections/hosts/*`, plus its
-registration in the settings section map): host rows with state chip (online /
+Hosts settings section (owned by the pipeline PR per the §2 table — section,
+dialog, store, and polling files plus the UI acceptance land there with the
+regenerated client; this section states the contract only): host rows with state chip (online /
 offline / connecting / removed-retained), installed version + controller
 version, OS/arch, origin marker, actions: Connect, Deploy, Restart, Edit,
 Remove (each with the confirm pattern used elsewhere in settings), and the Add
@@ -1371,25 +1436,31 @@ mutable module state.
   `ChannelIfAttached`/facts unchanged.
 - `cmd/evener-hub/config.go` — sidecar load/merge (hard-error duplicate rule)
   + atomic write.
-- `cmd/evener-hub/app_host_manage.go` (new) — the handlers, router
-  registration, mutation classification (`plan` is a mutation — it mints
+- `cmd/evener-hub/app_host_manage.go` (new) — the `list`/`status` handlers
+  with router registration, catalog entries, and regenerated client, plus the
+  `add`/`update`/`remove`/`teardown-retry` behavior behind hand-written
+  request/response types (their handlers register in the pipeline PR),
+  mutation classification (`plan` is a mutation — it mints
   durable state; `list`/`status`/`operations` are reads), guarded by the
   shared origin guard — landed by #1603 at the dial + dispatch seams,
   extended by the registry PR to the common request-ingress/router boundary as a
   pre-admission hook running before admission (§3) rather than wrapping
-  handlers one by one. The registry PR ships the hook plus the non-union
-  surface ordering tests; the union-returning handlers register in the
+  handlers one by one. The registry PR ships the hook plus the registry-surface
+  (`list`/`status`) ingress/origin-rejection/wiring tests; the union-returning
+  handlers register in the
   pipeline PR with the union catalog and regenerated client (§2), which
   asserts guard-before-admission on the pipeline surface plus the dedup/token
   orderings where they ship — explicitly NOT in
   `remoteHostAdminMethods` (negative assertion in the allow-list tests).
-- AppWire protocol catalog entries for every new method + request/response
+- AppWire protocol catalog entries for the registered methods + request/response
   types (hand-written Go request/response structs in the same PR as the
   handlers, so the backend contract is reviewable), with the shapes in §11
   (the wire contract field-for-field; the generated client through the
-  generator mapping named there) — but public AppWire catalog registration
-  plus the regenerated TypeScript client for the union-shaped methods land in
-  the pipeline PR with the union-registration generator work (§11), never in the registry PR: the registry
+  generator mapping named there) — `list`/`status` register with catalog
+  plus regenerated client in the registry PR, while public AppWire catalog
+  registration plus the regenerated TypeScript client for the union-shaped
+  methods land in the pipeline PR with the union-registration generator work
+  (§11), never in the registry PR: the registry
   ships no catalog entry and no regenerated client for a union-shaped
   response, so the "each handler ships with catalog + types + regenerated
   client" contract is satisfied per-PR-sequence — hand-written types in the registry PR,
@@ -1406,8 +1477,8 @@ mutable module state.
   with the live view seam (registry, manager, sources, web config, and the
   host-admin controller's host set/fan-outs); keep every existing
   `RemoteHost*` wiring.
-- Frontend: `settings/sections/hosts/*` + settings registration, host-manager
-  store, `operations` polling, notification subscription reuse. The spawn
+- Frontend: owned by the pipeline PR (section, dialogs, stores, polling per
+  the §2 table). The spawn
   picker is untouched (its Connect trigger ships with #1603).
 
 ## 15. Data flow (remove + tombstone)
@@ -1528,7 +1599,7 @@ remnant-escalation bound (a multiple of the cleared-marker TTL, default ships
 in the implementing PR) surfaces an operator-escalation signal on the remnant
 (`teardown-retry` responses and `list` tombstone rows carry the escalation
 age), and the operator resolves it out-of-band (manual teardown of the pinned
-target, then a forced clearance through the same `teardown-retry` path); the
+target, then a forced clearance through the authenticated `evener/host/teardown-recover` recovery mutation (§6); the
 gate still never auto-purges an open remnant — the bound escalates, never
 silently drops, so storage cannot pin forever without a visible operator
 action.
@@ -1555,10 +1626,13 @@ registry's current generation — survives restarts: an update-then-restart
 keeps outstanding tokens valid (the bumped generation is on disk), and no
 restart silently invalidates or re-validates anything. Store-side mirror: the
 per-name generation high-water mark is mirrored into the operation store
-itself (same atomic store writes as records), and boot takes the maximum of
-the sidecar mark and the store mirror as the name's restored generation — with
+itself (same atomic store writes as records). The mirrored-generation boot
+rule is owned by the deploy-pipeline spec §4 (marker-gated rollback: a store
+mirror newer than the sidecar mark with no matching commit marker rolls back
+to the sidecar mark, the discarded value kept only as the high-water mark) and
+is cited here, never restated — with
 the missing-sidecar preservation: a name with no sidecar mark contributes no
-mark to the maximum (the surviving mirror alone is the high-water mark),
+mark (the surviving mirror alone is the high-water mark),
 never a zero that drags it down — so deleting a corrupt sidecar and re-adding
 an identical host cannot restart its generation at 1 and adopt the old
 incarnation's records or tokens: the re-add mints above the mirrored
@@ -1571,9 +1645,14 @@ strictly above the tombstone's high-water mark before any historical
 receipts/remnants apply, so old `host-removed` records stay at or below the
 mark and live records stay unmarked — never a promotion of a pre-collision
 record into the current generation, never a block on valid operation-ID reuse
-— unless the colliding name holds an open teardown remnant, in which case the
-bump is forbidden and the live entry stays at the remnant's generation until
-`teardown-retry` resolves it (§6 — never a live incarnation over an open
+— unless the colliding name holds an open teardown remnant, in which case
+boot fails startup when the colliding live entry comes from the on-disk sidecar
+itself, or excludes the colliding declared entry from the live set (fenced
+`blocked-pending-teardown`, never published live, stale handles and tokens for
+the name observe nothing new) when it comes from a `hub.toml` declaration, and
+represents the declaration as blocked until `teardown-retry` resolves the open
+remnant; only then does the declaration mint a new generation and incarnation
+above the high-water mark (§6 — never a live incarnation over an open
 remnant). `hub.toml`-declared hosts carry a stable generation as long as their
 effective entry is unchanged — the sidecar persists each declared host's
 effective-entry fingerprint (content hash of the resolved entry) alongside the
@@ -1705,7 +1784,11 @@ Registry tests (all bullets in this section ship with the registry PR):
   over 500 rows / 1 MiB persists the newest-first projection with
   `rowsTruncated: true` on the tombstone and the `list` row (newest-first by
   row last-updated timestamp, never snapshot order), and the merge renders the
-  indicator — never the full set silently); re-add purges, clears the
+  indicator — never the full set silently); the global cap holds (churn over
+  distinct names converges newest-first by removal timestamp to the newest 64
+  tombstones / 16 MiB, remnant-gated tombstones never eviction candidates, and
+  a persist that fits only by evicting a remnant-gated tombstone refuses typed
+  `tombstone-capacity` naming the bound plus the blocking names); re-add purges, clears the
   name-keyed caches, and mints a new generation — publication from an obsolete
   generation is rejected; a refresh after remove re-merges the tombstone's
   retained rows (never drops them); boot prunes expired tombstones durably
@@ -1715,9 +1798,11 @@ Registry tests (all bullets in this section ship with the registry PR):
   immediately after the commit; a removed host is refused; validation reads
   the live set, never the startup snapshot), ingress-boundary ordering tests
   (a remote-originated request is refused before admission — proven by
-  ordering tests on the registry surface, not by handler wrapping; the
+  ordering tests on the registry surface (`list`/`status`, registered here),
+  not by handler wrapping; the
   before-dedup / before-token-validation orderings are asserted in the pipeline PR where
-  dedup and token validation ship — the tests present the cooperative bridge
+  dedup and token validation ship, as are the union-handler ingress/origin-rejection/wiring
+  tests for the handlers that register there — the tests present the cooperative bridge
   marker (the guard's only signal) and pin refusal of honestly-marked
   peer-forwarded requests, never spoof-resistance: a markerless request is
   local-originated by construction, §3), update-generation tests (update
@@ -1739,12 +1824,13 @@ Registry tests (all bullets in this section ship with the registry PR):
   uncommitted `add` retries while the row is still absent, `stale-entry` once
   an effective field changed; `update` takes no keyless path — missing either
   field is a validation refusal)), remote-origin rejection for
-  `list`/`add`/`update`/`remove`/`status` (the #1603 origin guard refuses
+  `list`/`status` (the #1603 origin guard refuses
   honestly-marked peer-forwarded requests before admission — the registry surface
-  only — including `teardown-retry`'s origin rejection alongside its registry
-  commit-point tests; `status` rejection is asserted here, never in the
+  only: `list`/`status` here, `add`/`update`/`remove`/`teardown-retry` origin
+  rejection alongside the pipeline-surface rejections where those handlers
+  register; `status` rejection is asserted here, never in the
   pipeline spec), and a wiring test mirroring the 05a registration
-  tests. Mutation-idempotency tests (the operation store's cross-name rule,
+  tests for the registered `list`/`status` handlers. Mutation-idempotency tests (the operation store's cross-name rule,
   applied to mutations): cross-name/cross-kind `mutationId` replay is the
   typed `conflicting-mutation-id` refusal; same-key replay after remove/
   re-add never fresh-applies against the new incarnation (a retained same-key
@@ -1777,7 +1863,14 @@ Registry tests (all bullets in this section ship with the registry PR):
   — the live entry may be absent or newer without blocking it — and never acts
 against the live entry; a bounded-run timeout against a fake teardown
 dependency returns the `committed-with-teardown-failure` arm with `seam`
-naming the failed seam and the remnant still open for a later retry).
+naming the failed seam and the remnant still open for a later retry;
+protocol-shape tests pin the `changed-entry` refusal arm plus the
+`teardown-recover` request/response shapes field-for-field;
+an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
+retry path and clears only through `teardown-recover` — attestation
+validation, safety-check refusals naming the blocking check, the audited
+`recovered-cleared` receipt, and replay-after-recovery returning the resolved
+receipt).
 Pending-marker tests: a post-commit receipt write
   lost while the process stays alive leaves the staged-receipt marker staged
   — a replay finalizes carrying the pre-minted `remnantId` and the pinned
@@ -1805,7 +1898,11 @@ lost). Remnant-gate tests:
   is open for a name, `deploy`, `restart`, `Ensure`-triggered work, `plan`
   (no-token `remnant-open` arm with `remnantId`, never a minted token), and
   attach all refuse with `remnant-open` naming the blocking `remnantId` — the
-  fence is host-wide, never mutation-only. Config-path tests: a `--config`
+  fence is host-wide, never mutation-only. Status-after-refusal tests: `status`
+  renders the pair-scoped refusal after each gateless pre-acquisition refusal
+  reason (`unattached`, `refresh-failed`, `probe-failed`, `remnant-open`,
+  `handler-absent`) — one case per reason, never stale data from a
+  superseded pair. Config-path tests: a `--config`
   startup carries the canonical path into the web config and the sidecar +
   fingerprint derive from it. Collision tests: a tombstone/live collision
   restores the live generation strictly above the high-water mark with
@@ -1866,11 +1963,11 @@ readability refusal).
 ## 18. PR size estimate (LOC)
 
 - Registry: ~800–1100 (registry/manager/config/admin-controller/wiring/catalog/
-  client) + tests.
+  client for the registered `list`/`status` surface) + tests.
 - Pipeline: ~700–1000 (handlers + token + operation store + reconciliation) +
-  tests (deploy-pipeline spec).
-- UI + fencing: section, dialogs, stores, polling (§13) + fencing
-  (crash-fencing spec) + tests.
+  tests (deploy-pipeline spec), plus the Hosts settings section, dialogs,
+  stores, and polling (moved from §13 per the §2 table).
+- Fencing: crash-fencing spec + tests.
 
 ## 19. Open questions
 
