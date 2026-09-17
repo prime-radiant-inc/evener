@@ -279,5 +279,45 @@ describe("createPendingTurnsStore", () => {
       // No records target ref-b; an absent thread model must not throw.
       expect(store.pendingTurnEntries("ref-b")).toEqual([]);
     });
+
+    // The store's central invariant: recordSubmittedHere's discovery is what
+    // lets pendingTurnEntries still answer "mine" for a mutation the
+    // authoritative projection now describes, once the durable outbox/
+    // optimistic record behind it is gone (settled away by the hydrate that
+    // reported it) - see reconcilePendingEntries's own comment on
+    // submittedHere.
+    test("a record recordSubmittedHere discovered still reads as fromThisClient once its durable record is gone", () => {
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort({
+          "ref-a": threadModel({
+            turns: [],
+            pendingMutations: [
+              {
+                clientMutationId: "cmid-1",
+                method: "turn/start",
+                input: [{ type: "text", text: "hello" }],
+                executionState: "accepted",
+                projectionState: "pending",
+              },
+            ],
+          }),
+        }),
+        draft: fakeDraftPort(),
+        identity: fakeIdentity("client-x"),
+      });
+      store.recordSubmittedHere({
+        outbox: [outboxRecord({ clientMutationId: "cmid-1", originClientId: "client-x" })],
+        optimistic: [],
+      });
+      // recordSubmittedHere only scans the snapshot it is handed; this store's
+      // own outbox/optimistic never held the record, matching a durable read
+      // that already settled it away.
+      expect(store.getState().outbox.size).toBe(0);
+      expect(store.getState().optimistic.size).toBe(0);
+
+      expect(store.pendingTurnEntries("ref-a")).toEqual([
+        expect.objectContaining({ id: "cmid-1", source: "authoritative", fromThisClient: true }),
+      ]);
+    });
   });
 });
