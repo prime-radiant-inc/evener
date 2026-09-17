@@ -196,7 +196,11 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       focus: () => viewRef.current?.focus(),
       getCursor: () => {
         const view = viewRef.current;
-        return view ? documentPositionToTextOffset(view.state.doc, view.state.selection.head) : 0;
+        // `selection.from` is the lower offset, which is what the textarea's
+        // `selectionStart` reported. `head` is the focus end, so a forward
+        // non-collapsed selection would anchor attachment-marker stripping at
+        // the wrong end of the range.
+        return view ? documentPositionToTextOffset(view.state.doc, view.state.selection.from) : 0;
       },
       getSelection: () => {
         const view = viewRef.current;
