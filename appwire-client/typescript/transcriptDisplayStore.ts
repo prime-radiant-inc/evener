@@ -671,9 +671,19 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   /** A change the HOST relayed rather than the store's own subscription (the
    * web's one client feeds several stores). Like a notification it is not
    * this generation's confirmation: it merges into `hub` under the ordinary
-   * stale guard and leaves the authoritative read to confirm. */
+   * stale guard and leaves the authoritative read to confirm. Unlike a
+   * notification - which only a supported hub ever sends - a relayed change
+   * is cargo some OTHER window already accepted before this store's own
+   * generation existed, so `changeArrivedBeforeConfirmation`'s
+   * no-live-generation exception (a host seeding this store from its cache
+   * before it connects) would otherwise let it through while this section
+   * has decided the hub does not carry the setting at all. Guarded on
+   * `unsupported` specifically, not `isSupported()`, so it still merges
+   * during the unknown window - the tests exercise a relay landing there,
+   * before a connection's features are known. */
   function applyHubChange(change: TranscriptDisplayChange): void {
     if (!isViewportClass(change.layout) || !isRevision(change.revision)) return;
+    if (getState().hubSupport === "unsupported") return;
     if (changeArrivedBeforeConfirmation()) return;
     let config: TranscriptDisplayConfigV1;
     try {

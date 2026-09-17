@@ -98,6 +98,22 @@ describe("support", () => {
       hubError: null,
     });
   });
+
+  test("a change relayed while unsupported does not repopulate hub", () => {
+    // No ready generation is live here (a downlevel hub whose features
+    // resolve to unsupported before this store ever connects, or one that
+    // has since disconnected): changeArrivedBeforeConfirmation's generation<0
+    // branch lets a relayed change through, because that branch exists for a
+    // host seeding this store from its own cache before it connects. That
+    // exception must not extend to a hub the section has decided does not
+    // exist: the shipped defaults are what the section presents, and a
+    // relayed change is a stale window's cargo, not this hub's.
+    const store = createTranscriptDisplayStore({ client: new FakeClient("ready") });
+    store.setSupport("unsupported");
+    store.getState().applyHubChange({ layout: "desktop", revision: 9, config: proposed });
+    expect(store.getState().hub).toEqual({});
+    expect(store.getState().loaded).toBe(false);
+  });
 });
 
 describe("hub defaults", () => {
