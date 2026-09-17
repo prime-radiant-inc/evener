@@ -1255,13 +1255,41 @@ func TestMarketplaceNameMigration_AFailedSaveLeavesTheStoreAsFound(t *testing.T)
 	}
 }
 
+// A migration whose very first write fails, and keeps failing exactly the
+// same way on every subsequent call (a permanently broken store root, not a
+// one-off blip), must report no change: migrateMarketplaceNames runs on
+// every read that takes the store lock (ListMarketplaces, List, Browse), so
+// setting Marketplaces/Plugins before any write has actually landed would
+// have a persistent failure broadcast evener/marketplace/updated and
+// evener/plugin/updated on every single list request forever - clients
+// refetch, get the same unmigrated store back, and the hub answers the next
+// list the same way, a self-sustaining notification loop.
+func TestMarketplaceNameMigration_APersistentlyFailingFirstWriteReportsNoChange(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "foo@bar", "widget")
+
+	orig := installSaveRegistry
+	installSaveRegistry = func(string, Registry) error { return errors.New("boom") }
+	t.Cleanup(func() { installSaveRegistry = orig })
+
+	for i := 0; i < 2; i++ {
+		changes, err := m.migrateMarketplaceNames()
+		if err == nil {
+			t.Fatalf("call %d: migrateMarketplaceNames = nil, want the write's persistent failure reported", i)
+		}
+		if changes.Marketplaces || changes.Plugins {
+			t.Fatalf("call %d: changes = %+v, want neither field set: nothing has ever been written", i, changes)
+		}
+	}
+}
+
 // migrateMarketplaceNames migrates one refused name at a time, each fully
 // saved (saveRename) before the next starts, so a run that migrates the
 // first name and then fails partway through the second leaves the first
 // rename persisted: a real, partial change to the store. changes.Marketplaces
-// is set once, before the loop starts, precisely so a partial run like this
-// one still reports it - round 8's fix for the class of bug where an error
-// dropped whatever the run had already saved.
+// is set once the first entry's own rename has actually landed, precisely so
+// a partial run like this one still reports it.
 func TestMarketplaceNameMigration_AFailedSaveOnTheSecondEntryStillReportsTheStoreChanged(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard

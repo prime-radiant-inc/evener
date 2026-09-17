@@ -83,16 +83,17 @@ func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcqu
 // hold the store lock.
 //
 // changes is returned on every path, including failure: recoverMarkedRename's
-// own answer, folded with this run's. Once there is a refused name to
-// migrate, changes.Marketplaces is set before the loop below even starts,
-// not only once an iteration has landed - a run that fails on its first name
-// touches marketplaces.json no more than one that never started, but a run
-// that fails on its second name has already saved the first, and the two
-// cases are indistinguishable from outside this function without tracing
-// every iteration's own success. changes.Plugins is set only for a run whose
-// refused names actually own installed plugins to re-key (registryKeyOwners),
-// computed once up front rather than traced per iteration for the same
-// reason.
+// own answer, folded with this run's. Both fields are set only once an
+// iteration's own saveRename has actually landed (mergeIntoMigrated or
+// migrateMarketplaceName, both of which always write both files on success),
+// never before the loop starts: this runs on every read that takes the store
+// lock (ListMarketplaces, List, Browse), so a persistently failing first
+// write - not a one-off - would otherwise report a change on every single
+// call forever, and every list a broadcast tells to refetch finds the same
+// unmigrated store and takes the lock again. A run that fails on its first
+// name reports no change, matching one that never started; a run that fails
+// on its second name still reports the first name's already-persisted
+// rename.
 func (m *Manager) migrateMarketplaceNames() (changes StoreChanges, err error) {
 	changes, err = m.recoverMarkedRename()
 	if err != nil {
@@ -118,13 +119,6 @@ func (m *Manager) migrateMarketplaceNames() (changes StoreChanges, err error) {
 	// belongs to: the two directories the refused name derived and the source
 	// its record names. A merge records none.
 	owners := registryKeyOwners(reg, mk)
-	changes.Marketplaces = true
-	for _, owner := range owners {
-		if slices.Contains(names, owner) {
-			changes.Plugins = true
-			break
-		}
-	}
 	recordedThisRun := map[recordedAlias]string{}
 	// The families earlier runs recorded, so an alias still waiting for the
 	// marketplace they migrated knows which record its directories became. An
@@ -174,6 +168,11 @@ func (m *Manager) migrateMarketplaceNames() (changes StoreChanges, err error) {
 			if reg, err = m.mergeIntoMigrated(mk, owners, reg, name, into); err != nil {
 				return changes, fmt.Errorf("merging marketplace %q, recorded under a name the store no longer accepts, into %q: %w", name, into, err)
 			}
+			// The merge's own saveRename just landed: name's directories are
+			// dropped and its plugins re-keyed under into, a real change to
+			// both files this run owes a broadcast for, unconditionally.
+			changes.Marketplaces = true
+			changes.Plugins = true
 			_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts, and names the same marketplace as %q; merged its plugins into that record and dropped the duplicate\n", name, into)
 			continue
 		}
@@ -194,6 +193,12 @@ func (m *Manager) migrateMarketplaceNames() (changes StoreChanges, err error) {
 		if reg, err = m.migrateMarketplaceName(mk, owners, reg, name, newName); err != nil {
 			return changes, fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts, to %q: %w", name, newName, err)
 		}
+		// migrateMarketplaceName's own saveRename just landed: name is gone
+		// from marketplaces.json and every plugin it owned is re-keyed in
+		// the registry, whether or not it owned any - saveRename writes both
+		// files unconditionally, so both are owed a broadcast here too.
+		changes.Marketplaces = true
+		changes.Plugins = true
 		recordedThisRun[key] = newName
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts; renamed it to %q\n", name, newName)
 	}
