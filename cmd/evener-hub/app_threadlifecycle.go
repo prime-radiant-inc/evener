@@ -609,7 +609,12 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 		// spawning again. Only this Hub's exact flag-day protocol establishes
 		// ownership; an older daemon can be healthy while remaining unroutable
 		// through the current local source. A dead daemon may remain as a
-		// crash marker and must fall through to spawning.
+		// crash marker and must fall through to spawning. Every serving
+		// configuration builds its Roster unconditionally (the single
+		// newWebServer call in main.go), so in production this re-check always
+		// runs and a resume that queued behind a completed one reuses its
+		// daemon instead of spawning a replacement; the nil guard is for tests
+		// that construct a WebConfig without discovery.
 		if cfg.Roster != nil {
 			if le, ok := liveDaemonForThread(cfg.Roster, sessionID); ok &&
 				le.Protocol == appwire.ProtocolVersion {
