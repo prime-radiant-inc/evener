@@ -1030,6 +1030,23 @@ test("expanded and default projects hydrate complete tiers and post-action expan
   });
 });
 
+test("setExpanded issues a v2 project read with the raw key and representation version 2", async () => {
+  const projectKey = "raw/project key";
+  const calls: NavigationReadParams[] = [];
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    throw new Error(`scripted project read ${params.resource}`);
+  });
+  store.getState().setExpanded(projectKey, true);
+  await flush();
+
+  expect(store.getState().expanded.get(projectKey)).toBe(true);
+  expect(calls.filter((params) => params.resource === "project")).toEqual([
+    { resource: "project", projectKey, representationVersion: 2 },
+  ]);
+});
+
 test("notification fencing rejects duplicate, wrong generation, and gaps while locations stay retained", async () => {
   const client = new FakeClient("ready");
   client.on("evener/navigation/read", (params) =>
