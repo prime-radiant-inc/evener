@@ -175,6 +175,155 @@ func TestRemoveWhoseRegistryWriteFailedKeepsThePluginInstalled(t *testing.T) {
 	}
 }
 
+// AddMarketplace clones a non-directory source into place before it saves
+// the metadata. A save failure must roll that clone back: the name was never
+// recorded, so a clone left behind would be a directory the store knows
+// nothing about.
+func TestAddMarketplaceWhoseSaveFailedRollsBackTheClone(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+
+	original := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = original })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	_, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	if err == nil {
+		t.Fatal("AddMarketplace = nil, want the failed save reported")
+	}
+	if errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want a plain refusal: the rollback removed the clone", err)
+	}
+	if _, statErr := os.Stat(m.marketplaceDir("market-a")); !os.IsNotExist(statErr) {
+		t.Fatalf("clone survived a rolled-back Add: %v", statErr)
+	}
+}
+
+// When the rollback itself cannot remove the clone, the store is left
+// changed after all: a directory nothing lists now occupies the name's slot.
+func TestAddMarketplaceWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+
+	originalWrite := marketplaceAtomicWriteFile
+	originalRemove := marketplaceRemoveAll
+	t.Cleanup(func() {
+		marketplaceAtomicWriteFile = originalWrite
+		marketplaceRemoveAll = originalRemove
+	})
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+	marketplaceRemoveAll = func(path string) error {
+		if path == m.marketplaceDir("market-a") {
+			return errors.New("the rollback removal failed")
+		}
+		return originalRemove(path)
+	}
+
+	_, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	if err == nil {
+		t.Fatal("AddMarketplace = nil, want the failed save reported")
+	}
+	if !errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want it to report the store changed: the rollback itself failed", err)
+	}
+}
+
+// RemoveMarketplace must save the metadata before it deletes the clone: a
+// save that fails first leaves the marketplace registered and its clone
+// untouched, a plain refusal rather than a change no rollback could undo.
+func TestRemoveMarketplaceWhoseSaveFailedLeavesTheClone(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	ref, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	if err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	original := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = original })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	err = m.RemoveMarketplace(ctx, "market-a")
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed save reported")
+	}
+	if errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want a plain refusal: the clone was never touched", err)
+	}
+	if _, statErr := os.Stat(ref.InstallLocation); statErr != nil {
+		t.Fatalf("clone deleted before the save that names it succeeded: %v", statErr)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatalf("loadMarketplaces after the refused removal: %v", err)
+	}
+	if _, ok := mk["market-a"]; !ok {
+		t.Fatal("marketplace no longer registered after a refused removal")
+	}
+}
+
+// A clone delete that fails after the save that removes it from the
+// marketplaces file has already applied: the listing is already stale, so
+// the hub still owes every other client the broadcast even though the clone
+// itself is litter RemoveMarketplace could not clean up.
+func TestRemoveMarketplaceWhoseCloneDeleteFailedReportsTheStoreChanged(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	original := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = original })
+	marketplaceRemoveAll = func(path string) error {
+		if path == m.marketplaceDir("market-a") {
+			return errors.New("the clone could not be removed")
+		}
+		return original(path)
+	}
+
+	err := m.RemoveMarketplace(ctx, "market-a")
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
+	}
+	if !errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want it to report the store changed: the save already applied", err)
+	}
+	mk, loadErr := m.loadMarketplaces()
+	if loadErr != nil {
+		t.Fatalf("loadMarketplaces after the applied removal: %v", loadErr)
+	}
+	if _, ok := mk["market-a"]; ok {
+		t.Fatal("marketplace still registered after a removal whose save succeeded")
+	}
+}
+
 // writeTestMarketplaceDir plants a directory-source marketplace holding one
 // plugin, which needs no network and no git binary.
 func writeTestMarketplaceDir(t *testing.T, name string) string {

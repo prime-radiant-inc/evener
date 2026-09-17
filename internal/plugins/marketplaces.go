@@ -230,7 +230,13 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
 		if src.Kind != SourceDirectory {
-			_ = marketplaceRemoveAll(installLoc)
+			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
+				// The name was never recorded, so nothing lists this clone -
+				// but it still sits on disk where a retry of this Add would
+				// find it in the way, which is the store left changed rather
+				// than back as it was found (ErrStoreChanged's own rule).
+				return MarketplaceRef{}, fmt.Errorf("%w: rolling back the clone after a failed save: %w", ErrStoreChanged, rollbackErr)
+			}
 		}
 		return MarketplaceRef{}, err
 	}
@@ -258,13 +264,25 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
+	// The metadata first, the clone second: deleting the clone first made a
+	// failing save unrecoverable - the marketplaces file still named a
+	// marketplace whose clone was gone, a change no rollback could undo -
+	// while this order makes that failure a plain refusal that leaves the
+	// marketplace registered and its clone untouched.
+	delete(mk, name)
+	if err := m.saveMarketplaces(mk); err != nil {
+		return err
+	}
 	if ref.Source.Kind != SourceDirectory {
 		if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
-			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+			// The save already applied - the marketplace is gone from the
+			// listing - so the hub still owes every other client the
+			// broadcast even though this clone is litter Remove could not
+			// clean up.
+			return fmt.Errorf("%w: removing marketplace clone %s: %w", ErrStoreChanged, m.marketplaceDir(name), err)
 		}
 	}
-	delete(mk, name)
-	return m.saveMarketplaces(mk)
+	return nil
 }
 
 // EditMarketplace renames a registered marketplace and/or replaces its
