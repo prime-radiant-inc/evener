@@ -490,32 +490,40 @@ const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => und
 const pendingMethod: PendingMethod = "send";
 const pendingState: PendingTurnState = "submitting";
 const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
-const identity: ClientIdentity = createClientIdentity(storage);
 const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
+const identity: ClientIdentity = createClientIdentity(storage, secureRandomSource);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry; void identity; void secureRandomSource;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
-const identity: client.ClientIdentity = client.createClientIdentity(storage); void identity;
-const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;`,
+const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
+const identity: client.ClientIdentity = client.createClientIdentity(storage, secureRandomSource); void identity;`,
       // createClientIdentity is a factory, not a module singleton: two
       // instances over two storages get two identities, and one instance's
-      // identity is memoized across repeated calls. createSecureUUID is the
-      // same helper mutation ids use; a source with no randomUUID proves the
-      // getRandomValues fallback runs. reconcilePendingEntries needs no model
-      // to prove it runs: an absent one is the same "no live projection yet"
-      // case a fresh composer starts from.
+      // identity is memoized across repeated calls. Both take their random
+      // source explicitly - no default to globalThis.crypto lives in the
+      // package. createSecureUUID is the same helper mutation ids use; a
+      // source with no randomUUID proves the getRandomValues fallback runs,
+      // and a source with neither proves the non-crypto fallback runs rather
+      // than throwing. reconcilePendingEntries needs no model to prove it
+      // runs: an absent one is the same "no live projection yet" case a
+      // fresh composer starts from.
       smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
-const identityA = client.createClientIdentity(identityStorage);
-const identityB = client.createClientIdentity({ getItem: () => null, setItem: () => undefined });
+const identityRandomSource = { getRandomValues: (array) => globalThis.crypto.getRandomValues(array) };
+const identityA = client.createClientIdentity(identityStorage, identityRandomSource);
+const identityB = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, identityRandomSource);
 const firstId = identityA.ownClientId();
 assert.equal(identityA.ownClientId(), firstId);
 assert.notEqual(identityB.ownClientId(), firstId);
 assert.equal(identityA.isOwnMutationRecord({ originClientId: firstId }), true);
 assert.equal(identityA.isOwnMutationRecord({ originClientId: "someone-else" }), false);
 assert.equal(identityA.isOwnMutationRecord({}), true);
+const noRandomSourceIdentity = client.createClientIdentity({ getItem: () => null, setItem: () => undefined }, {});
+assert.equal(typeof noRandomSourceIdentity.ownClientId(), "string");
 assert.equal(client.createSecureUUID({ randomUUID: () => "native-id", getRandomValues: (array) => array }), "native-id");
 const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array });
 assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+const insecureUUID = client.createSecureUUID({});
+assert.match(insecureUUID, /^insecure-/);
 assert.deepEqual(client.reconcilePendingEntries("ref", [], undefined, new Set()), []);
 `,
     },

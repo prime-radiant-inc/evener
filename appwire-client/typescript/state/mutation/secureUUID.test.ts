@@ -25,4 +25,11 @@ describe("createSecureUUID", () => {
       }),
     ).toBe("native-id");
   });
+
+  it("falls back to a non-cryptographic id when the source has neither method", () => {
+    const first = createSecureUUID({});
+    const second = createSecureUUID({});
+    expect(first).toMatch(/^insecure-/);
+    expect(first).not.toBe(second);
+  });
 });
