@@ -132,6 +132,30 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	aliases := forceStopAliases(entry)
 	finishRecovery := cfg.ResumeLocks.BeginForceStop(aliases)
 	defer func() { finishRecovery(stopErr == nil) }()
+	// Clear gives one daemon stable and current session aliases. Lock both so
+	// resume or deletion through either alias cannot race exit confirmation.
+	acquired := 0
+	defer func() {
+		for _, alias := range slices.Backward(aliases[:acquired]) {
+			cfg.ResumeLocks.For(alias).Unlock()
+		}
+	}()
+	// Deletion publication takes the same per-alias reservations an in-flight
+	// Resume holds across its launch. Take them before cancelling whenever they
+	// are free, so the deletion re-check under them is the final validation and
+	// runs before cancelActiveResumes aborts a Resume the request may still have
+	// to refuse. A reservation an in-flight launch already holds blocks deletion
+	// publication itself, so that case keeps the cancel-then-acquire order, and
+	// the re-check after ownership below stays authoritative.
+	reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, aliases)
+	if reservationsHeld {
+		acquired = len(aliases)
+		for _, alias := range aliases {
+			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+				return err
+			}
+		}
+	}
 	// A Resume can register after the initial snapshot while process discovery
 	// is running. The fence now prevents new registrations; cancel and drain
 	// any operation that entered that window before waiting for ownership.
@@ -148,19 +172,13 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			}
 		}
 	}
-	// Clear gives one daemon stable and current session aliases. Lock both so
-	// resume or deletion through either alias cannot race exit confirmation.
-	acquired := 0
-	defer func() {
-		for _, alias := range slices.Backward(aliases[:acquired]) {
-			cfg.ResumeLocks.For(alias).Unlock()
+	if !reservationsHeld {
+		for _, id := range aliases {
+			if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+				return err
+			}
+			acquired++
 		}
-	}()
-	for _, id := range aliases {
-		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
-			return err
-		}
-		acquired++
 	}
 	if err := ctx.Err(); err != nil {
 		return err
