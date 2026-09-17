@@ -181,7 +181,12 @@ under the mutation lock before the runtime transition begins — see the staged
 commit below; a `finalizingMutation` claim carries it as true), plus a
 `teardownStarted` flag (false at stage time, flipped true in its own atomic
 write after the swap and before the first teardown — see crash-window
-recovery below; a `finalizingMutation` claim carries the flag as true)
+recovery below; a `finalizingMutation` claim carries the flag as true),
+plus the collision-reconcile armed intent (the validation-read `hub.toml`
+fingerprint the commit staged against — see the final check in
+persistence; the post-commit write replaces the marker with the finalized
+receipt, clearing the armed intent with it, and the reconcile staging below
+supersedes it with the re-read fingerprint when a race is found)
 plus the staged provisional payload — explicitly provisional outcome, row,
 generation, a pre-minted `remnantId`, and the pinned teardown target (the
 in-progress remnant: the staged supervisor/channel/fan-out teardown
@@ -399,12 +404,17 @@ before any retry — `add` compares the listed entry hash for the name,
 `deploy` step (1) (extending the round-fourteen receipt and round-twelve
 scoping work, and the round-twenty-three presence rule — "FIRST" never meant
 before parameter presence):** receipt dedup by (mutationId, name, kind, current
-generation) runs FIRST for every `add`/`update`/`remove` — subject only to
+generation, current incarnation id) runs FIRST for every `add`/`update`/`remove` — subject only to
 `update`'s and `remove`'s parameter-presence gates (missing `mutationId` or
 `expectedGeneration` → validation refusal before any dedup lookup, see
 `update`/`remove`) — a dedup match returns
 the recorded receipt with no `expectedGeneration` VALUE check, gate, or remnant
-validation; only a non-replay proceeds into those checks.
+validation; only a non-replay proceeds into those checks (extending the
+round-twenty-five processing-order paragraph, which keyed the lookup on the
+4-tuple without the incarnation id, so two incarnations sharing a generation —
+explicitly allowed elsewhere — collided on the same key: a lookup carrying
+only (mutationId, name, kind, generation) never hits; the incarnation id is
+always compared, pinned to the live entry's current incarnation id).
 
 - `evener/host/list` (read, never dials, lock-free): every configured host — the full
   effective `HostConfig` fields plus live state: `attached`
@@ -438,7 +448,15 @@ validation; only a non-replay proceeds into those checks.
  reads — reconcile runs async or on the mutation/`plan`/`deploy` paths only
  — while a read arriving while a reconcile holds the lock serves the last
  published snapshot instead of waiting with busy semantics, never failing
- busy for a fingerprint reason).**
+ busy for a fingerprint reason — and the async reconcile re-compares
+ fingerprints on completion: when it finishes it re-reads the on-disk
+ fingerprint against the fingerprint it just reconciled, and a still-present
+ mismatch reschedules another pass (same debounce, coalescing further edits)
+ instead of settling — an edit landing mid-reconcile and coalesced away
+ can never leave live consumers on the deleted/changed host until the next
+ mutation or token path (extending the round-twenty-five async reconcile,
+ which scheduled with no trailing check, so a coalesced mid-flight edit was
+ silently lost until unrelated work re-triggered it).**
  **Read isolation:** "no mutation lock" does not mean "no synchronization"
  (extending the round-eleven lock-free `list`). Writers publish two
  immutable snapshots through atomic pointers: under the mutation lock every
@@ -626,12 +644,11 @@ cannot produce those fields), keyed by the host's registry (generation,
   the current facts and configuration** and returns the plan plus a
   **controller-minted confirmation token**: single-use, **expiring (token
   TTL: 5 minutes by default, owner-adjustable — bounded by the plan
-  freshness bound below (mint-time clamping to min(configured TTL, freshness
-  bound) by default — an owner-set TTL above the bound is permitted but
-  shortens the effective deploy window to the bound (see the window rule
-  below — the facts-age re-plan refusal stays reachable exactly there);
-  lowering the bound below outstanding TTLs shortens their effective expiry
-  to the bound at validate time, never past it — extending the
+  freshness bound below — mint persists `expiresAt = min(configured TTL,
+  freshness bound at mint)`: an owner-set TTL above the bound is clamped to
+  the bound at mint, never persisted past it; lowering the bound below
+  outstanding TTLs shortens their effective expiry to the bound at validate
+  time, never past it — extending the
   round-twenty-four TTL work, which stated the never-above invariant with no
   enforcement when the owner sets TTL above the bound or lowers the bound
   below outstanding TTLs: what changes is the mechanism — mint clamps, and
@@ -639,18 +656,18 @@ cannot produce those fields), keyed by the host's registry (generation,
   minute default above the 5-minute deploy freshness re-check so any token
   older than 5 minutes always failed stale and the advertised window was
   unreachable: the effective deploy window is min(TTL, remaining
-  facts-freshness at mint) — and a configured TTL above the freshness bound is
-  permitted but shortens the window (documenting the shortened window: the
-  token expires by TTL while its facts binding expires by the bound, so a
-  token presented after its facts aged past the bound but before its TTL is
-  the `stale-entry` facts-age re-plan refusal — the facts-age discriminator
-  stays reachable exactly in this configuration; extending the
-  round-twenty-four window, which always refreshed at mint with TTL <= bound,
-  so facts age was always below the bound at deploy and the facts-age arm
-  could never emit — at the default 5-minute TTL with a 5-minute bound the
-  window is the full TTL on freshly minted facts), and a token past the
-  freshness bound at deploy time is a `stale-entry` re-plan refusal (the UI
-  re-plans from fresh facts rather than retrying the token))**, bound to
+  facts-freshness at mint) — at the default 5-minute TTL with a 5-minute
+  bound the window is the full TTL on freshly minted facts), and a token
+  whose bound facts aged past the freshness bound at deploy time is a
+  `stale-entry` facts-age re-plan refusal (the UI re-plans from fresh facts
+  rather than retrying the token — extending the round-twenty-five window
+  text, which reached this arm through an unclamped above-bound TTL while
+  mint claimed to clamp: the arm is a second, independent guard checked
+  before the step-(4) `expiresAt` re-check, and it fires only when the bound
+  was lowered below outstanding TTLs after mint — at an unchanged bound the
+  unconditional refresh plus the mint clamp keep facts age below the bound
+  whenever the token is live, so expiry alone governs and the arm is
+  unreachable by construction, never by contradiction))**, bound to
   (host name, the host's registry generation at mint time, a hash of the resolved host entry, **a fingerprint (content
   hash) of the controller's `hub.toml` file bytes as they are on disk at
   plan time**, the preflight revision the plan was built from, the facts capture timestamp
@@ -891,7 +908,11 @@ cannot produce those fields), keyed by the host's registry (generation,
   mismatched, superseded, or expired → refusal** — as a fail-fast
   readability check only: a concurrent `plan` can mint a newer token and
   supersede the presented one before the gate is acquired, so nothing is
-  decided here. (3) Acquire the host's
+  decided here. A fenced name never reaches the gate: an open teardown
+  remnant for the host refuses with typed `remnant-open` (naming the
+  `remnantId` — see the remnant gate) before any probe or acquisition,
+  past the step-(1) dedup check (a same-key replay returns its record without
+  consulting the fence). (3) Acquire the host's
   per-host gate — but first probe gateless, then revalidate under the gate:
   **fail fast with the typed busy error if the gate is held at acquisition
   time** — **probe the running
@@ -921,8 +942,10 @@ cannot produce those fields), keyed by the host's registry (generation,
   older than the bound at deploy time are a `stale-entry` re-plan refusal
   (token unconsumed, no record — the UI re-plans), so a token presented at
   minute 4 never deploys on 4-minute-old OS/arch/target-writability facts
-  past the 5-minute bound at deploy time (and no token lives past 5 minutes
-  to present at minute 9 — see the TTL above)**
+  past the 5-minute bound at deploy time (mint clamps `expiresAt` to the
+  bound, so an unchanged bound governs through expiry alone — this arm fires
+  only when the bound was lowered below the minted TTL after mint, shortening
+  effective expiry at validate time — see the TTL above)**
   (a sidecar edit, a manual `hub.toml` edit — caught
   by the fingerprint, the only way a hand edit is visible without a restart
   — a facts refresh, a target change, a running-build or running-health
@@ -983,7 +1006,9 @@ cannot produce those fields), keyed by the host's registry (generation,
   over a worker-owned channel.
 - `evener/host/restart` (mutation): same operation model (**(host, kind)**-
   scoped operation-ID dedup first (generation-scoped like `deploy` — see the
-  operation store), busy-fail gate acquisition, atomic record
+  operation store), then the remnant fence (`remnant-open` naming the
+  `remnantId` past dedup and before any probe or acquisition — see the
+  remnant gate), busy-fail gate acquisition, atomic record
   creation — but no token: restart has no install step, no target, and no
   plan to re-verify; instead restart binds the current `hub.toml`
   content-hash fingerprint (the same fingerprint `plan` binds into
@@ -1016,7 +1041,12 @@ cannot produce those fields), keyed by the host's registry (generation,
   round-fourteen `attachUnderGate` work). The restart worker MUST use this
   primitive — re-running the normal attach path while holding the gate is a
   deadlock (the gate is non-reentrant) and a supervisor race (extending the
-  round-ten reattach work).** A restart issued while the host has
+  round-ten reattach work) — and every attach entry point (`attachUnderGate`
+  for a caller that does not already hold the operation gate, the normal
+  `Manager.Ensure` attach path, and the UI Connect action) checks the remnant
+  fence before dialing: an open remnant for the name refuses with typed
+  `remnant-open` naming the `remnantId` (see the remnant gate), so no attach
+  can rebind a channel or supervisor over a pending teardown.** A restart issued while the host has
   no attached channel runs the same operation-owned attach first under the
   already-held gate and names the attach-first path in the record, so
   verification always has a channel and initially unattached hosts need no
@@ -1040,7 +1070,12 @@ controller-side operation records; this component defines a
 
 - Record: operation id (controller-assigned), client operation ID, host, kind
   (deploy/restart), state (`pending`/`running`/`complete`/`failed`/
-  `interrupted`), progress entries (timestamped, bounded), terminal result,
+  `interrupted`/`orphan-unverified` — extending the round-twenty-five
+  record, which enumerated five states while `orphan-unverified` persisted as
+  a durable per-record state: the enum now names all six), the persisted
+  orphan boundary identity (pgid, session id, pid, start time — present
+  exactly on `orphan-unverified` records, exposed as `orphanBoundary` on the
+  wire record), progress entries (timestamped, bounded), terminal result,
 timestamps, the **pinned host generation (the incarnation the record ran
 against — part of the dedup scope, so polling after client operation-ID reuse
 returns distinguishable records and the current incarnation is selected by
@@ -1196,11 +1231,19 @@ returns distinguishable records and the current incarnation is selected by
   `interrupted`): every subsequent boot retries the enumeration and resolves
   the record once it succeeds (boundary empty or start-time mismatch → drop
   the intent and transition to `interrupted`; verified members reaped →
-  `interrupted`), and the operator recovers manually without it — the
-  record's persisted boundary identity (pgid, session id, pid, start time)
-  is visible through the `operations` detail filter, so the operator kills
-  the listed members (or confirms them gone) and restarts the hub, and the
-  post-recovery enumeration resolves the record the same way — a newer
+  `interrupted`), and the operator resolves it explicitly through the
+  authenticated `evener/host/orphan-resolve` mutation below (params
+  `{id: string}` — the controller-assigned record id — response the
+  updated `OperationRecord`: the call re-runs the persisted-boundary
+  enumeration for that record under the caller's session authentication and,
+  on a clean boundary (empty, or pid/start-time mismatch on every member),
+  drops the intent and transitions the record to `interrupted`; on members
+  still present it refuses with the transient busy form, never a force-clear)
+  — the record's persisted boundary identity (pgid, session id, pid,
+  start time) is visible through the `operations` detail filter, so the
+  operator kills the listed members (or confirms them gone) and calls
+  `orphan-resolve` (a hub restart re-runs the same enumeration at boot, and
+  the post-recovery enumeration resolves the record the same way) — a newer
   operation ID meanwhile starts fresh only after the boundary is resolved,
   never overlapping the unverified record (extending the round-twenty-four
   orphan-unverified state, which marked the record but let a newer operation
@@ -1210,8 +1253,8 @@ returns distinguishable records and the current incarnation is selected by
   host, that host admits no new operation past admission: `deploy`,
   `restart`, and `teardown-retry` refuse with the transient busy form, and
   local reaping stays incomplete — until the boundary is verified (a later
-  boot's enumeration resolves the record) or the operator resolves it
-  manually through the detail-filter recovery above — only then does a fresh
+  boot's enumeration resolves the record) or the operator resolves it through
+  `evener/host/orphan-resolve` above — only then does a fresh
   operation start under a new epoch after local reap completion). A crash between the
   pre-spawn persist and the spawn leaves a persisted-but-empty boundary: boot
   enumerates it, finds no members, and drops the intent — never an orphan,
@@ -1450,7 +1493,10 @@ model). A host without the
   under the gate before launching the worker, and the worker runs the same
   register/fence/perform guard advance — a crash mid-Ensure reaps and fences
   exactly like a user deploy, and no Ensure remote mutation precedes its
-  persisted epoch/ownership record.**
+  persisted epoch/ownership record — and the Ensure path checks the remnant
+  fence before minting that record: an open remnant for the host refuses the
+  Ensure-triggered operation with typed `remnant-open` (naming the
+  `remnantId`), never a fresh epoch over a pending teardown.**
   **The gate pins the token-bound host entry and resolved target for an
   operation's lifetime: while a deploy/restart holds its host's gate,
   `update` and `remove` of that host fail fast** (and `add` cannot collide —
@@ -1571,16 +1617,31 @@ model). A host without the
   locations — UNLESS the collision is covered by a managed sidecar marker
   the previous process left behind:** the reconcile write above records a
   managed pending marker (the re-read `hub.toml` fingerprint the reconcile
-  is running against plus the sidecar live entry it is about to drop) before
-  the follow-up cleanup, and a committed marker (the same fingerprint plus
-  the post-cleanup bytes) after it; when boot sees both live entries AND a
-  pending marker whose fingerprint matches a re-read of the on-disk
-  `hub.toml`, boot completes the interrupted cleanup (the follow-up drop +
-  runtime rebuild) instead of the hard error — the race the spec reconciles
-  is recoverable across the crash window too. A collision with no marker, or
-  with a marker whose fingerprint no longer matches the on-disk file (a
-  further hand edit superseded the interrupted reconcile), stays the hard
-  startup error — the marker scopes the recovery to exactly the race the
+  is running against plus the sidecar live entry it is about to drop) in the
+  same atomic sidecar write that stages the follow-up cleanup — the re-read
+  fingerprint is durable before the cleanup rename lands, never after it
+  (extending the round-twenty-five reconcile, which persisted the pending
+  marker only after the cleanup rename, so a crash or write failure in
+  between left a legitimate duplicate unmarked and boot hard-failed it) —
+  and the commit armed the intent one write earlier (the step-(2) staged write
+  carries the validation-read fingerprint — see mutation idempotency), so a
+  crash between the commit rename and the reconcile staging write is covered
+  too: when boot sees both live entries AND a pending marker whose fingerprint
+  matches a re-read of the on-disk `hub.toml`, boot completes the interrupted
+  cleanup (the follow-up drop + runtime rebuild) instead of the hard error —
+  and with no marker at all, boot still completes the cleanup against the
+  on-disk file (clearing the armed intent in the same write) when the staged
+  armed intent is present and the on-disk fingerprint differs from the armed
+  validation fingerprint — the commit raced a `hub.toml` change across its
+  rename (a concurrent hand edit races identically and reconciles identically:
+  `hub.toml` wins, the sidecar duplicate drops) — the race the spec
+  reconciles is recoverable across the whole crash window, never just past
+  the staging write. A collision with no marker and no armed intent, or with
+  a marker whose fingerprint no longer matches the on-disk file (a further
+  hand edit superseded the interrupted reconcile), or with an armed intent
+  whose validation fingerprint still matches the on-disk file (no race crossed
+  the commit — the duplicate is hand-made), stays the hard startup error —
+  the marker plus the armed intent scope the recovery to exactly the race the
   spec can reconcile, never a hand-created duplicate (extending the
   round-thirteen hub.toml-authority work; crash-window test in Testing).**
   The
@@ -1683,32 +1744,63 @@ the TTL read as `teardown-unknown-key` not-found instead of
   retained marker, so a retry naming a pruned key was indistinguishable
   from a never-seen key and fresh-applied past the prune, contradicting
   the stale-entry rule above): markers carry the scoped key only (no row
-  bytes, so they do not grow the sidecar materially) and are removed only
-  by the tombstone purge (re-add past the remnant gate, or retention
-  expiry — the explicitly defined clean-slate paths), never by the
-  count/TTL bound — the tombstone retention period is the marker bound, so
-  no separate count cap can drop a marker early and reopen the hole. A
-  replay naming a marked key refuses as `stale-entry` (pruned-generation);
-  a key with neither a retained receipt nor a pruned marker commits fresh
-  by the commits-fresh clause. The
+  bytes, so each stays small) and compact under their own owner-set bound —
+  at most 64 newest markers per live name plus a marker TTL in the same
+  owner-knob family as the superseded-receipt TTL (every sidecar mutation
+  and every boot compacts markers past either bound in the same atomic
+  write; defaults ship in the implementing PR) — extending the
+  round-twenty-five marker rule, which removed markers only by the tombstone
+  purge, so a never-removed live host minted one marker per unique
+  mutationId forever and the marker map grew monotonically against the
+  stated storage bound: what changes is that tombstone-less names compact
+  markers by count/TTL exactly like receipts, so the map stays bounded for
+  live hosts too. The newest same-key superseded receipt per name is still
+  retained until that name's tombstone expires (never pruned by the
+  receipt count/TTL bound above while the tombstone lives), and its marker
+  twin is exempt from the marker count/TTL bound the same way — that one
+  `remove`-retry backstop marker per tombstoned name persists until the
+  tombstone purge (re-add past the remnant gate, or retention expiry — the
+  explicitly defined clean-slate paths), so no marker cap can drop the live
+  backstop early and reopen the hole. A marker dropped by the count/TTL
+  bound for a tombstone-less name removes only the oldest non-backstop
+  entries, and a key with neither a retained receipt nor a live marker
+  commits fresh by the commits-fresh clause — the backstop exemption is the
+  one case where retention, not recency, decides. A replay naming a marked
+  key refuses as `stale-entry` (pruned-generation); a key with neither a
+  retained receipt nor a pruned marker commits fresh by the commits-fresh
+  clause. The
   tombstone purge is clean-slate: once the tombstone (and that name's
   receipts with it) is gone, a same-key replay commits fresh by the
   commits-fresh clause in mutation idempotency, above — see the single
   superseded-receipt rule there.**
- **Remnant gate (extending the round-eight commit
- point): any non-replay mutation (a same-key replay matching a
+ **Remnant gate (extending the round-eight commit point, and the
+ round-twenty-five remnant gate, which fenced configuration mutations only
+ — re-add, `update`, and `remove` on the remnant's name — so `deploy`,
+ `restart`, `Ensure`-triggered work, `plan`, and attach could run against a
+ newer lifecycle while the prior supervisor, channels, or fan-outs were still
+ pending teardown: what changes is that the open remnant is a host-wide fence
+ for every lifecycle and attach operation on the name until teardown
+ succeeds): any non-replay mutation (a same-key replay matching a
  current-generation receipt returns before this gate — see the fixed ordering
  in mutation idempotency) that would advance or remove the affected name while it
  holds an open remnant — re-add, `update` of the remnant's name, and `remove`
  of the remnant's name — is refused with the typed `remnant-open` conflict refusal
  (carrying the blocking `remnantId` — extending the round-eleven re-add gate:
  the gate refusal finally has its own contract value rather than borrowing
- `teardown-unknown-key`'s shape) — the operator first resumes the named
- teardown through `evener/host/teardown-retry` (which runs it to completion
- for that generation), and only then does the mutation proceed: re-add mints
- the new generation and purges the cleared remnant — so a new incarnation can
- never start while the old lifecycle still owns supervisors, channels, or
- fan-outs. **Open remnants pin their generation:** while a remnant is open
+ `teardown-unknown-key`'s shape) — and the same open remnant fences every
+ other lifecycle and attach path on the name: `deploy`, `restart`, and
+ `Ensure`-triggered work refuse with the same typed `remnant-open` refusal
+ (never the gate-busy form — the fence names the blocking `remnantId`, not
+ an in-flight operation), `plan` returns its no-token shape with a
+ `remnant-open` refusal naming the `remnantId` (never a minted token bound to
+ a lifecycle whose teardown is still pending), and attach (`attachUnderGate`
+ reattach/attach-first and the Connect path) refuses the same way — the
+ operator first resumes the named teardown through `evener/host/teardown-retry`
+ (which runs it to completion for that generation), and only then does any
+ fenced path proceed: re-add mints the new generation and purges the cleared
+ remnant — so a new incarnation can never start, and no
+ deploy/restart/`Ensure`/`plan`/attach can run, while the old lifecycle still
+ owns supervisors, channels, or fan-outs. **Open remnants pin their generation:** while a remnant is open
  for a name, no path advances that name past the remnant's generation —
  re-add, `update`, and `remove` on that name all stay refused by the gate
  above (the name stays tombstoned until the remnant resolves — the
@@ -1954,7 +2046,10 @@ Protocol types)
 with retryable diagnostics and a refresh-retry affordance (never Connect);
 `probe-failed` on an attached host surfaces the probe failure with
  retry (never a Connect loop); `handler-absent` on an attached host surfaces
- the one-time migration step (never Connect-first). `status` stays the read-only informational surface
+ the one-time migration step (never Connect-first); `remnant-open` surfaces
+ the blocking `remnantId` with a teardown-retry affordance (never Connect,
+ never re-plan — a re-plan mints nothing while the remnant is open).
+ `status` stays the read-only informational surface
   behind the host row — it mints nothing and is never the confirmation's
   source. Progress renders from `operations` polling (with best-effort
   stream events if implemented); terminal failure surfaces the verbatim 04b
@@ -2183,7 +2278,7 @@ exists for the current pair),
 - `evener/host/plan`: params `{name: string}`; response is either `{plan:
 HostPlan, token: string, outcome: "planned"}` or `{outcome: "no-token", staleFacts:
   {message: string, attached: bool, reason: "unattached" | "refresh-failed" |
-"probe-failed" | "handler-absent"}}` — `outcome: "no-token"` is the top-level
+"probe-failed" | "handler-absent" | "remnant-open"}, remnantId?: string}` — `remnantId` present exactly on the `remnant-open` arm (the remnant fence: an open remnant for the name refuses `plan` with no token minted — see the remnant gate; absent on every other no-token arm per the absent-when-unknown rule) — `outcome: "no-token"` is the top-level
 discriminator on the no-token arm (the token arm carries
 `outcome: "planned"` alongside `plan`/`token`), so the generator mapping
 selects arms on `outcome` with no presence-based exception — the `reason`
@@ -2194,8 +2289,11 @@ discriminates the
   out — retryable diagnostics, never Connect-first),
   `probe-failed` (attached, but the `evener/host/running` probe read failed or
   was unauthenticated), `handler-absent` (attached, but the remote predates the
-handler — take the one-time migration path), and the 08b protocol-shapes test
-pins the `outcome` discriminator on both arms. `HostPlan` is `{host, generation,
+handler — take the one-time migration path), `remnant-open` (an open teardown
+remnant fences the name — resume it through `teardown-retry` first; the
+`remnantId` field names the blocking remnant), and the 08b protocol-shapes test
+pins the `outcome` discriminator on both arms (including the `remnant-open`
+arm with its `remnantId`). `HostPlan` is `{host, generation,
   targetPath, controllerRevision, restartFollows, factsRevision,
   hubTomlFingerprint, factsCapturedAt: string (RFC3339), factsAgeSec: number,
   runningVersion: string, runningHealthy: bool}` — the token's bindings
@@ -2224,21 +2322,30 @@ pins the `outcome` discriminator on both arms. `HostPlan` is `{host, generation,
   a daemon pid on an incompatible protocol, or any condition that would make
   the hub report `ThreadStatusRestartRequired`, forces `healthy: false`);
   (3) the hub's durable state roots are writable (state-root write probe —
-  a real atomic temp-plus-rename probe inside the state dir (create temp,
-  fsync, rename over a probe name, remove — never the live store or sidecar
-  names — plus a free-space query against the state root; extending the
-  round-twenty-four metadata-only check, which ran an `access(W_OK)`-class
-  probe with no file creation while `runningHealthy` bound into deploy
-  invalidation, so the signal was TOCTOU-vulnerable exactly where it gated
-  work: what changes is the real mutation, so the probe exercises the write
-  path deploy depends on) —
+  a real atomic temp-plus-rename probe inside the state dir (create uniquely
+  named temp per probe — pid plus a per-process counter, never a shared
+  probe name — fsync, rename over the probe's own temp name, remove —
+  never the live store or sidecar names — plus a free-space query against
+  the state root; concurrent probes never share a rename target, so they
+  neither race nor serialize each other; a probe temp orphaned by a crash
+  carries the probe-name prefix and boot prunes prefix-matching strays before
+  serving; extending the round-twenty-four metadata-only check, which ran an
+  `access(W_OK)`-class probe with no file creation while `runningHealthy`
+  bound into deploy invalidation, so the signal was TOCTOU-vulnerable exactly
+  where it gated work, and the round-twenty-five probe, which used one shared
+  probe name with no crash-stray rule: what changes is the real mutation with
+  per-probe unique names plus crash-tolerant cleanup, so the probe exercises
+  the write path deploy depends on without racing concurrent probes or
+  leaking crash temps) —
   a read-only or full disk forces `healthy: false`, since the hub could
   neither persist an operation record nor a sidecar commit). Anything else —
   session counts, load, peer reachability, external dependency status —
   never feeds `healthy`. The 08b protocol-shapes test pins this three-
   condition computation (each forced-false case returns `healthy: false`
   while the probe itself still succeeds — `healthy: false` is data, never a
-  probe failure), so an implementation cannot reduce health to "the probe
+  probe failure; concurrent probes return independently with no shared rename
+  target, and a crash-orphaned probe temp is pruned at boot, never served),
+  so an implementation cannot reduce health to "the probe
   responded": a responding-but-degraded hub binds `runningHealthy: false`
   into the token, and a health change between plan and deploy invalidates the
   plan exactly like a revision change. `GET /api/health` stays the
@@ -2287,12 +2394,28 @@ regenerated client carry this arm as its own interface, and the 08a commit-point
   response `{id: string, clientOperationId: string, state: OperationState}`
   (`id` is the controller-assigned record id): the freshly created record
   reports `"pending"`, and a dedup hit returns the existing record's actual
-  state (`pending`/`running`/`complete`/`failed`/`interrupted`) — the same
-  `OperationRecord.state` the `operations` method returns.
+  state (`pending`/`running`/`complete`/`failed`/`interrupted`/`orphan-unverified`)
+  — the same `OperationRecord.state` the `operations` method returns.
 - `evener/host/restart`: params `{name: string, operationId: string}`;
   response `{id: string, clientOperationId: string, state: OperationState}`
   (fresh create: `"pending"`; dedup hit: the existing record's state, as
   for `deploy`).
+- `evener/host/orphan-resolve` (mutation, same-scope 08b — catalog entry +
+  TypeScript client): params `{id: string}` (the controller-assigned record
+  id of an `orphan-unverified` record); response the updated
+  `OperationRecord` (with `orphanBoundary` while still unverified, without it
+  once resolved). Admission is session-authenticated like every other
+  `evener/host/*` request; unknown `id` → typed not-found, non-unverified
+  record → typed validation refusal, members still present → the
+  transient busy form (never a force-clear). The call never creates an
+  operation record of its own and never advances the host generation — it
+  transitions the named record (`orphan-unverified` → `interrupted` on a
+  clean boundary) under the store mutex in one atomic write — the call itself
+  is never fenced by the orphan admission gate (it is the gate's way out),
+  then the host
+  admits new operations past admission again. The 08b protocol-shapes test
+  pins the params/response plus the `orphan-unverified` state and the
+  `orphanBoundary` field.
 - `evener/host/operations`: params `{name?: string, operationId?: string,
 state?: OperationState, generation?: number, incarnationId?: string, id?: string, limit?: number,
 cursor?: string}` — `operationId`
@@ -2309,18 +2432,29 @@ filter/response exposed only `generation`, so the colliding incarnation was
 unrepresentable and unqueryable); `id` is the detail filter
 for the controller-assigned record id — the busy payload's open/wait-able
 reference resolves through it directly — (all optional
-filters plus pagination; empty params lists the first page of the current
-generation); response
+filters plus pagination; empty params lists the first unfiltered page
+(cross-host, no generation pin — `hostBoundaries` returned; "current
+generation" is reserved for calls that name a host — extending the
+round-twenty-five params text, which promised the first page "of the current
+generation" for a multi-host page that has no single current generation);
+response
   `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number}}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq)` triple per host present on the page) — `limit` defaults
   to 50 and caps at 200; responses never exceed the cap, and an unfiltered
   call pages instead of returning the whole store. `OperationRecord` is `{id,
 clientOperationId, host, generation: number, incarnationId: string, kind: "deploy" | "restart", state:
-  "pending" | "running" | "complete" | "failed" | "interrupted", progress:
+  "pending" | "running" | "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?: {pgid: number, sessionId: number, pid: number, startTime: string}, progress:
   ProgressEntry[], result?: {ok: bool, message: string}, createdAt: string,
   updatedAt: string, hostRemoved: bool, compacted?: true}` — `incarnationId`
   is the pinned incarnation the record ran against (the dedup scope's second
   half, see the operation store — without it the response cannot distinguish
-  the colliding same-generation incarnations); `compacted` is present as
+  the colliding same-generation incarnations); `orphanBoundary` is present
+  exactly on records whose `state` is `orphan-unverified` (absent on every
+  other state per the absent-when-unknown rule — extending the
+  round-twenty-five `operations` detail filter, which exposed the persisted
+  boundary identity only as prose with no wire field, so operators could read
+  it but no client could parse it: the filter still resolves through `id`,
+  and the record now carries the boundary the operator must verify before
+  calling `orphan-resolve`); `compacted` is present as
   `true` exactly on tombstone replays (absent on live records per the
   absent-when-unknown rule — extending the round-twenty-three compacted-marker
   work: compacted replays already had to return `compacted: true`, but the
@@ -2368,6 +2502,22 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   the request, while an unfiltered response carries a per-host boundary map (one
   `(generation, incarnationId, compactSeq)` triple per host present on the
   page) and the cursor encodes that map alongside `(createdAt, id)`
+  (the cursor is a versioned base64url JSON envelope `{v: 1, pos: [createdAt,
+  id], bounds: {[host]: [generation, incarnationId, compactSeq] | "absent"}}`
+  — the absent marker encodes as the literal string `"absent"`, pinned in
+  the 08b protocol-shapes test — capped at 8 KiB encoded (a first page
+  whose boundary map would exceed the cap refuses with typed
+  `cursor-invalidated` naming the cap, never a truncated cursor; the 63-host
+  cap bounds the map, so the cap is reachable only with adversarial
+  incarnation-id lengths, never in normal use); a host created after the
+  cursor was minted has no stored triple to validate — later pages skip
+  its records (a newer host's records appear only on a fresh unpinned read,
+  never mid-pagination; a host removed after mint trips the same stored-triple
+  mismatch rule, so later pages refuse `stale-entry` — see below)
+  (extending the
+  round-twenty-five cursor, which left post-creation hosts undefined and
+  defined no encoding or size bound, so a new host between pages had no
+  specified handling and an unbounded map risked oversized responses)
   (extending the round-twenty-three cursor, which carried a single pair even
   for unfiltered cross-host queries, so later pages could not pin or validate
   mixed-host results — a cursor minted for one pair validated against an
@@ -2442,7 +2592,9 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   fingerprint; the client re-reads and retries), `teardown-unknown-key` (not-found class;
   unknown or purged `remnantId` — never a present-but-cleared remnant, which
   returns the `already-cleared` success arm), `remnant-open` (conflict class;
-  any remnant-gated mutation refused: data names the blocking `remnantId`;
+  any remnant-fenced path refused (re-add/`update`/`remove` on the remnant's
+  name, plus `deploy`/`restart`/`Ensure`-triggered work/`plan`/attach on the
+  name — see the remnant gate): data names the blocking `remnantId`;
   resume it through `teardown-retry` first), `session-unavailable` (the #1603
   attach classifier); `interrupted` is a terminal record state (outcome
   unknown), not a thrown error. `committed-with-teardown-failure` is NOT an
@@ -2479,7 +2631,7 @@ the 08a tests below) (with hand-written request/response types — the
   their atomic writes, shipped as store-owned helpers with no 08b behavior
   behind them); **08b** the union-registration generator change plus the
   union-shaped catalog + regenerated client for the 08a methods alongside
-  `status`/`plan` (token) / `deploy` / `restart` /
+  `status`/`plan` (token) / `deploy` / `restart` / `orphan-resolve` /
   `operations` + the full operation store (records, dedup, tokens,
   reconciliation); **08c** the frontend (settings section,
   dialogs, deploy confirmation). 08b stacks on 08a; 08c stacks on 08b.
@@ -2838,8 +2990,9 @@ post-bump generation without rebumping.**
  only the named teardown (unknown/purged ID → `teardown-unknown-key`
  not-found; present-but-cleared ID → the `already-cleared` success arm;
  retrying the original `mutationId` after resolution returns the resolved
- receipt; any remnant-gated mutation — re-add, `update`, or `remove` on the
- remnant's name — refused with `remnant-open` until the retry completes;
+ receipt; any remnant-fenced path — re-add, `update`, or `remove` on the
+ remnant's name, plus `deploy`/`restart`/`Ensure`-triggered work/`plan`/attach
+ on the name — refused with `remnant-open` until the retry completes;
  the persisted receipt carries exactly `{outcome, row, generation,
  incarnationId, committedAt, remnantId?, remnantResolvedAt?, bootRecovered?}` (`incarnationId` the pinned incarnation — the commit-point test pins the full five-part scoped key, so a shared-generation boot-merge looks the receipt up under the right incarnation; `remnantId`
  while the remnant is open, `remnantResolvedAt` after resolution,
@@ -2865,16 +3018,28 @@ durably; expiry filtering is in-memory only and the durable prune lands on
 the next mutation-path write — the `hub.toml`-fingerprint pre-handler check
 never takes the lock on the read path (mismatch serves the last published
 snapshot lock-free and schedules the reconcile asynchronously, debounced;
-no read ever fails busy for a fingerprint reason).
-Remnant-gate tests: re-add and retention expiry
- skip names with open remnants. Config-path tests: a `--config` startup
+no read ever fails busy for a fingerprint reason; the reconcile re-compares
+fingerprints on completion and reschedules on a still-present mismatch, so a
+coalesced mid-flight edit is never silently lost).
+Remnant-gate tests: re-add and retention expiry skip names with open
+ remnants; while a remnant is open for a name, `deploy`, `restart`,
+ `Ensure`-triggered work, `plan` (no-token `remnant-open` arm with
+ `remnantId`, never a minted token), and attach all refuse with
+ `remnant-open` naming the blocking `remnantId` — the fence is host-wide,
+ never mutation-only. Config-path tests: a `--config` startup
  carries the canonical path into the web config and the sidecar + fingerprint
  derive from it. Collision tests: a tombstone/live collision restores the
  live generation strictly above the high-water mark with pre-collision
  records marked and live records unmarked. **Crash-window test: a
  `hub.toml`/sidecar live-entry collision covered by a pending reconcile
  marker whose fingerprint matches the on-disk file boots into the completed
- cleanup (no hard error); the same collision with no marker, or with a
+ cleanup (no hard error) — the step-(2) write arms the validation
+ fingerprint and the pending marker rides the staging write, so a crash
+ between the commit rename and the staging write, or between staging and the
+ cleanup rename, still boots covered, never unmarked (while an armed intent
+ whose fingerprint still matches the on-disk file with a duplicate present
+ still boots hard-error — hand-made); the same collision with no marker
+ and no armed intent, or with a
  marker whose fingerprint no longer matches, boots into the hard startup
  error. Swap-window tests: a marker with `swapStarted: false` and
  `teardownStarted: false` finalizes without a remnant, while a marker with
@@ -2886,7 +3051,7 @@ a file readable beyond its owner, and the stash gets the same coverage
 stray-stash prune/ignore).**
 - 08b: handler tests per method (validation, admission, classification incl.
   `plan`-as-mutation, **remote-origin rejection for
-`status`/`plan`/`deploy`/`restart`/`operations`/`running`** (`teardown-retry`'s
+`status`/`plan`/`deploy`/`restart`/`operations`/`running`/`orphan-resolve`** (`teardown-retry`'s
 origin rejection is asserted in 08a with its commit-point tests),
   the token matrix:
   missing/mismatched/expired/superseded/consumed-then-replayed-with-new-op-ID
@@ -2939,8 +3104,9 @@ origin rejection is asserted in 08a with its commit-point tests),
   `runningHealthy` placement; handler-absent named for pre-handler
  remotes with the one-time manual-upgrade migration path; no-token `reason`
  discriminates `unattached` | `refresh-failed` | `probe-failed` |
- `handler-absent` and the UI branches on it — no Connect loop for attached
- probe failures)**,
+ `handler-absent` | `remnant-open` (with `remnantId` naming the blocking
+ remnant — see the remnant gate) and the UI branches on it — no Connect
+ loop for attached probe failures)**,
   **restart reattach (the worker retains the gate across the channel drop,
   reattaches through `attachUnderGate` for the pinned entry — never the
   normal attach path, no supervisor start until the post-verification
@@ -3004,17 +3170,23 @@ origin rejection is asserted in 08a with its commit-point tests),
   refusals, never silent page shifts; host-pinned pages carry the top-level
   pair while unfiltered cross-host pages omit it (`hostBoundaries`
   authoritative — the shapes test pins the absence); the cursor pins every
-  host in the query at creation, including absent ones — a host advancing
-  generations between pages is a `stale-entry` re-list refusal)**,
+  host in the query at creation, including absent ones (absent encodes as the
+  literal `"absent"` string, pinned field-for-field) — a host advancing
+  generations between pages is a `stale-entry` re-list refusal; a host created
+  after mint is skipped on later pages (fresh read only); the versioned
+  base64url envelope is capped at 8 KiB encoded (over-cap first page refuses
+  `cursor-invalidated`))**,
   **Darwin orphan ownership (Linux reaps through the cgroup boundary; Darwin
   reaps through the (pgid, session id) boundary plus the launcher-observed
   (pid, start time) marker — never the group id alone — with a pid whose
   start time differs reading as already clean (never signaled), and fails
   closed with durable `orphan-unverified` (resolved by retry at a later boot
-  or by operator recovery through the `operations` detail filter) when
+  or by the authenticated `evener/host/orphan-resolve` call — the record
+  carries `orphanBoundary`, the shapes test pins the `orphan-unverified` state,
+  and the detail filter still resolves through `id`) when
   enumeration is unavailable — and while the record is open the host admits
-  no new operation past admission (transient busy until verified or manually
-  resolved; the fresh operation starts only after local reap completion);
+  no new operation past admission (transient busy until verified or resolved
+  through `orphan-resolve`; the fresh operation starts only after local reap completion);
   fencing kill/wait run under bounded contexts (kill/wait timeout → terminal
   fencing-failure outcome with the gate released, never a stuck host)**), and
   the not-in-forwarded-allow-list
