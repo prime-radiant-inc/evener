@@ -3787,6 +3787,29 @@ function installFailingDecodeStub(): void {
 // desyncing the draft (a revert that bypasses writeDraft). Reproduction:
 // paste an image whose decode later fails, then type SYNCHRONOUSLY (no
 // yield to the microtask queue) before that rejection settles.
+test("a failed decode strips its marker while a selection is held, caret at that selection's start", async () => {
+  installFailingDecodeStub();
+  await mountComposer("ref_a");
+  const editor = textarea();
+
+  act(() => {
+    pastePngInto(editor);
+  });
+  replaceEditorText(editor, "keep [image 1] tail");
+  expect(editor.textContent).toBe("keep [image 1] tail");
+
+  // Hold a real forward selection while the decode fails. The field this
+  // replaced reported the selection's lower offset, so the caret after the
+  // strip belongs at the selection's start, not at its focus end.
+  selectEditorText(editor, 0, 4);
+
+  await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
+
+  expect(editor.textContent).toBe("keep  tail");
+  expect(editorCursor(editor)).toBe(0);
+  expect(readComposerDraft("ref_a")).toEqual({ text: "keep  tail", skillNames: [] });
+});
+
 test("typing synchronously after a paste whose decode later fails survives - the failed marker alone is stripped (critical)", async () => {
   installFailingDecodeStub();
   await mountComposer("ref_a");
