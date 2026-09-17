@@ -170,3 +170,16 @@ func TestListModelsLeavesLimitsNilWhenUnadvertised(t *testing.T) {
 		}
 	}
 }
+
+// TestListModelsReadsContextWindowAlone pins the top-level context_window as a
+// window source on its own. The other tests that touch it also set
+// context_length, so without this one a regression that dropped the
+// context_window field, or its use in row(), would still pass every test while
+// a gateway publishing only that spelling lost its window: ApplyTokenBudget
+// would then skip the total-context clamp and allocate output with no ceiling.
+func TestListModelsReadsContextWindowAlone(t *testing.T) {
+	c := listRow(t, `{"id":"window-only","context_window":1048576}`)
+	if c.ContextWindow == nil || *c.ContextWindow != 1048576 {
+		t.Fatalf("ContextWindow = %v, want 1048576", c.ContextWindow)
+	}
+}

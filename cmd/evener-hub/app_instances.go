@@ -1501,13 +1501,15 @@ func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name,
 }
 
 // SetModelDisabled flips one model row's disabled flag, writing through
-// aliases: an alias id resolves to its target and the flag lands on the
-// target row, so all names of a model share one flag and the alias row
-// itself never carries one. It writes an explicit bool — authoring the row
-// when the model exists only as a curated entry — so the choice survives
-// catalog refreshes. Refusals follow Create's convention: the caller sent
-// the bad name, so unknown instances, glob ids, dangling aliases,
-// cross-provider targets, and unknown rows come back as
+// aliases where the flag is shared: a same-provider alias id resolves to its
+// target and the flag lands there, so all names of one model on one
+// connection share one flag. A cross-provider alias carries its own row on
+// this instance — the config layer cannot author the target's record — so
+// the flag lands on the alias row and each connection keeps its own choice.
+// It writes an explicit bool — authoring the row when the model exists only
+// as a curated entry — so the choice survives catalog refreshes. Refusals
+// follow Create's convention: the caller sent the bad name, so unknown
+// instances, glob ids, dangling aliases, and unknown rows come back as
 // appwire.InvalidParams.
 func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetModelDisabledParams) error {
 	if err := c.refuseWhenBroken(); err != nil {
@@ -1530,9 +1532,9 @@ func (c *hubInstancesController) SetModelDisabled(params appwire.InstanceSetMode
 	if _, ok := c.reg.Get().Instance(name); !ok {
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	// Lockstep: an alias id resolves to its target, and the flag lands on
-	// the target row — never the alias. Membership, glob, dangling, and
-	// cross-provider refusals all come from the same answer.
+	// AliasTarget names the row the flag lands on: a same-provider alias's
+	// target, or a cross-provider alias's own row. Membership, glob, and
+	// dangling refusals all come from the same answer.
 	target, err := c.reg.Get().AliasTarget(name, model)
 	if err != nil {
 		return appwire.InvalidParams(err.Error())
