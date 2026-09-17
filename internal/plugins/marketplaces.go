@@ -300,8 +300,12 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 			// The save already applied - the marketplace is gone from the
 			// listing - so the hub still owes every other client the
 			// broadcast even though this clone is litter Remove could not
-			// clean up.
-			return fmt.Errorf("%w: removing marketplace clone %s: %w", ErrStoreChanged, m.marketplaceDir(name), err)
+			// clean up. This machine's absolute plugin-store path is
+			// server-side detail (the warning below): the client-facing
+			// error names only the marketplace, since this reaches the RPC
+			// caller as a wire error.
+			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+			return fmt.Errorf("%w: removing marketplace %q's clone failed; see the hub's log for detail", ErrStoreChanged, name)
 		}
 	}
 	return nil

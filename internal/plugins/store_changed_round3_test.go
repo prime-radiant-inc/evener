@@ -415,6 +415,42 @@ func TestRemoveMarketplaceWhoseCloneDeleteFailedReportsTheStoreChanged(t *testin
 	}
 }
 
+// The clone-delete failure's error reaches the RPC caller as a wire error;
+// this machine's absolute plugin-store path is server-side detail (a
+// warning), not something a client needs or should see.
+func TestRemoveMarketplaceWhoseCloneDeleteFailedNamesNoAbsolutePath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	original := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = original })
+	marketplaceRemoveAll = func(path string) error {
+		if path == m.marketplaceDir("market-a") {
+			return errors.New("the clone could not be removed")
+		}
+		return original(path)
+	}
+
+	err := m.RemoveMarketplace(ctx, "market-a")
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
+	}
+	if strings.Contains(err.Error(), m.marketplaceDir("market-a")) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "market-a") {
+		t.Fatalf("err = %v, want the marketplace named", err)
+	}
+}
+
 // Install's first access to a seeded, unfetched marketplace (catalogPlugin ->
 // ensureFetched) persists InstallLocation/LastUpdated before it even knows
 // whether the plugin it was asked for exists in the catalog. A plugin that
