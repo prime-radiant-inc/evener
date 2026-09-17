@@ -897,6 +897,11 @@ export function createConversationStore() {
     if (members.length === item.members.length) return duplicates(item) ? null : item;
     const first = members[0];
     if (first === undefined) return null;
+    // Every identity-bearing field comes from the new first member, including
+    // the absence of one: spreading `item` would keep the SUPERSEDED member's
+    // transcriptKey and position, which name what the projection now holds, so
+    // the next publish would read this row as a duplicate and drop the history
+    // it still carries.
     return {
       ...item,
       id: first.id,
@@ -904,8 +909,8 @@ export function createConversationStore() {
       family: first.family,
       detail: first.detail,
       state: members.some((member) => member.state === "running") ? "running" : "completed",
-      ...(first.transcriptKey === undefined ? {} : { transcriptKey: first.transcriptKey }),
-      ...(first.position === undefined ? {} : { position: first.position }),
+      transcriptKey: first.transcriptKey,
+      position: first.position,
       ...(members.length === 1 ? { members: undefined } : { members }),
     };
   }

@@ -1796,6 +1796,80 @@ describe("ConversationStore", () => {
       ).toBe(true);
     });
 
+    // The rebuilt cluster must not keep the superseded member's identity. A
+    // paged row's transcriptKey is the FIRST member's, so when that member is the
+    // one the snapshot now holds and the next member has no key of its own, the
+    // rebuilt row has to drop the key with it — carrying it forward would name an
+    // identity the projection already holds, and the next publish would read the
+    // row as a duplicate and delete the history it still carries.
+    it("drops the superseded member's transcript key when rebuilding a paged cluster", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(runningTurnThread());
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      const member = (id: string, over: { transcriptKey?: string } = {}) => ({
+        id,
+        label: `shell ${id}`,
+        family: "tool" as const,
+        state: "completed" as const,
+        detail: { output: `${id} output` },
+        ...over,
+      });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "keyed-first",
+            transcriptKey: "key-first",
+            label: "shell keyed-first",
+            family: "tool",
+            state: "completed",
+            detail: { output: "keyed-first output" },
+            members: [
+              member("keyed-first", { transcriptKey: "key-first" }),
+              member("unkeyed-second"),
+            ],
+          },
+        ],
+        nextCursor: undefined,
+      };
+      store.setState({ olderCursor: "older-cursor" });
+      await store.getState().loadOlder(service);
+
+      // The reread's snapshot holds the keyed first member.
+      service.readProjectionResult = makeReadProjectionResult(
+        runningTurnThread([
+          {
+            type: "commandExecution",
+            id: "wire-first",
+            transcriptKey: "key-first",
+            toolName: "shell",
+            status: "completed",
+            output: "authoritative",
+          } as ThreadItem,
+        ]),
+      );
+      await store.getState().rehydrate(service, sink);
+
+      const rebuilt = rows(store).find((row) => row.id === "unkeyed-second");
+      expect(rebuilt).toBeDefined();
+      expect(rebuilt?.transcriptKey).toBeUndefined();
+
+      // And it survives the next publish rather than reading as a duplicate.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: { type: "userMessage", id: "u-later", turnId: "t1", text: "later" },
+        },
+      } as AnyNotification);
+      expect(rows(store).some((row) => row.id === "unkeyed-second")).toBe(true);
+    });
+
     it("does not resurrect a removed image when an attachment wire ID changes", async () => {
       const { store, service, sink } = await openRunningTurn([
         {
