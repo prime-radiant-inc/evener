@@ -62,7 +62,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return err
 	}
 	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
-		if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false); err != nil {
+		if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil); err != nil {
 			return err
 		} else if stopped {
 			return nil

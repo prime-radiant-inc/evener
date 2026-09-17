@@ -1992,7 +1992,7 @@ func TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp(t *testing.T)
 		held.Lock()
 		noopDone := make(chan struct{})
 		go func() {
-			if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false); err != nil {
+			if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false, nil); err != nil {
 				t.Errorf("confirmed-stopped no-op: %v", err)
 			}
 			close(noopDone)
@@ -2242,14 +2242,14 @@ func TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping(t *testing.T
 		t.Fatal("fixture discovery did not fail")
 	}
 	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
-	stopped, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false)
+	stopped, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false, nil)
 	if err != nil {
 		t.Fatalf("ordinary shutdown no-op failed on a discovery error: %v", err)
 	}
 	if stopped {
 		t.Fatal("a corrupt discovery read must not prove the session stopped")
 	}
-	if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, true); err == nil {
+	if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, true, nil); err == nil {
 		t.Fatal("force stop must block on a strict discovery failure")
 	} else if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
 		t.Fatalf("force stop discovery failure wire code = %d, want %d (Unavailable)", code, appwire.CodeUnavailable)

@@ -5,11 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // confirmedStoppedResumeFixture establishes durable confirmed-stopped authority
@@ -75,6 +77,83 @@ func TestForceStopConfirmedStoppedValidatesIdentityBeforeCancelingResume(t *test
 		if !locks.HasActiveResume([]string{sessionID}) {
 			t.Fatal("force stop removed the in-flight Resume")
 		}
+	})
+}
+
+// TestForceStopConfirmedStoppedRechecksIdentityBeforeCancelingResume pins the
+// remaining identity window: the caller validates a caller-rendered daemon
+// identity before the confirmed-stopped shortcut, but a replacement claim can
+// appear between that validation and the shortcut's cancellation. The shortcut
+// must recheck the current rendezvous identity immediately before
+// cancelActiveResumes, so the stale request is refused without aborting the
+// in-flight Resume it can no longer address.
+func TestForceStopConfirmedStoppedRechecksIdentityBeforeCancelingResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks, sessionID, active := confirmedStoppedResumeFixture(t)
+		runDir := t.TempDir()
+		resident := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, resident)
+		expected := daemonIdentity(resident)
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The caller's identity validation sees the resident it was rendered
+		// from; the replacement claim appears before the shortcut's
+		// cancellation, on the shortcut's first deletion check.
+		original := deletionTargetState
+		calls := 0
+		deletionTargetState = func(s *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
+			calls++
+			if calls == 2 {
+				if err := rendezvous.Remove(runDir, resident.PID); err != nil {
+					t.Errorf("remove resident claim: %v", err)
+				}
+				replacement := resident
+				replacement.PID = 4302
+				replacement.StartedAt = resident.StartedAt.Add(time.Second)
+				if _, err := rendezvous.Write(runDir, replacement); err != nil {
+					t.Errorf("write replacement claim: %v", err)
+				}
+			}
+			return original(s, ref, threadID)
+		}
+		defer func() { deletionTargetState = original }()
+		cfg := hubcore.WebConfig{
+			RunDir:        runDir,
+			ResumeLocks:   locks,
+			DeletionStore: store,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				t.Error("replacement-claim force stop reached process control")
+				return nil, errors.New("unexpected process control")
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-stopped:
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("stale force stop error = %v, want conflict", err)
+			}
+		default:
+			active.Complete(nil)
+			<-stopped
+			t.Fatal("force stop canceled the in-flight Resume before rechecking the current daemon identity")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("force stop canceled the in-flight Resume before rechecking the current daemon identity")
+		}
+		if !locks.HasActiveResume([]string{sessionID}) {
+			t.Fatal("force stop removed the in-flight Resume")
+		}
+		active.Complete(nil)
 	})
 }
 

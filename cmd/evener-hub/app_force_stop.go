@@ -46,7 +46,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			return err
 		}
 	}
-	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
+	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true, params.ExpectedDaemon); err != nil {
 		return forceStopResumeStopError(err)
 	} else if stopped {
 		refreshAfterForceStop(ctx, cfg)
@@ -318,8 +318,12 @@ func tryLockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) 
 
 // A missing marker is not proof of exit. Only already-confirmed durable
 // recovery authority can authorize this no-op, and only if strict discovery
-// finds no claim against ANY alias while all those aliases are reserved.
-func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, sessionID string, stopResumes bool) (bool, error) {
+// finds no claim against ANY alias while all those aliases are reserved. A
+// non-nil expectedDaemon identity is reverified against current discovery
+// immediately before the stopResumes cancellation, so a replacement claim
+// appearing after the caller's own validation is refused before the in-flight
+// Resume is aborted.
+func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, sessionID string, stopResumes bool, expectedDaemon *appwire.DaemonIdentity) (bool, error) {
 	if cfg.ResumeLocks == nil || cfg.RunDir == "" {
 		return false, nil
 	}
@@ -373,6 +377,21 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		}
 	}
 	if stopResumes {
+		if expectedDaemon != nil {
+			// A replacement claim can appear after the caller's
+			// pre-cancellation identity validation. Recheck the current
+			// rendezvous identity before cancelActiveResumes aborts an
+			// in-flight Resume the request may still have to refuse; the
+			// discovery recheck under alias ownership below stays
+			// authoritative.
+			addressed, err := forceStopEntry(cfg.RunDir, sessionID, cfg.DaemonProcesses, nil, state.ResumeSessionID, expectedDaemon)
+			if err != nil {
+				return false, appwire.Unavailable(err.Error())
+			}
+			if err := expectedDaemonConflict(addressed, expectedDaemon); err != nil {
+				return false, err
+			}
+		}
 		releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 		if err != nil {
 			return false, err
