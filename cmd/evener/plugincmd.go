@@ -17,17 +17,17 @@ import (
 
 type pluginManager interface {
 	SeedDefaultMarketplaces(context.Context) (bool, error)
-	ListMarketplaces(context.Context) (plugins.Marketplaces, bool, error)
+	ListMarketplaces(context.Context) (plugins.Marketplaces, plugins.StoreChanges, error)
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
 	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
-	Browse(context.Context, string) (plugins.Catalog, bool, error)
-	List(context.Context) ([]plugins.ListItem, bool, error)
-	Install(context.Context, string, string) (plugins.InstallEntry, bool, error)
+	Browse(context.Context, string) (plugins.Catalog, plugins.StoreChanges, error)
+	List(context.Context) ([]plugins.ListItem, plugins.StoreChanges, error)
+	Install(context.Context, string, string) (plugins.InstallEntry, plugins.StoreChanges, error)
 	Remove(context.Context, string, string) error
 	SetEnabled(context.Context, string, string, bool) error
 	UpdateAll(context.Context) ([]plugins.InstallEntry, error)
-	Upgrade(context.Context, string, string) (plugins.InstallEntry, bool, error)
+	Upgrade(context.Context, string, string) (plugins.InstallEntry, plugins.StoreChanges, error)
 	SetAutoUpgrade(context.Context, string, string, bool) error
 	Gc(context.Context) ([]string, error)
 	Doctor() ([]plugins.DoctorFinding, error)

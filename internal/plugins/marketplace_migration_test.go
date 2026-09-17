@@ -1255,6 +1255,60 @@ func TestMarketplaceNameMigration_AFailedSaveLeavesTheStoreAsFound(t *testing.T)
 	}
 }
 
+// migrateMarketplaceNames migrates one refused name at a time, each fully
+// saved (saveRename) before the next starts, so a run that migrates the
+// first name and then fails partway through the second leaves the first
+// rename persisted: a real, partial change to the store. changes.Marketplaces
+// is set once, before the loop starts, precisely so a partial run like this
+// one still reports it - round 8's fix for the class of bug where an error
+// dropped whatever the run had already saved.
+func TestMarketplaceNameMigration_AFailedSaveOnTheSecondEntryStillReportsTheStoreChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "foo@bar", "widget")
+	plantLegacyMarketplace(t, m, "foo@qux", "gadget")
+
+	before := refusedMarketplaceNames(mustLoadMarketplaces(t, m))
+	if len(before) != 2 {
+		t.Fatalf("refused names = %v, want both legacy entries", before)
+	}
+
+	calls := 0
+	orig := installSaveRegistry
+	installSaveRegistry = func(path string, reg Registry) error {
+		calls++
+		if calls == 2 {
+			return errors.New("boom")
+		}
+		return orig(path, reg)
+	}
+	t.Cleanup(func() { installSaveRegistry = orig })
+
+	changes, err := m.migrateMarketplaceNames()
+	if err == nil {
+		t.Fatal("migrateMarketplaceNames = nil, want the second entry's save reported failed")
+	}
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the first entry's rename already persisted", changes)
+	}
+
+	after := refusedMarketplaceNames(mustLoadMarketplaces(t, m))
+	if len(after) != 1 {
+		t.Fatalf("refused names after the partial run = %v, want exactly one migrated and one still stuck on its failed save", after)
+	}
+}
+
+// mustLoadMarketplaces is loadMarketplaces with the error handled, for tests
+// that only care about the marketplaces it returns.
+func mustLoadMarketplaces(t *testing.T, m *Manager) Marketplaces {
+	t.Helper()
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return mk
+}
+
 // Every operation that takes the store lock finds the migrated name: on a
 // store nothing has listed, the name the entry was recorded under is gone and
 // the one it was renamed to works.

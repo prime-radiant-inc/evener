@@ -204,19 +204,19 @@ func marketplaceSourceToWire(src plugins.Source) appwire.MarketplaceSourceInput 
 // ListMarketplaces returns every registered marketplace, sorted by name: a
 // single consistent read off the manager (matching hubInstancesController.List).
 //
-// The second return is the manager's own migrated: a pure read can still
+// The second return is the manager's own StoreChanges: a pure read can still
 // persist a legacy-name migration behind the scenes (lockStore runs it on
 // every acquisition), which changes both stores, so the caller broadcasts
-// evener/marketplace/updated and evener/plugin/updated when it's true even
-// though this call asked for neither change.
-func (c *hubPluginsController) ListMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, bool, error) {
+// whichever of evener/marketplace/updated and evener/plugin/updated it names
+// even though this call asked for neither change.
+func (c *hubPluginsController) ListMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, plugins.StoreChanges, error) {
 	return c.listMarketplaces(ctx)
 }
 
-func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, bool, error) {
-	mk, migrated, err := c.mgr.ListMarketplaces(ctx)
+func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, plugins.StoreChanges, error) {
+	mk, changes, err := c.mgr.ListMarketplaces(ctx)
 	if err != nil {
-		return appwire.MarketplaceListResponse{}, migrated, err
+		return appwire.MarketplaceListResponse{}, changes, err
 	}
 	names := make([]string, 0, len(mk))
 	for name := range mk {
@@ -233,7 +233,7 @@ func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.Ma
 			LastUpdated:     hubcore.UnixSeconds(ref.LastUpdated),
 		})
 	}
-	return appwire.MarketplaceListResponse{Marketplaces: entries}, migrated, nil
+	return appwire.MarketplaceListResponse{Marketplaces: entries}, changes, nil
 }
 
 // marketplaceRefusalToWire turns the manager's marketplace sentinels into the
@@ -313,14 +313,14 @@ func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwi
 // unknown name, is classified like RemoveMarketplace's, by
 // marketplaceRefusalToWire; a fetch that failed is not a refusal.
 //
-// The second return reports whether that lazy fetch persisted a backfill to
-// the marketplace store - on top of whatever the catalog parse did, success
-// or failure. The caller broadcasts evener/marketplace/updated when it's
-// true, independent of this call's own error.
-func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, bool, error) {
-	cat, marketplaceChanged, err := c.mgr.Browse(ctx, params.Name)
+// The second return is the manager's own StoreChanges, including on the
+// rollback failure a save can hit after a lazy fetch: the clone still landed
+// on disk, so the caller broadcasts whichever store it names, independent of
+// this call's own error.
+func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, plugins.StoreChanges, error) {
+	cat, changes, err := c.mgr.Browse(ctx, params.Name)
 	if err != nil {
-		return appwire.MarketplaceBrowseResponse{}, marketplaceChanged, marketplaceRefusalToWire(err)
+		return appwire.MarketplaceBrowseResponse{}, changes, marketplaceRefusalToWire(err)
 	}
 	entries := make([]appwire.MarketplaceCatalogPlugin, 0, len(cat.Plugins))
 	for _, p := range cat.Plugins {
@@ -332,7 +332,7 @@ func (c *hubPluginsController) Browse(ctx context.Context, params appwire.Market
 			Author:      p.Author.Name,
 		})
 	}
-	return appwire.MarketplaceBrowseResponse{Name: cat.Name, Description: cat.Description, Plugins: entries}, marketplaceChanged, nil
+	return appwire.MarketplaceBrowseResponse{Name: cat.Name, Description: cat.Description, Plugins: entries}, changes, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -340,16 +340,16 @@ func (c *hubPluginsController) Browse(ctx context.Context, params appwire.Market
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ListPlugins returns every installed plugin. The second return is the
-// manager's own migrated - see ListMarketplaces for what a caller owes when
-// it's true.
-func (c *hubPluginsController) ListPlugins(ctx context.Context) (appwire.PluginListResponse, bool, error) {
+// manager's own StoreChanges - see ListMarketplaces for what a caller owes
+// when it names a change.
+func (c *hubPluginsController) ListPlugins(ctx context.Context) (appwire.PluginListResponse, plugins.StoreChanges, error) {
 	return c.listPlugins(ctx)
 }
 
-func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginListResponse, bool, error) {
-	items, migrated, err := c.mgr.List(ctx)
+func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginListResponse, plugins.StoreChanges, error) {
+	items, changes, err := c.mgr.List(ctx)
 	if err != nil {
-		return appwire.PluginListResponse{}, migrated, err
+		return appwire.PluginListResponse{}, changes, err
 	}
 	entries := make([]appwire.PluginEntry, 0, len(items))
 	for _, it := range items {
@@ -366,7 +366,7 @@ func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginL
 			LastUpdated:  hubcore.UnixSeconds(it.LastUpdated),
 		})
 	}
-	return appwire.PluginListResponse{Plugins: entries}, migrated, nil
+	return appwire.PluginListResponse{Plugins: entries}, changes, nil
 }
 
 // pluginWriteBetween runs after a plugin or marketplace write has applied and
@@ -381,7 +381,7 @@ var pluginWriteBetween = func() {}
 // says the write stands so the handler still broadcasts (#1572).
 func (c *hubPluginsController) pluginListAfterWrite(ctx context.Context) (appwire.PluginListResponse, error) {
 	pluginWriteBetween()
-	// migrated is discarded: the write this answers already owns its own
+	// changes is discarded: the write this answers already owns its own
 	// applied-write broadcast below, which refetches the same listing a
 	// concurrent migration would also have changed.
 	resp, _, err := c.listPlugins(ctx)
@@ -404,30 +404,29 @@ func (c *hubPluginsController) pluginWrite(ctx context.Context, apply func() err
 }
 
 // Install installs a plugin from a marketplace's catalog and returns the
-// updated list, plus whether the manager's first access to a seeded,
-// unfetched marketplace persisted a backfill during this call - a different
-// shape than pluginWrite's other callers (a second bool, not just a listing
-// and an error), so it stays inline. The caller broadcasts
-// evener/marketplace/updated when it's true, regardless of this call's own
-// error.
-func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, bool, error) {
-	_, marketplaceChanged, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace)
+// updated list, plus the manager's own StoreChanges (a lazy fetch's backfill,
+// or lockStore's migration, persisted during this call) - a different shape
+// than pluginWrite's other callers (a second return, not just a listing and
+// an error), so it stays inline. The caller broadcasts whichever store it
+// names, regardless of this call's own error.
+func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, plugins.StoreChanges, error) {
+	_, changes, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace)
 	if err != nil {
-		return appwire.PluginListResponse{}, marketplaceChanged, marketplaceRefusalToWire(err)
+		return appwire.PluginListResponse{}, changes, marketplaceRefusalToWire(err)
 	}
 	resp, err := c.pluginListAfterWrite(ctx)
-	return resp, marketplaceChanged, err
+	return resp, changes, err
 }
 
 // Upgrade re-resolves an installed plugin against its marketplace and returns
 // the updated list. See Install for the second return.
-func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, bool, error) {
-	_, marketplaceChanged, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace)
+func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, plugins.StoreChanges, error) {
+	_, changes, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace)
 	if err != nil {
-		return appwire.PluginListResponse{}, marketplaceChanged, marketplaceRefusalToWire(err)
+		return appwire.PluginListResponse{}, changes, marketplaceRefusalToWire(err)
 	}
 	resp, err := c.pluginListAfterWrite(ctx)
-	return resp, marketplaceChanged, err
+	return resp, changes, err
 }
 
 // Remove deletes an installed plugin's registry entry (and cache dir, if any)

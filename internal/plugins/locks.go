@@ -55,6 +55,38 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 	return acquire(ctx, lockPath, timeout)
 }
 
+// StoreChanges reports which of the two store files a call actually
+// persisted to, independent of whether the call itself succeeded: a write
+// that lands and then hits a failing later step, a lazy fetch's backfill, or
+// lockStore's own legacy-name migration all leave one or both true. It is the
+// one signal every manager method that can silently change either file
+// returns beside its error (never folded into the error, which is how the
+// same fact used to be encoded three different ways before it), so a caller
+// answers "do I owe a broadcast" the same way regardless of which of those
+// caused it, or whether the call also failed for an unrelated reason.
+//
+// A caller that owns its own applied-write signal (writeDidApply in the hub)
+// broadcasts on changes.X || writeDidApply(err) for a write endpoint; a plain
+// read endpoint (list, browse) broadcasts on changes.X alone - writeDidApply
+// answers "did a write that this call was itself responsible for land", not
+// "did nothing fail", so it must not be OR'd in for a call that made no
+// write of its own (writeDidApply(nil) is true, which would broadcast on
+// every successful read otherwise).
+type StoreChanges struct {
+	Marketplaces bool
+	Plugins      bool
+}
+
+// merge combines two StoreChanges, true wherever either says a store
+// changed - the shape a caller that layers one call's changes onto another's
+// uses (lockStore's migration alongside catalogPlugin's own lazy fetch).
+func (c StoreChanges) merge(other StoreChanges) StoreChanges {
+	return StoreChanges{
+		Marketplaces: c.Marketplaces || other.Marketplaces,
+		Plugins:      c.Plugins || other.Plugins,
+	}
+}
+
 // lockStore takes the store lock and, holding it, renames every marketplace
 // recorded under a name the store refuses today (migrateMarketplaceNames).
 // Every mutation and every lazy fetch locks here, so under the store lock
@@ -70,27 +102,24 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // read-only wait on this lock are the two acquisitions that do not come
 // through here.
 //
-// migrated reports whether this acquisition's migration actually changed the
-// store - a persisted rename or merge, not just the check finding nothing to
-// do. It answers hasPendingMigration before migrateMarketplaceNames runs, so
-// even a caller whose own request is a plain read (ListMarketplaces, List,
-// Browse) knows to broadcast the change every other client's listing is now
-// stale against.
-func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (release func(), migrated bool, err error) {
+// changes is migrateMarketplaceNames's own answer, returned even when the
+// migration fails: it renames each refused name independently (each one
+// saved on its own), so a failure partway through never undoes an earlier
+// iteration's already-persisted rename - the whole acquisition owes the
+// broadcast for what did land, not only for a fully clean run. A caller
+// whose own request is a plain read (ListMarketplaces, List, Browse) gets
+// this the same way a write does.
+func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (release func(), changes StoreChanges, err error) {
 	release, err = m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
-		return nil, false, err
+		return nil, StoreChanges{}, err
 	}
-	migrated, err = m.hasPendingMigration()
+	changes, err = m.migrateMarketplaceNames()
 	if err != nil {
 		release()
-		return nil, false, err
+		return nil, changes, err
 	}
-	if err := m.migrateMarketplaceNames(); err != nil {
-		release()
-		return nil, false, err
-	}
-	return release, migrated, nil
+	return release, changes, nil
 }
 
 // migrateStore takes the store lock for nothing but the migration lockStore

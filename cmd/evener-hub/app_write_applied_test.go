@@ -487,6 +487,24 @@ func seedLegacyNamedMarketplace(t *testing.T, pluginRoot string) {
 	}
 }
 
+// seedLegacyNamedMarketplaceWithPlugin is seedLegacyNamedMarketplace plus one
+// installed plugin the legacy name owns, so the migration it triggers
+// genuinely re-keys the registry (not just the marketplaces file):
+// changes.Plugins is only true when a migration actually moves a registry
+// key, and a legacy name with no installed plugins owns none.
+func seedLegacyNamedMarketplaceWithPlugin(t *testing.T, pluginRoot string) {
+	t.Helper()
+	seedLegacyNamedMarketplace(t, pluginRoot)
+	reg := plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"widget@../../escape": {{InstallPath: "widget", Version: "1", Source: plugins.Source{Kind: plugins.SourceDirectory, Path: "widget", Rel: true}}},
+		},
+	}
+	if err := plugins.SaveRegistry(filepath.Join(pluginRoot, "installed_plugins.json"), reg); err != nil {
+		t.Fatalf("seeding installed_plugins.json: %v", err)
+	}
+}
+
 // A plain evener/marketplace/list call can trigger lockStore's legacy-name
 // migration (every acquisition runs it, reads included) and persist a rename
 // - a real change to the marketplace store, the same class of thing round 6
@@ -525,7 +543,7 @@ func TestHubRPCMarketplaceListBroadcastsWhenLockStoreMigratesALegacyName(t *test
 // moment it lands.
 func TestHubRPCPluginListBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T) {
 	pluginRoot := t.TempDir()
-	seedLegacyNamedMarketplace(t, pluginRoot)
+	seedLegacyNamedMarketplaceWithPlugin(t, pluginRoot)
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
 	client := dialHubRPC(t, hub)
@@ -554,7 +572,7 @@ func TestHubRPCPluginListBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T
 // owed even though this particular call failed.
 func TestHubRPCBrowseBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T) {
 	pluginRoot := t.TempDir()
-	seedLegacyNamedMarketplace(t, pluginRoot)
+	seedLegacyNamedMarketplaceWithPlugin(t, pluginRoot)
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
 	client := dialHubRPC(t, hub)

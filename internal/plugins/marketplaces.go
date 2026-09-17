@@ -137,24 +137,24 @@ func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, des
 // catalogPlugin's callers use it to mark ErrMarketplaceStoreChanged on any
 // later failure of their own — the marketplace listing already changed by
 // then, whether or not the plugin they were after ever installs.
-func (m *Manager) ensureFetched(ctx context.Context, name string) (ref MarketplaceRef, fetched bool, err error) {
+func (m *Manager) ensureFetched(ctx context.Context, name string) (ref MarketplaceRef, changes StoreChanges, err error) {
 	mk, err := m.loadMarketplaces()
 	if err != nil {
-		return MarketplaceRef{}, false, err
+		return MarketplaceRef{}, StoreChanges{}, err
 	}
 	ref, ok := mk[name]
 	if !ok {
-		return MarketplaceRef{}, false, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
+		return MarketplaceRef{}, StoreChanges{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	if ref.InstallLocation != "" {
-		return ref, false, nil
+		return ref, StoreChanges{}, nil
 	}
 	installLoc := ref.Source.Path // directory source: referenced in place
 	if ref.Source.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
 		_ = marketplaceRemoveAll(installLoc)
 		if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
-			return MarketplaceRef{}, false, err
+			return MarketplaceRef{}, StoreChanges{}, err
 		}
 	}
 	ref.InstallLocation = installLoc
@@ -165,16 +165,15 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (ref Marketpla
 			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
 				// The name's InstallLocation was never recorded, so nothing
 				// lists this clone - but it still sits on disk where a retry
-				// of this fetch would find it in the way, which is the store
-				// left changed rather than back as it was found
-				// (ErrStoreChanged's own rule). AddMarketplace's own rollback
-				// hits this same shape.
-				return MarketplaceRef{}, false, errors.Join(err, rollbackErr, ErrStoreChanged)
+				// of this fetch would find it in the way, which is the
+				// marketplace store left changed rather than back as it was
+				// found. AddMarketplace's own rollback hits this same shape.
+				return MarketplaceRef{}, StoreChanges{Marketplaces: true}, errors.Join(err, rollbackErr)
 			}
 		}
-		return MarketplaceRef{}, false, err
+		return MarketplaceRef{}, StoreChanges{}, err
 	}
-	return ref, true, nil
+	return ref, StoreChanges{Marketplaces: true}, nil
 }
 
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
@@ -269,12 +268,12 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 // migration barrier (loadMigratedMarketplaces) so that the names it hands back
 // are the ones the store accepts today.
 //
-// migrated reports whether reaching that barrier ran a migration - a pure
-// read can still persist a rename or merge, which changes both the
-// marketplace store and, when the renamed entry has installed plugins, the
-// registry (see Install). A caller must broadcast both when it's true, even
-// though this call itself never asked for either change.
-func (m *Manager) ListMarketplaces(ctx context.Context) (mk Marketplaces, migrated bool, err error) {
+// changes is loadMigratedMarketplaces's own answer: a pure read can still
+// persist a rename or merge, which changes the marketplace store and,
+// separately, the registry when the renamed entry owns installed plugins
+// (see Install). A caller broadcasts whichever it names, even though this
+// call itself never asked for either change.
+func (m *Manager) ListMarketplaces(ctx context.Context) (mk Marketplaces, changes StoreChanges, err error) {
 	return m.loadMigratedMarketplaces(ctx, marketplaceAcquireLock)
 }
 

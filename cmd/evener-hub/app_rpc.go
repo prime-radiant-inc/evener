@@ -1261,14 +1261,16 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 // evener/marketplace/updated or evener/plugin/updated.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
-		resp, migrated, err := pluginsController.ListMarketplaces(ctx)
+		resp, changes, err := pluginsController.ListMarketplaces(ctx)
 		// A plain list can still trigger lockStore's legacy-name migration
 		// (every acquisition runs it, reads included) and persist a rename
-		// or merge - a real change to both stores, so every other client's
-		// listings are stale the moment it lands, whether or not this read
-		// asked for it.
-		if migrated {
+		// or merge - a real change to one or both stores, so every other
+		// client's listings are stale the moment it lands, whether or not
+		// this read asked for it.
+		if changes.Marketplaces {
 			notifyMarketplaceUpdated(server)
+		}
+		if changes.Plugins {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
@@ -1306,29 +1308,32 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
-		resp, marketplaceChanged, err := pluginsController.Browse(ctx, params)
+		resp, changes, err := pluginsController.Browse(ctx, params)
 		// Browse's first access to a seeded, unfetched marketplace persists
 		// its InstallLocation even though Browse itself never writes
 		// anything a caller asked for - every other client's marketplace
 		// listing is stale the moment that backfill lands, whether or not
-		// the catalog parse that follows it succeeds. marketplaceChanged
-		// also covers lockStore's own legacy-name migration, which re-keys
-		// the registry too (see Install), so both broadcast together; the
-		// occasional extra plugin refetch on a plain lazy fetch (which never
-		// touches the registry) is the cost of one shared signal instead of
-		// tracing which of the two a given true actually came from.
-		if marketplaceChanged {
+		// the catalog parse that follows it succeeds (including when the
+		// backfill's own save fails and the rollback that follows it also
+		// fails: the clone still landed). changes also covers lockStore's
+		// own legacy-name migration, which can re-key the registry too (see
+		// Install).
+		if changes.Marketplaces {
 			notifyMarketplaceUpdated(server)
+		}
+		if changes.Plugins {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
-		resp, migrated, err := pluginsController.ListPlugins(ctx)
+		resp, changes, err := pluginsController.ListPlugins(ctx)
 		// See evener/marketplace/list above: a plain plugin list can also
 		// trigger the migration.
-		if migrated {
+		if changes.Marketplaces {
 			notifyMarketplaceUpdated(server)
+		}
+		if changes.Plugins {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
@@ -1349,31 +1354,31 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return resp, err
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, marketplaceChanged, err := pluginsController.Install(ctx, params)
+		resp, changes, err := pluginsController.Install(ctx, params)
 		// Install's first access to a seeded, unfetched marketplace persists
 		// its InstallLocation on top of whatever else this call does -
 		// success, a later catalog/plugin step failing, or the plugin
-		// simply not resolving. marketplaceChanged also covers lockStore's
-		// migration, which re-keys the registry independent of whether the
-		// install itself applied - the || below is what makes that failure
-		// still broadcast the plugin change, not just writeDidApply's own.
-		if writeDidApply(err) || marketplaceChanged {
+		// simply not resolving. changes also covers lockStore's migration,
+		// which can re-key the registry independent of whether the install
+		// itself applied - the || below is what makes that failure still
+		// broadcast the plugin change, not just writeDidApply's own.
+		if writeDidApply(err) || changes.Plugins {
 			notifyPluginUpdated(server)
 		}
-		if marketplaceChanged {
+		if changes.Marketplaces {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, marketplaceChanged, err := pluginsController.Upgrade(ctx, params)
+		resp, changes, err := pluginsController.Upgrade(ctx, params)
 		// See Install above: the same lazy-fetch marketplace change, or the
 		// same migration, can accompany a successful or a failed upgrade
 		// alike.
-		if writeDidApply(err) || marketplaceChanged {
+		if writeDidApply(err) || changes.Plugins {
 			notifyPluginUpdated(server)
 		}
-		if marketplaceChanged {
+		if changes.Marketplaces {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err

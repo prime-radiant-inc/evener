@@ -318,18 +318,59 @@ func TestEnsureFetchedWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.T
 		return origRemove(path)
 	}
 
-	_, _, err := m.ensureFetched(ctx, "market-a")
+	_, changes, err := m.ensureFetched(ctx, "market-a")
 	if err == nil {
 		t.Fatal("ensureFetched = nil, want the failed save reported")
 	}
-	if !errors.Is(err, ErrStoreChanged) {
-		t.Fatalf("err = %v, want it to report the store changed: the rollback itself failed", err)
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the rollback itself failed, so the clone stayed", changes)
 	}
 	if !strings.Contains(err.Error(), "the store file could not be written") {
 		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
 	}
 	if !strings.Contains(err.Error(), "the rollback removal failed") {
 		t.Fatalf("err = %v, want the rollback failure reported too", err)
+	}
+}
+
+// Medium 2 (round 8): Browse calls ensureFetched for its lazy fetch and
+// merges the changes it reports into its own - the same double failure as
+// above (backfill save fails, then the rollback that tries to undo it fails
+// too) must still come out of Browse with Marketplaces true, not lost at the
+// merge.
+func TestBrowseWhoseBackfillSaveAndRollbackBothFailReportsTheStoreChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if err := m.saveMarketplaces(Marketplaces{"market-a": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/repo.git"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	origClone := marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitClone = origClone })
+	marketplaceGitClone = func(_ context.Context, _, dest, _, _ string) error { return os.MkdirAll(dest, 0o755) }
+
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
+	marketplaceRemoveAll = func(path string) error {
+		if path == m.marketplaceDir("market-a") {
+			return errors.New("the rollback removal failed")
+		}
+		return origRemove(path)
+	}
+
+	_, changes, err := m.Browse(ctx, "market-a")
+	if err == nil {
+		t.Fatal("Browse = nil, want the failed backfill save reported")
+	}
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: ensureFetched's rollback failed, so the clone stayed", changes)
 	}
 }
 
@@ -468,15 +509,15 @@ func TestInstallWhoseCatalogLookupFailedReportsTheMarketplaceStoreChanged(t *tes
 		t.Fatal(err)
 	}
 
-	_, marketplaceChanged, err := m.Install(context.Background(), "does-not-exist", name)
+	_, changes, err := m.Install(context.Background(), "does-not-exist", name)
 	if err == nil {
 		t.Fatal("Install(missing plugin) = nil, want the missing plugin reported")
 	}
 	if !errors.Is(err, ErrPluginNotFound) {
 		t.Fatalf("Install(missing plugin) = %v, want ErrPluginNotFound", err)
 	}
-	if !marketplaceChanged {
-		t.Fatal("Install(missing plugin) marketplaceChanged = false, want true: the lazy fetch already persisted")
+	if !changes.Marketplaces {
+		t.Fatal("Install(missing plugin) changes.Marketplaces = false, want true: the lazy fetch already persisted")
 	}
 	mk, _, listErr := m.ListMarketplaces(context.Background())
 	if listErr != nil {
@@ -499,12 +540,12 @@ func TestInstallWhoseCatalogLookupFailedOnAnAlreadyFetchedMarketplaceIsAPlainRef
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
-	_, marketplaceChanged, err := m.Install(context.Background(), "does-not-exist", name)
+	_, changes, err := m.Install(context.Background(), "does-not-exist", name)
 	if err == nil {
 		t.Fatal("Install(missing plugin) = nil, want the missing plugin reported")
 	}
-	if marketplaceChanged {
-		t.Fatal("Install(missing plugin) marketplaceChanged = true, want false: the marketplace was already fetched")
+	if changes.Marketplaces {
+		t.Fatal("Install(missing plugin) changes.Marketplaces = true, want false: the marketplace was already fetched")
 	}
 }
 
@@ -551,12 +592,12 @@ func TestUpgradeWhoseSaveFailedAfterALazyFetchReportsTheMarketplaceStoreChanged(
 		return errors.New("the registry could not be written")
 	}
 
-	_, marketplaceChanged, err := m.Upgrade(context.Background(), "widget", name)
+	_, changes, err := m.Upgrade(context.Background(), "widget", name)
 	if err == nil {
 		t.Fatal("Upgrade = nil, want the failed registry save reported")
 	}
-	if !marketplaceChanged {
-		t.Fatal("Upgrade marketplaceChanged = false, want true: the lazy fetch already persisted")
+	if !changes.Marketplaces {
+		t.Fatal("Upgrade changes.Marketplaces = false, want true: the lazy fetch already persisted")
 	}
 }
 

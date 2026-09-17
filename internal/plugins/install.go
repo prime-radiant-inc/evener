@@ -12,7 +12,7 @@ import (
 
 var (
 	installAcquireLock   = acquireLock
-	installEnsureFetched = func(m *Manager, ctx context.Context, marketplace string) (MarketplaceRef, bool, error) {
+	installEnsureFetched = func(m *Manager, ctx context.Context, marketplace string) (MarketplaceRef, StoreChanges, error) {
 		return m.ensureFetched(ctx, marketplace)
 	}
 	installParseCatalog     = ParseCatalog
@@ -54,26 +54,27 @@ func (m *Manager) saveRegistry(reg Registry) error {
 // fetching a seeded-but-unfetched marketplace first. Callers (Install/Upgrade)
 // already hold m.lockPath(), which ensureFetched requires.
 //
-// fetched reports ensureFetched's own answer: whether this call's lazy fetch
-// persisted the marketplace's backfill. It is set on every return past that
-// point, including plugin-not-found and outright success, so a caller can
-// tell the marketplace listing changed regardless of whether this plugin
-// resolves or installs.
-func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string) (ref MarketplaceRef, cp CatalogPlugin, fetched bool, err error) {
-	ref, fetched, err = installEnsureFetched(m, ctx, marketplace)
+// changes is ensureFetched's own answer, including on error (a rollback
+// failure still leaves the clone on disk - ensureFetched reports that as
+// changed, not just its own success path). It is set on every return past
+// that point, including plugin-not-found, so a caller can tell the
+// marketplace store changed regardless of whether this plugin resolves or
+// installs.
+func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string) (ref MarketplaceRef, cp CatalogPlugin, changes StoreChanges, err error) {
+	ref, changes, err = installEnsureFetched(m, ctx, marketplace)
 	if err != nil {
-		return MarketplaceRef{}, CatalogPlugin{}, false, err
+		return MarketplaceRef{}, CatalogPlugin{}, changes, err
 	}
 	cat, err := installParseCatalog(m.catalogRoot(ref))
 	if err != nil {
-		return MarketplaceRef{}, CatalogPlugin{}, fetched, err
+		return MarketplaceRef{}, CatalogPlugin{}, changes, err
 	}
 	for _, p := range cat.Plugins {
 		if p.Name == plugin {
-			return ref, p, fetched, nil
+			return ref, p, changes, nil
 		}
 	}
-	return MarketplaceRef{}, CatalogPlugin{}, fetched, fmt.Errorf("plugin %q in marketplace %q: %w", plugin, marketplace, ErrPluginNotFound)
+	return MarketplaceRef{}, CatalogPlugin{}, changes, fmt.Errorf("plugin %q in marketplace %q: %w", plugin, marketplace, ErrPluginNotFound)
 }
 
 // stagePlugin resolves a plugin's source. For a directory-marketplace it returns
@@ -122,45 +123,42 @@ func (m *Manager) commitStaged(marketplace, plugin, staging, sha string) (string
 
 // Install installs plugin from marketplace, enabled.
 //
-// marketplaceChanged reports whether this call's first access to a seeded,
-// unfetched marketplace persisted a backfill (InstallLocation/LastUpdated) to
-// the marketplace store, or lockStore's own legacy-name migration renamed or
-// merged something - on top of whatever else happened. It is true on every
-// return past catalogPlugin's own answer, success or failure alike: a caller
-// must broadcast the marketplace change whenever it's true, regardless of
-// whether the plugin itself ever installs. It folds the migration in rather
-// than adding a second return for it, because a migration also re-keys the
-// registry (renaming or merging carries a name's installed plugins to the
-// name it becomes): a caller that sees this true has to consider both
-// evener/marketplace/updated and evener/plugin/updated, not just the one the
-// name suggests.
-func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entry InstallEntry, marketplaceChanged bool, err error) {
-	release, migrated, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+// changes reports whether this call's first access to a seeded, unfetched
+// marketplace persisted a backfill (InstallLocation/LastUpdated) to the
+// marketplace store, or lockStore's own legacy-name migration renamed or
+// merged something - on top of whatever else happened. It is returned on
+// every path past lockStore's own answer, success or failure alike (a
+// validation refusal before catalogPlugin runs still carries whatever the
+// lock's migration already did): a caller must broadcast whichever of
+// Marketplaces/Plugins it names, regardless of whether the plugin itself
+// ever installs.
+func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
-		return InstallEntry{}, false, err
+		return InstallEntry{}, changes, err
 	}
 	defer release()
 
 	if err := validNameComponent("marketplace", marketplace); err != nil {
-		return InstallEntry{}, migrated, err
+		return InstallEntry{}, changes, err
 	}
 	if err := validNameComponent("plugin", plugin); err != nil {
-		return InstallEntry{}, migrated, err
+		return InstallEntry{}, changes, err
 	}
 
-	ref, cp, fetched, err := m.catalogPlugin(ctx, marketplace, plugin)
-	marketplaceChanged = fetched || migrated
+	ref, cp, fetchChanges, err := m.catalogPlugin(ctx, marketplace, plugin)
+	changes = changes.merge(fetchChanges)
 	if err != nil {
-		return InstallEntry{}, marketplaceChanged, err
+		return InstallEntry{}, changes, err
 	}
 	dir, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
-		return InstallEntry{}, marketplaceChanged, err
+		return InstallEntry{}, changes, err
 	}
 	if staged {
 		final, cerr := m.commitStaged(marketplace, plugin, dir, sha)
 		if cerr != nil {
-			return InstallEntry{}, marketplaceChanged, cerr
+			return InstallEntry{}, changes, cerr
 		}
 		dir = final
 	}
@@ -169,13 +167,13 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entr
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = installRemoveAll(dir)
 		}
-		return InstallEntry{}, marketplaceChanged, err
+		return InstallEntry{}, changes, err
 	}
 	if err := installValidateDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = installRemoveAll(dir)
 		}
-		return InstallEntry{}, marketplaceChanged, fmt.Errorf("installed plugin failed validation: %w", err)
+		return InstallEntry{}, changes, fmt.Errorf("installed plugin failed validation: %w", err)
 	}
 
 	now := m.now().UTC()
@@ -192,13 +190,13 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entr
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return InstallEntry{}, marketplaceChanged, err
+		return InstallEntry{}, changes, err
 	}
 	reg.Plugins[registryKey(plugin, marketplace)] = []InstallEntry{entry}
 	if err := m.saveRegistry(reg); err != nil {
-		return InstallEntry{}, marketplaceChanged, err
+		return InstallEntry{}, changes, err
 	}
-	return entry, marketplaceChanged, nil
+	return entry, changes, nil
 }
 
 // Upgrade re-resolves plugin from its marketplace. If the sha changed it
@@ -212,18 +210,17 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entr
 // The auto-upgrade daemon uses upgradeAuto instead, which re-checks the flag
 // under the same lock immediately before acting — see upgradeLocked.
 //
-// marketplaceChanged folds upgradeLocked's own fetched (catalogPlugin's
-// answer) together with lockStore's migrated - see Install for what it means
-// and why a caller must act on it regardless of err, including the plugin
-// broadcast a migration's own re-keying can also owe.
-func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (entry InstallEntry, marketplaceChanged bool, err error) {
-	release, migrated, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+// changes folds upgradeLocked's own answer together with lockStore's - see
+// Install for what it means and why a caller must act on it regardless of
+// err.
+func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
-		return InstallEntry{}, false, err
+		return InstallEntry{}, changes, err
 	}
 	defer release()
-	entry, _, _, fetched, err := m.upgradeLocked(ctx, plugin, marketplace, false)
-	return entry, fetched || migrated, err
+	entry, _, _, upgradeChanges, err := m.upgradeLocked(ctx, plugin, marketplace, false)
+	return entry, changes.merge(upgradeChanges), err
 }
 
 // upgradeLocked contains the actual mechanics of Upgrade. The caller MUST
@@ -244,59 +241,59 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (entr
 // snapshot — so callers can trust it even when another sweep or an explicit
 // upgrade races this one.
 //
-// fetched is catalogPlugin's own answer, forwarded so Upgrade (not
-// upgradeAuto - see its own callers) can report a marketplace change on a
-// later failure the way Install does.
-func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string, requireAutoUpgrade bool) (entry InstallEntry, changed, skipped, fetched bool, err error) {
+// changes is catalogPlugin's own answer, forwarded so Upgrade (not
+// upgradeAuto - see its own callers) can report a marketplace or plugin
+// change on a later failure the way Install does.
+func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string, requireAutoUpgrade bool) (entry InstallEntry, changed, skipped bool, changes StoreChanges, err error) {
 	if err := validNameComponent("marketplace", marketplace); err != nil {
-		return InstallEntry{}, false, false, false, err
+		return InstallEntry{}, false, false, StoreChanges{}, err
 	}
 	if err := validNameComponent("plugin", plugin); err != nil {
-		return InstallEntry{}, false, false, false, err
+		return InstallEntry{}, false, false, StoreChanges{}, err
 	}
 
 	key := registryKey(plugin, marketplace)
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return InstallEntry{}, false, false, false, err
+		return InstallEntry{}, false, false, StoreChanges{}, err
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok || len(entries) == 0 {
-		return InstallEntry{}, false, false, false, fmt.Errorf("%s: %w", key, ErrNotInstalled)
+		return InstallEntry{}, false, false, StoreChanges{}, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	prev := entries[0]
 
 	if requireAutoUpgrade && (!prev.AutoUpgrade || prev.Source.Rel || prev.Source.Kind == SourceDirectory) {
-		return prev, false, true, false, nil
+		return prev, false, true, StoreChanges{}, nil
 	}
 
-	ref, cp, fetched, err := m.catalogPlugin(ctx, marketplace, plugin)
+	ref, cp, changes, err := m.catalogPlugin(ctx, marketplace, plugin)
 	if err != nil {
-		return InstallEntry{}, false, false, fetched, err
+		return InstallEntry{}, false, false, changes, err
 	}
 	staging, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
-		return InstallEntry{}, false, false, fetched, err
+		return InstallEntry{}, false, false, changes, err
 	}
 	if !staged || sha == prev.GitCommitSha {
 		if staged {
 			_ = installRemoveAll(staging)
 		}
-		return prev, false, false, fetched, nil
+		return prev, false, false, changes, nil
 	}
 
 	final, err := m.commitStaged(marketplace, plugin, staging, sha)
 	if err != nil {
-		return InstallEntry{}, false, false, fetched, err
+		return InstallEntry{}, false, false, changes, err
 	}
 	note, err := installManifestFallback(final, true, cp)
 	if err != nil {
 		_ = installRemoveAll(final)
-		return InstallEntry{}, false, false, fetched, err
+		return InstallEntry{}, false, false, changes, err
 	}
 	if err := installValidateDir(final); err != nil {
 		_ = installRemoveAll(final)
-		return InstallEntry{}, false, false, fetched, fmt.Errorf("upgraded plugin failed validation: %w", err)
+		return InstallEntry{}, false, false, changes, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
 	prev.InstallPath = final
@@ -307,9 +304,9 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	prev.Note = note
 	reg.Plugins[key] = []InstallEntry{prev}
 	if err := m.saveRegistry(reg); err != nil {
-		return InstallEntry{}, false, false, fetched, err
+		return InstallEntry{}, false, false, changes, err
 	}
-	return prev, true, false, fetched, nil
+	return prev, true, false, changes, nil
 }
 
 func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) error {
@@ -407,16 +404,16 @@ func splitKey(key string) (plugin, marketplace string) {
 // none of this listing's business, so the barrier's lock is released again
 // before the registry is read.
 //
-// migrated is loadMigratedMarketplaces's own answer - see ListMarketplaces
+// changes is loadMigratedMarketplaces's own answer - see ListMarketplaces
 // for what a caller owes when it's true.
-func (m *Manager) List(ctx context.Context) (out []ListItem, migrated bool, err error) {
-	_, migrated, err = m.loadMigratedMarketplaces(ctx, installAcquireLock)
+func (m *Manager) List(ctx context.Context) (out []ListItem, changes StoreChanges, err error) {
+	_, changes, err = m.loadMigratedMarketplaces(ctx, installAcquireLock)
 	if err != nil {
-		return nil, migrated, err
+		return nil, changes, err
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return nil, migrated, err
+		return nil, changes, err
 	}
 	// Non-nil even when nothing is installed: callers (cmd/evener/plugincmd.go's
 	// `list --json`) JSON-encode this directly, and a nil slice would encode as
@@ -447,7 +444,7 @@ func (m *Manager) List(ctx context.Context) (out []ListItem, migrated bool, err 
 		}
 		return out[i].Marketplace < out[j].Marketplace
 	})
-	return out, migrated, nil
+	return out, changes, nil
 }
 
 // UpdateAll upgrades every installed, git-backed plugin (directory/relative

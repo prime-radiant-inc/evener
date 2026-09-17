@@ -129,23 +129,22 @@ func catalogPluginName(raw json.RawMessage) string {
 // Browse returns the parsed catalog of a registered marketplace, lazily
 // cloning it first if it was only seeded as an unfetched pointer.
 //
-// marketplaceChanged is ensureFetched's own answer (whether this call's lazy
-// fetch persisted a backfill to the marketplace store) folded together with
-// lockStore's migrated - see Install for why a migration's own re-keying
-// means a caller must consider the plugin broadcast too, not only the
-// marketplace one the name suggests. True on top of whatever the catalog
-// parse below does, whether or not that parse succeeds.
-func (m *Manager) Browse(ctx context.Context, name string) (cat Catalog, marketplaceChanged bool, err error) {
-	release, migrated, err := m.lockStore(ctx, acquireLock, 30*time.Second)
+// changes is ensureFetched's own answer (whether this call's lazy fetch
+// persisted a backfill to the marketplace store, including on a rollback
+// failure) folded together with lockStore's - see Install for what it means
+// and why a caller must act on it regardless of err. True on top of whatever
+// the catalog parse below does, whether or not that parse succeeds.
+func (m *Manager) Browse(ctx context.Context, name string) (cat Catalog, changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, acquireLock, 30*time.Second)
 	if err != nil {
-		return Catalog{}, false, err
+		return Catalog{}, changes, err
 	}
 	defer release()
-	ref, fetched, err := m.ensureFetched(ctx, name)
-	marketplaceChanged = fetched || migrated
+	ref, fetchChanges, err := m.ensureFetched(ctx, name)
+	changes = changes.merge(fetchChanges)
 	if err != nil {
-		return Catalog{}, marketplaceChanged, err
+		return Catalog{}, changes, err
 	}
 	cat, err = ParseCatalog(m.catalogRoot(ref))
-	return cat, marketplaceChanged, err
+	return cat, changes, err
 }

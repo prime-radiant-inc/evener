@@ -52,48 +52,22 @@ import (
 // on the lock has to stop with the client. The same branch creates the
 // store's .lock file in a store that had none, and a listing that finds
 // nothing to migrate never reaches it.
-// migrated reports whether taking the lock actually ran a migration: false
-// on the fast path above, which skips the lock (and so the migration)
-// entirely when nothing in the current map is refused.
-func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcquirer) (mk Marketplaces, migrated bool, err error) {
+// changes is lockStore's own answer, returned even when the lock itself or
+// the read after it fails: false/false on the fast path above, which skips
+// the lock (and so the migration) entirely when nothing in the current map
+// is refused.
+func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcquirer) (mk Marketplaces, changes StoreChanges, err error) {
 	mk, err = m.loadMarketplaces()
 	if err != nil || len(refusedMarketplaceNames(mk)) == 0 {
-		return mk, false, err
+		return mk, StoreChanges{}, err
 	}
-	release, migrated, err := m.lockStore(ctx, acquire, 30*time.Second)
+	release, changes, err := m.lockStore(ctx, acquire, 30*time.Second)
 	if err != nil {
-		return nil, false, err
+		return nil, changes, err
 	}
 	defer release()
 	mk, err = m.loadMarketplaces()
-	return mk, migrated, err
-}
-
-// hasPendingMigration reports whether migrateMarketplaceNames, called right
-// after under the same lock, has real work to do: an unfinished rename an
-// earlier run's crash left a marker for (and that marker names a real
-// rename, not a stale one namesNoRename would drop), or a marketplace
-// recorded under a name the store no longer accepts. Read before that call
-// mutates anything, so a caller that needs to know a migration is about to
-// change the store - and so must broadcast evener/marketplace/updated and
-// evener/plugin/updated once it lands - gets an answer that reflects the
-// state before it ran. This is a coarser question than tracing exactly which
-// of the two store files migrateMarketplaceNames's several branches touch:
-// migrating always loads and can save both together, so treating one
-// combined signal as changing both is what the code actually does.
-func (m *Manager) hasPendingMigration() (bool, error) {
-	marker, err := m.loadRenameMarker()
-	if err != nil {
-		return false, err
-	}
-	if marker != nil && marker.namesNoRename() == nil {
-		return true, nil
-	}
-	mk, err := m.loadMarketplaces()
-	if err != nil {
-		return false, err
-	}
-	return len(refusedMarketplaceNames(mk)) > 0, nil
+	return mk, changes, err
 }
 
 // migrateMarketplaceNames finishes the rename an interrupted run left in
@@ -107,30 +81,52 @@ func (m *Manager) hasPendingMigration() (bool, error) {
 // is saved on its own, so a failure leaves the entries before it migrated and
 // the failing one as it was found, and the error names it. The caller must
 // hold the store lock.
-func (m *Manager) migrateMarketplaceNames() error {
-	if err := m.recoverMarkedRename(); err != nil {
-		return err
+//
+// changes is returned on every path, including failure: recoverMarkedRename's
+// own answer, folded with this run's. Once there is a refused name to
+// migrate, changes.Marketplaces is set before the loop below even starts,
+// not only once an iteration has landed - a run that fails on its first name
+// touches marketplaces.json no more than one that never started, but a run
+// that fails on its second name has already saved the first, and the two
+// cases are indistinguishable from outside this function without tracing
+// every iteration's own success. changes.Plugins is set only for a run whose
+// refused names actually own installed plugins to re-key (registryKeyOwners),
+// computed once up front rather than traced per iteration for the same
+// reason.
+func (m *Manager) migrateMarketplaceNames() (changes StoreChanges, err error) {
+	changes, err = m.recoverMarkedRename()
+	if err != nil {
+		return changes, err
 	}
 	mk, err := m.loadMarketplaces()
 	if err != nil {
-		return err
+		return changes, err
 	}
 	names := refusedMarketplaceNames(mk)
 	if len(names) == 0 {
-		return nil
+		return changes, nil
 	}
 	names, err = m.migrationOrder(names)
 	if err != nil {
-		return err
+		return changes, err
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return err
+		return changes, err
 	}
 	// The name each rename of this run recorded, against the alias family it
 	// belongs to: the two directories the refused name derived and the source
 	// its record names. A merge records none.
 	owners := registryKeyOwners(reg, mk)
+	changes.Marketplaces = true
+	for _, name := range names {
+		for _, owner := range owners {
+			if owner == name {
+				changes.Plugins = true
+				break
+			}
+		}
+	}
 	recordedThisRun := map[recordedAlias]string{}
 	// The families earlier runs recorded, so an alias still waiting for the
 	// marketplace they migrated knows which record its directories became. An
@@ -138,7 +134,7 @@ func (m *Manager) migrateMarketplaceNames() error {
 	// merge into, so loading drops it.
 	rec, err := m.loadMigrationRecord()
 	if err != nil {
-		return err
+		return changes, err
 	}
 	before := len(rec.Renames)
 	kept := make([]recordedRename, 0, before)
@@ -158,19 +154,19 @@ func (m *Manager) migrateMarketplaceNames() error {
 	rec.Renames = kept
 	if len(kept) != before {
 		if err := m.saveMigrationRecord(rec); err != nil {
-			return err
+			return changes, err
 		}
 	}
 	for _, name := range names {
 		ref := mk[name]
 		dirs, err := m.marketplaceDirsKey(name)
 		if err != nil {
-			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
+			return changes, fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
 		key := recordedAlias{dirs: dirs, src: ref.Source}
 		alias, err := m.migratedUnderAnAlias(dirs, ref, mk, reg, recordedThisRun)
 		if err != nil {
-			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
+			return changes, fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
 		if alias {
 			// The record it merges into is where that rename put the
@@ -178,14 +174,14 @@ func (m *Manager) migrateMarketplaceNames() error {
 			// free: the clone and the cache both names derive moved with it.
 			into := recordedThisRun[key]
 			if reg, err = m.mergeIntoMigrated(mk, owners, reg, name, into); err != nil {
-				return fmt.Errorf("merging marketplace %q, recorded under a name the store no longer accepts, into %q: %w", name, into, err)
+				return changes, fmt.Errorf("merging marketplace %q, recorded under a name the store no longer accepts, into %q: %w", name, into, err)
 			}
 			_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts, and names the same marketplace as %q; merged its plugins into that record and dropped the duplicate\n", name, into)
 			continue
 		}
 		newName, err := m.freeMarketplaceName(migratedMarketplaceName(name), mk, reg)
 		if err != nil {
-			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
+			return changes, fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
 		// Written down before the rename, so a process that stops here still
 		// leaves the family for the next run the way the marker leaves it the
@@ -195,15 +191,15 @@ func (m *Manager) migrateMarketplaceNames() error {
 			Clone: dirs.clone, Cache: dirs.cache,
 		})
 		if err := m.saveMigrationRecord(rec); err != nil {
-			return fmt.Errorf("recording the migration of marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
+			return changes, fmt.Errorf("recording the migration of marketplace %q, recorded under a name the store no longer accepts: %w", name, err)
 		}
 		if reg, err = m.migrateMarketplaceName(mk, owners, reg, name, newName); err != nil {
-			return fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts, to %q: %w", name, newName, err)
+			return changes, fmt.Errorf("renaming marketplace %q, recorded under a name the store no longer accepts, to %q: %w", name, newName, err)
 		}
 		recordedThisRun[key] = newName
 		_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was recorded under a name the store no longer accepts; renamed it to %q\n", name, newName)
 	}
-	return nil
+	return changes, nil
 }
 
 // recoverMarkedRename finishes the rename a marker names, which is the one a
@@ -226,30 +222,40 @@ func (m *Manager) migrateMarketplaceNames() error {
 // rename moved there and what the user put there, and nothing left in the
 // store tells the two apart, so the acquisition fails naming both names and
 // the marker. The caller must hold the store lock.
-func (m *Manager) recoverMarkedRename() error {
+// changes is returned on every path: false/false where there was nothing to
+// recover, or nothing recorded yet to act on, and unconditionally true/true
+// from the point a real rename or merge is being finished (see
+// finishMarkedMerge and the moves below) - including on failure, since a
+// marker this far along can already have moved directories or rewritten
+// registry keys before the step that fails, and tracing exactly how far
+// through moveMarketplace/finishMarkedMerge's several branches a given
+// failure got is not worth doing twice over what migrateMarketplaceNames
+// already does for its own run.
+func (m *Manager) recoverMarkedRename() (StoreChanges, error) {
 	marker, err := m.loadRenameMarker()
 	if err != nil || marker == nil {
-		return err
+		return StoreChanges{}, err
 	}
 	if why := marker.namesNoRename(); why != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: %s in the plugin store names no rename to finish (%v); dropped it\n", renameMarkerFileName, why)
 		m.removeRenameMarker()
-		return nil
+		return StoreChanges{}, nil
 	}
 	mk, err := m.loadMarketplaces()
 	if err != nil {
-		return err
+		return StoreChanges{}, err
 	}
 	ref, recorded := mk[marker.From]
 	if !recorded {
 		m.removeRenameMarker()
-		return nil
+		return StoreChanges{}, nil
 	}
+	changes := StoreChanges{Marketplaces: true, Plugins: true}
 	if marker.Merge {
-		return m.finishMarkedMerge(mk, *marker)
+		return changes, m.finishMarkedMerge(mk, *marker)
 	}
-	fail := func(err error) error {
-		return fmt.Errorf("finishing the rename of marketplace %q to %q, which an earlier run left unfinished: %w", marker.From, marker.To, err)
+	fail := func(err error) (StoreChanges, error) {
+		return changes, fmt.Errorf("finishing the rename of marketplace %q to %q, which an earlier run left unfinished: %w", marker.From, marker.To, err)
 	}
 	if _, taken := mk[marker.To]; taken && marker.To != marker.From {
 		path, err := m.storePath(renameMarkerFileName)
@@ -336,7 +342,7 @@ func (m *Manager) recoverMarkedRename() error {
 	}
 	m.removeRenameMarker()
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was being renamed to %q when an earlier run stopped; finished the rename\n", marker.From, marker.To)
-	return nil
+	return changes, nil
 }
 
 // finishMarkedMerge finishes the merge a marker names: whatever keys are
