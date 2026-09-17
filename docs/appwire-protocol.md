@@ -1951,6 +1951,7 @@ _(no fields)_
 | `ref` | `string` |  |  |
 | `status` | `appwire.ThreadStatus` |  |  |
 | `failedToolCalls` | `*int` | yes |  |
+| `askPending` | `*bool` | yes |  |
 | `capabilities` | `*appwire.ThreadCapabilities` | yes |  |
 
 
