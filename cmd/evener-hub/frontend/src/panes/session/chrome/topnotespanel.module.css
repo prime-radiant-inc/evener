@@ -7,15 +7,20 @@
   margin-top: calc(-1 * var(--space-5));
 }
 
-/* Expanded, the panel is a floating layer over the transcript flow, so it
- * takes the design system's one elevation treatment (the same family as
- * menus and dialogs): surface-2 fill, pane radius, and the overlay ring +
- * soft shadow. Collapsed it stays flat structural chrome: a hairline-under
- * row inside the pane's own padding, no card. */
+/* Expanded, the panel is a floating layer over the transcript flow: surface-2
+ * fill, pane radius, and a clear boundary with the overlay family's soft
+ * shadow. The boundary is a real border, NOT --shadow-overlay's ring: the
+ * ring is a spread box-shadow, which paints OUTSIDE the border box and gets
+ * shaved by the pane body's scrollport at the flush top edge (that was the
+ * broken-corner look); a border paints inside the box and cannot be clipped.
+ * overflow: hidden tucks the header and the body's scrollbar into the
+ * rounded corners; it never clips the card's own shadow. */
 .topNotesPanel[data-expanded="true"] {
+  overflow: hidden;
   background: var(--surface-2);
+  border: 1px solid var(--edge-strong);
   border-radius: var(--radius-pane);
-  box-shadow: var(--shadow-overlay);
+  box-shadow: 0 8px 28px var(--shadow-color);
 }
 
 .summary {
@@ -101,7 +106,6 @@
   width: 100%;
   border: none;
   border-bottom: 1px solid var(--edge);
-  border-radius: var(--radius-pane) var(--radius-pane) 0 0;
   text-align: left;
   height: 28px;
   min-height: 28px;
