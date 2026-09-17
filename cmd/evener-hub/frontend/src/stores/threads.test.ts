@@ -4214,9 +4214,13 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     const independent = new MutationOutboxIndexedDB();
     await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toHaveLength(1));
 
+    // The genuine wire shape for an authoritatively empty queue: Go's
+    // QueueState omits both Depth and ClientMutationIDs (appwire/types.go's
+    // own `omitempty` tags) rather than sending 0 or []. Only Revision is
+    // guaranteed present.
     fake.emitNotification({
       method: "thread/queueChanged",
-      params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 8, clientMutationIds: [] } },
+      params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 8 } },
     });
 
     await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
@@ -4255,13 +4259,15 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
 
     // The authoritative snapshot NAMES the accepted id (still queued, from
     // its own point of view) rather than omitting it - settled via
-    // reconcileIdentities, not retired as absent.
+    // reconcileIdentities, not retired as absent. depth is present here
+    // (the genuine wire shape for a non-empty queue: Go's QueueState omits
+    // depth only when it is zero).
     fake.emitNotification({
       method: "thread/queueChanged",
       params: {
         threadId: "thr_ref_a",
         ref: "ref_a",
-        queue: { revision: 8, clientMutationIds: [record!.clientMutationId] },
+        queue: { revision: 8, depth: 1, clientMutationIds: [record!.clientMutationId] },
       },
     });
 
@@ -4299,14 +4305,17 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
 
     // The next authoritative read's queue names neither - both were
     // consumed while this client's own live connection missed the push (or
-    // never got one, per the replayed-drain case).
+    // never got one, per the replayed-drain case). The genuine wire shape
+    // for an authoritatively empty queue omits both depth and
+    // clientMutationIds (Go's own `omitempty` tags); only revision is
+    // guaranteed present.
     fake.on("thread/read", (params) =>
       readResponse(params.ref ?? "ref_a", {
         turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
         evener: {
           ref: params.ref ?? "ref_a",
           capabilities: CAPABILITIES,
-          queue: { revision: 99, clientMutationIds: [] },
+          queue: { revision: 99 },
           activeTurnId: "turn_1",
         },
       }),

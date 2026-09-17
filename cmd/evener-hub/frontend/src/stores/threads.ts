@@ -1435,11 +1435,15 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
 // - never sets it at all, #1704/#1705); depth is computed the same way on
 // every path, so depth === 0 is proof of an empty queue even without ids.
 // Anything else with ids missing is coverage this reading cannot vouch for.
+// Depth itself is `omitempty` on the wire (appwire/types.go's QueueState),
+// so an authoritatively empty queue arrives with depth absent, not 0 -
+// `?? 0` is the codebase's own convention for that (liveControls.ts's
+// controlsFor reads `model.queue?.depth ?? 0` the same way).
 function queueSnapshotFromWire(queue: QueueState, authoritative: boolean, instanceId: string): QueueSnapshot {
   const ids =
     queue.clientMutationIds !== undefined
       ? new Set(queue.clientMutationIds)
-      : queue.depth === 0
+      : (queue.depth ?? 0) === 0
         ? new Set<string>()
         : undefined;
   return { ids, revision: queue.revision, authoritative, instanceId };
