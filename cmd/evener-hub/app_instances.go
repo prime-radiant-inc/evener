@@ -1506,8 +1506,18 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	stamp := c.auth.now().UnixNano()
 	aside := fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)
 	for {
-		if _, err := os.Lstat(aside); errors.Is(err, os.ErrNotExist) {
+		_, err := os.Lstat(aside)
+		if errors.Is(err, os.ErrNotExist) {
 			break
+		}
+		if err != nil {
+			// The candidate could not be checked, so nothing here can promise
+			// the rename will not land on a copy that is already there - and a
+			// failure other than "not there" (a directory this process cannot
+			// search, a candidate past the name limit) fails the rename too.
+			// Stepping past it would spin here instead, holding the caller's
+			// credMu, so the whole removal is refused with the cause named.
+			return "", fmt.Errorf("remove %s: check whether %s is free to set its OAuth state aside: %w", name, aside, err)
 		}
 		stamp++
 		aside = fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)

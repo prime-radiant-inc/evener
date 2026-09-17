@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	authopenai "primeradiant.com/evener/auth/openai"
@@ -160,5 +161,52 @@ func TestInstances_RemoveReportsWhenAnOAuthCopyCannotBeReclaimed(t *testing.T) {
 	// The RPC handler announces a removal that stood on exactly this error.
 	if _, persisted := errors.AsType[removePersistedError](err); !persisted {
 		t.Fatalf("Remove = %v (%T), want a removePersistedError so the removal is announced", err, err)
+	}
+}
+
+// TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked: naming
+// the path a record is set aside at is a check followed by a rename, and a stat
+// that fails for anything but "not there" - a directory this process cannot
+// search, a candidate past the name limit - cannot say whether the destination
+// is free. Stepping past that error would spin while the removal holds credMu,
+// so the call refuses with the cause named instead. The timeout is the guard: a
+// regression to spinning fails here rather than hanging the suite. The removal
+// itself is asked below, because a state root whose records cannot be read is
+// one whose instance no longer resolves a credential, so a removal would be
+// refused earlier and never reach this check.
+func TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	path := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if _, err := os.Lstat(path); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Skip("this process can still stat through a 0000 directory (running as root?); the premise needs one it cannot")
+	}
+
+	type aside struct {
+		path string
+		err  error
+	}
+	done := make(chan aside, 1)
+	go func() {
+		asidePath, err := f.ctl.setAsideOAuthFile("openai-codex")
+		done <- aside{asidePath, err}
+	}()
+	select {
+	case got := <-done:
+		if got.err == nil || !strings.Contains(got.err.Error(), "is free to set its OAuth state aside") {
+			t.Fatalf("setAsideOAuthFile = (%q, %v), want the refusal naming the check that could not be made", got.path, got.err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("setAsideOAuthFile did not return: the aside-candidate loop is spinning while holding credMu")
 	}
 }
