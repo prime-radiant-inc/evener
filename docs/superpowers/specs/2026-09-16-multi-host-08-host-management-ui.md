@@ -129,7 +129,8 @@ what makes the federation fully operable without a terminal.
   deploy's planned restart, see `evener/host/restart` and `deploy`) is the
   sanctioned non-user path (extending the round-fourteen `attachUnderGate` and
   round-eleven wording) (`plan`'s gated
-  preflight refresh is one of the two deliberate non-attach SSH uses — the other is the
+  preflight refresh is one of the two deliberate non-attach SSH uses (run with
+  no gate held, the gate acquired only after it completes — see `plan`) — the other is the
  deploy/restart worker's post-operation preflight, the same one-shot preflight
  (see worker lifetime): bounded one-shot preflight
   command executions over the manager's transport that never initialize a
@@ -152,25 +153,34 @@ its AppWire protocol catalog entry + regenerated TypeScript client with the
 exact shapes in Protocol types, below.
 
 **Host mutations are serialized by one process-wide lock** (all of
-`add`/`update`/`remove` take it for their entire staged commit — and so does
-every other sidecar read-modify-write: `teardown-retry`'s remnant clearance,
-retention-expiry pruning, and marker finalization all run under the same lock
-(extending the round-eight serialization; the fixed lock order with the store
-mutex lands in the operation store below — the mutation lock is outermost, the
-store mutex innermost), so concurrent
-read-modify-write on the sidecar cannot lose updates.
+`add`/`update`/`remove` hold it only across stage, persist, and swap plus the
+remnant/receipt state transitions — released across post-commit teardowns and
+re-acquired to finalize — and so does every other sidecar read-modify-write:
+`teardown-retry`'s remnant clearance, retention-expiry pruning, and marker
+finalization all run under the same lock for their transitions only, never
+across a teardown (extending the round-eight serialization and the
+round-nineteen foreign-marker pattern — r19 held the normal-commit lock
+across post-commit teardowns while foreign finalization and `teardown-retry`
+ran teardowns outside it, blocking every host mutation through slow teardown;
+the fixed lock order with the store mutex lands in the operation store
+below — the mutation lock is outermost, the store mutex innermost), so
+concurrent read-modify-write on the sidecar cannot lose updates.
 **Mutation idempotency:** every `add`/`update`/`remove` accepts an optional
 opaque `mutationId` (non-empty, at most 128 bytes, no required structure —
 the same rules as client operation IDs). The staged commit persists a durable
 mutation receipt in two writes — the single explicit receipt write point (extending
 the round-ten receipt): the step-(2) sidecar write carries a transient
-`pendingMutation` marker (the scoped key plus `stagedAt` plus the staged
-provisional payload — explicitly provisional outcome, row, generation, a
-pre-minted `remnantId`, and the pinned teardown target (the in-progress
-remnant: the staged supervisor/channel/fan-out teardown description for this
-commit, resolvable without the live entry — the step-(2) write lands before
-the post-commit rebind executes the first teardown, so the target and its
-remnant are durable before any irreversible teardown destroys a handle);
+`pendingMutation` marker (the scoped key plus `stagedAt` plus a
+`teardownStarted` flag (false at stage time, flipped true in its own atomic
+write after the swap and before the first teardown — see crash-window
+recovery below; a `finalizingMutation` claim carries the flag as true)
+plus the staged provisional payload — explicitly provisional outcome, row,
+generation, a pre-minted `remnantId`, and the pinned teardown target (the
+in-progress remnant: the staged supervisor/channel/fan-out teardown
+description for this commit, resolvable without the live entry — the step-(2)
+write lands before the post-commit rebind executes the first teardown, so
+the target and its remnant are durable before any irreversible teardown
+destroys a handle);
 a single object, never a map — at most one staged
 commit holds the mutation lock), and the
 post-commit write replaces the marker with the finalized mutation receipt —
@@ -196,22 +206,48 @@ finalizes that marker first — with the pinned-teardown re-run above executed
 OUTSIDE the mutation lock (extending the round-eighteen marker work and the
 round-fifteen lock work — r18 finalized the foreign marker, pinned teardown
 included, while holding the process-wide lock, blocking every host mutation
-through a potentially slow supervisor/channel teardown): the finder takes the
-lock only for the marker/receipt state transitions (read the marker, run the
-pinned teardown with no lock held under the marker's generation/incarnation
-guards, re-take the lock to persist the finalized receipt plus real remnant),
+through a potentially slow supervisor/channel teardown): the finder first
+atomically claims the marker in one sidecar write under the lock — replacing
+the `pendingMutation` marker with a `finalizingMutation` claim carrying the
+same scoped key plus a server-generated opaque attempt token (extending the
+round-nineteen lock work — r19 released the lock across the teardown with no
+claim state, so a concurrent mutation or `teardown-retry` could finalize the
+same marker twice with conflicting receipts/remnants): any other path finding
+a `finalizingMutation` claim waits for or recovers the claim instead of
+re-finalizing — a live claimant re-runs to completion before responding busy,
+a dead claimant's claim (crashed or vanished holder) is adopted by re-running
+the pinned teardown under the same generation/incarnation guards and
+finalizing under the claimant's attempt token — then releases the lock, runs
+the pinned teardown with no lock held under the marker's
+generation/incarnation guards, and re-takes the lock to persist the finalized
+receipt plus real remnant (verifying the attempt token still owns the claim),
 so the foreign commit is durably recoverable (receipt plus real
 remnant) before the new mutation stages — before its own stage — a live
 process never accumulates an orphaned marker — and `list` already shows the
 committed row (disk holds the entry), so read-after-unknown converges even
-before finalization lands. **Crash-window recovery:** a crash between
-the step-(2) persist and the post-commit write leaves the marker with no
-receipt — boot finalizes it (the disk wins: the runtime rebuilds from the
-on-disk sidecar, so the mutation is committed; no remnant is minted because
-no live handles survive a restart, and the receipt records `bootRecovered:
-true` (the optional receipt field in Persistence + hot-apply, below)), so a
+before finalization lands. **Crash-window recovery (extending the
+round-nineteen marker recovery — r19 finalized every pending marker as
+committed-without-remnant even when the crash landed after teardown began,
+losing the pinned repair target and leaving partially-torn-down resources
+behind): the step-(2) write persists a `teardownStarted` flag with the marker
+(false at stage time), and the commit flips it to true in its own atomic
+sidecar write after the swap and before the first teardown executes — under
+the mutation lock, before the M8 lock release across teardowns — so the
+first teardown runs only after that flip is durable. Boot finalizes by the
+flag (a leftover `finalizingMutation` claim counts as teardown-started: the
+claim write sets the flag true, since a live claimant is about to run the
+torn-down under the claim): a
+marker with `teardownStarted: false` finalizes as committed with no remnant
+(no teardown ran — only then is finalize-without-repair sound — and the
+receipt records `bootRecovered: true` (the optional receipt field in
+Persistence + hot-apply, below)); a marker with `teardownStarted: true`
+recovers as a durable teardown remnant — the pinned target plus the
+pre-minted `remnantId` become the remnant record, the receipt records
+`committed-with-teardown-failure` with that `remnantId` plus `bootRecovered:
+true`, and the operator resumes through `evener/host/teardown-retry` — so a
 lost-response retry after the crash returns the recovered
-receipt instead of re-applying. Compensation's stash-restore removes the
+receipt or the retry handle instead of re-applying, and a crash after
+teardown began never loses its repair target.** Compensation's stash-restore removes the
 marker with the prior bytes, so a compensated mutation leaves neither marker
 nor receipt (pre-commit only: once the first teardown executes, the commit-point
 rule below applies and the in-progress remnant is the forward-repair handle,
@@ -241,27 +277,39 @@ pinned same-key receipt is always a hit for outcome recovery, never a fresh
 destructive apply). A mutation sent without a
 key whose response is lost reconciles read-after-unknown through `list`
 before any retry — `add` compares the listed entry hash for the name,
-`update` compares the listed row, `remove` treats a missing name or a
-`removed: true` row as committed. **Keyless-retry rule (the safe default for
-retries that carry no `mutationId`): a keyless retry never carries a stale
-`expectedGeneration` — it re-reads `list` first and, once the intended row
-(for `update`: a listed row byte-equal to the intended post-update row —
-full-row equality over every `HostRow` field, never the intended fields
-alone (extending the round-seventeen intended-field match — r17 compared
-only the intended values, so a concurrent intervening update that preserved
-them while changing other fields was silently overwritten); for `remove`: a
-missing name or a `removed: true` row) is observed, omits `expectedGeneration`
-on the retry (treating the mutation as committed) or does not retry at all —
-any intervening change to any field breaks the equality and forces the
-`stale-entry` path instead of guard omission;
-a keyless retry that has not yet observed its intended row re-reads `list`
-and retries without `expectedGeneration` only when the row is still absent
-(uncommitted) — so a committed keyless update's post-bump generation can
-never strand its own retry as `stale-entry` with no receipt, and `update`
-with `expectedGeneration` always carries a `mutationId` on the UI path
-(required together — a keyed replay returns the receipt before the stale
-check, see below — while a caller-constructed keyless `expectedGeneration`
-carries no receipt to recover and follows the re-read rule above).**
+  `update` compares the listed effective row, `remove` treats a missing name
+  or a `removed: true` row as committed. **Keyless-retry rule (extending the
+  round-nineteen keyless rule — r19 compared every `HostRow` field including
+  volatile live state, so equality never held stably, and let a keyless retry
+  omit `expectedGeneration` with no concurrent-update detection, so the claimed
+  stale-entry protection was unimplementable): a retry that carries no
+  `mutationId` never carries `expectedGeneration` either — without it a
+  concurrent update between the `list` read and the retry is undetectable, so
+  keyless mutations are non-retryable as guarded updates and the stale-entry
+  guarantee covers keyed retries only (the UI always sends `mutationId` with
+  `expectedGeneration`, required together — a keyed replay returns the receipt
+  before the stale check, see below; a caller-constructed keyless
+  `expectedGeneration` carries no receipt to recover and follows the re-read
+  rule below). Read-after-unknown compares only the effective `HostConfig`
+  fields plus `generation`/`origin` — never volatile live state (`attached`,
+  `midEnsure`, `lastAttachError`) or age counters (`installedVersionAgeSec`,
+  `lastAttachErrorAgeSec`, `escalationAgeSec`): once the intended effective
+  row (for `update`: listed effective fields equal to the intended post-update
+  fields; for `remove`: a missing name or a `removed: true` row) is observed,
+  the retry treats the mutation as committed and omits `expectedGeneration`
+  or does not retry at all — any intervening change to an effective field
+  breaks the equality and forces the `stale-entry` path instead of guard
+  omission. A keyless retry that has not yet observed its intended row
+  re-reads `list` and retries without `expectedGeneration` only while the
+  mutation is still uncommitted — for `add`, the row still absent; for
+  `update`, the listed row's effective fields still equal to the pre-update
+  row (a listed row differing from BOTH the pre-update and the intended
+  post-update effective fields is an intervening update and takes the
+  `stale-entry` path) — so a committed keyless update's post-bump generation
+  can never strand its own retry as `stale-entry` with no receipt, and a
+  lost-response keyless `update` whose post-update row was never observed
+  retries as uncommitted while its row is unchanged instead of matching
+  neither branch.**
 **Processing order is fixed — mirroring
 `deploy` step (1) (extending the round-fourteen receipt and round-twelve
 scoping work):** receipt dedup by (mutationId, name, kind, current
@@ -394,10 +442,11 @@ per the absent-when-unknown rule.
   the single superseded-receipt rule above (returns the recorded `committed`
   receipt, never a fresh destructive apply) — and
   an `update` retry that omits the optional `expectedGeneration` stays
-  unconditionally-committing by contract (see the keyless-retry rule in
-  mutation idempotency, below) — the UI always sends the key (`mutationId`
-  required with `expectedGeneration`), so omitting it is the explicit
-  caller-opt-out of the guard.**
+   unconditionally-committing by contract — keyless retries are non-retryable
+   as guarded updates (see the keyless-retry rule in mutation idempotency,
+   below) — the UI always sends the key (`mutationId` required with
+   `expectedGeneration`), so omitting it is the explicit caller-opt-out of
+   the guard.**
 - `evener/host/attach` (mutation): **shipped with #1603 round three** (wraps
   the dialing closure, errors classified through the #1603 attach classifier:
   ssh-start/deadline chains → typed `SessionUnavailable`, caller-context
@@ -485,7 +534,18 @@ cannot produce those fields), keyed by the host's registry generation
   delete/invalidate plus the sidecar generation the intent belongs to);
   (2) the store write applies it and the follow-up sidecar atomic write
   clears the intent. Token deletion therefore lands only after the sidecar
-  commit is durable, and boot reconciles both directions before serving
+  commit's swap succeeds — the store purge runs as the post-swap step, never
+  before it (extending the round-nineteen intent — r19 purged tokens
+  post-sidecar-commit but pre-swap, so a swap-failure compensation restored
+  sidecar bytes only and left a live host with purged tokens, violating the
+  pre-commit leave-old-state promise): a swap failure before the purge leaves
+  both files in the old state with nothing to compensate; a swap failure
+  after the purge compensates the store purge alongside the sidecar restore —
+  the purged token rows are re-inserted in the same atomic store write that
+  accompanies the stash restore, so compensation resurrects exactly the
+  tokens its own sidecar restore revalidates and the compensated mutation
+  leaves old sidecar bytes beside old store rows. Boot reconciles both
+  directions before serving
   (extending the round-eighteen intent work — r18 re-applied and dropped but
   never cleared a stale intent after convergence, so intents lingered across
   restarts):
@@ -499,23 +559,32 @@ cannot produce those fields), keyed by the host's registry generation
   clears the stale intent in its own follow-up sidecar atomic write, so no
   converged intent survives its boot. A crash between the files therefore
   converges to exactly the committed sidecar's view, never a restored sidecar
-  beside a committed revocation, and compensation never resurrects a token
-  its own sidecar restore invalidated.** `plan`
-  **always try-acquires the host's per-host gate first — before checking
-  facts and before minting — and fails fast with the typed busy error if
-  held**, so a fresh-facts plan cannot mint while a deploy/restart/`Ensure`
-  holds the gate. While holding the gate it rechecks attachment and the
-  registry generation of the resolved entry (a detach or mutation landing
-  between resolution and acquisition is a typed stale-entry refusal, never
-  a plan against the superseded entry), and it keeps the gate through token
-  persistence (mint + durable write), releasing only before returning. If
+  beside a committed revocation — and compensation resurrects only the tokens
+  its own sidecar restore revalidates (the never-resurrects rule survives for
+  compensated-away incarnations, never for a compensated mutation whose
+  restore keeps the host live).** `plan`
+  **runs its two network round-trips with no gate held, then try-acquires the
+  host's per-host gate and fails fast with the typed busy error if held**
+  (extending the round-fifteen gate and round-nineteen consume ordering —
+  r19 held the gate across the SSH preflight refresh plus the running
+  channel probe through mint, so a slow probe forced spurious busy refusals
+  on `update`/`remove`/`deploy`/`restart`): the gate hold is bounded to
+  validation plus the durable mint — `plan` acquires the gate only after the
+  refresh and probe below complete, then re-checks attachment, the registry
+  generation of the resolved entry, and facts-freshness against the refreshed
+  facts (a detach, mutation, or facts advance landing between the ungated
+  reads and acquisition is a typed stale-entry refusal or a re-read, never
+  a plan against the superseded entry), and keeps the gate only through
+  validation plus token persistence (mint + durable write), releasing before
+  returning — so a fresh-facts plan cannot mint while a deploy/restart/
+  `Ensure` holds the gate, but no network wait ever holds it. If
   the known preflight facts are stale (older than the **plan freshness
   bound — 5 minutes by default, owner-adjustable**), `plan` **first
   refreshes them: a re-run of the same one-shot SSH preflight the deploy
   path already uses (`Manager.preflight`, `sshconn/preflight.go` — the
   `uname`/env-probe/`id -u`/`launch-check` command sequence executed over
   the manager's SSH transport), exposed as a thin deadline-bounded entry
-  point and run while already holding the gate, bounded by the same attempt
+  point and run with no gate held, bounded by the same attempt
   bound that caps the preflight phase of `ensureOnce`** — then builds the
   plan from the refreshed facts, so an online (attached) host can always
   obtain a token without a re-attach/bootstrap cycle. The
@@ -533,14 +602,14 @@ cannot produce those fields), keyed by the host's registry generation
   affordance, never a Connect loop — reconnecting cannot fix an independent
   preflight failure. A token is only ever minted from fresh
   facts. **Running-state verification:** `plan` mints only for an attached
-  host, so while still holding the gate it probes the running hub's identity
+  host, so with no gate held it probes the running hub's identity
   and health through the attached channel with the `evener/host/running`
   method (catalog entry + request/response in Protocol types, below) — a
   read-only request issued only through `sshManager.ChannelIfAttached(name)`
   over the live channel (never a dial, never preflight), **deadline-bounded
   (explicit probe timeout, owner-adjustable, default ships in the
-  implementing PR — a hung remote must not hold the gate: on timeout
-  `plan` releases the gate and returns the no-token `probe-failed` refusal,
+  implementing PR — a hung remote holds no gate at all: on timeout
+  `plan` returns the no-token `probe-failed` refusal with nothing to release,
   extending the round-eleven reason field and the round-thirteen running
   probe)** — and records the
   response's `buildRevision` as `runningVersion` and its `healthy` flag as
@@ -632,7 +701,11 @@ cannot produce those fields), keyed by the host's registry generation
   the token's bindings — and re-probe the running build/health over the
   attached channel under the same explicit probe timeout as `plan`'s probe —
   a probe failure or timeout releases the gate and refuses with the typed
-  `probe-failed` refusal (token unconsumed, no operation record), distinct
+  `probe-failed` refusal — the unavailable-class envelope discriminator
+  `probe-failed` (data names the host and whether the probe read failed, timed
+  out, or was unauthenticated; see the typed-error catalog below; distinct
+  from `plan`'s no-token `reason: "probe-failed"` value, which is a union arm,
+  never an envelope) — (token unconsumed, no operation record), distinct
   from a genuine running-version mismatch's `stale-entry` refusal (extending
   the round-fourteen probe deadline) — and reject if it differs from the
   token-bound running revision or the token-bound running-health flag —
@@ -649,14 +722,19 @@ cannot produce those fields), keyed by the host's registry generation
   change between plan and deploy invalidates the plan; the UI re-plans). This re-read is the gate protocol's
   post-acquisition check (see the operation store). (4) **Revalidate and
   atomically consume the current nonce under the store mutex — still holding
-  the host's gate (gate-then-store-mutex, the same order as `plan`'s gated
-  mint, extending the round-eight store mutex and the round-thirteen marker
+  the host's gate (gate-then-store-mutex, the same order as `plan`'s
+  validation-plus-mint window, extending the round-eight store mutex and the round-thirteen marker
   finalization: the consume write is one more store-mutex-serialized
   read-modify-write) — as one atomic store write: re-read the host's
   current token row and compare-and-consume its nonce against the presented
-  token; a changed nonce (a concurrent `plan` superseded it between step (2)
-  and acquisition) is a `token-superseded` refusal with no consumption and
-  no operation created. On a match the same write deletes the token row and
+  token — and re-check `expiresAt` against the clock in that same transaction
+  (extending the round-nineteen consume — r19 checked expiry only at the
+  step-(2) provisional pass, so a token expiring across the gate/probe wait
+  created an operation): an `expiresAt` at or before now is a `token-expired`
+  refusal with no consumption and no operation created, even when the nonce
+  still matches; a changed nonce (a concurrent `plan` superseded it between
+  step (2) and acquisition) is a `token-superseded` refusal with no
+  consumption and no operation created. On a match the same write deletes the token row and
   creates the pending operation record — consume is delete in that same
   write, never a mark — so consumption and record creation are one
   event**; return its id. **A consumed token presented again reads as
@@ -798,7 +876,11 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   terminal state, so a unique-operation-ID stream cannot grow the file
   without bound. A compacted record never matches dedup again — a replay of
   its client operation ID opens fresh — and compaction never touches
-  `host-removed` marks of retained records.
+  `host-removed` marks of retained records. Every compacting write advances
+  a durable monotonic compaction sequence (`compactSeq`, persisted in the
+  store file) — the pagination cursor pins it (see `operations`), so a
+  mid-pagination compaction is detectable instead of silently shifting
+  later pages.
   **Store-wide serialization:** atomic writes alone do not serialize
   read-modify-write. Every operation-store read-modify-write path — token
   mint, token validate-and-consume, record create/update, and any dedup
@@ -832,18 +914,25 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   process group with parent-death cleanup (`Pdeathsig` / process-group kill on
   shutdown where the platform supports it), and boot kills any residual group
   members only through an ownership-verifiable handle — never the group id
-  alone (extending the round-eighteen group-id reap — r18 reaped by the
-  recorded group id, which is reusable by unrelated work after the original
-  group exits): each member's pidfd (or the platform equivalent — cgroup
-  membership, job-object handle) plus a server-generated per-spawn nonce is
-  persisted in the operation-store file alongside the record BEFORE the worker
-  spawns (never
-  after: a crash between spawn and persist would leave an unreapable group;
-  the pre-spawn persist is a `pending-spawn` intent carrying the nonce,
-  matched post-spawn, so a not-yet-created id can never authorize a kill);
-  boot validates the nonce through the handle before signaling — a pidfd that
-  no longer resolves, or members failing the nonce check, are already clean
-  — never an error, never a kill of unrelated work; (2)
+  alone (extending the round-eighteen group-id reap and superseding the
+  round-nineteen pidfd persist — r18 reaped by the recorded group id, which
+  is reusable by unrelated work after the original group exits, and r19
+  persisted a pidfd before spawn, which is unimplementable: a pidfd cannot
+  exist before its process is spawned and cannot be reused after a restart):
+  before spawning, the worker pre-creates a durable ownership boundary — a
+  platform cgroup (Linux) or job object (other platforms) plus a
+  server-generated per-spawn nonce — and persists the boundary identity plus
+  the nonce in the operation-store file alongside the record (the pre-spawn
+  persist carries a `pending-spawn` intent holding the nonce; the worker
+  spawns every SSH subprocess directly into the pre-created boundary and
+  matches the intent post-spawn, so a not-yet-populated boundary can never
+  authorize a kill); boot reaps by enumerating current boundary members and
+  signaling only members of the persisted boundary whose nonce still matches
+  — an empty boundary, or members failing the nonce check, are already clean
+  — never an error, never a kill of unrelated work. A crash between the
+  pre-spawn persist and the spawn leaves a persisted-but-empty boundary: boot
+  enumerates it, finds no members, and drops the intent — never an orphan,
+  never a reap of unrelated work; (2)
   fences the remote side per host with enforcement on both ends and inside
   every mutating step (extending
   the round-seventeen epoch and the round-eighteen start-gating — r17 defined
@@ -860,9 +949,25 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   compare-and-swap — the guard-file sequence is the total order across
   controller restarts, never the (boot id, per-host sequence) pair alone,
   which has no defined cross-restart order): the worker's first commands
+  under the new epoch run through a remote lease wrapper (extending the
+  round-nineteen lease file — r19 tracked prior commands but defined neither
+  atomic registration before side effects nor an atomic guard check per
+  irreversible action, so an untracked or already-checked old command could
+  survive the guard advance and mutate afterward): the wrapper atomically
+  registers each command in the per-host remote lease file BEFORE its side
+  effects start, performs the command's steps only through the wrapper, and
+  re-checks the presented epoch against the guard atomically with each
+  irreversible action — register, fence, and perform are one guarded unit
+  per mutation, and a step whose presented epoch no longer equals the guard
+  refuses server-side and aborts the operation. The wrapper's first commands
   under the new epoch kill and wait for exit of the superseded epoch's
-  already-running commands (remote kill of the prior epoch's tracked PIDs
-  from the per-host remote lease file, with exit confirmation) and only then
+  already-running commands (remote kill of the prior epoch's lease-tracked
+  entries with exit confirmation — each lease entry carries an ownership
+  token: the remote PID's start time, or a per-spawn nonce minted by the
+  wrapper at registration, or the remote cgroup/job-object membership where
+  the platform supports it — verified on the remote before signaling, mirroring
+  the local boundary-plus-nonce rule above, so a reused PID on the target
+  host never kills unrelated work) and only then
   advance the guard (compare-and-advance — an older epoch never
   overwrites a newer one, so a
   late orphan cannot move the guard backward); every mutating remote step
@@ -957,7 +1062,7 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   error naming the in-flight operation.**
   **Holder classes:** when the gate is held by a deploy/restart operation the
   busy error names that operation (its operation id — open/wait-able); when it
-  is held by `plan`'s mint window or by `Ensure`-triggered work — which hold
+  is held by `plan`'s validation-plus-mint window or by `Ensure`-triggered work — which hold
   no operation-store record — the busy error is the typed transient form
   (`host busy (plan/ensure in progress)`) carrying no operation reference, and
   the UI shows retry-with-backoff with no open/wait affordance.
@@ -1054,7 +1159,10 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   fingerprint against the validation read; if the file changed in between
   (an external editor landing between validation and rename), the staged
   bytes are discarded and the stage-validate sequence retries against the
-  new file (bounded retries, then a typed concurrent-edit refusal) — no
+  new file (bounded retries, then the conflict-class envelope discriminator
+  `concurrent-edit` — data carries the `hub.toml` fingerprint the commit
+  staged against plus the fingerprint observed at refusal, so the client can
+  re-read and retry; see the typed-error catalog below) — no
   sidecar commit is *intended* to land against a superseded file read —
   but the re-read + rename is not an atomic compare-and-swap, so the
   guarantee is reconciliation, not prevention: after the rename the commit
@@ -1222,7 +1330,10 @@ the TTL read as `teardown-unknown-key` not-found instead of
   remnants with it — cross-name replay after the purge commits fresh and
   overwrites by the scoping rule above.
 - **Staged commit (order matters):** add/update/remove never mutate live
-  state incrementally. Under the process-wide mutation lock: (1) stage the
+  state incrementally. Holding the process-wide mutation lock only across the
+  transitions below — released across post-commit teardowns, re-acquired to
+  finalize (the same pattern as foreign-marker finalization and
+  `teardown-retry`, which never hold the lock across a teardown): (1) stage the
   complete change — new registry value, the *description* of the manager
   deltas (including the planned supervisor/channel teardown for removals),
   source-registry rows, host-admin-controller host set and its notification
@@ -1240,7 +1351,9 @@ before the atomic rename, so the swap is compensable;
   live handles to the new values, and only then executing the planned
   teardowns (supervisor/channel stops, fan-out cancellations) as the
   post-commit rebind phase (see the mutation rebind ordering in the
-  operation store); (4) if the swap itself fails, **compensate
+  operation store) with the lock released across the teardowns and re-acquired
+  to persist the committed receipt plus real remnant (verifying the claim's
+  attempt token still owns the marker); (4) if the swap itself fails, **compensate
   fully before responding: restore the prior sidecar bytes from the stash
   (atomic rename), then revert the runtime to the previous set**, then
   report exactly which step failed — a typed swap-failure response is sent
@@ -1277,6 +1390,9 @@ Protocol types)
  `add`/`update`/`remove`, so a concurrent mutation cannot interleave with
  them) — never across the teardown itself (the M4 companion to the foreign-
  marker rule above):
+ them) — never across the teardown itself (the same claim pattern as the
+ foreign-marker rule above — claim under the lock with an attempt token,
+ release across the teardown, re-acquire to finalize):
  runs the remnant's pinned teardown to completion with no mutation lock held (never against a live or
  re-added entry — the open-remnant gate above guarantees no newer
  incarnation exists while the remnant is open, and the retry re-checks the
@@ -1473,11 +1589,20 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
   generator, and an `any`/`interface` field emits `unknown`), so sibling arm
   structs are NOT emitted by being named in prose. 08b therefore extends the
   generator with explicit union support (generator work lands in 08b, never
-  in this spec PR): the catalog declares one named Go struct per arm plus a
-  named union registration referencing every arm, and the generator emits
-  each arm as its own interface with the method's `MethodTypes` result entry
-  typed as the union over the arm names; the 08b protocol-shapes test pins
-  every arm field-for-field (including each arm's discriminator). The
+  in this spec PR — extending the round-nineteen sequencing, which required
+  regenerated 08a clients for union-shaped responses while deferring the
+  union-registration generator change to 08b, so the 08a client could not be
+  generated field-for-field): the catalog declares one named Go struct per
+  arm plus a named union registration referencing every arm, and the
+  generator emits each arm as its own interface with the method's
+  `MethodTypes` result entry typed as the union over the arm names; the 08b
+  protocol-shapes test pins every arm field-for-field (including each arm's
+  discriminator) — and the union-shaped catalog/client changes for the 08a
+  methods (the mutation-result arms, `RemovedRow`, `teardown-retry`'s
+  outcome arms) land in 08b with that generator work, never in 08a: 08a
+  ships the sidecar/commit behavior behind hand-written request/response
+  types plus the store-skeleton helpers, and the regenerated client for the
+  union-shaped 08a responses arrives with 08b. The
   single-response-interface alternative is rejected: collapsing the arms
   would force optional-ified `host`/`token`/`reason` fields the
   absent-when-unknown rule cannot distinguish.**
@@ -1515,8 +1640,10 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
   returns the recorded receipt before the stale check, so a lost-response
   retry recovers its outcome instead of refusing as stale; a caller-
   constructed keyless `expectedGeneration` follows the keyless-retry rule in
-  mutation idempotency — re-read `list` and omit `expectedGeneration` once
-  the intended row is observed); when `expectedGeneration` is present the
+  mutation idempotency — keyless retries never carry `expectedGeneration`:
+  re-read `list` and compare effective fields only, omitting
+  `expectedGeneration` once the intended effective row is observed); when
+  `expectedGeneration` is present the
   handler checks it under the mutation
   lock against the target's current generation before staging (mismatch → typed
   `stale-entry` refusal; see `evener/host/update` above); response is the
@@ -1578,7 +1705,7 @@ selects arms on `outcome` with no presence-based exception — the `reason`
 discriminates the
   failure (`stale-facts` deleted — `plan` always refreshes attached hosts, so
   no path yields it; see `plan`): `unattached` (host not attached — Connect first),
-  `refresh-failed` (attached, but the gated preflight refresh failed or timed
+  `refresh-failed` (attached, but the ungated preflight refresh failed or timed
   out — retryable diagnostics, never Connect-first),
   `probe-failed` (attached, but the `evener/host/running` probe read failed or
   was unauthenticated), `handler-absent` (attached, but the remote predates the
@@ -1693,14 +1820,27 @@ clientOperationId, host, generation: number, kind: "deploy" | "restart", state:
   lexicographically in its raw form), so lexicographic order is chronological
   order and the `(parsedTime, id)` cursor key is stable; the
   cursor is opaque (encodes the last row's `(createdAt, id)`, never a bare
-  offset). The response carries the effective `generation` actually listed
-  (the `generation: number` field of the response shape above, pinned in the
-  08b catalog entry),
-  and callers pass that value back with `cursor` for subsequent pages, so an
-  advancing generation mid-pagination changes nothing underfoot — later pages
-  read the pinned incarnation, and a newer generation's records appear only
-  on a fresh unpinned read. `limit` with no `cursor` starts the pinned first
-  page.**
+  offset — plus the pinned `generation` and a snapshot/retention boundary:
+  the cursor encodes `(generation, compactSeq, createdAt, id)`, where
+  `compactSeq` is the store's monotonic compaction sequence minted in the
+  same atomic write that compacts terminal records (see Retention and
+  compaction, above)). The response carries the effective `generation`
+  actually listed (the `generation: number` field of the response shape
+  above, pinned in the 08b catalog entry), and callers pass that value back
+  with `cursor` for subsequent pages (extending the round-nineteen pagination
+  — r19 excluded generation from the cursor while generation stayed optional
+  and let terminal-record compaction delete rows from the pinned generation
+  between pages, so later pages could change underfoot): the handler
+  validates the cursor's generation against the request's `generation`
+  filter (a mismatch is a typed `stale-entry` re-list refusal, never a mixed
+  page) and its `compactSeq` against the store's current sequence — a
+  compaction that removed rows at or before the cursor's position since the
+  cursor was minted surfaces a typed cursor-invalidated refusal naming the
+  compaction (the client restarts from the first page), so an advancing
+  generation or a mid-pagination compaction changes nothing silently
+  underfoot — later pages read the pinned incarnation, and a newer
+  generation's records appear only on a fresh unpinned read. `limit` with
+  no `cursor` starts the pinned first page.**
 - Typed errors ride the existing AppWire error envelope — the numeric `code`
   (`appwire/errors.go`: `CodeInvalidParams` -32602, `CodeConflict` -32013,
   `CodeUnavailable` -32014, `CodeInternalError` -32603, `CodeInvalidRequest`
@@ -1723,7 +1863,15 @@ clientOperationId, host, generation: number, kind: "deploy" | "restart", state:
   `too-many-hosts` (conflict class; the `ErrTooManyHosts` refusal),
   `swap-failed` (internal class; data names the seam), `host-detached`
   (unavailable class; deploy's channel-gone refusal — token unconsumed, no
-  record; UI Connects and re-plans), `teardown-unknown-key` (not-found class;
+  record; UI Connects and re-plans), `probe-failed` (unavailable class;
+  deploy step (3)'s running re-probe read failed, timed out, or was
+  unauthenticated — data names the host plus which of read-failed, timed-out,
+  or unauthenticated; token unconsumed, no record — distinct from `plan`'s
+  no-token `reason: "probe-failed"` union-arm value, which is never an
+  envelope), `concurrent-edit` (conflict class; the sidecar final check's
+  bounded stage-validate retries exhausted against a racing `hub.toml` edit —
+  data carries the staged `hub.toml` fingerprint plus the observed
+  fingerprint; the client re-reads and retries), `teardown-unknown-key` (not-found class;
   unknown or purged `remnantId` — never a present-but-cleared remnant, which
   returns the `already-cleared` success arm), `remnant-open` (conflict class;
   any remnant-gated mutation refused: data names the blocking `remnantId`;
@@ -1753,11 +1901,16 @@ clientOperationId, host, generation: number, kind: "deploy" | "restart", state:
   controller surface (including the per-host gate shared with `Ensure`) +
 `list/add/update/remove` + `teardown-retry` (the repair mutation for the 08a
 sidecar's own commit-point remnants and receipts — its commit-point tests are
-the 08a tests below) (with catalog + client
-  regeneration — including the minimal store skeleton `remove` depends on:
+the 08a tests below) (with hand-written request/response types — the
+  union-shaped catalog + regenerated-client changes for these methods land
+  in 08b with the union-registration generator work, see the Arm
+  registration paragraph above — including the minimal store skeleton
+  `remove` depends on:
   the `host-removed` mark path and the outstanding-token-row purge path with
   their atomic writes, shipped as store-owned helpers with no 08b behavior
-  behind them); **08b** `status`/`plan` (token) / `deploy` / `restart` /
+  behind them); **08b** the union-registration generator change plus the
+  union-shaped catalog + regenerated client for the 08a methods alongside
+  `status`/`plan` (token) / `deploy` / `restart` /
   `operations` + the full operation store (records, dedup, tokens,
   reconciliation); **08c** the frontend (settings section,
   dialogs, deploy confirmation). 08b stacks on 08a; 08c stacks on 08b.
@@ -1996,8 +2149,10 @@ name-keyed cache entry can never republish rows for the new host.
   instead of a fresh destructive apply (the single superseded-receipt rule —
   never a fresh apply, never `stale-entry` for the same key);
   `expectedGeneration` requires `mutationId` on the UI path and keyless
-  retries follow the re-read-and-omit rule (never a stale `expectedGeneration`
-  without a key))**,
+  retries follow the effective-fields re-read-and-omit rule (never an
+  `expectedGeneration` without a key; uncommitted `update` retries while the
+  effective row still equals the pre-update row, `stale-entry` once an
+  effective field changed))**,
   **remote-origin rejection for `list`/`add`/`update`/`remove`** (the #1603
   origin guard refuses honestly-marked peer-forwarded requests before admission — the 08a
 surface only — including `teardown-retry`'s origin rejection alongside its
@@ -2056,6 +2211,10 @@ origin rejection is asserted in 08a with its commit-point tests),
   the token matrix:
   missing/mismatched/expired/superseded/consumed-then-replayed-with-new-op-ID
   (pins to `token-missing`: consume deletes the row — see `deploy` step (4)),
+  **expiry-across-the-wait (a token valid at the step-(2) provisional pass
+  but past its TTL at the step-(4) consume is a `token-expired` refusal with
+  no record — expiry is re-checked inside the consume transaction, never
+  decided at provisional validation alone),**
   **supersede-between-validate-and-consume (a `plan` mint landing after
   `deploy`'s step (2) provisional pass but before its step (4) compare-and-
   consume is a `token-superseded` refusal with no record — see `deploy`
@@ -2076,9 +2235,9 @@ origin rejection is asserted in 08a with its commit-point tests),
   **the running probe (`evener/host/running` handler: local revision +
   health, attached-session admission only — unauthenticated probe refusal;
  browser/forwarded requests refused; never forwarded onward (no A→B→A chain);
-  the gate-held `plan` probe call with its explicit deadline (timeout →
-  no-token `probe-failed` refusal with gate release, never an extended busy
-  hold); `HostPlan.runningVersion` /
+  the ungated `plan` probe call with its explicit deadline (timeout →
+  no-token `probe-failed` refusal with no gate ever held, never an extended
+  busy hold); `HostPlan.runningVersion` /
   `runningHealthy` placement; handler-absent named for pre-handler
  remotes with the one-time manual-upgrade migration path; no-token `reason`
  discriminates `unattached` | `refresh-failed` | `probe-failed` |
@@ -2091,9 +2250,10 @@ origin rejection is asserted in 08a with its commit-point tests),
   reattached channel; an initially unattached restart attach-firsts under
   the same gate and names it in the record; a reconnect-after-restart test
   pins that the supervisor owns the channel again once the gate releases)**,
-  **the gated refresh: an attached host refreshes via the
+  **the ungated refresh: an attached host refreshes via the
   bounded one-shot SSH preflight (no channel initialization, no supervisor,
-  no attach state machine) then mints; an unattached host gets the
+  no attach state machine, no gate held) then acquires the gate, re-checks,
+  and mints; an unattached host gets the
  no-token refusal naming Connect; the deploy/restart worker's post-operation
  preflight is channel-free under the same pin**, execution-time re-resolution mismatch
   **including the `hub.toml` fingerprint (a manual edit between plan and
@@ -2119,18 +2279,25 @@ origin rejection is asserted in 08a with its commit-point tests),
   live mark still never-matches at boot)**, **the corrupt operation-store
   boot hard
   error**, **orphan fencing (a crashed worker's local process group is reaped
-  at boot and a fresh operation runs under a new fencing epoch — no overlap
-  with orphaned local or remote work)**, **the cross-file intent (a crash
+  at boot only through its persisted boundary-plus-nonce — a persisted-but-
+  empty boundary after a pre-spawn crash reaps nothing and drops the intent —
+  and a fresh operation runs under a new fencing epoch through the remote
+  lease wrapper (atomic register+fence+perform per mutation; lease ownership
+  token verified remotely before any kill) — no overlap with orphaned local
+  or remote work)**, **the cross-file intent (a crash
   between the sidecar commit and the store sync converges to the committed
-  sidecar's view in both directions; compensation never resurrects a token
-  its own sidecar restore invalidated)**, **plan publish (every `plan`
+  sidecar's view in both directions; the store purge lands only after swap
+  success, and swap-failure compensation re-inserts exactly the purged token
+  rows its sidecar restore revalidates)**, **plan publish (every `plan`
   refusal and every completed probe lands in the generation-scoped
   running-state/refusal snapshot — `status` after a plan refusal renders the
   refusal, never stale data)**, **the running-health definition (each
   forced-false condition returns `healthy: false` as data while the probe
   itself succeeds)**, **pinned pagination (stable `(createdAt, id)` order
   across concurrent terminal writes; mid-pagination generation advance keeps
-  later pages on the pinned incarnation)**), and the not-in-forwarded-allow-list assertion.
+  later pages on the pinned incarnation; cursor carries `(generation,
+  compactSeq, createdAt, id)` with generation-mismatch and post-cursor
+  compaction both surfaced as refusals, never silent page shifts)**), and the not-in-forwarded-allow-list assertion.
 - 08c: `make test-web`, browser gate (`env -u DBUS_SESSION_BUS_ADDRESS make
   test-web-browser`), `make lint-generated`; per-flow tests in the section's
   test files; the never-dial invariant of `list`/`status`/`operations`
