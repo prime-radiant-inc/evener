@@ -9873,6 +9873,62 @@ describe("ConversationStore", () => {
     }
   });
 
+  // A delta re-projects the turn it landed in, not the transcript. The reducer
+  // hands every other turn back by reference, so their rows come from the
+  // per-turn cache — observable through the work the projection would otherwise
+  // repeat: a settled tool call's duration costs two Date.parse calls per
+  // projection, and an older turn's must not be paid again for a delta into the
+  // newest one.
+  it("projects only the turn a delta landed in", async () => {
+    // The wire stamps epoch millis; the model holds the ISO strings the projection
+    // parses, which is what the spy counts.
+    const olderStamps = { startedAt: 1_000, completedAt: 2_000 };
+    const olderISO = ["1970-01-01T00:00:01.000Z", "1970-01-01T00:00:02.000Z"];
+    const older = makeTurn({
+      id: "t-older",
+      status: "completed",
+      items: [
+        {
+          type: "commandExecution",
+          id: "old-call",
+          toolName: "shell",
+          status: "completed",
+          output: "done",
+          ...olderStamps,
+        } as ThreadItem,
+      ],
+    });
+    const service = new FakeConversationService();
+    service.readProjectionResult = makeReadProjectionResult(
+      makeThread({
+        turns: [older, makeTurn({ id: "t1", status: "inProgress", items: [agentMessageItem("a1", "", "inProgress")] })],
+        evener: evenerWith({ activeTurnId: "t1" }),
+      }),
+    );
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+    const parse = vi.spyOn(Date, "parse");
+    try {
+      for (let i = 0; i < 10; i++) {
+        store.getState().applyNotification({
+          method: "item/agentMessage/delta",
+          params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "a1", delta: `d${i}` },
+        } as AnyNotification);
+      }
+      // Ten publishes, and the settled turn's timestamps were read none of those
+      // times: its rows were reused.
+      const olderParses = parse.mock.calls.filter((call) =>
+        olderISO.includes(String(call[0])),
+      );
+      expect(olderParses).toHaveLength(0);
+      // The deltas did land: the active turn's row grew.
+      expect(rowById(store, "a1")).toMatchObject({ markdown: "d0d1d2d3d4d5d6d7d8d9" });
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
   // The bound's cache belongs to the conversation: every string in it is held
   // by that conversation's model or its rows, so a conversation that has been
   // dropped must not leave its text behind in the cache. Observable without a

@@ -594,72 +594,98 @@ function clusterActivities(
 
 // --- timeline projection -----------------------------------------------------
 
-export function projectTimeline(
-  model: ThreadModel,
-  // The answerable asks, when the caller has already derived them
-  // (projectConversation does, for askPending).
-  asks: ReadonlyMap<string, AskQuestionRef[]> = askQuestionsByCall(model),
-): MobileTimelineItem[] {
+// One projected row before clustering, carrying whether it may still be merged
+// into a run and any attachments it emitted alongside itself.
+interface Ordered {
+  type: "final" | "activity";
+  item: MobileTimelineItem;
+  pre?: PreActivity;
+  attachments?: AttachmentRef[];
+}
 
-  // Project every item in order, preserving whether it is a final item or a
-  // clusterable activity pre-item. Attachments emitted alongside an item
-  // follow that item in the timeline.
-  interface Ordered {
-    type: "final" | "activity";
-    item: MobileTimelineItem;
-    pre?: PreActivity;
-    attachments?: AttachmentRef[];
+// One turn's rows, and what outside the turn they depended on.
+interface TurnRows {
+  entries: Ordered[];
+  // A turn's own items decide its rows, with one exception: whether an ask_user
+  // call is still answerable is a whole-model question (a later turn's user
+  // message answers an earlier ask — deriveAskQuestions.ts). Each entry records
+  // the calls this turn consumed and whether they were answerable, so the rows
+  // are reused only while that still holds.
+  askState: Array<[string, boolean]>;
+}
+
+// Per-turn rows, keyed on the TurnModel reference. The reducer hands a turn back
+// UNTOUCHED — by reference — when a frame did not change it (reducer.ts's mapTurn
+// and settleFirstMatchingTurn), so a delta into the newest turn leaves every older
+// turn's rows exactly as they were. Re-deriving them per frame is the transcript's
+// whole width of work, including a JSON parse per ask and two Date.parse calls per
+// timed tool call, for one item's text. A WeakMap so a dropped turn's rows go with
+// it.
+const turnRowCache = new WeakMap<TurnModel, TurnRows>();
+
+function rowsForTurn(
+  turn: TurnModel,
+  asks: ReadonlyMap<string, AskQuestionRef[]>,
+): Ordered[] {
+  const cached = turnRowCache.get(turn);
+  if (
+    cached !== undefined &&
+    cached.askState.every(([callId, answerable]) => asks.has(callId) === answerable)
+  ) {
+    return cached.entries;
   }
-  const ordered: Ordered[] = [];
-
-  for (const turn of model.turns) {
-    for (const item of turn.items) {
-      const result = projectItem(item, turn, asks);
-      if (result === null) continue;
-      if (result.kind === "final") {
-        ordered.push({
-          type: "final",
-          item: {
-            ...result.item,
-            ...(item.transcriptKey
-              ? { transcriptKey: item.transcriptKey }
-              : {}),
-            ...(item.position ? { position: item.position } : {}),
-          },
-          attachments: result.attachments,
-        });
-      } else {
-        ordered.push({
-          type: "activity",
-          item: {
-            ...result.pre.item,
-            ...(item.transcriptKey
-              ? { transcriptKey: item.transcriptKey }
-              : {}),
-            ...(item.position ? { position: item.position } : {}),
-          },
-          pre: {
-            ...result.pre,
-            item: {
-              ...result.pre.item,
-              ...(item.transcriptKey
-                ? { transcriptKey: item.transcriptKey }
-                : {}),
-              ...(item.position ? { position: item.position } : {}),
-            },
-          },
-          attachments: result.attachments,
-        });
-      }
+  const entries: Ordered[] = [];
+  const askState: Array<[string, boolean]> = [];
+  for (const item of turn.items) {
+    if (isAskUser(item)) {
+      const callId = item.callId ?? item.id;
+      askState.push([callId, asks.has(callId)]);
     }
-    // A turn error produces a failure item at the end of that turn's items.
-    if (turn.error) {
-      ordered.push({
+    const result = projectItem(item, turn, asks);
+    if (result === null) continue;
+    const identity = {
+      ...(item.transcriptKey ? { transcriptKey: item.transcriptKey } : {}),
+      ...(item.position ? { position: item.position } : {}),
+    };
+    if (result.kind === "final") {
+      entries.push({
         type: "final",
-        item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+        item: { ...result.item, ...identity },
+        attachments: result.attachments,
+      });
+    } else {
+      const item_ = { ...result.pre.item, ...identity };
+      entries.push({
+        type: "activity",
+        item: item_,
+        pre: { ...result.pre, item: item_ },
+        attachments: result.attachments,
       });
     }
   }
+  // A turn error produces a failure item at the end of that turn's items.
+  if (turn.error) {
+    entries.push({
+      type: "final",
+      item: failureItem(turn.error as NonNullable<Turn["error"]>, turn.id),
+    });
+  }
+  turnRowCache.set(turn, { entries, askState });
+  return entries;
+}
+
+export function projectTimeline(
+  model: ThreadModel,
+  // The answerable asks, when the caller has already derived them.
+  asks: ReadonlyMap<string, AskQuestionRef[]> = askQuestionsByCall(model),
+): MobileTimelineItem[] {
+  // Project every item in order, preserving whether it is a final item or a
+  // clusterable activity pre-item. Attachments emitted alongside an item
+  // follow that item in the timeline. Rows already derived for an unchanged turn
+  // come from the cache above; clustering then runs over the whole result,
+  // because a run of activities can span a turn boundary.
+  const ordered: Ordered[] = [];
+  for (const turn of model.turns) ordered.push(...rowsForTurn(turn, asks));
 
   // Second pass: cluster consecutive activity rows that share a family, then
   // rebuild the timeline in original order.
