@@ -601,12 +601,16 @@ per the absent-when-unknown rule.
   marked with their age**), the deploy decision inputs, the resolved remote
   target path (as of those facts), whether a restart follows, and any
   plan-time refusal known from the last preflight (`errControllerDirty` is
-  terminal; missing curl, unwritable target, unit findings per 04b).
+  terminal; missing curl, unwritable target, unit findings per 04b — the
+  same four terminal arms `plan` returns as `controller-dirty` /
+  `target-unwritable` / `target-missing-prereq` / `target-unit-findings`
+  with `terminal: true` in the no-token response below, so `status` and
+  `plan` name the same terminal conditions in the same words).
   **Last-known snapshot:** the manager owns a per-host last-known store —
   the latest preflight facts with their capture timestamp plus the latest
-attach error with its timestamp, plus the last-known running revision/health
-snapshot and the last plan-time refusal (the inputs behind `status`'s
-`restartFollows` and `planRefusal` — without these a no-dial `status` read
+attach error with its timestamp, plus the last-known running
+revision/health/process-start-time snapshot and the last plan-time refusal
+(the inputs behind `status`'s `restartFollows` and `planRefusal` — without these a no-dial `status` read
 cannot produce those fields), keyed by the host's registry (generation,
   incarnation id) pair
   and updated on every successful preflight and every attach outcome — **and
@@ -618,11 +622,12 @@ cannot produce those fields), keyed by the host's registry (generation,
  channel probe reintroduces the slow-probe busy-refusal bug): a
   refusal publishes its `{terminal, message}` as the pair's plan-time
   refusal (a later success clears it), and every completed probe — success or
-  authenticated failure — publishes the probed running revision/health (or
-  its absence) as the pair's running-state snapshot, so `status` after
-  a plan refusal renders the refusal and the probed state instead of stale
-  data from an older pair (snapshots from a superseded (generation,
-  incarnation id) pair stay absent by the pair key above)** (extending the
+  authenticated failure — publishes the probed running revision/health plus
+  the probed `processStartTime` when carried (or their absence) as the
+  pair's running-state snapshot, so `status` after a plan refusal renders
+  the refusal and the probed state instead of stale data from an older pair
+  (snapshots from a superseded (generation, incarnation id) pair stay absent
+  by the pair key above)** (extending the
   round-twenty-one generation-only store — r21 keyed facts, running-state, and
   refusal snapshots by generation alone, so the forbidden-bump rule's live entry
   at an open remnant's generation let old-incarnation facts match the new live
@@ -682,7 +687,10 @@ cannot produce those fields), keyed by the host's registry (generation,
   target path, controller revision, the probed running revision (see the
   running-state rule below), the probed running-health flag (also bound — a
   health change between plan and deploy invalidates the plan; see the
-  running-state rule and `deploy`), nonce). The `hub.toml` fingerprint is
+  running-state rule and `deploy`), the probed `processStartTime` when the
+  probe carried it (bound alongside the running revision, so a process
+  replacement between plan and deploy invalidates the plan even when the
+  revision is unverifiable), nonce). The `hub.toml` fingerprint is
   what makes a manual edit of that file invalidate outstanding tokens at
   deploy time: the initial full load of `hub.toml` is at startup, but the
   mutation staged-commit path re-reads the file bytes on every mutation
@@ -839,7 +847,12 @@ cannot produce those fields), keyed by the host's registry (generation,
   other `evener/host/*` request. A missing or unverified handshake is an unauthenticated probe.
   `restartFollows` is computed from the fresh preflight facts confirmed
   against the probed running version: the plan says a restart follows only
-  when the running hub is actually outdated. If the probe read fails or is
+  when the running hub is actually outdated — and a probed unverifiable
+  revision (`"dev"` or dirty, per `evener/host/running` above) always reads
+  as outdated (restart follows) unless the probe's `processStartTime`
+  proves the live process postdates the plan's own facts refresh (a dev
+  revision that merely equals the controller build proves nothing — same
+  rule the 04b restart wait applies). If the probe read fails or is
   unauthenticated — including a remote whose hub predates the handler
   (named distinctly as handler-absent; such remotes take the one-time
   migration path below, since the token-bound deploy path cannot itself
@@ -940,6 +953,10 @@ cannot produce those fields), keyed by the host's registry (generation,
   from a genuine running-version mismatch's `stale-entry` refusal (extending
   the round-fourteen probe deadline) — and reject if it differs from the
   token-bound running revision or the token-bound running-health flag —
+  and reject if the re-probed `processStartTime` differs from the
+  token-bound one when the token bound one (a process replacement between
+  plan and deploy invalidates the plan even under an unverifiable revision
+  — the H3 process-instance rule above) —
   and re-check the token-bound preflight-facts freshness (`factsRevision` /
   `factsCapturedAt` against the same 5-minute plan freshness bound): facts
   older than the bound at deploy time are a `stale-entry` re-plan refusal
@@ -1263,16 +1280,35 @@ returns distinguishable records and the current incarnation is selected by
   host, that host admits no new lifecycle or mutation call past admission:
   `plan`, `deploy`, `restart`, `add`, `update`, `remove`,
   `teardown-retry`, `attach`, and `Ensure`-triggered work all refuse with
-  the transient busy form, and local reaping stays incomplete — until the
-  boundary is verified (a later boot's enumeration resolves the record) or
-  the operator resolves it through `evener/host/orphan-resolve` above —
-  only then does a fresh
+  the transient busy form — scoped to that host's name only (extending the
+  round-twenty-seven fence, which listed `add` alongside per-host calls
+  without scoping: read as global, one host's orphan blocked `add` for an
+  unrelated name; read as same-name-only, the `add` arm looked redundant
+  with duplicate refusal. The scope is same-name: the fence refuses
+  same-name `add`/`update`/`remove`/`attach`/`plan`/`deploy`/`restart`/
+  `teardown-retry` plus `Ensure`-triggered work for that host only — an
+  `add` for a DIFFERENT name proceeds — and local reaping stays incomplete
+  — until the boundary is verified (a later boot's enumeration resolves
+  the record) or the operator resolves it through
+  `evener/host/orphan-resolve` above — only then does a fresh
   operation start under a new epoch after local reap completion — only the
   read-only calls (`list`, `status`, `operations`, `running`) and the
   `orphan-resolve` way out itself bypass the persistent orphan fence). A crash between the
   pre-spawn persist and the spawn leaves a persisted-but-empty boundary: boot
   enumerates it, finds no members, and drops the intent — never an orphan,
-  never a reap of unrelated work; (2)
+  never a reap of unrelated work. A crash after the spawn but before the
+  launcher-observed pid/start-time marker is persisted beside the nonce
+  leaves a live process with no verifiable ownership metadata (extending the
+  round-twenty-seven Darwin reap, which resolved any boundary whose members
+  failed the pid/start-time check as clean: a record with a persisted
+  boundary but no persisted post-spawn marker is indistinguishable from a
+  clean boundary and would have released the host): boot treats a
+  `pending-spawn` record whose post-spawn marker is absent as
+  `orphan-unverified` with the host fenced — never as clean, never
+  `interrupted` — until the operator resolves it through
+  `evener/host/orphan-resolve` (whose enumeration likewise refuses the
+  transient busy form on a marker-less boundary with members still present,
+  and drops the intent only on a demonstrably empty boundary); (2)
   fences the remote side per host with enforcement on both ends and inside
   every mutating step (extending
   the round-seventeen epoch and the round-eighteen start-gating — r17 defined
@@ -1361,8 +1397,21 @@ returns distinguishable records and the current incarnation is selected by
  install path `~/.local/share/evener/fence`, version pinned in the fencing
  epoch record) installed on the target host out-of-band before the first
  fenced operation (reusing the 04b bootstrap-on-bare-host
- seam for delivery only): verification is a read-only pre-fence check and
- installation is never an exempt pre-mutation step (extending the
+  seam for delivery only — and `bootstrap-on-bare-host` IS the one exempt
+  delivery step this paragraph otherwise forbids (extending the
+  round-twenty-seven helper-absent rule, which refused fail-closed before
+  any remote mutation with never an auto-install while routing every
+  mutating SSH command — including the 04b `Ensure`-triggered bootstrap —
+  through the wrapper: on a bare host the fail-closed check blocked the
+  very bootstrap that delivers the helper, so a newly added bare host could
+  never be provisioned from the UI. What changes is the named exemption:
+  the bootstrap-on-bare-host delivery — the 04b `bootstrapHub` first-attach
+  repair, which starts a stopped hub through the supervisor/ad-hoc launch
+  and ships the deployed payload with the helper bytes inside it — runs
+  unfenced exactly once per bare host under the worker's persisted epoch,
+  and no other mutating step shares the exemption): verification is a
+  read-only pre-fence check and
+  installation is never an exempt pre-mutation step otherwise (extending the
  round-twenty-one helper work — r21 ran install-or-verify as an unfenced
  remote write before the guard advance while calling it "never a mutation",
  so the first operation on a helper-less host performed an unfenced remote
@@ -1389,6 +1438,20 @@ through the old wrapper, and signaling only verified members — then
 advances the guard, then writes the new helper bytes directly, verifies the
 new version string with the read-only pre-fence check, and only then routes
 further mutating steps through the wrapper), never before the advance.
+Fail-closed quiescence (extending the round-twenty-seven migration
+primitive, which enumerated only tracked lease entries: an older or
+explicitly untrusted helper may hold untracked commands or start new ones
+during the read/kill/advance race, and its lease listing cannot be trusted
+to be complete — so the primitive refuses fail-closed whenever
+quiescence cannot be proven: after the tracked-entry kill/wait the worker
+re-enumerates the prior epoch's lease entries with the read-only pre-fence
+check and requires the set to be empty AND unchanged across two consecutive
+reads with no new entries between them; any surviving, reappearing, or
+newly-appearing entry — tracked or untracked — is a fail-closed fencing
+refusal before any guard advance, never a mutation overlapping unverified
+remote work. The host upgrades only when the untrusted helper demonstrably
+holds no live commands; otherwise the operator replaces the helper
+out-of-band exactly like the helper-absent path).
 Only a remote that cannot run even the direct-SSH migration kill/wait (no
 POSIX shell at the target path) refuses fail-closed until the operator
 replaces the helper out-of-band.
@@ -1489,7 +1552,19 @@ model). A host without the
   The two branches therefore converge differently before the store serves:
   a name with a valid sidecar marker triple rolls back to the sidecar mark
   (never the maximum — the mirror's newer compensated-away generation is
-  discarded); a name with no sidecar mark preserves the surviving mirror,
+  discarded — and the discarded generation is provably unreferenced
+  (extending the round-twenty-seven commit marker, which discarded the
+  mirror's newer generation with no invariant on who references it: a future
+  mutation could have reused a generation pinned by dedup or pagination.
+  What changes is the stated and boot-enforced invariant — the mirror may
+  advance past the sidecar mark only through the compensable second phase
+  of a mutation whose sidecar restore revalidates exactly the purged rows:
+  a compensated-away generation therefore never owns an `OperationRecord`,
+  never backs a dedup key, and never appears in a cursor boundary — and
+  boot asserts exactly that before discarding (any record, dedup entry, or
+  cursor-pinned boundary naming the discarded generation is a hard startup
+  error, never a silent drop), so no later mutation reuses a referenced
+  generation); a name with no sidecar mark preserves the surviving mirror,
   and the max-of-both restoration below reads that mirror alone as the
   high-water mark.**
   Records reach the store only through the
@@ -2307,7 +2382,20 @@ exists for the current pair),
 - `evener/host/plan`: params `{name: string}`; response is either `{plan:
 HostPlan, token: string, outcome: "planned"}` or `{outcome: "no-token", staleFacts:
   {message: string, attached: bool, reason: "unattached" | "refresh-failed" |
-"probe-failed" | "handler-absent" | "remnant-open"}, remnantId?: string}` — `remnantId` present exactly on the `remnant-open` arm (the remnant fence: an open remnant for the name refuses `plan` with no token minted — see the remnant gate; absent on every other no-token arm per the absent-when-unknown rule) — `outcome: "no-token"` is the top-level
+"probe-failed" | "handler-absent" | "remnant-open" | "controller-dirty" |
+"target-unwritable" | "target-missing-prereq" | "target-unit-findings"},
+  terminal: bool, remnantId?: string}` — `terminal` is `true` exactly on the
+  `controller-dirty` / `target-unwritable` / `target-missing-prereq` /
+  `target-unit-findings` arms (the `status` terminal refusals — a dirty
+  controller, a missing curl, an unwritable deploy target, 04b unit
+  findings: retry cannot clear them, so the UI renders the terminal
+  affordance, never retry-with-backoff; extending the round-twenty-seven
+  reason field, which defined only the five retry-oriented reasons while
+  `status` and the UI required terminal plan refusals) and `false` on the
+  five retry arms; `remnantId` present exactly on the `remnant-open` arm
+  (the remnant fence: an open remnant for the name refuses `plan` with no
+  token minted — see the remnant gate; absent on every other no-token arm
+  per the absent-when-unknown rule) — `outcome: "no-token"` is the top-level
 discriminator on the no-token arm (the token arm carries
 `outcome: "planned"` alongside `plan`/`token`), so the generator mapping
 selects arms on `outcome` with no presence-based exception — the `reason`
@@ -2321,19 +2409,46 @@ discriminates the
 handler — take the one-time migration path), `remnant-open` (an open teardown
 remnant fences the name — resume it through `teardown-retry` first; the
 `remnantId` field names the blocking remnant), and the 08b protocol-shapes test
+`controller-dirty` (the controller is dirty — rebuild from a clean tree,
+never retry the plan), `target-unwritable` (the resolved deploy target is
+not writable — fix the target, never retry the plan),
+`target-missing-prereq` (a deploy prerequisite is missing on the target,
+e.g. no curl — install it first), `target-unit-findings` (the 04b unit
+decision reports findings blocking deploy — resolve them first), and the
+08b protocol-shapes test
 pins the `outcome` discriminator on both arms (including the `remnant-open`
-arm with its `remnantId`). `HostPlan` is `{host, generation,
+arm with its `remnantId`, and the `terminal` flag true exactly on the four
+terminal arms). `HostPlan` is `{host, generation,
   targetPath, controllerRevision, restartFollows, factsRevision,
   hubTomlFingerprint, factsCapturedAt: string (RFC3339), factsAgeSec: number,
-  runningVersion: string, runningHealthy: bool}` — the token's bindings
-  (including the bound `factsCapturedAt` above) plus the server-generated
-  facts capture timestamp and age rendered behind the deploy confirmation's
+  runningVersion: string, runningHealthy: bool, runningProcessStartTime?:
+  string (RFC3339)}` — `runningProcessStartTime` present exactly when the
+  probe carried it (absent otherwise per the absent-when-unknown rule) —
+  the token's bindings (including the bound `factsCapturedAt` above) plus
+  the server-generated facts capture timestamp and age rendered behind the
+  deploy confirmation's
   freshness line. `plan`/`token`
   are absent — never null — on the no-token response, per the absent-
   when-unknown rule above.
 - `evener/host/running` (controller-side method, same-scope 08b — catalog
   entry + TypeScript client with the handler): params `{}`; response
-  `{buildRevision: string, healthy: bool}`. Served locally by every hub —
+  `{buildRevision: string, healthy: bool, processStartTime?: string
+  (RFC3339)}` — `processStartTime` present exactly when the serving hub
+  knows its own process start time (absent — never null — otherwise per the
+  absent-when-unknown rule; extending the round-twenty-seven `running`
+  shape, which carried only `buildRevision` + `healthy`: every unstamped
+  binary reports `buildRevision: "dev"` from the same source as the
+  `controllerBuild` plan input, so two different dev builds — or two
+  processes running the same one — were indistinguishable, and a plan could
+  omit a required restart while post-operation verification reported false
+  success. What changes is the process-instance discriminator: an
+  unverifiable revision (`"dev"` or a dirty `"<sha>-dirty"`, which name no
+  code — see the 04b restart identity rule) never proves currency by
+  revision equality: `plan` treats a probed unverifiable revision as
+  outdated (restart follows) unless the probe also carries a
+  `processStartTime` proving the live process is the just-deployed one, and
+  deploy/restart verification fails closed on an unverifiable revision with
+  no usable `processStartTime`). Served locally by every hub —
   `buildRevision` from the same source as the `controllerBuild` plan input,
   `healthy` the hub's own health, computed authoritatively as follows (this
   paragraph is the definition — no other signal counts): the serving hub
@@ -2392,7 +2507,18 @@ arm with its `remnantId`). `HostPlan` is `{host, generation,
 - `evener/host/teardown-retry` (mutation): params `{remnantId: string}`;
   response `{outcome: "teardown-complete" | "already-cleared", hostKind:
   "live" | "removed", host: HostRow | RemovedRow, remnantId: string,
-  escalationAgeSec?: number}` (present when the named remnant was past the
+  escalationAgeSec?: number}` — plus the declared timeout arm `{outcome:
+  "committed-with-teardown-failure", hostKind: "live" | "removed", host:
+  HostRow | RemovedRow, remnantId: string, escalationAgeSec?: number}`
+  (extending the round-twenty-seven timeout rule, which required returning
+  the terminal `committed-with-teardown-failure` outcome on retry timeout
+  while the declared response named only the two success arms — the timeout
+  path had no declared arm and the outcome is explicitly not an
+  error-envelope response. What changes is the third declared arm: a retry
+  whose bounded teardown run times out returns the timeout arm — the same
+  failure outcome as the mutation-result union, carrying the still-open
+  remnant's details for a later retry — and the 08b protocol-shapes test
+  pins all three arms field-for-field) — `escalationAgeSec` (present when the named remnant was past the
   escalation bound at execution — the escalation age the expiry-escalation
   rule promises on `teardown-retry` responses; absent otherwise per the
   absent-when-unknown rule) —
@@ -2483,7 +2609,14 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   other state per the absent-when-unknown rule — the `platform`
   discriminator selects the ownership data the verifier needs (Linux:
   kernel-enforced cgroup identity plus the pre-spawn server nonce —
-  membership alone authorizes the kill; Darwin: the (pgid, session id) pair
+  the kill requires BOTH cgroup membership AND a matching nonce (extending
+  the round-twenty-seven wire shape, which exposed the nonce on the wire
+  while stating membership alone authorizes the kill — both could not hold:
+  the nonce was either unchecked authorization data or redundant exposure
+  to every `operations` reader. What changes is the single stated rule —
+  nonce plus membership, never membership alone — so the wire nonce is the
+  authorization check the verifier performs, not redundant data); Darwin:
+  the (pgid, session id) pair
   plus the launcher-observed (pid, start time) instance marker — a pid whose
   start time differs names a different process and reads as already clean) —
   extending the
@@ -2507,7 +2640,18 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   generation pinning (extending the round-fourteen / round-twelve pagination
   work): records sort by `(createdAt, id)` ascending (the controller-assigned
   `id` is unique and monotonic per store, so the tiebreak is total —
-  concurrent terminal writes can never skip or duplicate a row across pages);
+  concurrent terminal writes can never skip or duplicate a row across pages
+  — and the cursor resumes by the monotonic `id` alone: the opaque cursor
+  encodes the last row's durable sequence position (the controller-assigned
+  `id`, which never rolls back), so a wall-clock rollback that stamps a
+  later record with an earlier `createdAt` can never strand it before the
+  cursor (extending the round-twenty-seven ordering, which resumed by the
+  `(createdAt, id)` pair: a record created after the cursor but stamped
+  earlier sorted before it and was permanently skipped. What changes is the
+  resume key — the monotonic sequence is the primary cursor position while
+  `createdAt` stays the human-readable sort display — and the 08b pinned-
+  pagination test pins the rollback case: a post-cursor record with a
+  pre-cursor timestamp still lists on the next page);
   `createdAt`/`updatedAt` are stored UTC-normalized (`Z`-suffixed RFC3339 —
   a stored offset form is converted at write time, never compared
   lexicographically in its raw form), so lexicographic order is chronological
@@ -2540,8 +2684,13 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   to the new generation; a generation-pinned page requires `name` — a
   host-pinned first page returns the pinned pair for the single host named by
   the request, while an unfiltered response carries a per-host boundary map (one
-  `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per host present on the
-  page) and the cursor encodes that map alongside `(createdAt, id)`
+  `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per host
+  in the query — every host in the query at cursor creation, not just the
+  hosts present on the page (correcting the stale parenthetical above, which
+  described the already-fixed round-twenty-four bug that recorded boundaries
+  only for present hosts: an implementer following "present hosts only"
+  would reintroduce wrong-incarnation cross-page listing) — and the cursor
+  encodes that map alongside `(createdAt, id)`
   (the cursor is a versioned base64url JSON envelope `{v: 1, pos: [createdAt,
   id], bounds: {[host]: [generation, incarnationId, compactSeq, presenceEpoch] | "absent"}}`
   — the absent marker encodes as the literal string `"absent"`, pinned in
@@ -2554,8 +2703,13 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   removal-epoch signal, so a removal preserving the triple listed
   removed-host records on later pages instead of refusing — capped at 8 KiB encoded (a first page
   whose boundary map would exceed the cap refuses with typed
-  `cursor-invalidated` naming the cap, never a truncated cursor; the 63-host
-  cap bounds the map, so the cap is reachable only with adversarial
+  `cursor-too-large` (its own envelope discriminator carrying `{capBytes:
+  8192}` — never `cursor-invalidated`, whose compaction data an over-cap
+  first page cannot produce: no cursor was minted, so there is no
+  `compactSeq` and no pinned pair to name; extending the round-twenty-seven
+  cursor text, which reused `cursor-invalidated` for both emitting paths
+  under one data contract) naming the cap, never a truncated cursor; the
+  63-host cap bounds the map, so the cap is reachable only with adversarial
   incarnation-id lengths, never in normal use); a host created after the
   cursor was minted has no stored triple to validate — later pages skip
   its records (a newer host's records appear only on a fresh unpinned read,
@@ -2617,9 +2771,12 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   `cursor-invalidated` (conflict class; data names the compacting
   `compactSeq` plus the cursor's pinned `(generation, incarnationId)` — the
   mid-pagination compaction refusal above, distinct from `stale-entry`'s
-  generation-mismatch re-list refusal; the 08b protocol-shapes test pins the
-  pair — extending the round-twenty-three catalog work, which promised the
-  typed refusal at the cursor paragraph but left this list without it),
+  generation-mismatch re-list refusal — and distinct from the over-cap
+  first-page `cursor-too-large` refusal above (own discriminator, data
+  `{capBytes: 8192}`); the 08b protocol-shapes test pins both discriminators
+  with their data shapes — extending the round-twenty-three catalog work,
+  which promised the typed refusal at the cursor paragraph but left this
+  list without it),
   `token-missing` /
   `token-mismatched` / `token-superseded` / `token-expired` (conflict class),
   **(a consumed-token replay presents a deleted row and reads as
@@ -2842,9 +2999,20 @@ controller was stopped can never restore the old generation with old records
 and cached state reading as current (extending the round-thirteen /
 round-fourteen fingerprint work) — initial
 assignment at boot is generation 1 for every `hub.toml`-declared name with no
-persisted high-water mark (extending the round-eleven collision work —
-`add`'s "generation 1 for a never-seen name" above is the same rule, so
-token generation checks have a defined baseline on both sides). Collision
+  persisted high-water mark, AND boot mints a fresh incarnation id for every
+  `hub.toml`-declared name with no persisted incarnation in that same atomic
+  sidecar write (extending the round-twenty-seven incarnation work, which
+  minted incarnation ids on `add`/re-add only: initial hosts carried
+  generations plus fingerprints but no incarnation id, so their required
+  (generation, incarnationId) identity was undefined across restarts. What
+  changes is the defined baseline on both halves — generation 1 plus a
+  persisted incarnation — so token generation checks and every
+  incarnation-scoped read have a defined pair on both sides; a declared
+  host whose effective entry changed while stopped still advances its
+  generation AND mints a fresh incarnation in the same write, and a
+  boot-merge collision on a declared name takes the same above-mark bump
+  plus fresh incarnation as any other collision, never a stable generation
+  with an undefined incarnation). Collision
 precedence: the boot-merge collision bump above overrides stable generation
 for that boot — the live host's above-mark generation replaces the stable
 one, and tokens bound to the pre-bump generation are invalidated (their
@@ -2881,7 +3049,21 @@ entries into the running registry, drop declared hosts deleted from the file
 out of the registry/manifest/admin host set and fan-outs — a deleted
 declared host reads as not-found on all `evener/host/*` methods until
 re-declared, and its name-keyed caches clear — then bump affected
-generations and clear or rebind every name-keyed cache above), so no
+generations and clear or rebind every name-keyed cache above — and the
+adopt-then-bump-then-clear sequence coordinates with in-flight operations
+exactly like `update`/`remove` (extending the round-twenty-seven
+reconciliation, which removed hosts and cleared manager bindings with no
+in-flight coordination while `update`/`remove` fail fast on a held gate: a
+reconciliation landing mid-operation could strand the worker on a host
+whose bindings were already cleared. What changes is the gate ordering —
+before dropping a declared host or clearing its manager bindings the
+reconcile try-acquires that host's per-host gate; a held gate defers the
+drop-and-clear for that host until the in-flight operation reaches terminal
+state — the admitted call proceeds on the pre-reconcile snapshot for that
+host meanwhile — while added/changed entries and uncontended drops apply
+immediately under the mutation lock; a deferred drop re-runs the same
+generation bump and cache clear when the gate releases, so no external edit
+survives past the in-flight operation's completion), so no
 external edit — including a declared-host removal — survives past the next
 mutation/`plan`/`deploy` admission (a `list`/`status` admission serves the
 last published snapshot immediately and schedules the same sequence
@@ -3143,9 +3325,15 @@ origin rejection is asserted in 08a with its commit-point tests),
   transient form fires only for `plan`'s validation-plus-mint window)**,
   **cursor-invalidated (a mid-pagination compaction past the cursor refuses
   typed `cursor-invalidated` with the compacting `compactSeq` — the client
-  restarts from page one)**,
+  restarts from page one; an over-cap first page refuses the distinct
+  `cursor-too-large` discriminator with `{capBytes: 8192}` — both shapes
+  pinned)**,
+  **teardown-retry timeout arm (a retry whose bounded teardown run times
+  out returns the declared `committed-with-teardown-failure` arm with the
+  still-open remnant's details — pinned alongside the two success arms)**,
   **the running probe (`evener/host/running` handler: local revision +
-  health, attached-session admission only — unauthenticated probe refusal;
+  health + optional `processStartTime`, attached-session admission only —
+  unauthenticated probe refusal;
  browser/forwarded requests refused; never forwarded onward (no A→B→A chain);
   the ungated `plan` probe call with its explicit deadline (timeout →
   no-token `probe-failed` refusal with no gate ever held, never an extended
@@ -3153,9 +3341,13 @@ origin rejection is asserted in 08a with its commit-point tests),
   `runningHealthy` placement; handler-absent named for pre-handler
  remotes with the one-time manual-upgrade migration path; no-token `reason`
  discriminates `unattached` | `refresh-failed` | `probe-failed` |
- `handler-absent` | `remnant-open` (with `remnantId` naming the blocking
- remnant — see the remnant gate) and the UI branches on it — no Connect
- loop for attached probe failures)**,
+  `handler-absent` | `remnant-open` | `controller-dirty` |
+  `target-unwritable` | `target-missing-prereq` | `target-unit-findings`
+  (with `remnantId` naming the blocking remnant — see the remnant gate —
+  and `terminal: true` exactly on the four terminal arms) and the UI
+  branches on it — no Connect loop for attached probe failures; an
+  unverifiable probed revision reads as outdated (restart follows) unless
+  `processStartTime` proves the live process)**,
   **restart reattach (the worker retains the gate across the channel drop,
   reattaches through `attachUnderGate` for the pinned entry — never the
   normal attach path, no supervisor start until the post-verification
@@ -3212,7 +3404,9 @@ origin rejection is asserted in 08a with its commit-point tests),
   forced-false condition returns `healthy: false` as data while the probe
   itself succeeds — evaluated by the serving hub's local predicate, never the
   `restartRequiredDaemon` probe path)**, **pinned pagination (stable `(createdAt, id)` order
-  across concurrent terminal writes; mid-pagination generation advance keeps
+  across concurrent terminal writes with the cursor resuming by the
+  monotonic `id` (a post-cursor record stamped pre-cursor by clock rollback
+  still lists — pinned); mid-pagination generation advance keeps
   later pages on the pinned incarnation; cursor carries `(generation,
   incarnationId, compactSeq, presenceEpoch, createdAt, id)` with pair-mismatch (`stale-entry`
   re-list) and post-cursor compaction (`cursor-invalidated`) both surfaced as
@@ -3226,7 +3420,8 @@ origin rejection is asserted in 08a with its commit-point tests),
   `stale-entry` re-list refusal the same way; a host created
   after mint is skipped on later pages (fresh read only); the versioned
   base64url envelope is capped at 8 KiB encoded (over-cap first page refuses
-  `cursor-invalidated`))**,
+  `cursor-too-large` with `{capBytes: 8192}`, pinned as its own
+  discriminator))**,
   **Darwin orphan ownership (Linux reaps through the cgroup boundary; Darwin
   reaps through the (pgid, session id) boundary plus the launcher-observed
   (pid, start time) marker — never the group id alone — with a pid whose
