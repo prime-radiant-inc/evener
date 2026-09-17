@@ -45,6 +45,22 @@ typecheck, and Biome gate; on Chrome-capable hosts, also run `make
 test-web-browser` for real geometry and browser guards. CI checks Biome
 formatting. Avoid `noNonNullAssertion` and array-index-key violations.
 
+The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental
+false` from `cmd/evener-hub/frontend`), which reads that directory's
+`tsconfig.json` and its `include` — `src` and `../../../appwire-client/typescript`
+— covering both trees in one program (measured: 1441 files, byte-identical
+between that invocation and a bare `tsc --noEmit -p tsconfig.json` from the
+same directory). `make test-web` runs this behind `web-preflight.sh`, which
+`npm ci`s the frontend install whenever `package-lock.json` is newer than
+`node_modules`. A bare `tsc -p tsconfig.json` skips that check: right after a
+merge that changed `package-lock.json` but before an `npm ci`, it type-checks
+against a stale install and can report real-looking errors (missing types,
+unresolved modules) that are an artifact of the stale install, not of the
+code — `make test-web` never hits this because its preflight repairs the
+install first. To reproduce the gate by hand, run `npm ci` in
+`cmd/evener-hub/frontend` before `npm run typecheck` (or just run `make
+test-web`), rather than a bare `tsc -p tsconfig.json`.
+
 ## Importing the AppWire TypeScript package
 
 The shared client lives at `appwire-client/typescript` and every consumer in
