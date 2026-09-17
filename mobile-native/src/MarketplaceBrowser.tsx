@@ -47,11 +47,10 @@ export function MarketplaceBrowser({
   client: ConversationClientLike;
   hubName: string;
   installed: PluginsStore;
-  // The screen's plugin-mutation gate, shared with the installed list: an
-  // install, or now a marketplace write, started here keeps running after
-  // this view is gone, so the lock it takes has to outlive the view - and
-  // living at the screen means the installed list sees a marketplace write
-  // as busy too, and vice versa.
+  // The screen's plugin-mutation gate, shared with the installed list: a
+  // write started here keeps running after this view is gone, so the lock
+  // it takes has to outlive the view - and living at the screen means the
+  // installed list sees a marketplace write as busy too, and vice versa.
   gate: PluginMutationGate;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
@@ -59,18 +58,8 @@ export function MarketplaceBrowser({
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
-  // Marketplace writes (add, remove, refresh) take the same gate an install
-  // does, and busy follows it directly: the hub already serializes them
-  // under one store lock (internal/plugins/locks.go's lockStore - install.go's
-  // Install/Upgrade/mutateEntry and marketplaces.go's RemoveMarketplace/
-  // RefreshMarketplace all acquire it), but the lock only blocks, it does not
-  // refuse - a removal issued mid-install would sit at the hub until the
-  // install's lock releases, which the request's own 30s timeout (client.ts's
-  // DEFAULT_REQUEST_TIMEOUT_MS) matches almost exactly. Taking the gate here
-  // too, exactly as install() does below, refuses at once with copy that says
-  // why instead of leaving the button looking hung or occasionally timing
-  // out - and there is now exactly one busy, the gate's own, not a
-  // view-local flag that could disagree with it.
+  // Marketplace writes take the same gate an install does; see
+  // pluginMutationGate.ts for why the gate exists.
   const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
   const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -116,12 +105,8 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
-  // Every marketplace write and every install dispatch through this one gate
-  // call: a refusal is reported the same way for both, and the gate's own
-  // isBusy() is what proves a write is in flight, live, at the moment it is
-  // actually dispatched - not a render-time snapshot, because the gap
-  // between a button press and the dispatch (a confirmation Alert, an open
-  // modal) can outlive the render that last checked busy.
+  // Every write goes through the gate; a refusal reads as busy, a throw as
+  // failure.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
@@ -337,8 +322,7 @@ export function MarketplaceBrowser({
           client={client}
           hubName={hubName}
           onClose={() => setAdding(false)}
-          onAdd={state.addMarketplace}
-          gate={gate}
+          onAdd={(params) => gate.run(() => state.addMarketplace(params))}
         />
       )}
     </>
@@ -350,17 +334,12 @@ function AddMarketplace({
   hubName,
   onClose,
   onAdd,
-  gate,
 }: {
   hubName: string;
   onClose(): void;
-  onAdd(params: MarketplaceAddParams): Promise<void>;
-  // The same gate the parent's own refresh/remove take: an install that
-  // started while this modal was open (it takes no time of its own to open,
-  // unlike the remove confirm's Alert, but can stay open for as long as the
-  // user takes to fill in the form) must still refuse the add rather than
-  // run it beside the install.
-  gate: PluginMutationGate;
+  /** Resolves false when the add was refused (a mutation is already
+   * running); the modal stays open and shows the busy copy. */
+  onAdd(params: MarketplaceAddParams): Promise<boolean>;
   client: ConversationClientLike;
 }) {
   const colors = useColors();
@@ -382,17 +361,15 @@ function AddMarketplace({
     setError(null);
     const value = source.trim();
     try {
-      const ran = await gate.run(() =>
-        onAdd({
-          name: name.trim(),
-          source:
-            kind === "github"
-              ? { kind, repo: value }
-              : kind === "directory"
-                ? { kind, path: value }
-                : { kind, url: value },
-        }),
-      );
+      const ran = await onAdd({
+        name: name.trim(),
+        source:
+          kind === "github"
+            ? { kind, repo: value }
+            : kind === "directory"
+              ? { kind, path: value }
+              : { kind, url: value },
+      });
       if (!ran) {
         if (alive.current) setError(PLUGIN_MUTATION_BUSY);
         return;

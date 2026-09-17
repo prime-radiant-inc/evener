@@ -17,26 +17,20 @@
 // PluginDetailSheet.tsx's four), and the shared core stays the wire truth both
 // frontends agree on rather than one host's UI rule.
 //
-// It is an affordance, not a correctness mechanism, and it does not need to be
-// one: the hub serializes every plugin AND marketplace mutation itself, under
-// the same exclusive flock held for the whole write (internal/plugins/locks.go's
-// lockStore - install.go's Install :119, Upgrade :195, Remove :318,
-// SetEnabled/SetAutoUpgrade via mutateEntry :287 and gc.go:47, and
-// marketplaces.go's AddMarketplace :164, RemoveMarketplace :247 and
-// RefreshMarketplace :881, all acquire it). Two writes that do overlap are
-// ordered there, and the second waits up to 30s for the first. What this gate
-// buys is a user not firing a second write while the first is still in
-// flight, watching the list jump between two intermediate answers, or - for
-// a write mid-lock-wait - a button that sits looking hung for as long as the
-// hub's own lock timeout, which the client's own request timeout roughly
-// matches. So a mutation that outlives the component it was started from is
-// a UX gap, not a data race.
+// It is an affordance, not a correctness mechanism: the hub serializes every
+// plugin and marketplace mutation itself, under the same exclusive lock held
+// for the whole write (internal/plugins/locks.go's lockStore, acquired by
+// install.go, gc.go and marketplaces.go alike). A second write that overlaps
+// waits there instead of racing. What this gate buys is a user not firing
+// that second write and watching the list jump between two intermediate
+// answers, or a button that sits looking hung for as long as the hub's own
+// lock wait.
 
 import { createFrameworkFreeStore } from "@evener/appwire-client";
 
 /** What a screen shows when the gate refuses: the refusal is not a failure of
  * the write the user asked for, so it must not read like one. */
-export const PLUGIN_MUTATION_BUSY = "Another plugin change is still running. Wait for it to finish.";
+export const PLUGIN_MUTATION_BUSY = "Another change is still running. Wait for it to finish.";
 
 export interface PluginMutationGate {
   /** True while a mutation is running: what both surfaces disable on. */
