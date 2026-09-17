@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"os"
 	"slices"
 	"sort"
 	"strings"
@@ -1122,6 +1123,67 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 	for name := range readOnly {
 		if _, ok := remoteHostAdminMethods[name]; !ok {
 			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
+		}
+	}
+}
+
+// sharedHostRequestMethodsPath is the checked-in list the web UI's forwarded
+// set and this proxy's allow-list are BOTH pinned to, next to this file. Its
+// header states the whole contract; the two tests that read it are
+// TestHostAdminAllowListCoversSharedForwardedMethods here and
+// hostRouting.test.ts's inventory assertion on the frontend side.
+const sharedHostRequestMethodsPath = "host_request_methods.txt"
+
+// readSharedHostRequestMethods parses the checked-in list: one method name per
+// non-empty line, '#' comments and blank lines ignored, the same shape as the
+// fuzz registry.
+func readSharedHostRequestMethods(t *testing.T) []string {
+	t.Helper()
+	data, err := os.ReadFile(sharedHostRequestMethodsPath)
+	if err != nil {
+		t.Fatalf("read %s: %v (the cross-language pin is only real while both sides can read it)", sharedHostRequestMethodsPath, err)
+	}
+	var methods []string
+	for line := range strings.SplitSeq(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		methods = append(methods, line)
+	}
+	return methods
+}
+
+// TestHostAdminAllowListCoversSharedForwardedMethods pins the CROSS-LANGUAGE
+// half of the proxy's boundary, which neither side's own table can see. The
+// frontend's forwarded set (hostRouting.ts's HOST_DEPENDENT_DISCOVERY_METHODS)
+// is checked in at host_request_methods.txt and asserted there against the
+// shipped set; here every method on that list must be BOTH on this allow-list
+// and actually forwarded rather than refused. That second half matters because
+// the allow-list's own test answers only to this package's policy table: a
+// maintainer who removes a method and flips its row stays green there while the
+// browser keeps forwarding a call the proxy answers with InvalidParams.
+func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
+	methods := readSharedHostRequestMethods(t)
+	if len(methods) == 0 {
+		t.Fatalf("%s names no forwarded methods, which would make this pin vacuous", sharedHostRequestMethodsPath)
+	}
+
+	controller, _, calls := scriptedHostAdmin(t, true, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	for _, name := range methods {
+		if _, ok := remoteHostAdminMethods[name]; !ok {
+			t.Errorf("the web UI forwards %q but the proxy's allow-list does not name it; every remote call for it is refused with InvalidParams", name)
+			continue
+		}
+		before := len(calls())
+		if _, err := controller.Request(context.Background(), appwire.HostRequestParams{Host: "m4", Method: name}); err != nil {
+			t.Errorf("forwarded method %q was refused by the proxy: %v", name, err)
+			continue
+		}
+		if after := len(calls()); after != before+1 {
+			t.Errorf("forwarded method %q was not forwarded (remote calls %d -> %d)", name, before, after)
 		}
 	}
 }

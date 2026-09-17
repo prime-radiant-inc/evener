@@ -65,7 +65,14 @@ export function canonicalResourceKey(key: ResourceKey): ResourceKey {
 export function navigationParamsToResourceKey(params: NavigationReadParams): ResourceKey {
   const offset = params.offset ?? 0;
   const paged = (maximum: number) => ({ offset, limit: params.limit ?? maximum });
-  switch (params.resource) {
+  // The wire type generates `resource: string`, wider than ResourceKey["kind"]:
+  // the cast plus the never-typed default below is what makes an unhandled
+  // kind (a real protocol addition, or a typo) a build failure here instead
+  // of a silent fallback to manifest.
+  const resource = params.resource as ResourceKey["kind"];
+  switch (resource) {
+    case "manifest":
+      return { kind: "manifest" };
     case "section":
       return { kind: "section", section: params.section as "live" | "needs_you", ...paged(NAVIGATION_SECTION_LIMIT) };
     case "pin_catalog":
@@ -89,8 +96,10 @@ export function navigationParamsToResourceKey(params: NavigationReadParams): Res
       };
     case "location":
       return { kind: "location", ref: params.ref as string };
-    default:
-      return { kind: "manifest" };
+    default: {
+      const exhaustive: never = resource;
+      throw new Error(`unknown navigation resource: ${String(exhaustive)}`);
+    }
   }
 }
 

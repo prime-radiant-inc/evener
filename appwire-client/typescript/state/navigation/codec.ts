@@ -11,6 +11,8 @@ import type {
 } from "../../types.gen";
 import { cloneAndDeepFreezeJSON } from "./immutable";
 import {
+  NAVIGATION_CATALOG_LIMIT,
+  NAVIGATION_SECTION_LIMIT,
   NavigationBaseInvalidError,
   navigationOwnedContainerKey,
   navigationRootContainerKey,
@@ -376,7 +378,8 @@ function manifestMetadata(value: Record<string, unknown>): boolean {
 
 function effectiveLimit(key: ResourceKey): number {
   if (!("limit" in key)) return 0;
-  const maximum = key.kind === "pin_catalog" || key.kind === "catalog" ? 100 : 50;
+  const maximum =
+    key.kind === "pin_catalog" || key.kind === "catalog" ? NAVIGATION_CATALOG_LIMIT : NAVIGATION_SECTION_LIMIT;
   return key.limit === 0 || key.limit > maximum ? maximum : key.limit;
 }
 
@@ -742,13 +745,8 @@ function sameIdentities(left: readonly unknown[], right: readonly unknown[]): bo
   return left.length === right.length && left.every((item, index) => item === right[index]);
 }
 
-/** Convert the normalized graph back to the resource-shaped view consumed by
- * the existing rail and hydration code. Entity/container identity remains in
- * the NormalizedResource; this projection only provides the compatibility
- * read model while callers migrate selectors to graph-native inputs. */
-/** The normalized resource a decoded snapshot stands for: its graph, its
- * version, and the presence every snapshot carries. Built by hand at five
- * call sites before this; "present" is the part that must not drift. */
+/** The normalized resource a decoded snapshot stands for, built by hand at
+ * five call sites before this. */
 export function snapshotResource(
   key: ResourceKey,
   decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
@@ -761,8 +759,8 @@ export function snapshotResource(
   };
 }
 
-/** The rows a decoded snapshot renders as - what a one-shot reader wants,
- * with no previous resource to reconcile against. */
+/** The rows a decoded snapshot renders as, for a one-shot reader with no
+ * previous resource to reconcile against. */
 export function materializeSnapshot(
   key: ResourceKey,
   decoded: Extract<DecodedNavigationResponse, { status: "snapshot" }>,
@@ -770,6 +768,10 @@ export function materializeSnapshot(
   return materializeNavigationResource(snapshotResource(key, decoded));
 }
 
+/** Convert the normalized graph back to the resource-shaped view consumed by
+ * the existing rail and hydration code. Entity/container identity remains in
+ * the NormalizedResource; this projection only provides the compatibility
+ * read model while callers migrate selectors to graph-native inputs. */
 export function materializeNavigationResource(resource: NormalizedResource): MaterializedValue {
   const { key } = resource;
   const { graph } = resource;

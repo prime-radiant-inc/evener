@@ -1410,11 +1410,13 @@ func (m *Manager) resolveExecutableName(ctx context.Context, host hostreg.Host, 
 // expectedHubExecutable resolves the canonical path of the executable the host
 // hub is expected to run: the configured evener_path when set, else a target
 // this Manager already resolved for the host, else whatever `command -v evener`
-// resolves to, else the installer's default ~/.local/bin/evener when that file
-// exists. Every path is canonicalized on the host, so a symlinked install on
-// either side compares equal. Sharing deployTarget's fallback is what identifies
-// a hub installed at the installer default but absent from the non-interactive
-// PATH, instead of reporting no executable and forcing a re-deploy.
+// resolves to. Every path is canonicalized on the host, so a symlinked install
+// on either side compares equal. A hub installed at the installer default
+// ~/.local/bin/evener but absent from the non-interactive PATH is identified
+// through the resolved-target branch: preflight probes that location and
+// records it as the host's target (probeInstallerDefaultExecutable →
+// setResolvedTarget), so the host is read as running the controller's build
+// rather than re-deployed to on every reconnect.
 func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) (string, error) {
 	if p := strings.TrimSpace(host.EvenerPath); p != "" {
 		return m.resolveRemotePath(ctx, host, p)
@@ -1422,18 +1424,19 @@ func (m *Manager) expectedHubExecutable(ctx context.Context, host hostreg.Host) 
 	if p := m.resolvedTarget(host.Name); p != "" {
 		return m.resolveRemotePath(ctx, host, p)
 	}
+	// There is no installer-default fallback here: `command -v evener` exits
+	// non-zero when the name is missing, which the runner reports as an error,
+	// so an absent evener takes the error branch below and never returns an
+	// empty answer for a fallback to fill in. The installer default is
+	// discovered by preflight instead and arrives through the resolved-target
+	// branch above.
 	out, err := m.runner.Run(ctx, rawCommandArgv(m.opts, host, "command -v evener"), nil)
 	if err != nil {
 		return "", fmt.Errorf("%w: host %q resolve evener on PATH: %w: %s", ErrRestart, host.Name, err, tail(out))
 	}
 	p := firstLine(string(out))
 	if p == "" {
-		if dp, ok := m.probeInstallerDefaultExecutable(ctx, host); ok {
-			p = dp
-		}
-	}
-	if p == "" {
-		return "", fmt.Errorf("%w: host %q has no evener on PATH, no evener at the installer default ~/.local/bin/evener, and no configured evener_path to identify the hub by; set evener_path", ErrRestart, host.Name)
+		return "", fmt.Errorf("%w: host %q has no evener on PATH and no configured evener_path to identify the hub by; set evener_path", ErrRestart, host.Name)
 	}
 	return m.resolveRemotePath(ctx, host, p)
 }
