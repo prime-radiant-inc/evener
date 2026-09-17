@@ -50,7 +50,9 @@ what makes the federation fully operable without a terminal.
 - Controller-side hub methods: `evener/host/list`, `evener/host/add`,
   `evener/host/update`, `evener/host/remove`, `evener/host/status`,
   `evener/host/plan`, `evener/host/deploy`, `evener/host/restart`, and
-  `evener/host/operations`. `evener/host/attach` ships with #1603 and is
+  `evener/host/operations`, plus the local `evener/host/running` probe
+  handler and the `evener/host/teardown-retry` repair mutation.
+  `evener/host/attach` ships with #1603 and is
   unchanged here — relied on, not re-specified.
 - Durable persistence of host entries with a hot-apply path: the running hub
   picks up add/update/remove without a restart (registry, sshconn manager,
@@ -124,15 +126,26 @@ read-modify-write on the sidecar cannot lose updates.
 **Mutation idempotency:** every `add`/`update`/`remove` accepts an optional
 opaque `mutationId` (non-empty, at most 128 bytes, no required structure —
 the same rules as client operation IDs). The staged commit persists a durable
-mutation receipt — the key, the outcome, and the resulting row — in the same
-atomic sidecar write as the mutation itself, and a replay carrying a known key
-returns the recorded receipt without re-applying: a retried `add` cannot
-duplicate, a retried `remove` cannot fail not-found, and a retried `update`
-cannot double-apply or double-bump the generation. A mutation sent without a
-key whose response is lost reconciles read-after-unknown through `list` before
-any retry — `add` compares the listed entry hash for the name, `update`
-compares the listed row, `remove` treats a missing name or a `removed: true`
-row as committed.
+mutation receipt — the scoped key, the outcome, the resulting row, and the
+resulting generation (row schema in Persistence + hot-apply, below) — in the
+same atomic sidecar write as the mutation itself, and a replay carrying a
+known key returns the recorded receipt without re-applying: a retried `add`
+cannot duplicate, a retried `remove` cannot fail not-found, and a retried
+`update` cannot double-apply or double-bump the generation. **Receipt scope
+— extending the round-nine receipt with the operation store's scoping:** the
+dedup key is (mutationId, host name, mutation kind, host generation at
+commit), mirroring the operation store's (host, kind, client operation ID,
+generation) scope. A replay matches only a receipt of the same name, kind,
+and current generation. A mutationId colliding with a current-generation
+receipt of a different name or kind is refused with the typed
+`conflicting-mutation-id` error — never a hit, never a re-apply under the
+colliding key (the operation store's conflicting-operation-ID rule, applied
+to mutations). A key whose only matches are superseded-generation receipts
+commits fresh and overwrites. A mutation sent without a
+key whose response is lost reconciles read-after-unknown through `list`
+before any retry — `add` compares the listed entry hash for the name,
+`update` compares the listed row, `remove` treats a missing name or a
+`removed: true` row as committed.
 
 - `evener/host/list` (read, never dials): every configured host — the full
   effective `HostConfig` fields plus live state: `attached`
@@ -147,8 +160,10 @@ row as committed.
   hosts (tombstones) appear as `list` rows with `removed: true`** and their
 retained-row count — one surface, no separate retained view. Removed rows are
 rendered from the tombstone's retained effective `HostConfig` (all seven
-fields `HostRow` requires), with live state left absent per the
-absent-when-unknown rule.
+fields `HostRow` requires) plus the explicit tombstone values
+(`attached: false`, `midEnsure: false`, the removed entry's origin and
+generation — see Protocol types); only the facts/error optionals stay absent
+per the absent-when-unknown rule.
 - `evener/host/add` (mutation): body = one host entry. Validate with the
   component-03 rules (name validation, the `[[hosts]]` field validation at
   `cmd/evener-hub/config.go:177`). **Enforces the component-03 host-count
@@ -241,8 +256,11 @@ absent-when-unknown rule.
   target path, controller revision, the probed running revision (see the
   running-state rule below), nonce). The `hub.toml` fingerprint is
   what makes a manual edit of that file invalidate outstanding tokens at
-  deploy time even though the running process loads it only at startup (see
-  `deploy`).
+  deploy time: the initial full load of `hub.toml` is at startup, but the
+  mutation staged-commit path re-reads the file bytes on every mutation
+  (validation read, final check, post-rename reconcile — see persistence)
+  and `plan`/`deploy` re-hash them at mint and execution time (see
+  `deploy`), so a hand edit is visible without a restart.
   **Generation binding:** the token is bound to the durable incarnation — the
   per-name generation of Host generations, below — and `deploy` validates the
   generation like every other binding. Live `remove` drops every outstanding
@@ -251,7 +269,12 @@ absent-when-unknown rule.
   remove/re-add cycle can never validate after it even if the re-added entry
   is byte-identical.
   **Outstanding-token rule: minting a new token for a host immediately
-  supersedes any earlier unconsumed token for that host.** `plan`
+  supersedes any earlier unconsumed token for that host. Superseded rows do
+  not accumulate:** the same atomic store write that persists the new token
+  deletes the host's earlier unconsumed token rows — predecessors are already
+  invalid by the rule above, so mint replaces rather than accumulates;
+  expired-token reaping (lazy + boot, below) covers only tokens that expire
+  unconsumed and unsuperseded. `plan`
   **always try-acquires the host's per-host gate first — before checking
   facts and before minting — and fails fast with the typed busy error if
   held**, so a fresh-facts plan cannot mint while a deploy/restart/`Ensure`
@@ -281,18 +304,29 @@ absent-when-unknown rule.
   prober for never-connected hosts); a token is only ever minted from fresh
   facts. **Running-state verification:** `plan` mints only for an attached
   host, so while still holding the gate it probes the running hub's identity
-  and health through the attached channel with an authenticated
-  running-health/build probe — a read-only request over the live channel
-  (never a dial, never preflight) returning the running build revision and
-  a health payload — and records `runningVersion` (with the build revision
-  behind it) and `runningHealthy` in the plan, with the running revision
+  and health through the attached channel with the `evener/host/running`
+  method (catalog entry + request/response in Protocol types, below) — a
+  read-only request issued only through `sshManager.ChannelIfAttached(name)`
+  over the live channel (never a dial, never preflight) — and records the
+  response's `buildRevision` as `runningVersion` and its `healthy` flag as
+  `runningHealthy`, both as `HostPlan` fields, with the running revision
   bound into the confirmation token alongside the other bindings above.
+  The remote handler ships in the same 08b as `plan`: every hub serves
+  `evener/host/running` locally (its own revision from the same source as
+  the `controllerBuild` plan input, plus its own health) and admits it only
+  over an attached session peered by the #1603 handshake — the probe
+  inherits the channel's authentication and adds no new capability
+  (classified as a read, never forwarded onward, never entering the deploy
+  ladder). A missing or unverified handshake is an unauthenticated probe.
   `restartFollows` is computed from the fresh preflight facts confirmed
   against the probed running version: the plan says a restart follows only
   when the running hub is actually outdated. If the probe read fails or is
-  unauthenticated, `plan` mints nothing and names the failure in the same
-  no-token shape as the stale-facts refusal — a plan never ships without
-  verified running state. The handshake version, ping liveness, and
+  unauthenticated — including a remote whose hub predates the handler
+  (named distinctly as handler-absent; such remotes upgrade out-of-band,
+  since the token-bound deploy path cannot itself deliver the first
+  probe-capable binary) — `plan` mints nothing and names the failure in the
+  same no-token shape as the stale-facts refusal — a plan never ships
+  without verified running state. The handshake version, ping liveness, and
   preflight on-disk facts feed the decision ladder but never substitute for
   the probe: none of them proves which build the live process runs.
   The token is generated by the controller, never constructed client-side —
@@ -368,7 +402,11 @@ absent-when-unknown rule.
   follows requires none. This is the execution half of the round-seven
   post-operation facts refresh: the refresh stays required, and it now has a
   precondition — the planned restart must actually have run — so `deploy`
-  can no longer report success with the running hub still outdated.
+  can no longer report success with the running hub still outdated. The
+  planned restart drops the channel exactly like a standalone `restart` and
+  follows the same operation-owned detach/restart/reattach sequence under
+  the same gate (see `restart`), so the post-operation probe always runs
+  over a worker-owned channel.
 - `evener/host/restart` (mutation): same operation model (**(host, kind)**-
   scoped operation-ID dedup first (generation-scoped like `deploy` — see the
   operation store), busy-fail gate acquisition, atomic record
@@ -382,7 +420,19 @@ absent-when-unknown rule.
   landing between restart's resolution and its gate acquisition is likewise
   a typed stale-entry refusal, never a restart of the superseded entry),
   wraps the 04b restart path (user vs system unit decision,
-  `waitHealthy` proven replacement).
+  `waitHealthy` proven replacement). Restart drops the attached AppWire
+  channel by construction, and no supervisor/`Ensure` reattach can cover the
+  worker — both need the gate the operation holds through terminal
+  verification — so the reattach is operation-owned: the worker retains its
+  host's gate across the drop and re-runs the `evener/host/attach` dialing
+  closure for the same generation-pinned entry (no gate release, no gate
+  handoff, no supervisor involvement — both stay gated out while the gate
+  is held), then runs the channel re-probe the post-operation refresh
+  requires over the reattached channel. A restart issued while the host has
+  no attached channel runs the same operation-owned attach first under the
+  already-held gate and names the attach-first path in the record, so
+  verification always has a channel and initially unattached hosts need no
+  separate SSH verification path.
 - `evener/host/plan`/`deploy`/`restart`/`status` on a name present solely as
   a tombstone — or absent from both files — is the same typed not-found as
   `update`/`remove`: only `list` surfaces tombstone-only names (as
@@ -595,7 +645,25 @@ controller-side operation records; this component defines a
   host at boot is discarded — the live host wins. A sidecar that fails
   schema validation or is corrupt at boot is a hard startup error naming
   the file — the same posture as the duplicate-name collision (recovery:
-  fix or delete the file; only sidecar state is lost).**
+  fix or delete the file; only sidecar state is lost).** **The sidecar file
+  also carries the mutation receipts and teardown-remnant records (sibling
+  of the idempotency receipts): `mutationReceipts` maps the scoped receipt
+  key (mutationId, host name, mutation kind, commit generation) to
+  `{outcome, row, generation, committedAt}`; `teardownRemnants` maps the same
+  key to `{seam, pendingTeardown, generation, committedAt}`. Both sections
+  ride the same atomic temp+rename writes as entries and tombstones (the
+  commit, the `teardown-retry` clearance, and the re-add purge below are all
+  single writes), and the same hard-startup-error posture on corrupt or
+  schema-invalid content. Retention:** receipts and remnants are per-host and
+  per-generation — re-add purges that name's superseded-generation receipts
+  and (after naming the operator-visible failure — see data flow) its stale
+  remnants in the same atomic write that mints the new generation, so the
+  sections stay bounded by the live host set plus at most one superseded
+  generation per name. Tombstone-purge semantics decide the rest (see L2):
+  while a tombstone is retained its name's receipts stay readable for
+  post-remove forensics; purging the tombstone drops that name's receipts and
+  remnants with it — cross-name replay after the purge commits fresh and
+  overwrites by the scoping rule above.
 - **Staged commit (order matters):** add/update/remove never mutate live
   state incrementally. Under the process-wide mutation lock: (1) stage the
   complete change — new registry value, the *description* of the manager
@@ -621,7 +689,20 @@ controller-side operation records; this component defines a
   mutation is committed and there is no compensation path back — a failure
   at or after the commit point is reported as a committed-with-
   teardown-failure with the seam named, and recovery is forward (retry the
-  teardown / re-apply), never a restore of the prior bytes — extending the
+  teardown / re-apply), never a restore of the prior bytes — through the
+  teardown-repair operation, never a blind full-mutation retry (replaying
+  the original mutationId stays a no-op receipt return, so the API has a
+  repair path that is not the replay): the same atomic sidecar write that
+  persists the committed receipt also persists a durable teardown-remnant
+  record — the mutation's scoped receipt key plus the named pending teardown
+  (handles, seam, generation) — and the new `evener/host/teardown-retry`
+  mutation (params `{mutationId: string}`, response `{host: HostRow}`)
+  resumes ONLY that named teardown: it looks up the remnant by the receipt
+  key (unknown key or already-cleared remnant → typed not-found), try-acquires
+  the host's per-host gate (held → typed busy, same classes as `restart`),
+  re-reads the live entry and refuses stale-entry if the host generation
+  moved since the commit, runs the named teardown to completion, clears the
+  remnant in the same atomic sidecar write, and returns the live row. Extending the
   round-eight commit-point work with a stable representation: the response
   carries the stable `committed-with-teardown-failure` outcome naming the
   seam, the mutation's durable receipt (see mutation idempotency, above) is
@@ -691,7 +772,9 @@ controller-side operation records; this component defines a
 - **Deploy confirmation:** opening the dialog calls `evener/host/plan` and
   renders the confirmation from **`plan`'s response — the controller-minted,
   token-bound plan**: target host, controller revision, resolved remote
-  target path, whether a restart follows, facts freshness, and any plan-time
+  target path, whether a restart follows, the running build, facts freshness
+  (from the plan's server-generated `factsCapturedAt`/`factsAgeSec`),
+  and any plan-time
   refusal (terminal ones disable the button). The deploy confirmation
   submits exactly the displayed plan: `evener/host/deploy` with that plan's
   token and a client operation ID — never a plan the user has not seen. If
@@ -760,6 +843,13 @@ operation-record bindings, not request fields — keep `host`.)
   `lastAttachError?: string`, `lastAttachErrorAgeSec?: number`,
   `midEnsure: bool`, `origin: "hub.toml" | "sidecar"`, `removed: bool`,
   `retainedRows?: number` (tombstone rows only), `generation: number`.
+  **Tombstone values:** a tombstone row renders from retained effective
+  `HostConfig` with `attached: false`, `midEnsure: false`, and the removed
+  entry's `origin` and `generation`; `installedVersion?`,
+  `installedVersionAgeSec?`, `osArch?`, `lastAttachError?`, and
+  `lastAttachErrorAgeSec?` stay absent (never null) per the absent-when-unknown
+  rule — every other `HostRow` field carries the explicit value above, so no
+  non-optional field is left unknown.
 - `evener/host/add`: params are one full host entry (all seven `HostConfig`
   fields; `name` required) plus optional `mutationId: string` (opaque,
   non-empty, at most 128 bytes — the idempotency key; see the mutation
@@ -779,11 +869,26 @@ operation-record bindings, not request fields — keep `host`.)
   HostPlan, token: string}` or `{staleFacts:
   {message: string, attached: bool}}`. `HostPlan` is `{host, generation,
   targetPath, controllerRevision, restartFollows, factsRevision,
-  hubTomlFingerprint}` — the token's bindings, rendered. `plan`/`token`
+  hubTomlFingerprint, factsCapturedAt: string (RFC3339), factsAgeSec: number,
+  runningVersion: string, runningHealthy: bool}` — the token's bindings plus
+  the server-generated facts capture timestamp and age behind the deploy
+  confirmation's freshness line. `plan`/`token`
   are absent — never null — on the stale-facts response, per the absent-
-  when-unknown rule above. `runningVersion: string` and
-  `runningHealthy: bool` ride alongside — the live running-state
-  verification, rendered.
+  when-unknown rule above.
+- `evener/host/running` (controller-side method, same-scope 08b — catalog
+  entry + TypeScript client with the handler): params `{}`; response
+  `{buildRevision: string, healthy: bool}`. Served locally by every hub —
+  `buildRevision` from the same source as the `controllerBuild` plan input,
+  `healthy` the hub's own health — admitted only over an attached session
+  peered by the #1603 handshake (read classification; never forwarded). The
+  `plan` probe calls it through `sshManager.ChannelIfAttached(name)`; its
+  response fields are what `plan` records as `HostPlan.runningVersion` /
+  `runningHealthy`.
+- `evener/host/teardown-retry` (mutation): params `{mutationId: string}`;
+  response `{host: HostRow}` — resumes and clears the named remnant, or typed
+  not-found / busy / stale-entry (see the commit point).
+- Mutation conflict: `conflicting-mutation-id` rides the same AppWire error
+  envelope as `conflicting-operation-id` and is refused the same way.
 - `evener/host/deploy`: params `{name: string, token: string, operationId:
   string}` (client operation ID: opaque, non-empty, at most 128 bytes);
   response `{id: string, clientOperationId: string, state: OperationState}`
@@ -808,11 +913,12 @@ operation-record bindings, not request fields — keep `host`.)
   `host-busy-transient` (no operation reference), `stale-entry` (entry,
   target, generation, or `hub.toml`-fingerprint mismatch),
   `token-missing` / `token-mismatched` / `token-superseded` /
-  `token-expired`, `conflicting-operation-id`, `too-many-hosts`
+  `token-expired`, `conflicting-operation-id`, `conflicting-mutation-id`, `too-many-hosts`
   (`ErrTooManyHosts`), `swap-failed` (names the seam),
   `committed-with-teardown-failure` (names the seam; the mutation is durable
   and the pending teardown is named for forward retry — not a failed
-  mutation), `session-unavailable`
+  mutation), `teardown-unknown-key` (unknown or already-cleared remnant),
+  `session-unavailable`
   (the #1603 attach classifier); `interrupted` is a terminal record state
   (outcome unknown), not a thrown error.
 - The **operation store**: a small durable store (records keyed by operation
@@ -862,7 +968,15 @@ scope. The tombstone's surviving surfaces are the stale tree rows and the
 `list` row (`removed: true`) — the Hosts list reads tombstones from the
 controller, never from the sources manifest. The tombstone is purged when
 the same host name is re-added, or after a retention period (owner-set;
-open question).
+open question 2 — **the owner knob is the retention period**). **Expiry
+mechanism (explicit, no background timer):** the controller evaluates expiry
+lazily — on every `list` read and on every sidecar mutation, both under the
+mutation lock — and drops each tombstone whose `removal timestamp + retention
+period` has passed: the read path filters it from the response, and the next
+atomic sidecar write under the lock prunes it durably (plus that name's
+receipts and remnants, per the retention rule in persistence). The data-flow
+purge sentence stands — re-add and retention-expiry both prune — and open
+question 2 now asks only for the default value, not the mechanism.
 
 **Tombstones are durable:** they persist as a section of the managed sidecar
 itself (same file, same atomic writes — see persistence), so a removal's
@@ -897,9 +1011,13 @@ names it as such — there is no silent history adoption either way.
 stable generation as long as their effective entry is unchanged — since the
 sibling reconciling commit above detects external `hub.toml` edits after the
 fact, any detected change to a `hub.toml`-declared host's effective entry
-(including a change detected while reloading `hub.toml` or by the
-post-commit reconciliation) advances that host's generation and clears or
-rebinds its name-keyed cached state — resolved deploy targets, deployment
+— detected by the sidecar staged commit's `hub.toml` re-reads (validation,
+final check, post-rename reconcile, all under the mutation lock) or by a
+`plan`/`deploy` fingerprint check, never by a background watcher —
+advances that host's generation and clears or
+rebinds its name-keyed cached state — the detecting path adopts the re-read
+entry into the running registry first, then bumps the generation, then
+clears or rebinds: resolved deploy targets, deployment
 state, last-known facts entries, supervisor bindings, channel handles, and
 outstanding tokens — so a stale snapshot or preflight facts read from the
 old configuration can never pass a generation check against the new one.
@@ -977,9 +1095,18 @@ name-keyed cache entry can never republish rows for the new host.
   **remote-origin rejection for `list`/`add`/`update`/`remove`** (the #1603
   origin guard refuses peer-forwarded requests before admission), and a
   wiring test mirroring the 05a registration tests.
+  **Mutation-idempotency tests (the operation store's cross-name rule,
+  applied to mutations): cross-name/cross-kind `mutationId` replay is the
+  typed `conflicting-mutation-id` refusal; same-key replay after remove/
+  re-add opens fresh (superseded-generation receipts are not a conflict).**
+  **Commit-point tests: a committed-with-teardown-failure persists the
+  remnant, replaying the original `mutationId` stays a no-op receipt return,
+  and `teardown-retry` completes only the named teardown (unknown or
+  cleared key → not-found; moved generation → stale-entry).**
 - 08b: handler tests per method (validation, admission, classification incl.
   `plan`-as-mutation, **remote-origin rejection for
-  `status`/`plan`/`deploy`/`restart`/`operations`**, the token matrix:
+  `status`/`plan`/`deploy`/`restart`/`operations`/`running`/`teardown-retry`**,
+  the token matrix:
   missing/mismatched/expired/superseded/consumed-then-replayed-with-new-op-ID,
   **generation-bound (a token minted under generation N is refused after
   remove/re-add even for a byte-identical entry; live remove drops
@@ -994,6 +1121,15 @@ name-keyed cache entry can never republish rows for the new host.
   reference and the UI shows retry, not open/wait)**,
   **protocol shapes (catalog entries and the regenerated client match the
   Protocol types section field-for-field)**,
+  **the running probe (`evener/host/running` handler: local revision +
+  health, attached-session admission only — unauthenticated probe refusal;
+  the gate-held `plan` probe call; `HostPlan.runningVersion` /
+  `runningHealthy` placement; handler-absent named for pre-handler
+  remotes)**,
+  **restart reattach (the worker retains the gate across the channel drop,
+  re-runs the attach closure for the pinned entry, and re-probes over the
+  reattached channel; an initially unattached restart attach-firsts under
+  the same gate and names it in the record)**,
   **the stale-facts gated refresh: an attached host refreshes via the
   bounded one-shot SSH preflight (no channel initialization, no supervisor,
   no attach state machine) then mints; an unattached host gets the
