@@ -562,6 +562,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		for _, item := range pending {
 			params := s.stampFailureCountOnStatusChange(item.method, item.params)
 			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = s.stampAskPendingOnStatusChange(item.method, params)
 			params = s.stampFailureCountOnItemCompleted(item.method, params)
 			params = stampAppNotificationTarget(params, item.threadID, item.ref)
 			notificationTarget := item.threadID
@@ -630,6 +631,7 @@ func (s *Server) finishProcessing() {
 		for _, item := range pending {
 			params := s.stampFailureCountOnStatusChange(item.method, item.params)
 			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = s.stampAskPendingOnStatusChange(item.method, params)
 			params = stampAppNotificationTarget(params, item.threadID, item.ref)
 			notificationTarget := item.threadID
 			s.mu.RLock()
@@ -1073,6 +1075,52 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 	}
 	status.FailedToolCalls = &count
 	return status
+}
+
+// stampAskPendingOnStatusChange rides the pending-ask flag along on every
+// thread/status/changed (#1613).
+//
+// The flag is otherwise snapshot-only, refreshed by thread/read, and the
+// clients cannot derive it: the reducer is forbidden from recomputing this
+// thread field from item lifecycle (appwire-client/typescript/reducer.test.ts,
+// "askPending is wire-authoritative"), because the ask dock owns its own,
+// separate in-tool signal. So after the user answers, every other client keeps
+// saying "question waiting" until it rereads.
+//
+// It happens HERE, at the server's single notification egress, for the reason
+// the two stampers around it give: the projector maps events to notifications
+// and holds no session handle, and the flag lives on the envelope.
+//
+// Absence means "no update", so an unmeasured envelope leaves the field off
+// rather than announcing a question nobody is waiting on.
+func (s *Server) stampAskPendingOnStatusChange(method string, params any) any {
+	if method != appwire.NotifyThreadStatusChanged {
+		return params
+	}
+	status, ok := params.(appwire.ThreadStatusChangedParams)
+	if !ok {
+		return params
+	}
+	pending := s.envelopeAskPending()
+	status.AskPending = &pending
+	return status
+}
+
+// envelopeAskPending reads the pending-ask flag out of the thread envelope the
+// snapshot is built from, so a notification and the snapshot cannot disagree.
+//
+// There is no unmeasured state to skip, which is what makes this simpler than
+// the failure count above: the envelope's flag is a plain bool refreshed from
+// the session whenever the ask facet is sampled, and appThread hands the same
+// value to every snapshot unconditionally. Wire absence therefore means an old
+// daemon, which is exactly what the client's absent-means-no-update rule is
+// for. The bridge samples the facet BEFORE the projection commit that emits
+// this notification (bridge.go), so the value stamped here is the one this
+// event produced.
+func (s *Server) envelopeAskPending() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.appEnvelope.AskPending
 }
 
 // stampCapabilitiesOnStatusChange rides the action set that goes with the
