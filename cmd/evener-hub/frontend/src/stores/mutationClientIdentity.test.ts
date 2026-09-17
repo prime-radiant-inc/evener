@@ -1,6 +1,8 @@
-import { beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { stubThrowingGetter } from "./throwingGetterTestUtils";
 
 const UUID = "11111111-2222-4333-8444-555555555555";
+const originalSessionStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
 
 // ownClientId holds a module-level fallback, so each case gets a fresh module
 // and an empty identity slot rather than the previous case's page identity.
@@ -8,6 +10,15 @@ beforeEach(() => {
   vi.unstubAllGlobals();
   globalThis.sessionStorage?.clear();
   vi.resetModules();
+});
+
+afterEach(() => {
+  if (originalSessionStorage) {
+    Object.defineProperty(globalThis, "sessionStorage", originalSessionStorage);
+  } else {
+    delete (globalThis as { sessionStorage?: unknown }).sessionStorage;
+  }
+  vi.unstubAllGlobals();
 });
 
 test("the generated identity uses crypto.randomUUID when available", async () => {
@@ -34,11 +45,19 @@ test("the stored identity is cached so a later storage failure keeps one identit
   expect(ownClientId()).toBe("stored-identity");
 });
 
-test("falls back to the random and timestamp identity without crypto.randomUUID", async () => {
-  vi.stubGlobal("crypto", { ...globalThis.crypto, randomUUID: undefined });
+test("falls back to a secure UUID-shaped identity without crypto.randomUUID", async () => {
+  // crypto's methods live on its prototype, so a spread copy carries none of
+  // them; getRandomValues is bound explicitly to keep it real, which is what
+  // createSecureUUID's fallback needs.
+  vi.stubGlobal("crypto", {
+    getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto),
+    randomUUID: undefined,
+  });
   const { ownClientId } = await import("./mutationClientIdentity");
 
-  expect(ownClientId()).toMatch(/^mutation-client-[0-9a-z]+-[0-9a-z]+$/);
+  expect(ownClientId()).toMatch(
+    /^mutation-client-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
 });
 
 test("a fallback identity created before storage was available is never replaced", async () => {
@@ -77,5 +96,28 @@ test("a fallback identity created before storage was available is never replaced
   // client.
   available = true;
   backing.set("evener-hub.mutation-client-identity", "stored-identity");
+  expect(ownClientId()).toBe(first);
+});
+
+// The property access itself, not just a method call: some sandboxed pages
+// throw on touching window.sessionStorage at all. globalThis.sessionStorage
+// is read lazily inside the shim's adapter methods, one call frame inside the
+// package's own try/catch, so this must not surface as an uncaught throw.
+// The file's afterEach restores the descriptor, so the two tests below don't
+// need the helper's own restore function.
+
+test("a sessionStorage getter that throws on access falls back to a generated identity", async () => {
+  stubThrowingGetter(globalThis, "sessionStorage");
+  const { ownClientId } = await import("./mutationClientIdentity");
+
+  expect(() => ownClientId()).not.toThrow();
+  expect(ownClientId()).toMatch(/^mutation-client-/);
+});
+
+test("a memoized identity never re-touches a throwing sessionStorage getter", async () => {
+  const { ownClientId } = await import("./mutationClientIdentity");
+  const first = ownClientId();
+
+  stubThrowingGetter(globalThis, "sessionStorage");
   expect(ownClientId()).toBe(first);
 });

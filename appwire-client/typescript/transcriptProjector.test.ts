@@ -1,7 +1,7 @@
-import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
-import { projectThread } from "./projector";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./transcriptDisplayConfig";
+import { projectThread } from "./transcriptProjector";
 
 const BASE_THREAD = {
   ref: "ref:test",
