@@ -2559,6 +2559,77 @@ test.each([
   expect(itemAt(turnAt(model, 0), 0).status).toBe("completed");
 });
 
+// The same rule on the turn's own settle path: a turn/completed carrying
+// itemsView "full" restates the turn's items, and an item in that payload that
+// says nothing about images keeps the ones the model already holds — the merge
+// chain there is the same composition item/completed uses, so it must carry the
+// same fields.
+test("a full turn settle that omits image fields keeps the item's images", () => {
+  const thread = testThread({
+    turns: [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        itemsView: "default",
+        items: [
+          {
+            id: "user-item",
+            turnId: "turn_1",
+            type: "userMessage",
+            text: "look",
+            status: "inProgress",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+          {
+            id: "tool-item",
+            turnId: "turn_1",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-1",
+            text: "",
+            status: "inProgress",
+            outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+          },
+        ],
+      },
+    ],
+  });
+  let model = hydrateThread({ thread }, thread.evener.ref, 1000);
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: thread.id,
+        ref: thread.evener.ref,
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { id: "user-item", turnId: "turn_1", type: "userMessage", text: "look", status: "completed" },
+            {
+              id: "tool-item",
+              turnId: "turn_1",
+              type: "commandExecution",
+              toolName: "shell",
+              callId: "call-1",
+              text: "",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toHaveLength(1);
+});
+
 // The output side keeps its own rule, which is why it needs its own case: there
 // an explicit empty list IS the removal the hub sends (#1614), and only an
 // absent field means "nothing said".
@@ -2613,13 +2684,17 @@ test("a settle carrying an explicitly empty output-image list takes the removal"
 });
 
 // An INPUT image list that arrives empty says nothing about the item's images:
-// the hub's own merges keep whatever list it already had when the incoming one
-// is empty (`server/appwire_turns.go:884-886` and
-// `internal/apptranscript/logical_turn.go:309`, both `len(incoming.Images) == 0`,
-// and the wire field is `omitempty`), and a real fixture sends exactly that —
+// the hub keeps whatever list it already had when the incoming one is empty
+// (`server/appwire_turns.go`'s and `internal/apptranscript/logical_turn.go`'s
+// `len(incoming.Images) == 0` branches), and a real fixture sends exactly that —
 // `fixtures/tool-and-jobs.jsonl:4`, a steering notification with `images: []`.
 // Reading it as "the images are gone" erases an older page's input images on
-// merge. Output images are the opposite case and keep their own rule below.
+// merge.
+//
+// OUTPUT images are the opposite case and keep their own rule below: there an
+// explicit empty list is the removal signal, which is a contract the wire states
+// (`OutputImages` marshalled so an empty list survives, merge sites keeping nil
+// apart from empty) rather than something the input list can express.
 test("an empty input-image list says nothing, so the images already known survive", () => {
   const thread = testThread({
     turns: [

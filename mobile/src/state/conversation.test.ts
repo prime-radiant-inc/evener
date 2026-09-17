@@ -1774,6 +1774,13 @@ describe("ConversationStore", () => {
       for (const id of ["m1", "m2", "m3"]) expect(identities).toContain(id);
     });
 
+    // c-2b's "a rebuilt paged cluster takes its identity from its new first
+    // member" test lived here. It exercised withPageHistory/retainedPageRow,
+    // which this row deletes: a page merges into the MODEL now, so a member the
+    // snapshot already holds is folded by identity rather than rebuilt around
+    // (mergeOlderItemPage). "keeps every item of a page whose middle one the
+    // model already holds" above is that guarantee against this mechanism.
+
     it("does not resurrect a removed image when an attachment wire ID changes", async () => {
       const { store, service, sink } = await openRunningTurn([
         {
@@ -2448,6 +2455,46 @@ describe("ConversationStore", () => {
       if (published === undefined) throw new Error("row not published");
       const texts = read(published);
       expect(texts.length).toBeGreaterThan(0);
+      for (const text of texts) expect(bounded(text)).toBe(true);
+    });
+
+    // Every text an activity row renders, top-level and per member: the label
+    // (the row's disclosure line and its accessibility label) and the
+    // description (the summary line a collapsed row shows) are read exactly as
+    // the arguments and output are.
+    it.each([
+      ["top-level", false],
+      ["clustered member", true],
+    ])("bounds an activity's label and description on a %s row", async (_where, clustered) => {
+      const activity = {
+        kind: "activity" as const,
+        id: "r",
+        label: oversized,
+        family: "tool" as const,
+        state: "completed" as const,
+        detail: { description: oversized, output: "small" },
+      };
+      const row = clustered
+        ? {
+            ...activity,
+            members: [
+              { ...activity, id: "r:0" },
+              { ...activity, id: "r:1" },
+            ],
+          }
+        : activity;
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ items: [row as unknown as MobileTimelineItem] });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const published = store.getState().conversation?.items.find((item) => item.id === "r");
+      if (published === undefined || published.kind !== "activity") throw new Error("row not published");
+      const texts = [
+        published.label,
+        published.detail.description,
+        ...(published.members ?? []).flatMap((member) => [member.label, member.detail.description]),
+      ].filter((text): text is string => text !== undefined);
+      expect(texts.length).toBe(clustered ? 6 : 2);
       for (const text of texts) expect(bounded(text)).toBe(true);
     });
 

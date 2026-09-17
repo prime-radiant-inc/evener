@@ -383,13 +383,16 @@ function inlineImageSrc(img: InputItem): string | undefined {
 }
 
 // The OPPOSITE rule to imagesToItemImagesForSession above, and deliberately so.
-// Output images are the one image list the hub can clear: it sends `[]` to say
-// the tool's output images are gone (#1614 — `omitzero` on OutputImages, and the
-// hub's merge and clone sites preserve an empty list rather than folding it into
-// nil), so an empty list here is a value the model must hold and an older page
-// must not replay what it had. Input images have no such signal — an empty list
-// there means "nothing said" (see above) — so the two functions read the same
-// shape differently on purpose.
+// Output images are the one image list a tool can clear, so the contract is:
+// an explicit empty output list IS the removal signal, and the model must be
+// able to hold it (an older page replaying the images it once had must not put
+// them back). The hub's half of that contract is `OutputImages` marshalled
+// `omitzero` with its merge and clone sites keeping nil apart from empty — a
+// wire change landing alongside this one, so read this function as the rule
+// rather than as a description of the hub that is deployed today.
+//
+// Input images have no removal signal at all: there an empty list means
+// "nothing said" (see above). Same shape, opposite reading, on purpose.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
   if (!images) return undefined;
   if (images.length === 0) return [];
@@ -1288,16 +1291,16 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
-        // below (mergeCompletedText/mergeReasoning/mergeArguments/mergeObservedTiming
-        // read/write disjoint fields off the same `old` reference, so
-        // composition order is free) — this branch has its own settled
+        // below (mergeCompletedText/mergeItemImages/mergeReasoning/mergeArguments/
+        // mergeObservedTiming read/write disjoint fields off the same `old`
+        // reference, so composition order is free) — this branch has its own settled
         // items rather than item/completed's single one, so it maps instead
         // of a single mapItem call.
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;
           return mergeObservedTiming(
-            mergeArguments(mergeReasoning(mergeCompletedText(identitySettled, old), old), old),
+            mergeArguments(mergeReasoning(mergeItemImages(mergeCompletedText(identitySettled, old), old), old), old),
             old,
             now,
           );
