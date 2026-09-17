@@ -104,8 +104,10 @@ export function readDraft(ref: string): string {
 // old v1 value (never the reverse order - a v2 write that crashed before the
 // v1 removal still leaves one readable draft behind). Blank text with no
 // selections removes the draft outright rather than storing an empty record -
-// a draft that would never send is never persisted. A selection-only draft
-// DOES send, so it persists even with blank text.
+// a draft that would never send is never persisted. A selection is only ever
+// staged next to its own visible `/<name>` reference, so a record with names
+// and no text is not something the composer produces; one that arrives from an
+// older build is normalized on restore rather than trusted here.
 export function writeComposerDraft(ref: string, value: ComposerDraft): void {
   markDraftEdited(ref);
   try {

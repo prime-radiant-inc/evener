@@ -1,12 +1,44 @@
 import { describe, expect, it } from "vitest";
 import {
   documentPositionToTextOffset,
+  materializeSkillReferences,
   parseSkillDocument,
   serializeSkillDocument,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 
 describe("skill document", () => {
+  it("reads a trailing colon as sentence punctuation, like a period", () => {
+    for (const text of ["Run /cleanup.", "Run /cleanup: fix the parser", "Run /cleanup,"]) {
+      expect(serializeSkillDocument(parseSkillDocument({ text, skillNames: ["cleanup"] }))).toEqual({
+        text,
+        skillNames: ["cleanup"],
+      });
+    }
+  });
+
+  it("still prefers a longer colon-qualified name over its own prefix", () => {
+    // The colon inside `plugin:hidden` continues the name; only a trailing one
+    // is punctuation.
+    expect(
+      serializeSkillDocument(
+        parseSkillDocument({ text: "Run /plugin:hidden", skillNames: ["plugin", "plugin:hidden"] }),
+      ),
+    ).toEqual({ text: "Run /plugin:hidden", skillNames: ["plugin:hidden"] });
+    expect(serializeSkillDocument(parseSkillDocument({ text: "Run /cleanup.v2", skillNames: ["cleanup"] }))).toEqual({
+      text: "Run /cleanup.v2",
+      skillNames: [],
+    });
+  });
+
+  it("appends a missing reference without disturbing the draft's own whitespace", () => {
+    // The append happens when a restore carries a selection with no visible
+    // reference; the text around it must survive exactly as the user left it.
+    expect(materializeSkillReferences("follow up\n", ["probe"])).toBe("follow up\n/probe");
+    expect(materializeSkillReferences("follow up", ["probe"])).toBe("follow up /probe");
+    expect(materializeSkillReferences("", ["probe"])).toBe("/probe");
+    expect(materializeSkillReferences("also /probe\n\n", ["probe"])).toBe("also /probe\n\n");
+  });
   it("round trips text, newlines, and repeated atoms with document-ordered deduplicated metadata", () => {
     const value = {
       text: "Run /skill-1\nand then /skill-2 and /skill-1",
