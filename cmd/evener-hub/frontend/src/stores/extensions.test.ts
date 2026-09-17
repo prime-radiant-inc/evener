@@ -975,8 +975,10 @@ describe("reconnect-triggered refetch", () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));
     fake.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    fake.on("evener/launch/getLayer", () => ({ pluginDirs: ["/opt/plugins"] }));
     await extensionsStore.getState().fetchMarketplaces();
     await extensionsStore.getState().fetchPlugins();
+    await extensionsStore.getState().fetchLaunchLayer();
 
     fake.emitStateChange("reconnecting");
     fake.emitReady();
@@ -984,6 +986,7 @@ describe("reconnect-triggered refetch", () => {
 
     expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(2);
     expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(2);
+    expect(fake.calls.filter((c) => c.method === "evener/launch/getLayer")).toHaveLength(2);
   });
 
   // pluginRevision is what the spawn form's HOST-scoped consumers key on:
@@ -1113,6 +1116,7 @@ describe("reconnect-triggered refetch", () => {
 
     expect(fake.calls.filter((c) => c.method === "evener/marketplace/list")).toHaveLength(marketplaceCalls + 1);
     expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
+    expect(fake.calls.filter((c) => c.method === "evener/launch/getLayer")).toHaveLength(0);
   });
 
   // A fresh screen that installs a plugin before ever fetching the list: none
