@@ -44,18 +44,19 @@ interface Preferences {
 	 * This is the ONE path out of an unreadable record, and it must work in every
 	 * state the app can be in when a user meets one. Reachability, by state:
 	 *
-	 * | state                  | this method            | screen button          | via `run` |
-	 * |------------------------|------------------------|------------------------|-----------|
-	 * | live model             | store.discardDraft     | calls this method      | would run |
-	 * | no model, backgrounded | port clear + snapshot  | calls this method      | NO-OP     |
-	 * | no model, reconnecting | port clear + snapshot  | calls this method      | NO-OP     |
-	 * | no session (hubId null)| nothing to clear       | no hub, no screen      | NO-OP     |
+	 * | state                  | this method            | screen button          | had it used `run` |
+	 * |------------------------|------------------------|------------------------|-------------------|
+	 * | live model             | store.discardDraft     | calls this directly    | would have run    |
+	 * | no model, backgrounded | port clear + snapshot  | calls this directly    | NO-OP             |
+	 * | no model, reconnecting | port clear + snapshot  | calls this directly    | NO-OP             |
+	 * | no session (hubId null)| nothing to clear       | no hub, no screen      | NO-OP             |
 	 *
 	 * Every row with a record ends the same way: record removed, UI unlocked -
 	 * the store publishes that when it has one, and the snapshot projection
-	 * below does it when it does not. The `run` column is why neither screen's
-	 * unreadable-discard goes through `run`: its first guard early-exits on a
-	 * null model, which is exactly the state this exists for. */
+	 * below does it when it does not. The last column is why BOTH screens call
+	 * this method directly rather than through their `run` helper: `run` exists
+	 * for operations that go through the shared store, so it requires a model,
+	 * which is exactly what these states lack. */
 	discardUnreadableDraft(section: "transcript" | "keybindings"): Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);

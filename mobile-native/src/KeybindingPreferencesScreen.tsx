@@ -106,23 +106,17 @@ export function KeybindingPreferencesScreen({
 		!!domain?.writeUncertain ||
 		!!domain?.storageUnavailable ||
 		!!domain?.confirmed?.loadError;
-	/** `requiresHub: false` for an operation that only touches this device, so it
-	 * still runs while disconnected. `requiresModel: false` for one that does not
-	 * go through the shared store at all - the unreadable-record escape hatch,
-	 * which exists precisely for the states where `model` is null (backgrounded,
-	 * reconnecting) and would otherwise be silently dropped by the guard below.
-	 * The hub-identity guard always applies: discarding must never clear a
-	 * different hub's record. */
+	/** Runs an operation THROUGH THE SHARED STORE, so it needs a model. Pass
+	 * `requiresHub: false` when it only touches this device, so it still runs
+	 * while disconnected. An operation that does not go through the store at all
+	 * - the unreadable-record escape hatch - does not come here: see its own call
+	 * site, which is why round 11's table lists "NO-OP" for this path. */
 	const run = (
 		operation: () => Promise<unknown>,
 		success?: () => void,
-		{
-			requiresHub = true,
-			requiresModel = true,
-		}: { requiresHub?: boolean; requiresModel?: boolean } = {},
+		{ requiresHub = true }: { requiresHub?: boolean } = {},
 	) => {
-		if (scope.hubId !== route.params.hubId) return;
-		if (requiresModel && !model) return;
+		if (!model || scope.hubId !== route.params.hubId) return;
 		if (requiresHub && !scope.connected) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
@@ -202,16 +196,20 @@ export function KeybindingPreferencesScreen({
 							    snapshot still reports it. The provider's path is local-only,
 							    so it runs with no hub. */}
 							<Action
-								onPress={() =>
-									run(
-										() => preferences.discardUnreadableDraft("keybindings"),
-										undefined,
-										// Neither a hub nor a live store: this is the one path out
-										// of an unreadable record, and `model` is null in exactly
-										// the states a user meets one in.
-										{ requiresHub: false, requiresModel: false },
-									)
-								}
+								onPress={() => {
+									// Deliberately NOT through `run`: this is the one path out of
+									// an unreadable record, `model` is null in exactly the states
+									// a user meets one in, and `run` requires a model. The
+									// hub-identity check is kept - a discard must never clear a
+									// different hub's record.
+									if (scope.hubId !== route.params.hubId) return;
+									setError(null);
+									preferences.discardUnreadableDraft("keybindings").catch(() => {
+										setError(
+											"The draft could not be discarded. Try again in a moment.",
+										);
+									});
+								}}
 							>
 								Discard unreadable draft
 							</Action>
