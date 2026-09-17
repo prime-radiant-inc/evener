@@ -2493,6 +2493,19 @@ type ThreadStatusChangedParams struct {
 	// hydrate legitimately gave it. Absence at HYDRATE is where "nobody
 	// counted" is expressed.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
+	// AskPending carries EvenerThread.AskPending — "this session is waiting on
+	// a human answer" — for the reason the failure count rides along above: it
+	// is otherwise snapshot-only, so after the user answers, every OTHER
+	// client keeps showing "question waiting" until its next read (#1613). The
+	// pending set clears only at a turn boundary (a resolving user turn, an
+	// interrupted turn: agent/session_tools_ask.go), which is exactly when a
+	// status change is announced, so this refreshes it when it can have moved
+	// and never polls.
+	//
+	// ABSENT MEANS "NO UPDATE" (an old daemon omits it), never "no question
+	// waiting": a client that cleared the flag on absence would stop showing a
+	// question the hydrate legitimately gave it.
+	AskPending *bool `json:"askPending,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
 	// count rides along above: it is otherwise snapshot-only, and three of its

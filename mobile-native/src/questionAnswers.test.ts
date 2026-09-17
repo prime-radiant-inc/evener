@@ -1,7 +1,9 @@
 import { expect, it } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 import {
   composeQuestionAnswers,
+  pendingQuestions,
   questionAdvanceTarget,
   seedQuestionAnswers,
 } from "./questionAnswers";
@@ -112,4 +114,30 @@ it("walks forward then returns to an unanswered question before sending", () => 
   );
   expect(questionAdvanceTarget(qs, answers, 2)).toBeUndefined();
   expect(questionAdvanceTarget([question], {}, 0)).toBeUndefined();
+});
+
+// What the phone offers to answer is what the projection found answerable in
+// this window, gated by the flag derived beside it: questionsPending, never the
+// wire's own askPending (which can be true for an ask whose item this window
+// does not hold, and there is nothing here to answer).
+it("offers the question rows' refs while questions are pending", () => {
+  const conversation = {
+    askPending: false,
+    questionsPending: true,
+    items: [
+      { kind: "user", id: "u1", markdown: "hi" },
+      { kind: "question", id: "ask-1", questions: [question] },
+    ],
+  } as unknown as MobileConversation;
+  expect(pendingQuestions(conversation)).toEqual([question]);
+});
+
+it("offers nothing when no question is pending, whatever rows remain", () => {
+  const conversation = {
+    askPending: true,
+    questionsPending: false,
+    items: [{ kind: "question", id: "ask-1", questions: [question] }],
+  } as unknown as MobileConversation;
+  expect(pendingQuestions(conversation)).toEqual([]);
+  expect(pendingQuestions(null)).toEqual([]);
 });

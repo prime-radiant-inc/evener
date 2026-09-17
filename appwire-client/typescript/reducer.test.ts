@@ -2478,7 +2478,7 @@ test("mergeOlderItemPage merges shared turns and transcript items in position or
 // arrives only once the hub emits one explicitly (a Go change of its own).
 // The client half is pinned here: an explicit [] on the wire is honoured as a
 // value, not folded to "absent".
-test("an explicitly empty images list on the wire is honoured as a value", () => {
+test("an empty input-images list on the wire leaves the item's images unset", () => {
   const thread = testThread({
     turns: [
       {
@@ -2499,16 +2499,18 @@ test("an explicitly empty images list on the wire is honoured as a value", () =>
     ],
   });
   const model = hydrateThread({ thread }, thread.evener.ref, 1000);
-  expect(itemAt(turnAt(model, 0), 0).images).toEqual([]);
+  expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
 });
 
-// An explicitly empty image list is a value the model must be able to hold:
-// "this item has no images any more" is what a live item/completed says when
-// the user's images were removed, and an older page replaying the same item
-// with its original attachment must not put them back. `undefined` is
-// reserved for a frame that carries no images field at all, where the page's
-// own list is the only one anybody has.
-test("mergeOlderItemPage keeps a live removal's empty image list over an older page's stale one", () => {
+// An INPUT image list that arrives empty says nothing about the item's images:
+// the hub's own merges keep whatever list it already had when the incoming one
+// is empty (`server/appwire_turns.go:884-886` and
+// `internal/apptranscript/logical_turn.go:309`, both `len(incoming.Images) == 0`,
+// and the wire field is `omitempty`), and a real fixture sends exactly that —
+// `fixtures/tool-and-jobs.jsonl:4`, a steering notification with `images: []`.
+// Reading it as "the images are gone" erases an older page's input images on
+// merge. Output images are the opposite case and keep their own rule below.
+test("an empty input-image list says nothing, so the images already known survive", () => {
   const thread = testThread({
     turns: [
       {
@@ -2533,7 +2535,9 @@ test("mergeOlderItemPage keeps a live removal's empty image list over an older p
   let model = hydrateThread({ thread, olderCursor: "cursor_1" }, thread.evener.ref, 1000);
   expect(itemAt(turnAt(model, 0), 0).images).toHaveLength(1);
 
-  // The live frame removes the images.
+  // A live frame carries an empty list: it says nothing about images, so the
+  // settled item carries none of its own (the settle merge takes the wire's
+  // fields; only a value could overwrite).
   model = applyNotification(
     model,
     {
@@ -2556,9 +2560,10 @@ test("mergeOlderItemPage keeps a live removal's empty image list over an older p
     } as AnyNotification,
     2000,
   );
-  expect(itemAt(turnAt(model, 0), 0).images).toEqual([]);
+  expect(itemAt(turnAt(model, 0), 0).images).toBeUndefined();
 
-  // An older page replays the item as it first arrived, images and all.
+  // So the older page replaying the item is the only list anybody has, and the
+  // merge keeps it — this is the erasure the empty-is-a-value reading caused.
   const merged = mergeOlderItemPage(model, {
     data: [
       {
@@ -2581,7 +2586,7 @@ test("mergeOlderItemPage keeps a live removal's empty image list over an older p
     ],
     nextCursor: undefined,
   });
-  expect(itemAt(turnAt(merged, 0), 0).images).toEqual([]);
+  expect(itemAt(turnAt(merged, 0), 0).images).toHaveLength(1);
 });
 
 // The same rule for a tool call's output images.
@@ -3494,12 +3499,14 @@ test("item/completed retains legacy display-ID matching when stable identity is 
 
 // askPending is a THREAD-level wire signal (EvenerThread.askPending, mirroring
 // the daemon's long-lived HasPendingAsk - "this session is waiting on a human
-// answer", agent/session_tools_ask.go). It is snapshot-authoritative: only a
-// wire snapshot (hydrateThread) sets it; no notification carries it (askPending
-// appears only on EvenerThread in types.gen.ts). The AskDock derives its OWN,
-// separate in-tool pending signal from ask_user items (composer/askDock), so
-// the reducer must NOT recompute this thread field from item lifecycle - doing
-// so clobbers the wire's authoritative value whenever items churn.
+// answer", agent/session_tools_ask.go). It is wire-authoritative: a wire
+// snapshot (hydrateThread) sets it, and thread/status/changed refreshes it under
+// the absent-means-no-update rule (#1613 - the pending set clears only at a turn
+// boundary, which is when that frame is announced). Nothing else may write it:
+// the AskDock derives its OWN, separate in-tool pending signal from ask_user
+// items (composer/askDock), so the reducer must NOT recompute this thread field
+// from item lifecycle - doing so clobbers the wire's authoritative value
+// whenever items churn.
 test("askPending is wire-authoritative from the thread snapshot", () => {
   const asking = testHydrate({
     evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
@@ -6265,4 +6272,36 @@ test("a failed turn/completed for a superseded turn leaves the active session al
   );
   expect(folded.status.type).toBe("active");
   expect(folded.activeTurnId).toBe("turn_2");
+});
+
+// askPending stays wire-authoritative and the wire can now refresh it: the hub
+// stamps the flag on thread/status/changed, which is the frame that goes with
+// every clear of the pending set (a resolving user turn, an interrupt), so a
+// client stops saying "question waiting" without a reread (#1613). Absent still
+// means "no update", so an older hub cannot blank a flag the hydrate gave us.
+test("thread/status/changed carries askPending, and absence leaves it alone", () => {
+  const asking = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+  });
+  expect(asking.askPending).toBe(true);
+
+  const answered = applyNotification(
+    asking,
+    {
+      method: "thread/status/changed",
+      params: { threadId: asking.threadId, ref: "ref_t", status: { type: "active" }, askPending: false },
+    } as AnyNotification,
+    1_000,
+  );
+  expect(answered.askPending).toBe(false);
+
+  const olderHub = applyNotification(
+    asking,
+    {
+      method: "thread/status/changed",
+      params: { threadId: asking.threadId, ref: "ref_t", status: { type: "active" } },
+    } as AnyNotification,
+    2_000,
+  );
+  expect(olderHub.askPending).toBe(true);
 });

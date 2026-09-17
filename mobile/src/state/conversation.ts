@@ -596,6 +596,12 @@ export function createConversationStore() {
       const cached = next.get(text) ?? previous.get(text);
       const bounded = cached ?? truncateText(text, MAX_ITEM_BYTES);
       next.set(text, bounded);
+      // A published row carries its BOUNDED text, so the next publish binds
+      // that string, not the one the model handed over. Bounding a bounded
+      // string is a no-op (truncateText never returns more than the limit), so
+      // record it as its own answer and the row costs one encode for its life
+      // rather than one more on every publish after the first.
+      if (bounded !== text) next.set(bounded, bounded);
       return bounded;
     };
     const items = capItems(conversation.items).map((item) => truncateItem(item, bound));

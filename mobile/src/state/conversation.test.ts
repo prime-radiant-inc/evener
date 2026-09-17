@@ -5252,6 +5252,47 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.askPending).toBe(false);
     });
 
+    // The hub's own clear, end to end (#1629): the snapshot said a question was
+    // waiting, the user answers, and the status frame that follows carries
+    // askPending: false — always stamped now, so false is a real clear rather
+    // than "no update". Both halves of the derivation go quiet: the answering
+    // user message takes the ask out of the live-ask window, and the frame takes
+    // the wire flag down. No reread, no heuristic.
+    it("reports no pending ask after the answer and the hub's own clear", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          evener: evenerWith({ askPending: true, activeTurnId: "t1" }),
+          turns: [
+            makeTurn({ id: "t1", items: [askUserItem("ask-1", VALID_ASK_ARGS)], status: "inProgress" }),
+          ],
+        }),
+      );
+      expect(store.getState().conversation?.questionsPending).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: userMessageItem("answer-1", "I choose A"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "active" },
+          askPending: false,
+        },
+      } as AnyNotification);
+
+      expect(store.getState().conversation?.askPending).toBe(false);
+      expect(store.getState().conversation?.questionsPending).toBe(false);
+      expect(rows(store).some((row) => row.kind === "question")).toBe(false);
+    });
+
     it("reports a live ask as pending before any snapshot says so", async () => {
       const { store } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
@@ -6377,6 +6418,45 @@ describe("ConversationStore", () => {
         name: "snapshot name",
         status: { type: "active" },
       });
+    });
+
+    // The same rule for the frames that carry transcript CONTENT, which is the
+    // half a reader would notice: a delta delivered after the response streams
+    // on top of the snapshot's own text. The snapshot is what the hub had at
+    // the cut — its materialized turn authority folds every delta into the item
+    // as it streams (server/appwire_turns.go's NotifyAgentMessageDelta case,
+    // `item.Text += params.Delta`), so a delta this store folded BEFORE the
+    // response is already in the text the response carries, and one after it
+    // appends to that text rather than being lost.
+    it("streams a delta that arrives after the response on top of the snapshot's text", async () => {
+      const service = new FakeConversationService();
+      const streaming = [agentMessageItem("a1", "", "inProgress")];
+      service.readProjectionResult = makeReadProjectionResult(runningTurnThread(streaming));
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // The hub has folded "half " into the item by the time of the cut.
+      service.readProjectionResult = makeReadProjectionResult(
+        runningTurnThread([agentMessageItem("a1", "half ", "inProgress")]),
+      );
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: target,
+      } as AnyNotification);
+      await ctrl.ready(1);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "half " });
+
+      // A delta after the response appends to the committed snapshot's text.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: { ...target, turnId: "t1", itemId: "a1", delta: "done" },
+      } as AnyNotification);
+      expect(rowById(store, "a1")).toMatchObject({ kind: "assistant", markdown: "half done" });
     });
 
     // Two fences on the same rule for the frames where a second application
@@ -9364,6 +9444,40 @@ describe("ConversationStore", () => {
       expect(after?.items).toBe(before?.items);
       expect(after?.questionsPending).toBe(before?.questionsPending);
     });
+  });
+
+  // A page load republishes every retained row through the same bound. The row
+  // a reader sees carries its BOUNDED text, so re-bounding it means encoding 64
+  // KiB again per publish unless the cache answers — and the cache is what makes
+  // a page load cost only the page's own rows.
+  it("does not re-encode an unchanged oversized row when an older page lands", async () => {
+    const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+    const service = new FakeConversationService();
+    service.readProjectionResult = {
+      ...makeReadProjectionResult(runningTurnThread([agentMessageItem("a1", oversized, "completed")])),
+      olderCursor: "cursor-1",
+    };
+    service.olderItems = {
+      items: [{ kind: "assistant", id: "old", markdown: "older row", streaming: false }],
+    };
+    const store = createConversationStore();
+    await store.getState().openProjected(service, createFakeSink(), "ref-1");
+    const row = rowById(store, "a1");
+    const bounded = row && "markdown" in row ? row.markdown : undefined;
+    if (bounded === undefined) throw new Error("no bounded row");
+    expect(bounded.endsWith(TRUNCATION_MARKER)).toBe(true);
+
+    const encode = vi.spyOn(TextEncoder.prototype, "encode");
+    try {
+      await store.getState().loadOlder(service);
+      expect(rowById(store, "old")).toBeDefined();
+      // The page's own row is the new work.
+      expect(encode.mock.calls.some((call) => call[0] === "older row")).toBe(true);
+      // The row already on screen is not: its bounded text comes from the cache.
+      expect(encode.mock.calls.filter((call) => call[0] === bounded)).toHaveLength(0);
+    } finally {
+      encode.mockRestore();
+    }
   });
 
   // The bound's cache belongs to the conversation: every string in it is held
