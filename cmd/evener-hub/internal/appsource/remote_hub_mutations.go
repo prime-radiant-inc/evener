@@ -22,22 +22,16 @@ func (s *RemoteHubSource) mutationCall(ctx context.Context, method string, clien
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
 		if cerr := ctx.Err(); cerr != nil {
 			return cerr
 		}
-		// Acquiring the client dials/attaches the remote host; when that fails
-		// no request crossed the wire, so the outcome is known and this must
-		// stay a SessionUnavailable the auto-resume gate can act on. Only a
-		// failure of the dispatched request itself can be in doubt.
-		//
-		// This is the connect mapper, matching call: the attach handshake is
-		// bounded by its own initTimeout child context, so a timed-out attach
-		// arrives as an ErrSSHStart chain that also satisfies
-		// errors.Is(err, context.DeadlineExceeded). mapCallError would return
-		// that raw before transportUnavailable could match ErrSSHStart, while
-		// mapConnectError still keeps a genuine caller cancellation raw.
+		// Resolving the client never dials; a failure here means the host has no
+		// live channel and is reported as a SessionUnavailable the auto-resume
+		// gate can act on, or the caller's own context ended. No request crossed
+		// the wire, so the outcome is known. This is the connect mapper, matching
+		// call (and it keeps a genuine caller cancellation raw).
 		return s.mapConnectError(err)
 	}
 	if err := client.Request(ctx, method, params, out); err != nil {

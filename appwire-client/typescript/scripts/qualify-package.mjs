@@ -547,11 +547,13 @@ marketplacesStore
 `,
     },
     // The mutation state layer: the durable record shapes both apps' outboxes
-    // store and the provenance rule their projections ask (did THIS client
-    // submit it), published as its own subpath because a host's storage and
-    // scheduling stay out of the package - this is the shape and the rule
-    // alone. Every call here is synchronous, unlike the fetch-backed layers
-    // above: there is no client port to script.
+    // store, the provenance rule their projections ask (did THIS client
+    // submit it), and the pure reconciliation that turns durable records plus
+    // a live model into the rows a composer's queue renders. Published as its
+    // own subpath because a host's storage and scheduling stay out of the
+    // package - this is the shape, the rule and the reconciliation alone.
+    // Every call here is synchronous, unlike the fetch-backed layers above:
+    // there is no client port to script.
     "./state/mutation": {
       esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
 const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
@@ -562,10 +564,14 @@ const recoveryRecord: MutationRecoveryRecord = { ...outboxRecord, recoveryKind: 
 const outboxState: MutationOutboxState = outboxRecord.state;
 const recoveryKind: MutationRecoveryKind = recoveryRecord.recoveryKind;
 const storage: ClientIdentityStorage = { getItem: () => null, setItem: () => undefined };
+const pendingMethod: PendingMethod = "send";
+const pendingState: PendingTurnState = "submitting";
+const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
 const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
 const identity: ClientIdentity = createClientIdentity(storage, secureRandomSource);
-void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void identity; void secureRandomSource;`,
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry; void identity; void secureRandomSource;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
+const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
 const identity: client.ClientIdentity = client.createClientIdentity(storage, secureRandomSource); void identity;`,
       // createClientIdentity is a factory, not a module singleton: two
@@ -575,7 +581,9 @@ const identity: client.ClientIdentity = client.createClientIdentity(storage, sec
       // package. createSecureUUID is the same helper mutation ids use; a
       // source with no randomUUID proves the getRandomValues fallback runs,
       // and a source with neither proves the non-crypto fallback runs rather
-      // than throwing.
+      // than throwing. reconcilePendingEntries needs no model to prove it
+      // runs: an absent one is the same "no live projection yet" case a
+      // fresh composer starts from.
       smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
 const identityRandomSource = { getRandomValues: (array) => globalThis.crypto.getRandomValues(array) };
 const identityA = client.createClientIdentity(identityStorage, identityRandomSource);
@@ -593,6 +601,10 @@ const fallbackUUID = client.createSecureUUID({ getRandomValues: (array) => array
 assert.match(fallbackUUID, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 const insecureUUID = client.createSecureUUID({});
 assert.match(insecureUUID, /^insecure-/);
+assert.deepEqual(
+  client.reconcilePendingEntries("ref", [], undefined, new Set(), identityA.isOwnMutationRecord),
+  [],
+);
 `,
     },
   };

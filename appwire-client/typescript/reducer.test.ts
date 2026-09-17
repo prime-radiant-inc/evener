@@ -1593,6 +1593,199 @@ test('turn/completed with itemsView "full" replaces items outright — a payload
   expect(survivor.text).toBe("Y's text");
 });
 
+// The "full" branch maps its own settled items through the same per-item helper
+// chain item/completed uses (see its own comment), so it owes the same image
+// rule: "full" replaces the item SET, not every field — a payload that carries no
+// images list for an item must not erase the ones that item already had (#1656).
+test('turn/completed with itemsView "full" keeps the images a settle payload says nothing about', () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" }]);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            { type: "userMessage", id: "item_user", turnId: "turn_1", text: "look", status: "completed" },
+            {
+              type: "commandExecution",
+              id: "item_tool",
+              turnId: "turn_1",
+              toolName: "shell",
+              callId: "call_1",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    } as AnyNotification,
+    1004,
+  );
+
+  expect(turnAt(model, 0).items).toHaveLength(2);
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" }]);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+  expect(itemAt(turnAt(model, 0), 0).status).toBe("completed");
+});
+
+// Both directions of the same selector on this path too: the images list the
+// payload does carry replaces the item's own, while the one it does not carry is
+// kept. A test that only ever omitted the field would stay green if the selector
+// were reversed, and a stale attachment would silently win.
+test('turn/completed with itemsView "full" takes a different images list and keeps one it was not given', () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [
+            {
+              type: "userMessage",
+              id: "item_user",
+              turnId: "turn_1",
+              text: "look",
+              status: "completed",
+              images: [{ type: "image", mediaType: "image/png", data: "BAUG", name: "new.png" }],
+            },
+            {
+              type: "commandExecution",
+              id: "item_tool",
+              turnId: "turn_1",
+              toolName: "shell",
+              callId: "call_1",
+              status: "completed",
+            },
+          ],
+        },
+      },
+    } as AnyNotification,
+    1004,
+  );
+
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,BAUG", name: "new.png" }]);
+  expect(itemAt(turnAt(model, 0), 1).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+});
+
 test("turn/completed's settle fold joins a mid-stream item's pendingText into text and flips inProgress to completed", () => {
   let model = testHydrate();
   model = applyNotification(
@@ -6050,4 +6243,271 @@ test("thread/status/changed carries askPending, and absence leaves it alone", ()
     2_000,
   );
   expect(olderHub.askPending).toBe(true);
+});
+
+// #1656: a settle says nothing about images unless it carries them. The wire has
+// no "the input images are gone" signal — an item's images are what the user
+// sent — so the hub keeps whatever list it already had whenever the incoming one
+// is empty (`len(incoming.Images) == 0` → `incoming.Images = existing.Images`,
+// server/appwire_turns.go:884-886, and its twin at
+// internal/apptranscript/logical_turn.go:309), and mergePageItem already reads an
+// empty list the same way (imagesToItemImagesForSession answers undefined for
+// it). item/completed rebuilt the item from its payload and layered only
+// text/reasoning/arguments/timing off the old one, so a settle that named no
+// images — or an empty list, which reads the same — cleared the attachment row
+// the reader was looking at. mergeItemImages gives the settle the hub's rule.
+const inputImageSettleCases: Array<[string, InputItem[] | undefined]> = [
+  ["an empty list", []],
+  ["no images field at all", undefined],
+];
+
+test.each(inputImageSettleCases)(
+  "item/completed carrying %s keeps the input images the item already had",
+  (_case, images) => {
+    let model = testHydrate();
+    model = applyNotification(
+      model,
+      {
+        method: "turn/started",
+        params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+      },
+      1001,
+    );
+    model = applyNotification(
+      model,
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          turnId: "turn_1",
+          item: {
+            type: "userMessage",
+            id: "item_user",
+            turnId: "turn_1",
+            text: "look",
+            status: "completed",
+            images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+          },
+        },
+      } as AnyNotification,
+      1002,
+    );
+    expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+      { src: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" },
+    ]);
+
+    // The second settle is the same item; it just says nothing about images.
+    model = applyNotification(
+      model,
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          turnId: "turn_1",
+          item: {
+            type: "userMessage",
+            id: "item_user",
+            turnId: "turn_1",
+            text: "look",
+            status: "completed",
+            ...(images === undefined ? {} : { images }),
+          },
+        },
+      } as AnyNotification,
+      1003,
+    );
+    expect(itemAt(turnAt(model, 0), 0).images).toEqual([
+      { src: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" },
+    ]);
+  },
+);
+
+// outputImages rides the same settle merge, and it keeps its own rule: it is the
+// one image list the wire can report as explicitly empty, so whether an empty
+// list is a value or an absence is the mapper's call
+// (outputImagesToItemImages), never this merge's. What the merge owes is the
+// absent case — a settle with no outputImages field says nothing, so the item
+// keeps what it had.
+test("item/completed omitting outputImages keeps the output images the item already had", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+});
+
+// The other direction of the same selector, and the reason the preserve cases
+// above cannot stand alone: a settle that DOES carry images replaces the ones
+// the item had. Reverse mergeItemImages' `??` (`existing.images ??
+// settled.images`) and every "keeps ..." assertion above stays green while a
+// stale attachment silently wins — this case is what turns that red.
+test("item/completed carrying a different images list overrides the images the item already had", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "iVBORw0KGgo=", name: "shot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,iVBORw0KGgo=", name: "shot.png" }]);
+
+  // Same item, and this settle's own image is the one that must win.
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "userMessage",
+          id: "item_user",
+          turnId: "turn_1",
+          text: "look",
+          status: "completed",
+          images: [{ type: "image", mediaType: "image/png", data: "BAUG", name: "new.png" }],
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).images).toEqual([{ src: "data:image/png;base64,BAUG", name: "new.png" }]);
+});
+
+test("item/completed carrying a different outputImages list overrides the output images the item already had", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "written-file", name: "plot.png", path: "out/plot.png" }],
+        },
+      },
+    } as AnyNotification,
+    1002,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  model = applyNotification(
+    model,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: {
+          type: "commandExecution",
+          id: "item_tool",
+          turnId: "turn_1",
+          toolName: "shell",
+          callId: "call_1",
+          status: "completed",
+          outputImages: [{ source: "tool-result", url: "/s/sess_t/images/capture", name: "capture.png" }],
+        },
+      },
+    } as AnyNotification,
+    1003,
+  );
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "/s/sess_t/images/capture", name: "capture.png", source: "tool-result" },
+  ]);
 });
