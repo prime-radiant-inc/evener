@@ -248,34 +248,42 @@ func marketplaceRefusalToWire(err error) error {
 	return err
 }
 
-// AddMarketplace registers a new marketplace and returns the updated list.
-// Its refusals — a source inside the store's own directories, and a fetched
-// catalog whose name the store cannot carry — are classified like the edit
-// path's identical ones, by marketplaceRefusalToWire.
-func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
-	if _, err := c.mgr.AddMarketplace(ctx, params.Name, marketplaceSourceFromWire(params.Source)); err != nil {
+// marketplaceWrite runs a marketplace-mutating manager call and answers with
+// the refreshed listing - the marketplace analogue of instanceWrite in
+// app_rpc.go. A refusal reports its wire class and changes nothing; a write
+// that applied (or one whose listing failed) answers the way
+// marketplaceListAfterWrite already does, wrapped in hubcore.ErrWriteApplied
+// or carrying plugins.ErrStoreChanged through unchanged - marketplaceRefusalToWire
+// only reclassifies the manager's refusal sentinels, so either survives it.
+func (c *hubPluginsController) marketplaceWrite(ctx context.Context, apply func() error) (appwire.MarketplaceListResponse, error) {
+	if err := apply(); err != nil {
 		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.marketplaceListAfterWrite(ctx)
 }
 
+// AddMarketplace registers a new marketplace and returns the updated list.
+// Its refusals — a source inside the store's own directories, and a fetched
+// catalog whose name the store cannot carry — are classified like the edit
+// path's identical ones, by marketplaceRefusalToWire.
+func (c *hubPluginsController) AddMarketplace(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
+	return c.marketplaceWrite(ctx, func() error {
+		_, err := c.mgr.AddMarketplace(ctx, params.Name, marketplaceSourceFromWire(params.Source))
+		return err
+	})
+}
+
 // RemoveMarketplace unregisters a marketplace and returns the updated list.
 // Its one refusal, an unknown name, is classified by marketplaceRefusalToWire.
 func (c *hubPluginsController) RemoveMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-	if err := c.mgr.RemoveMarketplace(ctx, params.Name); err != nil {
-		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.marketplaceListAfterWrite(ctx)
+	return c.marketplaceWrite(ctx, func() error { return c.mgr.RemoveMarketplace(ctx, params.Name) })
 }
 
 // RefreshMarketplace pulls a marketplace's latest catalog and returns the
 // updated list. Its refusals are classified like RemoveMarketplace's; a fetch
 // that failed is not a refusal and stays the hub's plain error.
 func (c *hubPluginsController) RefreshMarketplace(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-	if err := c.mgr.RefreshMarketplace(ctx, params.Name); err != nil {
-		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.marketplaceListAfterWrite(ctx)
+	return c.marketplaceWrite(ctx, func() error { return c.mgr.RefreshMarketplace(ctx, params.Name) })
 }
 
 // EditMarketplace renames a marketplace and/or replaces its source and
@@ -287,10 +295,10 @@ func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwi
 		converted := marketplaceSourceFromWire(*params.Source)
 		src = &converted
 	}
-	if _, err := c.mgr.EditMarketplace(ctx, params.Name, params.NewName, src); err != nil {
-		return appwire.MarketplaceListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.marketplaceListAfterWrite(ctx)
+	return c.marketplaceWrite(ctx, func() error {
+		_, err := c.mgr.EditMarketplace(ctx, params.Name, params.NewName, src)
+		return err
+	})
 }
 
 // Browse returns a marketplace's plugin catalog. Like ListMarketplaces, this
@@ -370,56 +378,53 @@ func (c *hubPluginsController) marketplaceListAfterWrite(ctx context.Context) (a
 	return resp, writeApplied(err)
 }
 
-// Install installs a plugin from a marketplace's catalog and returns the
-// updated list.
-func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if _, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace); err != nil {
+// pluginWrite is marketplaceWrite's plugin-listing sibling, for the
+// evener/plugin/* mutations.
+func (c *hubPluginsController) pluginWrite(ctx context.Context, apply func() error) (appwire.PluginListResponse, error) {
+	if err := apply(); err != nil {
 		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
 	}
 	return c.pluginListAfterWrite(ctx)
+}
+
+// Install installs a plugin from a marketplace's catalog and returns the
+// updated list.
+func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+	return c.pluginWrite(ctx, func() error {
+		_, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace)
+		return err
+	})
 }
 
 // Upgrade re-resolves an installed plugin against its marketplace and returns
 // the updated list.
 func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if _, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace); err != nil {
-		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.pluginListAfterWrite(ctx)
+	return c.pluginWrite(ctx, func() error {
+		_, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace)
+		return err
+	})
 }
 
 // Remove deletes an installed plugin's registry entry (and cache dir, if any)
 // and returns the updated list.
 func (c *hubPluginsController) Remove(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.Remove(ctx, params.Plugin, params.Marketplace); err != nil {
-		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.pluginListAfterWrite(ctx)
+	return c.pluginWrite(ctx, func() error { return c.mgr.Remove(ctx, params.Plugin, params.Marketplace) })
 }
 
 // Enable flips an installed plugin's enabled flag on and returns the updated
 // list.
 func (c *hubPluginsController) Enable(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, true); err != nil {
-		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.pluginListAfterWrite(ctx)
+	return c.pluginWrite(ctx, func() error { return c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, true) })
 }
 
 // Disable flips an installed plugin's enabled flag off and returns the
 // updated list.
 func (c *hubPluginsController) Disable(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, false); err != nil {
-		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.pluginListAfterWrite(ctx)
+	return c.pluginWrite(ctx, func() error { return c.mgr.SetEnabled(ctx, params.Plugin, params.Marketplace, false) })
 }
 
 // SetAutoUpgrade flips an installed plugin's auto-upgrade flag and returns
 // the updated list.
 func (c *hubPluginsController) SetAutoUpgrade(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-	if err := c.mgr.SetAutoUpgrade(ctx, params.Plugin, params.Marketplace, params.AutoUpgrade); err != nil {
-		return appwire.PluginListResponse{}, marketplaceRefusalToWire(err)
-	}
-	return c.pluginListAfterWrite(ctx)
+	return c.pluginWrite(ctx, func() error { return c.mgr.SetAutoUpgrade(ctx, params.Plugin, params.Marketplace, params.AutoUpgrade) })
 }

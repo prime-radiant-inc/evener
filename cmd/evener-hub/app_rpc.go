@@ -1127,26 +1127,24 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
 		return authController.List(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.ApiKeySet(params)
+	// ApiKeySet, ApiKeyClear and CredentialJsonSet all answer with a bare
+	// AuthStatusResponse, so one closure covers the broadcast every one of
+	// them owes evener/auth/updated when its write applied.
+	authStatusWrite := func(originClientID string, call func() (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
+		resp, err := call()
 		if writeDidApply(err) {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, originClientID)
 		}
 		return resp, err
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeySet(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.ApiKeyClear(params)
-		if writeDidApply(err) {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
-		return resp, err
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeyClear(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.CredentialJsonSet(params)
-		if writeDidApply(err) {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
-		return resp, err
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.CredentialJsonSet(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
@@ -1250,26 +1248,28 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 		return pluginsController.ListMarketplaces(ctx)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.AddMarketplace(ctx, params)
+	// Add, Remove and Refresh all answer with the refreshed marketplace list
+	// and owe the same broadcast when their write applied; only Edit's is
+	// different (it can re-key installed plugins too), so it stays inline.
+	marketplaceBroadcastWrite := func(call func() (appwire.MarketplaceListResponse, error)) (appwire.MarketplaceListResponse, error) {
+		resp, err := call()
 		if writeDidApply(err) {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, error) { return pluginsController.AddMarketplace(ctx, params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RemoveMarketplace(ctx, params)
-		if writeDidApply(err) {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, error) {
+			return pluginsController.RemoveMarketplace(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RefreshMarketplace(ctx, params)
-		if writeDidApply(err) {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return marketplaceBroadcastWrite(func() (appwire.MarketplaceListResponse, error) {
+			return pluginsController.RefreshMarketplace(ctx, params)
+		})
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceEdit, func(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
 		resp, err := pluginsController.EditMarketplace(ctx, params)
@@ -1289,47 +1289,32 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Install(ctx, params)
+	// Install, Upgrade, Remove, Enable, Disable and SetAutoUpgrade all answer
+	// with the refreshed plugin list and owe the identical broadcast.
+	pluginBroadcastWrite := func(call func() (appwire.PluginListResponse, error)) (appwire.PluginListResponse, error) {
+		resp, err := call()
 		if writeDidApply(err) {
 			notifyPluginUpdated(server)
 		}
 		return resp, err
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Install(ctx, params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Upgrade(ctx, params)
-		if writeDidApply(err) {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Upgrade(ctx, params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Remove(ctx, params)
-		if writeDidApply(err) {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Remove(ctx, params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Enable(ctx, params)
-		if writeDidApply(err) {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Enable(ctx, params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Disable(ctx, params)
-		if writeDidApply(err) {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Disable(ctx, params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.SetAutoUpgrade(ctx, params)
-		if writeDidApply(err) {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.SetAutoUpgrade(ctx, params) })
 	})
 }
 
