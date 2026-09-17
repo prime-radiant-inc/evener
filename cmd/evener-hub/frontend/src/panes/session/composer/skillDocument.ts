@@ -30,6 +30,11 @@ export const skillSchema = new Schema({
 // A namespace or path continuation cannot turn a prefix into an active skill.
 const tokenCharacter = /[\p{L}\p{N}_./:-]/u;
 
+// Punctuation that ends a sentence rather than continuing a name: `/review.` and
+// `/review:` are complete references, while `/plugin:hidden` still prefers the
+// longer name because its colon is followed by a token character.
+const sentenceTerminator = /[.:]/;
+
 /** Whether a character continues a skill token rather than bounding one. */
 export function isSkillTokenCharacter(character: string): boolean {
   return tokenCharacter.test(character);
@@ -49,7 +54,7 @@ export function completeSkillReferenceAt(text: string, offset: number, names: re
       text.startsWith(`/${candidate}`, offset) &&
       (end === text.length ||
         !tokenCharacter.test(text.charAt(end)) ||
-        (text.charAt(end) === "." && !tokenCharacter.test(text.charAt(end + 1))))
+        (sentenceTerminator.test(text.charAt(end)) && !tokenCharacter.test(text.charAt(end + 1))))
     );
   });
 }
@@ -109,8 +114,10 @@ export function materializeSkillReferences(text: string, names: readonly string[
   const present = new Set(serializeSkillDocument(parseSkillDocument({ text, skillNames: [...names] })).skillNames);
   const missing = names.filter((name) => !present.has(name));
   if (missing.length === 0) return text;
-  const head = text.trimEnd();
-  return [...(head === "" ? [] : [head]), ...missing.map((name) => `/${name}`)].join(" ");
+  // The text is kept exactly as it is - only the join to the appended
+  // references is decided here, so trailing whitespace the user typed survives.
+  const joiner = text === "" || /\s$/.test(text) ? "" : " ";
+  return `${text}${joiner}${missing.map((name) => `/${name}`).join(" ")}`;
 }
 
 /** Map a UTF-16 serialized offset to a flat document position; bias snaps atom interiors. */
