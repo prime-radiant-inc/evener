@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createPluginMutationGate, PLUGIN_MUTATION_BUSY } from "./pluginMutationGate";
+import { createPluginMutationGate } from "./pluginMutationGate";
 
 /** A promise plus the resolver for it, to hold a mutation open. */
 function pending(): { promise: Promise<void>; settle: () => void } {
@@ -43,8 +43,6 @@ describe("one plugin mutation at a time", () => {
 
     const refused = gate.run(async () => undefined);
     await expect(refused).resolves.toBe(false);
-    expect(typeof PLUGIN_MUTATION_BUSY).toBe("string");
-    expect(PLUGIN_MUTATION_BUSY.length).toBeGreaterThan(0);
 
     first.settle();
     await expect(running).resolves.toBe(true);

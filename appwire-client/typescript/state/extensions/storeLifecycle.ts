@@ -15,6 +15,57 @@
 // reconnect is. A list a host has already read is read again when the
 // connection is ready again; a list nothing has read stays unread, because a
 // store whose host never asked for the list must not start asking on its own.
+//
+// CONNECTION IDENTITY
+//
+// Three review rounds asked the same question in three shapes - a replaced
+// connection's in-flight replies, its notifications, and what a reset does to
+// both - so the answer is written out here and the predicate implemented from
+// it.
+//
+// Two different things are easy to conflate:
+//   - the SOURCE: the object frames arrive through, `notifications`, fixed for
+//     the store's life.
+//   - the IDENTITY: what the host says the store's data belongs to, reported
+//     through connectionChanged and free to change.
+// A host either reports its own source as the identity (a real client), or
+// reports something else and subscribes through a port that follows the
+// identity for it (the web: `hubClient` over onConnectionNotification, which
+// re-wires onto each new client and unwires the previous one).
+//
+// INVARIANT
+//   The store acts on a notification unless it can prove the frame came from a
+//   connection it has left. It can prove that only when the host names its own
+//   source as the identity; a host that names something else has delegated the
+//   proof to its port.
+//
+// EVENTS
+//
+//   event                        | identity   | names source | a frame from the source is
+//   -----------------------------|------------|--------------|---------------------------
+//   construct                    | none       | unknown      | (not subscribed yet)
+//   start()                      | unchanged  | unchanged    | acted on
+//   connectionChanged(c) c===src  | c          | yes          | acted on
+//   connectionChanged(c) c!==src  | c          | unchanged    | ignored once known to
+//                                |            |              | name the source; acted on
+//                                |            |              | for a port host
+//   reset()                      | none       | unknown      | acted on - nothing has
+//                                |            |              | been reported to compare
+//   dispose()                    | unchanged  | unchanged    | ignored, always
+//
+// Replacing the identity also fences every reply the previous connection still
+// owes (see connectionChanged), so neither its answers nor its announcements
+// reach the store.
+//
+// The one frame this cannot catch: a port host whose old client is dispatching
+// at the instant the port unwires it. AppwireClient.setState dispatches over a
+// snapshot of its handler set, so that frame still reaches the handler, and
+// only the source could tell it apart - which the port type deliberately does
+// not carry. Its cost is bounded and conservative: what a notification applies
+// is monotonic (a cache retired, a revision advanced, both of which a host
+// re-derives from the CURRENT connection), and the read it schedules goes
+// through the port to the current client. So the worst case is one redundant
+// read of the right hub, never a page of the wrong hub's data.
 
 import type { AppwireClient, ConnectionState } from "../../client";
 import type { FrameworkFreeStore } from "../../frameworkFreeStore";
@@ -135,9 +186,13 @@ export function createStoreLifecycle<S>(
       if (disposed) return;
       // Total: a store that has forgotten what it read holds no data derived
       // from a connection either, so it has not "been away" from one - the
-      // next ready connection is a first connection for it.
+      // next ready connection is a first connection for it. The identity goes
+      // with it, and so must what was inferred FROM it: with nothing reported,
+      // there is nothing to compare a frame against, and the source's own
+      // notifications must still arrive.
       connection = { client: null, state: "idle" };
       hasBeenReady = false;
+      subscriptionIsTheConnection = false;
       fenceInFlight();
       const store = options.store();
       store.setState(store.getInitialState());

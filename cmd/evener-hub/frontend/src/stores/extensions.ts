@@ -123,14 +123,6 @@ function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): 
   plugins.connectionChanged(state.client, state.state);
 }
 connectionStore.subscribe(syncConnection);
-// And the connection that already exists. This module is lazily loaded, so
-// initializing after the client is ready is the common case: without this pass
-// the cores' first sight of the connection is the NEXT transition, which they
-// read as a first connection - invalidating nothing and moving no revision,
-// exactly when a disconnection has just hidden changes from them. Same shape
-// as stores/credentials.ts's own initial pass.
-syncConnection(connectionStore.getState());
-
 export const extensionsStore = createStore<ExtensionsStoreState>((set) => ({
   ...marketplaces.getState(),
   ...plugins.getState(),
@@ -200,6 +192,19 @@ function publishChangedFields<S extends Partial<ExtensionsStoreState>>(core: {
 }
 publishChangedFields(marketplaces);
 publishChangedFields(plugins);
+
+// And the connection that already exists. This module is lazily loaded, so
+// initializing after the client is ready is the common case: without this pass
+// the cores' first sight of the connection is the NEXT transition, which they
+// read as a first connection - invalidating nothing and moving no revision,
+// exactly when a disconnection has just hidden changes from them. Same shape
+// as stores/credentials.ts's own initial pass.
+//
+// Last in the module, after the store and its mirrors exist: the pass can
+// reach a core's state (a recovery read for a list something has already read,
+// which cannot be true at first load but is one refactor away from being), and
+// whatever a core publishes has to have somewhere to land.
+syncConnection(connectionStore.getState());
 
 export function useExtensionsStore(): ExtensionsStoreState;
 export function useExtensionsStore<T>(selector: (state: ExtensionsStoreState) => T): T;

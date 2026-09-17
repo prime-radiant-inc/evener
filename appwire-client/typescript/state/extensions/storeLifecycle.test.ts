@@ -462,6 +462,24 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(lifecycle.listCalls(fake)).toBe(reads);
     });
 
+    test("reset() leaves the store listening to the connection it still has", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      lifecycle.answerList(fake);
+      await lifecycle.fetch(store.getState());
+      store.start();
+
+      // reset() forgets what the store read, not which connection it is on -
+      // and the host has reported nothing since, so there is no connection to
+      // compare a notification against. The client is still live and its
+      // changes must still arrive.
+      store.reset();
+      const reads = lifecycle.listCalls(fake);
+      lifecycle.notifyUpdated(fake);
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(lifecycle.listCalls(fake)).toBe(reads + 1);
+    });
+
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
