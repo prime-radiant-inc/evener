@@ -2380,6 +2380,118 @@ describe("ConversationStore", () => {
     });
   });
 
+  // Every row kind that carries text a reader scrolls past is bounded, not just
+  // the two that happen to stream: a pasted user message can be as large as any
+  // assistant reply, a tool failure's detail carries a stack, and a notice
+  // carries whatever the daemon said.
+  describe("the display bound covers every text-bearing row kind", () => {
+    const oversized = "x".repeat(MAX_ITEM_BYTES + 5_000);
+    const bounded = (text: string): boolean =>
+      new TextEncoder().encode(text).length <= MAX_ITEM_BYTES &&
+      text.endsWith(TRUNCATION_MARKER);
+
+    it.each([
+      [
+        "user",
+        { kind: "user", id: "r", text: oversized },
+        (row: MobileTimelineItem) => (row.kind === "user" ? [row.text] : []),
+      ],
+      [
+        "assistant",
+        { kind: "assistant", id: "r", markdown: oversized, streaming: false },
+        (row: MobileTimelineItem) => (row.kind === "assistant" ? [row.markdown] : []),
+      ],
+      [
+        "notice",
+        {
+          kind: "notice",
+          id: "r",
+          origin: "system",
+          family: "warning",
+          tone: "warning",
+          text: oversized,
+        },
+        (row: MobileTimelineItem) => (row.kind === "notice" ? [row.text] : []),
+      ],
+      [
+        "failure",
+        { kind: "failure", id: "r", title: oversized, detail: oversized },
+        (row: MobileTimelineItem) => (row.kind === "failure" ? [row.title, row.detail] : []),
+      ],
+      [
+        "question",
+        {
+          kind: "question",
+          id: "r",
+          questions: [
+            {
+              key: "call:0",
+              callId: "call",
+              header: "Choice",
+              question: oversized,
+              multiSelect: false,
+              options: [{ label: "A", detail: oversized }],
+              why: oversized,
+            },
+          ],
+        },
+        (row: MobileTimelineItem) =>
+          row.kind === "question"
+            ? row.questions.flatMap((q) => [
+                q.question,
+                ...(q.why === undefined ? [] : [q.why]),
+                ...q.options.map((option) => option.detail),
+              ])
+            : [],
+      ],
+      [
+        "activity",
+        {
+          kind: "activity",
+          id: "r",
+          label: "shell",
+          family: "tool",
+          state: "completed",
+          detail: { output: oversized, arguments: oversized, error: oversized },
+        },
+        (row: MobileTimelineItem) =>
+          row.kind === "activity"
+            ? [row.detail.output, row.detail.arguments, row.detail.error].filter(
+                (text): text is string => text !== undefined,
+              )
+            : [],
+      ],
+    ] as const)("bounds a %s row", async (_kind, row, read) => {
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({ items: [row as unknown as MobileTimelineItem] });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const published = store.getState().conversation?.items.find((item) => item.id === "r");
+      if (published === undefined) throw new Error("row not published");
+      const texts = read(published);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const text of texts) expect(bounded(text)).toBe(true);
+    });
+
+    // An attachment's src is the image itself (a data: URI for composer bytes),
+    // not prose a reader scrolls: cutting it mid-payload yields an image that
+    // cannot decode, so it is left whole. The wire bounds image payloads at the
+    // source instead.
+    it("leaves an attachment's data URI whole", async () => {
+      const src = `data:image/png;base64,${"A".repeat(MAX_ITEM_BYTES + 5_000)}`;
+      const service = new FakeConversationService();
+      service.openConv = makeConversation({
+        items: [
+          { kind: "attachments", id: "r", items: [{ id: "r:0", src }] } as unknown as MobileTimelineItem,
+        ],
+      });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const published = store.getState().conversation?.items.find((item) => item.id === "r");
+      expect(published?.kind === "attachments" ? published.items[0]?.src : undefined).toBe(src);
+    });
+  });
+
   describe("arguments/output stop at 64 KiB UTF-8 and end with truncation marker", () => {
     it("truncates assistant item markdown at 64 KiB UTF-8 with marker", async () => {
       const service = new FakeConversationService();
