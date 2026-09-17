@@ -33,10 +33,12 @@ func writeApplied(err error) error {
 	return appliedWriteError{err}
 }
 
-// storeWriteError marks a store failure that landed its write, so the one
-// predicate below answers for the hub's own writes and for the state stores
-// (hubcore.ErrWriteApplied) and the plugin store (plugins.ErrStoreChanged)
-// alike. The wire class of what it wraps is preserved.
+// storeWriteError marks a hubcore state store's failure that landed its write
+// (hubcore.ErrWriteApplied: the keybindings and transcript-display stores), so
+// writeDidApply below answers for those the same way it answers for the hub's
+// own writes. The wire class of what it wraps is preserved. The plugin store's
+// own answer (plugins.ErrStoreChanged) is classified by pluginWriteError in
+// app_plugins.go, which also maps the manager's refusal classes.
 func storeWriteError(err error) error {
 	if errors.Is(err, hubcore.ErrWriteApplied) {
 		return writeApplied(err)

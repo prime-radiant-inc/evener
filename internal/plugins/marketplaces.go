@@ -386,7 +386,13 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 	fail := func(err error) (MarketplaceRef, error) {
 		// Before undo, which moves the install location back under its old
 		// name: the contents have to be in it first.
-		errs := []error{err, undoSwap(), runUndo(undo)}
+		swapErr, undoErr := undoSwap(), runUndo(undo)
+		errs := []error{err, swapErr, undoErr}
+		if swapErr != nil || undoErr != nil {
+			// The rollback could not put every directory back, so the store is
+			// left changed and the hub must still announce it (ErrStoreChanged).
+			errs = append(errs, ErrStoreChanged)
+		}
 		_ = marketplaceRemoveAll(staging)
 		return MarketplaceRef{}, errors.Join(errs...)
 	}
@@ -918,5 +924,11 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 	}
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
-	return m.saveMarketplaces(mk)
+	if err := m.saveMarketplaces(mk); err != nil {
+		// The clone on disk has already moved — a pull, a staged reclone, or a
+		// first fetch — so the store is changed even though its file does not
+		// say so, and the hub must still announce it (ErrStoreChanged).
+		return fmt.Errorf("%w: %w", ErrStoreChanged, err)
+	}
+	return nil
 }

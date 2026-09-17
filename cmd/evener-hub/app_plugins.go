@@ -230,13 +230,6 @@ func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.Ma
 	return appwire.MarketplaceListResponse{Marketplaces: entries}, nil
 }
 
-// marketplaceRefusalToWire turns the manager's marketplace sentinels into the
-// wire's own refusal classes, so the same refusal reads the same way whichever
-// mutation raised it — a taken name is the caller's Conflict, whether another
-// marketplace holds it or a removed one's leftovers still occupy it, and an
-// unknown name, a name the store cannot carry, and a source inside the plugin
-// store's own directories their InvalidParams. Anything else — a fetch
-// failure, a rename the filesystem refused — stays the hub's plain error.
 // pluginWriteError classifies a manager write's failure for the wire. A
 // refusal reads as its refusal class and changed nothing; a failure that left
 // the store changed (plugins.ErrStoreChanged) is also an applied write, so the
@@ -250,6 +243,13 @@ func pluginWriteError(err error) error {
 	return wire
 }
 
+// marketplaceRefusalToWire turns the manager's marketplace sentinels into the
+// wire's own refusal classes, so the same refusal reads the same way whichever
+// mutation raised it — a taken name is the caller's Conflict, whether another
+// marketplace holds it or a removed one's leftovers still occupy it, and an
+// unknown name, a name the store cannot carry, and a source inside the plugin
+// store's own directories their InvalidParams. Anything else — a fetch
+// failure, a rename the filesystem refused — stays the hub's plain error.
 func marketplaceRefusalToWire(err error) error {
 	switch {
 	case errors.Is(err, plugins.ErrMarketplaceExists):

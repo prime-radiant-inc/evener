@@ -329,14 +329,24 @@ func (m *Manager) Remove(ctx context.Context, plugin, marketplace string) error 
 	if !ok {
 		return fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
+	// The registry first, the files second. Deleting first made a failing save
+	// unrecoverable — the registry still named a plugin whose files were gone,
+	// a change no rollback could undo — while this order makes that failure a
+	// plain refusal that leaves the plugin installed. The cache removal stays
+	// best-effort: once the entry is gone nothing reads those bytes, so a
+	// leftover directory is litter, not state (#1543/#1572's rule: a write that
+	// applied is announced, and this one either applies or changes nothing).
+	delete(reg.Plugins, key)
+	if err := m.saveRegistry(reg); err != nil {
+		return err
+	}
 	if len(entries) > 0 {
 		p := entries[0].InstallPath
 		if strings.HasPrefix(p, m.cacheDir()+string(os.PathSeparator)) {
 			_ = installRemoveAll(p)
 		}
 	}
-	delete(reg.Plugins, key)
-	return m.saveRegistry(reg)
+	return nil
 }
 
 type ListItem struct {
