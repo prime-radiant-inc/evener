@@ -106,9 +106,17 @@ export function KeybindingPreferencesScreen({
 		!!domain?.writeUncertain ||
 		!!domain?.storageUnavailable ||
 		!!domain?.confirmed?.loadError;
-	const run = (operation: () => Promise<unknown>, success?: () => void) => {
-		if (!scope.connected || !model || scope.hubId !== route.params.hubId)
-			return;
+	/** `requiresHub: false` for an operation that only touches this device, so
+	 * it still runs while disconnected: the shared store allows a local discard
+	 * offline, and refusing it here would leave an unreadable record with no way
+	 * to clear it. */
+	const run = (
+		operation: () => Promise<unknown>,
+		success?: () => void,
+		{ requiresHub = true }: { requiresHub?: boolean } = {},
+	) => {
+		if (!model || scope.hubId !== route.params.hubId) return;
+		if (requiresHub && !scope.connected) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
 		void operation()
@@ -181,13 +189,15 @@ export function KeybindingPreferencesScreen({
 								Discard it to edit shortcuts again.
 							</Copy>
 							{/* Not gated on the section's `busy`, which the unreadable record
-							    itself sets: this is the escape hatch out of that state. It
-							    IS gated on the connection, because `run` above refuses while
-							    disconnected and a control that does nothing is worse than a
-							    disabled one. */}
+							    itself sets, nor on the connection: discarding writes only to
+							    this device, so it works offline and is the way out of a
+							    section the unreadable record otherwise locks. */}
 							<Action
-								disabled={!preferences.connected}
-								onPress={() => run(() => model.discardKeybindingsDraft())}
+								onPress={() =>
+									run(() => model.discardKeybindingsDraft(), undefined, {
+										requiresHub: false,
+									})
+								}
 							>
 								Discard unreadable draft
 							</Action>
