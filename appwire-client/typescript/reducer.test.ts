@@ -6673,3 +6673,58 @@ test("item/completed carrying a different outputImages list overrides the output
     { src: "/s/sess_t/images/capture", name: "capture.png", source: "tool-result" },
   ]);
 });
+
+// The removal on the settle path, which mergeItemImages owns: a later
+// item/completed carrying an explicit empty outputImages list clears the images
+// an earlier frame set, because that [] is the hub's only way to say the
+// pictures are gone (appwire.ThreadItem.OutputImages is omitzero for exactly
+// this). A settle that carries no field at all still keeps them — the two cases
+// this merge has to tell apart.
+test("item/completed carrying an explicit empty outputImages list clears the images a prior frame set", () => {
+  const settle = (outputImages: unknown, at: number, model: ThreadModel): ThreadModel =>
+    applyNotification(
+      model,
+      {
+        method: "item/completed",
+        params: {
+          threadId: "thr_t",
+          ref: "ref_t",
+          turnId: "turn_1",
+          item: {
+            type: "commandExecution",
+            id: "item_tool",
+            turnId: "turn_1",
+            toolName: "shell",
+            callId: "call_1",
+            status: "completed",
+            ...(outputImages === undefined ? {} : { outputImages }),
+          },
+        },
+      } as AnyNotification,
+      at,
+    );
+
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = settle([{ source: "written-file", name: "plot.png", path: "out/plot.png" }], 1002, model);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  // A settle that says nothing keeps them.
+  model = settle(undefined, 1003, model);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([
+    { src: "out/plot.png", name: "plot.png", path: "out/plot.png", source: "written-file" },
+  ]);
+
+  // An explicit empty list removes them.
+  model = settle([], 1004, model);
+  expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
+});

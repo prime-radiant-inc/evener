@@ -480,15 +480,22 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
 }
 
-// A settle says nothing about images unless it carries them. `undefined` is what
-// both mappers produce for a field the payload left out, and for an empty list
-// too: imagesToItemImagesForSession and outputImagesToItemImages each read `[]` as
-// absence, the same rule the hub applies on its own upsert (`len(incoming.Images)
-// == 0` and `len(incoming.OutputImages) == 0` keep the existing list,
-// server/appwire_turns.go:884-889, and its twin at
-// internal/apptranscript/logical_turn.go:309). So `undefined` is the only signal
-// this merge ever sees for either list, and a settle must not erase images from
-// the item it replaces — exactly as mergePageItem already refuses to.
+// A settle says nothing about images unless it carries them, and the two lists
+// differ in what "nothing" means.
+//
+// Input images: `undefined` is the only signal this merge sees.
+// imagesToItemImagesForSession answers it for a payload that left the field out
+// and for an empty list alike, because the wire has no removal for input images
+// — they are what the user sent — and the hub keeps the existing list for a
+// zero-length one (appwire.ThreadItem.Images is omitempty). So a settle can only
+// add them, never clear them.
+//
+// Output images: an explicit empty list IS the removal
+// (appwire.ThreadItem.OutputImages is omitzero, and appwire.MergeOutputImages
+// carries the rule on the Go side), so outputImagesToItemImages answers `[]` for
+// it and `undefined` only for a payload that carried no field. The `??` below
+// therefore lets that `[]` win over the images the item already had, while still
+// keeping them when the settle said nothing.
 function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (!existing) return settled;
   const images = settled.images ?? existing.images;
