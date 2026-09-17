@@ -5,21 +5,19 @@ import {
 	type ReactNode,
 	useContext,
 	useEffect,
+	useMemo,
 	useState,
 } from "react";
 import {
 	type AppwireClient,
-	discardStoredTranscriptDraft,
+	type KeybindingDraftCheckpoint,
 	type TranscriptDisplayConfigV1,
+	type TranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { draftBackend } from "./nativeDraftBackend";
 import { useConnection } from "./ConnectionProvider";
-import {
-	nativeKeybindingDrafts,
-	nativePreferenceDrafts,
-	nativeTranscriptDrafts,
-} from "./nativePreferenceDrafts";
+import { nativePreferenceDrafts, retainingDraftStorage } from "./nativePreferenceDrafts";
 import {
 	type NativePreferences,
 	type NativePreferencesSnapshot,
@@ -39,19 +37,23 @@ interface Preferences {
 	 * This is the ONE path out of an unreadable record, and it must work in every
 	 * state the app can be in when a user meets one. Reachability, by state:
 	 *
-	 * | state                  | this method            | screen button          | had it used `run` |
-	 * |------------------------|------------------------|------------------------|-------------------|
-	 * | live model             | store.discardDraft     | calls this directly    | would have run    |
-	 * | no model, backgrounded | port clear + snapshot  | calls this directly    | NO-OP             |
-	 * | no model, reconnecting | port clear + snapshot  | calls this directly    | NO-OP             |
-	 * | no session (hubId null)| nothing to clear       | no hub, no screen      | NO-OP             |
+	 * | state                  | this method                    | screen button          | had it used `run` |
+	 * |------------------------|---------------------------------|------------------------|-------------------|
+	 * | live model              | store.discardDraft              | calls this directly    | would have run    |
+	 * | no model, backgrounded  | retaining wrapper's discardLastLoaded + snapshot | calls this directly | NO-OP |
+	 * | no model, reconnecting  | retaining wrapper's discardLastLoaded + snapshot | calls this directly | NO-OP |
+	 * | no session (hubId null) | nothing to clear                | no hub, no screen      | NO-OP             |
 	 *
-	 * Every row with a record ends the same way: record removed, UI unlocked -
-	 * the store publishes that when it has one, and the snapshot projection
-	 * below does it when it does not. The last column is why BOTH screens call
-	 * this method directly rather than through their `run` helper: `run` exists
-	 * for operations that go through the shared store, so it requires a model,
-	 * which is exactly what these states lack. */
+	 * The no-model rows name the record by the identity `retainingDraftStorage`
+	 * kept from the LAST time something (a now-disposed model's own
+	 * repository, most often) actually loaded it - never a fresh reload, which
+	 * could name a record another writer has since replaced (RoboRev round 17,
+	 * eighth raise). Every row with a record ends the same way: record
+	 * removed, UI unlocked - the store publishes that when it has one, and the
+	 * snapshot projection below does it when it does not. The last column is
+	 * why BOTH screens call this method directly rather than through their
+	 * `run` helper: `run` exists for operations that go through the shared
+	 * store, so it requires a model, which is exactly what these states lack. */
 	discardUnreadableDraft(section: "transcript" | "keybindings"): Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);
@@ -71,12 +73,31 @@ export function NativePreferencesProvider({
 		snapshot: NativePreferencesSnapshot;
 		config: TranscriptDisplayConfigV1 | null;
 	} | null>(null);
+	// One retaining wrapper per section, per hub - not per client, and not
+	// disposed with any one model built over it: a model's own repository
+	// classifies and discards through THIS SAME object, so the identity it
+	// most recently loaded survives that model's disposal (a client dropped,
+	// a hub reconnect) for the no-model discard path below to use.
+	const drafts = useMemo(
+		() =>
+			hubId
+				? {
+						transcript: retainingDraftStorage<TranscriptDraftCheckpoint>(
+							nativePreferenceDrafts("transcript", hubId, backend),
+						),
+						keybindings: retainingDraftStorage<KeybindingDraftCheckpoint>(
+							nativePreferenceDrafts("keybindings", hubId, backend),
+						),
+					}
+				: null,
+		[hubId],
+	);
 	useEffect(() => {
-		if (!client || !hubId) return;
+		if (!client || !hubId || !drafts) return;
 		let unsubscribe = () => {};
 		const dispose = bindNativePreferences(
 			client,
-			nativeTranscriptDrafts(hubId, backend),
+			drafts.transcript,
 			(model) => {
 				unsubscribe();
 				const update = () => {
@@ -96,19 +117,19 @@ export function NativePreferencesProvider({
 				unsubscribe = model.subscribe(update);
 				update();
 			},
-			nativeKeybindingDrafts(hubId, backend),
+			drafts.keybindings,
 		);
 		return () => {
 			unsubscribe();
 			dispose();
 		};
-	}, [client, hubId]);
+	}, [client, hubId, drafts]);
 	const selected = bound?.hubId === hubId ? bound : null;
 	const liveModel = selected?.client === client ? selected.model : null;
 	const discardUnreadableDraft = async (
 		section: "transcript" | "keybindings",
 	): Promise<void> => {
-		if (!hubId) return;
+		if (!hubId || !drafts) return;
 		if (liveModel) {
 			await (section === "transcript"
 				? liveModel.discardTranscriptDraft()
@@ -117,11 +138,7 @@ export function NativePreferencesProvider({
 		}
 		// The port can throw; awaiting inside an async function turns that into a
 		// rejection the caller's error handler already knows how to show.
-		// discardStoredTranscriptDraft and discardStoredKeybindingDraft are the
-		// same function (draftCheckpointPort.ts's discardStoredDraft, re-exported
-		// under each store's own name); either name works for either section's
-		// storage.
-		discardStoredTranscriptDraft(nativePreferenceDrafts(section, hubId, backend));
+		drafts[section === "transcript" ? "transcript" : "keybindings"].discardLastLoaded();
 		// No store to publish the result, so the exposed snapshot is projected
 		// here: without this the record is gone but the section still reports
 		// draftUnreadable and stays locked until the next connection.

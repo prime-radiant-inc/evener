@@ -9,6 +9,7 @@ import {
 	type NativePreferenceDraftBackend,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
+	retainingDraftStorage,
 } from "./nativePreferenceDrafts";
 
 const config = makeTranscriptDisplayConfig();
@@ -250,5 +251,45 @@ describe("native preference drafts", () => {
 		expect(() => nativeKeybindingDrafts("", disk.port)).toThrow(
 			"A hub id is required",
 		);
+	});
+
+	// RoboRev round 17 Medium 1 (eighth raise): a model's OWN repository
+	// classifies a record and retains its raw identity for as long as that
+	// model instance lives (round 16's createDraftRepository), but the
+	// no-model discard path runs with NO model - including after one that
+	// classified this record has since been disposed (a client dropped, a
+	// hub reconnect). A fresh reload at that point names whatever is stored
+	// NOW, not the record that justified showing the discard button.
+	// retainingDraftStorage keeps the identity in the wrapper itself, which
+	// the provider owns for the hub's whole lifetime - outliving any one
+	// model - so the no-model path can still discard by it.
+	it("discards the record most recently loaded, not a fresh reload - refusing once that record has been replaced", () => {
+		const disk = deviceStore();
+		const key = "evener.native.transcript-draft.hub";
+		const storage = retainingDraftStorage(nativeTranscriptDrafts("hub", disk.port));
+
+		// Classified unreadable - exactly what a model's own repository does
+		// while it is still alive.
+		disk.raw.set(key, "{not json");
+		storage.load();
+
+		// The model is disposed here (a client dropped, a hub reconnect); no
+		// model exists to reclassify anything. Another store or app version
+		// then replaces the SAME record with a valid, newer checkpoint.
+		const newer = { id: "d1", layout: "mobile" as const, baseRevision: 4, config, writeUncertain: false };
+		storage.save(newer);
+
+		// The no-model discard path names the record load() actually
+		// classified, not whatever is stored now: it refuses, and the newer
+		// checkpoint survives.
+		storage.discardLastLoaded();
+		expect(disk.raw.get(key)).toBe(JSON.stringify(newer));
+	});
+
+	it("discardLastLoaded is a no-op before anything has ever been loaded", () => {
+		const disk = deviceStore();
+		const storage = retainingDraftStorage(nativeTranscriptDrafts("hub", disk.port));
+		expect(() => storage.discardLastLoaded()).not.toThrow();
+		expect(disk.raw.size).toBe(0);
 	});
 });
