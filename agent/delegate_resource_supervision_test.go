@@ -240,6 +240,7 @@ func TestDelegateResourceSupervision_CommittedSendStartRefusesASecondTurn(t *tes
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	var handoffMu sync.Mutex
 	var handoffSeen, secondTurnLaunched bool
@@ -289,6 +290,7 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 	}
 	root := restoreSupervisionRoot(t, fixture, nil)
 	warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
 
 	var handoffMu sync.Mutex
 	var claimSeen, claimHeld, candidateFound, secondTurnLaunched bool
@@ -3037,6 +3039,13 @@ func TestWaitForStableSupervisionRunOutlastsDeferredAttentionDrive(t *testing.T)
 	}
 }
 
+// warmStableSupervisionDelegate starts the warm run and acknowledges its result.
+// It does NOT wait for that run to quiesce: the run's finalizer outlives the
+// acknowledged result, because `running` goes false at the top of the finalize
+// block and `finalizing` clears only at the end, and a send landing in that
+// window is refused as target busy by design. A caller that needs a drivable
+// child must wait for quiescence first; the callers that arm attention
+// deliberately do not, so that the drive they exercise is the deferred one.
 func warmStableSupervisionDelegate(t *testing.T, root *Session, fixture coldStableDelegateFixture) *subagent {
 	t.Helper()
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "warm retained runtime", 60_000)
