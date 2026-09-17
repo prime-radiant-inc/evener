@@ -1048,6 +1048,31 @@ describe("reconnect-triggered refetch", () => {
     expect(extensionsStore.getState().pluginsLoading).toBe(false);
   });
 
+  // What ConnectionBanner's retry does: connect(fresh) runs BEFORE
+  // `await fresh.connect()`, so the store is told about the replacement while
+  // it is still idle and only later hears it is ready. The read the
+  // replacement interrupted has to survive that gap, because the sections'
+  // loader latches `started` and will not ask again.
+  test("a replacement named before it is dialled still gets the read it interrupted", async () => {
+    const interrupted = connectFakeClient();
+    interrupted.on("evener/plugin/list", () => new Promise(() => {}));
+    void extensionsStore.getState().fetchPlugins();
+    await Promise.resolve();
+    expect(extensionsStore.getState().pluginsLoading).toBe(true);
+
+    const fresh = new FakeClient("idle");
+    fresh.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    connectionStore.getState().connect(fresh);
+    expect(fresh.calls).toHaveLength(0);
+
+    fresh.emitReady();
+    await drainMicrotasks();
+
+    expect(fresh.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+    expect(extensionsStore.getState().pluginsLoading).toBe(false);
+  });
+
   test("a reconnect reads nothing for a section that was never opened", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));

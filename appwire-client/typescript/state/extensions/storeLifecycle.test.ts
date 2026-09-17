@@ -484,6 +484,31 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       void reading;
     });
 
+    test("a replacement named before it is ready still gets the read it interrupted", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      gateRequests(fake, lifecycle.listMethod);
+      const reading = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+      expect(lifecycle.loading(store.getState())).toBe(true);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
+
+      // What a retry actually looks like: the host names its fresh client
+      // before dialling it, so the store hears about the replacement while it
+      // is still idle. That call fences the read and settles the flag, so by
+      // the time ready arrives the state carries no trace of the read - the
+      // intent has to outlive the call that observed it.
+      const fresh = lifecycle.create().fake;
+      store.connectionChanged(fresh, "idle");
+      store.connectionChanged(fresh, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
+      expect(lifecycle.list(store.getState())).not.toBeNull();
+      expect(lifecycle.loading(store.getState())).toBe(false);
+      void reading;
+    });
+
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
