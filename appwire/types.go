@@ -144,6 +144,11 @@ const (
 	// remote host's hub (component 07a). Host is the component-03 source ID;
 	// Method must be in the proxy's exact allow-list. See HostRequestParams.
 	MethodEvenerHostRequest = "evener/host/request"
+	// MethodEvenerHostAttach explicitly attaches one configured remote host
+	// (component 06's Connect action, component 08's host management surface).
+	// It is the browser-reachable trigger that wraps the Ensure-backed dialing
+	// seam; every other remote path is attached-only. See HostAttachParams.
+	MethodEvenerHostAttach = "evener/host/attach"
 )
 
 const (
@@ -3799,6 +3804,41 @@ type HostRequestParams struct {
 // not landed here. Read this marker as "an opaque JSON object the proxy passes
 // through", never as an empty result.
 type HostForwardedResult struct{}
+
+// HostAttachParams is the evener/host/attach payload (component 06's Connect
+// action): the component-03 source ID of one configured remote host to attach.
+//
+// Host is the host's configured name (component 06 §"Go changes" item 5:
+// "Params: HostAttachParams{Host string} — a component-03 source ID"). The
+// handler resolves it through the controller's host registry, so an unknown
+// name is InvalidParams, and calls the Ensure-backed attach seam. Attaching an
+// already-attached host is idempotent and returns its current state.
+type HostAttachParams struct {
+	Host string `json:"host"`
+}
+
+// HostAttachResponse is evener/host/attach's result: the post-attach state of
+// one remote host. Attached is true once a live channel exists (always true on
+// a successful response). Host is the attached host's configured identity;
+// ServerName/ServerVersion are the attach handshake's ServerInfo, so the
+// controller can render the row as online without a second probe. The remaining
+// fields are the host's post-attach facts (preflight-owned): they are omitted
+// when the host's facts seam is not wired.
+//
+// ServerVersion is the handshake's ServerInfo.Version — the hub's protocol
+// server version constant ("0.1.0"), NOT the host's build identity. The host's
+// running build is HubVersion, which the preflight facts carry.
+type HostAttachResponse struct {
+	Attached        bool        `json:"attached"`
+	Host            string      `json:"host,omitempty"`
+	ServerName      string      `json:"serverName,omitempty"`
+	ServerVersion   string      `json:"serverVersion,omitempty"`
+	ProtocolVersion string      `json:"protocolVersion,omitempty"`
+	HubVersion      string      `json:"hubVersion,omitempty"`
+	OS              string      `json:"os,omitempty"`
+	Arch            string      `json:"arch,omitempty"`
+	Features        *FeatureSet `json:"features,omitempty"`
+}
 
 // HostNotificationParams is the evener/host/notification payload (component
 // 07a): one host-owned config notification re-emitted to the controller's

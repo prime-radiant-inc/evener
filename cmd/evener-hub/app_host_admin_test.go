@@ -389,13 +389,19 @@ func TestHostAdminAllowListMatchesCatalog(t *testing.T) {
 		// remote admin proxy, so both are denied deliberately rather than left
 		// undecided — an unlisted method is refused with appwire.InvalidParams
 		// and never forwarded.
-		"evener/daemon/list":     false,
-		"evener/daemon/retire":   false,
-		"evener/dirs/create":     true, // discovery: create the host directory the spawn form asked for
-		"evener/favorite/set":    false,
-		"evener/git/head":        true, // discovery: read-only branch metadata for a remote path
-		"evener/harnesses/list":  true, // discovery: the host's own harnesses
-		"evener/host/request":    false,
+		"evener/daemon/list":    false,
+		"evener/daemon/retire":  false,
+		"evener/dirs/create":    true, // discovery: create the host directory the spawn form asked for
+		"evener/favorite/set":   false,
+		"evener/git/head":       true, // discovery: read-only branch metadata for a remote path
+		"evener/harnesses/list": true, // discovery: the host's own harnesses
+		"evener/host/request":   false,
+		// evener/host/attach is controller-LOCAL: it dials a host this
+		// controller owns through the Ensure-backed seam. There is no host to
+		// forward to until the attach succeeds, so it is never a proxied call,
+		// and a peer hub must not be able to make this hub attach a new host by
+		// forwarding it.
+		"evener/host/attach":     false,
 		"evener/instance/create": true,
 		"evener/instance/edit":   true,
 		"evener/instance/list":   true,
@@ -934,6 +940,59 @@ func waitForHostNotificationSubscribers(t *testing.T, source *appsource.RemoteHu
 	}
 }
 
+// TestHostAdminAttachWakesBackoffSleepingFanOut pins the round-seven M1
+// finding: an EventAttached must rebind the host-notification broker
+// immediately, not after its exponential backoff (up to 30s) expires. A
+// fan-out parked in backoff while its host is offline must subscribe — pinned
+// by observing the source's host-notification subscriber count, i.e. the
+// SubscribeHostNotifications registration that starts the fresh client's
+// drain — as soon as the attach event arrives and the host reports online.
+func TestHostAdminAttachWakesBackoffSleepingFanOut(t *testing.T) {
+	client, _, _ := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+		return okReply()
+	})
+	source := appsource.NewRemoteHubSource("m4", nil, func(context.Context, string) (*appwire.Client, error) {
+		return client, nil
+	})
+	var online atomic.Bool
+	source.SetHostOnline(online.Load)
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	controller := newHubHostAdminController(newRecordingBroadcaster(), hosts, sources)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		controller.fanOut(ctx, source)
+	}()
+
+	// Let the fan-out enter backoff while the host reports offline: it must
+	// not subscribe before the attach.
+	time.Sleep(250 * time.Millisecond)
+	if got := source.HostNotificationSubscribers(); got != 0 {
+		t.Fatalf("offline fan-out subscribed %d times, want 0 before the attach", got)
+	}
+
+	// The attach flips the host online and wakes the broker for it.
+	online.Store(true)
+	controller.hostAttached("m4")
+	waitForHostNotificationSubscribers(t, source, 1,
+		"the attach event did not wake the backoff-sleeping fan-out")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("fanOut did not return after its context was canceled")
+	}
+}
+
 // TestHostAdminForbiddenMethodRefusedBeforeAvailabilityCheck pins the ordering
 // of the fail-closed checks: a method the proxy may never forward is refused
 // with InvalidParams even when the host is offline, without consulting the
@@ -1124,6 +1183,15 @@ func TestHostAdminMutationClassificationMatchesAllowList(t *testing.T) {
 		if _, ok := remoteHostAdminMethods[name]; !ok {
 			t.Errorf("readOnly names %q, which is not on the proxy allow-list", name)
 		}
+	}
+	// evener/host/attach is a controller-local mutation, never a forwarded one:
+	// it must stay off both the allow-list and the forwarded-mutation set, so the
+	// proxy can never forward a dial request to a peer hub.
+	if _, ok := remoteHostAdminMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be on the remote-admin allow-list: it is a controller-local method", appwire.MethodEvenerHostAttach)
+	}
+	if _, ok := remoteHostAdminMutationMethods[appwire.MethodEvenerHostAttach]; ok {
+		t.Errorf("%q must not be classified as a forwarded mutation: it is a controller-local method", appwire.MethodEvenerHostAttach)
 	}
 }
 

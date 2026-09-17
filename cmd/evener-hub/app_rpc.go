@@ -49,7 +49,13 @@ func newHubSourceRegistry(cfg hubcore.WebConfig) *appsource.Registry {
 		} else {
 			for _, host := range cfg.RemoteHosts {
 				source := appsource.NewRemoteHubSource(host.Name, host.Roots, cfg.RemoteHostClient)
+				// The non-dialing seams every non-explicit read path resolves
+				// through: the attached-only client lookup and the attach
+				// handshake facts (component 05, §"Registration and
+				// default-source selection").
+				source.SetHostClientIfAttached(cfg.RemoteHostClientIfAttached)
 				source.SetHostFacts(cfg.RemoteHostFacts)
+				source.SetHostHandshake(cfg.RemoteHostHandshake)
 				source.SetHostOnline(func() bool {
 					return cfg.RemoteHostOnline == nil || cfg.RemoteHostOnline(host.Name)
 				})
@@ -360,10 +366,11 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	return newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	return server
 }
 
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) *appserver.Server {
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -513,6 +520,10 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerSessionDeleteHandler(server, nil)
 	registerPinSectionHandlers(server, cfg, navigation, resolve)
 	registerMiscHandlers(server, cfg, sources)
+	// Component 06's Connect action: the browser-reachable explicit attach
+	// trigger. It wraps the Ensure-backed dialing seam and is the only method
+	// that may dial a remote host on the user's behalf.
+	registerHostAttachHandler(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
@@ -536,8 +547,12 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// hub's top-level lifecycle drains it unconditionally on the way out
 	// (main.go), not only on the tracing path, and does so before the SSH
 	// manager closes the transports these fan-outs read from.
-	registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server
+	// The returned controller owns the per-host fan-out wakeups: newWebServer
+	// (web.go) keeps the handle so main.go can bind hostAttached to the
+	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
+	// moment its host's fresh channel is installed.
+	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
+	return server, hostAdmin
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {

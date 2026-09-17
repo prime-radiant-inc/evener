@@ -425,13 +425,43 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// constructed before the WebServer it must invalidate, and it is only ever
 	// invoked once the background loops start attaching hosts.
 	var sshStateInvalidatedNavigation func()
+	// hostAttachedWakeup is late-bound like the navigation hook above: the
+	// host-admin controller (and its per-host fan-outs) is constructed with
+	// the WebServer below, after the SSH manager, and it is only ever invoked
+	// once the background loops start attaching hosts.
+	var hostAttachedWakeup func(host string)
 	sshManager := sshconn.New(hostRegistry, sshconn.Options{
 		Logger: func(format string, args ...any) { _, _ = fmt.Fprintf(stderr, "[hub] "+format+"\n", args...) },
-		OnEvent: hubSSHStateInvalidation(func() {
-			if sshStateInvalidatedNavigation != nil {
-				sshStateInvalidatedNavigation()
-			}
-		}),
+		OnEvent: hubSSHStateInvalidation(
+			func() {
+				if sshStateInvalidatedNavigation != nil {
+					sshStateInvalidatedNavigation()
+				}
+			},
+			// An attach is not only a liveness change: a host that was dormant
+			// contributes no fresh rows to the snapshot walk (it is skipped
+			// attached-only), so its threads stay absent from the navigation tree
+			// until the next ~30s tick. Poke the remote-thread refresher on the
+			// same transition so an explicit evener/host/attach populates the tree
+			// immediately. remotePoke is buffered 1 and this send is non-blocking,
+			// so the sshconn event loop never blocks on a refresh already pending.
+			func(host string) {
+				select {
+				case remotePoke <- struct{}{}:
+				default:
+				}
+				// The same transition wakes the host-notification fan-out: a
+				// fan-out sleeping in backoff would otherwise wait up to 30s
+				// before subscribing while the new client's notification buffer
+				// fills undrained. The wakeup carries no client — the fan-out
+				// still resolves the fresh client through ClientIfAttached —
+				// and the send below is non-blocking for the same reason the
+				// poke above is: the sshconn event loop must never block.
+				if hostAttachedWakeup != nil {
+					hostAttachedWakeup(host)
+				}
+			},
+		),
 	})
 	// The manager owns every live SSH channel; tie their lifetime to this
 	// process so they die with the hub.
@@ -478,25 +508,40 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 			}
 			return ch.Client(), nil
 		},
+		// The attached-only lookup every non-explicit read path resolves
+		// through, so none can implicitly attach a dormant host.
+		RemoteHostClientIfAttached: sshManager.ClientIfAttached,
 		RemoteHostFacts: func(ctx context.Context, host string, client *appwire.Client) (appsource.HostFacts, error) {
-			ch, err := sshManager.Ensure(ctx, host)
-			if err != nil {
-				return appsource.HostFacts{}, err
+			return remoteHostFactsIfAttached(ctx, host, client, func(host string) (attachedChannelView, bool) {
+				// Non-dialing: read one installed channel and refuse unless it is
+				// the very channel client belongs to, so the facts can never
+				// describe a different generation than the probe's wire reads.
+				ch, ok := sshManager.ChannelIfAttached(host)
+				if !ok {
+					return nil, false
+				}
+				return ch, true
+			})
+		},
+		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
+			ch, ok := sshManager.ChannelIfAttached(host)
+			if !ok {
+				return appwire.InitializeResponse{}, false
 			}
-			// The facts must describe the same connection generation the probe
-			// ran its wire reads on. Ensure is idempotent while attached, so it
-			// normally hands back the channel behind client; if a component-04
-			// reconnect swapped the generation in between, refuse rather than
-			// cache facts from one connection against another's reads. The
-			// probe is not cached on failure, so the next call re-probes the new
-			// generation cleanly.
-			if ch.Client() != client {
-				return appsource.HostFacts{}, fmt.Errorf("remote hub %q: connection changed during capability probe", host)
-			}
-			return remoteHostFacts(ch.Preflight(), ch.Client().Features()), nil
+			return remoteHostHandshakeForChannel(ch, client)
 		},
 		RemoteHostOnline: sshManager.Attached,
 	}, appwireTrace)
+	// Bind the host-notification wakeup now that the controller exists: the
+	// sshconn manager (built above) fires EventAttached once the fresh channel
+	// is installed, and the controller (built with the WebServer just above)
+	// owns the fan-outs. The wakeup rides that same attach event — alongside
+	// the navigation invalidation and the remote-thread poke wired into OnEvent
+	// above — rather than inventing a second path. A nil controller (no remote
+	// hosts) leaves the slot nil, which the callback already tolerates.
+	if web.hostAdmin != nil {
+		hostAttachedWakeup = web.hostAdmin.hostAttached
+	}
 	// Drain the AppWire RPC server on every exit path, tracing or not (round
 	// eight). The remote-admin fan-out is bound to appserver.Server.Lifetime(),
 	// and Shutdown is what cancels it, so a hub that only stopped its HTTP
@@ -677,10 +722,24 @@ func hostRegistryEntries(cfg Config) []hostreg.Host {
 // Manager.Attached: an attach, a detach, or a terminal attach failure.
 // Intermediate EventState transitions (preflighting, attaching, reconnecting)
 // never change the attached answer, so they do not force a rebuild.
-func hubSSHStateInvalidation(invalidate func()) func(sshconn.Event) {
+//
+// onAttach, when non-nil, runs only on EventAttached, alongside invalidate. It
+// exists because an attach is more than a liveness change: the snapshot walk is
+// attached-only, so a newly attached host's threads are absent from the
+// navigation tree until the refresher's next tick unless that transition pokes
+// it. Detach and terminal failure do not need the extra callback — the
+// last-known-good carry-forward already keeps a dropped host's rows.
+func hubSSHStateInvalidation(invalidate func(), onAttach func(host string)) func(sshconn.Event) {
 	return func(ev sshconn.Event) {
 		switch ev.Kind {
-		case sshconn.EventAttached, sshconn.EventDetached, sshconn.EventFailed:
+		case sshconn.EventAttached:
+			if invalidate != nil {
+				invalidate()
+			}
+			if onAttach != nil {
+				onAttach(ev.Host)
+			}
+		case sshconn.EventDetached, sshconn.EventFailed:
 			if invalidate != nil {
 				invalidate()
 			}
@@ -730,6 +789,69 @@ func remoteHostFacts(pf sshconn.Preflight, features appwire.FeatureSet) appsourc
 		Arch:            pf.Arch,
 		Features:        features,
 	}
+}
+
+// attachedChannelView is the slice of a live sshconn.Channel the remote-host
+// facts seams read. One sshconn.Manager.ChannelIfAttached lookup yields one
+// generation, so reading the client, preflight, and handshake from the same
+// value cannot splice a reconnect's facts onto the previous client's reads.
+// *sshconn.Channel satisfies it.
+type attachedChannelView interface {
+	Client() *appwire.Client
+	Preflight() sshconn.Preflight
+	Handshake() appwire.InitializeResponse
+}
+
+// remoteHostFactsForChannel returns the preflight half of the host's capability
+// snapshot for client, refusing when ch is not the channel client belongs to.
+//
+// The capability probe resolves client through the attached-only lookup and
+// runs every wire read on it, then asks for the facts. A supervisor reconnect
+// between those two steps would leave ch describing a newer connection than
+// client; answering from it would let the probe cache a snapshot assembled from
+// two generations — the hazard sshconn's channel identity check exists to
+// prevent. Refuse with the typed unavailable error the auto-resume gate already
+// understands instead; the probe is not cached on failure, so it re-probes the
+// new generation cleanly.
+func remoteHostFactsForChannel(ch attachedChannelView, host string, client *appwire.Client) (appsource.HostFacts, error) {
+	if ch == nil || ch.Client() != client {
+		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
+	}
+	return remoteHostFacts(ch.Preflight(), client.Features()), nil
+}
+
+// remoteHostFactsIfAttached is the RemoteHostFacts seam: it looks host up
+// through lookup (a non-dialing attached-only channel lookup) and answers the
+// facts for client's own generation.
+//
+// A caller cancellation or deadline is the caller's own context ending, not
+// host unavailability, so it is returned raw before the lookup runs — exactly
+// as the capability probe leaves a canceled context raw and resolveClient/call
+// leave it raw. Reporting it as the typed SessionUnavailable would fire the
+// auto-resume/refusal gates for a request the caller abandoned. A host whose
+// channel is gone or is a different generation is the typed SessionUnavailable
+// those gates act on.
+func remoteHostFactsIfAttached(ctx context.Context, host string, client *appwire.Client, lookup func(string) (attachedChannelView, bool)) (appsource.HostFacts, error) {
+	if err := ctx.Err(); err != nil {
+		return appsource.HostFacts{}, err
+	}
+	ch, ok := lookup(host)
+	if !ok {
+		return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: " + host)
+	}
+	return remoteHostFactsForChannel(ch, host, client)
+}
+
+// remoteHostHandshakeForChannel returns the attach handshake ch captured, but
+// only when ch is the channel client belongs to. Reporting false otherwise
+// keeps the probe from pairing one connection's wire reads with another's
+// handshake; the preflight facts it already accepted (remoteHostFactsForChannel)
+// are then the only source, and those are pinned to the same client.
+func remoteHostHandshakeForChannel(ch attachedChannelView, client *appwire.Client) (appwire.InitializeResponse, bool) {
+	if ch == nil || ch.Client() != client {
+		return appwire.InitializeResponse{}, false
+	}
+	return ch.Handshake(), true
 }
 
 // printVersionInfo prints version information including backend git SHA and frontend hash.
