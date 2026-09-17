@@ -852,6 +852,50 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ layout: "desktop", revision: 3, config: desktopConfig, generation: 1 });
   });
 
+  // RoboRev round 22 Medium 3: the replacement-restoring partial computed
+  // draftConflict against getState() - evaluated before this refresh's OWN
+  // confirm of the SAME layout has published, so it still read the
+  // PRECEDING revision - and that partial is spread after the caller's own
+  // fresh conflict, so its answer wins. An authoritative read that advances
+  // the layer's revision could leave a stale replacement marked
+  // non-conflicting.
+  test("adopting a replacement while the authoritative read advances the layer's own revision flags it stale", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    client.on(patchMethod, () => {
+      throw new Error("connection lost");
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // Another writer replaces the SAME on-disk record, composed against the
+    // SAME revision this write was too - the one about to be superseded.
+    const replacement: TranscriptDraftCheckpoint = {
+      id: "other",
+      layout: "mobile",
+      baseRevision: 2,
+      config: mobileConfig,
+      writeUncertain: false,
+    };
+    drafts.storage.save(replacement);
+
+    // The authoritative read that settles this write also advances mobile's
+    // OWN confirmed revision past what the replacement was composed against.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(4, mobileConfig)),
+    }));
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toEqual(replacement);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: mobileConfig, generation: 1 });
+    // The adopted replacement's base revision (2) is behind the revision
+    // that just landed (4): it must read as stale, not composable as-is.
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
   test("saveDraft refuses a reply that is not this write's own outcome", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
