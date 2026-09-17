@@ -126,16 +126,17 @@ function authoritativeEntry(
 // durable storage (the host's own reconcileIdentities). This set is what
 // carries provenance past that settlement.
 //
-// isOwnMutationRecord is the host's ClientIdentity capability, not the
-// package's default: a caller with no identity handy still gets the safe
-// answer (unattributed only) rather than being forced to build one.
+// isOwnMutationRecord is the host's ClientIdentity capability
+// (createClientIdentity's own method in records.ts) - required, not
+// defaulted: a partial "unattributed only" stand-in here would silently
+// diverge from that rule's "or names this client" branch the moment a real
+// caller's own submission carries an originClientId.
 export function reconcilePendingEntries(
   ref: string,
   outbox: PendingRecord[],
   model: ThreadModel | undefined,
   submittedHere: ReadonlySet<string>,
-  isOwnMutationRecord: (record: { originClientId?: string }) => boolean = (record) =>
-    record.originClientId === undefined,
+  isOwnMutationRecord: (record: { originClientId?: string }) => boolean,
 ): PendingTurnEntry[] {
   const reflected = reflectedMutationIds(model);
   const entries = new Map<string, PendingTurnEntry>();

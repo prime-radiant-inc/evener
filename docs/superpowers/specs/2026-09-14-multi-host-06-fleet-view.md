@@ -251,10 +251,14 @@ only `local`, so the fan-out currently degenerates to one source.
   (and its synchronous `remoteThreadFetch` fallback) resolves the client through
   that accessor, not the `Ensure`-backed `RemoteHubClientFunc`, and skips the
   host when it reports "not attached" without dialing.
-  **Implementation status:** the shipped `refreshRemoteThreadSnapshot`
-  (`web_api_tree.go`) iterates `s.sources.All()` with no attachment gate and its
-  resolver is wired to `Ensure`; both the gate and the attached-only lookup are
-  the implementing PR's requirement, not a present fact.
+  **Implementation status:** shipped. `refreshRemoteThreadSnapshot`
+  (`web_api_tree.go`) skips a remote source whose attached-only lookup
+  (`hubcore.WebConfig.RemoteHostClientIfAttached`, backed by
+  `Manager.ClientIfAttached`) reports "not attached", without calling it, and
+  carries the host's last-known-good rows forward. The source's own resolver is
+  attached-only too, so the check and the request cannot disagree. The
+  synchronous `remoteThreadFetch` fallback runs through the same function and
+  obeys the same gate.
 - **Tree ingestion**: `navigationSnapshotInputs` folds cached remote threads
   into the same `metas`/`live` inputs as local sessions
   (`web_api_tree.go`).

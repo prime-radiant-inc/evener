@@ -57,7 +57,11 @@ models and which take a plugin selection), the built-in slash invocation
 matcher and argument lookup both composers run a draft through before sending
 it, the transcript display configuration both apps resolve (local over hub
 over shipped), encode for local storage and summarize a transcript's content
-level and advanced toggles with, the keybinding group both apps' shortcut settings are built on (the action
+level and advanced toggles with, the transcript projector
+(`projectThread(model, config)`) that turns a thread's turns and items into
+the rows a transcript renders - content-level filtering, the critical/intent/
+thinking/hidden decision per item, disclosure eligibility and anchors - over
+the same config, framework-free and with no host global, the keybinding group both apps' shortcut settings are built on (the action
 ids, the chord AST with its overlap predicate, the default binding map, the
 display rows, the override primitives and the semantic override validation) -
 its registry is a framework-free store factory, `createKeybindingsRegistry(parse)`

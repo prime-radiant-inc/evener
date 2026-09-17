@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -264,10 +265,15 @@ type hubHostAdminController struct {
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
 	sources *appsource.Registry
+	// attachWakeMu guards attachWake: the per-host wakeup channels the
+	// EventAttached path signals so a backoff-sleeping fan-out rebinds its
+	// host's fresh client immediately instead of waiting out the delay.
+	attachWakeMu sync.Mutex
+	attachWake   map[string]chan struct{}
 }
 
 func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
-	return &hubHostAdminController{broadcaster: broadcaster, hosts: hosts, sources: sources}
+	return &hubHostAdminController{broadcaster: broadcaster, hosts: hosts, sources: sources, attachWake: map[string]chan struct{}{}}
 }
 
 // registerHostAdminHandlers installs the proxy handler and starts one
@@ -275,7 +281,13 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 // lifetime; production passes the RPC server's own lifetime handle
 // (appserver.Server.Lifetime), so a shut-down server stops its fan-outs instead
 // of leaving them subscribed to the previous server's sources.
-func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
+//
+// It returns the controller so the caller can wire its hostAttached wakeup
+// into the sshconn attach-event path (main.go's OnEvent): without that wiring
+// an EventAttached wakes the navigation snapshot but not a fan-out sleeping in
+// backoff, which may then wait up to hostNotificationRetryMax before
+// subscribing while the new client's notification buffer fills.
+func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) *hubHostAdminController {
 	hosts, err := hostreg.New(cfg.RemoteHosts)
 	if err != nil {
 		// Config loading already validated every entry (main.go builds the
@@ -287,6 +299,7 @@ func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cf
 	controller := newHubHostAdminController(server, hosts, sources)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRequest, controller.Request)
 	controller.start(ctx)
+	return controller
 }
 
 // Request forwards one allow-listed admin RPC to the named host's hub.
@@ -381,12 +394,22 @@ func (c *hubHostAdminController) start(ctx context.Context) {
 // component-04 supervisor owns (re)connecting the host. Retries use bounded
 // exponential backoff, so a permanently-down host costs one in-memory check per
 // interval rather than an SSH preflight every second.
+//
+// hostAttached wakes this host's fan-out out of backoff: the sshconn
+// EventAttached path calls it once the fresh channel is installed, so the
+// fan-out re-checks Online() and subscribes through ClientIfAttached
+// immediately instead of sleeping up to hostNotificationRetryMax while the new
+// client's notification buffer (appwire.NotificationBufferCap, a loud
+// overflow) fills undrained. The wakeup carries no client: the fan-out still
+// resolves the fresh client through the source's attached-only lookup, so the
+// r6 liveness refusal stands — a host that dropped between the event and the
+// wakeup resolves to SessionUnavailable and the loop backs off again.
 func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.RemoteHubSource) {
 	host := remote.ID()
 	delay := hostNotificationRetryBase
 	for ctx.Err() == nil {
 		if !remote.Online() {
-			if !hostNotificationBackoff(ctx, delay) {
+			if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
 				return
 			}
 			delay = nextHostNotificationBackoff(delay)
@@ -396,7 +419,7 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 		notifications, err := remote.SubscribeHostNotifications(subCtx)
 		if err != nil {
 			cancel()
-			if !hostNotificationBackoff(ctx, delay) {
+			if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
 				return
 			}
 			delay = nextHostNotificationBackoff(delay)
@@ -405,10 +428,62 @@ func (c *hubHostAdminController) fanOut(ctx context.Context, remote *appsource.R
 		delay = hostNotificationRetryBase
 		c.relayHostNotifications(ctx, host, notifications)
 		cancel()
-		if !hostNotificationBackoff(ctx, delay) {
+		if !c.hostNotificationBackoffOrAttach(ctx, host, delay) {
 			return
 		}
 		delay = nextHostNotificationBackoff(delay)
+	}
+}
+
+// hostAttached signals host's fan-out to cut its backoff short and re-check
+// attachment now. It is the EventAttached half of the attach-event path: the
+// same transition already pokes the remote-thread refresher (main.go's
+// onAttach) and invalidates the navigation snapshot, and this rides that same
+// event rather than inventing a second one. The signal is a buffered wakeup
+// per host, created on demand: an attach with no running fan-out (an unknown
+// host, or a host whose fan-out already subscribed) parks one pending wakeup
+// the next backoff takes immediately, which is harmless — the fan-out still
+// re-checks Online() and the attached-only lookup before subscribing.
+func (c *hubHostAdminController) hostAttached(host string) {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return
+	}
+	c.attachWakeMu.Lock()
+	ch, ok := c.attachWake[host]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		c.attachWake[host] = ch
+	}
+	c.attachWakeMu.Unlock()
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
+// hostNotificationBackoffOrAttach waits delay but returns true early when
+// the host's attach wakeup fires, reporting false only
+// when ctx ended first. The caller re-checks Online() and re-resolves the
+// client through the attached-only lookup, so a stale or spurious wakeup
+// cannot subscribe a dead generation: it just shortens one sleep.
+func (c *hubHostAdminController) hostNotificationBackoffOrAttach(ctx context.Context, host string, delay time.Duration) bool {
+	c.attachWakeMu.Lock()
+	ch, ok := c.attachWake[host]
+	if !ok {
+		ch = make(chan struct{}, 1)
+		c.attachWake[host] = ch
+	}
+	c.attachWakeMu.Unlock()
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	case <-ch:
+		return true
 	}
 }
 
@@ -434,18 +509,6 @@ func (c *hubHostAdminController) relayHostNotifications(ctx context.Context, hos
 				Params: notification.Params,
 			})
 		}
-	}
-}
-
-// hostNotificationBackoff waits delay, reporting false when ctx ended first.
-func hostNotificationBackoff(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
 	}
 }
 
