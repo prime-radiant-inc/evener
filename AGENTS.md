@@ -45,6 +45,43 @@ typecheck, and Biome gate; on Chrome-capable hosts, also run `make
 test-web-browser` for real geometry and browser guards. CI checks Biome
 formatting. Avoid `noNonNullAssertion` and array-index-key violations.
 
+The typecheck step runs `npm run typecheck` (`tsc --noEmit --incremental
+false` from `cmd/evener-hub/frontend`), which reads that directory's
+`tsconfig.json` and its `include` — `src` and `../../../appwire-client/typescript`
+— covering both trees in one program: this is the same file set a bare
+`tsc --noEmit -p tsconfig.json` from the same directory resolves (verified
+byte-identical as a point-in-time measurement on #1676; re-check with
+`tsc --listFilesOnly` rather than trusting that count to stay current).
+`make test-web` runs the typecheck behind `web-preflight.sh`, which `npm
+ci`s the frontend install whenever `package-lock.json` is newer than
+`node_modules`. A bare `tsc -p tsconfig.json` skips that check: right after a
+merge that changed `package-lock.json` but before an `npm ci`, it type-checks
+against a stale install and can report real-looking errors (missing types,
+unresolved modules) that are an artifact of the stale install, not of the
+code. `make test-web` avoids that specific case — a real, non-symlinked
+`node_modules` left behind by a `package-lock.json` change — because its
+preflight repairs the install first; the symlinked-install case has its own
+caveat below. Prefer `make test-web` to reproduce the gate by hand rather
+than running `npm ci` yourself: an agent worktree's `node_modules` is often
+a symlink to a shared install other worktrees use, and `npm ci` deletes the
+existing `node_modules` before installing — through a symlink that deletes
+the shared install out from under everyone else. `web-preflight.sh` only
+guards this conditionally: it checks `node_modules -nt package-lock.json`
+first, and reaches the `-L node_modules` branch — which compares the symlink
+target's own `package-lock.json` before allowing anything through — only
+when that first check is false. When a shared install happens to be newer
+than this worktree's lockfile, the `-nt` check short-circuits the symlink
+branch entirely: the script no-ops and proceeds without ever comparing
+lockfiles, so it is not a guarantee that a stale or mismatched shared
+install gets caught. If you do run `npm ci` by hand, check `[ -L node_modules ]`
+yourself first; don't rely on the script to catch it for you. The same
+symlink risk applies to `appwire-client/typescript` (no preflight script owns its
+install; `make test-api-package` runs `npm run qualification` directly) and
+to `mobile-native` (`native-preflight.sh` checks the install's freshness and
+health but never runs `npm ci` itself, precisely to avoid this — it fails
+loudly and names the command instead). Never run `npm ci` through a
+symlinked `node_modules` in any of the three.
+
 ## Importing the AppWire TypeScript package
 
 The shared client lives at `appwire-client/typescript` and every consumer in

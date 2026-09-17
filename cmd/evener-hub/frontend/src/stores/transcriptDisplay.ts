@@ -37,6 +37,7 @@ import {
   readLegacyPreference,
   readTranscriptDisplayLocal,
 } from "./prefs";
+import { readyGenerationCallback } from "./readyGenerationCallback";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
@@ -444,7 +445,7 @@ function rewireClient(client: AppwireClientLike): void {
   // The confirmed defaults belong to the PREVIOUS hub: they stop presenting
   // before this client's first refresh can land.
   hubStore.detachHub();
-  unwireReady = client.onReady(beginReadyGeneration);
+  unwireReady = client.onReady(readyGenerationCallback(client, () => wiredClient, beginReadyGeneration));
   if (client.state === "ready") beginReadyGeneration();
 }
 
