@@ -168,6 +168,60 @@ describe("native preference drafts", () => {
 		expect(raw.size).toBe(0);
 	});
 
+	it("a discard naming a DIFFERENT record does not remove what is stored", () => {
+		const raw = new Map<string, string>();
+		const store = {
+			getItemSync: (key: string) => raw.get(key) ?? null,
+			setItemSync: (key: string, value: string) => {
+				raw.set(key, value);
+			},
+			removeItemSync: (key: string) => {
+				raw.delete(key);
+			},
+		};
+		const port = draftBackend(store, () => "id-1");
+		const storage = nativeTranscriptDrafts("hub", port);
+		const key = "evener.native.transcript-draft.hub";
+
+		// A record that parses but is not a checkpoint, stored non-canonically.
+		raw.set(key, '{\n  "id" : "a" ,\n  "baseRevision": -1\n}');
+		const read = storage.load();
+		expect(read).not.toBeNull();
+
+		// A stale cleanup for some OTHER checkpoint must not remove this record
+		// just because nothing has been written since it was read.
+		storage.removeIf({ id: "b", baseRevision: 9 } as never);
+		expect(raw.has(key)).toBe(true);
+
+		// The record this read actually named still removes it.
+		storage.removeIf(read as never);
+		expect(raw.has(key)).toBe(false);
+	});
+
+	it("a stored JSON null is an unreadable record, not a missing key", () => {
+		const raw = new Map<string, string>();
+		const store = {
+			getItemSync: (key: string) => raw.get(key) ?? null,
+			setItemSync: (key: string, value: string) => {
+				raw.set(key, value);
+			},
+			removeItemSync: (key: string) => {
+				raw.delete(key);
+			},
+		};
+		const storage = nativeTranscriptDrafts("hub", draftBackend(store, () => "id-1"));
+		const key = "evener.native.transcript-draft.hub";
+		raw.set(key, "null");
+
+		// Returning it as null would be indistinguishable from no record at all,
+		// which is how it became invisible AND unremovable.
+		const read = storage.load();
+		expect(read).not.toBeNull();
+
+		storage.removeIf(read as never);
+		expect(raw.has(key)).toBe(false);
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(
