@@ -850,6 +850,62 @@ test("rejects malformed job collections in navigation session summaries", async 
   expect(resource.error).toBeTruthy();
 });
 
+// Distinct from the malformed-INITIAL-body cases above: this section loads
+// successfully, and only the invalidation-triggered REFRESH comes back
+// malformed. Revalidation must not clobber the installed graph while
+// loading, nor when the refresh fails.
+test("a malformed refresh response preserves the installed graph while recording a protocol error", async () => {
+  const sectionKey = { kind: "section", section: "live", offset: 0, limit: 50 } as const;
+  const refresh = deferred<NavigationReadResponse>();
+  let sectionCalls = 0;
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") return wireV2(params, emptyManifest());
+    if (params.resource !== "section") throw new Error("unexpected navigation resource");
+    sectionCalls++;
+    if (sectionCalls > 1) return refresh.promise;
+    return wireV2(params, { sessions: [{ ref: "local:stable", children: [] }], remaining: 0, truncated: false });
+  });
+  store.init(client, capability());
+  await flush();
+  const installed = await store.getState().loadSection("live");
+  if (!installed.normalized) throw new Error("normalized section did not install");
+  const installedGraph = installed.normalized.graph;
+  const installedData = installed.data;
+
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "section", section: "live", revision: 2 }],
+    }),
+  );
+  await flush();
+  const loading = store.getState().resources.get(keyID(sectionKey));
+  expect(loading?.loading).toBe(true);
+  expect(loading?.data).toBe(installedData);
+  expect(loading?.normalized?.graph).toBe(installedGraph);
+
+  refresh.resolve({
+    status: "ok",
+    representation: "snapshot",
+    generationId: generation,
+    revision: 2,
+    etag: "section-2",
+    data: {},
+  } as NavigationReadResponse);
+  await flush();
+  const failed = store.getState().resources.get(keyID(sectionKey));
+  const failure = failed?.error;
+  expect(failure).toBeInstanceOf(Error);
+  if (!(failure instanceof Error)) throw new Error("expected malformed response error");
+  expect(failure).toMatchObject({ message: "navigation protocol: invalid v2 response" });
+  expect(failure).toBe(store.getState().protocolError);
+  expect(failure.cause).toBeInstanceOf(Error);
+  expect(failed?.data).toBe(installedData);
+  expect(failed?.normalized?.graph).toBe(installedGraph);
+});
+
 test("stale client completion cannot overwrite newer client", async () => {
   const old = deferred<NavigationReadResponse>();
   const first = new FakeClient("ready");
