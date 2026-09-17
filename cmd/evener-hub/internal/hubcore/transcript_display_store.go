@@ -53,6 +53,14 @@ func NewTranscriptDisplayStore(stateRoot string) (*TranscriptDisplayStore, error
 	return newTranscriptDisplayStoreFS(afero.NewOsFs(), stateRoot, transcriptDisplayStoreFaults{})
 }
 
+// NewTranscriptDisplayStoreForTest is NewTranscriptDisplayStore with fault
+// injection, so RPC-layer tests can exercise a patch that renames
+// successfully and then fails a later durable step (the same applied-write
+// case KeybindingsStoreForTest exercises for keybindings).
+func NewTranscriptDisplayStoreForTest(stateRoot string, afterRenameFault func() error) (*TranscriptDisplayStore, error) {
+	return newTranscriptDisplayStoreFS(afero.NewOsFs(), stateRoot, transcriptDisplayStoreFaults{AfterRename: afterRenameFault})
+}
+
 func newTranscriptDisplayStoreFS(fs afero.Fs, stateRoot string, faults transcriptDisplayStoreFaults) (*TranscriptDisplayStore, error) {
 	state, err := loadTranscriptDisplaySnapshotFS(fs, stateRoot)
 	if err != nil {

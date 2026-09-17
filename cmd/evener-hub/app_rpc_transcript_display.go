@@ -30,6 +30,22 @@ func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.
 					appwire.TranscriptDisplayChangedParams(result))
 			}
 			if err != nil {
+				if writeDidApply(err) {
+					// The broadcast above already reconciles every OTHER
+					// client; the REQUESTING client only sees this response,
+					// so it carries the same applied state - otherwise the
+					// client that asked is the one client left treating an
+					// applied write as rejected.
+					return nil, appwire.WireError{
+						Code:    appwire.CodeInternalError,
+						Message: err.Error(),
+						Data: appwire.TranscriptDisplayPostApplyData{
+							EvenerErrorInfo: appwire.ErrorTranscriptDisplayPostApply,
+							Layout:          result.Layout,
+							Applied:         appwire.TranscriptDisplayDefault{Revision: result.Revision, Config: result.Config},
+						},
+					}
+				}
 				return nil, err
 			}
 			return result, nil

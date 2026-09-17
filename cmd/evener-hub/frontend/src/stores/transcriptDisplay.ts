@@ -604,6 +604,24 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         });
         return canonical;
       } catch (error) {
+        const applied = postApplyApplied(error, layout);
+        if (applied !== undefined) {
+          // The write landed on the hub (the error carries the canonical
+          // applied state, and the broadcast reconciles every other client);
+          // treat it as the successful save it is instead of a rejected one -
+          // clearing the draft and leaving hubError untouched, not set.
+          if (patchTokens.get(layout) === token && isCurrentReady(client, generation)) {
+            applyHubDefault(layout, applied);
+            const drafts = { ...transcriptDisplayStore.getState().drafts };
+            delete drafts[layout];
+            transcriptDisplayStore.setState({
+              drafts,
+              hubError: null,
+              hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
+            });
+          }
+          return transcriptDisplayStore.getState().hub[layout] ?? applied;
+        }
         const canonical = conflictCurrent(error, layout);
         if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
           if (canonical !== undefined) applyHubDefault(layout, canonical);
@@ -641,6 +659,19 @@ function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDi
   const data = error.data as Record<string, unknown>;
   if (data.evenerErrorInfo !== "conflict" || data.layout !== layout) return undefined;
   return fromWireDefault(data.current);
+}
+
+/** Extracts the canonical applied state a post-apply durable failure carries
+ * (evenerErrorInfo "transcriptDisplayPostApply"): the hub's rename already
+ * published the new revision and only a follow-up step failed, so the patch
+ * must be treated as applied - not as a hubError that reverts the draft over
+ * bindings already live on the hub. */
+function postApplyApplied(error: unknown, layout: ViewportClass): HubTranscriptDisplayDefault | undefined {
+  if (!(error instanceof WireError) || error.code !== -32603 || typeof error.data !== "object" || error.data === null)
+    return undefined;
+  const data = error.data as Record<string, unknown>;
+  if (data.evenerErrorInfo !== "transcriptDisplayPostApply" || data.layout !== layout) return undefined;
+  return fromWireDefault(data.applied);
 }
 
 connectionStore.subscribe(onConnectionChange);

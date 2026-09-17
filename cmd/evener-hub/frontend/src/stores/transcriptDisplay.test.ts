@@ -290,6 +290,37 @@ describe("effective transcript display state", () => {
     expect(transcriptDisplayStore.getState().hubError).toBe("revision conflict");
   });
 
+  test("reconciles a post-apply durable failure as a successful save, not a rejected one", async () => {
+    const client = new FakeClient("ready");
+    const confirmed = preset("tools");
+    const requested = preset("activity");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: confirmed },
+      mobile: { revision: 0, config: shippedMobileConfig },
+    }));
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      throw new WireError("write applied, sync failed", -32603, {
+        evenerErrorInfo: "transcriptDisplayPostApply",
+        layout: "desktop",
+        applied: { revision: 4, config: requested },
+        ignored: "not part of the applied contract",
+      });
+    });
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    // The write landed on the hub (the error carries the canonical applied
+    // state), so the promise must resolve with it - not reject as though the
+    // save failed.
+    const result = await transcriptDisplayStore.getState().patchHubDefault("desktop", requested);
+    expect(result).toEqual({ revision: 4, config: requested });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 4, config: requested });
+    expect(transcriptDisplayStore.getState().hubError).toBeNull();
+    expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(requested);
+  });
+
   test("rejects every malformed PATCH success without changing hub state or clearing the draft", async () => {
     const client = new FakeClient("ready");
     const confirmed = preset("tools");
