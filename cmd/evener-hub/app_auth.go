@@ -497,32 +497,6 @@ var credentialWriteBetween = func() {}
 // failure is not lost either: reloadRegistryLocked leaves it on the registry,
 // which is where the pane reads it (Diagnostics) and where instance writes are
 // refused until the file loads (WritesRefused, spec §10).
-// statusAfterCredentialWrite answers a credential write that has already landed
-// with the instance's status. A read that fails does not unwrite the
-// credential, so it is reported as an applied write, with the provider named
-// for the broadcast and the rest of the status left at what could not be read.
-func (c *hubAuthController) statusAfterCredentialWrite(name string) (appwire.AuthStatusResponse, error) {
-	status, err := c.Status(appwire.AuthStatusParams{Provider: name})
-	if err != nil {
-		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
-	}
-	return status, nil
-}
-
-// openAIStatusAfterWrite is statusAfterCredentialWrite's Codex sibling: it
-// answers a write that already landed the OAuth record (LoginComplete,
-// Logout, DevicePoll) with the instance's status. A read that fails does not
-// unwrite the record, so it is reported as an applied write, with the
-// provider named for the broadcast and the rest of the status left at what
-// could not be read (#1543's rule).
-func (c *hubAuthController) openAIStatusAfterWrite(name string) (appwire.AuthStatusResponse, error) {
-	status, err := c.openAIInstanceStatus(name)
-	if err != nil {
-		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
-	}
-	return status, nil
-}
-
 func (c *hubAuthController) credentialWrite(write func() error) error {
 	c.credMu.Lock()
 	defer c.credMu.Unlock()
@@ -549,6 +523,32 @@ func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
 	return nil
+}
+
+// statusAfterCredentialWrite answers a credential write that has already landed
+// with the instance's status. A read that fails does not unwrite the
+// credential, so it is reported as an applied write, with the provider named
+// for the broadcast and the rest of the status left at what could not be read.
+func (c *hubAuthController) statusAfterCredentialWrite(name string) (appwire.AuthStatusResponse, error) {
+	status, err := c.Status(appwire.AuthStatusParams{Provider: name})
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
+}
+
+// openAIStatusAfterWrite is statusAfterCredentialWrite's Codex sibling: it
+// answers a write that already landed the OAuth record (LoginComplete,
+// Logout, DevicePoll) with the instance's status. A read that fails does not
+// unwrite the record, so it is reported as an applied write, with the
+// provider named for the broadcast and the rest of the status left at what
+// could not be read (#1543's rule).
+func (c *hubAuthController) openAIStatusAfterWrite(name string) (appwire.AuthStatusResponse, error) {
+	status, err := c.openAIInstanceStatus(name)
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
 }
 
 // reloadRegistryLocked re-derives the instance set after a credential changed:
