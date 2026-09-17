@@ -99,6 +99,15 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
+- `@evener/appwire-client/state/connection` - the connection state layer:
+  `createConnectionStore()` is a framework-free store holding one host's wired
+  `AppwireClientLike`, the `ConnectionState` mirror that follows it, and plain
+  settable `serverInfo`/`features` fields the host writes from its own
+  handshake read. `connect(client)` swaps the wired client with a reentrancy
+  guard and a detach of the outgoing client's connection-state listener, so a
+  replaced client never keeps a live subscription; `onConnectionNotification(store, handler)`
+  follows whichever client the store holds across a swap. No handshake, no
+  view binding. Resolves to `state/connection/index.ts`, a barrel.
 - `@evener/appwire-client/state/navigation` - the navigation state layer both
   apps' navigation stores are built on: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph

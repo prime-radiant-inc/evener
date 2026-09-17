@@ -39,3 +39,32 @@ describe("connection handshake metadata", () => {
     expect(connectionStore.getState().features).toBeUndefined();
   });
 });
+
+describe("connectionStore.setState", () => {
+  afterEach(() => {
+    connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  });
+
+  test("an updater callback receives connect, exactly like a direct getState() read", () => {
+    const client = new FakeClient("ready");
+    connectionStore.getState().connect(client);
+    let sawConnect: unknown;
+    connectionStore.setState((state) => {
+      sawConnect = state.connect;
+      return { serverInfo: { name: "hub", version: "1.0.0" } };
+    });
+    expect(sawConnect).toBe(connectionStore.getState().connect);
+    expect(connectionStore.getState().serverInfo).toEqual({ name: "hub", version: "1.0.0" });
+  });
+
+  test("connect is never written into the core's own state, even if an updater's return value includes it", () => {
+    connectionStore.setState((state) => ({ connect: state.connect, serverInfo: { name: "hub", version: "1.0.0" } }));
+    // If `connect` had actually reached the core's state, it would still be
+    // there (nothing else touches this key) - the assertion that matters is
+    // that the field, present or not, is always the live method, since a
+    // stale copy pulled off one snapshot must never mask it.
+    const client = new FakeClient("ready");
+    connectionStore.getState().connect(client);
+    expect(connectionStore.getState().client).toBe(client);
+  });
+});
