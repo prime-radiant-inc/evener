@@ -24,7 +24,7 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { PLUGIN_MUTATION_BUSY, type PluginMutationGate } from "./pluginMutationGate";
 import { HubPathField } from "./HubPathField";
-import { catalogToBrowse, refusesMarketplaceWrite } from "./marketplaceBrowserModel";
+import { catalogToBrowse } from "./marketplaceBrowserModel";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The stores keep each failed request's own text; this screen shows the same
@@ -48,8 +48,10 @@ export function MarketplaceBrowser({
   hubName: string;
   installed: PluginsStore;
   // The screen's plugin-mutation gate, shared with the installed list: an
-  // install started here keeps running after this view is gone, so the lock
-  // it takes has to outlive the view.
+  // install, or now a marketplace write, started here keeps running after
+  // this view is gone, so the lock it takes has to outlive the view - and
+  // living at the screen means the installed list sees a marketplace write
+  // as busy too, and vice versa.
   gate: PluginMutationGate;
   onOpenPlugin(target: PluginRefParams): void;
 }) {
@@ -57,32 +59,20 @@ export function MarketplaceBrowser({
   const model = useMemo(() => createMarketplacesStore(client), [client]);
   const state = useSyncExternalStore(model.subscribe, model.getState);
   const plugins = useSyncExternalStore(installed.subscribe, installed.getState);
-  const pluginBusy = useSyncExternalStore(gate.subscribe, gate.isBusy);
-  const [selected, setSelected] = useState<string | null>(null);
-  // Marketplace writes (add, remove, refresh) are this view's own and end with
-  // it; the plugin install is the one that outlives it, so only that one takes
-  // the screen's gate. They still wait on pluginBusy (see the three actions
-  // below) without taking the gate themselves: the hub DOES serialize a
-  // marketplace removal or refresh against a concurrent install under the
-  // same store lock (internal/plugins/locks.go's lockStore - install.go's
+  // Marketplace writes (add, remove, refresh) take the same gate an install
+  // does, and busy follows it directly: the hub already serializes them
+  // under one store lock (internal/plugins/locks.go's lockStore - install.go's
   // Install/Upgrade/mutateEntry and marketplaces.go's RemoveMarketplace/
-  // RefreshMarketplace all acquire it), so the write itself is safe either
-  // way. What the lock does not do is refuse: a removal issued mid-install
-  // blocks at the hub until the install's lock releases, which the request's
-  // own 30s timeout (client.ts's DEFAULT_REQUEST_TIMEOUT_MS) matches almost
-  // exactly - so without this gate the button would sit looking hung, or
-  // occasionally time out outright, instead of refusing at once with copy
-  // that says why.
-  const [mutating, setMutating] = useState(false);
-  // Mirrors the mutating state above for dispatchMutation's own live check:
-  // a ref, because that check runs at the moment a write actually dispatches
-  // - after a confirmation Alert or inside the add-marketplace modal - which
-  // can land long after the render that set mutating, on a stale closure
-  // that never sees a later render's value.
-  const mutatingRef = useRef(false);
-  // Any of the three marketplace actions plus the installed-plugin gate: what
-  // every write-disabling site below shares.
-  const busy = mutating || pluginBusy;
+  // RefreshMarketplace all acquire it), but the lock only blocks, it does not
+  // refuse - a removal issued mid-install would sit at the hub until the
+  // install's lock releases, which the request's own 30s timeout (client.ts's
+  // DEFAULT_REQUEST_TIMEOUT_MS) matches almost exactly. Taking the gate here
+  // too, exactly as install() does below, refuses at once with copy that says
+  // why instead of leaving the button looking hung or occasionally timing
+  // out - and there is now exactly one busy, the gate's own, not a
+  // view-local flag that could disagree with it.
+  const busy = useSyncExternalStore(gate.subscribe, gate.isBusy);
+  const [selected, setSelected] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -126,61 +116,34 @@ export function MarketplaceBrowser({
     )
       setSelected(null);
   }, [selected, state.marketplaces]);
-  // The one path every marketplace write (refresh, remove, add) dispatches
-  // through, mirroring how gate.run() is installs' own single live-checked
-  // guard: refuses, live at dispatch time, if this view's own write or the
-  // screen's plugin-install gate is already running - a fresh read, not a
-  // render-time snapshot, because the gap between a button press and the
-  // actual dispatch (a confirmation Alert, an open modal) can outlive the
-  // render that last checked busy. Resolves true if it ran.
-  async function dispatchMutation(run: () => Promise<void>): Promise<boolean> {
-    if (refusesMarketplaceWrite(mutatingRef.current, gate.isBusy())) return false;
-    mutatingRef.current = true;
-    setMutating(true);
-    try {
-      await run();
-      return true;
-    } finally {
-      mutatingRef.current = false;
-      setMutating(false);
-    }
-  }
-  // A marketplace write is this view's own: it marks this view busy and ends
-  // with it, and surfaces a refusal the same way install() below does.
+  // Every marketplace write and every install dispatch through this one gate
+  // call: a refusal is reported the same way for both, and the gate's own
+  // isBusy() is what proves a write is in flight, live, at the moment it is
+  // actually dispatched - not a render-time snapshot, because the gap
+  // between a button press and the dispatch (a confirmation Alert, an open
+  // modal) can outlive the render that last checked busy.
   async function act(action: () => Promise<void>) {
     const version = revision.current;
     setError(null);
     try {
-      const ran = await dispatchMutation(action);
+      const ran = await gate.run(action);
       if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
     } catch {
       if (revision.current === version) setError(WRITE_FAILED);
     }
   }
-  // An install is the write that outlives this view, so it takes the screen's
-  // gate rather than the flag above - the installed list disables on the same
-  // gate, and a tab switch cannot start a second one.
   function install(target: PluginRefParams) {
-    const version = revision.current;
-    setError(null);
-    void gate
-      .run(() => plugins.installPlugin(target.plugin, target.marketplace))
-      .then((ran) => {
-        if (!ran && revision.current === version) setError(PLUGIN_MUTATION_BUSY);
-      })
-      .catch(() => {
-        if (revision.current === version) setError(WRITE_FAILED);
-      });
+    void act(() => plugins.installPlugin(target.plugin, target.marketplace));
   }
   const marketplace = state.marketplaces?.find(
     (item) => item.name === selected,
   );
   function refresh() {
-    if (!marketplace) return;
+    if (!marketplace || busy) return;
     void act(() => state.refreshMarketplace(marketplace.name));
   }
   function remove() {
-    if (!marketplace) return;
+    if (!marketplace || busy) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -375,7 +338,7 @@ export function MarketplaceBrowser({
           hubName={hubName}
           onClose={() => setAdding(false)}
           onAdd={state.addMarketplace}
-          dispatch={dispatchMutation}
+          gate={gate}
         />
       )}
     </>
@@ -387,17 +350,17 @@ function AddMarketplace({
   hubName,
   onClose,
   onAdd,
-  dispatch,
+  gate,
 }: {
   hubName: string;
   onClose(): void;
   onAdd(params: MarketplaceAddParams): Promise<void>;
-  // The same live-checked guard the parent's own refresh/remove dispatch
-  // through: an install that started while this modal was open (it takes no
-  // time of its own to open, unlike the remove confirm's Alert, but can stay
-  // open for as long as the user takes to fill in the form) must still
-  // refuse the add rather than run it beside the install.
-  dispatch(run: () => Promise<void>): Promise<boolean>;
+  // The same gate the parent's own refresh/remove take: an install that
+  // started while this modal was open (it takes no time of its own to open,
+  // unlike the remove confirm's Alert, but can stay open for as long as the
+  // user takes to fill in the form) must still refuse the add rather than
+  // run it beside the install.
+  gate: PluginMutationGate;
   client: ConversationClientLike;
 }) {
   const colors = useColors();
@@ -419,7 +382,7 @@ function AddMarketplace({
     setError(null);
     const value = source.trim();
     try {
-      const ran = await dispatch(() =>
+      const ran = await gate.run(() =>
         onAdd({
           name: name.trim(),
           source:

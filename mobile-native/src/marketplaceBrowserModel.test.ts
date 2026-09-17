@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { MarketplaceEntry } from "@evener/appwire-client";
 import type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
-import { catalogToBrowse, refusesMarketplaceWrite } from "./marketplaceBrowserModel";
+import { catalogToBrowse } from "./marketplaceBrowserModel";
 
 const entry = (name: string): MarketplaceEntry => ({
   name,
@@ -28,16 +28,4 @@ test("a selection the list no longer carries is not browsed: the selection is ab
 
 test("an unloaded list decides nothing yet", () => {
   expect(catalogToBrowse("a", null, catalogs())).toBeNull();
-});
-
-test("neither this view's own write nor the plugin gate running refuses nothing", () => {
-  expect(refusesMarketplaceWrite(false, false)).toBe(false);
-});
-
-test("this view's own write already running refuses", () => {
-  expect(refusesMarketplaceWrite(true, false)).toBe(true);
-});
-
-test("the plugin-install gate running refuses too, even with no write of this view's own", () => {
-  expect(refusesMarketplaceWrite(false, true)).toBe(true);
 });
