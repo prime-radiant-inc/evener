@@ -466,9 +466,7 @@ func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
 	if merged.Error == "" {
 		merged.Error = older.Error
 	}
-	if merged.OutputImages == nil {
-		merged.OutputImages = older.OutputImages
-	}
+	merged.OutputImages = appwire.MergeOutputImages(older.OutputImages, merged.OutputImages)
 	if merged.Status == "" || tuiStatusRank(merged.Status) < tuiStatusRank(older.Status) {
 		merged.Status = older.Status
 	}

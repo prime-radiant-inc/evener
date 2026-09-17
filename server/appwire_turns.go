@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -773,13 +772,7 @@ func cloneAppThreadItem(item appwire.ThreadItem) appwire.ThreadItem {
 	clone.DurationMS = cloneInt64(item.DurationMS)
 	clone.ExitCode = cloneInt64(item.ExitCode)
 	clone.Raw = append(json.RawMessage(nil), item.Raw...)
-	// OutputImages keeps its nil-ness, the way appitempaging.cloneThreadItem
-	// does: appending to a nil slice yields nil, which flattens an empty list
-	// (a removal) into an absence. Images needs no such care — it is omitempty,
-	// so an empty list encodes exactly like an absent one.
-	if item.OutputImages != nil {
-		clone.OutputImages = slices.Clone(item.OutputImages)
-	}
+	clone.OutputImages = appwire.CloneOutputImages(item.OutputImages)
 	clone.Images = make([]appwire.InputItem, len(item.Images))
 	for i := range item.Images {
 		clone.Images[i] = item.Images[i]
@@ -890,16 +883,12 @@ func mergeAppThreadItem(existing, incoming appwire.ThreadItem) appwire.ThreadIte
 	}
 	// Input images keep the length rule: nothing removes them (they are what the
 	// user sent), the field is omitempty, so an empty list and an absent one are
-	// the same thing on the wire.
+	// the same thing on the wire. Output images have their own rule, which
+	// appwire.MergeOutputImages owns.
 	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
 	}
-	// Output images do not: an empty list is the frame saying the images are
-	// gone (appwire.ThreadItem.OutputImages), and copying the snapshot's own
-	// back over it would drop the one signal a client has for a removal.
-	if incoming.OutputImages == nil {
-		incoming.OutputImages = existing.OutputImages
-	}
+	incoming.OutputImages = appwire.MergeOutputImages(existing.OutputImages, incoming.OutputImages)
 	if incoming.ToolName == "" {
 		incoming.ToolName = existing.ToolName
 	}

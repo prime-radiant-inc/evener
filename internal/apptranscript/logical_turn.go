@@ -303,12 +303,7 @@ func mergeAppThreadItems(existing, incoming appwire.ThreadItem) appwire.ThreadIt
 	if incoming.ExitCode == nil {
 		incoming.ExitCode = existing.ExitCode
 	}
-	// Nil, not empty: an empty list is the later item saying its images are
-	// gone, and falling back on it would put the earlier item's images back.
-	// Input images below keep the length rule — nothing removes them.
-	if incoming.OutputImages == nil {
-		incoming.OutputImages = existing.OutputImages
-	}
+	incoming.OutputImages = appwire.MergeOutputImages(existing.OutputImages, incoming.OutputImages)
 	if len(incoming.Images) == 0 {
 		incoming.Images = existing.Images
 	}
