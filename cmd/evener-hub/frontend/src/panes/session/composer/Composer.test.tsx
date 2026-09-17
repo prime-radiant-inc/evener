@@ -861,7 +861,9 @@ test("renders a textarea with an accessible name", async () => {
   expect(textarea()).toBeTruthy();
   // One editable, one textbox: a wrapper that is itself a textbox would nest
   // the role and hand assistive tech an editable that owns no content.
-  expect(screen.getAllByRole("textbox", { name: /^message$/i })).toHaveLength(1);
+  // Counted without a name filter on purpose: an unnamed wrapper textbox would
+  // hide from an accessible-name query and this guard has to see it.
+  expect(screen.getAllByRole("textbox")).toHaveLength(1);
 });
 
 // --- mount autofocus ---------------------------------------------------------

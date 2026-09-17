@@ -211,7 +211,10 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const from = textOffsetToDocumentPosition(doc, start);
         const to = textOffsetToDocumentPosition(doc, end, 1);
         const suffix = doc.textBetween(to, doc.content.size);
-        const separator = /^\s/.test(suffix) ? "" : " ";
+        // A separator is only needed between the label and text that would
+        // join it: punctuation already bounds the reference, so completing
+        // before a comma gives `/review,` rather than `/review ,`.
+        const separator = suffix === "" || isSkillTokenCharacter(suffix.charAt(0)) ? " " : "";
         const content = [skillSchema.nodes.skill.create({ name })];
         if (separator) content.push(skillSchema.text(separator));
         const inserted = content.reduce((size, node) => size + node.nodeSize, 0);

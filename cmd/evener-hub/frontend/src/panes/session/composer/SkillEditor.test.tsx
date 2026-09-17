@@ -177,6 +177,20 @@ describe("SkillEditor real ProseMirror view", () => {
     expect(result.value().text).toBe("\ncaption");
   });
 
+  it("does not separate a completed skill from punctuation that already bounds it", () => {
+    const result = mount({ text: "/rev, please", skillNames: [] });
+    act(() => result.ref.current?.insertSkill(0, 4, "review"));
+    // The comma already bounds the reference, so no separator is needed; adding
+    // one would put whitespace in the request the user never typed.
+    expect(result.value()).toEqual({ text: "/review, please", skillNames: ["review"] });
+  });
+
+  it("separates a completed skill from text that would join its reference", () => {
+    const result = mount({ text: "/revplease", skillNames: [] });
+    act(() => result.ref.current?.insertSkill(0, 4, "review"));
+    expect(result.value()).toEqual({ text: "/review please", skillNames: ["review"] });
+  });
+
   it("does not submit Enter or insert a newline while composing", () => {
     const onKeyDown = vi.fn();
     const result = mount({ text: "", skillNames: [] }, { onKeyDown });
