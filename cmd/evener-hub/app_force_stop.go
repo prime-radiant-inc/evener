@@ -156,6 +156,26 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 			}
 		}
 	}
+	// A caller-rendered identity is revalidated here — under the admission
+	// fence, after the reservation attempt, immediately before
+	// cancelActiveResumes — because a replacement claim can appear after the
+	// pre-fence validation, and only a check synchronized with the fence keeps
+	// the cancellation below from aborting the replacement Resume a stale
+	// request can no longer address. With every alias reservation held no
+	// Resume is mid-launch (a launch holds its aliases across the claim), so no
+	// Resume-originated claim can appear between this check and the
+	// cancellation; a launch already holding a reservation keeps the
+	// cancel-then-acquire order, where a claim landing during the drain stays
+	// subject to the authoritative post-ownership reread below.
+	if params.ExpectedDaemon != nil {
+		addressed, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
+		if err != nil {
+			return appwire.Unavailable(err.Error())
+		}
+		if err := expectedDaemonConflict(addressed, params.ExpectedDaemon); err != nil {
+			return err
+		}
+	}
 	// A Resume can register after the initial snapshot while process discovery
 	// is running. The fence now prevents new registrations; cancel and drain
 	// any operation that entered that window before waiting for ownership.

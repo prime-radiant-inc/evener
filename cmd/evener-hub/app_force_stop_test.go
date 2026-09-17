@@ -2342,3 +2342,93 @@ func TestForceStopStaleExpectedDaemonDoesNotCancelResume(t *testing.T) {
 		active.Complete(nil)
 	})
 }
+
+// TestForceStopRevalidatesIdentityUnderFenceBeforeCancelingResume pins the
+// atomicity contract RoboRev found: the caller-rendered identity validation at
+// the top of forceStopThread is not atomic with the admission fence and
+// cancelActiveResumes, so a replacement claim landing between them used to be
+// detected only by the post-cancellation reread — after the stale request had
+// already aborted the replacement Resume it could no longer address. The
+// identity must be revalidated under the admission fence and alias
+// reservations, before any in-flight Resume is canceled.
+func TestForceStopRevalidatesIdentityUnderFenceBeforeCancelingResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		expected := daemonIdentity(entry)
+		replacement := entry
+		replacement.PID = 4302
+		replacement.StartedAt = entry.StartedAt.Add(time.Second)
+		locks := hubcore.NewResumeLocks()
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The replacement claim lands after the pre-fence validation but before
+		// the cancellation: the first under-reservation deletion check swaps the
+		// addressed marker for the replacement's. The replacement Resume itself
+		// registered while the request verified the process — the window the
+		// post-fence drain exists to close.
+		swapped := false
+		original := deletionTargetState
+		deletionTargetState = func(_ *hubcore.DeletionStore, ref, _ string) (hubcore.DeletionState, bool) {
+			if ref == "" && !swapped {
+				swapped = true
+				if err := rendezvous.Remove(runDir, entry.PID); err != nil {
+					t.Error(err)
+				}
+				if _, err := rendezvous.Write(runDir, replacement); err != nil {
+					t.Error(err)
+				}
+			}
+			return "", false
+		}
+		defer func() { deletionTargetState = original }()
+		var active *hubcore.ActiveResume
+		var events []string
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks, DeletionStore: store, DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+			events = append(events, "open")
+			registered, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+			if err != nil {
+				return nil, err
+			}
+			active = registered
+			return &forceStopProcess{events: &events}, nil
+		})}
+		completed := make(chan error, 1)
+		go func() {
+			completed <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-completed:
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("replacement in the validation gap error = %v, want conflict", err)
+			}
+		default:
+			// A handler still draining the canceled replacement means the stale
+			// request aborted the Resume it could no longer address.
+			if active != nil {
+				active.Complete(nil)
+			}
+			<-completed
+			t.Fatal("stale force stop canceled the replacement Resume before refusing the identity conflict")
+		}
+		if active == nil {
+			t.Fatal("replacement Resume was not registered during process verification")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("stale force stop canceled the replacement Resume before refusing the identity conflict")
+		}
+		active.Complete(nil)
+		if slices.Contains(events, "kill") {
+			t.Fatalf("stale force stop killed a process: %v", events)
+		}
+	})
+}
