@@ -939,6 +939,22 @@ export function resumeStopFence(ref: string): () => void {
   };
 }
 
+// Resume can return a NEW identity, and that identity can be named by a Stop
+// before resumeThread resolves: any surface already tracking the resumed ref
+// (a prior load, a list row hydrated from hub state) records its Stop during
+// the reconnect window. A fence captured after the resolve would take that
+// Stop as its baseline and never fire. Snapshot every generation before the
+// resume starts instead; the returned check fences any ref -- the old one the
+// pane still shows and the new one the resume returns -- against its
+// pre-resume baseline.
+export function resumeStopBaseline(): (ref: string) => void {
+  const generations = new Map(userIntentStopGenerations);
+  return (ref: string) => {
+    if ((userIntentStopGenerations.get(ref) ?? 0) !== (generations.get(ref) ?? 0))
+      throw new Error("Stop canceled this pending action; send again when ready.");
+  };
+}
+
 export async function retryBlockedMutation(
   clientMutationId: string,
   mode: "user" | "backgroundNote" = "user",

@@ -2520,6 +2520,74 @@ test("a Stop on the resumed identity cancels the stale post-resume publish", asy
   expect(window.location.pathname).toBe("/s/local%3Astable-a");
 });
 
+// RoboRev finding on the reduced branch: refreshedStopFence baselines the new
+// identity AFTER resumeThread returns, so a Stop recorded against the resumed
+// ref while the resume RPC is still in flight becomes that fence's baseline
+// and can never cancel the post-resume hydration. The resumed identity can be
+// named during that window by any surface already tracking it (here the tab
+// holds currentRef from a prior load), so the new ref must be fenced against
+// its pre-resume Stop generation, not a post-resume one.
+test("a Stop on the resumed identity during the resume reconnect cancels the resume", async ({ onTestFinished }) => {
+  onTestFinished(stubSessionSlots);
+  const stableRef = "local:stable-a";
+  const currentRef = "local:current-b";
+  const fake = connectFakeClient();
+  let resumeRequested!: () => void;
+  const requested = new Promise<void>((resolve) => {
+    resumeRequested = resolve;
+  });
+  let resolveResume!: (response: ThreadReadResponse) => void;
+  const resumeHeld = new Promise<ThreadReadResponse>((resolve) => {
+    resolveResume = resolve;
+  });
+  fake.on("thread/read", (params) => {
+    if (params.ref === currentRef) return readResponse(currentRef, { status: { type: "idle" } });
+    return readResponse(stableRef, {
+      status: { type: "notLoaded" },
+      evener: { ref: stableRef, capabilities: CAPABILITIES, resumeRequired: true, queue: { revision: 0 } },
+    });
+  });
+  fake.on("thread/resume", () => {
+    resumeRequested();
+    return resumeHeld;
+  });
+  fake.on("thread/shutdown", () => ({}));
+  // The resumed identity is already tracked by this tab (a prior load, a list
+  // row), so a Stop surface can name it before resumeThread resolves.
+  await act(async () => {
+    await threadsStore.getState().ensureThread(currentRef);
+  });
+  window.history.replaceState({}, "", "/s/local%3Astable-a");
+  const subscribe = (notify: () => void) => {
+    window.addEventListener("popstate", notify);
+    return () => window.removeEventListener("popstate", notify);
+  };
+  function RoutedSession() {
+    const pathname = useSyncExternalStore(subscribe, () => window.location.pathname);
+    const route = urlToPane(pathname);
+    if (route?.type !== "session") throw new Error("expected session route");
+    return <Session params={route.params as { ref: string }} paneId="p1" focused={true} />;
+  }
+  render(
+    <ClientProvider client={fake}>
+      <RoutedSession />
+    </ClientProvider>,
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "Resume session" }));
+  await act(async () => {
+    await requested;
+  });
+  // The Stop lands against the resumed identity while the resume RPC is still
+  // on the wire. Only then does the resume response arrive.
+  await act(async () => {
+    await threadsStore.getState().shutdown(currentRef);
+    resolveResume(readResponse(currentRef, { status: { type: "idle" } }));
+  });
+  expect(await screen.findByText(/Stop canceled this pending action/)).toBeTruthy();
+  expect(window.location.pathname).toBe("/s/local%3Astable-a");
+});
+
 test("offers explicit resume after restart even without pending messages", async () => {
   const fake = connectFakeClient();
   const resumeTransport = vi.spyOn(fake, "resumeThread");

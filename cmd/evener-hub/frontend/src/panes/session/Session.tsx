@@ -32,7 +32,7 @@ import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
 import { useNavigationStore } from "../../stores/navigation/store";
-import { resumeStopFence, threadsStore, useThreadsStore } from "../../stores/threads";
+import { resumeStopBaseline, threadsStore, useThreadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
 import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
@@ -127,19 +127,23 @@ function RestartRequiredNotice({
       if (resumeRequired) {
         const { client, state } = connectionStore.getState();
         if (!client || state !== "ready") throw new Error("Connect to the hub before resuming this session.");
-        const stopFence = resumeStopFence(sessionRef);
+        // Baseline every Stop generation BEFORE the resume starts: the resume
+        // may return a different identity, and that new ref can be named by a
+        // Stop while the resume RPC is still in flight (any surface already
+        // tracking the resumed ref records it). A fence captured after the
+        // resolve would take that Stop as its baseline and never fire, so both
+        // refs are checked against their pre-resume generations.
+        const stopBaseline = resumeStopBaseline();
+        const stopFence = () => stopBaseline(sessionRef);
         const { thread } = await client.resumeThread(sessionRef, { beforeRequest: stopFence });
         refreshedRef = thread.evener.ref;
-        // Resume may return a different identity. During the post-resume
-        // hydration the pane still shows the old ref (the navigate below has
-        // not run), so a Stop against EITHER ref must cancel it: the old ref is
-        // what the visible Stop names, the new one is what another holder of
-        // the resumed session names. A fence watches one ref's generation, so
-        // both are checked.
-        const refreshedStopFence = resumeStopFence(refreshedRef);
+        // During the post-resume hydration the pane still shows the old ref
+        // (the navigate below has not run), so a Stop against EITHER ref must
+        // cancel it: the old ref is what the visible Stop names, the new one
+        // is what another holder of the resumed session names.
         const identityFence = () => {
-          stopFence();
-          refreshedStopFence();
+          stopBaseline(sessionRef);
+          stopBaseline(refreshedRef);
         };
         identityFence();
         await threadsStore.getState().refreshThread(refreshedRef, identityFence);
