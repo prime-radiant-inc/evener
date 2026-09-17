@@ -111,7 +111,8 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
   list: (state) => state.launchLayer,
   initial: { launchLayer: null, launchLayerLoading: false, launchLayerError: null },
   // launchLayer's lifecycle passes no onNotified at all, so there is nothing
-  // for invalidationMarker to read: see storeLifecycle.ts's LAUNCH_LAYER wiring.
+  // for invalidationMarker to read: see launchLayer.ts's createLaunchLayerStore,
+  // whose createStoreLifecycle options omit onNotified.
 };
 
 /** The handful of things every ordering case in this suite needs from a fake
