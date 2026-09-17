@@ -4508,6 +4508,34 @@ test.each([
   expect(applied.lastFrameAt).toBe(2000);
 });
 
+// The same rule for the settle path: a turn/completed naming the model's
+// active turn when that turn is outside the loaded window has nothing to
+// settle, so the turns array must come back by reference. settleFirstMatchingTurn
+// is the only other fold that maps over turns without first proving the id is
+// there (mapTurn's callers resolve it through resolveInsertTurnId/findItemTurnId).
+test("turn/completed for an active turn outside the loaded window leaves turns by reference", () => {
+  const model = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_outside_window" },
+  });
+  expect(model.activeTurnId).toBe("turn_outside_window");
+  expect(model.turns).toEqual([]);
+
+  const applied = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turn: { id: "turn_outside_window", status: "completed", itemsView: "" },
+      },
+    } as AnyNotification,
+    2000,
+  );
+  expect(applied.turns).toBe(model.turns);
+  expect(applied.lastFrameAt).toBe(2000);
+});
+
 // A warning frame that carries no message anywhere leaves the item's text
 // empty. The frame itself is not a message: it is the routing envelope
 // (threadId, ref) plus whatever shape the producer sent, and a renderer that

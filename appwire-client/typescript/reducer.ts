@@ -985,6 +985,12 @@ function resolveInsertTurnId(
 // the exact corruption this reducer must not produce.
 function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: TurnModel): TurnModel[] {
   const duplicateCount = turns.reduce((count, t) => (t.id === turnId ? count + 1 : count), 0);
+  // Nothing here to settle: the id names a turn outside the window this client
+  // loaded (activeTurnId comes off the wire snapshot). Hand the same array back,
+  // as mapTurn does — a fresh one would tell every consumer the transcript
+  // moved when it did not, and a host that detects an unplaceable frame by that
+  // reference would never ask for the read that fills the gap.
+  if (duplicateCount === 0) return turns;
   if (duplicateCount > 1) {
     console.error(
       `applyNotification: turn/completed turnId ${turnId} matches ${duplicateCount} turns in model.turns — settling only the first match (turn-id-uniqueness invariant violated)`,
