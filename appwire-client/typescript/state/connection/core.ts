@@ -67,7 +67,8 @@ export function createConnectionStore(): ConnectionStore {
   // are torn down when a ref is released, whereas this is one connection-wide
   // mirror that lives exactly as long as its client is the wired one.
   let unwireStateChange: (() => void) | null = null;
-  // Bumped on every connect() call and captured as each call's own
+  // Bumped on every client wiring - connect() or a setState-driven swap,
+  // both go through wireClient below - and captured as that call's own
   // generation. "Am I still the frame that owns unwireStateChange" cannot be
   // answered by comparing `client` identity alone: a finite re-entrant swap
   // cycle (connect(a) re-enters with connect(b), which re-enters back with
@@ -96,8 +97,27 @@ export function createConnectionStore(): ConnectionStore {
     client: null,
   })) as ConnectionStore;
 
-  function connect(client: AppwireClientLike): void {
-    if (store.getState().client === client) return;
+  // Captured before `store.setState` is replaced below, and used only for
+  // the two writes that must never re-enter that replacement: the listener's
+  // own state-change publish would otherwise detect its own `client`-less
+  // partial (harmless) but a client-carrying publish would detect itself and
+  // recurse. The listener callback still calls the live `store.setState`
+  // (round 2's fix, so a spy on it keeps seeing every state change) - only
+  // wireClient's own client+related-fields write below bypasses it.
+  const rawSetState = store.setState.bind(store);
+
+  // wireClient is the one place a client transition is wired, whatever
+  // triggers it - connect() or a caller replacing `client` directly through
+  // setState (round 3 finding: `pendingTurnsStore.setState({ client, ... })`-
+  // shaped calls, the pattern several existing test files already use, never
+  // went through connect() at all, so the new client's own transitions never
+  // reached the store). `publish` is the caller's own write of `client` plus
+  // whatever else changed alongside it; wireClient's job around it is
+  // exactly connect()'s old job: detach the outgoing listener, wire the
+  // incoming one before publishing, and use the shared generation counter -
+  // not a second one - to decide, after publishing (which can re-enter),
+  // whether this frame still owns the slot.
+  function wireClient(client: AppwireClientLike | null, publish: () => void): void {
     const generation = ++connectGeneration;
     unwireStateChange?.();
     unwireStateChange = null;
@@ -106,30 +126,56 @@ export function createConnectionStore(): ConnectionStore {
     // (AppwireClient.connect enters "connecting", close() enters "closed",
     // both without awaiting), so publishing first leaves a window where a
     // transition has no listener and is lost until the client's next one.
-    const unwire = client.onStateChange((s) => {
-      if (store.getState().client !== client) return;
-      store.setState(s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s });
-    });
-    // Read client.state here, not before registering: a transition that
-    // landed during registration is already reflected in it, and the
-    // callback above could not have published it while this client was
-    // still not the store's.
-    store.setState({ client, state: client.state, serverInfo: undefined, features: undefined });
-    // The synchronous dispatch above can re-enter connect() one or more
-    // times. Whichever frame ran last owns the slot; every other frame -
-    // including this one, if a later frame already ran and returned - must
-    // retire its own listener instead of touching unwireStateChange. Client
-    // identity alone cannot tell "no one has touched this since me" apart
-    // from "someone touched it and it happens to match me again" (a re-entrant
-    // A -> B -> A cycle targets A twice, as two different frames), so the
-    // generation counter is compared instead: only the frame whose
-    // generation is still the latest one issued may claim the slot.
+    const unwire = client
+      ? client.onStateChange((s) => {
+          if (store.getState().client !== client) return;
+          store.setState(s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s });
+        })
+      : undefined;
+    publish();
+    // The synchronous publish above can re-enter wireClient (through
+    // connect() or through setState) one or more times. Whichever frame ran
+    // last owns the slot; every other frame - including this one, if a later
+    // frame already ran and returned - must retire its own listener instead
+    // of touching unwireStateChange. Client identity alone cannot tell "no
+    // one has touched this since me" apart from "someone touched it and it
+    // happens to match me again" (a re-entrant A -> B -> A cycle targets A
+    // twice, as two different frames), so the generation counter is compared
+    // instead: only the frame whose generation is still the latest one
+    // issued may claim the slot.
     if (connectGeneration === generation) {
-      unwireStateChange = unwire;
+      if (unwire) unwireStateChange = unwire;
     } else {
-      unwire();
+      unwire?.();
     }
   }
+
+  function connect(client: AppwireClientLike): void {
+    if (store.getState().client === client) return;
+    // Read client.state here, not before wireClient registers its listener:
+    // a transition that landed during registration is already reflected in
+    // it, and the listener could not have published it while this client was
+    // still not the store's.
+    wireClient(client, () => rawSetState({ client, state: client.state, serverInfo: undefined, features: undefined }));
+  }
+
+  // Replaces the triple's own setState so a caller that swaps or clears
+  // `client` directly - not through connect() - gets the identical wiring:
+  // without this, `store.setState({ client: fresh, ... })` changed who the
+  // store SAYS is wired without ever subscribing to that client's own
+  // transitions, so nothing published again until someone happened to call
+  // connect() too. Every other partial (the overwhelming majority: no
+  // `client` key at all) passes straight through, including the listener's
+  // own state-change publishes above.
+  store.setState = (partial) => {
+    const current = store.getState();
+    const resolved = typeof partial === "function" ? partial(current) : partial;
+    if ("client" in resolved && resolved.client !== current.client) {
+      wireClient(resolved.client ?? null, () => rawSetState(resolved));
+      return;
+    }
+    rawSetState(resolved);
+  };
 
   store.connect = connect;
   return store;

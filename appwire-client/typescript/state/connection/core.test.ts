@@ -161,6 +161,32 @@ describe("createConnectionStore", () => {
     second.emitStateChange("closed");
     expect(store.getState().serverInfo).toBeUndefined();
   });
+
+  test("a client swapped in through setState directly (bypassing connect()) still gets its own listener", () => {
+    const store = createConnectionStore();
+    const first = new FakeClient("ready");
+    store.connect(first);
+
+    // Round 3 finding: a caller that replaces `client` through setState
+    // directly - every existing test file that does this (CommandPalette.test.tsx,
+    // commandCatalog.test.ts, threads.test.ts, SessionChrome.test.tsx and
+    // others all call `store.setState({ client: fake, ... })` rather than
+    // `store.connect(fake)`) - never goes through connect()'s wiring at all.
+    const second = new FakeClient("ready");
+    store.setState({ client: second, state: second.state });
+
+    // (a) the new client's own transitions must reach the store, exactly as
+    // if it had been wired through connect() - nothing else will ever wire
+    // a listener to it otherwise.
+    second.emitStateChange("closed");
+    expect(store.getState().state).toBe("closed");
+
+    // (b) the old client's transitions must not resurrect stale state - the
+    // identity check inside connect(first)'s listener closure guards this
+    // even though that listener itself was never detached.
+    first.emitStateChange("reconnecting");
+    expect(store.getState().state).toBe("closed");
+  });
 });
 
 describe("onConnectionNotification", () => {
