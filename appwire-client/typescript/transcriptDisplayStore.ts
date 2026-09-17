@@ -734,7 +734,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * write's outcome is now whatever the hub confirmed, so the checkpoint is
    * re-marked and edits unblock. A read that started before the write left,
    * or landed while one is in flight, says nothing about that write. */
-  function settledWrite(writeSerialAtStart: number, finalHub: HubDefaultsByLayout): Partial<TranscriptDisplayStoreFields> {
+  function settledWrite(
+    writeSerialAtStart: number,
+    finalHub: HubDefaultsByLayout,
+  ): Partial<TranscriptDisplayStoreFields> {
     const { draft, writeUncertain, saving } = getState();
     if (writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
