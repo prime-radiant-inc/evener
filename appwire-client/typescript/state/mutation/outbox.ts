@@ -121,6 +121,8 @@ export interface MutationOutboxOptions {
   createBroadcastChannel?: (name: string) => MutationOutboxChannel;
   lifecycleWindow?: MutationLifecycleTarget;
   lifecycleDocument?: MutationVisibilityTarget;
+  // A timer is a PAIR: scheduling what cannot be cancelled would keep scanning
+  // an outbox that has stopped. Pass both or neither — one alone is no timer.
   setInterval?: (callback: () => void, milliseconds: number) => number;
   clearInterval?: (intervalId: number) => void;
   // How often a host with a timer re-scans. The web's 2s default is the
@@ -187,8 +189,9 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#createChannel = options.createBroadcastChannel;
     this.#lifecycleTarget = options.lifecycleWindow;
     this.#visibilityTarget = options.lifecycleDocument;
-    this.#setInterval = options.setInterval;
-    this.#clearInterval = options.clearInterval;
+    const cancellableTimer = options.setInterval !== undefined && options.clearInterval !== undefined;
+    this.#setInterval = cancellableTimer ? options.setInterval : undefined;
+    this.#clearInterval = cancellableTimer ? options.clearInterval : undefined;
     this.#scanIntervalMs = options.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS;
   }
 
@@ -251,7 +254,11 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   }
 
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {
-    if (!this.#isReady() || this.#scheduledReadyScans.has(reason)) return;
+    // A host's timer callback can already be queued when clearInterval lands, and
+    // a lifecycle event can arrive during shutdown: a stopped outbox scans
+    // nothing. An enqueue is deliberately not gated — its record is durable and
+    // announcing it costs nothing.
+    if (!this.#started || !this.#isReady() || this.#scheduledReadyScans.has(reason)) return;
     this.#scheduledReadyScans.add(reason);
     this.#schedule(async () => {
       try {
