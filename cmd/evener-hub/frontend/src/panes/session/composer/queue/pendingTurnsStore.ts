@@ -323,10 +323,14 @@ type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
 // it. useSyncExternalStore only re-runs getSnapshot on a subscribe
 // notification (or a render for an unrelated reason), so it has to hear from
 // both stores; and since pendingTurnEntries() builds a fresh array on every
-// call, getSnapshot caches the last one and only replaces it when the two
-// inputs it actually depends on - which state each store is in, and which
-// ref/method were asked for - have themselves changed, which is what keeps
-// this from tearing into an infinite render loop.
+// call, getSnapshot caches the last one and only replaces it when the
+// inputs it actually reads - outbox, optimistic, submittedHere, the thread
+// model, and which ref/method were asked for - have themselves changed
+// (never the whole pendingTurnsStore state object, which also changes on
+// writes this read does not depend on, like beginSubmission/endSubmission's
+// submittingRefs or the recovery map), which is what keeps this from
+// tearing into an infinite render loop without over-invalidating on those
+// unrelated writes.
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
@@ -347,19 +351,23 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
   );
 
   const cacheRef = useRef<{
-    pendingState: unknown;
+    outbox: ReturnType<typeof pendingTurnsStore.getState>["outbox"];
+    optimistic: ReturnType<typeof pendingTurnsStore.getState>["optimistic"];
+    submittedHere: ReturnType<typeof pendingTurnsStore.getState>["submittedHere"];
     model: ThreadsPortModel;
     ref: string;
     method: PendingMethod | undefined;
     entries: PendingTurnEntry[];
   } | null>(null);
   const getSnapshot = useCallback((): PendingTurnEntry[] => {
-    const pendingState = pendingTurnsStore.getState();
+    const { outbox, optimistic, submittedHere } = pendingTurnsStore.getState();
     const model = threadsPort.getThreadModel(ref);
     const cached = cacheRef.current;
     if (
       cached &&
-      cached.pendingState === pendingState &&
+      cached.outbox === outbox &&
+      cached.optimistic === optimistic &&
+      cached.submittedHere === submittedHere &&
       cached.model === model &&
       cached.ref === ref &&
       cached.method === method
@@ -368,7 +376,7 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
     }
     const entries = pendingTurnsStore.pendingTurnEntries(ref, method);
     const result = entries.length > 0 ? entries : NO_ENTRIES;
-    cacheRef.current = { pendingState, model, ref, method, entries: result };
+    cacheRef.current = { outbox, optimistic, submittedHere, model, ref, method, entries: result };
     return result;
   }, [ref, method]);
 

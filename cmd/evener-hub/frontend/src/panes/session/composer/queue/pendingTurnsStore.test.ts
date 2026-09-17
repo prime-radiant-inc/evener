@@ -130,6 +130,30 @@ test("an action becomes pending only after its durable enqueue commits", async (
   expect(pending.result.current).toEqual([expect.objectContaining({ text: "hello" })]);
 });
 
+test("usePendingTurnEntries returns the same entries array across a submittingRefs-only write", async () => {
+  const fake = await connect();
+  fake.on("turn/start", () => new Promise<never>(() => undefined));
+  const pending = renderHook(() => usePendingTurnEntries("ref_a", "send"));
+  await act(async () => {
+    await threadsStore.getState().send("ref_a", "hello");
+  });
+  await flushPendingTurnsProjectionForTests();
+  const entriesBefore = pending.result.current;
+  expect(entriesBefore).toEqual([expect.objectContaining({ text: "hello" })]);
+
+  // beginSubmission/endSubmission only touch submittingRefs - not outbox,
+  // optimistic, submittedHere or the thread model this hook's entries
+  // actually depend on - so the getSnapshot cache must not recompute here.
+  await act(async () => {
+    await submitWithPendingTracking(
+      { ref: "ref_a", method: "send", text: "unrelated", onFailure: vi.fn() },
+      () => Promise.resolve(),
+    );
+  });
+
+  expect(pending.result.current).toBe(entriesBefore);
+});
+
 test("a committed submission releases its caller while recovery projection reads are stalled", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
