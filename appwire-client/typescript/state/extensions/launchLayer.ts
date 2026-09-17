@@ -1,7 +1,7 @@
 // The global launch-config layer store: the one LaunchConfigLayer object the
 // extensions settings edit, behind the web's Plugins/Skills directories and
-// MCP servers sections (its pluginDirs, skillsDirs, mcpConfigFiles and
-// mcpServers are four fields of that same object). createLaunchLayerStore is a
+// MCP servers sections (its pluginDirs, skillsDirs, mcpConfigs and mcps are
+// four fields of that same object). createLaunchLayerStore is a
 // factory - each app builds the one instance it wires up, and tests build
 // their own - returning a FrameworkFreeStore (see frameworkFreeStore.ts) whose
 // state holds the store-bound actions.
@@ -118,7 +118,11 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
         writeRevisioned(
           listRevision,
           () => client.request("evener/launch/setLayer", { ...GLOBAL_LAYER_PARAMS, config: next }),
-          () => () => set({ launchLayer: next }),
+          // The same three fields a read's success writes. A write that owns
+          // the layer owns the error and the loading flag with it - an
+          // outrun read behind it writes none of the three (see
+          // plugins.ts's and marketplaces.ts's own mutate).
+          () => () => set({ launchLayer: next, launchLayerLoading: false, launchLayerError: null }),
         ),
     };
   });
