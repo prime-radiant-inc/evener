@@ -3,7 +3,7 @@ import {
   type PendingTurnsDraftPort,
   type PendingTurnsThreadsPort,
 } from "@evener/appwire-client/state/mutation";
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
@@ -314,22 +314,66 @@ const NO_ENTRIES: PendingTurnEntry[] = [];
 const NO_RECOVERY: MutationRecoveryRecord[] = [];
 const NO_BLOCKED: MutationOutboxRecord[] = [];
 
+type ThreadsPortModel = ReturnType<typeof threadsPort.getThreadModel>;
+
+// pendingTurnEntries() reads both pendingTurnsStore's own state and, through
+// the threads port, the live thread model - a turn moving from queued to
+// started arrives over the wire into threadsStore, not into an outbox
+// record, so a subscription to pendingTurnsStore alone would leave a
+// component showing a turn as still pending after the hub already started
+// it. useSyncExternalStore only re-runs getSnapshot on a subscribe
+// notification (or a render for an unrelated reason), so it has to hear from
+// both stores; and since pendingTurnEntries() builds a fresh array on every
+// call, getSnapshot caches the last one and only replaces it when the two
+// inputs it actually depends on - which state each store is in, and which
+// ref/method were asked for - have themselves changed, which is what keeps
+// this from tearing into an infinite render loop.
 export function usePendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
-  const outbox = useStore(pendingTurnsStore, (state) => state.outbox);
-  const optimistic = useStore(pendingTurnsStore, (state) => state.optimistic);
-  const submittedHere = useStore(pendingTurnsStore, (state) => state.submittedHere);
-  const model = useThreadsStore((state) => state.threads.get(ref));
   useEffect(() => {
     void refreshPendingTurnsProjection(ref);
   }, [ref]);
-  // outbox/optimistic/submittedHere/model are read through the store and the
-  // threads port, not taken as arguments - they are deliberate trigger-only
-  // deps here, so a change to any of them still invalidates this memo.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: outbox/optimistic/submittedHere/model are deliberate trigger-only deps, see above
-  return useMemo(() => {
+
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => {
+      const unsubscribePending = pendingTurnsStore.subscribe(onStoreChange);
+      const unsubscribeThreads = threadsStore.subscribe((state, previous) => {
+        if (state.threads.get(ref) !== previous.threads.get(ref)) onStoreChange();
+      });
+      return () => {
+        unsubscribePending();
+        unsubscribeThreads();
+      };
+    },
+    [ref],
+  );
+
+  const cacheRef = useRef<{
+    pendingState: unknown;
+    model: ThreadsPortModel;
+    ref: string;
+    method: PendingMethod | undefined;
+    entries: PendingTurnEntry[];
+  } | null>(null);
+  const getSnapshot = useCallback((): PendingTurnEntry[] => {
+    const pendingState = pendingTurnsStore.getState();
+    const model = threadsPort.getThreadModel(ref);
+    const cached = cacheRef.current;
+    if (
+      cached &&
+      cached.pendingState === pendingState &&
+      cached.model === model &&
+      cached.ref === ref &&
+      cached.method === method
+    ) {
+      return cached.entries;
+    }
     const entries = pendingTurnsStore.pendingTurnEntries(ref, method);
-    return entries.length > 0 ? entries : NO_ENTRIES;
-  }, [outbox, optimistic, submittedHere, model, ref, method]);
+    const result = entries.length > 0 ? entries : NO_ENTRIES;
+    cacheRef.current = { pendingState, model, ref, method, entries: result };
+    return result;
+  }, [ref, method]);
+
+  return useSyncExternalStore(subscribe, getSnapshot);
 }
 
 // The same projection read from the stores as they are now, not as a component
