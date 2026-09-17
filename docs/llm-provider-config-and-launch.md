@@ -279,10 +279,16 @@ Editing an implicit instance, or setting it as the default, writes a
 **shadowing** entry that carries only the fields the user changed — never a
 literal `base_url` the form merely displayed, which would otherwise trip
 the credential-inheritance stop described in
-[`llm-providers.md`](llm-providers.md#providerstoml). Removing a
-purely-implicit instance (one with no shadowing entry of its own) is
-refused, with a message naming the variable or record that makes it exist —
-unset the variable, or remove the OAuth record, instead.
+[`llm-providers.md`](llm-providers.md#providerstoml). Removing an implicit
+instance follows the credential that makes it exist. One the host supplies —
+an API-key variable, the application-default credentials, a keyless endpoint —
+is refused, since it would come straight back; the message names the variable
+to unset, the ADC credentials to remove, or the fact that the row belongs to
+its provider. One holding the user's own credential — a stored key, a
+signed-in Codex record — is removable, and removing it deletes that credential;
+that takes the instance away only where nothing else supplies one, since a
+variable or an ADC file the host also has would bring the row back on the next
+load.
 
 The RPCs feeding this pane (`evener/auth/*`) now return one status per
 curated implicit provider plus every explicit instance, not the old fixed

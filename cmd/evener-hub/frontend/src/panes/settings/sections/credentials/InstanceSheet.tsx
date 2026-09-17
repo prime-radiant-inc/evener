@@ -32,12 +32,15 @@ import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evene
 import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
+  ErrorInstanceRenamePersisted,
   errorText,
+  friendlyErrorMessage,
   fromEnvironment,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
+  WireError,
 } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
@@ -53,6 +56,7 @@ import {
   SURFACE_OPTIONS,
   varRows,
 } from "./instanceEdit";
+import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
   headingRow: requireClass(styles.headingRow, "InstanceSheet.module.css", "headingRow"),
@@ -84,6 +88,17 @@ const STALE_SAVE_WARNING =
 const CHANGED_INSTANCE_ERROR =
   "This instance was replaced under the same name; the form was reset to the instance now on screen.";
 
+// isInstanceRenamePersisted reads the hub's own discriminator for a rename that
+// stood but could not carry the instance's credentials cleanly
+// (appwire.ErrorInstanceRenamePersisted, exported by the AppWire package so every
+// client reads the one value its ErrorData carries, and bound to the Go constant
+// by that package's errors.test.ts). providers.toml names the new instance either
+// way, so the save is not a failure to report; the hub's message names the
+// credential left behind.
+function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
+}
+
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
 // removal and a recreation under the same name, or another instance renamed
@@ -113,13 +128,29 @@ const RENAME_IDENTITY_FIELDS = [
  * digest cannot be compared as an untouched identity field across such a save. */
 const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
+/** The entry field each wire `clear*` flag stands for. The flag and the field
+ * are different names (`clearApiKeyEnv` clears `apiKeyEnv`), and a rename's
+ * identity comparison has to see a clear as the field it changed. Deriving the
+ * field from the flag by lower-casing the letter after "clear" was implicit and
+ * name-shaped - a field carrying an acronym would not match - so the pairing is
+ * written out here: a clear flag mapped to the wrong field leaves that field
+ * compared as untouched, so a superseded rename that cleared it fails to
+ * recognize its own rename and reports a stale save for a write that landed. */
+const CLEARED_FIELDS: Record<string, string> = {
+  clearBaseUrl: "baseUrl",
+  clearProtocol: "protocol",
+  clearSurface: "surface",
+  clearApiKeyEnv: "apiKeyEnv",
+  clearCredentialHeader: "credentialHeader",
+};
+
 /** The entry fields this save's params changed, whether a field carries a value
  * or a `clear` flag: those are the fields a rename may legitimately differ in. */
 function changedFields(params: InstanceEditParams): Set<string> {
   const changed = new Set<string>();
   for (const key of Object.keys(params)) {
     if (key === "name" || key === "newName") continue;
-    changed.add(key.startsWith("clear") ? key.charAt(5).toLowerCase() + key.slice(6) : key);
+    changed.add(CLEARED_FIELDS[key] ?? key);
   }
   return changed;
 }
@@ -197,6 +228,14 @@ function renamedInstanceLanded(
   // rename's own outcome rather than evidence of a later tenant of the freed
   // name. The other direction, and any change on an authored row, still says
   // this save's instance is not what holds the new name.
+  //
+  // What separates this save's row from a look-alike is then the identity
+  // fields compared below, not the flag: a concurrent client that authored an
+  // instance under the new name with the same provider, endpoint and auth
+  // between the write and this read would pass. That was already true of an
+  // authored rename before this relaxation, and the listing carries no
+  // per-mutation identifier to close it with - an incarnation or generation
+  // number on the wire is what that would take.
   const authoredByRename = before.implicit && !listed.implicit;
   if (listed.implicit !== before.implicit && !authoredByRename) return undefined;
   const changed = changedFields(params);
@@ -452,6 +491,22 @@ export function InstanceSheet({
           setFormError(CONNECTION_REPLACED_ERROR);
         }
         toast.push("warning", CONNECTION_REPLACED_ERROR);
+        return;
+      }
+      // A rename that stood but could not carry the instance's OAuth record
+      // comes back carrying the hub's own discriminator for it
+      // (isInstanceRenamePersisted). providers.toml already names the new
+      // instance, so the save is not a failure: reconcile the listing and follow
+      // the instance to its new name, surfacing the hub's message - it names the
+      // credential left behind - as a warning rather than a plain failure.
+      if (params.newName !== undefined && isInstanceRenamePersisted(err)) {
+        const landed = await confirmListingState((rows) => renamedInstanceLanded(rows, instance, params) !== undefined);
+        if (shownName.current === instance.name) {
+          setRenamingFrom(undefined);
+          if (landed) onRenamed(params.newName);
+          else setFormError(friendlyErrorMessage(err));
+        }
+        toast.push("warning", friendlyErrorMessage(err));
         return;
       }
       const message = errorText(err);

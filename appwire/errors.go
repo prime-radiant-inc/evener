@@ -29,6 +29,24 @@ const (
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
 	ErrorKeybindingsPostRename ErrorInfo = "keybindingsPostRename"
+	// ErrorInstanceRemovePersisted marks a provider-instance removal that
+	// APPLIED - the authored entry left providers.toml - before the removal
+	// could not finish. What is unfinished is in the message: either the copy
+	// the removal set the OAuth record aside as is still on disk (the cleanup
+	// could not delete it), or the rollback after a failed reload could not be
+	// written, so the removal stands in the config and the credentials this call
+	// deleted are back under the name. Clients must report the removal as
+	// standing rather than as a failed removal, because the entry is out of the
+	// file the hub and its clients read.
+	ErrorInstanceRemovePersisted ErrorInfo = "instanceRemovePersisted"
+	// ErrorInstanceRenamePersisted marks a provider-instance rename that
+	// APPLIED (providers.toml carries the new name) before the follow-up
+	// credential move or reload failed; the message names what was left behind.
+	// The rename is on disk, so clients must report it as the standing write it
+	// was and steer to the new name rather than report a failed save - the old
+	// name is gone and re-issuing the rename can only fail on a missing
+	// instance.
+	ErrorInstanceRenamePersisted ErrorInfo = "instanceRenamePersisted"
 )
 
 type MutationOutcome string
@@ -183,5 +201,29 @@ func QueuedDrainPartial(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorQueuedDrainPartial},
+	}
+}
+
+// InstanceRemovePersisted reports a provider-instance removal that stood in
+// providers.toml even though the removal could not finish. The message says
+// what is unfinished and names what the caller is left with; the entry itself
+// is gone from the file.
+func InstanceRemovePersisted(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRemovePersisted},
+	}
+}
+
+// InstanceRenamePersisted reports a provider-instance rename that stood but
+// could not carry the instance's credentials cleanly: the config carries the
+// new name while a stored key or OAuth record was left behind. The message
+// names what was left; the instance itself is renamed.
+func InstanceRenamePersisted(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRenamePersisted},
 	}
 }

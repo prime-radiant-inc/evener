@@ -2,6 +2,8 @@ import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListR
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorInstanceRemovePersisted,
+  ErrorInstanceRenamePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
 } from "@evener/appwire-client";
@@ -565,6 +567,110 @@ describe("the detail sheet", () => {
     // The row is gone on the host: re-issuing the remove could only fail, so
     // the confirm dialog closes with the failure.
     expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+  });
+
+  // A removal that stood still comes back as an error when the hub could not
+  // delete the OAuth copy it set aside. The hub discriminates exactly that case
+  // with its own evenerErrorInfo value, so the client reports the standing
+  // removal - dialog and sheet closed, the guided owner told, and the hub's own
+  // message about the leftover copy as a warning - even for a UI-credentialed
+  // instance with no authored entry, which the listing could not tell apart
+  // from a refusal.
+  test("a removal error carrying the hub's persisted discriminator is reported as the removal it was", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    const HUB_MESSAGE =
+      "removed personal, but a credential the removal set aside is still on disk, and deleting it is what takes it away: /state/auth/personal.json.removing-1 (delete refused)";
+    fake.on("evener/instance/remove", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRemovePersisted });
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/still on disk/);
+    expect(onInstanceRemoved).toHaveBeenCalledWith("personal");
+    expect(screen.queryByText(/Remove failed/)).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Remove instance" })).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "personal" })).toBeNull());
+  });
+
+  // The standing removal's RPC threw, so the store kept the listing it read
+  // before it (applyMutation installed nothing) - the removed row would stay on
+  // screen until an unrelated refetch. The branch must re-read the listing
+  // itself before it reports the removal: the removed row has to leave the
+  // listing the guided owner reacts to.
+  test("a persisted removal re-reads the listing so the removed row leaves it", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "removed personal, but a credential the removal set aside is still on disk, and deleting it is what takes it away: /state/auth/personal.json.removing-1 (delete refused)";
+    // The pre-removal read carries the row; every read after it is the hub's
+    // post-removal listing, without the authored row.
+    let reads = 0;
+    fake.on("evener/instance/list", () => {
+      reads += 1;
+      return reads === 1 ? LIST : { instances: [WORK], availableProviders: [] };
+    });
+    fake.on("evener/instance/remove", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRemovePersisted });
+    });
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/still on disk/);
+    // The listing was re-read: the removed row is gone, not left on a listing
+    // the store read before the removal.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /personal/ })).toBeNull());
+    expect(fake.calls.filter((call) => call.method === "evener/instance/list").length).toBeGreaterThan(1);
+  });
+
+  // A refusal carries no such discriminator, so it stays the plain failure it
+  // was, with the dialog left open exactly as today. Nothing is inferred from
+  // the listing, which cannot tell a refusal from a standing removal for a
+  // UI-credentialed instance with no authored entry.
+  test("a removal error without the persisted discriminator stays a plain failure", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/remove", () => {
+      throw new WireError("removing personal was refused: the endpoint moved", -32013);
+    });
+    const onInstanceRemoved = vi.fn();
+    render(
+      <>
+        <CredentialsSection sectionId="credentials" onInstanceRemoved={onInstanceRemoved} />
+        <Toast />
+      </>,
+    );
+    await screen.findByText("personal");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "personal");
+    await user.click(within(inspector).getByRole("button", { name: "Remove" }));
+    const confirm = screen.getByRole("dialog", { name: "Remove instance" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove" }));
+
+    await screen.findByText(/Remove failed/);
+    expect(onInstanceRemoved).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Remove instance" })).toBeTruthy();
   });
 });
 
@@ -2143,5 +2249,66 @@ describe("rename from the sheet", () => {
     await screen.findByRole("dialog", { name: "work2" });
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
     expect(screen.getByRole("button", { name: /work2/ })).toBeTruthy();
+  });
+
+  // A rename that stood still comes back as an error when the hub could not
+  // carry the instance's OAuth record to the new name. The hub discriminates
+  // exactly that case with its own evenerErrorInfo value, so the client steers
+  // to the renamed instance and surfaces the hub's own message as a warning
+  // rather than a failed save: providers.toml already names the new instance.
+  test("a rename error carrying the hub's persisted discriminator is reconciled and warned, not failed", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    let renamed = false;
+    fake.on("evener/instance/list", () =>
+      renamed ? { instances: [{ ...WORK, name: "work2" }, PERSONAL], availableProviders: [] } : LIST,
+    );
+    fake.on("evener/instance/edit", () => {
+      renamed = true;
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(/OAuth record not read/);
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    // The rename stood: the sheet follows the instance to its new name.
+    await screen.findByRole("dialog", { name: "work2" });
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+  });
+
+  // A refusal carries no such discriminator, so it stays the plain save failure
+  // it was, with the sheet left where it was.
+  test("a rename error without the persisted discriminator stays a plain failure", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/edit", () => {
+      throw new WireError("renaming work was refused: the new name is taken", -32013);
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(/Save failed/);
+    expect(screen.queryByRole("dialog", { name: "work2" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "work" })).toBeTruthy();
   });
 });

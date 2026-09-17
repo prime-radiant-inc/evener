@@ -101,6 +101,19 @@ func (m hubModel) handleInstanceList(msg launchconfig.InstanceListResultMsg) (te
 
 func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Err != nil {
+		// A removal that stood in the config but could not finish comes back
+		// carrying the hub's own discriminator for it. The entry is out of
+		// providers.toml, so this is not a failure to report: surface the hub's
+		// message (it says what was left unfinished) as a warning and re-read
+		// the listing the removal left behind.
+		if isInstanceRemovePersisted(msg.Err) {
+			m.err = nil
+			m.addInstanceRemovalWarningNotice(msg.Err)
+			if m.credentialsPanel != nil && m.client != nil {
+				return m, launchconfig.CmdInstanceList(m.client)
+			}
+			return m, nil
+		}
 		m.err = msg.Err
 		return m, nil
 	}
@@ -115,6 +128,27 @@ func (m hubModel) handleInstanceMutateResult(msg launchconfig.InstanceMutateResu
 	return m, nil
 }
 
+// isInstanceRemovePersisted reports whether err is the hub's discriminator for a
+// provider-instance removal that stood but left a copy of the OAuth record on
+// disk (appwire.ErrorInstanceRemovePersisted). The wire error's Data is an
+// ErrorData in-process and a decoded map over the socket, so both are accepted -
+// the same shape isQueuedDrainPartial reads. The discriminator is the
+// evenerErrorInfo string, never the code: siblings share the code.
+func isInstanceRemovePersisted(err error) bool {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return false
+	}
+	switch data := wire.Data.(type) {
+	case appwire.ErrorData:
+		return data.EvenerErrorInfo == appwire.ErrorInstanceRemovePersisted
+	case map[string]any:
+		return data["evenerErrorInfo"] == string(appwire.ErrorInstanceRemovePersisted)
+	default:
+		return false
+	}
+}
+
 func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
 		return m, launchconfig.CmdInstanceSetDefault(m.client, msg.Name)
@@ -124,7 +158,7 @@ func (m hubModel) handleInstanceSetDefault(msg launchconfig.InstanceSetDefaultMs
 
 func (m hubModel) handleInstanceRemove(msg launchconfig.InstanceRemoveMsg) (tea.Model, tea.Cmd) {
 	if m.client != nil {
-		return m, launchconfig.CmdInstanceRemove(m.client, msg.Name)
+		return m, launchconfig.CmdInstanceRemove(m.client, msg.Name, msg.EndpointFingerprint)
 	}
 	return m, nil
 }

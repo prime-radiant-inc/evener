@@ -1,6 +1,9 @@
 import {
+  ErrorInstanceRemovePersisted,
+  friendlyErrorMessage,
   safeCredentialTestResult,
   sessionActionError,
+  WireError,
 } from "@evener/appwire-client";
 import type {
   AuthTestResponse,
@@ -28,6 +31,52 @@ interface ProviderState {
   loading: boolean;
   busy: boolean;
   error: string | null;
+}
+
+// isInstanceRemovePersisted reads the hub's own discriminator for a removal that
+// stood in the config but could not finish
+// (appwire.ErrorInstanceRemovePersisted, exported by the AppWire package so every
+// client reads the one value its ErrorData carries, and bound to the Go constant
+// by that package's errors.test.ts). A refusal or any other failure carries no
+// such info, so it stays a plain failure.
+export function isInstanceRemovePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
+}
+
+// removalFailureMessage is what the screen shows when a removal is refused or
+// otherwise fails (a rejection without the persisted discriminator). The generic
+// copy the credential flows use guards against a provider or transport error
+// echoing a submitted secret; a removal carries no secret - only the instance
+// name and the endpoint fingerprint the caller asserted - so the hub's own
+// message, which names the refusal's remedy, reaches the user the same way the
+// web pane's "Remove failed: <message>" toast does.
+export function removalFailureMessage(err: unknown): string {
+  return `Remove failed: ${friendlyErrorMessage(err)}`;
+}
+
+// RemovalOutcome is what a removal resolved to. A removal that stood in the
+// config but could not finish is not a failure - the entry is out of
+// providers.toml - so it resolves with the hub's own message (it says what was
+// left unfinished) for the screen to warn with. Every other failure rejects, as
+// before.
+export type RemovalOutcome =
+  | { kind: "removed" }
+  | { kind: "removedPersisted"; message: string };
+
+// applyRemovalOutcome is what the providers screen does with a resolved
+// removal. The editor closes for EVERY successful removal - the authored entry
+// is gone, and for a name the environment also supplies the implicit row that
+// survives must open fresh rather than keep the removed instance's draft (a
+// save from that draft would author a new override against the replacement
+// row). Only a removal that stood with a leftover copy carries a warning; a
+// clean removal leaves the list-level warning silent.
+export function applyRemovalOutcome(
+  outcome: RemovalOutcome,
+  close: () => void,
+  setWarning: (message: string | null) => void,
+): void {
+  close();
+  setWarning(outcome.kind === "removedPersisted" ? outcome.message : null);
 }
 
 /** Provider data and operations for one hub's provider list: the credential
@@ -141,8 +190,25 @@ export class ProviderInstances {
   // holding a listing another client has since re-pointed refuses instead of
   // deleting whatever now answers to the name (the web pane's removal asserts
   // the same value).
-  remove = (name: string, expectedEndpointFingerprint?: string) =>
-    this.mutate(() => this.core.getState().remove(name, expectedEndpointFingerprint), true);
+  remove = async (
+    name: string,
+    expectedEndpointFingerprint?: string,
+  ): Promise<RemovalOutcome> => {
+    try {
+      await this.mutate(
+        () => this.core.getState().remove(name, expectedEndpointFingerprint),
+        true,
+      );
+      return { kind: "removed" };
+    } catch (err) {
+      if (!isInstanceRemovePersisted(err)) throw err;
+      // The removal stood: re-read the listing it left behind so the removed row
+      // leaves it. A lost read is the connection banner's to report, not this
+      // removal's - the hub's message is what the screen has to show.
+      await this.core.getState().fetch().catch(() => {});
+      return { kind: "removedPersisted", message: friendlyErrorMessage(err) };
+    }
+  };
   setDefault = (name: string) =>
     this.mutate(() => this.core.getState().setDefault(name), true);
   setApiKey = (provider: string, value: string) =>
