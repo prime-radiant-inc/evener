@@ -728,12 +728,21 @@ export function createConversationStore() {
   // clusterActivities: identity, label and detail come from the first member,
   // the state is running when any member runs, and a single member is a plain
   // activity row rather than a cluster of one).
+  //
+  // duplicates() reads ownTimelineIdentities, not timelineIdentities: a
+  // page-owned attachment's OWN identity is what makes it a duplicate, never
+  // its source's. timelineIdentities also carries an attachment's source
+  // identity (so a reader deduping by "every identity this row touches"
+  // treats an attachment as inseparable from its message) — the wrong rule
+  // here, where the projected snapshot can hold the source row without yet
+  // holding its attachment; matching on the source would discard a page's
+  // only copy of an attachment the snapshot has not caught up to.
   function retainedPageRow(
     item: MobileTimelineItem,
     identities: ReadonlySet<string>,
   ): MobileTimelineItem | null {
     const duplicates = (candidate: MobileTimelineItem): boolean =>
-      [...timelineIdentities(candidate)].some((id) => identities.has(id));
+      [...ownTimelineIdentities(candidate)].some((id) => identities.has(id));
     if (item.kind !== "activity" || item.members === undefined) {
       return duplicates(item) ? null : item;
     }

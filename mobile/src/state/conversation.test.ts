@@ -6966,6 +6966,48 @@ describe("ConversationStore", () => {
       expect(store.getState().olderCursor).toBe("cursor-2");
     });
 
+    it("keeps a page-owned attachment when the snapshot's source row omits it", async () => {
+      // The page-owned attachment's own identity is "wire-Z:attachments";
+      // its source is "key-Z". A later notification adds a fresh row that
+      // shares "key-Z" (the source) but carries no attachment of its own —
+      // the snapshot merely mentioning the source must not read as "this
+      // attachment is already there."
+      const { store, service } = await openRunningTurn([]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "attachments",
+            id: "wire-Z:attachments",
+            items: [{ id: "att-Z", src: "https://example.com/z.png" }],
+            sourceTranscriptKey: "key-Z",
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "wire-Z-source",
+            transcriptKey: "key-Z",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+          },
+        },
+      } as AnyNotification);
+
+      expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
+    });
+
     it("carries no page history across a reread when the cap already trimmed it", async () => {
       const service = new FakeConversationService();
       const initialThreadItems: ThreadItem[] = [];
