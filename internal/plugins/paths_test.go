@@ -113,11 +113,11 @@ func TestStoreReaders_RefuseARootThatIsNotResolved(t *testing.T) {
 		read func(*Manager) (int, error)
 	}{
 		{"List", func(m *Manager) (int, error) {
-			items, err := m.List(context.Background())
+			items, _, err := m.List(context.Background())
 			return len(items), err
 		}},
 		{"ListMarketplaces", func(m *Manager) (int, error) {
-			mk, err := m.ListMarketplaces(context.Background())
+			mk, _, err := m.ListMarketplaces(context.Background())
 			return len(mk), err
 		}},
 	}

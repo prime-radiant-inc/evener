@@ -203,14 +203,20 @@ func marketplaceSourceToWire(src plugins.Source) appwire.MarketplaceSourceInput 
 
 // ListMarketplaces returns every registered marketplace, sorted by name: a
 // single consistent read off the manager (matching hubInstancesController.List).
-func (c *hubPluginsController) ListMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, error) {
+//
+// The second return is the manager's own migrated: a pure read can still
+// persist a legacy-name migration behind the scenes (lockStore runs it on
+// every acquisition), which changes both stores, so the caller broadcasts
+// evener/marketplace/updated and evener/plugin/updated when it's true even
+// though this call asked for neither change.
+func (c *hubPluginsController) ListMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, bool, error) {
 	return c.listMarketplaces(ctx)
 }
 
-func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, error) {
-	mk, err := c.mgr.ListMarketplaces(ctx)
+func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.MarketplaceListResponse, bool, error) {
+	mk, migrated, err := c.mgr.ListMarketplaces(ctx)
 	if err != nil {
-		return appwire.MarketplaceListResponse{}, err
+		return appwire.MarketplaceListResponse{}, migrated, err
 	}
 	names := make([]string, 0, len(mk))
 	for name := range mk {
@@ -227,7 +233,7 @@ func (c *hubPluginsController) listMarketplaces(ctx context.Context) (appwire.Ma
 			LastUpdated:     hubcore.UnixSeconds(ref.LastUpdated),
 		})
 	}
-	return appwire.MarketplaceListResponse{Marketplaces: entries}, nil
+	return appwire.MarketplaceListResponse{Marketplaces: entries}, migrated, nil
 }
 
 // marketplaceRefusalToWire turns the manager's marketplace sentinels into the
@@ -333,15 +339,17 @@ func (c *hubPluginsController) Browse(ctx context.Context, params appwire.Market
 // Plugins
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ListPlugins returns every installed plugin (see ListMarketplaces).
-func (c *hubPluginsController) ListPlugins(ctx context.Context) (appwire.PluginListResponse, error) {
+// ListPlugins returns every installed plugin. The second return is the
+// manager's own migrated - see ListMarketplaces for what a caller owes when
+// it's true.
+func (c *hubPluginsController) ListPlugins(ctx context.Context) (appwire.PluginListResponse, bool, error) {
 	return c.listPlugins(ctx)
 }
 
-func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginListResponse, error) {
-	items, err := c.mgr.List(ctx)
+func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginListResponse, bool, error) {
+	items, migrated, err := c.mgr.List(ctx)
 	if err != nil {
-		return appwire.PluginListResponse{}, err
+		return appwire.PluginListResponse{}, migrated, err
 	}
 	entries := make([]appwire.PluginEntry, 0, len(items))
 	for _, it := range items {
@@ -358,7 +366,7 @@ func (c *hubPluginsController) listPlugins(ctx context.Context) (appwire.PluginL
 			LastUpdated:  hubcore.UnixSeconds(it.LastUpdated),
 		})
 	}
-	return appwire.PluginListResponse{Plugins: entries}, nil
+	return appwire.PluginListResponse{Plugins: entries}, migrated, nil
 }
 
 // pluginWriteBetween runs after a plugin or marketplace write has applied and
@@ -373,13 +381,16 @@ var pluginWriteBetween = func() {}
 // says the write stands so the handler still broadcasts (#1572).
 func (c *hubPluginsController) pluginListAfterWrite(ctx context.Context) (appwire.PluginListResponse, error) {
 	pluginWriteBetween()
-	resp, err := c.listPlugins(ctx)
+	// migrated is discarded: the write this answers already owns its own
+	// applied-write broadcast below, which refetches the same listing a
+	// concurrent migration would also have changed.
+	resp, _, err := c.listPlugins(ctx)
 	return resp, writeApplied(err)
 }
 
 func (c *hubPluginsController) marketplaceListAfterWrite(ctx context.Context) (appwire.MarketplaceListResponse, error) {
 	pluginWriteBetween()
-	resp, err := c.listMarketplaces(ctx)
+	resp, _, err := c.listMarketplaces(ctx)
 	return resp, writeApplied(err)
 }
 

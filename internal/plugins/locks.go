@@ -69,16 +69,28 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // to fix, which evener-doctor reports too. The bundled lock and Doctor's
 // read-only wait on this lock are the two acquisitions that do not come
 // through here.
-func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
-	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
+//
+// migrated reports whether this acquisition's migration actually changed the
+// store - a persisted rename or merge, not just the check finding nothing to
+// do. It answers hasPendingMigration before migrateMarketplaceNames runs, so
+// even a caller whose own request is a plain read (ListMarketplaces, List,
+// Browse) knows to broadcast the change every other client's listing is now
+// stale against.
+func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (release func(), migrated bool, err error) {
+	release, err = m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	migrated, err = m.hasPendingMigration()
+	if err != nil {
+		release()
+		return nil, false, err
 	}
 	if err := m.migrateMarketplaceNames(); err != nil {
 		release()
-		return nil, err
+		return nil, false, err
 	}
-	return release, nil
+	return release, migrated, nil
 }
 
 // migrateStore takes the store lock for nothing but the migration lockStore
@@ -89,7 +101,7 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 // for keys the rename has just replaced. The lock is released rather than
 // held across those upgrades, each of which takes it itself.
 func (m *Manager) migrateStore(ctx context.Context) error {
-	release, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+	release, _, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}

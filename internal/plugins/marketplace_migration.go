@@ -52,17 +52,48 @@ import (
 // on the lock has to stop with the client. The same branch creates the
 // store's .lock file in a store that had none, and a listing that finds
 // nothing to migrate never reaches it.
-func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcquirer) (Marketplaces, error) {
-	mk, err := m.loadMarketplaces()
+// migrated reports whether taking the lock actually ran a migration: false
+// on the fast path above, which skips the lock (and so the migration)
+// entirely when nothing in the current map is refused.
+func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcquirer) (mk Marketplaces, migrated bool, err error) {
+	mk, err = m.loadMarketplaces()
 	if err != nil || len(refusedMarketplaceNames(mk)) == 0 {
-		return mk, err
+		return mk, false, err
 	}
-	release, err := m.lockStore(ctx, acquire, 30*time.Second)
+	release, migrated, err := m.lockStore(ctx, acquire, 30*time.Second)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer release()
-	return m.loadMarketplaces()
+	mk, err = m.loadMarketplaces()
+	return mk, migrated, err
+}
+
+// hasPendingMigration reports whether migrateMarketplaceNames, called right
+// after under the same lock, has real work to do: an unfinished rename an
+// earlier run's crash left a marker for (and that marker names a real
+// rename, not a stale one namesNoRename would drop), or a marketplace
+// recorded under a name the store no longer accepts. Read before that call
+// mutates anything, so a caller that needs to know a migration is about to
+// change the store - and so must broadcast evener/marketplace/updated and
+// evener/plugin/updated once it lands - gets an answer that reflects the
+// state before it ran. This is a coarser question than tracing exactly which
+// of the two store files migrateMarketplaceNames's several branches touch:
+// migrating always loads and can save both together, so treating one
+// combined signal as changing both is what the code actually does.
+func (m *Manager) hasPendingMigration() (bool, error) {
+	marker, err := m.loadRenameMarker()
+	if err != nil {
+		return false, err
+	}
+	if marker != nil && marker.namesNoRename() == nil {
+		return true, nil
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		return false, err
+	}
+	return len(refusedMarketplaceNames(mk)) > 0, nil
 }
 
 // migrateMarketplaceNames finishes the rename an interrupted run left in

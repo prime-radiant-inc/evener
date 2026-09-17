@@ -129,19 +129,23 @@ func catalogPluginName(raw json.RawMessage) string {
 // Browse returns the parsed catalog of a registered marketplace, lazily
 // cloning it first if it was only seeded as an unfetched pointer.
 //
-// The second return is ensureFetched's own answer: whether this call's lazy
-// fetch persisted a backfill to the marketplace store, on top of whatever
-// the catalog parse below does - true whether or not that parse succeeds.
+// marketplaceChanged is ensureFetched's own answer (whether this call's lazy
+// fetch persisted a backfill to the marketplace store) folded together with
+// lockStore's migrated - see Install for why a migration's own re-keying
+// means a caller must consider the plugin broadcast too, not only the
+// marketplace one the name suggests. True on top of whatever the catalog
+// parse below does, whether or not that parse succeeds.
 func (m *Manager) Browse(ctx context.Context, name string) (cat Catalog, marketplaceChanged bool, err error) {
-	release, err := m.lockStore(ctx, acquireLock, 30*time.Second)
+	release, migrated, err := m.lockStore(ctx, acquireLock, 30*time.Second)
 	if err != nil {
 		return Catalog{}, false, err
 	}
 	defer release()
 	ref, fetched, err := m.ensureFetched(ctx, name)
+	marketplaceChanged = fetched || migrated
 	if err != nil {
-		return Catalog{}, fetched, err
+		return Catalog{}, marketplaceChanged, err
 	}
 	cat, err = ParseCatalog(m.catalogRoot(ref))
-	return cat, fetched, err
+	return cat, marketplaceChanged, err
 }

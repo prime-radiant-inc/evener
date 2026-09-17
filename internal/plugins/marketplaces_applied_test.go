@@ -27,7 +27,7 @@ func TestAnIncompleteRenameRollbackReportsTheStoreChanged(t *testing.T) {
 		return orig(from, to)
 	}
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	marketplaceRename = orig
 	if err == nil {
 		t.Fatal("expected the cache move to fail")

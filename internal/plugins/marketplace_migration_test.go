@@ -245,7 +245,7 @@ func TestMarketplaceNameMigration_RenamesAnAtNamedMarketplaceBesideItsSuffix(t *
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
 	gadget := plantLegacyMarketplace(t, m, "bar", "gadget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestListMarketplaces_MigratesARefusedName(t *testing.T) {
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestListMarketplaces_ObservesTheCallersCancellation(t *testing.T) {
 		cancel()
 	}()
 	start := time.Now()
-	if _, err := m.ListMarketplaces(ctx); err == nil {
+	if _, _, err := m.ListMarketplaces(ctx); err == nil {
 		t.Fatal("ListMarketplaces returned while the store lock was held")
 	} else if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
@@ -348,7 +348,7 @@ func TestList_MigratesARefusedName(t *testing.T) {
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
 
-	items, err := m.List(context.Background())
+	items, _, err := m.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -369,7 +369,7 @@ func TestList_MigratesARefusedName(t *testing.T) {
 		return orig(ctx, lockPath, timeout)
 	}
 	t.Cleanup(func() { installAcquireLock = orig })
-	if _, err := m.List(context.Background()); err != nil {
+	if _, _, err := m.List(context.Background()); err != nil {
 		t.Fatalf("second List: %v", err)
 	}
 	if locks != 0 {
@@ -393,7 +393,7 @@ func TestList_ObservesTheCallersCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	start := time.Now()
-	if _, err := m.List(ctx); err == nil {
+	if _, _, err := m.List(ctx); err == nil {
 		t.Fatal("List returned while the store lock was held")
 	} else if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
@@ -414,7 +414,7 @@ func TestMarketplaceNameMigration_MovesAScratchNamedClone(t *testing.T) {
 			plantLegacyMarketplace(t, m, scratch, "widget")
 			want := strings.TrimPrefix(scratch, ".")
 
-			mk, err := m.ListMarketplaces(context.Background())
+			mk, _, err := m.ListMarketplaces(context.Background())
 			if err != nil {
 				t.Fatalf("ListMarketplaces: %v", err)
 			}
@@ -476,7 +476,7 @@ func TestMarketplaceNameMigration_MovesNothingForATraversingName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -524,7 +524,7 @@ func TestMarketplaceNameMigration_UnfetchesAGitBackedTraversingName(t *testing.T
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestMarketplaceNameMigration_KeepsADirectorySourcesPathForATraversingName(t
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -592,7 +592,7 @@ func TestMarketplaceNameMigration_MovesANestedCloneAndCache(t *testing.T) {
 	m.Stderr = io.Discard
 	nested := plantLegacyMarketplace(t, m, "a/b", "widget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -634,13 +634,13 @@ func TestMarketplaceNameMigration_LeavesAnotherMarketplacesNestedDirs(t *testing
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	mustExist(t, marker)
 	mustExist(t, pluginB)
-	items, err := m.List(context.Background())
+	items, _, err := m.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +695,7 @@ func TestMarketplaceNameMigration_MovesTheOwnPluginCachesOfABlockedName(t *testi
 	pluginP := plantLegacyMarketplace(t, m, "a", "p")
 	plantLegacyMarketplace(t, m, "a/b", "widget")
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	reg, err := m.loadRegistry()
@@ -747,7 +747,7 @@ func TestMarketplaceNameMigration_LeavesTheDirsADotNameAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -816,7 +816,7 @@ func TestMarketplaceNameMigration_LeavesAPluginCacheAnotherRecordInstallsIn(t *t
 		t.Fatal(err)
 	}
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	if reg, err = m.loadRegistry(); err != nil {
@@ -843,7 +843,7 @@ func TestMarketplaceNameMigration_MovesBothOfANestedRefusedPair(t *testing.T) {
 	plantLegacyMarketplace(t, m, "a@b", "widget")
 	plantLegacyMarketplace(t, m, "a@b/c", "gadget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -926,7 +926,7 @@ func TestMarketplaceNameMigration_SuffixesADerivedNameThatIsTaken(t *testing.T) 
 			plantLegacyMarketplace(t, m, "foo@bar", "widget")
 			occupy(t, m)
 
-			mk, err := m.ListMarketplaces(context.Background())
+			mk, _, err := m.ListMarketplaces(context.Background())
 			if err != nil {
 				t.Fatalf("ListMarketplaces: %v", err)
 			}
@@ -959,7 +959,7 @@ func TestMarketplaceNameMigration_MigratesLongerNamesFirst(t *testing.T) {
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
 	plantLegacyMarketplace(t, m, "z@foo@bar", "gizmo")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1000,7 +1000,7 @@ func TestMarketplaceNameMigration_MigratesADescendantBeforeItsAncestor(t *testin
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1047,7 +1047,7 @@ func TestMarketplaceNameMigration_ReKeysAnOutOfStoreNameBeforeItsSuffix(t *testi
 	plantLegacyMarketplace(t, m, "a/b", "widget")
 	gadget := plantLegacyMarketplace(t, m, "../..@a/b", "gadget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1083,7 +1083,7 @@ func TestMarketplaceNameMigration_OrdersADescendantAndAnAtSuffixTogether(t *test
 	plantLegacyMarketplace(t, m, "a/b/..", "gadget")
 	plantLegacyMarketplace(t, m, "x@a/b", "gizmo")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1129,7 +1129,7 @@ func TestMarketplaceNameMigration_BindsTheDirectoryOrderToDirectoriesTheStoreHol
 	widget := plantLegacyMarketplace(t, m, "a/..", "widget")
 	gadget := plantLegacyMarketplace(t, m, "../..@a/..", "gadget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1161,7 +1161,7 @@ func TestMarketplaceNameMigration_ASecondLoadChangesNothing(t *testing.T) {
 	m := NewManager(t.TempDir())
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	mkBefore := readStoreFile(t, m.marketplacesFile())
@@ -1179,7 +1179,7 @@ func TestMarketplaceNameMigration_ASecondLoadChangesNothing(t *testing.T) {
 	}
 	t.Cleanup(func() { marketplaceAtomicWriteFile, installSaveRegistry = origWrite, origSave })
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("second ListMarketplaces: %v", err)
 	}
 	// Gc takes the store lock and writes nothing of its own.
@@ -1226,7 +1226,7 @@ func TestMarketplaceNameMigration_AFailedSaveLeavesTheStoreAsFound(t *testing.T)
 			restore := inject()
 			t.Cleanup(restore)
 
-			_, err := m.ListMarketplaces(context.Background())
+			_, _, err := m.ListMarketplaces(context.Background())
 			restore()
 			if err == nil {
 				t.Fatal("expected the save to fail")
@@ -1244,7 +1244,7 @@ func TestMarketplaceNameMigration_AFailedSaveLeavesTheStoreAsFound(t *testing.T)
 			mustNotExist(t, m.marketplaceDir("foo-bar"))
 			mustNotExist(t, filepath.Join(m.cacheDir(), "foo-bar"))
 
-			mk, err := m.ListMarketplaces(context.Background())
+			mk, _, err := m.ListMarketplaces(context.Background())
 			if err != nil {
 				t.Fatalf("ListMarketplaces once the store can be written: %v", err)
 			}
@@ -1289,7 +1289,7 @@ func TestMarketplaceNameMigration_RunsUnderEveryStoreLock(t *testing.T) {
 			if err := op.run(m, "staging"); err != nil {
 				t.Fatalf("%s of the migrated name: %v", op.what, err)
 			}
-			mk, err := m.ListMarketplaces(context.Background())
+			mk, _, err := m.ListMarketplaces(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1385,7 +1385,7 @@ func TestMarketplaceNameMigration_ReportsEachRename(t *testing.T) {
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
 	plantLegacyMarketplace(t, m, asideCloneName, "gadget")
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(stderr.String()), "\n")
@@ -1399,7 +1399,7 @@ func TestMarketplaceNameMigration_ReportsEachRename(t *testing.T) {
 	}
 
 	stderr.Reset()
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("second ListMarketplaces: %v", err)
 	}
 	if stderr.Len() != 0 {
@@ -1419,7 +1419,7 @@ func TestMarketplaceNameMigration_MovesInsideASymlinkedMarketplacesDir(t *testin
 	m.Stderr = io.Discard
 	plantLegacyMarketplace(t, m, "a/b", "widget")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1578,7 +1578,7 @@ func TestMarketplaceNameMigration_LeavesResidueForANeverFetchedName(t *testing.T
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1607,7 +1607,7 @@ func TestMarketplaceNameMigration_MergesARefusedAliasIntoOneRecord(t *testing.T)
 	plantLegacyMarketplace(t, m, "a/b", "gadget")
 	plantOneSource(t, m, "a/./b", "a/b")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1639,7 +1639,7 @@ func TestMarketplaceNameMigration_MergesARefusedAliasIntoOneRecord(t *testing.T)
 	}
 
 	mkBefore, regBefore := readStoreFile(t, m.marketplacesFile()), readStoreFile(t, m.registryPath())
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("second ListMarketplaces: %v", err)
 	}
 	if got := readStoreFile(t, m.marketplacesFile()); got != mkBefore {
@@ -1686,7 +1686,7 @@ func TestMarketplaceNameMigration_MergeKeepsTheEntryTheFirstRenameLeft(t *testin
 		t.Fatal(err)
 	}
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	reg, err = m.loadRegistry()
@@ -1737,7 +1737,7 @@ func TestMarketplaceNameMigration_DoesNotAbsorbAStrangersRecord(t *testing.T) {
 	}
 	installed := installedAt(t, reg, registryKey("widget", "a-b"))
 
-	mk, err = m.ListMarketplaces(context.Background())
+	mk, _, err = m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1798,7 +1798,7 @@ func TestMarketplaceNameMigration_KeepsAMarketplaceThatOnlySharesTheDerivedName(
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1856,7 +1856,7 @@ func TestMarketplaceNameMigration_KeepsTwoSourcesDerivingOnePair(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1921,7 +1921,7 @@ func TestMarketplaceNameMigration_MergesTwoAliasesOfOneDirectorySource(t *testin
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -1971,7 +1971,7 @@ func TestMarketplaceNameMigration_AFailedSaveRemovesTheMarker(t *testing.T) {
 		return orig(path, data, perm)
 	}
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	marketplaceAtomicWriteFile = orig
 	if err == nil {
 		t.Fatal("expected the save to fail")
@@ -2006,7 +2006,7 @@ func TestMarketplaceNameMigration_AFailedMoveThatRollsBackRemovesTheMarker(t *te
 		return orig(from, to)
 	}
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	marketplaceRename = orig
 	if err == nil {
 		t.Fatal("expected the clone move to fail")
@@ -2034,7 +2034,7 @@ func TestMarketplaceNameMigration_AFailedCacheMoveThatRollsBackRemovesTheMarker(
 		return orig(from, to)
 	}
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	marketplaceRename = orig
 	if err == nil {
 		t.Fatal("expected the cache move to fail")
@@ -2134,7 +2134,7 @@ func TestMarketplaceNameMigration_ADerivedNameTheFilesystemCannotHoldFallsBack(t
 				t.Fatalf("marketplaces = %v, want marketplace alone", mk)
 			}
 			// Every later operation must work on the migrated store too.
-			if _, err := m.ListMarketplaces(context.Background()); err != nil {
+			if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 				t.Fatalf("ListMarketplaces: %v", err)
 			}
 		})
@@ -2359,7 +2359,7 @@ func TestMarketplaceNameMigration_ASingleNameNoFilesystemCanHoldIsMigrated(t *te
 			if _, ok := mk["marketplace"]; !ok || len(mk) != 1 {
 				t.Fatalf("marketplaces = %v, want marketplace alone", mk)
 			}
-			if _, err := m.ListMarketplaces(context.Background()); err != nil {
+			if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 				t.Fatalf("ListMarketplaces: %v", err)
 			}
 		})
@@ -2597,7 +2597,7 @@ func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *test
 		return orig(from, to)
 	}
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	marketplaceRename = orig
 	if err == nil {
 		t.Fatal("expected the cache move to fail")
@@ -2746,7 +2746,7 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 		return origSave(path, reg)
 	}
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	marketplaceAtomicWriteFile, installSaveRegistry = origWrite, origSave
 	if err == nil {
 		t.Fatal("expected the save to fail")
@@ -2756,7 +2756,7 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces once the store can be written: %v", err)
 	}
@@ -2878,7 +2878,7 @@ func TestMarketplaceNameMigration_KeepsANeverFetchedDuplicatesRecord(t *testing.
 		t.Fatal(err)
 	}
 
-	mk, err = m.ListMarketplaces(context.Background())
+	mk, _, err = m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -2927,7 +2927,7 @@ func TestMarketplaceNameMigration_MarksTheRenameThatMovesNothing(t *testing.T) {
 		return origSave(path, reg)
 	}
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	marketplaceAtomicWriteFile, installSaveRegistry = origWrite, origSave
@@ -2971,7 +2971,7 @@ func TestMarketplaceNameMigration_CompletesARenameUnderAnotherMarketplacesDirs(t
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3029,7 +3029,7 @@ func TestMarketplaceNameMigration_CompletesThePluginCacheMovesItsMarkerNames(t *
 	}
 	plantRenameMarker(t, m, "a/b", "a-b")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3071,7 +3071,7 @@ func TestMarketplaceNameMigration_AFailedSavePutsThePluginCachesBack(t *testing.
 	installSaveRegistry = func(string, Registry) error { return errors.New("boom") }
 	t.Cleanup(func() { installSaveRegistry = orig })
 
-	_, err := m.ListMarketplaces(context.Background())
+	_, _, err := m.ListMarketplaces(context.Background())
 	installSaveRegistry = orig
 	if err == nil {
 		t.Fatal("expected the save to fail")
@@ -3089,7 +3089,7 @@ func TestMarketplaceNameMigration_AFailedSavePutsThePluginCachesBack(t *testing.
 	mustNotExist(t, filepath.Join(m.cacheDir(), "a-b"))
 	mustNotExist(t, renameMarkerFile(m))
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces once the store can be written: %v", err)
 	}
@@ -3183,7 +3183,7 @@ func TestMarketplaceNameMigration_WarnsAboutAMarkerItCannotRemove(t *testing.T) 
 		return orig(path)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3240,7 +3240,7 @@ func TestMarketplaceNameMigration_DropsAMarkerThatNamesNoRename(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			mk, err := m.ListMarketplaces(context.Background())
+			mk, _, err := m.ListMarketplaces(context.Background())
 			if err != nil {
 				t.Fatalf("ListMarketplaces: %v", err)
 			}
@@ -3300,7 +3300,7 @@ func TestMarketplaceNameMigration_LeavesResidueThatNoMarkerNames(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3361,7 +3361,7 @@ func TestMarketplaceNameMigration_ADirectorySourceClaimsNoResidue(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	mk, err = m.ListMarketplaces(context.Background())
+	mk, _, err = m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3416,7 +3416,7 @@ func TestMarketplaceNameMigration_MarksTheMergeItMakes(t *testing.T) {
 		return orig(path, reg)
 	}
 
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
 	installSaveRegistry = orig
@@ -3474,7 +3474,7 @@ func TestMarketplaceNameMigration_CompletesAMergeItsMarkerNames(t *testing.T) {
 	}
 	plantMergeMarker(t, m, duplicate, "a-b")
 
-	mk, err = m.ListMarketplaces(context.Background())
+	mk, _, err = m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3502,7 +3502,7 @@ func TestMarketplaceNameMigration_CompletesAMergeItsMarkerNames(t *testing.T) {
 	}
 
 	mkBefore, regBefore := readStoreFile(t, m.marketplacesFile()), readStoreFile(t, m.registryPath())
-	if _, err := m.ListMarketplaces(context.Background()); err != nil {
+	if _, _, err := m.ListMarketplaces(context.Background()); err != nil {
 		t.Fatalf("second ListMarketplaces: %v", err)
 	}
 	if got := readStoreFile(t, m.marketplacesFile()); got != mkBefore {
@@ -3566,7 +3566,7 @@ func TestMarketplaceNameMigration_MergesAnAliasIntoTheNameItsRenameTook(t *testi
 	plantLegacyMarketplace(t, m, "a/b", "gadget")
 	plantOneSource(t, m, "a/./b", "a/b")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
@@ -3615,7 +3615,7 @@ func TestMarketplaceNameMigration_MergesAnAliasPastASameBaseStranger(t *testing.
 	plantLegacyMarketplace(t, m, "a@b", "zed")
 	plantOneSource(t, m, "./a@b", "a@b/", "a@b")
 
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}

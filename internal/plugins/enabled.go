@@ -14,7 +14,7 @@ var enabledLoad = agentplugin.Load
 //
 //nolint:unused // used by evenerfuzz coverage tests.
 func listOrWarn(ctx context.Context, m *Manager) []ListItem {
-	items, err := m.List(ctx)
+	items, _, err := m.List(ctx)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: listing plugins: %v\n", err)
 		return nil

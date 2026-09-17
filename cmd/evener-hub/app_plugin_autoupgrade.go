@@ -30,7 +30,12 @@ var pluginAutoUpgradeTick = runPluginAutoUpgradeTick
 
 var (
 	pluginListMarketplaces = func(ctx context.Context, mgr *plugins.Manager) (map[string]plugins.MarketplaceRef, error) {
-		return mgr.ListMarketplaces(ctx)
+		// The auto-upgrade daemon already refreshes every known marketplace
+		// up front each tick, so a migration here is not the interactive
+		// path's unbroadcast-change gap; migrated is discarded rather than
+		// marked (see the RPC handlers in app_rpc.go for the interactive path).
+		mk, _, err := mgr.ListMarketplaces(ctx)
+		return mk, err
 	}
 	pluginRefreshMarketplace = func(ctx context.Context, mgr *plugins.Manager, name string) error {
 		return mgr.RefreshMarketplace(ctx, name)

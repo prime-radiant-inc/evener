@@ -169,7 +169,7 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	c := newHubPluginsController(filepath.Join(root, "plugins"))
 	src := fuzzMarketplace(t, root)
 	_ = marketplaceSourceToWire(marketplaceSourceFromWire(appwire.MarketplaceSourceInput{Kind: "directory", Path: src}))
-	_, _ = c.ListMarketplaces(context.Background())
+	_, _, _ = c.ListMarketplaces(context.Background())
 	_, _ = c.AddMarketplace(ctx, appwire.MarketplaceAddParams{Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: src}})
 	_, _ = c.AddMarketplace(ctx, appwire.MarketplaceAddParams{Name: "bad", Source: appwire.MarketplaceSourceInput{Kind: "bad"}})
 	_, _, _ = c.Browse(ctx, appwire.MarketplaceBrowseParams{Name: "acme"})
@@ -177,7 +177,7 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 	_, _ = c.RefreshMarketplace(ctx, appwire.MarketplaceNameParams{Name: "acme"})
 	_, _ = c.RefreshMarketplace(ctx, appwire.MarketplaceNameParams{Name: "missing"})
 	ref := appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}
-	_, _ = c.ListPlugins(context.Background())
+	_, _, _ = c.ListPlugins(context.Background())
 	_, _, _ = c.Install(ctx, ref)
 	_, _, _ = c.Install(ctx, appwire.PluginRefParams{Plugin: "missing", Marketplace: "acme"})
 	_, _ = c.Disable(context.Background(), ref)
@@ -191,9 +191,9 @@ func fuzzExercisePlugins(t *testing.T, root string) {
 
 	corrupt := newHubPluginsController(filepath.Join(root, "corrupt"))
 	fuzzWriteFile(t, filepath.Join(root, "corrupt", "known_marketplaces.json"), "{")
-	_, _ = corrupt.ListMarketplaces(context.Background())
+	_, _, _ = corrupt.ListMarketplaces(context.Background())
 	fuzzWriteFile(t, filepath.Join(root, "corrupt", "installed_plugins.json"), "{")
-	_, _ = corrupt.ListPlugins(context.Background())
+	_, _, _ = corrupt.ListPlugins(context.Background())
 	badref := appwire.PluginRefParams{Plugin: "x", Marketplace: "y"}
 	_, _, _ = corrupt.Upgrade(ctx, badref)
 	_, _ = corrupt.Enable(context.Background(), badref)

@@ -22,11 +22,11 @@ type pluginManagerReplay struct {
 func (m *pluginManagerReplay) SeedDefaultMarketplaces(context.Context) (bool, error) {
 	return false, m.err
 }
-func (m *pluginManagerReplay) ListMarketplaces(context.Context) (plugins.Marketplaces, error) {
+func (m *pluginManagerReplay) ListMarketplaces(context.Context) (plugins.Marketplaces, bool, error) {
 	if m.err != nil {
-		return nil, m.err
+		return nil, false, m.err
 	}
-	return plugins.Marketplaces{"local": {Source: plugins.Source{Kind: plugins.SourceDirectory, Path: "/tmp/local"}, InstallLocation: "/tmp/local", LastUpdated: time.Unix(0, 0)}}, nil
+	return plugins.Marketplaces{"local": {Source: plugins.Source{Kind: plugins.SourceDirectory, Path: "/tmp/local"}, InstallLocation: "/tmp/local", LastUpdated: time.Unix(0, 0)}}, false, nil
 }
 func (m *pluginManagerReplay) AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error) {
 	return plugins.MarketplaceRef{InstallLocation: "/tmp/market"}, m.err
@@ -36,14 +36,14 @@ func (m *pluginManagerReplay) RefreshMarketplace(context.Context, string) error 
 func (m *pluginManagerReplay) Browse(context.Context, string) (plugins.Catalog, bool, error) {
 	return plugins.Catalog{Name: "market", Plugins: []plugins.CatalogPlugin{{Name: "plug", Description: "desc"}}, SkippedPlugins: []string{"skip"}}, false, m.err
 }
-func (m *pluginManagerReplay) List(context.Context) ([]plugins.ListItem, error) {
+func (m *pluginManagerReplay) List(context.Context) ([]plugins.ListItem, bool, error) {
 	if m.err != nil {
-		return nil, m.err
+		return nil, false, m.err
 	}
 	if m.empty {
-		return nil, nil
+		return nil, false, nil
 	}
-	return []plugins.ListItem{{Plugin: "plug", Marketplace: "market", Version: "1", Enabled: true, AutoUpgrade: true, Broken: true}, {Plugin: "off", Marketplace: "market"}}, nil
+	return []plugins.ListItem{{Plugin: "plug", Marketplace: "market", Version: "1", Enabled: true, AutoUpgrade: true, Broken: true}, {Plugin: "off", Marketplace: "market"}}, false, nil
 }
 func (m *pluginManagerReplay) Install(context.Context, string, string) (plugins.InstallEntry, bool, error) {
 	return plugins.InstallEntry{Version: "1", InstallPath: "/tmp/plugin", Note: "note"}, false, m.err

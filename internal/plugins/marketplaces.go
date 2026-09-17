@@ -180,7 +180,7 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (ref Marketpla
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless
 // name is given), and records it. Returns the stored ref.
 func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (MarketplaceRef, error) {
-	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
+	release, _, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -268,12 +268,18 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 // ListMarketplaces returns every registered marketplace, read from behind the
 // migration barrier (loadMigratedMarketplaces) so that the names it hands back
 // are the ones the store accepts today.
-func (m *Manager) ListMarketplaces(ctx context.Context) (Marketplaces, error) {
+//
+// migrated reports whether reaching that barrier ran a migration - a pure
+// read can still persist a rename or merge, which changes both the
+// marketplace store and, when the renamed entry has installed plugins, the
+// registry (see Install). A caller must broadcast both when it's true, even
+// though this call itself never asked for either change.
+func (m *Manager) ListMarketplaces(ctx context.Context) (mk Marketplaces, migrated bool, err error) {
 	return m.loadMigratedMarketplaces(ctx, marketplaceAcquireLock)
 }
 
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
-	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
+	release, _, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}
@@ -337,7 +343,7 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 // directory-source marketplace's relative plugins are referenced in place
 // inside it. A re-source moves neither, beyond the re-key a rename implies.
 func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src *Source) (MarketplaceRef, error) {
-	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
+	release, _, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return MarketplaceRef{}, err
 	}
@@ -929,7 +935,7 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 }
 
 func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
-	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
+	release, _, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
 		return err
 	}

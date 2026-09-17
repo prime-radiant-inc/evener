@@ -466,3 +466,113 @@ func TestHubRPCBrowseBroadcastsMarketplaceUpdatedOnASuccessfulLazyFetch(t *testi
 		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
 	}
 }
+
+// seedLegacyNamedMarketplace plants known_marketplaces.json directly under
+// pluginRoot, naming a marketplace under a traversing name validNameComponent
+// refuses today (the shape an older evener or a hand edit could leave): the
+// store lock's own migration (migrateMarketplaceNames, run from lockStore on
+// every acquisition - reads included) renames it the next time anything
+// takes the lock, the same technique
+// TestPlugins_Marketplace_BrowseRefusalsAreWireErrors already uses.
+func seedLegacyNamedMarketplace(t *testing.T, pluginRoot string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{"../../escape": map[string]any{
+		"source": map[string]any{"source": "url", "url": filepath.Join(t.TempDir(), "absent.git")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "known_marketplaces.json"), body, 0o644); err != nil {
+		t.Fatalf("seeding known_marketplaces.json: %v", err)
+	}
+}
+
+// A plain evener/marketplace/list call can trigger lockStore's legacy-name
+// migration (every acquisition runs it, reads included) and persist a rename
+// - a real change to the marketplace store, the same class of thing round 6
+// covers for a lazy fetch. Every other client's marketplace listing is stale
+// the moment that rename lands, whether or not the call that triggered it
+// was itself a write.
+func TestHubRPCMarketplaceListBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T) {
+	pluginRoot := t.TempDir()
+	seedLegacyNamedMarketplace(t, pluginRoot)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.MarketplaceList(context.Background())
+	if err != nil {
+		t.Fatalf("evener/marketplace/list: %v", err)
+	}
+	if len(resp.Marketplaces) != 1 || resp.Marketplaces[0].Name != "escape" {
+		t.Fatalf("marketplaces = %+v, want the legacy name migrated to escape (confirms the migration actually ran)", resp.Marketplaces)
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
+	}
+}
+
+// The plugin-list sibling of the marketplace-list case above: evener/plugin/list
+// also runs behind the migration barrier (List -> loadMigratedMarketplaces),
+// and a migration re-keys the registry as well as the marketplaces file, so a
+// plain plugin list can persist a rename too. Both listings are stale the
+// moment it lands.
+func TestHubRPCPluginListBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T) {
+	pluginRoot := t.TempDir()
+	seedLegacyNamedMarketplace(t, pluginRoot)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	if _, err := client.PluginList(context.Background()); err != nil {
+		t.Fatalf("evener/plugin/list: %v", err)
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
+	}
+	if counts[appwire.NotifyEvenerPluginUpdated] != 1 {
+		t.Fatalf("evener/plugin/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerPluginUpdated], counts)
+	}
+}
+
+// Browse's own migration case: a Browse for the legacy name itself is an
+// InvalidParams refusal (the name it asked for is unknown by the time it
+// looks it up - the lock's migration renamed it first), but the migration it
+// triggered along the way still persisted, so both stores' broadcasts are
+// owed even though this particular call failed.
+func TestHubRPCBrowseBroadcastsWhenLockStoreMigratesALegacyName(t *testing.T) {
+	pluginRoot := t.TempDir()
+	seedLegacyNamedMarketplace(t, pluginRoot)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	_, err := client.MarketplaceBrowse(context.Background(), appwire.MarketplaceBrowseParams{Name: "../../escape"})
+	if err == nil {
+		t.Fatal("evener/marketplace/browse = nil, want the now-renamed name reported unknown")
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
+	}
+	if counts[appwire.NotifyEvenerPluginUpdated] != 1 {
+		t.Fatalf("evener/plugin/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerPluginUpdated], counts)
+	}
+}

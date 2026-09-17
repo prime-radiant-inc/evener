@@ -148,8 +148,8 @@ func FuzzLaunchModelsPluginsBoundaries(f *testing.F) {
 			t.Fatal(err)
 		}
 		pctl := newHubPluginsController(pluginRoot)
-		_, _ = pctl.ListMarketplaces(context.Background())
-		_, _ = pctl.ListPlugins(context.Background())
+		_, _, _ = pctl.ListMarketplaces(context.Background())
+		_, _, _ = pctl.ListPlugins(context.Background())
 		ref := appwire.PluginRefParams{Plugin: "missing", Marketplace: "missing"}
 		_, _, _ = pctl.Upgrade(ctx, ref)
 		_, _ = pctl.Enable(context.Background(), ref)

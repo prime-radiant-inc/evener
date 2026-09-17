@@ -478,7 +478,7 @@ func TestInstallWhoseCatalogLookupFailedReportsTheMarketplaceStoreChanged(t *tes
 	if !marketplaceChanged {
 		t.Fatal("Install(missing plugin) marketplaceChanged = false, want true: the lazy fetch already persisted")
 	}
-	mk, listErr := m.ListMarketplaces(context.Background())
+	mk, _, listErr := m.ListMarketplaces(context.Background())
 	if listErr != nil {
 		t.Fatalf("ListMarketplaces: %v", listErr)
 	}
@@ -535,7 +535,7 @@ func TestUpgradeWhoseSaveFailedAfterALazyFetchReportsTheMarketplaceStoreChanged(
 	// a pointer again (EditMarketplace re-sourcing, or a store repair): the
 	// installed entry stays, but Upgrade's own catalogPlugin call must fetch
 	// the marketplace again.
-	mk, err := m.ListMarketplaces(context.Background())
+	mk, _, err := m.ListMarketplaces(context.Background())
 	if err != nil {
 		t.Fatalf("ListMarketplaces: %v", err)
 	}
