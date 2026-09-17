@@ -86,6 +86,14 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			if params.Capabilities != nil {
 				m.detail.Capabilities = hubCapabilitiesFromWire(*params.Capabilities, m.detail.Capabilities.ResumeRequired)
 			}
+			// The waiting-question flag rides the same frame, for the same
+			// reason and under the same rule (#1613): it is otherwise
+			// snapshot-only, so without this the badge keeps saying "question
+			// waiting" after the answer until the next read. Absent means "no
+			// update", never "no question waiting".
+			if params.AskPending != nil {
+				m.detail.AskPending = *params.AskPending
+			}
 			// Refresh on any transition so the rest of the detail (and a set an
 			// older daemon did not send inline) reflects the source's current
 			// view. Without this, the cached idle snapshot keeps Interrupt=false
