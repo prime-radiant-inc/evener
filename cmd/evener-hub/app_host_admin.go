@@ -462,8 +462,8 @@ func (c *hubHostAdminController) hostAttached(host string) {
 	}
 }
 
-// hostNotificationBackoffOrAttach waits delay like hostNotificationBackoff but
-// returns true early when host's attach wakeup fires, reporting false only
+// hostNotificationBackoffOrAttach waits delay but returns true early when
+// the host's attach wakeup fires, reporting false only
 // when ctx ended first. The caller re-checks Online() and re-resolves the
 // client through the attached-only lookup, so a stale or spurious wakeup
 // cannot subscribe a dead generation: it just shortens one sleep.
@@ -509,18 +509,6 @@ func (c *hubHostAdminController) relayHostNotifications(ctx context.Context, hos
 				Params: notification.Params,
 			})
 		}
-	}
-}
-
-// hostNotificationBackoff waits delay, reporting false when ctx ended first.
-func hostNotificationBackoff(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
 	}
 }
 
