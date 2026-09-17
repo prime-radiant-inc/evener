@@ -24,8 +24,10 @@ export interface KeyedRevision {
   current(key: string, revision: number): boolean;
   /** Invalidates `key`: every reply for it still on the wire lands nothing. */
   retire(key: string): void;
-  /** Invalidates every key that has a read in flight, and forgets those reads. */
-  retireInFlight(): void;
+  /** Invalidates every key that has a read in flight, and forgets those reads.
+   * Returns the keys it retired, so a caller holding a cache entry per key -
+   * one this map alone cannot see - can settle what it just fenced. */
+  retireInFlight(): string[];
   /** Registers `read` as the read in flight for `key`. */
   begin(key: string, read: Promise<void>): void;
   /** The read in flight for `key`, if one is. */
@@ -54,8 +56,10 @@ export function createKeyedRevision(): KeyedRevision {
       revisions.set(key, revisionOf(key) + 1);
     },
     retireInFlight() {
-      for (const key of reads.keys()) revisions.set(key, revisionOf(key) + 1);
+      const keys = [...reads.keys()];
+      for (const key of keys) revisions.set(key, revisionOf(key) + 1);
       reads.clear();
+      return keys;
     },
     begin(key, read) {
       reads.set(key, read);
