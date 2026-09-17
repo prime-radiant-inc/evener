@@ -85,6 +85,20 @@ export function serializeSkillDocument(doc: ProseMirrorNode): SkillEditorValue {
   return { text, skillNames: canonicalSkillNames(names) };
 }
 
+/**
+ * The serialized text with every atom's label blanked to spaces, same length,
+ * so offsets stay valid. A chip DISPLAYS `/name` but is not text the user
+ * typed: scanning the raw serialization lets a chip at the end of the draft
+ * read as a slash command someone just started.
+ */
+export function maskSkillAtoms(value: SkillEditorValue): string {
+  let text = "";
+  parseSkillDocument(value).forEach((node) => {
+    text += node.isText ? node.text : " ".repeat(node.attrs.name.length + 1);
+  });
+  return text;
+}
+
 /** Map a UTF-16 serialized offset to a flat document position; bias snaps atom interiors. */
 export function textOffsetToDocumentPosition(doc: ProseMirrorNode, offset: number, bias: -1 | 1 = -1): number {
   let textOffset = 0;

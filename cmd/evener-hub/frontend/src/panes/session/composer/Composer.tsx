@@ -111,7 +111,7 @@ import { RepoLocation } from "./RepoLocation";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu, optionId as slashOptionId } from "./SlashCompletionMenu";
-import { parseSkillDocument, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
+import { maskSkillAtoms, parseSkillDocument, type SkillEditorValue, serializeSkillDocument } from "./skillDocument";
 import { recordStoplessComposer } from "./stoplessComposer";
 
 export interface ComposerProps {
@@ -928,7 +928,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (slashToken's own doc comment above) reopens on the
     // very next text change rather than staying closed indefinitely.
-    setSlashToken(parseSlashToken(value.text, caret));
+    setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
   }
 
   // commitSlashCompletion is Tab/Enter's (handleKeyDown below) and a mouse

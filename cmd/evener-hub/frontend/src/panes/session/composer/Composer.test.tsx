@@ -3966,6 +3966,41 @@ test("removing an attachment that joined a token to a chip keeps the editor and 
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
 });
 
+test("a chip at the end of the draft does not reopen the slash menu when its separator is removed", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_chip_without_separator";
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  });
+  const editor = textarea();
+
+  await user.type(editor, "Run /skill-1");
+  await user.click(slashOptions()[0]!);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /skill-1 ", skillNames: ["skill-1"] });
+
+  // A chip is a selection, not typed prose: dropping its separator leaves the
+  // label as the last thing in the draft, and that must not read as a slash
+  // command the user just started.
+  await user.keyboard("{Backspace}");
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /skill-1", skillNames: ["skill-1"] });
+  expect(screen.queryByTestId("composer-slash-menu")).toBeNull();
+});
+
 test("committing a skill during an IME composition leaves the menu open rather than losing it", async () => {
   const user = userEvent.setup();
   const ref = "ref_skill_commit_composing";
