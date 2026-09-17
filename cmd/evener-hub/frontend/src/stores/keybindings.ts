@@ -18,6 +18,7 @@ import { useStore } from "zustand";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
+import { readyGenerationCallback } from "./readyGenerationCallback";
 
 export type { KeybindingsStoreState };
 
@@ -62,7 +63,7 @@ function rewireClient(client: AppwireClientLike): void {
   // The loaded state belongs to the PREVIOUS hub: un-apply its overrides and
   // reset its payload before this client's first refresh can land.
   keybindingsStore.detachHub();
-  unwireReady = client.onReady(beginReadyGeneration);
+  unwireReady = client.onReady(readyGenerationCallback(client, () => wiredClient, beginReadyGeneration));
   if (client.state === "ready") beginReadyGeneration();
 }
 
