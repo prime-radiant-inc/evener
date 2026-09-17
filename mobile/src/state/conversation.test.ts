@@ -5,6 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   hydrateThread,
+  liveAskQuestions,
   QUEUE_UNAVAILABLE,
   SEND_UNAVAILABLE,
   sessionControls,
@@ -24,7 +25,6 @@ import type {
 import type {
   ActivityMember,
   MobileConversation,
-  MobileQuestionRef,
   MobileTimelineItem,
 } from "../conversation/project";
 import { projectConversation } from "../conversation/project";
@@ -2522,72 +2522,56 @@ describe("ConversationStore", () => {
       for (const text of texts) expect(bounded(text)).toBe(true);
     });
 
-    // A question row is the one kind with two readings of the same prose, so it
-    // has its own table below rather than a row in this one.
-
-    // A question row carries two readings of the same prose: the canonical
-    // values, which the composed answer must name exactly as the agent asked
-    // them, and a bounded display copy for the reader. Every prose field a
-    // renderer or the answer carries is in the bounded copy.
-    it.each([
-      ["header", (q: MobileQuestionRef) => q.display.header, (q: MobileQuestionRef) => q.header],
-      ["question", (q: MobileQuestionRef) => q.display.question, (q: MobileQuestionRef) => q.question],
-      ["why", (q: MobileQuestionRef) => q.display.why, (q: MobileQuestionRef) => q.why],
-      [
-        "ifUnanswered",
-        (q: MobileQuestionRef) => q.display.ifUnanswered,
-        (q: MobileQuestionRef) => q.ifUnanswered,
-      ],
-      [
-        "option label",
-        (q: MobileQuestionRef) => q.display.options[0]?.label,
-        (q: MobileQuestionRef) => q.options[0]?.label,
-      ],
-      [
-        "option detail",
-        (q: MobileQuestionRef) => q.display.options[0]?.detail,
-        (q: MobileQuestionRef) => q.options[0]?.detail,
-      ],
-    ] as const)("bounds a question's %s for display and keeps the canonical value", async (_field, read, canonical) => {
-      const service = new FakeConversationService();
-      service.openConv = makeConversation({
-        items: [
+    // A question row's own prose is bounded in place, like every other kind, and
+    // the fixture is built the way the app builds one: an ask_user item whose
+    // arguments carry the oversized text, projected through the model. The answer
+    // path is unaffected because it does not read these rows — it asks the model
+    // through the package's own rule, so it still names the uncut values.
+    it("bounds a question row's prose and leaves the model's asks whole", async () => {
+      const bigAsk = JSON.stringify({
+        questions: [
           {
-            kind: "question",
-            id: "r",
-            questions: [
-              {
-                key: "call:0",
-                callId: "call",
-                header: oversized,
-                question: oversized,
-                multiSelect: false,
-                why: oversized,
-                ifUnanswered: oversized,
-                options: [{ label: oversized, detail: oversized }],
-                display: {
-                  header: oversized,
-                  question: oversized,
-                  why: oversized,
-                  ifUnanswered: oversized,
-                  options: [{ label: oversized, detail: oversized }],
-                },
-              },
-            ],
-          } as unknown as MobileTimelineItem,
+            header: oversized,
+            question: oversized,
+            why: oversized,
+            if_unanswered: oversized,
+            options: [{ label: oversized, detail: oversized }],
+            multi_select: false,
+          },
         ],
       });
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        runningTurnThread([askUserItem("ask-1", bigAsk)]),
+      );
       const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
-      const published = store.getState().conversation?.items.find((item) => item.id === "r");
-      if (published === undefined || published.kind !== "question") throw new Error("row not published");
-      const question = published.questions[0];
-      if (question === undefined) throw new Error("no question");
-      const shown = read(question);
-      if (shown === undefined) throw new Error("display field missing");
-      expect(bounded(shown)).toBe(true);
-      // The canonical value is whole: the answer names what the agent asked.
-      expect(canonical(question)).toBe(oversized);
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      const row = rows(store).find((item) => item.kind === "question");
+      if (row === undefined || row.kind !== "question") throw new Error("no question row");
+      const shown = row.questions[0];
+      if (shown === undefined) throw new Error("no question");
+      const option = shown.options[0];
+      for (const text of [
+        shown.header,
+        shown.question,
+        shown.why,
+        shown.ifUnanswered,
+        option?.label,
+        option?.detail,
+      ]) {
+        if (text === undefined) throw new Error("prose field missing");
+        expect(bounded(text)).toBe(true);
+      }
+
+      // What the composer answers with comes from the model, uncut: a bounded
+      // label would name a choice the agent never offered.
+      const conversation = store.getState().conversation;
+      if (conversation === null) throw new Error("conversation gone");
+      const canonical = liveAskQuestions(conversation)[0];
+      expect(canonical?.header).toBe(oversized);
+      expect(canonical?.options[0]?.label).toBe(oversized);
+      expect(canonical?.ifUnanswered).toBe(oversized);
     });
 
     // Every text an activity row renders, top-level and per member: the label

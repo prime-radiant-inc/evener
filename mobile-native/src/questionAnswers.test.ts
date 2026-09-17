@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
 import type { AskQuestionRef } from "@evener/appwire-client";
+import { hydrateThread } from "@evener/appwire-client";
+import type { Thread } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/project";
+import { projectConversation } from "../../mobile/src/conversation/project";
 import {
   composeQuestionAnswers,
   pendingQuestions,
@@ -116,24 +119,69 @@ it("walks forward then returns to an unanswered question before sending", () => 
   expect(questionAdvanceTarget([question], {}, 0)).toBeUndefined();
 });
 
-// What the phone offers to answer is exactly what the projection rendered as a
-// question row: the projector builds one only for an ask the package says is
-// answerable now, and the wire's thread-level askPending says nothing about what
-// THIS window can answer.
-it("offers the question rows' refs", () => {
-  const conversation = {
-    askPending: false,
-    items: [
-      { kind: "user", id: "u1", markdown: "hi" },
-      { kind: "question", id: "ask-1", questions: [question] },
-    ],
-  } as unknown as MobileConversation;
-  expect(pendingQuestions(conversation)).toEqual([question]);
+// What the phone offers to answer is what the MODEL says is answerable, through
+// the package's own rule — the same call the projection's question rows come from,
+// so the refs are canonical (uncut) while the rows a reader scrolls carry the
+// display bound's copies. The wire's thread-level askPending is not consulted: it
+// can be true for an ask this window does not hold, where there is nothing here to
+// answer.
+it("offers the model's answerable asks", () => {
+  const conversation = projectConversation(
+    hydrateThread(
+      {
+        thread: {
+          id: "thread-1",
+          sessionId: "session-1",
+          preview: "",
+          ephemeral: false,
+          modelProvider: "anthropic",
+          createdAt: 0,
+          updatedAt: 0,
+          status: { type: "idle" },
+          cwd: "",
+          cliVersion: "",
+          source: "",
+          turns: [
+            {
+              id: "t1",
+              status: "completed",
+              itemsView: "default",
+              items: [
+                {
+                  id: "ask-1",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "ask_user",
+                  status: "completed",
+                  argumentsJson: JSON.stringify({
+                    questions: [
+                      {
+                        header: "Choice",
+                        question: "Choose",
+                        options: [{ label: "A", detail: "" }],
+                        multi_select: false,
+                      },
+                    ],
+                  }),
+                },
+              ],
+            },
+          ],
+          evener: { ref: "ref-1", askPending: false },
+        } as unknown as Thread,
+      },
+      "ref-1",
+      0,
+    ),
+  );
+  expect(pendingQuestions(conversation).map((ref) => ref.header)).toEqual(["Choice"]);
+  expect(conversation.items.some((row) => row.kind === "question")).toBe(true);
 });
 
-it("offers nothing when no row carries a question, whatever the wire's flag says", () => {
+it("offers nothing when nothing is answerable, whatever the wire's flag says", () => {
   const conversation = {
     askPending: true,
+    turns: [],
     items: [{ kind: "user", id: "u1", markdown: "hi" }],
   } as unknown as MobileConversation;
   expect(pendingQuestions(conversation)).toEqual([]);

@@ -148,7 +148,7 @@ export type MobileTimelineItem = (
   // The pending ask_user questions of one call, each carrying that call's id
   // (AskQuestionRef.callId); the composer renders them as interactive cards
   // with a single "Send answers" action.
-  | { kind: "question"; id: string; questions: MobileQuestionRef[] }
+  | { kind: "question"; id: string; questions: AskQuestionRef[] }
   | { kind: "failure"; id: string; title: string; detail: string }
   | { kind: "attachments"; id: string; items: AttachmentRef[] }
 ) & {
@@ -271,41 +271,6 @@ function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
     return attachmentRows(item.id, item.outputImages, "out:");
   }
   return undefined;
-}
-
-// One answerable question, twice over. The wire's own fields are canonical and
-// stay whole: the answer this client composes names the header, the chosen option
-// labels and the ifUnanswered text back to the agent that asked
-// (mobile-native/src/questionAnswers.ts's composeQuestionAnswers), so a cut value
-// would name a choice nobody offered. `display` is the same prose for a reader,
-// and it is what the store's display bound cuts — every renderer reads it
-// (mobile-native/src/TimelineItem.tsx, QuestionSheet.tsx), while selection
-// matching keeps using `options`.
-export interface MobileQuestionRef extends AskQuestionRef {
-  display: {
-    header: string;
-    question: string;
-    why?: string;
-    ifUnanswered?: string;
-    // Index-aligned with `options`: built from it, never reordered.
-    options: { label: string; detail?: string }[];
-  };
-}
-
-function withQuestionDisplay(question: AskQuestionRef): MobileQuestionRef {
-  return {
-    ...question,
-    display: {
-      header: question.header,
-      question: question.question,
-      ...(question.why === undefined ? {} : { why: question.why }),
-      ...(question.ifUnanswered === undefined ? {} : { ifUnanswered: question.ifUnanswered }),
-      options: question.options.map((option) => ({
-        label: option.label,
-        ...(option.detail === undefined ? {} : { detail: option.detail }),
-      })),
-    },
-  };
 }
 
 // --- pending ask_user questions ---------------------------------------------
@@ -432,7 +397,7 @@ function projectItem(
   if (questions) {
     return {
       kind: "final",
-      item: { kind: "question", id: item.id, questions: questions.map(withQuestionDisplay) },
+      item: { kind: "question", id: item.id, questions },
     };
   }
 

@@ -2,25 +2,22 @@ import {
   type AskAnswerItem,
   type AskQuestionRef,
   composeAskAnswers,
+  liveAskQuestions,
 } from "@evener/appwire-client";
-import type {
-  MobileConversation,
-  MobileQuestionRef,
-} from "../../mobile/src/conversation/project";
+import type { MobileConversation } from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
 >;
 export function pendingQuestions(
   conversation: MobileConversation | null,
-): MobileQuestionRef[] {
-  // The question rows themselves are the answer: the projection only builds one
-  // for an ask the package says is answerable now (project.ts's question branch
-  // over deriveAskQuestions), and the wire's thread-level askPending says nothing
-  // about what THIS window can answer.
-  return (conversation?.items ?? []).flatMap((item) =>
-    item.kind === "question" ? item.questions : [],
-  );
+): AskQuestionRef[] {
+  // Asked of the MODEL, with the package's own rule — the same call the
+  // projection's question rows come from (project.ts's askQuestionsByCall). The
+  // refs are therefore canonical: composeQuestionAnswers names the header, the
+  // chosen labels and the ifUnanswered text exactly as the agent asked them,
+  // while the rows a reader scrolls carry the display bound's cut copies.
+  return conversation === null ? [] : liveAskQuestions(conversation);
 }
 export function composeQuestionAnswers(
   questions: AskQuestionRef[],

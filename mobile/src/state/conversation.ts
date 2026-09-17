@@ -377,28 +377,26 @@ function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelin
     case "failure":
       return { ...item, title: bound(item.title), detail: bound(item.detail) };
     case "question":
-      // The display copy, all of it. The canonical fields beside it stay whole
-      // because the answer this client composes names the header, the chosen
-      // labels and the ifUnanswered text back to the agent that asked
-      // (project.ts's MobileQuestionRef): answering with a cut value would name a
-      // choice nobody offered. Every renderer reads `display`.
+      // Every prose field a reader sees, bounded in place like any other row. The
+      // answer this client composes does NOT read these rows — it asks the model
+      // for the canonical refs (questionAnswers.ts's pendingQuestions →
+      // liveAskQuestions) — so a cut label here can never name a choice the agent
+      // did not offer.
       return {
         ...item,
         questions: item.questions.map((question) => ({
           ...question,
-          display: {
-            ...question.display,
-            header: bound(question.display.header),
-            question: bound(question.display.question),
-            ...(question.display.why === undefined ? {} : { why: bound(question.display.why) }),
-            ...(question.display.ifUnanswered === undefined
-              ? {}
-              : { ifUnanswered: bound(question.display.ifUnanswered) }),
-            options: question.display.options.map((option) => ({
-              label: bound(option.label),
-              ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
-            })),
-          },
+          header: bound(question.header),
+          question: bound(question.question),
+          ...(question.why === undefined ? {} : { why: bound(question.why) }),
+          ...(question.ifUnanswered === undefined
+            ? {}
+            : { ifUnanswered: bound(question.ifUnanswered) }),
+          options: question.options.map((option) => ({
+            ...option,
+            label: bound(option.label),
+            ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
+          })),
         })),
       };
     case "activity":
