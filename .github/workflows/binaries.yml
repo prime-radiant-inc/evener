@@ -83,6 +83,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    concurrency:
+      group: snapshot-publish
+      cancel-in-progress: true
     steps:
       # The steps below run git (tag/push) and gh (release view/create/upload)
       # against this repository, and both need a checkout: git refuses to run
@@ -109,4 +112,8 @@ jobs:
         run: |
           gh release view "snapshot" >/dev/null 2>&1 || \
             gh release create "snapshot" --title "Evener snapshot" --notes "Latest successful build from main." --prerelease
-          gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber
+          for attempt in 1 2 3; do
+            gh release upload "snapshot" dist/*.tar.gz dist/checksums.txt --clobber && exit 0
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          exit 1
