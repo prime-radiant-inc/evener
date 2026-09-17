@@ -5261,6 +5261,47 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.askPending).toBe(false);
     });
 
+    // The hub's own clear, end to end (#1629): the snapshot said a question was
+    // waiting, the user answers, and the status frame that follows carries
+    // askPending: false — always stamped now, so false is a real clear rather
+    // than "no update". Both halves of the derivation go quiet: the answering
+    // user message takes the ask out of the live-ask window, and the frame takes
+    // the wire flag down. No reread, no heuristic.
+    it("reports no pending ask after the answer and the hub's own clear", async () => {
+      const store = await openProjectedThread(
+        makeThread({
+          evener: evenerWith({ askPending: true, activeTurnId: "t1" }),
+          turns: [
+            makeTurn({ id: "t1", items: [askUserItem("ask-1", VALID_ASK_ARGS)], status: "inProgress" }),
+          ],
+        }),
+      );
+      expect(store.getState().conversation?.questionsPending).toBe(true);
+
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: userMessageItem("answer-1", "I choose A"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "active" },
+          askPending: false,
+        },
+      } as AnyNotification);
+
+      expect(store.getState().conversation?.askPending).toBe(false);
+      expect(store.getState().conversation?.questionsPending).toBe(false);
+      expect(rows(store).some((row) => row.kind === "question")).toBe(false);
+    });
+
     it("reports a live ask as pending before any snapshot says so", async () => {
       const { store } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
