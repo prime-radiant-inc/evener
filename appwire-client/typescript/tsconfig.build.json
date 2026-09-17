@@ -89,6 +89,7 @@
     "state/credentials/instances.ts",
     "state/extensions/index.ts",
     "state/extensions/keyedRevision.ts",
+    "state/extensions/launchLayer.ts",
     "state/extensions/listRevision.ts",
     "state/extensions/marketplaces.ts",
     "state/extensions/plugins.ts",
