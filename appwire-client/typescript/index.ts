@@ -212,6 +212,7 @@ export type {
 export {
   createKeybindingsStore,
   discardStoredDraft as discardStoredKeybindingDraft,
+  draftCheckpoint as validateKeybindingDraftCheckpoint,
   fromWireOverrides,
   keybindingsSupport,
 } from "./keybindingsStore";
@@ -483,6 +484,7 @@ export type {
 export {
   createTranscriptDisplayStore,
   discardStoredDraft as discardStoredTranscriptDraft,
+  draftCheckpoint as validateTranscriptDraftCheckpoint,
   fromWireChange,
   InvalidPatchResponseError,
   isViewportClass,

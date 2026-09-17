@@ -346,7 +346,10 @@ function keybindingRules(value: unknown): KeybindingsRule[] {
   });
 }
 
-function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
+/** Exported so a host that classifies a stored draft before any store exists
+ * (a client-independent local preview) uses the SAME decoder the store
+ * restores through, rather than a second, driftable one. */
+export function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
   if (value === null || typeof value !== "object" || Array.isArray(value)) invalidDraft();
   const item = value as Record<string, unknown>;
   if (

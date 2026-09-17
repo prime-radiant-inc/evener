@@ -340,8 +340,11 @@ function invalidDraft(): never {
 }
 
 /** The strict checkpoint check the draft editor runs on a restored
- * checkpoint. Throws on anything else. */
-function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
+ * checkpoint. Throws on anything else. Exported so a host that classifies a
+ * stored draft before any store exists (a client-independent local preview)
+ * uses the SAME decoder the store restores through, rather than a second,
+ * driftable one. */
+export function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
   if (!isRecord(value)) invalidDraft();
   if (
     typeof value.id !== "string" ||
