@@ -1,5 +1,6 @@
-import type { ClientIdentity, ClientIdentityStorage, SecureRandomSource } from "@evener/appwire-client/state/mutation";
+import type { ClientIdentity, ClientIdentityStorage } from "@evener/appwire-client/state/mutation";
 import { createClientIdentity } from "@evener/appwire-client/state/mutation";
+import { browserRandomSource } from "./browserRandomSource";
 
 // sessionStorage is per-tab, stable across that tab's reloads, which is what
 // the durable mutation outbox's provenance rule (see the package) needs to
@@ -12,23 +13,6 @@ const sessionStorageAdapter: ClientIdentityStorage = {
   getItem: (key) => globalThis.sessionStorage?.getItem(key) ?? null,
   setItem: (key, value) => globalThis.sessionStorage?.setItem(key, value),
 };
-
-// globalThis.crypto is read once, guarded: touching the property at all can
-// throw in a locked-down page, and this app's target has no other random
-// source to fall back to, so a throw here still hands createSecureUUID an
-// empty source (its own documented non-crypto id) instead of crashing.
-function browserRandomSource(): SecureRandomSource {
-  try {
-    const crypto = globalThis.crypto;
-    return {
-      randomUUID: typeof crypto?.randomUUID === "function" ? () => crypto.randomUUID() : undefined,
-      getRandomValues:
-        typeof crypto?.getRandomValues === "function" ? (array) => crypto.getRandomValues(array) : undefined,
-    };
-  } catch {
-    return {};
-  }
-}
 
 let instance: ClientIdentity = createClientIdentity(sessionStorageAdapter, browserRandomSource());
 
