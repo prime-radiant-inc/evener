@@ -59,8 +59,15 @@
 //     raised is settled (nothing on the wire will lower it), AND the intent
 //     survives: something asked for this list and never got it, so the read is
 //     issued again once the replacement is ready. The intent is not in the
-//     store's data - a read that never landed left none - so it is read off
-//     the state the fence is about to clear.
+//     store's data - a read that never landed left none - so it is read off the
+//     state the fence is about to clear, and LATCHED.
+//
+//   the replacement is named before it is dialled | the same thing, in two
+//     calls: a host connects its fresh client and only then awaits it, so the
+//     store hears "idle" first. That call fences the read and returns, having
+//     settled the flag; the "ready" that follows would find nothing left to
+//     act on. The latch is what carries the intent between the two, and only
+//     reset() clears it.
 //
 // Replacing the identity also fences every reply the previous connection still
 // owes (see connectionChanged), so neither its answers nor its announcements
@@ -149,6 +156,12 @@ export function createStoreLifecycle<S>(
   // Whether this store has ever had a ready connection: what tells a
   // reconnection from a first connection.
   let hasBeenReady = false;
+  // Whether anything has asked for the list. It is deliberately NOT read off
+  // the store's data: a read that never landed leaves none, and the fence that
+  // cancels such a read settles the flag it raised. So the intent is latched
+  // here and lives until reset(), the way the credentials core keeps
+  // requestedList outside its own listing state.
+  let wanted = false;
   // Whether the host names the subscription as its connection; see the factory
   // doc. Set the first time connectionChanged mentions it, which a host using
   // a port never does.
@@ -205,6 +218,7 @@ export function createStoreLifecycle<S>(
       connection = { client: null, state: "idle" };
       hasBeenReady = false;
       subscriptionIsTheConnection = false;
+      wanted = false;
       fenceInFlight();
       const store = options.store();
       store.setState(store.getInitialState());
@@ -221,8 +235,11 @@ export function createStoreLifecycle<S>(
       if (client === previous.client && state === previous.state) return;
       const replaced = client !== previous.client;
       // Before the fence, which settles the flag a read in flight raised and
-      // so erases the only evidence that one was asked for.
-      const wantsList = options.wantsList(options.store().getState());
+      // so erases the only evidence that one was asked for. Latched rather
+      // than used here and forgotten: a host names its fresh client before it
+      // dials it, so the call that sees the interrupted read is usually NOT
+      // the call that can re-issue it.
+      wanted = wanted || options.wantsList(options.store().getState());
       connection = { client, state };
       // A read scheduled on the connection that is changing has nothing left
       // to say: on the way down it would fire against a socket that is gone
@@ -259,7 +276,7 @@ export function createStoreLifecycle<S>(
       // A first connection is not a reconnection: nothing was missed, because
       // there was nothing to miss it with.
       if (away) options.onNotified?.();
-      if (!wantsList) return;
+      if (!wanted) return;
       void options.refetch(options.store().getState());
     },
     dispose() {
