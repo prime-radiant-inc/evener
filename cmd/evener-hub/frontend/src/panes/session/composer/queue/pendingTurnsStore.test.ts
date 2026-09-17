@@ -14,6 +14,7 @@ import { useColdStartSkeleton } from "../../coldStart";
 import { readComposerDraft, writeComposerDraft } from "../draft";
 import {
   discardRecoveryPendingTurn,
+  pendingTurnEntries,
   refreshPendingTurnsProjection,
   resendRecoveryPendingTurn,
   resetPendingTurnsStoreForTests,
@@ -105,6 +106,14 @@ afterEach(() => {
   // getMutationRuntime() (no setMutationStorageForTests override) discovers
   // and re-pins.
   globalThis.indexedDB = new IDBFactory();
+});
+
+test("the plain pendingTurnEntries read returns the same empty-array reference when nothing is pending", async () => {
+  await connect();
+  const first = pendingTurnEntries("ref_a");
+  const second = pendingTurnEntries("ref_a");
+  expect(first).toEqual([]);
+  expect(first).toBe(second);
 });
 
 test("an action becomes pending only after its durable enqueue commits", async () => {

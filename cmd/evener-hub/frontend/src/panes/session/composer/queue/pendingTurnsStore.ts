@@ -380,7 +380,8 @@ export function usePendingTurnEntries(ref: string, method?: PendingMethod): Pend
 // rendered them: for the press handlers that re-derive their verdict at the
 // press (stores/liveControls.ts is the rule; this is its pending-send input).
 export function pendingTurnEntries(ref: string, method?: PendingMethod): PendingTurnEntry[] {
-  return pendingTurnsStore.pendingTurnEntries(ref, method);
+  const entries = pendingTurnsStore.pendingTurnEntries(ref, method);
+  return entries.length > 0 ? entries : NO_ENTRIES;
 }
 
 export function useAwaitingFirstFrameSend(ref: string): boolean {
