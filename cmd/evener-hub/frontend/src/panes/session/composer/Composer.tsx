@@ -874,11 +874,18 @@ export function Composer({ ref, focused }: ComposerProps) {
     recoveryFenced: boolean,
   ): { canSend: boolean; canQueue: boolean } {
     // A recovery-fenced local session has no send/queue until the user resumes
-    // it. The wire already advertises send=false for this snapshot, but the
-    // availability table's plain-send default for a notLoaded status would
-    // otherwise route a turn/start - the implicit resume-on-Send this branch
-    // removed. The explicit Resume action is the only thing that resumes it.
-    if (target.ref.startsWith("local:") && target.status.type === "notLoaded" && recoveryFenced) {
+    // it, in WHATEVER non-active status the snapshot carries. A stopped
+    // session reads notLoaded, but the same restart-blocking obligation
+    // survives into a live idle snapshot (resumeRequired, send:false), and
+    // the availability table's answer for either shape is its plain-send
+    // default - it never consults capabilities.send for an idle status.
+    // Without the fence both route a turn/start, the implicit resume-on-Send
+    // this branch removed. The explicit Resume action is the only thing that
+    // resumes it. An ACTIVE fenced session keeps the table's own answer: a
+    // live turn is already running, so its queue mode carries no implicit
+    // resume, and its presses still reach their own refusal gates (the
+    // skillInput capability gate among them).
+    if (target.ref.startsWith("local:") && recoveryFenced && target.status.type !== "active") {
       return { canSend: false, canQueue: false };
     }
     const tableAvailability = deriveSendQueueAvailability({

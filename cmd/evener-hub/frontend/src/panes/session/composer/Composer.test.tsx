@@ -3351,6 +3351,38 @@ test("a fenced stopped local session that advertises send renders a disabled Sen
   expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
 });
 
+// Regression for the RoboRev Medium on PR 1393 (fee4eb8): the local recovery
+// fence only applied to notLoaded snapshots. A fenced local session can also
+// hydrate LIVE - idle with resumeRequired:true and send:false - and the
+// availability table falls through to plain-send mode for that shape (it
+// never consults capabilities.send for an idle status), so Send rendered
+// ENABLED and routed to turn/start despite the store's restart-blocking
+// obligation. The fence now covers a local target in whatever status it
+// hydrates as, for as long as the obligation stands.
+test("a live fenced idle local session renders a disabled Send and sends no turn/start", async () => {
+  const user = userEvent.setup();
+  const ref = "local:live-fenced-idle";
+  const fake = await mountComposer(ref, {
+    status: { type: "idle" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  const editor = textarea();
+  await user.click(editor);
+  await user.type(editor, "one more thing");
+  expect(submitButton().disabled).toBe(true);
+  // The chord reaches the form by the same route the button does; it refuses too.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // --- interrupt ---------------------------------------------------------------
 
 test("clicking Stop calls turn/interrupt", async () => {
