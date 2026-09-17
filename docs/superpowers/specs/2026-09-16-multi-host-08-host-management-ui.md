@@ -415,9 +415,9 @@ before any retry — `add` compares the listed entry hash for the name,
   `mutationId` never carries `expectedGeneration` either — without it a
   concurrent update between the `list` read and the retry is undetectable, so
   keyless `add` retries are non-retryable as guarded updates and the stale-entry
-  guarantee covers keyed retries only (`update` and `remove` require both fields server-side
+  guarantee covers keyed retries only (`update` and `remove` require all three fields server-side
   and takes no keyless path — see below; the UI always sends `mutationId` with
-  `expectedGeneration`, required together — a keyed replay returns the receipt
+  `expectedGeneration` and `expectedIncarnationId`, required together — a keyed replay returns the receipt
   before the stale check, see below; a caller-constructed keyless
   `expectedGeneration` carries no receipt to recover and is a validation
   refusal, never a guarded update). Read-after-unknown compares only the effective `HostConfig`
@@ -434,20 +434,20 @@ before any retry — `add` compares the listed entry hash for the name,
   re-reads `list` and retries without `expectedGeneration` only while the
   mutation is still uncommitted — the row still absent — so retries converge
   without double-applying. `update` and `remove` take no keyless path at all —
-  both `mutationId` and `expectedGeneration` are required on each (extending
+  `mutationId`, `expectedGeneration`, and `expectedIncarnationId` are required on each (extending
   the round-twenty-one unguarded-remove rule — r21 kept both fields optional
   and enforced the incarnation guard through a server-side unguarded-retry
   refusal, but optional fields let a first-time keyless call and a lost-response
   retry after re-add arrive identically, so no server-side refusal can tell them
   apart: optional is unworkable either way, and the chosen shape is
   required-key, not server-issued request identity): an `update` or `remove`
-  missing either field is a validation refusal committing nothing (surfaced
-  inline like any validation error; the UI always sends both, re-reading `list`
-  first when the generation is unknown). The keyless-retry rule above therefore
+  missing any field is a validation refusal committing nothing (surfaced
+  inline like any validation error; the UI always sends all three, re-reading `list`
+  first when the generation or incarnation is unknown). The keyless-retry rule above therefore
   covers `add` only — a lost-response `update`/`remove` retry always carries its
   original key and follows the single superseded-receipt rule (returns the
   recorded `committed` receipt, never a fresh destructive apply), an
-  `update`/`remove` carrying a fresh key against a superseded generation refuses
+  `update`/`remove` carrying a fresh key against a superseded generation or a superseded incarnation refuses
   as `stale-entry`, and no unkeyed `update`/`remove` ever stages against a live
   incarnation.**
 **Processing order is fixed — mirroring
@@ -455,10 +455,10 @@ before any retry — `add` compares the listed entry hash for the name,
 scoping work, and the round-twenty-three presence rule — "FIRST" never meant
 before parameter presence):** receipt dedup by (mutationId, name, kind, current
 generation, current incarnation id) runs FIRST for every `add`/`update`/`remove` — subject only to
-`update`'s and `remove`'s parameter-presence gates (missing `mutationId` or
-`expectedGeneration` → validation refusal before any dedup lookup, see
+`update`'s and `remove`'s parameter-presence gates (missing `mutationId`,
+`expectedGeneration`, or `expectedIncarnationId` → validation refusal before any dedup lookup, see
 `update`/`remove`) — a dedup match returns
-the recorded receipt with no `expectedGeneration` VALUE check, gate, or remnant
+the recorded receipt with no `expectedGeneration`/`expectedIncarnationId` VALUE check, gate, or remnant
 validation; only a non-replay proceeds into those checks (extending the
 round-twenty-five processing-order paragraph, which keyed the lookup on the
 4-tuple without the incarnation id, so two incarnations sharing a generation —
@@ -564,14 +564,26 @@ per the absent-when-unknown rule.
   field except `name` — **names are immutable** (they key source IDs, cached
   rows, manager state, and file entries; renaming is remove + add, documented
   in the UI). Update never inserts a new name; only `add` can. **An update
- requires `mutationId` and `expectedGeneration` together (like `remove` —
- params `{name, entry, mutationId, expectedGeneration}`, see Protocol types;
+requires `mutationId`, `expectedGeneration`, AND `expectedIncarnationId`
+together (like `remove` —
+params `{name, entry, mutationId, expectedGeneration, expectedIncarnationId}`,
+see Protocol types;
  extending the round-twenty-four update contract, which left
- `expectedGeneration` optional — see the required-key protocol change):
- presence of both is validated before the dedup check (missing either →
+`expectedGeneration` optional — see the required-key protocol change — and
+extending the round-thirty-two incarnation work, which tagged handles and
+receipts by incarnation but left the `update`/`remove` guards
+generation-only, so a new incarnation reusing the remnant's generation was
+indistinguishable from it: after teardown a stale client with a new mutation
+ID could update or remove the new host. What changes is the guard — the
+incarnation id is exposed on every `list`/`status` row beside the generation,
+and the caller echoes both back):
+presence of all three is validated before the dedup check (missing any →
  validation refusal committing nothing), and `expectedGeneration` is checked
  under the mutation lock against the target's current generation before
- staging, past the dedup check (a replay never reaches it) — a mismatch is a
+staging, past the dedup check (a replay never reaches it) — AND
+`expectedIncarnationId` is checked under the same lock against the target's
+current incarnation id before staging (a replay never reaches it) — a
+mismatch on either is a
  typed `stale-entry` refusal that commits nothing (the UI re-reads the row
  and retries against the current generation). A delayed retry of an `update` that carries no matching
   current-generation receipt and lands after an intervening `update` advanced
@@ -612,19 +624,19 @@ per the absent-when-unknown rule.
   are **not** silently dropped: the source's last-known-good snapshot is
   retained as an explicit **tombstone** (see data flow), and the UI warns
   when the host has live remote threads (host data on the remote is
-  untouched). **Remove requires both `mutationId` and `expectedGeneration`
- together (params `{name, mutationId, expectedGeneration}` — both required,
- see Protocol types): presence of both is validated before the dedup check
- (missing either → validation refusal committing nothing), and
- `expectedGeneration` is checked under the mutation lock before staging,
+  untouched). **Remove requires `mutationId`, `expectedGeneration`, and `expectedIncarnationId`
+ together (params `{name, mutationId, expectedGeneration, expectedIncarnationId}` — all three required,
+ see Protocol types): presence of all three is validated before the dedup check
+(missing any → validation refusal committing nothing), and
+`expectedGeneration` plus `expectedIncarnationId` are checked under the mutation lock against the target's current (generation, incarnation id) pair before staging,
  past the dedup check
  (a replay never reaches it) — a mismatch is the same typed `stale-entry`
-  refusal committing nothing — and the UI retry path always sends both
-  (re-read from `list` first when the generation is unknown). A lost-
+ refusal committing nothing — and the UI retry path always sends all three
+ (re-read from `list` first when the generation or incarnation is unknown). A lost-
   response `remove` retry that lands after a re-add minted a new generation
   and carries no recorded same-key receipt (a fresh key) therefore refuses as stale instead of tearing
  down the new incarnation — enforced server-side under the mutation lock
- (a `remove` carrying a fresh key against a superseded generation refuses as
+ (a `remove` carrying a fresh key against a superseded generation or a superseded incarnation refuses as
  `stale-entry`: a lost response plus a re-add leaves a retry with no recorded
  same-key receipt holding no incarnation handle, and no client re-read can
  recover one — extending the round-twenty-one
@@ -816,12 +828,31 @@ cannot produce those fields), keyed by the host's registry (generation,
  operation-store file — which the stash restore cannot touch, since the
  rename replaces sidecar bytes only — then restores the prior sidecar bytes
  from the stash, then re-inserts the purged rows in a second store write,
- then clears the compensation record. Boot reconciles live compensation
- records before serving (re-inserting their rows, then clearing), so a crash
- at any point of compensation still converges to the restored sidecar's view
- with its tokens intact — the compensation record survives the sidecar
- restoration by construction, and the restored sidecar carries no
- `pendingStoreSync` intent for the generic rules below to misread. Boot reconciles both
+ then clears the compensation record (extending the round-thirty-two
+ compensation, which persisted the purged rows but named no phase and
+ restored the sidecar before the rows: a crash after the record persist but
+ before the sidecar restore left boot re-inserting purged rows and clearing
+ the record while the new sidecar still held `pendingStoreSync` — the
+ generic reconciliation could re-purge those rows, the stash was explicitly
+ ignored, and new-sidecar state with old tokens was lost. What changes is
+ the phase plus the order — the `pendingCompensation` record carries
+ `phase` (`compensating-sidecar` → `compensating-rows` → `compensating-clear`)
+ plus the stash reference the sidecar restore must apply, and the restorer
+ advances the phase in its own store write per step: sidecar restore FIRST
+ (stash bytes back, phase to `compensating-rows`), THEN the row re-insert
+ (phase to `compensating-clear`), then the record clear. Boot reconciles a
+ live compensation record by phase, never by blind re-insert: a record still
+ in `compensating-sidecar` restores the sidecar from the referenced stash
+ before touching any rows; a record in `compensating-rows` verifies the
+ restored sidecar is in place, then re-inserts exactly the rows the restored
+ sidecar's generation revalidates; a record in `compensating-clear` clears
+ without resurrecting rows (the rows are already converged — clearing the
+ pending intent without re-inserting is the roll-forward, never a second
+ resurrect). A crash at any point of compensation therefore still converges
+ to the restored sidecar's view with its tokens intact — the compensation
+ record survives the sidecar restoration by construction, and the restored
+ sidecar carries no `pendingStoreSync` intent for the generic rules below
+ to misread). Boot reconciles both
   directions before serving
   (extending the round-eighteen intent work — r18 re-applied and dropped but
   never cleared a stale intent after convergence, so intents lingered across
@@ -1241,8 +1272,10 @@ controller-side operation records; this component defines a
   a durable per-record state: the enum now names all six), the persisted
   orphan boundary identity — the tagged platform-specific boundary below
   (Linux: cgroup identity + launcher-observed pid/start time bound to the
-  pre-spawn nonce; Darwin: process-group/session + launcher-
-  observed pid/start time — present exactly on `orphan-unverified` records,
+  pre-spawn nonce (one (pid, startTime, nonce) marker per spawned process
+  where the boundary holds multiple SSH subprocesses); Darwin:
+  process-group/session + launcher-
+  observed pid/start time (likewise one marker per member) — present exactly on `orphan-unverified` records,
   exposed as `orphanBoundary` on the wire record), progress entries
   (timestamped, bounded), terminal result,
 timestamps, the **pinned host generation (the incarnation the record ran
@@ -1421,7 +1454,18 @@ returns distinguishable records and the current incarnation is selected by
   the kernel-owned (pid, start time) pair bound to the persisted nonce —
   and unverifiable means fail closed, never ignore-the-nonce). On Darwin the reap runs
   process-table enumeration of the persisted (pgid, session id) pair through
-  the same `agent/envctx` Darwin probe seam as `probes_darwin.go`, and every
+  a dedicated process-boundary API (a new `agent/execenv` boundary-enumeration
+  seam — NOT the `agent/envctx` probe seam: `agent/envctx`'s `Probes`
+  (`collector.go`) exposes only `Now`/`GitBranch`/`Load`/`Memory`/`Disk`
+  (load, memory, and disk probes in `probes_darwin.go`/`probes_linux.go`),
+  with no process-enumeration entry, so routing the reap through it was
+  unimplementable as written — extending the round-thirty-two Darwin reap,
+  which cited that seam for enumeration: what changes is the seam — the
+  implementing PR adds the boundary-enumeration function beside the existing
+  `process_group_unix.go`/`detach_unix.go` process-group seams, and the
+  Linux and Darwin arms stay asymmetric only because the kernels are: Linux
+  enforces membership in cgroupfs while Darwin has no cgroup or job-object
+  primitive, so Darwin enumerates the (pgid, session id) pair instead), and every
   enumerated member is verified against a launcher-observed marker before
   signaling: the worker's `setsid`-detached launcher persists the spawned
   child's observed pid plus its process start time beside the nonce, and boot
@@ -1608,19 +1652,34 @@ returns distinguishable records and the current incarnation is selected by
   timeout therefore leaves a terminal record plus a closed host, never a
   terminal record plus an operable one — the host is operable again only
   after fencing is confirmed, never merely after the gate released).** The
-  wrapper's first commands
-  under the new epoch kill (bounded kill context) and wait for exit (bounded
-  wait context) of the superseded epoch's
-  already-running commands (remote kill of the prior epoch's lease-tracked
-  entries with exit confirmation — each lease entry carries an ownership
-  token: the remote PID's start time, or a per-spawn nonce minted by the
-  wrapper at registration, or the remote cgroup/job-object membership where
-  the platform supports it — verified on the remote before signaling, mirroring
-  the local boundary-plus-nonce rule above, so a reused PID on the target
-  host never kills unrelated work) and only then
-  advance the guard (compare-and-advance — an older epoch never
-  overwrites a newer one, so a
-  late orphan cannot move the guard backward); every mutating remote step
+  wrapper's first command under the new epoch is a preemptive
+  fence-takeover — one atomic helper-mediated operation that revokes the
+  superseded epoch and takes over the exclusive per-host remote lease BEFORE
+  any kill/wait (extending the round-thirty-two fencing, which ordered
+  kill/wait before the guard advance while old commands held the exclusive
+  per-host lease across their guarded actions: the new worker could not
+  acquire the lease it needed to fence them, and a lease released between
+  kill and guard advance let the old worker reacquire it. What changes is
+  the order plus the primitive — the takeover lands first, atomically: the
+  helper revokes the old epoch's lease ownership, installs the new epoch as
+  the lease holder, and records the fence state (fencing epoch, superseded
+  epoch, monotonic fence sequence) in the same atomic step, so the old
+  worker's lease is dead before it can reacquire and the new worker holds
+  the lease it kills under); only then, holding the taken-over lease, does
+  the new worker kill (bounded kill context) and wait for exit (bounded
+  wait context) the superseded epoch's already-running commands (remote kill
+  of the prior epoch's lease-tracked entries with exit confirmation — each
+  lease entry carries an ownership token: the remote PID's start time, or a
+  per-spawn nonce minted by the wrapper at registration, or the remote
+  cgroup/job-object membership where the platform supports it — verified on
+  the remote before signaling, mirroring the local boundary-plus-nonce rule
+  above, so a reused PID on the target host never kills unrelated work),
+  and only then advances the guard (compare-and-advance — an older epoch
+  never overwrites a newer one, so a late orphan cannot move the guard
+  backward — with the fence state held through the advance: the takeover's
+  fence record persists until the guard advance lands, so no window exists
+  where the lease is released but the guard has not advanced); every
+  mutating remote step
   after the advance re-presents the epoch and re-checks it against the guard
   immediately before its irreversible action — a step whose presented epoch
   no longer equals the guard refuses server-side and aborts the operation.
@@ -1672,13 +1731,18 @@ returns distinguishable records and the current incarnation is selected by
   overlap or replace live remote work. What changes is the host-side proof —
   the delivery step is permitted only after a host-side atomic
   bootstrap/fencing primitive proves the target truly bare: the unfenced
-  delivery opens by atomically claiming a controller-scoped bootstrap guard
-  on the host itself (a single atomic create-if-absent of a guard entry
-  naming this controller's fencing epoch — concurrent claimants serialize on
-  the host, exactly one wins), then verifies no foreign process or foreign
-  guard holder is live (no running evener-managed process outside the
+  delivery opens by atomically claiming AND quiescing through a pre-existing
+  trusted host-side primitive (a single atomic claim-plus-quiesce naming
+  this controller's fencing epoch — concurrent claimants serialize on the
+  host, exactly one wins, and the quiesce holds for the entire delivery so
+  no process or controller starting after the claim can overlap it — never
+  an ordinary-SSH claim-then-check pair, whose check cannot cover
+  mid-delivery starts; where no such host-side primitive exists the
+  delivery is unavailable — out-of-band helper provisioning is required),
+  verifying no foreign process or foreign guard holder is live as part of
+  the same atomic quiesce (no running evener-managed process outside the
   claimed guard's ownership, no live foreign guard claim), and only then
-  delivers; a lost claim race or any live foreign presence refuses
+  delivers; a lost claim race, an unavailable primitive, or any live foreign presence refuses
   fail-closed with the typed `fencing-helper-absent` refusal (the helper gate
   below) —
   the exemption never degrades to overwrite — so the bare-host proof holds
@@ -1692,17 +1756,32 @@ returns distinguishable records and the current incarnation is selected by
   only at the finalizing `helperInstalled` write: a crash after remote
   install/launch but before that write left the host still never-provisioned
   with the exemption open, so the next attempt ran unfenced a second time
-  while the crashed attempt's remote work might still run. What changes is
-  that the unfenced exception closes after ANY attempted bootstrap — the
-  attempt fence lands before the first remote side effect, so a crash before
-  the `helperInstalled` marker lands leaves the host attempt-fenced, never
-  never-provisioned again): a host carrying the attempt fence without
-  `helperInstalled` takes the fenced path on every later attempt — recovery
-  first re-probes the remote and verifies no bootstrapped process from the
-  crashed attempt is live (or the operator repairs out-of-band through the
-  one-time migration path below), and only then runs the next mutation under
-  the worker's persisted epoch — and a retry racing the finalize replays
-  under dedup rather than running a second delivery. No other mutating step shares the exemption): verification is a
+  while the crashed attempt's remote work might still run — and extending
+  the round-thirty-two bootstrap, whose host-side atomic guard-file claim
+  plus process check ran over ordinary SSH: the check cannot stop another
+  process or controller starting after the check during delivery, so the
+  stated no-overlap guarantee was unenforceable on the one unfenced path.
+  What changes is that the unfenced exception closes after ANY attempted
+  bootstrap AND the delivery itself runs under a pre-existing trusted
+  host-side quiesce — the attempt fence lands before the first remote side
+  effect, so a crash before the `helperInstalled` marker lands leaves the
+  host attempt-fenced, never never-provisioned again; and the first-ever
+  delivery is permitted only through a host-side primitive that atomically
+  claims AND quiesces the host for the entire delivery (a pre-existing
+  trusted primitive — the target's own atomic claim-plus-quiesce, never an
+  ordinary-SSH claim-then-check pair: the quiesce holds from the claim
+  through delivery completion, so no process or controller starting
+  mid-delivery can overlap it; where no such host-side primitive exists
+  the operator provisions the helper out-of-band and the unfenced exception
+  is unavailable — the delivery refuses fail-closed with
+  `fencing-helper-absent` exactly like every other helper-less path): a
+  host carrying the attempt fence without `helperInstalled` takes the fenced
+  path on every later attempt — recovery first re-probes the remote and
+  verifies no bootstrapped process from the crashed attempt is live (or the
+  operator repairs out-of-band through the one-time migration path below),
+  and only then runs the next mutation under the worker's persisted epoch —
+  and a retry racing the finalize replays under dedup rather than running a
+  second delivery. No other mutating step shares the exemption): verification is a
   read-only pre-fence check and
   installation is never an exempt pre-mutation step otherwise (extending the
  round-twenty-one helper work — r21 ran install-or-verify as an unfenced
@@ -2189,7 +2268,7 @@ the TTL read as `teardown-unknown-key` not-found instead of
   until that name's tombstone expires (never pruned by the count/TTL bound
   above while the tombstone lives); a same-key `remove` retry naming a
   count/TTL-pruned generation therefore never fresh-applies against the
-  re-added incarnation — the UI's `expectedGeneration` guard is the first
+  re-added incarnation — the UI's (`expectedGeneration`, `expectedIncarnationId`) guard is the first
   line, this refusal the backstop — and a keyed replay naming any pruned
   generation likewise refuses as stale rather than committing fresh. The
   pruned-generation refusal is enforceable because every count/TTL
@@ -2446,7 +2525,11 @@ Protocol types)
   wins** — while a typed failure never diverges from what a restart would
   apply. Within a live process, staging failures change nothing. The stash
   is deleted once the commit reaches either outcome; a stash left by a
-  crash is ignored (safe to prune) at boot.
+  crash is ignored (safe to prune) at boot — EXCEPT a stash named by a live
+  `pendingCompensation` record's stash reference (see the cross-file commit
+  intent above): that stash is the compensation's restore source, applied in
+  phase order (sidecar first, rows second) before any prune, so the stranded
+  stash is never ignored while its compensation is still open.
 - **Per-host lifecycle handles:** every live host owns cancellable handles —
   its remote-source subscription, its host-admin fan-out (request
   forwarding plus notification fan-out), and its supervisor/channel binding
@@ -2670,39 +2753,47 @@ unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
   non-empty, at most 128 bytes — the idempotency key; see the mutation
   idempotency rule above); response is the mutation-result union below.
 - `evener/host/update`: params `{name: string, entry: <the six non-name
-  `HostConfig` fields>, mutationId: string, expectedGeneration: number}` —
-  the idempotency key and the generation guard, both required together (like
+  `HostConfig` fields>, mutationId: string, expectedGeneration: number,
+  expectedIncarnationId: string}` —
+  the idempotency key and the (generation, incarnation id) guard, all three
+  required together (like
   `remove` — extending the round-twenty-four update contract, which left
   `expectedGeneration` optional with keyless retries unconditionally
   committing, so a stale or buggy client could overwrite an intervening
   update with no generation check: what changes is the enforcement,
   matching `remove`'s required-key shape — a first-time `update` and a
   lost-response retry after an intervening update are no longer
-  indistinguishable) — with update-identical check-and-refusal semantics
-  once present (presence of both validated before the dedup check — missing
-  either → validation refusal committing nothing; `expectedGeneration`
-  checked under the mutation lock against the target's current generation
+  indistinguishable — and extending the round-thirty-two incarnation work,
+  which left the guards generation-only while a new incarnation may reuse
+  the remnant's generation: what changes is the incarnation guard — the
+  caller echoes the `incarnationId` from the `list`/`status` row beside the
+  generation, and a new incarnation sharing the old generation is told
+  apart by it) — with update-identical check-and-refusal semantics
+  once present (presence of all three validated before the dedup check — missing
+  any → validation refusal committing nothing; `expectedGeneration` AND
+  `expectedIncarnationId` checked under the mutation lock against the
+  target's current (generation, incarnation id) pair
   before staging — past the dedup check, so a replay never reaches it;
-  mismatch → the same typed `stale-entry` refusal committing nothing — a
+  mismatch on either → the same typed `stale-entry` refusal committing nothing — a
   keyed replay returns the recorded receipt before the stale check, so a
   lost-response retry recovers its outcome instead of refusing as stale;
-  see `evener/host/update` above; the UI retry path always sends both, and
+  see `evener/host/update` above; the UI retry path always sends all three, and
   the 08b catalog, regenerated client, and update-required-key behavioral
-  tests pin the four-field shape with both fields required); response is the
+  tests pin the five-field shape with all three fields required); response is the
  mutation-result union below.
 - `evener/host/remove`: params `{name: string, mutationId: string,
- expectedGeneration: number}` — the idempotency key and the generation guard,
- both required together (unlike `add`, where `mutationId` stays optional —
- `update` requires both fields identically, see above),
+ expectedGeneration: number, expectedIncarnationId: string}` — the idempotency key and the (generation, incarnation id) guard,
+ all three required together (unlike `add`, where `mutationId` stays optional —
+ `update` requires all three fields identically, see above),
  with update-identical check-and-refusal semantics once present (presence of
- both validated before the dedup check — missing either → validation refusal
- committing nothing; `expectedGeneration` checked under the
- mutation lock against the target's current generation before staging —
+ all three validated before the dedup check — missing any → validation refusal
+ committing nothing; `expectedGeneration` AND `expectedIncarnationId` checked under the
+ mutation lock against the target's current (generation, incarnation id) pair before staging —
  past the dedup check, so a replay never reaches it; mismatch → the same
  typed `stale-entry` refusal committing nothing; see `evener/host/remove`
- above; the UI retry path always sends both, and the 08b catalog, regenerated
- client, and remove-required-key behavioral tests pin the three-field shape
- with both fields required);
+ above; the UI retry path always sends all three, and the 08b catalog, regenerated
+ client, and remove-required-key behavioral tests pin the four-field shape
+ with all three fields required);
  response the
  mutation-result union below — the clean path returns `{outcome: "committed",
 host: RemovedRow}`, and only the union's failure arm
@@ -2727,13 +2818,27 @@ returns either `{outcome: "committed", host: HostRow}` (remove's clean path
 returns `{outcome: "committed", host: RemovedRow}`) or
 the failure arm `{outcome: "committed-with-teardown-failure", seam:
 string, remnantId: string, host: HostRow}` (remove's failure arm carries
-`host: RemovedRow` for the same reason) — a normal result-union response,
+`host: RemovedRow` for the same reason) or
+the dropped arm `{outcome: "collision-dropped", droppedEntry: HostConfig, winningFingerprint: string, host: HostRow}`
+(remove's dropped arm carries `host: RemovedRow` for the same reason — the
+dropped arm names the staged entry the post-rename reconcile dropped plus
+the winning `hub.toml` fingerprint the receipt carries, so a replay
+returning it can never read as a live commit — extending the
+round-thirty-two mutation-result union, which declared only the `committed`
+and `committed-with-teardown-failure` arms while the collision prose
+required the persisted receipt to carry the explicit `collision-dropped`
+outcome with a replay returning it: an implementer could not satisfy both.
+What changes is the third arm — the response-union `outcome` discriminator
+gains the `collision-dropped` leaf alongside the two existing leaves, the
+catalog carries all three arms field-for-field, and the regenerated client
+carries the dropped arm as its own interface through the generator mapping
+above) — a normal result-union response,
 never an AppWire error-envelope throw (pre-commit failures throw typed error
 envelope codes; post-commit outcomes return through the union — the failure
 arm names a committed mutation whose teardown needs forward retry) — the `remnantId` is mandatory on
 the failure arm, `seam` names the failed rebind step, and the committed
 `HostRow` is always present so the UI renders the row with a teardown-retry
-affordance. The catalog carries both arms field-for-field and the regenerated
+affordance. The catalog carries all three arms field-for-field and the regenerated
 client carries each arm as its own interface through the generator mapping
 above (see Implementation approach); a shape missing `remnantId`
 on the failure arm fails the protocol-shapes test.
@@ -2748,7 +2853,18 @@ exists for the current pair),
   `factsRevision?: string`, `factsAgeSec?: number`, `planRefusal?:
   {terminal: bool, message: string, reason: "unattached" | "refresh-failed" |
   "probe-failed" | "handler-absent" | "remnant-open" | "controller-dirty" |
-  "target-unwritable" | "target-missing-prereq" | "target-unit-findings"}`
+  "target-unwritable" | "target-missing-prereq" | "target-unit-findings",
+  remnantId?: string, attached: bool}`
+  (`remnantId` present exactly on the `remnant-open` arm — the blocking
+  remnant's id, mirroring `plan`'s no-token arm field-for-field; absent on
+  every other arm per the absent-when-unknown rule — and `attached` naming
+  the attach state `plan`'s no-token `staleFacts.attached` carries, so a
+  `status`-only reader seeing `reason: "remnant-open"` can name the blocking
+  remnant for the teardown-retry affordance — extending the
+  round-thirty-two status shape, which carried the same `reason`
+  discriminator while claiming field-for-field parity with `plan`'s no-token
+  arm but omitted both fields, so the parity held for `reason`/`terminal`
+  only: what changes is the payload, closing the last two fields)
   (the same `reason` discriminator `plan`'s no-token arm carries below, with
   the same value set and the same terminal-four rule — extending the
   round-twenty-eight status shape, which carried only `{terminal, message}`
@@ -2983,11 +3099,11 @@ generation" is reserved for calls that name a host — extending the
 round-twenty-five params text, which promised the first page "of the current
 generation" for a multi-host page that has no single current generation);
 response
-  `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number, presenceEpoch: number}}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per every host in the query at cursor creation — hosts with no rows on the page encode as the `"absent"` marker, never by omission — `presenceEpoch` the per-host removal/presence epoch below, validated on every continuation) — `limit` defaults
+  `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number, presenceEpoch: number} | "absent"}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many, and extending the round-thirty-two response type, which permitted only the four-field object while the prose required row-less hosts encoded as the literal `"absent"` string: the cursor envelope already carried `| "absent"` per bound, so the omission was only in the client-consumed response type — what changes is the union: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per every host in the query at cursor creation — hosts with no rows on the page encode as the `"absent"` marker, never by omission — `presenceEpoch` the per-host removal/presence epoch below, validated on every continuation) — `limit` defaults
   to 50 and caps at 200; responses never exceed the cap, and an unfiltered
   call pages instead of returning the whole store. `OperationRecord` is `{id,
 clientOperationId, host, generation: number, incarnationId: string, kind: "deploy" | "restart", state:
-  "pending" | "running" | "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?: {platform: "linux", cgroupId: string, nonce: string} | {platform: "darwin", pgid: number, sessionId: number, pid: number, startTime: string}, progress:
+  "pending" | "running" | "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?: {platform: "linux", cgroupId: string, nonce: string, pid: number, startTime: string} | {platform: "darwin", pgid: number, sessionId: number, pid: number, startTime: string}, progress:
   ProgressEntry[], result?: {ok: bool, message: string}, createdAt: string,
   updatedAt: string, hostRemoved: bool, compacted?: true}` — `incarnationId`
   is the pinned incarnation the record ran against (the dedup scope's second
@@ -2995,11 +3111,14 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   the colliding same-generation incarnations); `orphanBoundary` is present
   exactly on records whose `state` is `orphan-unverified` (absent on every
   other state per the absent-when-unknown rule — the `platform`
-  discriminator selects the ownership data the verifier needs (Linux:
-  kernel-enforced cgroup identity plus the launcher-observed (pid, start
-  time) instance marker bound to the pre-spawn server nonce (see the boot
-  reap above — cgroupfs hosts no app-written marker file, so the nonce
-  binds to kernel-owned process identity instead) —
+  discriminator selects the ownership data the verifier needs (Linux: the
+  dedicated process-boundary fields — kernel-enforced cgroup identity plus
+  the launcher-observed `pid`/`startTime` instance marker bound to the
+  pre-spawn server nonce, carried ON THE WIRE (see the boot reap above —
+  cgroupfs hosts no app-written marker file, so the nonce binds to
+  kernel-owned process identity instead, and the pair is NOT derivable from
+  `cgroupId`+`nonce`: the wire carries the persisted pair verbatim, so the
+  verifier never reconstructs it) —
   the kill requires BOTH cgroup membership AND a (pid, start time) matching
   the launcher-observed pair, and a member matching no persisted pair reads
   as already clean while a boundary whose pair was never persisted fails
@@ -3007,13 +3126,22 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   the round-twenty-seven wire shape and the round-thirty-one cgroup marker,
   which exposed the nonce on the wire while stating membership alone
   authorizes the kill or reading the nonce back from a cgroup marker file
-  cgroupfs cannot host — neither could hold: the kill requires
+  cgroupfs cannot host — and extending the round-thirty-two wire shape,
+  which omitted the Linux `pid`/`startTime` pair (cgroupId + nonce only)
+  while the kill required BOTH membership AND a pair match, and stored only
+  one pair on Darwin while recovery must match every boundary member
+  (including multiple SSH subprocesses): neither could hold — the kill
+  requires
   kernel-attested instance identity plus membership, never membership alone —
   so the wire nonce is the pre-spawn intent value the launcher-observed pair
   is bound to, not redundant data); Darwin:
   the (pgid, session id) pair
   plus the launcher-observed (pid, start time) instance marker — a pid whose
-  start time differs names a different process and reads as already clean) —
+  start time differs names a different process and reads as already clean —
+  and where the boundary holds multiple SSH subprocesses the record persists
+  one boundary entry per spawned process (one (pid, startTime, nonce) marker
+  per member, matched member-by-member at verify time, never one pair for
+  the whole boundary)) —
   extending the
   round-twenty-five `operations` detail filter, which exposed the persisted
   boundary identity only as prose with no wire field, and the round-twenty-six
@@ -3311,7 +3439,24 @@ and the tombstone is **consumed by the tree and the action-capability
 logic** — removed-host rows must be visibly non-actionable
 (markers in the tree/rail; actions disabled), not merely `Complete == false`,
 because liveness alone does not make an unknown source's rows stale in the
-current navigation projection. **Tombstoned hosts are not manifest
+current navigation projection (extending the round-thirty-two tombstone
+merge, which re-applied retained rows as ordinary `appwire.Thread` values
+while the tree predicate treats active status as live
+(`appThreadTreeLive(thread) && s.sourceOnline(thread.Source)` in
+`cmd/evener-hub/web_api_tree.go`, and `sourceOnline` in
+`cmd/evener-hub/web.go` deliberately fail-opens unknown source IDs as
+online): without a tombstone marker carried into tree/action logic, a
+removed host's active rows still satisfied the live predicate and stayed
+live and actionable. What changes is the consumption — the merge carries
+each re-applied row's tombstone identity through the navigation snapshot
+(the publication tags every tombstone-sourced row with its tombstone name,
+never as an ordinary live-source row), and the tree/action logic consumes
+it: tombstone-tagged rows are forced non-live with capabilities disabled —
+never through the `appThreadTreeLive` + `sourceOnline` predicate — while
+their metadata (labels, timestamps, truncation indicator) is retained for
+display. A tombstone-tagged row therefore renders stale and non-actionable
+even when its retained status is active, and deregistration keeps the
+source-unknown fail-open from ever promoting it back to live). **Tombstoned hosts are not manifest
 sources:** removal deletes the source-registry entry, so the navigation
 manifest's `sources` array drops the removed host on its next read — the
 manifest element schema is exactly `{id,label,kind,online}`
@@ -3644,9 +3789,9 @@ name-keyed cache entry can never republish rows for the new host.
   request is local-originated by construction, see Non-scope)**,
   **update-generation tests (update advances the generation and
   clears/generation-keys resolved targets, facts, and bindings before
-  rebinding; `expectedGeneration` present-and-current commits, present-and-
-  stale is a `stale-entry` refusal committing nothing (`update` and `remove`
-  both require both fields — missing either is a validation refusal committing
+  rebinding; (`expectedGeneration`, `expectedIncarnationId`) present-and-current commits, present-and-
+  stale on either is a `stale-entry` refusal committing nothing (`update` and `remove`
+  both require all three fields — missing any is a validation refusal committing
   nothing — with the same check-and-refusal once present); a lost-response `remove` retried after a
   re-add never tears down
   the new incarnation when the generations differ — a retained same-key
@@ -3785,7 +3930,11 @@ origin rejection is asserted in 08a with its commit-point tests),
   value against its emitting path, the `cursor-invalidated` catalog
   entry, and the `fencing-failure` + `fencing-helper-absent` +
   `fencing-helper-untrusted` + `cursor-too-large` catalog entries with
-  their data shapes)**,
+  their data shapes — plus the `collision-dropped` mutation-result arm
+  (dropped-entry + winning-fingerprint payload), the `hostBoundaries`
+  `{...} | "absent"` value union, the Linux `orphanBoundary` arm's
+  `pid`/`startTime` fields, and `status.planRefusal`'s `remnantId?` +
+  `attached` parity fields)**,
   **operations incarnation scope (a `generation` + `incarnationId` filter
   pair addresses the colliding same-generation incarnation; the response
   echoes the listed pair; a cursor minted under one pair never lists the
