@@ -2329,10 +2329,16 @@ func TestForceStopStaleExpectedDaemonDoesNotCancelResume(t *testing.T) {
 		case err := <-completed:
 			assertStaleIdentityConflict(err)
 		default:
-			// Current behavior: the stale request canceled the Resume and is
-			// draining its cleanup. Release it so the refusal can be observed.
+			// The refusal must come before any cancellation: a handler still
+			// draining the canceled Resume means the stale request aborted the
+			// Resume it could no longer address.
 			active.Complete(nil)
-			assertStaleIdentityConflict(<-completed)
+			<-completed
+			t.Fatal("stale force stop canceled the in-flight Resume before refusing the identity conflict")
 		}
+		if active.Context().Err() != nil {
+			t.Fatal("stale force stop canceled the in-flight Resume before refusing the identity conflict")
+		}
+		active.Complete(nil)
 	})
 }
