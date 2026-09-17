@@ -650,8 +650,20 @@ describe("MutationDispatcher", () => {
   });
 });
 
+// cut defaults to +Infinity: "retire on absence alone, with no cut
+// protection" - the pre-#1717-Medium-1 behavior, for tests that exercise
+// something else entirely. A test of the cut mechanism itself overrides it,
+// typically with dispatcher.peekAcceptCounter(targetRef) at the point it
+// wants to simulate the snapshot's own arrival.
 function queueSnapshot(overrides: Partial<QueueSnapshot> = {}): QueueSnapshot {
-  return { ids: new Set(), revision: 1, authoritative: true, instanceId: "instance-a", ...overrides };
+  return {
+    ids: new Set(),
+    revision: 1,
+    authoritative: true,
+    instanceId: "instance-a",
+    cut: Number.POSITIVE_INFINITY,
+    ...overrides,
+  };
 }
 
 // One accepted, not-yet-reflected turn/queue intent ("pending" projectionState
@@ -884,6 +896,57 @@ describe("reconcileQueueSnapshot", () => {
     outbox.close();
   });
 
+  // RoboRev's review round 4 Medium 2: an authoritative snapshot from a new
+  // instance with unknown coverage (ids === undefined) returned before the
+  // old instance was marked superseded, so a LATER delayed snapshot from
+  // that old instance was still accepted - flipping the state back to it,
+  // and (on whatever transition eventually followed) superseding the real,
+  // live instance instead. Superseding must happen on first sight of the
+  // new instance regardless of whether THIS snapshot's own ids are known.
+  test("a new instance's unknown-coverage snapshot supersedes the old instance immediately", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "unknown-coverage-supersedes", ["queue-a", "queue-b"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "instance A"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // Instance A reconciles at revision 5.
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 5, instanceId: "A" }));
+
+    // thread/clear replaces the instance. Instance B's FIRST snapshot has
+    // unknown coverage (a legacy push) - it retires nothing, but the
+    // transition to B must still happen, superseding A right now.
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: undefined, revision: 1, instanceId: "B" }));
+
+    // A's own delayed revision-6 snapshot, in flight since before the
+    // clear, finally arrives. A is already superseded, so this must be
+    // rejected outright rather than accepted as "same instance, newer
+    // revision" - accepting it would flip the state back to A.
+    const stillQueued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued under B"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    const settled = await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set(), revision: 6, instanceId: "A" }),
+    );
+
+    expect(settled).toEqual([]);
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      stillQueued.clientMutationId,
+    ]);
+
+    // B's own real snapshot, arriving after, still works - the state is on
+    // B (not A), so this is "same instance, newer revision", not a
+    // transition, and retires the record B's own queue no longer names.
+    const secondSettled = await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set(), revision: 2, instanceId: "B" }),
+    );
+    expect(secondSettled).toEqual([stillQueued.clientMutationId]);
+    outbox.close();
+  });
+
   // RoboRev's simplify-round Medium on #1705: the cursor advanced even when
   // the write that follows it fails, so a retry delivering the identical
   // revision again was discarded as stale despite nothing of it ever having
@@ -905,6 +968,40 @@ describe("reconcileQueueSnapshot", () => {
 
     expect(settled).toEqual([queued.clientMutationId]);
     expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+    outbox.close();
+  });
+
+  // RoboRev's review round 4 Medium 1: chain-enqueue order is not proof of
+  // causal order. A stale snapshot's OWN data can predate an accept even
+  // though, by the time its scan actually runs (delayed by other work, or
+  // simply queued behind the accept), the accept has already landed - so
+  // absence from `ids` alone is not enough; the scan also needs each
+  // record's own accept-stamp, checked against the snapshot's `cut` as
+  // captured at its TRUE arrival, before whichever runs first.
+  test("a snapshot's cut, captured before an accept, protects that accept even though the scan runs after it lands", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "cut-protects-post-cut-accept", ["queue-a"]);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    // The snapshot's own cut is read at its TRUE arrival - before the accept
+    // below even happens (a hydrate reads this before reconcileIdentities/
+    // restoreProvenAbsent, both real awaits the accept can land during).
+    const cut = dispatcher.peekAcceptCounter("ref-a");
+
+    const fresh = await outbox.enqueueIntent(queueIntent("ref-a", "fresh"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(await outbox.listOptimistic("ref-a")).toHaveLength(1);
+
+    // Only NOW is the (already-stale, unaware of "fresh") snapshot actually
+    // reconciled, using the cut captured before the accept.
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), cut }));
+
+    expect(settled).toEqual([]);
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      fresh.clientMutationId,
+    ]);
     outbox.close();
   });
 

@@ -11,25 +11,36 @@ import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 
 // A caller's own fresh reading of the server's queue for one target ref,
 // translated from whatever wire shape it came from (a queueChanged push, a
-// thread/read hydrate). `ids` is the queue's full clientMutationId
-// membership when known - `undefined` means coverage is unknown (a legacy
-// server push that never populates it, still a real, reachable path: see
-// #1704/#1705) and reconcileQueueSnapshot must not guess, never treating
-// "unknown" as "empty". `revision` orders snapshots for the same target so
-// a stale or reordered one is ignored rather than acted on, but only within
-// one session instance: `instanceId` is that session's own identity (the
-// thread's instanceId, falling back to its threadId - the same fence
-// expectedInstanceId uses), since a thread/clear installs a new instance
-// whose revision counter restarts, and a revision is meaningless compared
-// across two different instances.
+// thread/read hydrate, a thread/clear response). `ids` is the queue's full
+// clientMutationId membership when known - `undefined` means coverage is
+// unknown (a legacy server push that never populates it, still a real,
+// reachable path: see #1704/#1705) and reconcileQueueSnapshot must not
+// guess, never treating "unknown" as "empty". `revision` orders snapshots
+// for the same target so a stale or reordered one is ignored rather than
+// acted on, but only within one session instance: `instanceId` is that
+// session's own identity (the thread's instanceId, falling back to its
+// threadId - the same fence expectedInstanceId uses), since a thread/clear
+// installs a new instance whose revision counter restarts, and a revision
+// is meaningless compared across two different instances.
 // `authoritative` is the caller's own answer to "is this data source live
 // and trustworthy right now", separate from ids coverage - false for a
 // saved/incompatible/not-loaded hydrate snapshot.
+// `cut` is peekAcceptCounter(targetRef)'s reading, captured by the CALLER at
+// this snapshot's true arrival (the wire notification/response first
+// reaching the client) rather than by this method at whatever later moment
+// it is actually called - the two can differ (a hydrate reconciles identities
+// and restores proven-absent records before ever calling this), and a scan
+// gated on a cut read late could already include an accept that happened
+// during that gap, wrongly retiring it (#1717's Medium 1, round 4). The scan
+// retires only optimistic records this target accepted strictly before
+// `cut` (#nextAcceptStamp's own counter) - never a record accepted at or
+// after it, however chain-queueing happens to order the two.
 export interface QueueSnapshot {
   ids: ReadonlySet<string> | undefined;
   revision: number;
   authoritative: boolean;
   instanceId: string;
+  cut: number;
 }
 
 export interface MutationDispatcherOptions {
@@ -55,8 +66,18 @@ export class MutationDispatcher {
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
   readonly #queueReconciliations = new Map<string, Promise<unknown>>();
-  readonly #lastReconciledQueue = new Map<string, { instanceId: string; revision: number }>();
+  // One state record per target: the instance this target is currently on,
+  // the highest revision reconciled for it, and the accept-cut as of that
+  // reconciliation (kept for the same reason revision is - a record of where
+  // this target's own baseline last stood, not itself compared against a
+  // record's stamp; each snapshot's OWN cut does that, fresh every time).
+  readonly #queueState = new Map<string, { instance: string; revision: number; cut: number }>();
   readonly #supersededQueueInstances = new Map<string, Set<string>>();
+  // One monotonic counter per target, advanced only by an accept
+  // (#nextAcceptStamp) - see QueueSnapshot's own `cut` for why a caller reads
+  // it (peekAcceptCounter) at a snapshot's true arrival rather than this
+  // dispatcher inferring it later.
+  readonly #acceptCounters = new Map<string, number>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
     this.#storage = storage;
@@ -81,23 +102,38 @@ export class MutationDispatcher {
     if (restored.length > 0) this.#onStorageChange([targetRef]);
   }
 
-  // The one entry point for a fresh queue reading, from either a live push
-  // or a hydrate (#1706's shape). An applied drain or a consumed queue
-  // intent leaves no push naming the ids it consumed - queueChanged carries
-  // only what remains, steering/injected only the drain's own id - so a
-  // same-client queue intent accepted before it sits in the optimistic
-  // store unreflected forever unless something retires it against a fresh
-  // reading of what the queue holds now. Settles this snapshot's own named
-  // ids (the durable copy's job is done once an authoritative feed shows the
-  // id directly) and retires `turn/queue` records absent from it - never
-  // guessing when `snapshot.ids` is undefined (unknown coverage; see
-  // QueueSnapshot). Serialized per target and gated on revision
-  // monotonicity: a snapshot no newer than the last one this target
-  // reconciled is ignored outright, closing the reorder/stale-read race
-  // #1705's second review round measured (a queueChanged processed after a
-  // concurrent, newer accept must not retire it). This does not, on its
-  // own, prove any one record predates the snapshot cut absent a per-record
-  // revision stamp - out of scope here, tracked with the rest of #1706.
+  // A caller's own reading of this target's accept counter, for stamping a
+  // QueueSnapshot's `cut` at the snapshot's true arrival - see that field's
+  // own comment for why that has to happen before the caller's own further
+  // async work, not inside reconcileQueueSnapshot itself. Never advances the
+  // counter; only #nextAcceptStamp (an actual accept) does that.
+  peekAcceptCounter(targetRef: string): number {
+    return this.#acceptCounters.get(targetRef) ?? 0;
+  }
+
+  #nextAcceptStamp(targetRef: string): number {
+    const stamp = this.#acceptCounters.get(targetRef) ?? 0;
+    this.#acceptCounters.set(targetRef, stamp + 1);
+    return stamp;
+  }
+
+  // The one entry point for a fresh queue reading, from either a live push,
+  // a hydrate, or a thread/clear response (#1706's shape, #1717's Medium 3
+  // added the third). An applied drain or a consumed queue intent leaves no
+  // push naming the ids it consumed - queueChanged carries only what
+  // remains, steering/injected only the drain's own id - so a same-client
+  // queue intent accepted before it sits in the optimistic store unreflected
+  // forever unless something retires it against a fresh reading of what the
+  // queue holds now. Settles this snapshot's own named ids (the durable
+  // copy's job is done once an authoritative feed shows the id directly)
+  // and retires `turn/queue` records absent from it AND accepted before its
+  // own `cut` - never guessing when `snapshot.ids` is undefined (unknown
+  // coverage; see QueueSnapshot), and never trusting absence alone to prove
+  // a record predates the snapshot (#1717's Medium 1). Serialized per
+  // target with an accepted intent's own optimistic write
+  // (#serializedWithQueueReconciliation) and gated on revision monotonicity
+  // within one session instance (QueueSnapshot's own `instanceId`/`cut`
+  // comments cover both).
   async reconcileQueueSnapshot(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
     return this.#serializedWithQueueReconciliation(targetRef, () =>
       this.#reconcileQueueSnapshotNow(targetRef, snapshot),
@@ -128,31 +164,43 @@ export class MutationDispatcher {
   async #reconcileQueueSnapshotNow(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
     if (!snapshot.authoritative) return [];
     // The wire gives no ordering across instances (no sequence or generation
-    // number on thread/queueChanged or a thread/read response spans a
-    // clear - that exists only for navigation invalidation, a separate
-    // subsystem), so once this target has moved on to a different instance,
-    // an in-flight snapshot from the one it left behind is rejected outright
-    // rather than compared: its own revision means nothing here any more.
+    // number on thread/queueChanged, a thread/read response, or a
+    // thread/clear response spans a clear - that exists only for navigation
+    // invalidation, a separate subsystem), so an already-superseded
+    // instance's in-flight snapshot is rejected outright rather than
+    // compared: its own revision means nothing here any more.
     if (this.#supersededQueueInstances.get(targetRef)?.has(snapshot.instanceId)) return [];
-    const last = this.#lastReconciledQueue.get(targetRef);
+    let state = this.#queueState.get(targetRef);
+    if (state === undefined || state.instance !== snapshot.instanceId) {
+      // First sight of this instance for the target, from ANY event -
+      // supersede whatever was current and reset the baseline BEFORE
+      // deciding coverage, regardless of whether THIS snapshot's own ids
+      // are known. Fixing this ordering matters: coverage-unknown snapshots
+      // returning before this reset left the old instance uncondemned, so a
+      // later delayed snapshot from it could still be accepted, flip the
+      // state back, and (on the transition that eventually followed) mark
+      // the real, live instance superseded instead (#1717's Medium 2).
+      if (state !== undefined) {
+        const superseded = this.#supersededQueueInstances.get(targetRef) ?? new Set<string>();
+        superseded.add(state.instance);
+        this.#supersededQueueInstances.set(targetRef, superseded);
+      }
+      state = { instance: snapshot.instanceId, revision: -1, cut: snapshot.cut };
+      this.#queueState.set(targetRef, state);
+    }
     // A revision is only comparable within its own instance - see
     // QueueSnapshot's own comment on why a new instance's low revision is
-    // never stale against an old instance's higher one.
-    if (last !== undefined && last.instanceId === snapshot.instanceId && snapshot.revision <= last.revision) {
-      return [];
-    }
+    // never stale against an old instance's higher one. The reset above
+    // already put this target on `snapshot.instanceId` with revision -1, so
+    // a first-ever snapshot from a new instance always passes here.
+    if (snapshot.revision <= state.revision) return [];
     if (snapshot.ids === undefined) return [];
     await this.reconcileIdentities(snapshot.ids);
-    const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", snapshot.ids);
-    if (last !== undefined && last.instanceId !== snapshot.instanceId) {
-      const superseded = this.#supersededQueueInstances.get(targetRef) ?? new Set<string>();
-      superseded.add(last.instanceId);
-      this.#supersededQueueInstances.set(targetRef, superseded);
-    }
+    const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", snapshot.ids, snapshot.cut);
     // Recorded only once every write above has succeeded: a failed
-    // reconciliation must leave the cursor where it was so a retry at the
+    // reconciliation must leave the state where it was so a retry at the
     // same revision is not discarded as stale.
-    this.#lastReconciledQueue.set(targetRef, { instanceId: snapshot.instanceId, revision: snapshot.revision });
+    this.#queueState.set(targetRef, { instance: snapshot.instanceId, revision: snapshot.revision, cut: snapshot.cut });
     if (settled.length > 0) this.#onStorageChange([targetRef]);
     return settled;
   }
@@ -245,11 +293,16 @@ export class MutationDispatcher {
           return "stop";
         applyHumanNoteResponse?.({ note: result.note, receipt });
       }
+      // Stamped here, before this write joins the shared per-target chain
+      // (which may delay when it actually lands) - the stamp is this
+      // target's own true accept order, for a later snapshot's cut to
+      // compare against (QueueSnapshot's own comment; #1717's Medium 1).
+      const acceptStamp = this.#nextAcceptStamp(record.targetRef);
       // Serialized against any in-flight queue reconciliation for this
       // target (see #serializedWithQueueReconciliation): otherwise this
       // write and a concurrent snapshot's retire-scan could interleave.
       await this.#serializedWithQueueReconciliation(record.targetRef, () =>
-        this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState),
+        this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState, acceptStamp),
       );
       this.#onStorageChange([record.targetRef]);
       return "advance";

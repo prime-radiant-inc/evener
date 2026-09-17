@@ -685,6 +685,29 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
         : state.hydrations,
     };
   });
+  // The response names the replacement instance's own queue, authoritative
+  // by construction (a clear always sets mutationStateAuthoritative). Feed
+  // it through the same entry point queueChanged/hydrate use: without this,
+  // a queue intent accepted under the OLD instance survives the clear as a
+  // ghost, and the dispatcher's own state stays on the old instance until a
+  // later push or hydrate happens to arrive (#1717's Medium 3).
+  const runtime = getMutationRuntime();
+  if (runtime) {
+    const snapshot = queueSnapshotFromWire(
+      response.thread.evener.queue,
+      true,
+      response.thread.evener.instanceId ?? response.thread.id,
+      runtime.dispatcher.peekAcceptCounter(targetRef),
+    );
+    void runtime.dispatcher
+      .reconcileQueueSnapshot(targetRef, snapshot)
+      .then((settled) =>
+        settled.length > 0 || (snapshot.ids?.size ?? 0) > 0 ? refreshMutationPins(runtime, [targetRef]) : undefined,
+      )
+      .catch(() => {
+        // A later queueChanged or hydrate retries the same settlement.
+      });
+  }
 }
 
 function currentDispatchClient(targetRef?: string): AppwireClientLike | null {
@@ -1439,14 +1462,19 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
 // so an authoritatively empty queue arrives with depth absent, not 0 -
 // `?? 0` is the codebase's own convention for that (liveControls.ts's
 // controlsFor reads `model.queue?.depth ?? 0` the same way).
-function queueSnapshotFromWire(queue: QueueState, authoritative: boolean, instanceId: string): QueueSnapshot {
+function queueSnapshotFromWire(
+  queue: QueueState,
+  authoritative: boolean,
+  instanceId: string,
+  cut: number,
+): QueueSnapshot {
   const ids =
     queue.clientMutationIds !== undefined
       ? new Set(queue.clientMutationIds)
       : (queue.depth ?? 0) === 0
         ? new Set<string>()
         : undefined;
-  return { ids, revision: queue.revision, authoritative, instanceId };
+  return { ids, revision: queue.revision, authoritative, instanceId, cut };
 }
 
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
@@ -1639,6 +1667,12 @@ async function publishAndReconcileThreadHydration(
           (published.status.type === "restartRequired" ||
             (pending.epoch === readyEpoch && pending.client === wiredClient));
         if (!current()) return;
+        // Captured HERE, before reconcileIdentities/restoreProvenAbsent
+        // below - those are real awaits, and an accept that lands during
+        // them must not be mistaken for one this snapshot's own queue data
+        // (already fixed, on the wire, before any of this ran) could have
+        // named (QueueSnapshot's own `cut` comment; #1717's Medium 1).
+        const queueCut = runtime.dispatcher.peekAcceptCounter(ref);
         const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
         const mutationStateAuthoritative = hydration.response.thread.evener.mutationStateAuthoritative === true;
         await runtime.dispatcher.reconcileIdentities(authoritativeIds);
@@ -1677,6 +1711,7 @@ async function publishAndReconcileThreadHydration(
               hydration.response.thread.evener.queue,
               true,
               hydration.response.thread.evener.instanceId ?? hydration.response.thread.id,
+              queueCut,
             ),
           );
         }
@@ -1845,7 +1880,15 @@ function handleNotification(n: AnyNotification): void {
     const ref = notificationRef(n);
     const runtime = getMutationRuntime();
     if (ref && runtime) {
-      const snapshot = queueSnapshotFromWire(n.params.queue, true, n.params.threadId);
+      // No async gap before this: the notification's own arrival IS the
+      // snapshot's arrival, so peekAcceptCounter here already reads it at
+      // the earliest possible moment (QueueSnapshot's own `cut` comment).
+      const snapshot = queueSnapshotFromWire(
+        n.params.queue,
+        true,
+        n.params.threadId,
+        runtime.dispatcher.peekAcceptCounter(ref),
+      );
       void runtime.dispatcher
         .reconcileQueueSnapshot(ref, snapshot)
         .then((settled) =>

@@ -5147,6 +5147,41 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().watchedThreads.get("ref_a")?.turns).toEqual([]);
   });
 
+  // RoboRev's review round 4 Medium 3 (#1717): a successful clear installs a
+  // new instance and publishes its own authoritative queue, but nothing fed
+  // that queue into reconcileQueueSnapshot - an accepted turn/queue intent
+  // from the OLD instance survived as a ghost until some LATER push or
+  // hydrate happened to arrive. The clear response itself is exactly as
+  // authoritative as either of those, so it goes through the same entry
+  // point directly.
+  test("clearThread's own response retires an accepted queue intent from the instance it replaced", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued before the clear");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const independent = new MutationOutboxIndexedDB();
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toHaveLength(1));
+
+    // The new instance's own queue is empty - the genuine wire shape omits
+    // both depth and clientMutationIds, same as any other authoritative
+    // empty-queue reading.
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { id: "thr_cleared", turns: [] })));
+    await threadsStore.getState().clearThread("ref_a");
+
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
+    independent.close();
+  });
+
   // Dual-map atomicity (round-2 fix): thread/clear's response snapshot lands
   // in threads and watchedThreads through ONE setState (applyClearResponse's
   // single patch), so a synchronous subscriber never sees threads cleared
