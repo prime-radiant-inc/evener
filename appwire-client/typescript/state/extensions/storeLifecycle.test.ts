@@ -177,6 +177,14 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
     const fail = deferFailure(fake, "evener/launch/setLayer");
     return () => fail(new Error("write refused"));
   },
+  gateFailingMutations: (fake) => {
+    const rejecters: (() => void)[] = [];
+    fake.on(
+      "evener/launch/setLayer",
+      () => new Promise((_, reject) => rejecters.push(() => reject(new Error("write refused")))) as never,
+    );
+    return rejecters;
+  },
   list: (state) => state.launchLayer,
   fetch: (state) => state.fetchLaunchLayer(),
   mutate: (state) => state.setLaunchLayer({ pluginDirs: ["/opt/plugins"] }),
