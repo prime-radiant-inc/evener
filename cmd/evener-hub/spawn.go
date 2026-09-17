@@ -621,6 +621,12 @@ func resumeDaemon(ctx context.Context, evenerBinary, runDir string, req hubcore.
 	finishLaunch := func(failed bool, cleanupErr error) error {
 		if req.ActiveResume != nil {
 			if err := req.ActiveResume.LaunchFinished(failed, cleanupErr); err != nil {
+				// LaunchFinished already classifies a retained cleanup
+				// failure; wrap only an unclassified one so the "cleanup is
+				// unconfirmed" text is not duplicated.
+				if cleanup, ok := errors.AsType[*resumeCleanupError](err); ok {
+					return cleanup
+				}
 				return &resumeCleanupError{cause: err}
 			}
 			return nil

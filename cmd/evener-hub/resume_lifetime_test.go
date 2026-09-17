@@ -560,6 +560,56 @@ func TestLongRunningResumeCleanupErrorPreservesCancellation(t *testing.T) {
 	})
 }
 
+// TestLongRunningResumeCleanupErrorIsNotNested pins finishLaunch's
+// classification boundary: LaunchFinished already retains the child-cleanup
+// failure as a *resumeCleanupError, so finishLaunch must return that
+// classification unchanged instead of wrapping it in a second one and
+// duplicating the "cleanup is unconfirmed" text.
+func TestLongRunningResumeCleanupErrorIsNotNested(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		original := startResumeChild
+		defer func() { startResumeChild = original }()
+		waiting, allowExit := make(chan struct{}), make(chan struct{})
+		defer close(allowExit)
+		killErr := errors.New("fixture kill denied")
+		startResumeChild = func(*exec.Cmd) (resumeChild, error) {
+			return resumeChild{pid: 4242, kill: func() error { return killErr }, wait: func() error {
+				close(waiting)
+				<-allowExit
+				return nil
+			}}, nil
+		}
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		completed := make(chan error, 1)
+		runDir := t.TempDir()
+		go func() {
+			_, err := resumeDaemon(ctx, "fixture-evener", runDir, hubcore.ResumeRequest{SessionID: sessionID, CompletionOwned: true, ActiveResume: active}, DefaultConfig().SpawnTimeout, io.Discard)
+			completed <- err
+		}()
+		<-waiting
+		cancel()
+		err = <-completed
+		var cleanup *resumeCleanupError
+		if !errors.As(err, &cleanup) || !errors.Is(err, killErr) {
+			t.Fatalf("cleanup failure lost its classification or cause: %v", err)
+		}
+		if _, ok := errors.AsType[*resumeCleanupError](cleanup.Unwrap()); ok {
+			t.Fatalf("cleanup failure classified twice: %v", err)
+		}
+		if count := strings.Count(err.Error(), "resume child cleanup is unconfirmed"); count != 1 {
+			t.Fatalf("cleanup message duplicated %d times: %v", count, err)
+		}
+		active.Complete(nil)
+	})
+}
+
 func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	root := t.TempDir()
 	t.Chdir(root)
