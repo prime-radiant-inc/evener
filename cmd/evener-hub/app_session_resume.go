@@ -58,12 +58,10 @@ func withSessionResume[R any](
 // we must NOT resurrect it just to kill it (kata qp94 carve-out). An unknown
 // ref or any non-session-unavailable failure is still returned unchanged.
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
+	if err := shutdownCleanupError(cfg, params.Ref); err != nil {
+		return err
+	}
 	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
-		if cfg.ResumeLocks != nil {
-			if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(ref.ThreadID)); err != nil {
-				return appwire.Unavailable(err.Error())
-			}
-		}
 		if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false); err != nil {
 			return err
 		} else if stopped {
@@ -71,6 +69,12 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		}
 	}
 	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
+		// A Resume can retain failed child cleanup while shutdown waits for
+		// alias ownership, after the pre-check above already passed. Recheck
+		// under ownership before the shutdown action.
+		if err := shutdownCleanupError(cfg, params.Ref); err != nil {
+			return struct{}{}, err
+		}
 		source, err := sourceForThread(sources, params.Ref, "")
 		if err != nil {
 			return struct{}{}, err
@@ -81,6 +85,12 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return struct{}{}, source.ShutdownThread(ctx, params)
 	})
 	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
+		// The fallback treats an unavailable session as successfully stopped;
+		// a cleanup failure retained since the under-ownership recheck must
+		// not become that success.
+		if err := shutdownCleanupError(cfg, params.Ref); err != nil {
+			return err
+		}
 		if cfg.Roster != nil {
 			if err := hubRosterRefresh(ctx, cfg.Roster); err != nil {
 				return appwire.Unavailable(err.Error())
@@ -92,6 +102,21 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return nil
 	}
 	return err
+}
+
+// shutdownCleanupError refuses shutdown while any Resume in the session's
+// ownership group has unconfirmed child cleanup. It runs before ownership and
+// again under it, because a Resume can report the failure while shutdown
+// waits for the alias.
+func shutdownCleanupError(cfg hubcore.WebConfig, ref string) error {
+	parsed, err := appwire.ParseRef(ref)
+	if err != nil || parsed.SourceID != "local" || cfg.ResumeLocks == nil {
+		return nil
+	}
+	if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(parsed.ThreadID)); err != nil {
+		return appwire.Unavailable(err.Error())
+	}
+	return nil
 }
 
 func setGoalWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {

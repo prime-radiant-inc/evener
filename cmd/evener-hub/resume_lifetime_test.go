@@ -727,3 +727,71 @@ func TestShutdownRefusesCleanupBeforeHandlerDone(t *testing.T) {
 		t.Fatalf("shutdown cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
 	}
 }
+
+// shutdownScriptedSource is a scriptedAppSource whose shutdown action
+// succeeds, so a shutdown that proceeds to the source reports success.
+type shutdownScriptedSource struct {
+	*scriptedAppSource
+	shutdowns int
+}
+
+func (s *shutdownScriptedSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
+	s.shutdowns++
+	return nil
+}
+
+// TestShutdownRechecksCleanupUnderOwnership pins the race RoboRev found: the
+// pre-ownership ResumeCleanupErrorStrict check has already passed when a
+// Resume retains failed child cleanup while shutdown is still waiting for
+// alias ownership. The under-ownership recheck must refuse the shutdown
+// rather than let the source action report the session stopped.
+func TestShutdownRechecksCleanupUnderOwnership(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The in-flight launch holds the alias reservation across its launch,
+		// so shutdown blocks waiting for ownership after its pre-check passed.
+		locks.For(sessionID).Lock()
+		cleanupErr := errors.New("FIXTURE_CHILD_CLEANUP_UNCONFIRMED")
+		waiting := make(chan struct{})
+		go func() {
+			<-waiting
+			active.LaunchFinished(true, cleanupErr)
+			locks.For(sessionID).Unlock()
+		}()
+		source := &shutdownScriptedSource{scriptedAppSource: &scriptedAppSource{
+			id: "local",
+			thread: appwire.Thread{
+				ID:     sessionID,
+				Source: "local",
+				Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Shutdown: true}},
+			},
+		}}
+		sources := appsource.NewRegistry()
+		sources.Add(source)
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- shutdownThreadTolerateExited(t.Context(), cfg, sources, appwire.ThreadShutdownParams{Ref: "local:" + sessionID})
+		}()
+		synctest.Wait() // shutdown is blocked acquiring the alias reservation
+		close(waiting)
+		err = <-stopped
+		if err == nil {
+			t.Fatal("shutdown reported success while a failed launch's child cleanup was unconfirmed")
+		}
+		if !strings.Contains(err.Error(), cleanupErr.Error()) {
+			t.Fatalf("shutdown lost the retained cleanup error: %v", err)
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("shutdown cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+		if source.shutdowns != 0 {
+			t.Fatal("shutdown invoked the source action with child cleanup unconfirmed")
+		}
+	})
+}
