@@ -183,6 +183,76 @@ it("offers the model's answerable asks", () => {
   expect(conversation.items.some((row) => row.kind === "question")).toBe(true);
 });
 
+// The server resolves a pending ask on an interrupt or a user steer exactly
+// like a plain user message (agent/session_lifecycle.go: an interrupted
+// turn calls clearAskPending directly and appends a steering turn carrying
+// SteeringKindInterrupted; a user steer enters the drain loop as
+// EntryUserInput, the same accepted-turn path that clears askPending for a
+// plain user message). The phone must not keep offering a question the hub
+// has already closed out.
+it.each([
+  ["an interrupt", { steeringKind: "interrupted" }],
+  ["a user steer", { source: "user" }],
+])("offers nothing once %s resolves the ask", (_label, steeringFields) => {
+  const conversation = projectConversation(
+    hydrateThread(
+      {
+        thread: {
+          id: "thread-1",
+          sessionId: "session-1",
+          preview: "",
+          ephemeral: false,
+          modelProvider: "anthropic",
+          createdAt: 0,
+          updatedAt: 0,
+          status: { type: "idle" },
+          cwd: "",
+          cliVersion: "",
+          source: "",
+          turns: [
+            {
+              id: "t1",
+              status: "completed",
+              itemsView: "default",
+              items: [
+                {
+                  id: "ask-1",
+                  turnId: "t1",
+                  type: "commandExecution",
+                  toolName: "ask_user",
+                  status: "completed",
+                  argumentsJson: JSON.stringify({
+                    questions: [
+                      {
+                        header: "Choice",
+                        question: "Choose",
+                        options: [{ label: "A", detail: "" }],
+                        multi_select: false,
+                      },
+                    ],
+                  }),
+                },
+                {
+                  id: "steer-1",
+                  turnId: "t1",
+                  type: "steering",
+                  text: "resolved",
+                  ...steeringFields,
+                },
+              ],
+            },
+          ],
+          evener: { ref: "ref-1", askPending: false },
+        } as unknown as Thread,
+      },
+      "ref-1",
+      0,
+    ),
+  );
+  expect(pendingQuestions(conversation)).toEqual([]);
+  expect(conversation.items.some((row) => row.kind === "question")).toBe(false);
+});
+
 it("bounds a question's display copy while the canonical refs stay uncut", () => {
   const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
   const huge = "x".repeat(MAX_ITEM_BYTES + 10);

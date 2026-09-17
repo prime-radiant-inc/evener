@@ -133,6 +133,53 @@ test("a userMessage AFTER an ask_user ack resolves it - excluded from the live s
   expect(liveAskQuestions(m)).toEqual([]);
 });
 
+// The server resolves the whole pending set on an interrupt exactly like a
+// user message resolves it (agent/session_lifecycle.go: an interrupted turn
+// calls clearAskPending directly - "the cards stay rendered from the
+// transcript regardless; only the pending set... clears" - then appends a
+// steering turn carrying SteeringKindInterrupted as the transcript's own
+// marker of that boundary). A client deriving the live set locally must
+// treat that marker as a resolution too, or it renders a question the
+// server has already closed out.
+test("a steering item with steeringKind interrupted AFTER an ask_user ack resolves it", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "interrupted", steeringKind: "interrupted" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+// A user steer reaches processOneInput as EntryUserInput (session_lifecycle.go:
+// "the steering carrier enters as queued user input... it must reach the
+// model rather than wait behind a question the user has already moved
+// past"), which is the same accepted-turn path that clears askPending for a
+// plain user message. Its transcript item carries source "user" (the wire's
+// SteeringSourceUser), never a steeringKind.
+test("a steering item with source user AFTER an ask_user ack resolves it", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "focus on the tests", source: "user" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+// A daemon-originated steer with no user provenance (no steeringKind naming
+// an interrupt, no source "user") never resolves a pending ask - the user
+// has not spoken and has not stopped anything.
+test("a daemon steering item with neither steeringKind interrupted nor source user does not resolve the ask", () => {
+  const m = model([
+    turn("t1", [
+      askItem("i1", "t1", "call_1"),
+      item("i2", "t1", { type: "steering", text: "a reminder", steeringKind: "task-nudge" }),
+    ]),
+  ]);
+  expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
 test("an ask_user call acked AFTER the last userMessage stays live", () => {
   const m = model([
     turn("t1", [
