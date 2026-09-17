@@ -4,6 +4,7 @@ import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
+  type KeybindingDraftCheckpoint,
   fromWireOverrides,
   type KeybindingsStore,
   type KeybindingsStoreDeps,
@@ -12,7 +13,7 @@ import {
 } from "./keybindingsStore";
 import { deferred } from "./testing/deferred";
 import { FakeClient } from "./testing/fakeClient";
-import { memoryKeybindingDraftStorage } from "./testing/keybindingDraftStorage";
+import { memoryDraftStorage } from "./testing/draftStorage";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
 import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
@@ -91,8 +92,8 @@ describe("two stores share nothing", () => {
   });
 
   test("two draft editors over two storage ports checkpoint independently", async () => {
-    const draftsA = memoryKeybindingDraftStorage();
-    const draftsB = memoryKeybindingDraftStorage();
+    const draftsA = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const draftsB = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const storeA = await readyStore(clientServing(3), { drafts: draftsA.storage });
     const storeB = await readyStore(clientServing(9), { drafts: draftsB.storage });
 
@@ -196,7 +197,7 @@ describe("without a registry", () => {
 
 describe("the checkpointed draft editor", () => {
   test("persists the intent before the PATCH leaves, clears it on the ack and applies the canonical payload", async () => {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
     let checkpointAtDispatch: unknown = null;
     client.on(patchMethod, () => {
@@ -224,7 +225,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("a lost reply leaves the write uncertain and blocks edits until an authoritative read", async () => {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
     client.on(patchMethod, () => {
       throw new Error("token secret");
@@ -254,7 +255,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("a read carrying loadError after a lost reply settles nothing", async () => {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = new FakeClient("ready");
     let response: KeybindingsOverrides = payload(3, []);
     client.on(getMethod, () => response);
@@ -289,7 +290,7 @@ describe("the checkpointed draft editor", () => {
    * flight, then begins a new one on the same instance (the web adapter's
    * singleton does exactly this across a reconnect). */
   async function saveAcrossGenerationEnd(settle: "resolve" | "reject") {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
     const reply = deferred<KeybindingsOverrides>();
     client.on(patchMethod, () => reply.promise);
@@ -350,7 +351,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("discardDraft removes the checkpoint editDraft saved through a port that compares JSON bytes", async () => {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
 
     store.getState().editDraft(rules);
@@ -368,7 +369,7 @@ describe("the checkpointed draft editor", () => {
 
   test("a direct write is refused while a checkpointed write owns the payload", async () => {
     const client = clientServing(3);
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<KeybindingsOverrides>();
     client.on(patchMethod, () => reply.promise);
@@ -386,7 +387,7 @@ describe("the checkpointed draft editor", () => {
 
   test("an older save's late reply does not clear a newer save's saving flag", async () => {
     const client = clientServing(3);
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const first = deferred<KeybindingsOverrides>();
     const second = deferred<KeybindingsOverrides>();
@@ -422,7 +423,7 @@ describe("the checkpointed draft editor", () => {
 
   test("a rejection arriving after support went unknown still clears saving", async () => {
     const client = clientServing(3);
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<KeybindingsOverrides>();
     client.on(patchMethod, () => reply.promise);
@@ -441,7 +442,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("an unreadable stored record never locks the section", async () => {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.corrupt();
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
 
@@ -462,7 +463,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
-    const drafts = memoryKeybindingDraftStorage();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });
     const store = createKeybindingsStore({ client: new FakeClient("ready"), drafts: drafts.storage });
     expect(store.getState()).toMatchObject({ draft: { revision: 3, rules }, writeUncertain: true });
@@ -472,7 +473,7 @@ describe("the checkpointed draft editor", () => {
     ["a whitespace-only action id", [{ action: " ", chord: "Control+P" }]],
     ["a whitespace-only chord", [{ action: ACTIONS.paletteOpen, chord: "\t\n" }]],
   ])("editDraft refuses %s, as the hub would", async (_name, proposed) => {
-    const store = await readyStore(clientServing(3), { drafts: memoryKeybindingDraftStorage().storage });
+    const store = await readyStore(clientServing(3), { drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage });
     expect(() => store.getState().editDraft(proposed as KeybindingsRule[])).toThrow("Invalid keybinding draft.");
     expect(store.getState().draft).toBeNull();
   });
@@ -523,7 +524,7 @@ describe("a retired payload fences every reply still in flight", () => {
   test.each(cells)("%s while a %s reply is in flight", async (_site, _path, reset, method, start) => {
     const registry = registryWithDefaults();
     const client = clientServing(3, [applied]);
-    const store = await readyStore(client, { registry, drafts: memoryKeybindingDraftStorage().storage });
+    const store = await readyStore(client, { registry, drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage });
     const reply = deferred<KeybindingsOverrides>();
     client.on(method, () => reply.promise);
     const settled = start(store).then(
@@ -639,7 +640,7 @@ describe("saveDraft's post-reply sequence: fence, decode, apply, storage", () =>
     "$name",
     async ({ rules = proposed, arrange, reply = payload(4, rules), rejects, after, settle }) => {
       const registry = registryWithDefaults();
-      const drafts = memoryKeybindingDraftStorage();
+      const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
       const client = clientServing(3, [applied]);
       const store = await readyStore(client, { registry, drafts: drafts.storage });
       const wire = deferred<KeybindingsOverrides>();

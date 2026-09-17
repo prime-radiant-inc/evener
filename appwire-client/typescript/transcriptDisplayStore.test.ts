@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { WireError } from "./errors";
 import { deferred } from "./testing/deferred";
+import { memoryDraftStorage } from "./testing/draftStorage";
 import { FakeClient } from "./testing/fakeClient";
 import {
   type HubTranscriptDisplayDefault,
@@ -40,30 +41,6 @@ function serving(desktop: HubTranscriptDisplayDefault, mobile: HubTranscriptDisp
 
 function patchAnswer(layout: "desktop" | "mobile", value: HubTranscriptDisplayDefault) {
   return { layout, revision: value.revision, config: toWireConfig(value.config) };
-}
-
-/** An in-memory draft port that records every call, for asserting the
- * checkpoint-before-request ordering and the cleanup. */
-function memoryDrafts(initial: unknown = null) {
-  let stored: unknown = initial;
-  const calls: string[] = [];
-  let ids = 0;
-  const storage: TranscriptDraftStorage = {
-    createId: () => `draft-${++ids}`,
-    load: () => {
-      calls.push("load");
-      return stored;
-    },
-    save: (checkpoint) => {
-      calls.push(`save:${checkpoint.writeUncertain ? "uncertain" : "settled"}`);
-      stored = checkpoint;
-    },
-    removeIf: (checkpoint) => {
-      calls.push("removeIf");
-      if (stored !== null && (stored as TranscriptDraftCheckpoint).id === checkpoint.id) stored = null;
-    },
-  };
-  return { storage, calls, current: () => stored as TranscriptDraftCheckpoint | null };
 }
 
 async function readyStore(client: FakeClient, deps: Partial<TranscriptDisplayStoreDeps> = {}) {
@@ -412,7 +389,7 @@ describe("the direct write", () => {
 
   test("a later checkpointed write on the same layout supersedes an earlier direct write's reply", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const first = deferred<TranscriptDisplayPatchResponse>();
     const second = deferred<TranscriptDisplayPatchResponse>();
@@ -481,7 +458,7 @@ describe("the direct write", () => {
 
   test("a direct write is refused while a checkpointed write owns the layer", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
@@ -500,7 +477,7 @@ describe("the direct write", () => {
 
   test("an older save's late reply does not clear a newer save's saving flag", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const first = deferred<TranscriptDisplayPatchResponse>();
     const second = deferred<TranscriptDisplayPatchResponse>();
@@ -537,7 +514,7 @@ describe("the direct write", () => {
 
   test("a rejection arriving after support went unknown still clears saving", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
@@ -561,7 +538,7 @@ describe("the direct write", () => {
 
   test("a superseded checkpointed reply always clears saving", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
@@ -720,7 +697,7 @@ describe("the direct write", () => {
 describe("the checkpointed draft editor", () => {
   test("editDraft persists the proposal; saveDraft checkpoints before the request leaves and releases it on confirmation", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     store.getState().editDraft("mobile", proposed);
     expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
@@ -736,29 +713,29 @@ describe("the checkpointed draft editor", () => {
     expect(await save).toEqual(hubDefault(3, proposed));
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draft: null, draftConflict: false });
     expect(drafts.calls.at(-1)).toBe("removeIf");
-    expect(drafts.current()).toBeNull();
+    expect(drafts.stored()).toBeNull();
     expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
   });
 
   test("a lost reply leaves the write uncertain and edits blocked until an authoritative read settles it", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     client.on(patchMethod, () => {
       throw new Error("connection lost");
     });
     await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("connection lost");
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftConflict: true });
-    expect(drafts.current()?.writeUncertain).toBe(true);
+    expect(drafts.stored()?.writeUncertain).toBe(true);
     expect(() => store.getState().editDraft("mobile", mobileConfig)).toThrow(/unavailable/);
     await store.getState().refreshHubDefaults();
     expect(store.getState().writeUncertain).toBe(false);
-    expect(drafts.current()?.writeUncertain).toBe(false);
+    expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
   test("saveDraft refuses a reply that is not this write's own outcome", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     // Structurally a valid reply for this layout, and one revision past the
     // confirmed one - but it carries a configuration this write never asked
@@ -771,7 +748,7 @@ describe("the checkpointed draft editor", () => {
 
   test("a revision conflict is a KNOWN outcome: the canonical lands and the proposal stays for review", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     client.on(patchMethod, () => {
       throw new WireError("revision conflict", -32013, {
@@ -786,12 +763,12 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
     expect(store.getState().hub.mobile).toEqual(hubDefault(5, desktopConfig));
     expect(store.getState().draft?.config).toEqual(proposed);
-    expect(drafts.current()?.writeUncertain).toBe(false);
+    expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
   test("a newer external revision keeps the proposal for review instead of reporting it applied", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<TranscriptDisplayPatchResponse>();
     client.on(patchMethod, () => reply.promise);
@@ -806,12 +783,12 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
     expect(store.getState().draft?.config).toEqual(proposed);
     expect(store.getState().hub.mobile).toEqual(hubDefault(5, desktopConfig));
-    expect(drafts.current()?.writeUncertain).toBe(false);
+    expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
   test("a hub change during a draft applies and flags the draft for review; rebaseDraft moves it on", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     store.getState().editDraft("mobile", proposed);
     client.emitNotification({
@@ -828,7 +805,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("a restored checkpoint is the store's first state; a corrupt one marks the port unavailable", async () => {
-    const drafts = memoryDrafts({
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",
       layout: "mobile",
       baseRevision: 2,
@@ -840,7 +817,7 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
     expect(store.getState().writeUncertain).toBe(true);
 
-    const corrupt = memoryDrafts({ id: "", baseRevision: -1 });
+    const corrupt = memoryDraftStorage<TranscriptDraftCheckpoint>({ id: "", baseRevision: -1 });
     const broken = createTranscriptDisplayStore({ client, drafts: corrupt.storage });
     expect(broken.getState().storageUnavailable).toBe(true);
     expect(broken.getState().draftError).toMatch(/restore/);
@@ -848,7 +825,7 @@ describe("the checkpointed draft editor", () => {
 
   test("the draft editor stays open while a read is in flight; the older reply is discarded", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const store = await readyStore(client, { drafts: memoryDrafts().storage });
+    const store = await readyStore(client, { drafts: memoryDraftStorage<TranscriptDraftCheckpoint>().storage });
     const reply = deferred<TranscriptDisplayDefaults>();
     client.on(getMethod, () => reply.promise);
     const refresh = store.getState().refreshHubDefaults();
@@ -872,7 +849,7 @@ describe("the checkpointed draft editor", () => {
   test("an unreadable stored record never locks the section: the hub loads, discard clears it, edits resume", async () => {
     // The shape the native host wrote before layouts were recorded - and any
     // other value this build cannot read.
-    const legacy = memoryDrafts({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: legacy.storage });
 
@@ -885,7 +862,7 @@ describe("the checkpointed draft editor", () => {
 
     // One tap throws the unreadable record away.
     store.getState().discardDraft();
-    expect(legacy.current()).toBeNull();
+    expect(legacy.stored()).toBeNull();
     expect(store.getState().storageUnavailable).toBe(false);
 
     // And the editor is usable again.
@@ -898,7 +875,7 @@ describe("the checkpointed draft editor", () => {
     // checkpoint that does not say which layer it proposes names no draft:
     // it is not restored, and it takes the same path as any other malformed
     // stored value rather than being guessed at.
-    const legacy = memoryDrafts({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({ id: "d0", baseRevision: 2, config: proposed, writeUncertain: false });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: legacy.storage });
     expect(store.getState().draft).toBeNull();
@@ -907,7 +884,7 @@ describe("the checkpointed draft editor", () => {
   });
 
   test("a restored proposal is discardable while the hub read has failed", async () => {
-    const drafts = memoryDrafts({
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
       id: "d1",
       layout: "mobile",
       baseRevision: 2,
@@ -926,17 +903,17 @@ describe("the checkpointed draft editor", () => {
     // nothing and sends nothing.
     store.getState().discardDraft();
     expect(store.getState().draft).toBeNull();
-    expect(drafts.current()).toBeNull();
+    expect(drafts.stored()).toBeNull();
   });
 
   test("discardDraft drops the proposal and its checkpoint", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     store.getState().editDraft("mobile", proposed);
     store.getState().discardDraft();
     expect(store.getState().draft).toBeNull();
-    expect(drafts.current()).toBeNull();
+    expect(drafts.stored()).toBeNull();
   });
 });
 
@@ -960,7 +937,7 @@ describe("a retired payload fences every reply still in flight", () => {
 
   test.each(cells)("%s while a %s reply is in flight", async (_site, _path, reset, method, start) => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
-    const drafts = memoryDrafts();
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();
     const store = await readyStore(client, { drafts: drafts.storage });
     const reply = deferred<TranscriptDisplayDefaults & TranscriptDisplayPatchResponse>();
     client.on(method, () => reply.promise);
