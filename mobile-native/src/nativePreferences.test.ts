@@ -370,6 +370,11 @@ function draftStorage() {
 			values.delete(key);
 			return true;
 		},
+		replaceIf: (key: string, expected: NativePreferenceDraftCheckpoint, next: NativePreferenceDraftCheckpoint) => {
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
+			values.set(key, structuredClone(next));
+			return true;
+		},
 	};
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
 }

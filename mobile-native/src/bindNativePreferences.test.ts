@@ -45,6 +45,7 @@ function fixture() {
 		set: () => {},
 		delete: () => {},
 		deleteIf: () => false,
+		replaceIf: () => false,
 		createId: () => "test",
 	});
 	const hello = {
