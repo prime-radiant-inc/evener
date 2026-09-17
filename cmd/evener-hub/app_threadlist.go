@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"sort"
 	"strings"
@@ -124,18 +125,25 @@ func hubThreadListWithSourceTimeout(ctx context.Context, cfg hubcore.WebConfig, 
 					// request never reaches here for an unattached host.
 					if _, isRemote := remoteHosts[source.ID()]; isRemote &&
 						sourceExplicitlyRequestedForList(source.ID(), params) && cfg.RemoteHostClient != nil {
-						if _, err := cfg.RemoteHostClient(sourceCtx, source.ID()); err != nil {
+						// dialRemoteHost applies the shared host-routing origin
+						// guard before the Ensure-backed dial: a remote-originated
+						// request may not make this hub attach a host (component 07,
+						// §"Host-routing origin guard").
+						if _, err := dialRemoteHost(sourceCtx, cfg, source.ID()); err != nil {
 							// Classify the attach failure through the source exactly as
 							// its own call path classifies a connect failure: sshconn's
 							// transient attach failures and transport losses become the
 							// typed SessionUnavailable the auto-resume/refusal gates
 							// match, instead of surfacing here as a raw transport error.
 							// The caller's own context ending stays raw, matching
-							// RemoteHubSource.call.
+							// RemoteHubSource.call. A guard refusal is already a typed
+							// WireError and must not be re-labelled.
 							if cerr := ctx.Err(); cerr != nil {
 								err = cerr
-							} else if classifier, ok := source.(attachErrorClassifier); ok {
-								err = classifier.MapAttachError(err)
+							} else if _, isWire := errors.AsType[appwire.WireError](err); !isWire {
+								if classifier, ok := source.(attachErrorClassifier); ok {
+									err = classifier.MapAttachError(err)
+								}
 							}
 							results <- sourceResult{index: index, err: err}
 							cancel()

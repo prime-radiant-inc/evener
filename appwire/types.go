@@ -3786,21 +3786,31 @@ type HostForwardedResult struct{}
 // HostAttachParams is the evener/host/attach payload (component 06's Connect
 // action): the component-03 source ID of one configured remote host to attach.
 //
-// Name is the host's configured name. The handler resolves it through the
-// controller's host registry, so an unknown name is InvalidParams, and calls
-// the Ensure-backed attach seam. Attaching an already-attached host is
-// idempotent and returns its current state.
+// Host is the host's configured name (component 06 §"Go changes" item 5:
+// "Params: HostAttachParams{Host string} — a component-03 source ID"). The
+// handler resolves it through the controller's host registry, so an unknown
+// name is InvalidParams, and calls the Ensure-backed attach seam. Attaching an
+// already-attached host is idempotent and returns its current state.
 type HostAttachParams struct {
-	Name string `json:"name"`
+	Host string `json:"host"`
 }
 
 // HostAttachResponse is evener/host/attach's result: the post-attach state of
 // one remote host. Attached is true once a live channel exists (always true on
-// a successful response). The remaining fields are the attach handshake's
-// facts, so the controller can render the row as online without a second probe;
-// they are omitted when the host's facts seam is not wired.
+// a successful response). Host is the attached host's configured identity;
+// ServerName/ServerVersion are the attach handshake's ServerInfo, so the
+// controller can render the row as online without a second probe. The remaining
+// fields are the host's post-attach facts (preflight-owned): they are omitted
+// when the host's facts seam is not wired.
+//
+// ServerVersion is the handshake's ServerInfo.Version — the hub's protocol
+// server version constant ("0.1.0"), NOT the host's build identity. The host's
+// running build is HubVersion, which the preflight facts carry.
 type HostAttachResponse struct {
 	Attached        bool        `json:"attached"`
+	Host            string      `json:"host,omitempty"`
+	ServerName      string      `json:"serverName,omitempty"`
+	ServerVersion   string      `json:"serverVersion,omitempty"`
 	ProtocolVersion string      `json:"protocolVersion,omitempty"`
 	HubVersion      string      `json:"hubVersion,omitempty"`
 	OS              string      `json:"os,omitempty"`

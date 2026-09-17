@@ -448,14 +448,21 @@ func isWordByte(b byte) bool {
 // remoteThreadListBudget is the deadline one controller-side ListThreads call
 // runs under, in place of the local-daemon budget (app_threadlist.go).
 //
-// This source's list resolves its client through the SSH manager, which
-// attaches the host on first use: an ssh spawn, an AppWire initialize and a
-// preflight (call → RemoteHubClientFunc → sshconn.Manager.Ensure). The
-// transport's own connect bound alone is 10s and the attach as a whole can run
-// the restart/deploy ladder, so a three-second budget does not describe this
-// call: it cuts a working attach off, and the timeout that results is
-// indistinguishable from a broken host, because both are just "no threads".
-// An unfiltered list then drops the whole host and reports success.
+// This source's list does NOT attach the host itself: ListThreads resolves its
+// client through the attached-only lookup (clientIfAttached, backed by
+// sshconn.Manager.ClientIfAttached) and never dials, so a direct read can never
+// force a dormant host online or re-dial one that dropped. The attach that can
+// precede the call is the explicit-SourceIDs trigger in the multi-source
+// fan-out (app_threadlist.go), which dials through the Ensure-backed
+// RemoteHostClient and then lets this source's attached-only resolver serve the
+// list — both under the deadline the source reports. That attach is an ssh
+// spawn, an AppWire initialize and a preflight (dial →
+// hubcore.WebConfig.RemoteHostClient → sshconn.Manager.Ensure); the transport's
+// own connect bound alone is 10s and the attach as a whole can run the
+// restart/deploy ladder, so a three-second budget does not describe this call:
+// it cuts a working attach off, and the timeout that results is
+// indistinguishable from a broken host, because both are just "no threads". An
+// unfiltered list then drops the whole host and reports success.
 //
 // This is what one list is worth waiting for: it covers the transport's 10s
 // connect bound (sshconn's defaultConnectTimeout) plus the handshake with

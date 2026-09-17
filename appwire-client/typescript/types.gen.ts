@@ -616,11 +616,14 @@ export interface HarnessListResponse {
 }
 
 export interface HostAttachParams {
-  name: string;
+  host: string;
 }
 
 export interface HostAttachResponse {
   attached: boolean;
+  host?: string;
+  serverName?: string;
+  serverVersion?: string;
   protocolVersion?: string;
   hubVersion?: string;
   os?: string;

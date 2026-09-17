@@ -309,7 +309,7 @@ function SpawnForm({
       if (isLocalHost(host) || connectingHosts.has(host)) return;
       setConnectingHosts((current) => new Set(current).add(host));
       void client
-        .request("evener/host/attach", { name: host })
+        .request("evener/host/attach", { host })
         .catch((error: unknown) => {
           toasts.push("error", `Connect ${host} failed: ${friendlyLaunchErrorMessage(error)}`);
         })

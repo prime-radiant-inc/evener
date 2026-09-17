@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/sshconn"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -45,7 +47,7 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 // the host is already attached, so a repeated Connect is safe and simply returns
 // the current facts.
 func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
-	name := strings.TrimSpace(params.Name)
+	name := strings.TrimSpace(params.Host)
 	if _, ok := hosts.Get(name); !ok {
 		return appwire.HostAttachResponse{}, appwire.InvalidParams(fmt.Sprintf("unknown host %q", name))
 	}
@@ -54,7 +56,12 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	if cfg.RemoteHostClient == nil {
 		return appwire.HostAttachResponse{}, appwire.Unavailable(fmt.Sprintf("host %q cannot be attached", name))
 	}
-	client, err := cfg.RemoteHostClient(ctx, name)
+	// dialRemoteHost applies the shared host-routing origin guard before the
+	// Ensure-backed dial: a remote-originated request (it arrived over a peer
+	// hub's attach bridge) may not make this hub attach a host, which would
+	// bypass the depth-1 topology cap (component 07, §"Host-routing origin
+	// guard").
+	client, err := dialRemoteHost(ctx, cfg, name)
 	if err != nil {
 		// A caller cancellation or deadline is the caller's own context ending,
 		// not host unavailability, so it stays raw before the classifier runs —
@@ -68,7 +75,21 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		}
 		return appwire.HostAttachResponse{}, classifyHostAttachError(sources, name, err)
 	}
-	resp := appwire.HostAttachResponse{Attached: true}
+	resp := appwire.HostAttachResponse{Attached: true, Host: name}
+	// The handshake seam is optional (tests and embedders may leave it unset).
+	// When wired it answers from the channel the dial produced, so the response
+	// carries the attach contract's server identity and the caller can render
+	// the row online without a second probe (component 06 §"Go changes" item 5:
+	// "serverName/version from the attach handshake, plus the host ID").
+	if cfg.RemoteHostHandshake != nil && client != nil {
+		if handshake, ok := cfg.RemoteHostHandshake(name, client); ok {
+			resp.ServerName = handshake.ServerInfo.Name
+			resp.ServerVersion = handshake.ServerInfo.Version
+			if resp.ProtocolVersion == "" {
+				resp.ProtocolVersion = handshake.ProtocolVersion
+			}
+		}
+	}
 	// The facts seam is optional (tests and embedders may leave it unset); when
 	// wired it answers from the channel the dial produced, so the caller can
 	// render the row online without a second probe.
@@ -78,7 +99,12 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if cerr := ctx.Err(); cerr != nil {
 				return appwire.HostAttachResponse{}, cerr
 			}
-			return appwire.HostAttachResponse{}, factsErr
+			// The dial succeeded and the host is attached — the attach event has
+			// already flipped it online. A failure reading the post-attach facts
+			// is not a failed Connect, so the successful dial stays authoritative
+			// and the response carries what the handshake supplied rather than
+			// making the browser show a failure toast for a host that is online.
+			return resp, nil
 		}
 		resp.ProtocolVersion = facts.ProtocolVersion
 		resp.HubVersion = facts.HubVersion
@@ -94,17 +120,59 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 // maps its connect failures. A host with no registered source (or a source that
 // does not implement the classifier) leaves the error raw, preserving every
 // other caller's behavior.
+//
+// The source's classifier handles the transient/transport sentinels
+// (ErrSSHStart, ErrRestart, and the transport shapes) as the typed
+// SessionUnavailable the auto-resume/refusal gates match. The manager's
+// terminal classes are deliberately left raw by that classifier — they name a
+// host that will never attach and must not be retried — so they are typed here
+// instead, rather than reaching the browser as a generic internal error through
+// appserver.WireError.
 func classifyHostAttachError(sources *appsource.Registry, host string, err error) error {
-	if sources == nil {
+	mapped := err
+	if sources != nil {
+		if source, ok := sources.Source(host); ok {
+			if classifier, ok := source.(attachErrorClassifier); ok {
+				mapped = classifier.MapAttachError(err)
+			}
+		}
+	}
+	if _, ok := errors.AsType[appwire.WireError](mapped); ok {
+		return mapped
+	}
+	return hostAttachWireError(mapped)
+}
+
+// hostAttachWireError maps the manager's terminal attach sentinels to the typed
+// wire errors the attach contract specifies for clients (component 06 §"Go
+// changes" item 5 "Error mapping"; §"Connect action failure"):
+//
+//   - protocol/contract refusals (protocol incompatibility, unsupported host,
+//     launch contract, unparseable preflight, unusable host address, unknown
+//     host, closed manager) → Unavailable (actionUnavailable): the host refused
+//     the controller, and no retry of this attach can change that.
+//   - deploy failures (ErrDeploy) and the dirty-controller deploy refusal
+//     (errControllerDirty), plus a version mismatch that a deploy would have to
+//     fix → HubLaunchError (hubLaunch): the controller could not install or
+//     match its build on the host.
+//
+// An unrecognized error is returned unchanged, so it still surfaces as an
+// internal error rather than being mislabelled as a typed refusal.
+func hostAttachWireError(err error) error {
+	switch {
+	case errors.Is(err, sshconn.ErrProtocolIncompatible),
+		errors.Is(err, sshconn.ErrUnsupportedHost),
+		errors.Is(err, sshconn.ErrLaunchContract),
+		errors.Is(err, sshconn.ErrPreflightDecode),
+		errors.Is(err, sshconn.ErrHostNotFound),
+		errors.Is(err, sshconn.ErrHostAddr),
+		errors.Is(err, sshconn.ErrManagerClosed):
+		return appwire.Unavailable("host attach refused: " + err.Error())
+	case errors.Is(err, sshconn.ErrDeploy),
+		errors.Is(err, sshconn.ErrVersionMismatch),
+		errors.Is(err, sshconn.ErrControllerDirty):
+		return appwire.HubLaunchError("host attach deploy failed: " + err.Error())
+	default:
 		return err
 	}
-	source, ok := sources.Source(host)
-	if !ok {
-		return err
-	}
-	classifier, ok := source.(attachErrorClassifier)
-	if !ok {
-		return err
-	}
-	return classifier.MapAttachError(err)
 }

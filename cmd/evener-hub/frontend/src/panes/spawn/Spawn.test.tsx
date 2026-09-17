@@ -6121,7 +6121,7 @@ test("selecting a remote host issues evener/host/attach for it", async () => {
   await waitFor(() =>
     expect(
       fake.calls.some(
-        (call) => call.method === "evener/host/attach" && (call.params as { name: string }).name === "buildbox",
+        (call) => call.method === "evener/host/attach" && (call.params as { host: string }).host === "buildbox",
       ),
     ).toBe(true),
   );
@@ -6151,7 +6151,7 @@ test("an offline host offers an enabled Connect action that attaches it", async 
   await waitFor(() =>
     expect(
       fake.calls.some(
-        (call) => call.method === "evener/host/attach" && (call.params as { name: string }).name === "offline-host",
+        (call) => call.method === "evener/host/attach" && (call.params as { host: string }).host === "offline-host",
       ),
     ).toBe(true),
   );

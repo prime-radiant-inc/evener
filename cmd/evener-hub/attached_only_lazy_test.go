@@ -104,6 +104,37 @@ func TestHubThreadListExplicitSourceIDsAttachesTheHost(t *testing.T) {
 	}
 }
 
+// The shared host-routing origin guard covers the explicit-SourceIDs
+// thread/list attach trigger too: a remote-originated explicit list is refused
+// typed before the Ensure-backed dial, so a peer hub cannot make this hub
+// attach a configured host (component 07, §"Host-routing origin guard").
+func TestHubThreadListExplicitAttachRefusesRemoteOriginatedDial(t *testing.T) {
+	var dials atomic.Int64
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			dials.Add(1)
+			return &appwire.Client{}, nil
+		},
+		RemoteHostClientIfAttached: func(string) (*appwire.Client, bool) { return nil, false },
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
+
+	ctx := withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge)
+	_, err := hubThreadListWithSourceTimeout(ctx, cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"alpha"}}, time.Second)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("remote-originated explicit list error %T=%v, want WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("remote-originated explicit list wire=%+v, want invalid params", wire)
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("remote-originated explicit list dialed %d times, want 0", got)
+	}
+}
+
 // The background snapshot must not force attachment either: refreshRemoteThreadSnapshot
 // skips an unattached source without calling into it, so the 30s ticker cannot
 // dial every configured host (component 06, §"What already exists").

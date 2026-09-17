@@ -51,7 +51,7 @@ func TestHostAttachDialsOnceAndReturnsFacts(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Name: "alpha"})
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestHostAttachIsIdempotent(t *testing.T) {
 	hosts := hostAttachRegistry(t, cfg)
 
 	for i := range 2 {
-		resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Name: "alpha"})
+		resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 		if err != nil {
 			t.Fatalf("attach %d: %v", i, err)
 		}
@@ -106,7 +106,7 @@ func TestHostAttachUnknownHostIsInvalidParams(t *testing.T) {
 	}
 	hosts := hostAttachRegistry(t, cfg)
 
-	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Name: "ghost"})
+	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "ghost"})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("unknown-host attach error %T=%v, want WireError", err, err)
@@ -125,7 +125,7 @@ func TestHostAttachWithoutDialSeamIsUnavailable(t *testing.T) {
 	cfg := hubcore.WebConfig{RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}}}
 	hosts := hostAttachRegistry(t, cfg)
 
-	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Name: "alpha"})
+	_, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		t.Fatalf("seamless attach error %T=%v, want WireError", err, err)
@@ -166,7 +166,7 @@ func TestHostAttachClassifiesAttachFailureAsSessionUnavailable(t *testing.T) {
 			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
 			hosts := hostAttachRegistry(t, cfg)
 
-			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Name: "alpha"})
+			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
 			var wire appwire.WireError
 			if !errors.As(err, &wire) {
 				t.Fatalf("attach failure %T=%v, want a typed WireError", err, err)
@@ -199,11 +199,184 @@ func TestHostAttachKeepsCallerCancellationRaw(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := hubHostAttach(ctx, cfg, sources, hosts, appwire.HostAttachParams{Name: "alpha"})
+	_, err := hubHostAttach(ctx, cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled attach error %T=%v, want context.Canceled", err, err)
 	}
 	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		t.Fatalf("canceled attach classified as host unavailability: %+v", wire)
+	}
+}
+
+// A remote-originated request — one forwarded over a peer hub's attach bridge —
+// may not make this hub attach a host. The shared host-routing origin guard
+// refuses it typed before any Ensure-backed dial, so a peer cannot use this hub
+// to reach a third host and break the depth-1 topology cap (component 07,
+// §"Host-routing origin guard"; component 06 §"Go changes" item 5).
+func TestHostAttachRefusesRemoteOriginatedDial(t *testing.T) {
+	var dials atomic.Int64
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			dials.Add(1)
+			return &appwire.Client{}, nil
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+
+	ctx := withHostRoutingOrigin(context.Background(), hostRoutingOriginBridge)
+	_, err := hubHostAttach(ctx, cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("remote-originated attach error %T=%v, want WireError", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("remote-originated attach wire=%+v, want invalid params", wire)
+	}
+	if !strings.Contains(wire.Message, hostRoutingOriginBridge) {
+		t.Fatalf("remote-originated refusal %q does not name the origin", wire.Message)
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("remote-originated attach dialed %d times, want 0", got)
+	}
+}
+
+// The response carries the attach contract's server identity: the configured
+// host ID and the handshake's ServerInfo name/version. HubVersion stays
+// facts-owned, so it reports the host's running build, not the handshake's
+// package-constant ServerInfo.Version.
+func TestHostAttachPopulatesHostIdentityAndHandshake(t *testing.T) {
+	live := &appwire.Client{}
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			return live, nil
+		},
+		RemoteHostFacts: func(context.Context, string, *appwire.Client) (appsource.HostFacts, error) {
+			return appsource.HostFacts{ProtocolVersion: "1", HubVersion: "9.9.9"}, nil
+		},
+		RemoteHostHandshake: func(host string, client *appwire.Client) (appwire.InitializeResponse, bool) {
+			if host != "alpha" || client != live {
+				return appwire.InitializeResponse{}, false
+			}
+			return appwire.InitializeResponse{
+				ProtocolVersion: "1",
+				SourceID:        "local",
+				ServerInfo:      appwire.ServerInfo{Name: "evener-hub", Version: "0.1.0"},
+			}, true
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	if resp.Host != "alpha" || resp.ServerName != "evener-hub" || resp.ServerVersion != "0.1.0" {
+		t.Fatalf("attach response = %+v, want host ID + handshake server name/version", resp)
+	}
+	if resp.HubVersion != "9.9.9" {
+		t.Fatalf("HubVersion = %q, want the facts' build version (not the handshake constant)", resp.HubVersion)
+	}
+}
+
+// The manager's terminal attach failures reach the browser as typed wire
+// errors, not generic internal errors: a protocol/contract refusal is
+// actionUnavailable, and a deploy failure (including the dirty-controller
+// refusal) is hubLaunch (component 06 §"Connect action failure").
+func TestHostAttachTerminalFailuresAreTypedWireErrors(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		attachErr error
+		code      int
+		info      appwire.ErrorInfo
+	}{
+		{
+			name:      "protocol incompatible",
+			attachErr: fmt.Errorf("%w: host %q protocol %q", sshconn.ErrProtocolIncompatible, "alpha", "x"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorActionUnavailable,
+		},
+		{
+			name:      "unsupported host",
+			attachErr: fmt.Errorf("%w: host %q", sshconn.ErrUnsupportedHost, "alpha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorActionUnavailable,
+		},
+		{
+			name:      "deploy failed",
+			attachErr: fmt.Errorf("%w: host %q build", sshconn.ErrDeploy, "alpha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+		{
+			name:      "dirty controller refused",
+			attachErr: fmt.Errorf("%w: host %q", sshconn.ErrControllerDirty, "alpha"),
+			code:      appwire.CodeUnavailable,
+			info:      appwire.ErrorHubLaunch,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := hubcore.WebConfig{
+				RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+				RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+					return nil, tc.attachErr
+				},
+			}
+			// A real remote hub source: the terminal classes under test are the
+			// ones its own classifier deliberately leaves raw.
+			sources := appsource.NewRegistry()
+			sources.Add(appsource.NewRemoteHubSource("alpha", nil, cfg.RemoteHostClient))
+			hosts := hostAttachRegistry(t, cfg)
+
+			_, err := hubHostAttach(context.Background(), cfg, sources, hosts, appwire.HostAttachParams{Host: "alpha"})
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("attach failure %T=%v, want a typed WireError", err, err)
+			}
+			data, _ := wire.Data.(appwire.ErrorData)
+			if wire.Code != tc.code || data.EvenerErrorInfo != tc.info {
+				t.Fatalf("attach failure wire=%+v, want code=%d info=%q", wire, tc.code, tc.info)
+			}
+			if !strings.Contains(wire.Message, "alpha") {
+				t.Fatalf("attach failure message %q does not name host alpha", wire.Message)
+			}
+		})
+	}
+}
+
+// A successful dial is authoritative: if only the post-attach facts read fails
+// (a link drop or a reconnect that swaps the channel), the response still
+// reports Attached true — the attach event has already flipped the host online,
+// and a failure toast for an online host makes the user retry needlessly. The
+// facts are omitted, and the handshake identity survives.
+func TestHostAttachKeepsSuccessfulDialWhenFactsReadFails(t *testing.T) {
+	live := &appwire.Client{}
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			return live, nil
+		},
+		RemoteHostFacts: func(context.Context, string, *appwire.Client) (appsource.HostFacts, error) {
+			return appsource.HostFacts{}, errors.New("link dropped between the dial and the facts read")
+		},
+		RemoteHostHandshake: func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
+			return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "evener-hub", Version: "0.1.0"}}, true
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
+	if err != nil {
+		t.Fatalf("attach after a successful dial must not fail on the facts read: %v", err)
+	}
+	if !resp.Attached || resp.Host != "alpha" {
+		t.Fatalf("attach response = %+v, want the successful dial authoritative", resp)
+	}
+	if resp.HubVersion != "" || resp.OS != "" || resp.Arch != "" || resp.Features != nil {
+		t.Fatalf("facts present in %+v, want them omitted after a failed facts read", resp)
+	}
+	if resp.ServerName != "evener-hub" || resp.ServerVersion != "0.1.0" {
+		t.Fatalf("handshake identity lost from %+v", resp)
 	}
 }

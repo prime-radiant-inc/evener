@@ -1688,6 +1688,15 @@ func isTerminal(err error) bool {
 	}
 }
 
+// ErrControllerDirty is the exported alias for the terminal dirty-controller
+// deploy refusal (errControllerDirty, deploy.go): this controller was built
+// from a dirty tree, so it has no reproducible identity to install on or match
+// against a host, and the refusal is terminal rather than a retryable ErrDeploy.
+// It is exported so a caller — the hub's attach handler — can match the refusal
+// with errors.Is and surface it as a typed deploy failure
+// (appwire.HubLaunchError) rather than a generic internal error.
+var ErrControllerDirty = errControllerDirty
+
 func (m *Manager) hostLock(name string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -745,7 +745,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `name` | `string` |  |  |
+| `host` | `string` |  |  |
 
 
 ### `HostAttachResponse`
@@ -753,6 +753,9 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `attached` | `bool` |  |  |
+| `host` | `string` | yes |  |
+| `serverName` | `string` | yes |  |
+| `serverVersion` | `string` | yes |  |
 | `protocolVersion` | `string` | yes |  |
 | `hubVersion` | `string` | yes |  |
 | `os` | `string` | yes |  |
