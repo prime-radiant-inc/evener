@@ -48,7 +48,10 @@ export interface NativePreferencesSnapshot {
 	transcriptMobile: PreferenceState<ConfirmedTranscript>;
 }
 
-const initialDomain = <T>(): PreferenceState<T> => ({
+/** An empty domain: every field at its "not yet known" value. Exported so a
+ * test fixture can spread it instead of writing out every field, here and
+ * for the shared gates (preferenceGates.test.ts). */
+export const initialDomain = <T>(): PreferenceState<T> => ({
 	support: "unknown",
 	loading: false,
 	saving: false,

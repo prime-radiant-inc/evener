@@ -47,6 +47,25 @@ function backend() {
 	return { port, keys: () => [...values.keys()].sort() };
 }
 
+/** The real byte-aware backend (draftBackend) over a plain Map-backed
+ * synchronous key-value store, with the raw bytes observable. What every
+ * test below that cares about unreadable/malformed records actually runs
+ * against - never a hand-rolled re-implementation of get/deleteIf, which
+ * would only assert the stub. */
+function deviceStore() {
+	const raw = new Map<string, string>();
+	const store = {
+		getItemSync: (key: string) => raw.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			raw.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			raw.delete(key);
+		},
+	};
+	return { raw, port: draftBackend(store, () => "id-1") };
+}
+
 describe("native preference drafts", () => {
 	it("keeps one hub's drafts out of another's", () => {
 		const disk = backend();
@@ -84,32 +103,9 @@ describe("native preference drafts", () => {
 		// The device store as the provider wraps it: a value it cannot parse comes
 		// back as its RAW bytes rather than throwing, so the shared store reads it
 		// as an unreadable record (draftUnreadable) instead of a dead port.
-		const raw = new Map<string, string>();
-		const port: NativePreferenceDraftBackend = {
-			createId: () => "1",
-			get: (key) => {
-				const value = raw.get(key);
-				if (value === undefined) return null;
-				try {
-					return JSON.parse(value);
-				} catch {
-					return value;
-				}
-			},
-			set: (key, value) => {
-				raw.set(key, JSON.stringify(value));
-			},
-			delete: (key) => {
-				raw.delete(key);
-			},
-			deleteIf: (key, value: unknown) => {
-				const stored = raw.get(key);
-				if (stored === undefined) return;
-				if (stored === value || stored === JSON.stringify(value)) raw.delete(key);
-			},
-		};
-		const storage = nativeTranscriptDrafts("hub", port);
-		raw.set("evener.native.transcript-draft.hub", "{not json");
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
+		disk.raw.set("evener.native.transcript-draft.hub", "{not json");
 
 		// Read back as the raw string, which is not a checkpoint.
 		expect(storage.load()).toBe("{not json");
@@ -120,98 +116,62 @@ describe("native preference drafts", () => {
 	});
 
 	it("clears an unreadable record whose stored bytes are not canonical JSON", () => {
-		const raw = new Map<string, string>();
-		const store = {
-			getItemSync: (key: string) => raw.get(key) ?? null,
-			setItemSync: (key: string, value: string) => {
-				raw.set(key, value);
-			},
-			removeItemSync: (key: string) => {
-				raw.delete(key);
-			},
-		};
-		const storage = nativeTranscriptDrafts("hub", draftBackend(store, () => "id-1"));
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
 		const key = "evener.native.transcript-draft.hub";
 
 		// Parses, but is not a checkpoint, and its formatting is not what
 		// JSON.stringify would produce - so its re-encoding cannot name it.
-		raw.set(key, '{\n  "id" : "" ,\n  "baseRevision": -1\n}');
+		disk.raw.set(key, '{\n  "id" : "" ,\n  "baseRevision": -1\n}');
 		const read = storage.load();
 		expect(read).not.toBeNull();
-		expect(JSON.stringify(read)).not.toBe(raw.get(key));
+		expect(JSON.stringify(read)).not.toBe(disk.raw.get(key));
 
 		storage.removeIf(read as never);
-		expect(raw.has(key)).toBe(false);
+		expect(disk.raw.has(key)).toBe(false);
 	});
 
-	it("clears an unreadable record with no client and no store", () => {
-		// What the provider has while backgrounded or reconnecting: the ports for
-		// this hub, and no model at all. The escape hatch must still work, because
-		// that is exactly when a user is stuck behind such a record.
-		const raw = new Map<string, string>();
-		const store = {
-			getItemSync: (key: string) => raw.get(key) ?? null,
-			setItemSync: (key: string, value: string) => {
-				raw.set(key, value);
-			},
-			removeItemSync: (key: string) => {
-				raw.delete(key);
-			},
-		};
-		const port = draftBackend(store, () => "id-1");
-		raw.set("evener.native.transcript-draft.hub", "{not json");
-		raw.set("evener.native.keybinding-draft.hub", '{"id":""}');
+	// One row per state in NativePreferencesProvider's reachability table with
+	// no model at all (backgrounded, reconnecting): both take the identical
+	// port path, so one test stands in for both rows. The screens' JSX gates
+	// stay untested per #1526; what is pinned here is the path each button
+	// calls, for either state.
+	it("no model (backgrounded or reconnecting): the port path removes the record", () => {
+		const disk = deviceStore();
+		disk.raw.set("evener.native.transcript-draft.hub", "{not json");
+		disk.raw.set("evener.native.keybinding-draft.hub", '{"id":""}');
 
-		discardStoredTranscriptDraft(nativeTranscriptDrafts("hub", port));
-		discardStoredKeybindingDraft(nativeKeybindingDrafts("hub", port));
+		discardStoredTranscriptDraft(nativeTranscriptDrafts("hub", disk.port));
+		discardStoredKeybindingDraft(nativeKeybindingDrafts("hub", disk.port));
 
-		expect(raw.size).toBe(0);
+		expect(disk.raw.size).toBe(0);
 	});
 
 	it("a discard naming a DIFFERENT record does not remove what is stored", () => {
-		const raw = new Map<string, string>();
-		const store = {
-			getItemSync: (key: string) => raw.get(key) ?? null,
-			setItemSync: (key: string, value: string) => {
-				raw.set(key, value);
-			},
-			removeItemSync: (key: string) => {
-				raw.delete(key);
-			},
-		};
-		const port = draftBackend(store, () => "id-1");
-		const storage = nativeTranscriptDrafts("hub", port);
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
 		const key = "evener.native.transcript-draft.hub";
 
 		// A record that parses but is not a checkpoint, stored non-canonically.
-		raw.set(key, '{\n  "id" : "a" ,\n  "baseRevision": -1\n}');
+		disk.raw.set(key, '{\n  "id" : "a" ,\n  "baseRevision": -1\n}');
 		const read = storage.load();
 		expect(read).not.toBeNull();
 
 		// A stale cleanup for some OTHER checkpoint must not remove this record
 		// just because nothing has been written since it was read.
 		storage.removeIf({ id: "b", baseRevision: 9 } as never);
-		expect(raw.has(key)).toBe(true);
+		expect(disk.raw.has(key)).toBe(true);
 
 		// The record this read actually named still removes it.
 		storage.removeIf(read as never);
-		expect(raw.has(key)).toBe(false);
+		expect(disk.raw.has(key)).toBe(false);
 	});
 
 	it("a stored JSON null is an unreadable record, not a missing key", () => {
-		const raw = new Map<string, string>();
-		const store = {
-			getItemSync: (key: string) => raw.get(key) ?? null,
-			setItemSync: (key: string, value: string) => {
-				raw.set(key, value);
-			},
-			removeItemSync: (key: string) => {
-				raw.delete(key);
-			},
-		};
-		const storage = nativeTranscriptDrafts("hub", draftBackend(store, () => "id-1"));
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
 		const key = "evener.native.transcript-draft.hub";
-		raw.set(key, "null");
+		disk.raw.set(key, "null");
 
 		// Returning it as null would be indistinguishable from no record at all,
 		// which is how it became invisible AND unremovable.
@@ -219,7 +179,7 @@ describe("native preference drafts", () => {
 		expect(read).not.toBeNull();
 
 		storage.removeIf(read as never);
-		expect(raw.has(key)).toBe(false);
+		expect(disk.raw.has(key)).toBe(false);
 	});
 
 	it("a port failure during a local discard propagates, so a screen can show it", () => {
@@ -237,35 +197,6 @@ describe("native preference drafts", () => {
 		expect(() => discardStoredTranscriptDraft(storage)).toThrow("disk unavailable");
 	});
 
-	// One row per state in NativePreferencesProvider's reachability table. Every
-	// row with a record must end the same way: record removed. The screens' JSX
-	// gates stay untested per #1526; what is pinned here is the path each button
-	// calls, for each state the app can be in when a user meets such a record.
-	it.each([
-		["no model, backgrounded"],
-		["no model, reconnecting"],
-	])("%s: the port path removes the record", (_state) => {
-		const raw = new Map<string, string>();
-		const store = {
-			getItemSync: (key: string) => raw.get(key) ?? null,
-			setItemSync: (key: string, value: string) => {
-				raw.set(key, value);
-			},
-			removeItemSync: (key: string) => {
-				raw.delete(key);
-			},
-		};
-		const port = draftBackend(store, () => "id-1");
-		raw.set("evener.native.transcript-draft.hub", "{not json");
-		raw.set("evener.native.keybinding-draft.hub", "null");
-
-		// Exactly what the provider does with no model: no client, no store.
-		discardStoredTranscriptDraft(nativeTranscriptDrafts("hub", port));
-		discardStoredKeybindingDraft(nativeKeybindingDrafts("hub", port));
-
-		expect(raw.size).toBe(0);
-	});
-
 	it("no session: there is no hub key to clear, and nothing throws", () => {
 		// hubId null never reaches a port at all (the provider returns early), so
 		// the row has no record and no screen; the ports refuse a blank id.
@@ -280,23 +211,13 @@ describe("native preference drafts", () => {
 	});
 
 	it("a READABLE record with reordered keys is discarded and does not come back", () => {
-		const raw = new Map<string, string>();
-		const store = {
-			getItemSync: (key: string) => raw.get(key) ?? null,
-			setItemSync: (key: string, value: string) => {
-				raw.set(key, value);
-			},
-			removeItemSync: (key: string) => {
-				raw.delete(key);
-			},
-		};
-		const port = draftBackend(store, () => "id-1");
-		const storage = nativeTranscriptDrafts("hub", port);
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
 		const key = "evener.native.transcript-draft.hub";
 
 		// A perfectly valid checkpoint, stored with its keys in a different order
 		// from this build's canonical encoding - an older build, or another writer.
-		raw.set(
+		disk.raw.set(
 			key,
 			JSON.stringify({
 				writeUncertain: false,
@@ -318,7 +239,7 @@ describe("native preference drafts", () => {
 			config: decoded.config,
 			writeUncertain: decoded.writeUncertain,
 		} as never);
-		expect(raw.has(key)).toBe(false);
+		expect(disk.raw.has(key)).toBe(false);
 	});
 
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {

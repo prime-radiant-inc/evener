@@ -14,6 +14,7 @@ import type { KeybindingsRule } from "@evener/appwire-client";
 import { useConnection } from "./ConnectionProvider";
 import { checkedKeybindingChange, keybindingPreview } from "./keybindingRules";
 import { useNativePreferences } from "./NativePreferencesProvider";
+import { editingDisabled } from "./preferenceGates";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
@@ -94,29 +95,31 @@ export function KeybindingPreferencesScreen({
 	const editor = route.params.editor;
 	const action = preview.rows.find((row) => row.actionId === editor?.actionId);
 	const model = preferences.model;
-	const available =
-		!!model &&
-		preferences.connected &&
-		domain?.support === "supported" &&
-		!!domain.confirmed;
 	const busy =
-		!available ||
-		!!domain?.loading ||
-		!!domain?.saving ||
-		!!domain?.writeUncertain ||
-		!!domain?.storageUnavailable ||
-		!!domain?.confirmed?.loadError;
-	/** Runs an operation THROUGH THE SHARED STORE, so it needs a model. Pass
-	 * `requiresHub: false` when it only touches this device, so it still runs
-	 * while disconnected. An operation that does not go through the store at all
-	 * - the unreadable-record escape hatch - does not come here: see its own call
-	 * site, which is why round 11's table lists "NO-OP" for this path. */
+		!model ||
+		!domain ||
+		domain.support !== "supported" ||
+		editingDisabled(domain, preferences.connected) ||
+		!!domain.confirmed?.loadError;
+	/** Runs an operation THROUGH THE SHARED STORE by default, so it needs a
+	 * model. Pass `requiresHub: false` when it only touches this device, so it
+	 * still runs while disconnected; pass `requiresModel: false` too for an
+	 * operation that does not need one at all (the unreadable-record escape
+	 * hatch), which still keeps the hub-identity check and the staleness guard
+	 * every path here gets - a reply landing after the scope changed (a
+	 * different hub selected, this screen unmounted) must not set an error on
+	 * a screen it no longer describes. `message` is the fixed copy this path's
+	 * own failure shows. */
 	const run = (
 		operation: () => Promise<unknown>,
 		success?: () => void,
-		{ requiresHub = true }: { requiresHub?: boolean } = {},
+		{
+			requiresHub = true,
+			requiresModel = true,
+			message = "The change could not be completed. Check current shortcuts and review your changes.",
+		}: { requiresHub?: boolean; requiresModel?: boolean; message?: string } = {},
 	) => {
-		if (!model || scope.hubId !== route.params.hubId) return;
+		if ((requiresModel && !model) || scope.hubId !== route.params.hubId) return;
 		if (requiresHub && !scope.connected) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
@@ -125,10 +128,7 @@ export function KeybindingPreferencesScreen({
 				if (active()) success?.();
 			})
 			.catch(() => {
-				if (active())
-					setError(
-						"The change could not be completed. Check current shortcuts and review your changes.",
-					);
+				if (active()) setError(message);
 			});
 	};
 	const closeEditor = () => navigation.setParams({ editor: undefined });
@@ -189,25 +189,15 @@ export function KeybindingPreferencesScreen({
 								The shortcut draft saved on this phone could not be read.
 								Discard it to edit shortcuts again.
 							</Copy>
-							{/* Gated on the RECORD alone - not on `busy` (which the record
-							    itself sets), not on the connection, and not on a live model:
-							    the client goes away while backgrounded or reconnecting, which
-							    is exactly when a user is stuck behind such a record, and the
-							    snapshot still reports it. The provider's path is local-only,
-							    so it runs with no hub. */}
 							<Action
 								onPress={() => {
-									// Deliberately NOT through `run`: this is the one path out of
-									// an unreadable record, `model` is null in exactly the states
-									// a user meets one in, and `run` requires a model. The
-									// hub-identity check is kept - a discard must never clear a
-									// different hub's record.
-									if (scope.hubId !== route.params.hubId) return;
-									setError(null);
-									preferences.discardUnreadableDraft("keybindings").catch(() => {
-										setError(
-											"The draft could not be discarded. Try again in a moment.",
-										);
+									run(() => preferences.discardUnreadableDraft("keybindings"), undefined, {
+										// Local-only: no hub and no model needed for this, the one
+										// path out of an unreadable record - `model` is null in
+										// exactly the states a user meets one in.
+										requiresHub: false,
+										requiresModel: false,
+										message: "The draft could not be discarded. Try again in a moment.",
 									});
 								}}
 							>

@@ -50,3 +50,16 @@ export function nativeTranscriptDrafts(
 ): TranscriptDraftStorage {
 	return nativeDraftStorage("transcript", hubId, backend);
 }
+
+/** Either section's storage, by name, for a caller that only knows which
+ * section it is discarding for and has no reason to pick between
+ * nativeTranscriptDrafts/nativeKeybindingDrafts itself. */
+export function nativePreferenceDrafts(
+	section: "transcript" | "keybindings",
+	hubId: string,
+	backend: NativePreferenceDraftBackend,
+): KeybindingDraftStorage & TranscriptDraftStorage {
+	return section === "transcript"
+		? nativeDraftStorage("transcript", hubId, backend)
+		: nativeDraftStorage("keybinding", hubId, backend);
+}

@@ -9,7 +9,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { NativePreferencesSnapshot } from "./nativePreferences";
-import { transcriptEditingDisabled } from "./transcriptPreferencesEditorGates";
+import { disabled as gateDisabled, editingDisabled as gateEditingDisabled } from "./preferenceGates";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const levels: Record<ContentLevel, { label: string; description: string }> = {
@@ -111,18 +111,13 @@ export function TranscriptPreferencesEditor({
 	const review = current !== null && reviewRevision === current.revision;
 	const selected = state.draft ?? current;
 	const config = selected?.config;
-	const disabled =
-		!connected ||
-		state.loading ||
-		state.saving ||
-		state.writeUncertain ||
-		state.storageUnavailable;
+	const disabled = gateDisabled(state, connected);
 	// A restored draft renders before the hub's first read lands (`draft` is
 	// restored synchronously; `confirmed` only after a successful read), and
 	// every edit/save composes against the confirmed value - `disabled` alone
 	// does not say so. Discard needs none of this: it stays gated on `disabled`
 	// (round 16 keeps that contract for #1693).
-	const editingDisabled = transcriptEditingDisabled(state, connected);
+	const editingDisabled = gateEditingDisabled(state, connected);
 	const dirty = state.draft !== null;
 	// An unreadable stored draft is the one storage failure the user can clear,
 	// and clearing it is the only way out of the disabled state above: there is

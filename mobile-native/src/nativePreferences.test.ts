@@ -7,6 +7,9 @@ import type {
 import { toWireConfig } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import {
+	type ConfirmedKeybindings,
+	type ConfirmedTranscript,
+	initialDomain,
 	type NativePreferencesSnapshot,
 	NativePreferences,
 	snapshotAfterLocalDiscard,
@@ -424,26 +427,18 @@ it("an unreadable stored record is surfaced as such and discarding clears it", a
 it("a local discard unlocks the section it cleared, and leaves the other alone", () => {
 	const locked: NativePreferencesSnapshot = {
 		keybindings: {
+			...initialDomain<ConfirmedKeybindings>(),
 			support: "supported",
-			loading: false,
-			saving: false,
-			confirmed: null,
-			draft: null,
 			error: "Could not restore the saved shortcut draft. Check current shortcuts to retry.",
 			conflict: true,
-			writeUncertain: false,
 			storageUnavailable: true,
 			draftUnreadable: true,
 		},
 		transcriptMobile: {
+			...initialDomain<ConfirmedTranscript>(),
 			support: "supported",
-			loading: false,
-			saving: false,
-			confirmed: null,
-			draft: null,
 			error: "Could not restore the saved transcript draft. Check current settings to retry.",
 			conflict: true,
-			writeUncertain: false,
 			storageUnavailable: true,
 			draftUnreadable: true,
 		},

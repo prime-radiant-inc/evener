@@ -9,7 +9,6 @@ import {
 } from "react";
 import {
 	type AppwireClient,
-	discardStoredKeybindingDraft,
 	discardStoredTranscriptDraft,
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
@@ -18,6 +17,7 @@ import { draftBackend } from "./nativeDraftBackend";
 import { useConnection } from "./ConnectionProvider";
 import {
 	nativeKeybindingDrafts,
+	nativePreferenceDrafts,
 	nativeTranscriptDrafts,
 } from "./nativePreferenceDrafts";
 import {
@@ -32,11 +32,6 @@ interface Preferences {
 	snapshot: NativePreferencesSnapshot | null;
 	config: TranscriptDisplayConfigV1 | null;
 	connected: boolean;
-	/** Throws away an unreadable stored draft. Local-only, so it works with no
-	 * connection and no live model: the client goes away while backgrounded or
-	 * reconnecting, and that is exactly when a user is stuck behind such a
-	 * record. With a live model the store does it and publishes the state; with
-	 * none the port is cleared directly. */
 	/** Throws away a stored draft this build cannot read. Rejects rather than
 	 * throwing, so a screen routes a storage failure through the same error
 	 * handler as every other operation.
@@ -122,9 +117,11 @@ export function NativePreferencesProvider({
 		}
 		// The port can throw; awaiting inside an async function turns that into a
 		// rejection the caller's error handler already knows how to show.
-		if (section === "transcript")
-			discardStoredTranscriptDraft(nativeTranscriptDrafts(hubId, backend));
-		else discardStoredKeybindingDraft(nativeKeybindingDrafts(hubId, backend));
+		// discardStoredTranscriptDraft and discardStoredKeybindingDraft are the
+		// same function (draftCheckpointPort.ts's discardStoredDraft, re-exported
+		// under each store's own name); either name works for either section's
+		// storage.
+		discardStoredTranscriptDraft(nativePreferenceDrafts(section, hubId, backend));
 		// No store to publish the result, so the exposed snapshot is projected
 		// here: without this the record is gone but the section still reports
 		// draftUnreadable and stays locked until the next connection.
