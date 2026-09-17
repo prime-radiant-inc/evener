@@ -1009,6 +1009,44 @@ describe("the checkpointed draft editor", () => {
     expect(broken.getState().draftError).toMatch(/restore/);
   });
 
+  // RoboRev round 23 High 1: a draft restored before any ready generation
+  // began (a store built synchronously, before the host ever connects) keeps
+  // generation: null forever - staleDraft never runs the generation check on
+  // it - so a LATER hub replacement reporting the identical revision by
+  // coincidence would read it as current. The fix stamps the draft with the
+  // generation confirming it the moment the first authoritative payload
+  // lands, before staleness is evaluated for that payload.
+  test("a draft restored before any generation began is stamped by the first authoritative payload, so a later hub replacement at the same revision is caught", async () => {
+    const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = createTranscriptDisplayStore({ client, drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
+
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    // The first authoritative payload lands: the draft is stamped with THIS
+    // generation, even though nothing about it looked stale yet.
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    // The hub is replaced (a reconnect to a different hub, or the same hub
+    // restarted): a new generation begins and its own numbering happens to
+    // confirm the IDENTICAL revision this draft was stamped against.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+
+    expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
+    expect(store.getState().draftConflict).toBe(true);
+  });
+
   test("the draft editor stays open while a read is in flight; the older reply is discarded", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: memoryDraftStorage<TranscriptDraftCheckpoint>().storage });
@@ -1108,7 +1146,10 @@ describe("the checkpointed draft editor", () => {
     });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
+    // Classified at construction with generation: null (before the ready
+    // generation began); readyStore's own refresh is this generation's first
+    // authoritative payload, which stamps it (round 23 High 1).
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
 
     // Another store or app version replaces the SAME record with a valid,
     // newer checkpoint - under different storage bytes - between this
@@ -1143,7 +1184,10 @@ describe("the checkpointed draft editor", () => {
     });
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client, { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: null });
+    // Classified at construction with generation: null (before the ready
+    // generation began); readyStore's own refresh is this generation's first
+    // authoritative payload, which stamps it (round 23 High 1).
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed, generation: 1 });
 
     // The user edits the restored draft: save() writes a NEW checkpoint. The
     // repository's tracked identity must move with it, or a discard right

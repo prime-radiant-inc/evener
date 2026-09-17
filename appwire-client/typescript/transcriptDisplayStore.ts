@@ -581,10 +581,25 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       preview !== undefined &&
       configFingerprint(value.config) !== configFingerprint(preview) &&
       (previewBase.generation !== fence.generation || value.revision > previewBase.revision);
+    // A draft restored before any ready generation existed is stamped
+    // generation: null (nothing to compare against yet at restore time) -
+    // round 23 High 1: left null forever, staleDraft's generation check never
+    // runs for it, so a LATER hub replacement reporting the identical
+    // revision by coincidence would read it as current. The first
+    // authoritative payload to land (either layout - both share one
+    // generation) is what actually confirms the draft valid for a real
+    // generation, so the stamp happens HERE, before staleness is judged for
+    // this same payload, and folds into this same publish. A draft already
+    // stamped (an edit, or an earlier authoritative payload) is left alone.
+    const draft =
+      state.draft !== null && state.draft.generation === null
+        ? { ...state.draft, generation: fence.generation }
+        : state.draft;
     setState({
       hub,
       ...(contradictsPreview ? clearPreview(layout) : {}),
-      draftConflict: staleDraft(state.draft, hub, fence.generation),
+      draft,
+      draftConflict: staleDraft(draft, hub, fence.generation),
       ...extra,
     });
     return true;
