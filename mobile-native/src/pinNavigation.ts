@@ -4,8 +4,7 @@ import type {
 } from "@evener/appwire-client";
 import {
 	decodeNavigationResponse,
-	materializeNavigationResource,
-	normalizedGraphFromSnapshot,
+	materializeSnapshot,
 	requiredRevision,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
@@ -26,12 +25,10 @@ export async function readPinLocation(
 	const decoded = decodeNavigationResponse(key, undefined, wire);
 	let location: NavigationSessionLocation | null = null;
 	if (decoded.status === "snapshot") {
-		location = materializeNavigationResource({
+		location = materializeSnapshot(
 			key,
-			graph: normalizedGraphFromSnapshot(decoded.snapshot),
-			version: decoded.version,
-			presence: "present",
-		}) as unknown as NavigationSessionLocation;
+			decoded,
+		) as unknown as NavigationSessionLocation;
 		if (location.ref !== ref || location.session?.ref !== ref)
 			throw Error("The hub returned a different session location.");
 	} else if (decoded.status !== "gone") {

@@ -1899,6 +1899,17 @@ it("projects a warning item as a notice the phone reads as critical", () => {
   ]);
 });
 
+// A warning with nothing in it is not a row. The web's own warning renderer
+// returns null for exactly this case (WarningItem: no title, no text, no
+// hint), and a blank critical notice on the phone is a red herring with no
+// content to explain itself.
+it("drops a warning that carries nothing at all", () => {
+  const projected = projectThread(
+    thread([turn("t", [item({ id: "w", type: "warning", text: "", status: "completed" })])]),
+  );
+  expect(projected.items).toEqual([]);
+});
+
 it("carries a warning that has no title of its own", () => {
   const projected = projectThread(
     thread([

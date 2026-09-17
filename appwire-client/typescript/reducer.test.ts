@@ -4483,6 +4483,31 @@ test("warning with bare-string `warning` and no top-level message renders that s
   expect(item.text).toBe("provider hiccup");
 });
 
+// A frame the reducer cannot place must leave the model's turns BY REFERENCE.
+// activeTurnId comes off the wire snapshot (hydrateThread), so it can name a
+// turn outside the window this client loaded — and then there is nowhere to put
+// a warning or an injected steer. Returning a fresh turns array for a frame
+// that changed nothing tells every consumer "the transcript moved" when it did
+// not: a host that detects an unplaceable frame by comparing that reference
+// (native's store) would never ask for the read that would fill the gap.
+test.each([
+  ["a warning", { method: "warning", params: { threadId: "thr_t", ref: "ref_t", message: "careful" } }],
+  [
+    "an injected steer",
+    { method: "evener/steering/injected", params: { threadId: "thr_t", ref: "ref_t", text: "go left" } },
+  ],
+])("%s for an active turn outside the loaded window leaves turns by reference", (_case, notification) => {
+  const model = testHydrate({
+    evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_outside_window" },
+  });
+  expect(model.activeTurnId).toBe("turn_outside_window");
+  expect(model.turns).toEqual([]);
+
+  const applied = applyNotification(model, notification as AnyNotification, 2000);
+  expect(applied.turns).toBe(model.turns);
+  expect(applied.lastFrameAt).toBe(2000);
+});
+
 // A warning frame that carries no message anywhere leaves the item's text
 // empty. The frame itself is not a message: it is the routing envelope
 // (threadId, ref) plus whatever shape the producer sent, and a renderer that

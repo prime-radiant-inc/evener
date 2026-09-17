@@ -921,8 +921,15 @@ export function notificationTargetsThread(n: AnyNotification, model: ThreadModel
 }
 
 // Replaces the turn identified by turnId with `fn(turn)`; turns not matching
-// pass through unchanged (same reference).
+// pass through unchanged. Returns the SAME array when no turn matched: a frame
+// this fold could not place changed nothing, and handing back a fresh array
+// would tell every consumer the transcript moved. Most callers resolve the id
+// against model.turns first and always match; the two that cannot —
+// `warning` and `evener/steering/injected`, which take model.activeTurnId
+// straight off the wire snapshot — are exactly the ones this protects, because
+// that id can name a turn outside the window this client loaded.
 function mapTurn(turns: TurnModel[], turnId: string, fn: (turn: TurnModel) => TurnModel): TurnModel[] {
+  if (!turns.some((t) => t.id === turnId)) return turns;
   return turns.map((t) => (t.id === turnId ? fn(t) : t));
 }
 

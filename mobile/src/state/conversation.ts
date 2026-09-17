@@ -569,6 +569,14 @@ export function createConversationStore() {
   // streaming into does re-encode once per frame, because its text really is
   // new each time — #1535 is where that stops growing.
   let boundedText = new Map<string, string>();
+  // The cache belongs to the conversation whose rows it bound: every string
+  // in it is held by that conversation's model or its rows, so once the
+  // conversation is dropped the cache is the only thing retaining them. Every
+  // transition that drops the conversation releases it. A suspend does not:
+  // the rows stay on screen for the resume, which republishes the same text.
+  function releaseBoundedTextCache(): void {
+    boundedText = new Map();
+  }
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
     const previous = boundedText;
     const next = new Map<string, string>();
@@ -836,6 +844,7 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
+        releaseBoundedTextCache();
         set({
           status: "opening",
           ref,
@@ -891,6 +900,7 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
+        releaseBoundedTextCache();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1726,6 +1736,7 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
+        releaseBoundedTextCache();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -1767,17 +1778,26 @@ export function createConversationStore() {
         }
         if (state.ref === null) return;
         // evener/thread/resync is the authoritative refresh path (the store
-        // never re-reads on its own). An item frame the reducer could not
-        // place — an unknown method, or one naming an item or turn this model
-        // does not hold — leaves `turns` untouched by reference (every applied
-        // fold rebuilds it through mapTurn), while the model itself is still a
-        // new object because the frame is evidence of liveness. That is the
-        // gap case: this client missed the item/started that would have made
-        // the frame placeable, so it asks for the canonical read at once
-        // rather than showing an incomplete transcript until the next resync.
+        // never re-reads on its own). Any frame about the transcript that the
+        // reducer could not place — an unknown method, one naming an item or
+        // turn this model does not hold, a warning or a steer whose active
+        // turn lies outside the loaded window — leaves `turns` untouched by
+        // reference (every applied fold rebuilds it through mapTurn, which
+        // hands back the same array when nothing matched), while the model
+        // itself is still a new object because the frame is evidence of
+        // liveness. That is the gap case: the transcript this client holds is
+        // missing what the frame was about, so it asks for the canonical read
+        // at once rather than showing an incomplete transcript until the next
+        // resync. Thread-level frames (a status, a name, the queue) never
+        // touch turns and are not gaps, so they are named out.
+        const touchesTranscript =
+          n.method.startsWith("item/") ||
+          n.method.startsWith("turn/") ||
+          n.method === "warning" ||
+          n.method === "evener/steering/injected";
         if (
           n.method === "evener/thread/resync" ||
-          (n.method.startsWith("item/") && applied.turns === state.conversation.turns)
+          (touchesTranscript && applied.turns === state.conversation.turns)
         ) {
           requestRehydrate(state.ref);
         }
@@ -1795,6 +1815,7 @@ export function createConversationStore() {
         loadOlderToken += 1;
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
+        releaseBoundedTextCache();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();

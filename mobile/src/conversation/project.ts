@@ -340,11 +340,13 @@ function reasoningText(item: ItemModel): string {
   return paragraphs.length === 0 ? item.text : paragraphs.join("\n\n");
 }
 
+// Returns null for an item with nothing to show — the timeline then carries
+// no row for it.
 function projectItem(
   item: ItemModel,
   turn: TurnModel,
   asks: ReadonlyMap<string, AskQuestionRef[]>,
-): PreResult {
+): PreResult | null {
   // Human steering uses the same message and image presentation as user input.
   if (isUserMessage(item) || (isSteering(item) && item.source === "user")) {
     const attachments = itemAttachments(item);
@@ -493,6 +495,12 @@ function projectItem(
   if (item.type === "warning") {
     const title = item.warning?.title;
     const hint = item.warning?.hint;
+    const text = [title, item.text, hint].filter((part) => part).join("\n");
+    // A warning carrying no title, no message and no hint has nothing to
+    // show: the web renders no row for it either (WarningItem returns null
+    // for exactly this case), and an empty notice here would be a blank
+    // bubble the reader cannot act on.
+    if (text === "") return null;
     return {
       kind: "final",
       item: {
@@ -501,7 +509,7 @@ function projectItem(
         origin: "system",
         family: "warning",
         tone: "warning",
-        text: [title, item.text, hint].filter((part) => part).join("\n"),
+        text,
       },
     };
   }
@@ -634,6 +642,7 @@ export function projectTimeline(
   for (const turn of model.turns) {
     for (const item of turn.items) {
       const result = projectItem(item, turn, asks);
+      if (result === null) continue;
       if (result.kind === "final") {
         ordered.push({
           type: "final",

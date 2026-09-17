@@ -2905,6 +2905,35 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
+    // The same gap detection covers a frame that is not an item frame at all: a
+    // warning or an injected steer whose active turn lies outside the window
+    // this client loaded has nowhere to land, and the model says so by handing
+    // back the turns it already had.
+    it.each([
+      ["a warning", {
+        method: "warning",
+        params: { threadId: "thread-1", ref: "ref-1", message: "careful" },
+      }],
+      ["an injected steer", {
+        method: "evener/steering/injected",
+        params: { threadId: "thread-1", ref: "ref-1", text: "go left", kind: "user", source: "user" },
+      }],
+    ] as const)("rereads when %s names an active turn this window does not hold", async (_label, frame) => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ evener: evenerWith({ activeTurnId: "t-outside-window" }) }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.activeTurnId).toBe("t-outside-window");
+      const initialReads = service.readProjectionCalls.length;
+
+      store.getState().applyNotification(frame as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+    });
+
     // An item frame the reducer has no case for cannot be projected, so the
     // canonical read is still the recovery.
     it("rereads for an item frame the model has no rule for", async () => {
@@ -9253,6 +9282,71 @@ describe("ConversationStore", () => {
       expect(
         store.getState().conversation?.items.some((i) => i.id === "old"),
       ).toBe(true);
+    });
+  });
+
+  // The bound's cache belongs to the conversation: every string in it is held
+  // by that conversation's model or its rows, so a conversation that has been
+  // dropped must not leave its text behind in the cache. Observable without a
+  // test-only accessor, through the work the cache avoids: inside one
+  // conversation a settled row is not re-encoded, and a conversation opened
+  // after the old one was dropped encodes its text again.
+  describe("the display bound's cache belongs to the conversation", () => {
+    const settledText = "some settled text".repeat(20);
+
+    function encodesOfSettledText(encode: {
+      mock: { calls: readonly unknown[][] };
+    }): number {
+      return encode.mock.calls.filter((call) => call[0] === settledText).length;
+    }
+
+    it.each([
+      ["close", (store: ReturnType<typeof createConversationStore>) => store.getState().close()],
+      ["reset", (store: ReturnType<typeof createConversationStore>) => store.getState().reset()],
+    ] as const)("releases it on %s", async (_label, drop) => {
+      const items = [agentMessageItem("a1", settledText, "completed")];
+      const { store, service, sink } = await openRunningTurn(items);
+
+      const encode = vi.spyOn(TextEncoder.prototype, "encode");
+      try {
+        // Within the conversation the cache holds: a frame republishes the
+        // rows and the unchanged text is taken from it, not re-encoded.
+        encode.mockClear();
+        store.getState().applyNotification({
+          method: "thread/status/changed",
+          params: { threadId: "thread-1", ref: "ref-1", status: { type: "running" } },
+        } as AnyNotification);
+        expect(encodesOfSettledText(encode)).toBe(0);
+
+        drop(store);
+
+        // The next conversation binds its own text: nothing was carried over.
+        encode.mockClear();
+        service.readProjectionResult = makeReadProjectionResult(runningTurnThread(items));
+        await store.getState().openProjected(service, sink, "ref-1");
+        expect(encodesOfSettledText(encode)).toBeGreaterThan(0);
+      } finally {
+        encode.mockRestore();
+      }
+    });
+
+    // suspendProjected keeps the conversation and its rows on screen for the
+    // resume, so the cache still belongs to something live: every string in it
+    // is still retained by those rows, clearing it would recover no memory,
+    // and the resume's re-read republishes the same text.
+    it("keeps it across a suspend and resume, which keep the rows", async () => {
+      const items = [agentMessageItem("a1", settledText, "completed")];
+      const { store, service, sink } = await openRunningTurn(items);
+
+      store.getState().suspendProjected();
+      const encode = vi.spyOn(TextEncoder.prototype, "encode");
+      try {
+        service.readProjectionResult = makeReadProjectionResult(runningTurnThread(items));
+        await store.getState().resumeProjected(service, sink, "ref-1");
+        expect(encodesOfSettledText(encode)).toBe(0);
+      } finally {
+        encode.mockRestore();
+      }
     });
   });
 
