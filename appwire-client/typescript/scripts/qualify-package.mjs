@@ -297,6 +297,20 @@ client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
+  // The eleven storage-port methods neither outbox fixture exercises: the
+  // type-use program and the smoke script embed this one definition and add the
+  // two calls each of them actually makes (enqueueIntent, listTargetRefs).
+  const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  getOptimistic: () => Promise.resolve(undefined),
+  listOptimistic: () => Promise.resolve([]),
+  getRecovery: () => Promise.resolve(undefined),
+  nextDispatchable: () => Promise.resolve(undefined),
+  markAttempted: () => Promise.resolve(false),
+  markUnknown: () => Promise.resolve(false),
+  settleReceipt: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(false),
+  restoreProvenAbsent: () => Promise.resolve([]),
+  transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off
   // its entry module below. A subpath with no entry here is not qualified,
@@ -579,7 +593,16 @@ const draftPort: PendingTurnsDraftPort = {
 const pendingTurnsStore: PendingTurnsStore = createPendingTurnsStore({ threads: threadsPort, draft: draftPort, identity });
 const pendingTurnsState: PendingTurnsState = pendingTurnsStore.getState();
 const submittedDraft: SubmittedDraft = { draftRevisionAtStart: 0, text: "hi", skillNames: [] };
-void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage; void pendingEntry; void pendingTurnsState; void submittedDraft; void secureRandomSource;`,
+const outboxStorage: MutationOutboxStorage = {
+  enqueueIntent: () => Promise.resolve(outboxRecord),
+  listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
+${inertOutboxStorageMethods}
+};
+const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
+const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
+const reason: MutationDiscoveryReason = "enqueue";
+void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
+void pendingEntry; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -588,7 +611,14 @@ const pendingTurnsState: client.PendingTurnsState = client.createPendingTurnsSto
   threads: { getThreadModel: () => undefined },
   draft: { readDraftRevision: () => 0, readComposerDraft: () => ({ text: "", skillNames: [] }), clearDraft: () => undefined },
   identity,
-}).getState(); void pendingTurnsState;`,
+}).getState(); void pendingTurnsState;
+const channel: client.MutationOutboxChannel = {
+  postMessage: () => undefined,
+  close: () => undefined,
+  addEventListener: () => undefined,
+  removeEventListener: () => undefined,
+};
+void channel;`,
       // createClientIdentity is a factory, not a module singleton: two
       // instances over two storages get two identities, and one instance's
       // identity is memoized across repeated calls. Both take their random
@@ -641,6 +671,57 @@ assert.equal(pendingTurnsStore.beginSubmission("ref-a"), false);
 pendingTurnsStore.endSubmission("ref-a");
 assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
 assert.deepEqual(pendingTurnsStore.pendingTurnEntries("ref-a"), []);
+// The outbox over a memory storage port: no channel, no lifecycle target and
+// no timer, which is exactly what a host without them passes. One enqueue
+// commits through the port and announces the ref it landed under, and stop()
+// awaits the discovery it queued — all of it synchronous in shape (one promise
+// chain, no timers), so a CommonJS consumer with no top-level await can prove
+// it.
+const enqueued = [];
+const discovered = [];
+const memoryOutbox = new client.MutationOutbox(
+  {
+    enqueueIntent(intent) {
+      const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+      enqueued.push(record);
+      return Promise.resolve(record);
+    },
+    listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+${inertOutboxStorageMethods}
+  },
+  {
+    isReady: () => true,
+    onDiscover: (targetRefs, reason) => {
+      discovered.push({ targetRefs, reason });
+    },
+  },
+);
+memoryOutbox
+  .start()
+  .then(() =>
+    memoryOutbox.enqueueIntent({
+      targetRef: "local:thread-1",
+      method: "turn/queue",
+      payload: {},
+      attachments: [],
+      optimisticDisplay: null,
+    }),
+  )
+  .then((record) => {
+    assert.equal(record.clientMutationId, "cmid-1");
+    return memoryOutbox.stop();
+  })
+  .then(() => {
+    assert.deepEqual(
+      discovered.map((entry) => entry.reason),
+      ["startup", "enqueue"],
+    );
+    assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
+  })
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
 `,
     },
   };
