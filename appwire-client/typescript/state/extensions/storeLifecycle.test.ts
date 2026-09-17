@@ -12,8 +12,15 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import { deferFailure, deferRequest, FakeClient, failing } from "../../testing/fakeClient";
-import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
+import {
+  answerRequests,
+  callsTo,
+  FakeClient,
+  failRequests,
+  gateFailures,
+  gateRequests,
+} from "../../testing/fakeClient";
+import type { MethodName } from "../../types.gen";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
 import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
@@ -27,23 +34,13 @@ interface LifecycleCase<S> {
   /** The notification the store follows, and one it does not own. */
   notifyUpdated(fake: FakeClient): void;
   notifyUnrelated(fake: FakeClient): void;
-  /** Answers the list request; listCalls counts the ones that were sent. */
-  answerList(fake: FakeClient): void;
-  listCalls(fake: FakeClient): number;
-  /** Holds the next list request (or the mutation's); the returned function
-   * answers it. */
-  deferList(fake: FakeClient): () => void;
-  /** Holds EVERY list request, one answerer per call, so two reads can be in
-   * flight and be answered out of order. */
-  gateList(fake: FakeClient): (() => void)[];
-  deferMutation(fake: FakeClient): () => void;
-  /** Scripts the mutation to fail. */
-  failMutation(fake: FakeClient): void;
-  /** Holds the mutation; the returned function fails it. */
-  deferFailingMutation(fake: FakeClient): () => void;
-  /** Holds EVERY mutation, one rejecter per call, so two failing writes can be
-   * in flight and fail in either order. */
-  gateFailingMutations(fake: FakeClient): (() => void)[];
+  /** The store's two wire methods and an answer to each. The suite scripts
+   * them through testing/fakeClient's generic helpers, so a store describes
+   * itself here as data rather than as a closure per script. */
+  listMethod: MethodName;
+  listResponse: unknown;
+  mutationMethod: MethodName;
+  mutationResponse: unknown;
   /** The list the store holds, null until something has read it. */
   list(state: S): unknown;
   fetch(state: S): Promise<void>;
@@ -63,41 +60,14 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
   debounceMs: MARKETPLACE_REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }),
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
-  answerList: (fake) => fake.on("evener/marketplace/list", () => ({ marketplaces: [] })),
-  listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/marketplace/list").length,
-  gateList: (fake) => {
-    const releases: (() => void)[] = [];
-    fake.on(
-      "evener/marketplace/list",
-      () => new Promise((resolve) => releases.push(() => resolve({ marketplaces: [] }))) as never,
-    );
-    return releases;
-  },
-  deferList: (fake) => {
-    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/list");
-    return () => release({ marketplaces: [] });
-  },
-  deferMutation: (fake) => {
-    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
-    return () => release({ marketplaces: [] });
-  },
-  failMutation: (fake) => fake.on("evener/marketplace/remove", failing("write refused")),
-  deferFailingMutation: (fake) => {
-    const fail = deferFailure(fake, "evener/marketplace/remove");
-    return () => fail(new Error("write refused"));
-  },
-  gateFailingMutations: (fake) => {
-    const rejecters: (() => void)[] = [];
-    fake.on(
-      "evener/marketplace/remove",
-      () => new Promise((_, reject) => rejecters.push(() => reject(new Error("write refused")))) as never,
-    );
-    return rejecters;
-  },
-  list: (state) => state.marketplaces,
+  listMethod: "evener/marketplace/list",
+  listResponse: { marketplaces: [] },
+  mutationMethod: "evener/marketplace/remove",
+  mutationResponse: { marketplaces: [] },
   fetch: (state) => state.fetchMarketplaces(),
   mutate: (state) => state.removeMarketplace("acme"),
   loading: (state) => state.marketplacesLoading,
+  list: (state) => state.marketplaces,
   initial: { marketplaces: null, marketplacesLoading: false, marketplacesError: null },
 };
 
@@ -109,43 +79,30 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   debounceMs: PLUGIN_REFETCH_DEBOUNCE_MS,
   notifyUpdated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
   notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/marketplace/updated", params: {} }),
-  answerList: (fake) => fake.on("evener/plugin/list", () => ({ plugins: [] })),
-  listCalls: (fake) => fake.calls.filter((c) => c.method === "evener/plugin/list").length,
-  gateList: (fake) => {
-    const releases: (() => void)[] = [];
-    fake.on(
-      "evener/plugin/list",
-      () => new Promise((resolve) => releases.push(() => resolve({ plugins: [] }))) as never,
-    );
-    return releases;
-  },
-  deferList: (fake) => {
-    const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/list");
-    return () => release({ plugins: [] });
-  },
-  deferMutation: (fake) => {
-    const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/remove");
-    return () => release({ plugins: [] });
-  },
-  failMutation: (fake) => fake.on("evener/plugin/remove", failing("write refused")),
-  deferFailingMutation: (fake) => {
-    const fail = deferFailure(fake, "evener/plugin/remove");
-    return () => fail(new Error("write refused"));
-  },
-  gateFailingMutations: (fake) => {
-    const rejecters: (() => void)[] = [];
-    fake.on(
-      "evener/plugin/remove",
-      () => new Promise((_, reject) => rejecters.push(() => reject(new Error("write refused")))) as never,
-    );
-    return rejecters;
-  },
-  list: (state) => state.plugins,
+  listMethod: "evener/plugin/list",
+  listResponse: { plugins: [] },
+  mutationMethod: "evener/plugin/remove",
+  mutationResponse: { plugins: [] },
   fetch: (state) => state.fetchPlugins(),
   mutate: (state) => state.removePlugin("linter", "acme"),
   loading: (state) => state.pluginsLoading,
+  list: (state) => state.plugins,
   initial: { plugins: null, pluginsLoading: false, pluginsError: null, pluginRevision: 0 },
 };
+
+/** Answers the one request in flight, failing loudly if none is. */
+function answerOne(answers: ((response: unknown) => void)[], response: unknown): void {
+  const answer = answers[0];
+  if (!answer) throw new Error("no request is in flight");
+  answer(response);
+}
+
+/** Fails the one request in flight, failing loudly if none is. */
+function failOne(failures: ((error: Error) => void)[]): void {
+  const fail = failures[0];
+  if (!fail) throw new Error("no request is in flight");
+  fail(new Error("write refused"));
+}
 
 function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
   describe(`${name} store lifecycle`, () => {
@@ -170,7 +127,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
     test("a store that never started ignores the notification", async () => {
       const { fake, store } = lifecycle.create();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       lifecycle.notifyUpdated(fake);
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
       expect(fake.calls).toHaveLength(0);
@@ -189,9 +146,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     test("dispose() unsubscribes, cancels a pending refetch and fences replies in flight", async () => {
       const { fake, store } = lifecycle.create();
       store.start();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       lifecycle.notifyUpdated(fake);
-      const release = lifecycle.deferList(fake);
+      const reads = gateRequests(fake, lifecycle.listMethod);
       const fetching = lifecycle.fetch(store.getState());
       await Promise.resolve();
       const before = store.getState();
@@ -200,23 +157,23 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
       lifecycle.notifyUpdated(fake);
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
-      release();
+      answerOne(reads, lifecycle.listResponse);
       await fetching;
 
       expect(store.getState()).toBe(before);
-      expect(lifecycle.listCalls(fake)).toBe(1);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
       store.start(); // refused after dispose
       lifecycle.notifyUpdated(fake);
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
       expect(store.getState()).toBe(before);
-      expect(lifecycle.listCalls(fake)).toBe(1);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
     });
 
     test("a mutation that resolves after dispose() publishes nothing", async () => {
       const { fake, store } = lifecycle.create();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
-      const release = lifecycle.deferMutation(fake);
+      const writes = gateRequests(fake, lifecycle.mutationMethod);
       const mutating = lifecycle.mutate(store.getState());
       await Promise.resolve();
       const before = store.getState();
@@ -226,7 +183,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       });
 
       store.dispose();
-      release();
+      answerOne(writes, lifecycle.mutationResponse);
       await mutating;
 
       expect(notified).toBe(0);
@@ -235,9 +192,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
     test("an established list is read again when the connection is ready again", async () => {
       const { fake, store } = lifecycle.create();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
-      expect(lifecycle.listCalls(fake)).toBe(1);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
 
       // The hub broadcasts a change to every CONNECTED client, so a change
       // made while this one was away reaches it as nothing at all: the
@@ -248,13 +205,13 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(0);
-      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
 
     test("a reconnect inside the debounce window reads once, not twice", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       store.start();
 
@@ -267,12 +224,12 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       store.connectionChanged(fake, "reconnecting");
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs * 2);
-      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
 
     test("a list nothing has read is not read by a reconnect", async () => {
       const { fake, store } = lifecycle.create();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
 
       store.connectionChanged(fake, "reconnecting");
       store.connectionChanged(fake, "ready");
@@ -289,22 +246,22 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     test("a replacement client that arrives ready reads an established list", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready"); // the connection the host reports before anything reads
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
 
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(0);
-      expect(lifecycle.listCalls(fake)).toBe(1); // the same connection, still ready: nothing to recover
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1); // the same connection, still ready: nothing to recover
 
       const replacement = lifecycle.create().fake;
       store.connectionChanged(replacement, "ready");
       await vi.advanceTimersByTimeAsync(0);
-      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
 
     test("reset() after dispose() publishes nothing", async () => {
       const { fake, store } = lifecycle.create();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       const before = store.getState();
       let notified = 0;
@@ -321,7 +278,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
     test("a read outrun before it lands writes nothing, not even the flag it raised", async () => {
       const { fake, store } = lifecycle.create();
-      const releases = lifecycle.gateList(fake);
+      const releases = gateRequests(fake, lifecycle.listMethod);
       const older = lifecycle.fetch(store.getState());
       await Promise.resolve();
       const newer = lifecycle.fetch(store.getState());
@@ -333,18 +290,18 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       // The older read answers first. The newer request is still pending and
       // it raised the flag: a response the store has already superseded may
       // not clear it, nor post its own error over a load still running.
-      answerOlder();
+      answerOlder(lifecycle.listResponse);
       await older;
       expect(lifecycle.loading(store.getState())).toBe(true);
 
-      answerNewer();
+      answerNewer(lifecycle.listResponse);
       await newer;
       expect(lifecycle.loading(store.getState())).toBe(false);
     });
 
     test("a write that publishes nothing hands the state back to the read it outran", async () => {
       const { fake, store } = lifecycle.create();
-      const releases = lifecycle.gateList(fake);
+      const releases = gateRequests(fake, lifecycle.listMethod);
       const reading = lifecycle.fetch(store.getState());
       await Promise.resolve();
       expect(lifecycle.loading(store.getState())).toBe(true);
@@ -353,12 +310,12 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       // publishing nothing. It must not keep what it fenced: otherwise the
       // read lands superseded, writes none of its three fields, and the flag
       // it raised stays up with nothing left to lower it.
-      lifecycle.failMutation(fake);
+      failRequests(fake, lifecycle.mutationMethod, "write refused");
       await expect(lifecycle.mutate(store.getState())).rejects.toThrow("write refused");
 
       const answer = releases[0];
       if (!answer) throw new Error("the read must be in flight");
-      answer();
+      answer(lifecycle.listResponse);
       await reading;
       expect(lifecycle.loading(store.getState())).toBe(false);
     });
@@ -366,7 +323,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     test("a reply from the connection that was replaced publishes nothing", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
-      const releases = lifecycle.gateList(fake);
+      const releases = gateRequests(fake, lifecycle.listMethod);
       const reading = lifecycle.fetch(store.getState());
       await Promise.resolve();
 
@@ -376,7 +333,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       store.connectionChanged(lifecycle.create().fake, "ready");
       const answer = releases[0];
       if (!answer) throw new Error("the read must be in flight");
-      answer();
+      answer(lifecycle.listResponse);
       await reading;
 
       expect(lifecycle.list(store.getState())).toBeNull();
@@ -387,10 +344,10 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
     test("a read that landed fenced is applied when the write that fenced it retracts", async () => {
       const { fake, store } = lifecycle.create();
-      const releases = lifecycle.gateList(fake);
+      const releases = gateRequests(fake, lifecycle.listMethod);
       const reading = lifecycle.fetch(store.getState());
       await Promise.resolve();
-      const failWrite = lifecycle.deferFailingMutation(fake);
+      const writeFailures = gateFailures(fake, lifecycle.mutationMethod);
       const mutating = lifecycle.mutate(store.getState());
       await Promise.resolve();
 
@@ -398,14 +355,14 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       // the flag it raised belongs to the write now.
       const answer = releases[0];
       if (!answer) throw new Error("the read must be in flight");
-      answer();
+      answer(lifecycle.listResponse);
       await reading;
       expect(lifecycle.loading(store.getState())).toBe(true);
 
       // Then the write fails, publishing nothing and giving the state back.
       // The read's answer is the newest one anybody has, and it is the last
       // one there will be: nothing else is coming to lower that flag.
-      failWrite();
+      failOne(writeFailures);
       await expect(mutating).rejects.toThrow("write refused");
       expect(lifecycle.loading(store.getState())).toBe(false);
       expect(lifecycle.list(store.getState())).not.toBeNull();
@@ -417,10 +374,10 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     ] as const) {
       test(`${name} of two failed writes failing first still lets the read it fenced land`, async () => {
         const { fake, store } = lifecycle.create();
-        const reads = lifecycle.gateList(fake);
+        const reads = gateRequests(fake, lifecycle.listMethod);
         const reading = lifecycle.fetch(store.getState());
         await Promise.resolve();
-        const fails = lifecycle.gateFailingMutations(fake);
+        const fails = gateFailures(fake, lifecycle.mutationMethod);
         const first = lifecycle.mutate(store.getState());
         await Promise.resolve();
         const second = lifecycle.mutate(store.getState());
@@ -433,14 +390,14 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
         for (const index of order) {
           const fail = fails[index];
           if (!fail) throw new Error("both writes must be in flight");
-          fail();
+          fail(new Error("write refused"));
         }
         await expect(first).rejects.toThrow("write refused");
         await expect(second).rejects.toThrow("write refused");
 
         const answer = reads[0];
         if (!answer) throw new Error("the read must be in flight");
-        answer();
+        answer(lifecycle.listResponse);
         await reading;
 
         expect(lifecycle.loading(store.getState())).toBe(false);
@@ -451,23 +408,23 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     test("a notification from the client that was replaced schedules no read", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       store.start();
 
       const current = lifecycle.create().fake;
       store.connectionChanged(current, "ready");
-      const reads = lifecycle.listCalls(fake);
+      const reads = callsTo(fake, lifecycle.listMethod);
 
       lifecycle.notifyUpdated(fake);
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
-      expect(lifecycle.listCalls(fake)).toBe(reads);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(reads);
     });
 
     test("reset() leaves the store listening to the connection it still has", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       store.start();
 
@@ -476,31 +433,31 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       // compare a notification against. The client is still live and its
       // changes must still arrive.
       store.reset();
-      const reads = lifecycle.listCalls(fake);
+      const reads = callsTo(fake, lifecycle.listMethod);
       lifecycle.notifyUpdated(fake);
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
-      expect(lifecycle.listCalls(fake)).toBe(reads + 1);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(reads + 1);
     });
 
     test("a read a replacement interrupted is issued again", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
-      lifecycle.gateList(fake);
+      gateRequests(fake, lifecycle.listMethod);
       const reading = lifecycle.fetch(store.getState());
       await Promise.resolve();
       expect(lifecycle.loading(store.getState())).toBe(true);
-      expect(lifecycle.listCalls(fake)).toBe(1);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
 
       // The replacement fences the read and settles the flag it raised, which
       // is round 9's half. This is the other half: something asked for this
       // list and never got it, and that intent outlives the connection the
       // asking happened on - the host's own loader is a one-shot and will not
       // ask again.
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       store.connectionChanged(lifecycle.create().fake, "ready");
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
       expect(lifecycle.list(store.getState())).not.toBeNull();
       expect(lifecycle.loading(store.getState())).toBe(false);
       void reading;
@@ -509,7 +466,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       store.start();
 
@@ -522,39 +479,39 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       lifecycle.notifyUpdated(fake);
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
-      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
 
     test("a reconnect after dispose() reads nothing", async () => {
       const { fake, store } = lifecycle.create();
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
 
       store.dispose();
       store.connectionChanged(fake, "reconnecting");
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
-      expect(lifecycle.listCalls(fake)).toBe(1);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(1);
     });
 
     test("reset() returns to the initial state and fences the list still in flight", async () => {
       const { fake, store } = lifecycle.create();
-      const release = lifecycle.deferList(fake);
+      const reads = gateRequests(fake, lifecycle.listMethod);
       const fetching = lifecycle.fetch(store.getState());
       await Promise.resolve();
 
       store.reset();
       expect(store.getState()).toMatchObject(lifecycle.initial);
 
-      release();
+      answerOne(reads, lifecycle.listResponse);
       await fetching;
       expect(store.getState()).toMatchObject(lifecycle.initial);
 
       // The store keeps working after a reset.
-      lifecycle.answerList(fake);
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
       await lifecycle.fetch(store.getState());
       expect(lifecycle.loading(store.getState())).toBe(false);
-      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
   });
 }

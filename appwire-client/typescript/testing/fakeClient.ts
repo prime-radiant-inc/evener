@@ -301,3 +301,39 @@ export function deferFailure(fake: FakeClient, method: MethodName): (err: Error)
   );
   return (err: Error) => fail(err);
 }
+
+// The generic request scripts a parametrized suite needs: one store's method
+// names are data to it, and fake.on/emitNotification are typed per method, so
+// the cast lives here once instead of in a closure per store per script.
+
+/** Scripts `method` to answer with `response`. */
+export function answerRequests(fake: FakeClient, method: MethodName, response: unknown): void {
+  fake.on(method, (() => response) as never);
+}
+
+/** Scripts `method` to reject with `message`. */
+export function failRequests(fake: FakeClient, method: MethodName, message: string): void {
+  fake.on(method, failing(message) as never);
+}
+
+/** Scripts `method` to hang and hands back one resolver per call, so several
+ * requests to it can be in flight and be answered out of order. deferRequest's
+ * multi-call half: that one keeps a single resolver, which is only ever the
+ * last call's. */
+export function gateRequests(fake: FakeClient, method: MethodName): ((response: unknown) => void)[] {
+  const answers: ((response: unknown) => void)[] = [];
+  fake.on(method, (() => new Promise((resolve) => answers.push(resolve))) as never);
+  return answers;
+}
+
+/** gateRequests' failing half: one rejecter per call. */
+export function gateFailures(fake: FakeClient, method: MethodName): ((error: Error) => void)[] {
+  const failures: ((error: Error) => void)[] = [];
+  fake.on(method, (() => new Promise((_, reject) => failures.push(reject))) as never);
+  return failures;
+}
+
+/** How many requests `method` has received. */
+export function callsTo(fake: FakeClient, method: MethodName): number {
+  return fake.calls.filter((call) => call.method === method).length;
+}
