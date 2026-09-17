@@ -271,9 +271,9 @@ func TestEnsureInstallerFallbackDeploysPinnedRelease(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v6","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
@@ -344,9 +344,9 @@ func TestInstallerFallbackRecordsDefaultRunTarget(t *testing.T) {
 		case strings.Contains(joined, "launch-check"):
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"protocol":"evener-appwire-v6","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"protocol":"evener-appwire-v5","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			return nil, nil
 		case strings.Contains(joined, "api/health"):
@@ -1172,7 +1172,7 @@ func TestEnsureMissingEvenerReachesTheInstallerFallback(t *testing.T) {
 				// No evener on the host's non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "list-units"):
 			return nil, nil
 		case strings.Contains(joined, "lsof -ti :9180"):
@@ -1238,7 +1238,7 @@ func TestDeployInstallerPreservesExistingHubTarget(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte("/usr/local/bin/evener\n"), nil
 		case strings.Contains(joined, "launch-check"):
-			return []byte(`{"protocol":"evener-appwire-v6","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"protocol":"evener-appwire-v5","version":"newsha","launch_flags":["api-log"]}`), nil
 		case strings.Contains(joined, "evener-install.XXXXXX"):
 			installerJoined = joined
 			return nil, nil

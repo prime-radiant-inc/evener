@@ -90,7 +90,7 @@ test("row displays identity.ref under the daemon name", async () => {
       {
         identity: IDENTITY_FIXTURE,
         name: "Ref display daemon",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -117,7 +117,7 @@ test("list-snapshot lifecycle blockers are shown in the row before any retire at
       {
         identity: IDENTITY_FIXTURE,
         name: "Pre-blocked daemon",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -146,7 +146,7 @@ test("delegate blocker with both ids renders the root session id and the delegat
       {
         identity: IDENTITY_FIXTURE,
         name: "Delegate-blocked daemon",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -176,7 +176,7 @@ test("delegate blocker with an empty session id falls through to the delegate id
       {
         identity: IDENTITY_FIXTURE,
         name: "Delegate-only blocked daemon",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -210,7 +210,7 @@ test("residents sharing a ref but differing in generation render without duplica
       {
         identity: { ref: sharedRef, pid: 401, startedAt: "2026-09-10T00:00:00Z", generation: "gen-old" },
         name: "Replacee old",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -221,7 +221,7 @@ test("residents sharing a ref but differing in generation render without duplica
       {
         identity: { ref: sharedRef, pid: 402, startedAt: "2026-09-10T00:01:00Z", generation: "gen-new" },
         name: "Replacee new",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -276,7 +276,7 @@ function sharedRefDaemon(opts: {
       generation: opts.generation,
     },
     name: opts.name,
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: opts.stale ? "stale" : "current",
@@ -542,7 +542,7 @@ test("failed refresh retains old rows and shows a stale-data indicator", async (
       {
         identity: IDENTITY_FIXTURE,
         name: "Kept resident",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -586,7 +586,7 @@ describe("force-stop dialog", () => {
         {
           identity: IDENTITY_FIXTURE,
           name: "Target resident",
-          protocol: "evener-appwire-v6",
+          protocol: "evener-appwire-v5",
           compatibility: "compatible",
           archived: false,
           probeState: "current",
@@ -621,7 +621,7 @@ describe("force-stop dialog", () => {
         {
           identity: IDENTITY_FIXTURE,
           name: "Cancel target",
-          protocol: "evener-appwire-v6",
+          protocol: "evener-appwire-v5",
           compatibility: "compatible",
           archived: false,
           probeState: "current",
@@ -654,7 +654,7 @@ describe("force-stop dialog", () => {
         {
           identity: IDENTITY_FIXTURE,
           name: "Confirm target",
-          protocol: "evener-appwire-v6",
+          protocol: "evener-appwire-v5",
           compatibility: "compatible",
           archived: false,
           probeState: "current",
@@ -706,7 +706,7 @@ describe("force-stop dialog", () => {
         {
           identity: identityA,
           name: "Shifting daemon",
-          protocol: "evener-appwire-v6",
+          protocol: "evener-appwire-v5",
           compatibility: "compatible",
           archived: false,
           probeState: "current",
@@ -732,7 +732,7 @@ describe("force-stop dialog", () => {
           {
             identity: identityB,
             name: "Shifting daemon",
-            protocol: "evener-appwire-v6",
+            protocol: "evener-appwire-v5",
             compatibility: "compatible",
             archived: false,
             probeState: "current",
@@ -765,7 +765,7 @@ describe("force-stop dialog", () => {
         {
           identity: IDENTITY_FIXTURE,
           name: "Pending target",
-          protocol: "evener-appwire-v6",
+          protocol: "evener-appwire-v5",
           compatibility: "compatible",
           archived: false,
           probeState: "current",
@@ -810,7 +810,7 @@ describe("force-stop dialog", () => {
         {
           identity: IDENTITY_FIXTURE,
           name: "ForceStop error daemon",
-          protocol: "evener-appwire-v6",
+          protocol: "evener-appwire-v5",
           compatibility: "compatible",
           archived: false,
           probeState: "current",
@@ -849,7 +849,7 @@ test("retire RPC failure displays a friendly error in the row", async () => {
       {
         identity: IDENTITY_FIXTURE,
         name: "Retire error daemon",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -884,7 +884,7 @@ test("unknown timeout (lifecycle null) renders differently from disabled zero (t
       {
         identity: { ref: "local:no-lc", pid: 300, startedAt: "2026-09-10T00:00:00Z", generation: "gen-nolc" },
         name: "Unknown timeout",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "unknown",
         archived: false,
         probeState: "unknown",
@@ -895,7 +895,7 @@ test("unknown timeout (lifecycle null) renders differently from disabled zero (t
       {
         identity: { ref: "local:zero-lc", pid: 301, startedAt: "2026-09-10T00:00:00Z", generation: "gen-zero" },
         name: "Disabled timeout",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -936,7 +936,7 @@ test("both the Hub default timeout and the row's effective timeout are displayed
       {
         identity: IDENTITY_FIXTURE,
         name: "Timeout display",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -976,7 +976,7 @@ test("Accepted:true retire response displays retiring state without removing the
       {
         identity: IDENTITY_FIXTURE,
         name: "Soon retiring",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -1019,7 +1019,7 @@ test("accepted retire phase survives a later stale probe with no lifecycle", asy
       {
         identity: IDENTITY_FIXTURE,
         name: "Retiring through stale",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: probeStale ? "stale" : "current",
@@ -1072,7 +1072,7 @@ test("an accepted retire survives a post-retire refresh that still reports resid
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Cached-rostered resident",
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: "current",
@@ -1137,7 +1137,7 @@ test("an accepted retire is cleared when its row leaves the roster", async () =>
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Accepted departing resident",
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: "current",
@@ -1191,7 +1191,7 @@ test("an accepted retire is cleared when the daemon reaches a genuinely differen
       {
         identity: IDENTITY_FIXTURE,
         name: "Phase-moving resident",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -1234,7 +1234,7 @@ test("retire refusal persists across an immediately-following fresh current snap
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Blocked resident",
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: "current",
@@ -1299,7 +1299,7 @@ test("retire refusal survives a fresh current snapshot that stops reporting the 
       {
         identity: IDENTITY_FIXTURE,
         name: "Resolving blocker",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -1349,7 +1349,7 @@ test("a refused retire whose blockers subsume the snapshot blockers renders one 
       {
         identity: IDENTITY_FIXTURE,
         name: "Duplicate blocked resident",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -1398,7 +1398,7 @@ test("a departed daemon's action error is pruned and does not resurface on a sam
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Departing daemon",
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: "current",
@@ -1443,7 +1443,7 @@ test("retire refusal blockers clear when a newer snapshot changes the row lifecy
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Lifecycle changing",
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: "current",
@@ -1509,7 +1509,7 @@ test("retire refusal clears when the daemon leaves the roster", async () => {
   const resident = {
     identity: IDENTITY_FIXTURE,
     name: "Departing refused daemon",
-    protocol: "evener-appwire-v6",
+    protocol: "evener-appwire-v5",
     compatibility: "compatible",
     archived: false,
     probeState: "current",
@@ -1562,7 +1562,7 @@ test("initiating a new retire clears the previous refusal", async () => {
       {
         identity: IDENTITY_FIXTURE,
         name: "Retried refused daemon",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -1628,7 +1628,7 @@ test("Retire now button is keyboard-focusable", async () => {
       {
         identity: IDENTITY_FIXTURE,
         name: "Focus target",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",
@@ -1658,7 +1658,7 @@ test("a sub-second timeout does not render as the disabled zero sentinel", async
       {
         identity: { ref: "local:subsecond", pid: 302, startedAt: "2026-09-10T00:00:00Z", generation: "gen-sub" },
         name: "Subsecond timeout",
-        protocol: "evener-appwire-v6",
+        protocol: "evener-appwire-v5",
         compatibility: "compatible",
         archived: false,
         probeState: "current",

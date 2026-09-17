@@ -744,7 +744,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
   }
   // Run the shipped program from the installed tarball. Only the remote server
   // is scripted; imports, sockets, handshake, client requests and output are real.
-  const serverProtocolVersion = "evener-appwire-v6";
+  const serverProtocolVersion = "evener-appwire-v5";
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],
