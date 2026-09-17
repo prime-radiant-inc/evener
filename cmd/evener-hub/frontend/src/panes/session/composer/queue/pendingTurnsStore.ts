@@ -354,6 +354,7 @@ function projectPendingEntries(
     [...state.outbox.values(), ...state.optimistic.values()],
     model,
     state.submittedHere,
+    isOwnMutationRecord,
   ).filter((entry) => method === undefined || entry.method === method);
   return matches.length > 0 ? matches : NO_ENTRIES;
 }
