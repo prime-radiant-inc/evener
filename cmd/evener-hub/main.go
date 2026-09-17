@@ -310,7 +310,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// first load is missing from that list - and from every listing built over it
 	// - until the next one. The reload runs even when the recovery also reported
 	// copies it could not put back, because it put back at least one.
-	restored, err := restoreUncommittedOAuthAsides(hubReg, hubAuthStateRoot(hubReg), providersConfigPath)
+	restored, err := restoreUncommittedOAuthAsides(hubAuthStateRoot(hubReg), providersConfigPath)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "[hub] %v\n", err)
 	}

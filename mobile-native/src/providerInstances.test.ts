@@ -7,10 +7,14 @@ import {
   type CredentialListing,
   createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
-import { WireError } from "@evener/appwire-client";
+import { ErrorInstanceRemovePersisted, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { isInstanceRemovePersisted, ProviderInstances } from "./providerInstances";
+import {
+  isInstanceRemovePersisted,
+  ProviderInstances,
+  removalFailureMessage,
+} from "./providerInstances";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -412,7 +416,7 @@ it("reconciles and reports a removal that stood with a leftover OAuth copy", asy
   io.request = async (method) => {
     if (method === "evener/instance/remove") {
       throw new WireError(HUB_MESSAGE, -32603, {
-        evenerErrorInfo: "instanceRemovePersisted",
+        evenerErrorInfo: ErrorInstanceRemovePersisted,
       });
     }
     return listing("reconciled");
@@ -428,7 +432,7 @@ it("reconciles and reports a removal that stood with a leftover OAuth copy", asy
   expect(model.getSnapshot().busy).toBe(false);
   expect(
     isInstanceRemovePersisted(
-      new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: "instanceRemovePersisted" }),
+      new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRemovePersisted }),
     ),
   ).toBe(true);
   expect(isInstanceRemovePersisted(new WireError("refused", -32013))).toBe(false);
@@ -449,4 +453,24 @@ it("a removal failure without the persisted discriminator still rejects and does
   await expect(model.remove("test")).rejects.toThrow("refused");
   expect(requests.filter((r) => r.method === "evener/instance/list")).toHaveLength(1);
   expect(model.getSnapshot().data).toEqual(listing("initial"));
+});
+
+// A refused removal must reach the user with the hub's own remedy, not a generic
+// "could not be confirmed" sentence: unlike a credential save, a removal error
+// carries only the instance name and the endpoint fingerprint, never a secret, so
+// the screen can show it verbatim - the way the web pane's "Remove failed:" toast
+// does. Anything that is not a hub WireError still genericizes.
+it("surfaces the hub's removal-failure message and genericizes everything else", () => {
+  expect(
+    removalFailureMessage(
+      new WireError("removing test was refused: the endpoint moved since it was listed", -32013),
+    ),
+  ).toBe("Remove failed: removing test was refused: the endpoint moved since it was listed");
+  expect(
+    removalFailureMessage(new WireError("removing test was refused: check the endpoint", -32013, {
+      evenerErrorInfo: "conflict",
+    })),
+  ).toBe("Remove failed: removing test was refused: check the endpoint");
+  expect(removalFailureMessage(new Error("socket closed"))).toBe("Remove failed: Something went wrong.");
+  expect(removalFailureMessage("socket closed")).toBe("Remove failed: Something went wrong.");
 });

@@ -32,6 +32,7 @@ import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evene
 import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
+  ErrorInstanceRenamePersisted,
   errorText,
   friendlyErrorMessage,
   fromEnvironment,
@@ -89,12 +90,13 @@ const CHANGED_INSTANCE_ERROR =
 
 // isInstanceRenamePersisted reads the hub's own discriminator for a rename that
 // stood but could not carry the instance's credentials cleanly
-// (appwire.ErrorInstanceRenamePersisted, read here as the literal its ErrorData
-// carries - the same way CredentialsSection reads instanceRemovePersisted).
-// providers.toml names the new instance either way, so the save is not a failure
-// to report; the hub's message names the credential left behind.
+// (appwire.ErrorInstanceRenamePersisted, exported by the AppWire package so every
+// client reads the one value its ErrorData carries, and bound to the Go constant
+// by that package's errors.test.ts). providers.toml names the new instance either
+// way, so the save is not a failure to report; the hub's message names the
+// credential left behind.
 function isInstanceRenamePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "instanceRenamePersisted";
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
 }
 
 // The entry fields a rename carries over unchanged, and that the store's own

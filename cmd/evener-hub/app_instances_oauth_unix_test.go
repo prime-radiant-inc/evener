@@ -148,7 +148,7 @@ func TestInstances_SetAsideOAuthFileRefusesWhenTheCandidateCannotBeChecked(t *te
 	}
 	done := make(chan aside, 1)
 	go func() {
-		asidePath, err := f.ctl.setAsideOAuthFile(name)
+		asidePath, err := f.ctl.setAsideOAuthFile(name, false)
 		done <- aside{asidePath, err}
 	}()
 	select {

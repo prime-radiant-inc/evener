@@ -19,30 +19,36 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-// TestOAuthAsideInstanceKnowsBothMarkers: both aside shapes parse, and each
-// reports whether the removal that made it had stood. A name whose stamp is not
-// all digits, or whose record part does not end in .json, is not a copy -
-// including a record for an instance whose own name holds a marker.
+// TestOAuthAsideInstanceKnowsBothMarkers: every aside shape parses, each reports
+// whether the removal that made it had stood and whether that removal was
+// config-backed. A name whose stamp is not all digits, or whose record part does
+// not end in .json, is not a copy - including a record for an instance whose own
+// name holds a marker.
 func TestOAuthAsideInstanceKnowsBothMarkers(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		instance  string
-		committed bool
-		aside     bool
+		name         string
+		instance     string
+		committed    bool
+		configBacked bool
+		aside        bool
 	}{
-		{"work.json.removing-5", "work", false, true},
-		{"work.json.removed-5", "work", true, true},
-		{"x.removing-1.json", "", false, false},
-		{"x.removed-1.json", "", false, false},
-		{"notes.txt", "", false, false},
-		{"x.removed-1.json.removing-5", "x.removed-1", false, true},
-		{"x.removing-1.json.removed-5", "x.removing-1", true, true},
-		{"work.json.removing-abc", "", false, false},
-		{"work.json.removed-", "", false, false},
+		{"work.json.removing-5", "work", false, false, true},
+		{"work.json.removed-5", "work", true, false, true},
+		{"work.json.removing-cfg-5", "work", false, true, true},
+		{"work.json.removed-cfg-5", "work", true, true, true},
+		{"x.removing-1.json", "", false, false, false},
+		{"x.removed-1.json", "", false, false, false},
+		{"notes.txt", "", false, false, false},
+		{"x.removed-1.json.removing-5", "x.removed-1", false, false, true},
+		{"x.removing-1.json.removed-5", "x.removing-1", true, false, true},
+		{"x.removing-cfg-1.json.removing-5", "x.removing-cfg-1", false, false, true},
+		{"work.json.removing-abc", "", false, false, false},
+		{"work.json.removed-", "", false, false, false},
+		{"work.json.removing-cfg-abc", "", false, false, false},
 	} {
-		inst, committed, aside := oauthAsideInstance(tc.name)
-		if inst != tc.instance || committed != tc.committed || aside != tc.aside {
-			t.Fatalf("oauthAsideInstance(%q) = (%q, %v, %v), want (%q, %v, %v)", tc.name, inst, committed, aside, tc.instance, tc.committed, tc.aside)
+		inst, committed, configBacked, aside := oauthAsideInstance(tc.name)
+		if inst != tc.instance || committed != tc.committed || configBacked != tc.configBacked || aside != tc.aside {
+			t.Fatalf("oauthAsideInstance(%q) = (%q, %v, %v, %v), want (%q, %v, %v, %v)", tc.name, inst, committed, configBacked, aside, tc.instance, tc.committed, tc.configBacked, tc.aside)
 		}
 	}
 }
@@ -53,7 +59,7 @@ func committedAsideStamps(t *testing.T, f *instancesFixture, name string) []int6
 	t.Helper()
 	var out []int64
 	for _, entry := range authDirEntries(t, f) {
-		inst, committed, aside := oauthAsideInstance(entry)
+		inst, committed, _, aside := oauthAsideInstance(entry)
 		if !aside || !committed || inst != name {
 			continue
 		}
@@ -96,7 +102,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackACredentialOnlyImplicitRecord(t *t
 		t.Fatalf("fixture: openai-codex = %+v, want no instance while its record is set aside", before)
 	}
 
-	restored, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
 	if err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
@@ -124,8 +130,12 @@ func TestRestoreUncommittedOAuthAsidesPutsBackACredentialOnlyImplicitRecord(t *t
 // forever. A committed copy whose name the config DOES carry is left exactly
 // where it is: after a removal that failed between its commit mark and its
 // rollback, that copy can be the instance's only record, and leaving it is the
-// conservative rule. (This replaces an earlier test that left every committed
-// copy for the name's next removal; change 3 sweeps the ones no config carries.)
+// conservative rule.
+//
+// A CREDENTIAL-ONLY committed copy with no config entry and a free record path
+// could be a failed rollback's only surviving credential, so its delete is
+// REPORTED rather than silent (change 3). A config-backed one is plain debris of
+// a standing authored removal and is deleted without a report.
 func TestRestoreUncommittedOAuthAsidesSweepsCommittedCopiesTheConfigDoesNotCarry(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
@@ -140,21 +150,27 @@ func TestRestoreUncommittedOAuthAsidesSweepsCommittedCopiesTheConfigDoesNotCarry
 	}
 	carried := "work.json" + oauthCommittedMarker + "1757000000000000000"
 	orphan := "retired.json" + oauthCommittedMarker + "1757000000000000001"
-	for name, body := range map[string]string{carried: "the removal that stood\n", orphan: "an orphaned removal\n"} {
+	cfgOrphan := "gone.json" + oauthConfigCommittedMarker + "1757000000000000002"
+	for name, body := range map[string]string{carried: "the removal that stood\n", orphan: "an orphaned removal\n", cfgOrphan: "a standing authored removal\n"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", name, err)
 		}
 	}
 
-	restored, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
-	if err != nil {
-		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err == nil || !strings.Contains(err.Error(), "deleted the committed credential-only copy "+orphan) {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the deleted credential-only committed copy %s reported", restored, err, orphan)
+	}
+	if strings.Contains(err.Error(), cfgOrphan) {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want a config-backed delete not reported as a lone credential", err)
 	}
 	if restored {
 		t.Fatal("restoreUncommittedOAuthAsides = true, want a committed copy never put back")
 	}
-	if _, err := os.Lstat(filepath.Join(dir, orphan)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the committed copy %s was not swept (Lstat = %v), want it deleted with no config entry", orphan, err)
+	for _, name := range []string{orphan, cfgOrphan} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the committed copy %s was not swept (Lstat = %v), want it deleted with no config entry", name, err)
+		}
 	}
 	if _, err := os.Lstat(filepath.Join(dir, carried)); err != nil {
 		t.Fatalf("the committed copy %s was taken (%v), want it left while the config carries the name", carried, err)
@@ -196,10 +212,11 @@ func TestInstances_RemoveCommitsTheAsideBeforeDeletingIt(t *testing.T) {
 	// Startup never puts a committed copy back, so the failed delete cannot undo
 	// the standing removal. With no providers.toml entry carrying the name,
 	// startup also sweeps the copy, so the credential does not sit on disk forever
-	// with no removal left to collect it.
-	restored, rerr := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
-	if rerr != nil {
-		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	// with no removal left to collect it. This copy is credential-only with a free
+	// record path, so the delete is reported rather than silent.
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr == nil || !strings.Contains(rerr.Error(), "deleted the committed credential-only copy "+left[0]) {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the swept credential-only copy %s reported", restored, rerr, left[0])
 	}
 	if restored {
 		t.Fatal("startup put a committed copy back, undoing the standing removal")
@@ -284,7 +301,7 @@ func TestInstances_RemovalsStampLaterRevivalsAboveEarlierOnesWhenTheClockStepsBa
 			t.Fatalf("Rename(%s -> %s): %v", entry, inFlight, err)
 		}
 	}
-	restored, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
 	if err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
@@ -320,7 +337,7 @@ func TestRestoreUncommittedOAuthAsidesNeedsAReloadForACredentialOnlyInstance(t *
 		t.Fatal("fixture: the set-aside instance is still in the registry list")
 	}
 
-	restored, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
 	if err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
@@ -356,7 +373,7 @@ func asideCopyNames(f *instancesFixture) []string {
 		if e.IsDir() {
 			continue
 		}
-		if _, _, aside := oauthAsideInstance(e.Name()); aside {
+		if _, _, _, aside := oauthAsideInstance(e.Name()); aside {
 			out = append(out, e.Name())
 		}
 	}
@@ -457,7 +474,7 @@ func TestInstances_RemoveRestoresTheRecordWhenTheReloadFailsAgainstACommittedCop
 		t.Fatalf("restored bytes = %q, want the original %q", after, before)
 	}
 	for _, name := range authDirEntries(t, f) {
-		if _, _, aside := oauthAsideInstance(name); aside {
+		if _, _, _, aside := oauthAsideInstance(name); aside {
 			t.Fatalf("the rollback left %s, want the committed copy renamed back to the record path", name)
 		}
 	}
@@ -496,7 +513,9 @@ func TestInstances_RemoveAMarkFailureRollsBackTheRemoval(t *testing.T) {
 	f.ctl.auth.now = func() time.Time { return fixed }
 	record := authopenai.AuthFilePath(f.stateDir, "work")
 	stamp := strconv.FormatInt(fixed.UnixNano(), 10)
-	committed := record + oauthCommittedMarker + stamp
+	// "work" is authored, so its removal is the config-backed kind and the
+	// commit destination carries the cfg marker: the obstacle must sit there.
+	committed := record + oauthConfigCommittedMarker + stamp
 	if err := os.Mkdir(committed, 0o700); err != nil {
 		t.Fatalf("Mkdir(%s): %v", committed, err)
 	}
@@ -519,7 +538,7 @@ func TestInstances_RemoveAMarkFailureRollsBackTheRemoval(t *testing.T) {
 	}
 	authoredEntry(t, f.tomlPath, "work")
 	for _, name := range authDirEntries(t, f) {
-		if _, committed, aside := oauthAsideInstance(name); aside && !committed {
+		if _, committed, _, aside := oauthAsideInstance(name); aside && !committed {
 			t.Fatalf("an in-flight copy %s survived the rollback, so startup would restore it", name)
 		}
 	}
@@ -579,7 +598,7 @@ func TestInstances_RemoveAMarkFailureAndAFailedRollbackLeavesStartupToRecover(t 
 	if rerr := os.RemoveAll(record); rerr != nil {
 		t.Fatalf("RemoveAll(%s): %v", record, rerr)
 	}
-	restored, rerr := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
 	if rerr != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
 	}
@@ -658,7 +677,7 @@ func TestInstances_RemoveAReloadFailureReturnsACommittedCopyToInFlight(t *testin
 	if rerr := os.RemoveAll(record); rerr != nil {
 		t.Fatalf("RemoveAll(%s): %v", record, rerr)
 	}
-	restored, rerr := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath)
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
 	if rerr != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
 	}
@@ -745,7 +764,7 @@ func TestInstances_EditRenameCarriesAnInFlightOAuthCopy(t *testing.T) {
 		t.Fatalf("moved record = %+v, want the carried record with Provider personal", moved)
 	}
 	for _, name := range authDirEntries(t, f) {
-		inst, _, aside := oauthAsideInstance(name)
+		inst, _, _, aside := oauthAsideInstance(name)
 		if !aside || inst != "work" {
 			continue
 		}
@@ -792,4 +811,155 @@ func TestInstances_EditRenameReportsAnOAuthCopyItCouldNotCarry(t *testing.T) {
 		t.Fatalf("Edit = %v, want it to name the copy %s left behind", err, copyName)
 	}
 	authoredEntry(t, f.tomlPath, "personal")
+}
+
+// TestRestoreUncommittedOAuthAsidesPutsBackAConfigBackedCopyTheConfigStillCarries:
+// the other half of the kind rule. A CONFIG-BACKED in-flight copy whose name
+// providers.toml still carries is a removal that never reached its providers.toml
+// write - the config is the durable evidence that it did not - so it is put back,
+// bytes intact, when the record path is free.
+func TestRestoreUncommittedOAuthAsidesPutsBackAConfigBackedCopyTheConfigStillCarries(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	record := authopenai.AuthFilePath(f.stateDir, "work")
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	original, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	aside := record + oauthConfigAsideMarker + "1757000000000000000"
+	if err := os.Rename(record, aside); err != nil {
+		t.Fatalf("Rename: %v", err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides = false, want the config-backed copy the config still carries put back")
+	}
+	got, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the record was not put back: %v", err)
+	}
+	if !bytes.Equal(got, original) {
+		t.Fatalf("restored bytes = %q, want the original %q", got, original)
+	}
+	if _, err := os.Lstat(aside); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the copy is still on disk (Lstat = %v), want it moved", err)
+	}
+}
+
+// TestInstances_RemovalRecordsTheAsideKind: the kind is written into the aside
+// name by the removal's own rename, so it is durable with no extra file. A
+// removal of an AUTHORED instance (providers.toml carried the name) sets aside a
+// config-backed copy; one of a credential-only instance (no entry) does not. The
+// delete is refused so each committed copy stays on disk to be inspected.
+func TestInstances_RemovalRecordsTheAsideKind(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth(work): %v", err)
+	}
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	f.ctl.auth.deleteAside = func(string) error { return errors.New("delete refused") }
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "work"}); err == nil {
+		t.Fatal("Remove(work) = nil, want the sweep failure reported")
+	}
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err == nil {
+		t.Fatal("Remove(openai-codex) = nil, want the sweep failure reported")
+	}
+
+	var sawCfg, sawPlain bool
+	for _, name := range authDirEntries(t, f) {
+		inst, committed, configBacked, aside := oauthAsideInstance(name)
+		if !aside || !committed {
+			continue
+		}
+		switch {
+		case inst == "work" && configBacked:
+			sawCfg = true
+		case inst == "openai-codex" && !configBacked:
+			sawPlain = true
+		case inst == "work":
+			t.Fatalf("the authored removal's copy %s is not config-backed", name)
+		case inst == "openai-codex":
+			t.Fatalf("the credential-only removal's copy %s is config-backed", name)
+		}
+	}
+	if !sawCfg {
+		t.Fatal("the authored removal did not record a config-backed aside")
+	}
+	if !sawPlain {
+		t.Fatal("the credential-only removal did not record a credential-only aside")
+	}
+}
+
+// TestInstances_EditRenameKeepsAnUnparseablePromotedRecordRecoverable: the rename
+// promotes the newest in-flight copy to the old record path so moveCredentials
+// can read it. When that read refuses the bytes (an unparseable record), leaving
+// them at the canonical old-name path would strand them - no reader looks there
+// once providers.toml names the new instance, and startup recovery does not
+// recognize a plain record as an aside. The bytes must move back under a
+// recovery-recognized aside for the NEW name (kind and stamp preserved), and the
+// carry problem must be reported the way the other carry failures are.
+func TestInstances_EditRenameKeepsAnUnparseablePromotedRecordRecoverable(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stamp := "1757000000000000000"
+	aside := "work.json" + oauthConfigAsideMarker + stamp
+	const content = "a record the hub cannot parse\n"
+	if err := os.WriteFile(filepath.Join(dir, aside), []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", aside, err)
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err == nil {
+		t.Fatal("Edit(rename) = nil, want the unparseable promoted record reported")
+	}
+	if _, persisted := errors.AsType[renamePersistedError](err); !persisted {
+		t.Fatalf("Edit = %v (%T), want a renamePersistedError", err, err)
+	}
+	newAside := "personal.json" + oauthConfigAsideMarker + stamp
+	if !strings.Contains(err.Error(), newAside) {
+		t.Fatalf("Edit = %v, want it to name the recovery-recognized aside %s", err, newAside)
+	}
+	got, rerr := os.ReadFile(filepath.Join(dir, newAside))
+	if rerr != nil {
+		t.Fatalf("the bytes are not under the recovery-recognized aside %s: %v", newAside, rerr)
+	}
+	if string(got) != content {
+		t.Fatalf("the carried bytes = %q, want %q", got, content)
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the unreadable record was left at the old canonical path (Lstat = %v)", statErr)
+	}
+	authoredEntry(t, f.tomlPath, "personal")
+
+	// Startup recovery reads that name and puts the bytes back for the renamed
+	// instance, so the credential is reachable again.
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	}
+	if !restored {
+		t.Fatal("startup did not restore the renamed instance's carried record")
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "personal")); statErr != nil {
+		t.Fatalf("the carried record was not restored under the new name: %v", statErr)
+	}
 }

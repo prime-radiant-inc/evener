@@ -1192,12 +1192,31 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	// and carry every other copy to the new name's aside name, marker and stamp
 	// preserved, so no in-flight copy is left filed under the old name while
 	// startup recovery and the sweep still parse what remains.
-	problems = append(problems, c.carryOAuthAsidesForRename(oldName, newName)...)
+	promoted, carryProblems := c.carryOAuthAsidesForRename(oldName, newName)
+	problems = append(problems, carryProblems...)
 	record, err := c.auth.loadAuth(c.auth.stateDir, oldName)
 	switch {
 	case errors.Is(err, authopenai.ErrAuthNotFound):
 	case err != nil:
-		problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
+		// The read refused the record. When this call promoted a copy to the
+		// record path, its bytes are now at the canonical OLD-name path, which no
+		// recovery recognizes once providers.toml names only the new instance - a
+		// shape nothing restores, so the renamed instance would lose its OAuth
+		// credential. Move those bytes back under a recovery-recognized aside for
+		// the NEW name (kind and stamp preserved), the way every other carry
+		// problem is reported: the rename stands and the caller is told what was
+		// left reachable.
+		if promoted != "" {
+			dstBase := oauthRenamedAsideName(newName, promoted)
+			recordPath := authopenai.AuthFilePath(c.auth.stateDir, oldName)
+			if rerr := os.Rename(recordPath, filepath.Join(filepath.Dir(recordPath), dstBase)); rerr != nil {
+				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), and the copy %q it carried could not be filed as the recovery-recognized aside %q (%v)", err, promoted, dstBase, rerr))
+			} else {
+				problems = append(problems, fmt.Sprintf("OAuth record not read (%v), so the copy %q it carried was filed as the recovery-recognized aside %q", err, promoted, dstBase))
+			}
+		} else {
+			problems = append(problems, fmt.Sprintf("OAuth record not read: %v", err))
+		}
 	default:
 		// The record's provider field names the instance it belongs to (the
 		// OAuth completion paths set it), so it follows the rename.
@@ -1215,37 +1234,43 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 }
 
 // carryOAuthAsidesForRename carries the in-flight OAuth copies filed under
-// oldName to newName across a rename and names what it could not carry. The
+// oldName to newName across a rename and names what it could not carry. It
+// returns the base name of the copy it promoted to the old record path, if any,
+// so moveCredentials can tell whether a read that refuses the record is looking
+// at a promoted copy it must move back under a name recovery recognizes. The
 // newest copy is promoted to the old record path when that path is free, so
 // moveCredentials' read carries it as the record and the renamed instance has a
 // usable credential at once; when the path is occupied the instance already has
 // a live record, so the copy is carried like every other. Every remaining copy
-// is renamed to the new name's aside name with its marker and stamp preserved,
-// so restoreUncommittedOAuthAsides and reclaimOAuthAsides still parse it and no
-// in-flight copy is left filed under a name providers.toml no longer carries.
+// is renamed to the new name's aside name with its MARKER (hence its kind) and
+// stamp preserved, so restoreUncommittedOAuthAsides and reclaimOAuthAsides still
+// parse it, kind intact, and no in-flight copy is left filed under a name
+// providers.toml no longer carries.
 //
 // A copy whose stamp cannot be ordered (past an int64) is carried rather than
 // promoted: the stamp text is preserved, so it stays parseable even though it
 // cannot be ranked. Committed copies are not touched - they belong to a removal
 // that stood and startup sweeps those whose name the config no longer carries.
-func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName string) []string {
+func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName string) (string, []string) {
 	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return "", nil
 		}
-		return []string{fmt.Sprintf("OAuth copies under %q not read, so they could not follow the rename: %v", oldName, err)}
+		return "", []string{fmt.Sprintf("OAuth copies under %q not read, so they could not follow the rename: %v", oldName, err)}
 	}
 	var copies []string
+	kind := make(map[string]bool, len(entries))
 	newest := ""
 	var newestStamp int64
 	for _, e := range entries {
-		inst, committed, aside := oauthAsideInstance(e.Name())
+		inst, committed, configBacked, aside := oauthAsideInstance(e.Name())
 		if e.IsDir() || !aside || committed || inst != oldName {
 			continue
 		}
 		copies = append(copies, e.Name())
+		kind[e.Name()] = configBacked
 		stamp, perr := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
 		if perr != nil {
 			continue
@@ -1273,12 +1298,12 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 		if name == promoted {
 			continue
 		}
-		dst := filepath.Join(dir, newName+".json"+oauthAsideMarker+oauthAsideStampText(name))
+		dst := filepath.Join(dir, newName+".json"+oauthAsideMarkerFor(kind[name])+oauthAsideStampText(name))
 		if rerr := os.Rename(filepath.Join(dir, name), dst); rerr != nil {
 			problems = append(problems, fmt.Sprintf("OAuth copy %q not carried to %q (%v)", name, filepath.Base(dst), rerr))
 		}
 	}
-	return problems
+	return promoted, problems
 }
 
 // removalRemedy names the action that really takes an environment-backed
@@ -1336,8 +1361,24 @@ func keylessScheme(auth string) bool {
 // entry shadows it, which includes the account a user signed in to
 // (client-side parity: fromEnvironment in the AppWire package's
 // credentialLabels).
+//
+// The Codex transport is exempt before the source is consulted, mirroring the
+// client: it reads only its OAuth record, and the instance exists because that
+// record file does - a record the hub cannot parse is still the user's, and the
+// status reports no usable source for it (openAIInstanceStatus) while the
+// registry reports the oauth source. Without the exemption a Codex row whose
+// status resolved no source (empty/none) would be offered Remove in the UI but
+// refused here. The client's other early return - true when the row needs no
+// credential - is already the keylessScheme branch: the wire's
+// CredentialRequired is exactly `Auth != AuthNone && Auth != AuthOptionalBearer`
+// (List, app_instances.go), so `!credentialRequired` is keylessScheme, and
+// keylessScheme returns true below. Verified against
+// appwire-client/typescript/credentialLabels.ts and this file's List entry.
 func environmentBacked(inst registry.Instance) bool {
 	if !inst.Implicit {
+		return false
+	}
+	if inst.Auth == registry.AuthOAuthOpenAICodex {
 		return false
 	}
 	if keylessScheme(inst.Auth) {
@@ -1452,8 +1493,13 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// removal is not the place to fail over unrelated debris, and the refusal is
 	// what the caller must act on (see reclaimOAuthAsides).
 
+	// Whether providers.toml carried an entry for this name at removal start
+	// decides the kind recorded in the aside's name (setAsideOAuthFile):
+	// config-backed or credential-only. It is read from `before`, the layer that
+	// still holds the entry, and reused below as `authored`.
+	_, authored := before.Providers[name]
 	storedKey, hasStoredKey := c.auth.creds.Get(name)
-	oauthAside, err := c.setAsideOAuthFile(name)
+	oauthAside, err := c.setAsideOAuthFile(name, authored)
 	if err != nil {
 		return err
 	}
@@ -1470,7 +1516,6 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// still written when its `default` named this instance, because dropping
 	// that pointer is a real change to a file that already exists - leaving it
 	// behind would name an instance the next load cannot find.
-	_, authored := before.Providers[name]
 	delete(l.Providers, name)
 	// A `default` naming the instance just removed would fail the next load,
 	// so it goes with it; the ranking of §5.1 picks the replacement.
@@ -1568,8 +1613,11 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 //
 // The name keeps the record's own suffix and adds one no reader looks for, so an
 // aside left behind by a crash is never mistaken for a record (only .json files
-// are read).
-func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) {
+// are read). It also records the removal's KIND, which is what the removal's own
+// rename writes atomically: configBacked when providers.toml carried a
+// [providers.<name>] entry at removal start, credential-only otherwise. Recovery
+// reads that kind instead of inferring it from the registry.
+func (c *hubInstancesController) setAsideOAuthFile(name string, configBacked bool) (string, error) {
 	path := authopenai.AuthFilePath(c.auth.stateDir, name)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1610,12 +1658,15 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	// the existence check and the rename. The candidate keeps the all-digits
 	// tail oauthAsideInstance requires, so a stepped name is still reclaimable
 	// rather than debris.
+	// The marker the copy is written under records the removal's kind, so
+	// recovery can decide whether to put it back without asking the registry.
+	marker := oauthAsideMarkerFor(configBacked)
 	stamp := c.auth.now().UnixNano()
 	if entries, err := os.ReadDir(filepath.Dir(path)); err == nil {
 		var highest int64
 		var have bool
 		for _, e := range entries {
-			inst, _, aside := oauthAsideInstance(e.Name())
+			inst, _, _, aside := oauthAsideInstance(e.Name())
 			if e.IsDir() || !aside || inst != name {
 				continue
 			}
@@ -1634,7 +1685,7 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 			stamp = highest + 1
 		}
 	}
-	aside := fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)
+	aside := fmt.Sprintf("%s%s%d", path, marker, stamp)
 	for {
 		_, err := os.Lstat(aside)
 		if errors.Is(err, os.ErrNotExist) {
@@ -1650,7 +1701,7 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 			return "", fmt.Errorf("remove %s: check whether %s is free to set its OAuth state aside: %w", name, aside, err)
 		}
 		stamp++
-		aside = fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)
+		aside = fmt.Sprintf("%s%s%d", path, marker, stamp)
 	}
 	if err := os.Rename(path, aside); err != nil {
 		return "", fmt.Errorf("remove %s: set its OAuth state aside to preserve it: %w", name, err)
@@ -1663,7 +1714,14 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 // when the leftovers are reclaimed, and it names an IN-FLIGHT copy: the removal
 // that made it had not yet done its durable work - the aside, the credential
 // deletions and, when it changed, the providers.toml write - when the copy was
-// written, so startup puts it back (restoreUncommittedOAuthAsides).
+// written, so startup puts it back (restoreUncommittedOAuthAsides). This shape
+// is the CREDENTIAL-ONLY kind: the removed name had no [providers.<name>] entry
+// at removal start (an implicit Codex account, a stored key for a curated
+// provider), so the record file is the whole of what made the instance exist.
+// Asides written by the release before the kind was recorded carry this shape,
+// so they parse as credential-only; that is the conservative reading, because a
+// credential-only in-flight copy is always put back when its record path is
+// free, which never strands a previous release's bytes.
 const oauthAsideMarker = ".removing-"
 
 // oauthCommittedMarker is the same separation for a copy whose removal HAD done
@@ -1675,19 +1733,46 @@ const oauthAsideMarker = ".removing-"
 // shapes order against each other the same way.
 const oauthCommittedMarker = ".removed-"
 
+// oauthConfigAsideMarker and oauthConfigCommittedMarker are the same two shapes
+// for a removal whose name providers.toml carried a [providers.<name>] entry at
+// removal start (Remove's `before.Providers[name]`), which setAsideOAuthFile
+// records in the name it writes atomically. The kind is what recovery uses
+// instead of inferring from the registry: an in-flight copy whose name the config
+// still carries is an in-doubt removal to put back, while a config-backed copy
+// whose name the config no longer carries reached its providers.toml write - the
+// config itself is the durable evidence that the removal proceeded - so it is
+// resolved forward (returned to the committed shape) rather than restored. A
+// credential-only copy is always restored while its record path is free.
+const oauthConfigAsideMarker = ".removing-cfg-"
+const oauthConfigCommittedMarker = ".removed-cfg-"
+
+// oauthAsideMarkerFor names the in-flight marker for a removal of the given kind.
+// The committed shape is its oauthCommittedAsideName.
+func oauthAsideMarkerFor(configBacked bool) string {
+	if configBacked {
+		return oauthConfigAsideMarker
+	}
+	return oauthAsideMarker
+}
+
 // oauthAsideInstance returns the instance a copy was made from, whether the
-// removal that made it had stood, and whether name is a copy at all. The aside
-// name is the record's whole path - its .json suffix included - plus a stamp, so
-// an instance whose own name holds a marker is not one: `x.removing-1`'s record
-// is `x.removing-1.json`, whose tail after the marker is not a number, and no
-// record a load would read is ever taken for debris.
-func oauthAsideInstance(name string) (string, bool, bool) {
+// removal that made it had stood, whether the removal was config-backed
+// (oauthConfigAsideMarker), and whether name is a copy at all. The aside name is
+// the record's whole path - its .json suffix included - plus a stamp, so an
+// instance whose own name holds a marker is not one: `x.removing-1`'s record is
+// `x.removing-1.json`, whose tail after the marker is not a number, and no record
+// a load would read is ever taken for debris. The config-backed markers are
+// checked before the plain ones because they share the plain ones' prefix.
+func oauthAsideInstance(name string) (inst string, committed, configBacked, aside bool) {
 	for _, m := range []struct {
-		marker    string
-		committed bool
+		marker       string
+		committed    bool
+		configBacked bool
 	}{
-		{oauthCommittedMarker, true},
-		{oauthAsideMarker, false},
+		{oauthConfigCommittedMarker, true, true},
+		{oauthConfigAsideMarker, false, true},
+		{oauthCommittedMarker, true, false},
+		{oauthAsideMarker, false, false},
 	} {
 		i := strings.LastIndex(name, m.marker)
 		if i < 0 {
@@ -1700,16 +1785,17 @@ func oauthAsideInstance(name string) (string, bool, bool) {
 		if strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) >= 0 {
 			continue
 		}
-		return strings.TrimSuffix(record, ".json"), m.committed, true
+		return strings.TrimSuffix(record, ".json"), m.committed, m.configBacked, true
 	}
-	return "", false, false
+	return "", false, false, false
 }
 
 // oauthAsideStampText returns the stamp an aside name carries. The name has
 // already been accepted by oauthAsideInstance, so one of the markers is present
-// and the tail after it is all digits.
+// and the tail after it is all digits. The config-backed markers come first
+// because they share the plain ones' prefix.
 func oauthAsideStampText(name string) string {
-	for _, marker := range []string{oauthCommittedMarker, oauthAsideMarker} {
+	for _, marker := range []string{oauthConfigCommittedMarker, oauthConfigAsideMarker, oauthCommittedMarker, oauthAsideMarker} {
 		i := strings.LastIndex(name, marker)
 		if i < 0 {
 			continue
@@ -1724,24 +1810,48 @@ func oauthAsideStampText(name string) string {
 
 // oauthCommittedAsideName returns the name an in-flight copy takes once the
 // removal it belongs to has stood. The stamp is preserved - the committed copy
-// orders against the others the same way - and only the marker changes, to the
-// shape startup never puts back. name must be an in-flight copy
-// (oauthAsideInstance returned it with committed false), so it carries the
-// marker.
+// orders against the others the same way - and the KIND is preserved, so the
+// committed shape still records whether the removal was config-backed. name must
+// be an in-flight copy (oauthAsideInstance returned it with committed false), so
+// it carries one of the in-flight markers; the config-backed pair is tried first
+// because it shares the plain marker's prefix.
 func oauthCommittedAsideName(name string) string {
-	i := strings.LastIndex(name, oauthAsideMarker)
-	return name[:i] + oauthCommittedMarker + name[i+len(oauthAsideMarker):]
+	for _, p := range [][2]string{
+		{oauthConfigAsideMarker, oauthConfigCommittedMarker},
+		{oauthAsideMarker, oauthCommittedMarker},
+	} {
+		if i := strings.LastIndex(name, p[0]); i >= 0 {
+			return name[:i] + p[1] + name[i+len(p[0]):]
+		}
+	}
+	return name
 }
 
 // oauthInFlightAsideName returns the name a COMMITTED copy takes when a failing
 // rollback cannot put it back at the record path: the in-flight shape startup
-// recovery reads (restoreUncommittedOAuthAsides). The stamp is preserved and
-// only the marker changes, the exact inverse of oauthCommittedAsideName. name
-// must be a committed copy (oauthAsideInstance returned it with committed true),
-// so it carries the marker.
+// recovery reads (restoreUncommittedOAuthAsides). The stamp and the KIND are
+// preserved, the exact inverse of oauthCommittedAsideName. name must be a
+// committed copy (oauthAsideInstance returned it with committed true), so it
+// carries one of the committed markers; the config-backed pair is tried first.
 func oauthInFlightAsideName(name string) string {
-	i := strings.LastIndex(name, oauthCommittedMarker)
-	return name[:i] + oauthAsideMarker + name[i+len(oauthCommittedMarker):]
+	for _, p := range [][2]string{
+		{oauthConfigCommittedMarker, oauthConfigAsideMarker},
+		{oauthCommittedMarker, oauthAsideMarker},
+	} {
+		if i := strings.LastIndex(name, p[0]); i >= 0 {
+			return name[:i] + p[1] + name[i+len(p[0]):]
+		}
+	}
+	return name
+}
+
+// oauthRenamedAsideName returns the in-flight aside name a copy takes under a
+// new instance name across a rename, preserving the copy's kind and stamp. It is
+// used when a promoted copy cannot be read back as the record, so its bytes stay
+// under a name startup recovery recognizes.
+func oauthRenamedAsideName(newName, aside string) string {
+	_, _, configBacked, _ := oauthAsideInstance(aside)
+	return newName + ".json" + oauthAsideMarkerFor(configBacked) + oauthAsideStampText(aside)
 }
 
 // commitOAuthAside renames one in-flight copy to its committed shape and returns
@@ -1757,7 +1867,7 @@ func oauthInFlightAsideName(name string) string {
 // rolls the removal back on one, while the reclaim reports it.
 func commitOAuthAside(path string) (string, error) {
 	name := filepath.Base(path)
-	_, committed, aside := oauthAsideInstance(name)
+	_, committed, _, aside := oauthAsideInstance(name)
 	if !aside || committed {
 		return path, nil
 	}
@@ -1770,43 +1880,63 @@ func commitOAuthAside(path string) (string, error) {
 
 // restoreUncommittedOAuthAsides puts back the in-flight OAuth records a removal
 // set aside for an instance that still exists. It reports what it could not put
-// back, and whether it restored anything at all.
+// back - and, for the one deliberate delete whose bytes could be a stranded
+// instance's only credential, that it did delete them - and whether it restored
+// anything at all.
 //
 // A removal moves the record aside before it deletes anything, so a hub that
 // dies inside that window - or a failed removal whose rename-back did not land
-// (restoreFailedRemoval) - leaves a record under its in-flight aside name with
-// the instance still configured. providers.toml says whether the removal reached
-// the file, so an aside goes back when the config still names its instance OR
-// when the name is a curated credential-only provider - an implicit Codex
-// instance exists from its record alone and has no entry to name it, so the
-// config test by itself would strand exactly the record that made it exist -
-// and the record's own path is free. The bytes are moved, never read, so a
-// record the hub cannot read is put back as faithfully as any other.
+// (restoreFailedRemoval) - leaves a record under its in-flight aside name. The
+// KIND recorded in that name, not the provider registry, decides what happens to
+// it:
 //
-// A COMMITTED copy (oauthCommittedMarker) is never put back: it is the leftover
-// of a removal that had done its durable work - the commit point marked it
+//   - A CREDENTIAL-ONLY copy (oauthAsideMarker) has no [providers.<name>] entry
+//     to name the instance: the record file was the whole of what made it exist
+//     (an implicit Codex account, a stored key for a curated provider). It is
+//     put back when its record path is free. That is the rollback policy for an
+//     in-doubt removal - deleting it would strand the only credential the
+//     instance ever had without the user asking. Asides written by the release
+//     before the kind was recorded carry the plain shape and parse as
+//     credential-only, so they are restored too, never stranded.
+//   - A CONFIG-BACKED copy (oauthConfigAsideMarker) whose name providers.toml
+//     STILL carries is an in-doubt removal that never reached its config write -
+//     the config is the durable evidence that it did not - so it is put back
+//     when its record path is free.
+//   - A CONFIG-BACKED copy whose name the config no longer carries is a removal
+//     that DID reach its providers.toml write: it is resolved forward by
+//     returning it to its committed shape below, which the sweep then collects.
+//     It is NOT put back; doing so would resurrect a removal whose configuration
+//     and credentials were already deleted. (This is the high finding: recovery
+//     must not infer the kind from the current registry.)
+//
+// The bytes are moved, never read, so a record the hub cannot read is put back
+// as faithfully as any other.
+//
+// A COMMITTED copy is never put back: it is the leftover of a removal that had
+// done its durable work - the commit point marked it
 // (markOAuthAsidesCommitted) before the reload that published the removal, and
 // the reclaim (reclaimOAuthAsides) then deletes what a crash left. Putting it
 // back would undo a removal the caller was told had happened. One whose name
 // providers.toml does not carry is also DELETED here: the removal that made it
 // stood, so nothing wants it once the name is gone, and no later removal of that
-// name will ever collect it. One whose name the config DOES carry is left where
-// it is - after a removal that failed between its commit mark and its rollback,
-// that copy can be the instance's only record, and the conservative rule is what
-// protects it. The sweep's protection leans on a committed copy meaning the
-// removal STOOD, which is why a failing rollback returns a committed copy it
-// cannot put back to the in-flight shape (restoreFailedRemoval). The residual
-// this design accepts: if that rollback can neither rename the record back to
-// its own path nor rename the copy to the in-flight shape, a committed copy of a
-// removal that did not stand survives here, and this sweep deletes it on the
-// next start.
+// name will ever collect it. A credential-only copy of that shape whose record
+// path is free is reported before it goes, because it could be a failed
+// rollback's only surviving credential and a delete must not be silent; what
+// actually forces the re-sign-in in that state is the failed rollback that could
+// not restore the record, not this delete, which only removes the bytes a human
+// could have copied back by hand. One whose name the config DOES carry is left
+// where it is - after a removal that failed between its commit mark and its
+// rollback, that copy can be the instance's only record, and the conservative
+// rule is what protects it. The sweep's protection leans on a committed copy
+// meaning the removal STOOD, which is why a failing rollback returns a committed
+// copy it cannot put back to the in-flight shape (restoreFailedRemoval). The
+// residual this design accepts: if that rollback can neither rename the record
+// back to its own path nor rename the copy to the in-flight shape, a committed
+// copy of a removal that did not stand survives here, and this sweep deletes it
+// on the next start (and reports a credential-only one).
 //
-// Everything else is left exactly where it is. An IN-FLIGHT aside whose instance
-// the config no longer names and which is not a curated credential-only provider
-// is left for that name's next removal to collect (reclaimOAuthAsides): taking it
-// here would delete the last credential of an instance a failed removal stranded
-// without the user asking for it. A record filed under its own name again is the
-// record the instance has now, so a copy beside it stays too.
+// A record filed under its own name again is the record the instance has now, so
+// a copy beside it stays too.
 //
 // One instance can hold several copies - a removal strands one, a later sign-in
 // writes the record again, a second removal sets that one aside as well - so the
@@ -1822,7 +1952,7 @@ func commitOAuthAside(path string) (string, error) {
 // out of every listing over it - until the next Reload. The returned bool is
 // true when at least one record was put back, so a partial restore (some copies
 // reported as problems) still asks for the reload.
-func restoreUncommittedOAuthAsides(reg *hubcore.ProviderRegistry, stateDir, providersConfigPath string) (bool, error) {
+func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, error) {
 	layer, _, err := registry.ReadConfigFile(providersConfigPath)
 	if err != nil {
 		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
@@ -1839,22 +1969,27 @@ func restoreUncommittedOAuthAsides(reg *hubcore.ProviderRegistry, stateDir, prov
 		}
 		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
 	}
-	var current *registry.Registry
-	if reg != nil {
-		current = reg.Get()
+	// A committed copy carries its name and kind into the delete step, so the
+	// delete can report the credential-only ones that could be a stranded
+	// instance's only credential rather than removing them silently.
+	type committedCopy struct {
+		name         string
+		inst         string
+		configBacked bool
 	}
 	// The newest in-flight copy of each name that still exists, chosen before
 	// anything moves so the choice does not depend on the order the directory
 	// hands its entries back.
 	newest := make(map[string]string, len(entries))
 	stamps := make(map[string]int64, len(entries))
-	var committedNames []string
+	var committed []committedCopy
+	var problems []string
 	for _, e := range entries {
-		inst, committed, aside := oauthAsideInstance(e.Name())
+		inst, isCommitted, configBacked, aside := oauthAsideInstance(e.Name())
 		if e.IsDir() || !aside {
 			continue
 		}
-		if committed {
+		if isCommitted {
 			// Only a committed copy whose name providers.toml does NOT carry is
 			// swept below: it belongs to a removal that STOOD, so nothing wants it
 			// once the name is gone, and no later removal will ever collect it. A
@@ -1866,13 +2001,26 @@ func restoreUncommittedOAuthAsides(reg *hubcore.ProviderRegistry, stateDir, prov
 			// leaves a committed copy of a removal that did not stand, and this
 			// sweep deletes it on the next start.
 			if _, carried := layer.Providers[inst]; !carried {
-				committedNames = append(committedNames, e.Name())
+				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
 			}
 			continue
 		}
-		if _, carried := layer.Providers[inst]; !carried && !curatedCredentialOnlyOAuth(current, inst) {
+		_, carried := layer.Providers[inst]
+		if configBacked && !carried {
+			// The removal reached its config write (the config is the durable
+			// evidence): resolve it forward rather than restoring it. Returning it
+			// to the committed shape lets the sweep below collect it, so it does
+			// not stay in flight for a later pass to resurrect.
+			committedName := oauthCommittedAsideName(e.Name())
+			if rerr := os.Rename(filepath.Join(dir, e.Name()), filepath.Join(dir, committedName)); rerr != nil {
+				problems = append(problems, fmt.Sprintf("return the config-backed copy %s of %q, whose name the config no longer carries, to the committed shape for the sweep (%v)", e.Name(), inst, rerr))
+			} else {
+				committed = append(committed, committedCopy{committedName, inst, configBacked})
+			}
 			continue
 		}
+		// Credential-only copies, and config-backed copies the config still
+		// carries, are put back if their record path is free.
 		stamp, err := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
 		if err != nil {
 			// A stamp past an int64 is a name no removal wrote, and one that
@@ -1884,7 +2032,6 @@ func restoreUncommittedOAuthAsides(reg *hubcore.ProviderRegistry, stateDir, prov
 			stamps[inst] = stamp
 		}
 	}
-	var problems []string
 	restored := false
 	for inst, name := range newest {
 		path := authopenai.AuthFilePath(stateDir, inst)
@@ -1906,29 +2053,35 @@ func restoreUncommittedOAuthAsides(reg *hubcore.ProviderRegistry, stateDir, prov
 	// Delete the committed copies no config names: the removal they belong to
 	// stood, and no later removal of that name will ever collect them, so leaving
 	// them would keep the user's credential on disk forever under a name nothing
-	// reads. A delete that fails is reported with the rest of this pass's problems.
-	for _, name := range committedNames {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			problems = append(problems, fmt.Sprintf("delete the committed copy %s whose name the config no longer carries (%v)", name, err))
+	// reads. A credential-only copy whose record path is free could be a failed
+	// rollback's only surviving credential - the state restoreFailedRemoval
+	// leaves when it can neither restore the record nor return the copy to the
+	// in-flight shape - so the delete is reported rather than silent. The report
+	// names what the delete removes: the bytes a human could have copied back by
+	// hand. What forces a re-sign-in in that state is the failed rollback, not
+	// the delete. A delete that fails is reported with the rest of this pass's
+	// problems either way.
+	for _, c := range committed {
+		loneCredential := false
+		if !c.configBacked {
+			if _, statErr := os.Lstat(authopenai.AuthFilePath(stateDir, c.inst)); errors.Is(statErr, os.ErrNotExist) {
+				loneCredential = true
+			}
+		}
+		if err := os.Remove(filepath.Join(dir, c.name)); err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				problems = append(problems, fmt.Sprintf("delete the committed copy %s whose name the config no longer carries (%v)", c.name, err))
+			}
+			continue
+		}
+		if loneCredential {
+			problems = append(problems, fmt.Sprintf("deleted the committed credential-only copy %s of %q, whose name the config no longer carries and whose record path is free, so those bytes were the last copy of that credential a human could have put back by hand", c.name, c.inst))
 		}
 	}
 	if len(problems) > 0 {
-		return restored, fmt.Errorf("a record a failed removal set aside could not be put back: %s", strings.Join(problems, ", "))
+		return restored, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
 	}
 	return restored, nil
-}
-
-// curatedCredentialOnlyOAuth reports whether name is a curated provider that
-// exists as an instance only when a credential resolves for it on the Codex
-// OAuth transport - the implicit instance a UI sign-in creates, which no
-// providers.toml entry names. A nil registry (no successful load) has no curated
-// view to ask, so it answers no and the config test alone decides.
-func curatedCredentialOnlyOAuth(reg *registry.Registry, name string) bool {
-	if reg == nil {
-		return false
-	}
-	p, ok := reg.Provider(name)
-	return ok && p.Implicit != nil && *p.Implicit && p.Transport.Auth == registry.AuthOAuthOpenAICodex
 }
 
 // markOAuthAsidesCommitted moves every IN-FLIGHT copy filed under name to its
@@ -1967,7 +2120,7 @@ func (c *hubInstancesController) markOAuthAsidesCommitted(name, own string) (str
 	}
 	var problems []string
 	for _, e := range entries {
-		inst, committed, aside := oauthAsideInstance(e.Name())
+		inst, committed, _, aside := oauthAsideInstance(e.Name())
 		// A directory is skipped for the same reason the reclaim skips one: the
 		// hub sets copies aside as regular files, so a directory filed under a
 		// copy's name was not written by a removal.
@@ -2041,7 +2194,7 @@ func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 	}
 	var unmarked, remaining []string
 	for _, e := range entries {
-		inst, _, aside := oauthAsideInstance(e.Name())
+		inst, _, _, aside := oauthAsideInstance(e.Name())
 		// A directory is skipped: this takes the copies the hub itself set
 		// aside, and deleting a directory's contents is not something a removal
 		// may do. setAsideOAuthFile refuses anything but a regular file at the
@@ -2198,7 +2351,7 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 		// a rename cannot leave the half-written file a copy could.
 		if err := os.Rename(oauthAside, authopenai.AuthFilePath(c.auth.stateDir, name)); err != nil {
 			restoreErr := err
-			if _, committed, _ := oauthAsideInstance(filepath.Base(oauthAside)); committed {
+			if _, committed, _, _ := oauthAsideInstance(filepath.Base(oauthAside)); committed {
 				inFlight := filepath.Join(filepath.Dir(oauthAside), oauthInFlightAsideName(filepath.Base(oauthAside)))
 				if fallbackErr := os.Rename(oauthAside, inFlight); fallbackErr != nil {
 					problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v), and its committed copy could not be returned to the in-flight shape startup recovery reads (%v)", restoreErr, fallbackErr))

@@ -97,4 +97,33 @@ describe("fromEnvironment against the hub's own instance list", () => {
     }
     expect(fromEnvironment(hubInstance("authored"))).toBe(false);
   });
+
+  // The exemption is keyed on the hub's transport string, never on the resolved
+  // source: the registry derives a Codex instance from its OAuth record file and
+  // still permits the removal when the record cannot be read (cmd/evener-hub's
+  // environmentBacked), so the same recorded row can resolve with any source -
+  // "oauth" for a readable record, "none" (or an empty source) for one the hub
+  // cannot use. The recorded row supplies the hub's own `auth`; the corpus
+  // supplies the sources the hub actually sends; "" stands for a source the
+  // registry could not resolve at all. A hub-side rename of the scheme or a
+  // client-side removal of the exemption fails here rather than offering Remove
+  // for a row one side refuses.
+  test("the recorded Codex row is the user's own at every source the hub sends", () => {
+    const codex = hubInstance("openai-codex");
+    expect(codex.auth).toBe("oauth-openai-codex");
+    expect(codex.implicit).toBe(true);
+
+    const sentSources = new Set(hubInstances().map((instance) => instance.activeSource));
+    // The vocabulary the corpus actually carries, so this never invents a source
+    // no hub row resolves. "none" is the unreadable-record state.
+    expect(sentSources.has("none")).toBe(true);
+    expect(sentSources.has("oauth")).toBe(true);
+
+    for (const activeSource of [...sentSources, ""]) {
+      expect(
+        fromEnvironment({ ...codex, activeSource }),
+        `openai-codex (auth ${codex.auth}) with activeSource ${JSON.stringify(activeSource)}`,
+      ).toBe(false);
+    }
+  });
 });

@@ -2,6 +2,8 @@ import type { AuthLogoutResponse, AuthTestResponse, InstanceEntry, InstanceListR
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorInstanceRemovePersisted,
+  ErrorInstanceRenamePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   WireError,
 } from "@evener/appwire-client";
@@ -580,7 +582,7 @@ describe("the detail sheet", () => {
     const HUB_MESSAGE =
       "removed personal, but a credential the removal set aside is still on disk, and deleting it is what takes it away: /state/auth/personal.json.removing-1 (delete refused)";
     fake.on("evener/instance/remove", () => {
-      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: "instanceRemovePersisted" });
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRemovePersisted });
     });
     const onInstanceRemoved = vi.fn();
     render(
@@ -2225,7 +2227,7 @@ describe("rename from the sheet", () => {
     );
     fake.on("evener/instance/edit", () => {
       renamed = true;
-      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: "instanceRenamePersisted" });
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
     });
     render(
       <>

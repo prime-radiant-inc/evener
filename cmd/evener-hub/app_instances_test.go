@@ -755,6 +755,36 @@ func TestInstances_RemoveDeletesAStoredKeyForACuratedProvider(t *testing.T) {
 	}
 }
 
+// TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn: the Codex transport is
+// exempt from environmentBacked before the credential source is consulted,
+// mirroring the client's fromEnvironment. A Codex row the status resolved with no
+// source (none or empty) must still be removable here - the client already offers
+// Remove for it - while the schemes that really do come back with the host stay
+// environment-backed. The client's !credentialRequired early return is the
+// keylessScheme branch: the wire's CredentialRequired is exactly
+// !keylessScheme, so nothing extra is needed beyond the Codex exemption.
+func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		inst registry.Instance
+		want bool
+	}{
+		{"codex, no resolved source", registry.Instance{Implicit: true, Auth: registry.AuthOAuthOpenAICodex, CredentialSource: "none"}, false},
+		{"codex, empty source", registry.Instance{Implicit: true, Auth: registry.AuthOAuthOpenAICodex, CredentialSource: ""}, false},
+		{"codex, oauth source", registry.Instance{Implicit: true, Auth: registry.AuthOAuthOpenAICodex, CredentialSource: "oauth"}, false},
+		{"keyless local endpoint", registry.Instance{Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"}, true},
+		{"optional-bearer gateway", registry.Instance{Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "env:GATEWAY_KEY"}, true},
+		{"env-backed bearer", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "env:OPENAI_API_KEY"}, true},
+		{"application-default credentials", registry.Instance{Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"}, true},
+		{"stored curated key", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "store"}, false},
+		{"authored instance", registry.Instance{Implicit: false, Auth: registry.AuthBearer, CredentialSource: "env:OPENAI_API_KEY"}, false},
+	} {
+		if got := environmentBacked(tc.inst); got != tc.want {
+			t.Fatalf("environmentBacked(%+v) = %v, want %v (%s)", tc.inst, got, tc.want, tc.name)
+		}
+	}
+}
+
 // authDirEntries lists the names in the fixture's OAuth state directory, sorted
 // by os.ReadDir, or nil when the directory does not exist.
 func authDirEntries(t *testing.T, f *instancesFixture) []string {
@@ -2224,7 +2254,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 		t.Fatalf("Rename: %v", err)
 	}
 
-	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -2239,32 +2269,37 @@ func TestRestoreUncommittedOAuthAsidesPutsBackARecordTheRemovalNeverCommitted(t 
 	}
 }
 
-// TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut: an aside the
-// config no longer names belongs to a removal that stood - or to an instance
-// whose own record was what made it exist - so startup leaves it for that
-// name's next removal to collect, and a record filed under its own name again
-// is the record the instance has now, so a copy beside it stays as well. A
-// state root with no auth directory at all is nothing set aside, not a failure.
-func TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut(t *testing.T) {
+// TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesALiveCopy:
+// a CONFIG-BACKED in-flight copy whose name providers.toml no longer carries is
+// a removal that reached its config write - the config is the durable evidence -
+// so startup must not resurrect it. It is returned to the committed shape and
+// the sweep in the same pass deletes it, so it never stays in flight for a later
+// pass to restore, and its record path is left free. A copy filed beside a
+// record the instance already has - the user signed in again after the removal
+// that set it aside - stays where it is: the live record is the one the instance
+// has now. A state root with no auth directory at all is nothing set aside, not
+// a failure.
+func TestRestoreUncommittedOAuthAsidesResolvesAConfigBackedCopyForwardAndLeavesALiveCopy(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
 		t.Fatalf("Create: %v", err)
 	}
 	// Nothing set aside yet, and no auth directory to look in.
-	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides with nothing set aside: %v", err)
 	}
 
-	// A copy of a name the config does not carry: the removal that made it
-	// unwanted stood.
-	committed := authopenai.AuthFilePath(f.stateDir, "gone") + oauthAsideMarker + "1757000000000000000"
+	// A CONFIG-BACKED in-flight copy of a name the config does not carry: the
+	// removal reached its config write and must be resolved forward, not restored.
+	stale := authopenai.AuthFilePath(f.stateDir, "gone") + oauthConfigAsideMarker + "1757000000000000000"
+	staleCommitted := authopenai.AuthFilePath(f.stateDir, "gone") + oauthConfigCommittedMarker + "1757000000000000000"
 	// A copy of a name that has its record back: the user signed in after the
 	// removal that set this one aside.
 	live := authopenai.AuthFilePath(f.stateDir, "work") + oauthAsideMarker + "1757000000000000000"
-	if err := os.MkdirAll(filepath.Dir(committed), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(stale), 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	for _, path := range []string{committed, live} {
+	for _, path := range []string{stale, live} {
 		if err := os.WriteFile(path, []byte("{}\n"), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", path, err)
 		}
@@ -2278,13 +2313,24 @@ func TestRestoreUncommittedOAuthAsidesLeavesWhatTheRemovalCarriedOut(t *testing.
 		t.Fatalf("ReadFile: %v", err)
 	}
 
-	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
-	for _, path := range []string{committed, live} {
-		if _, err := os.Lstat(path); err != nil {
-			t.Fatalf("the copy at %s was taken (%v), want it left for the next removal", path, err)
-		}
+	if restored {
+		t.Fatal("restoreUncommittedOAuthAsides = true, want the config-backed copy resolved forward rather than restored")
+	}
+	if _, err := os.Lstat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the config-backed copy %s stayed in flight (Lstat = %v), so a later pass could restore it", stale, err)
+	}
+	if _, err := os.Lstat(staleCommitted); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the config-backed copy was not collected as %s (Lstat = %v)", staleCommitted, err)
+	}
+	if _, err := os.Lstat(authopenai.AuthFilePath(f.stateDir, "gone")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the removal that reached its config write was resurrected at its record path (Lstat = %v)", err)
+	}
+	if _, err := os.Lstat(live); err != nil {
+		t.Fatalf("the copy beside the live record at %s was taken (%v), want it left", live, err)
 	}
 	got, err := os.ReadFile(record)
 	if err != nil || !bytes.Equal(got, current) {
@@ -2315,7 +2361,7 @@ func TestRestoreUncommittedOAuthAsidesPutsBackTheNewestCopy(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -2363,7 +2409,7 @@ func TestRestoreUncommittedOAuthAsidesIsVisibleWithoutAReload(t *testing.T) {
 		t.Fatalf("fixture: work = %+v (ok = %v), want the instance a set-aside record leaves credential-less", before, ok)
 	}
 
-	if _, err := restoreUncommittedOAuthAsides(f.ctl.reg, f.stateDir, f.tomlPath); err != nil {
+	if _, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil {
 		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
 	}
 	// No reload: the same registry object, read again.
@@ -5280,7 +5326,7 @@ func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
 		dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
 		held := map[string][]byte{}
 		for _, name := range authDirEntries(t, f) {
-			if _, _, aside := oauthAsideInstance(name); !aside {
+			if _, _, _, aside := oauthAsideInstance(name); !aside {
 				continue
 			}
 			data, err := os.ReadFile(filepath.Join(dir, name))

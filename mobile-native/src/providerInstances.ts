@@ -1,4 +1,5 @@
 import {
+  ErrorInstanceRemovePersisted,
   friendlyErrorMessage,
   safeCredentialTestResult,
   sessionActionError,
@@ -34,11 +35,23 @@ interface ProviderState {
 
 // isInstanceRemovePersisted reads the hub's own discriminator for a removal that
 // stood in the config but could not finish
-// (appwire.ErrorInstanceRemovePersisted, the literal its ErrorData carries - the
-// same way the web pane reads it). A refusal or any other failure carries no
+// (appwire.ErrorInstanceRemovePersisted, exported by the AppWire package so every
+// client reads the one value its ErrorData carries, and bound to the Go constant
+// by that package's errors.test.ts). A refusal or any other failure carries no
 // such info, so it stays a plain failure.
 export function isInstanceRemovePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "instanceRemovePersisted";
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
+}
+
+// removalFailureMessage is what the screen shows when a removal is refused or
+// otherwise fails (a rejection without the persisted discriminator). The generic
+// copy the credential flows use guards against a provider or transport error
+// echoing a submitted secret; a removal carries no secret - only the instance
+// name and the endpoint fingerprint the caller asserted - so the hub's own
+// message, which names the refusal's remedy, reaches the user the same way the
+// web pane's "Remove failed: <message>" toast does.
+export function removalFailureMessage(err: unknown): string {
+  return `Remove failed: ${friendlyErrorMessage(err)}`;
 }
 
 // RemovalOutcome is what a removal resolved to. A removal that stood in the

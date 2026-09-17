@@ -27,6 +27,7 @@ import type { AuthTestResponse, InstanceEntry } from "@evener/appwire-client";
 import {
   CONNECTION_REPLACED_ERROR,
   ENDPOINT_CHANGED_TEST_MESSAGE,
+  ErrorInstanceRemovePersisted,
   FINGERPRINT_UNAVAILABLE_TEST_MESSAGE,
   fingerprintUnavailable,
   friendlyErrorMessage,
@@ -73,12 +74,12 @@ const CLASS = {
 
 // isInstanceRemovePersisted reads the hub's own discriminator for a removal that
 // stood in the config but could not finish
-// (appwire.ErrorInstanceRemovePersisted, read here as the literal its
-// ErrorData carries - the same way rail/actions.ts reads "resourceNotFound").
-// A refusal or any other failure carries no such info, so it stays a plain
-// failure and is never reported as a removal.
+// (appwire.ErrorInstanceRemovePersisted, exported by the AppWire package so every
+// client reads the one value its ErrorData carries, and bound to the Go constant
+// by that package's errors.test.ts). A refusal or any other failure carries no
+// such info, so it stays a plain failure and is never reported as a removal.
 function isInstanceRemovePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "instanceRemovePersisted";
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRemovePersisted;
 }
 
 type OpenEditor =

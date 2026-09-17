@@ -31,7 +31,7 @@ import { useConnection } from "./ConnectionProvider";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
-import { ProviderInstances } from "./providerInstances";
+import { ProviderInstances, removalFailureMessage } from "./providerInstances";
 import { ProviderSignIn } from "./providerSignIn";
 import type { Routes } from "./screens";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
@@ -186,13 +186,13 @@ function Providers({
         close();
         setWarning(outcome.message);
       }
-    } catch {
+    } catch (err) {
       if (version !== editorVersion.current) return;
-      // Provider/transport errors may echo submitted credentials. Keep the
-      // editor's error independent of upstream response text.
-      setActionError(
-        "The operation could not be confirmed. Refresh and check the current state before trying again.",
-      );
+      // A removal error carries the instance name and the endpoint fingerprint,
+      // never a secret, so the hub's own message (which names the refusal's
+      // remedy) is surfaced the way the web pane reports it - not the generic
+      // "could not be confirmed" copy the credential saves use.
+      setActionError(removalFailureMessage(err));
     }
   }
   function confirm(title: string, action: () => Promise<void>) {
