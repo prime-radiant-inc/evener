@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -241,15 +242,56 @@ func TestAddMarketplaceWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.
 	if !errors.Is(err, ErrStoreChanged) {
 		t.Fatalf("err = %v, want it to report the store changed: the rollback itself failed", err)
 	}
-	// Both underlying failures have to survive: the save error is why a
-	// rollback was attempted at all, and the rollback error is why it did
-	// not undo anything. Dropping either would tell the caller only half of
-	// what happened.
+	// The save error survives - it is why a rollback was attempted at all.
+	// The rollback error itself does not: rollbackFailed logs it (its own
+	// text can carry this machine's absolute plugin-store path, see
+	// TestAddMarketplaceWhoseRollbackAlsoFailedNamesNoAbsolutePath below)
+	// rather than returning it to the RPC caller.
 	if !strings.Contains(err.Error(), "the store file could not be written") {
 		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
 	}
-	if !strings.Contains(err.Error(), "the rollback removal failed") {
-		t.Fatalf("err = %v, want the rollback failure reported too", err)
+}
+
+// The rollback failure's error reaches the RPC caller as a wire error; this
+// machine's absolute plugin-store path is server-side detail (a warning),
+// not something a client needs or should see. A real os.RemoveAll failure
+// names the path in its own Error() text (*fs.PathError), so the injected
+// rollback error here does too, unlike the earlier test's plain sentinel.
+func TestAddMarketplaceWhoseRollbackAlsoFailedNamesNoAbsolutePath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+
+	originalWrite := marketplaceAtomicWriteFile
+	originalRemove := marketplaceRemoveAll
+	t.Cleanup(func() {
+		marketplaceAtomicWriteFile = originalWrite
+		marketplaceRemoveAll = originalRemove
+	})
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+	path := m.marketplaceDir("market-a")
+	marketplaceRemoveAll = func(p string) error {
+		if p == path {
+			return &fs.PathError{Op: "remove", Path: path, Err: errors.New("permission denied")}
+		}
+		return originalRemove(p)
+	}
+
+	_, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src})
+	if err == nil {
+		t.Fatal("AddMarketplace = nil, want the failed save reported")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "market-a") {
+		t.Fatalf("err = %v, want the marketplace named", err)
 	}
 }
 
@@ -325,11 +367,58 @@ func TestEnsureFetchedWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.T
 	if !changes.Marketplaces {
 		t.Fatalf("changes = %+v, want Marketplaces true: the rollback itself failed, so the clone stayed", changes)
 	}
+	// The save error survives - it is why a rollback was attempted at all.
+	// The rollback error itself does not: rollbackFailed logs it (its own
+	// text can carry this machine's absolute plugin-store path, see
+	// TestEnsureFetchedWhoseRollbackAlsoFailedNamesNoAbsolutePath below)
+	// rather than returning it to the RPC caller.
 	if !strings.Contains(err.Error(), "the store file could not be written") {
 		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
 	}
-	if !strings.Contains(err.Error(), "the rollback removal failed") {
-		t.Fatalf("err = %v, want the rollback failure reported too", err)
+}
+
+// The rollback failure's error reaches the RPC caller as a wire error; this
+// machine's absolute plugin-store path is server-side detail (a warning),
+// not something a client needs or should see. A real os.RemoveAll failure
+// names the path in its own Error() text (*fs.PathError), so the injected
+// rollback error here does too, unlike the earlier test's plain sentinel.
+func TestEnsureFetchedWhoseRollbackAlsoFailedNamesNoAbsolutePath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if err := m.saveMarketplaces(Marketplaces{"market-a": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/repo.git"}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	origClone := marketplaceGitClone
+	t.Cleanup(func() { marketplaceGitClone = origClone })
+	marketplaceGitClone = func(_ context.Context, _, dest, _, _ string) error { return os.MkdirAll(dest, 0o755) }
+
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the store file could not be written")
+	}
+
+	path := m.marketplaceDir("market-a")
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
+	marketplaceRemoveAll = func(p string) error {
+		if p == path {
+			return &fs.PathError{Op: "remove", Path: path, Err: errors.New("permission denied")}
+		}
+		return origRemove(p)
+	}
+
+	_, _, err := m.ensureFetched(ctx, "market-a")
+	if err == nil {
+		t.Fatal("ensureFetched = nil, want the failed save reported")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "market-a") {
+		t.Fatalf("err = %v, want the marketplace named", err)
 	}
 }
 

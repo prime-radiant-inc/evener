@@ -165,10 +165,12 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (ref Marketpla
 			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
 				// The name's InstallLocation was never recorded, so nothing
 				// lists this clone - but it still sits on disk where a retry
-				// of this fetch would find it in the way, which is the
-				// marketplace store left changed rather than back as it was
-				// found. AddMarketplace's own rollback hits this same shape.
-				return MarketplaceRef{}, StoreChanges{Marketplaces: true}, errors.Join(err, rollbackErr)
+				// of this fetch would find it in the way. AddMarketplace's
+				// own rollback hits this same shape, including
+				// rollbackFailed's rule for rollbackErr's own text (the hub's
+				// log, not the caller, since it can carry this machine's
+				// absolute plugin-store path).
+				return MarketplaceRef{}, StoreChanges{Marketplaces: true}, fmt.Errorf("%w; %w", err, m.rollbackFailed(name, rollbackErr))
 			}
 		}
 		return MarketplaceRef{}, StoreChanges{}, err
@@ -250,13 +252,13 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 			if rollbackErr := marketplaceRemoveAll(installLoc); rollbackErr != nil {
 				// The name was never recorded, so nothing lists this clone -
 				// but it still sits on disk where a retry of this Add would
-				// find it in the way, which is the store left changed rather
-				// than back as it was found (ErrStoreChanged's own rule). The
-				// save failure that started this is kept alongside the
-				// rollback failure that compounded it - dropping it would
-				// tell the caller only that a rollback failed, never why the
-				// save it was rolling back needed one at all.
-				return MarketplaceRef{}, fmt.Errorf("%w: saving %q failed (%w); rolling back the clone also failed: %w", ErrStoreChanged, name, err, rollbackErr)
+				// find it in the way. The save failure that started this is
+				// kept - it is why a rollback was attempted at all - and
+				// rollbackFailed reports the rest (ErrStoreChanged, since the
+				// clone stayed, and the hub's log rather than the caller for
+				// rollbackErr's own text, which can carry this machine's
+				// absolute plugin-store path).
+				return MarketplaceRef{}, fmt.Errorf("saving %q failed (%w); %w", name, err, m.rollbackFailed(name, rollbackErr))
 			}
 		}
 		return MarketplaceRef{}, err
@@ -275,6 +277,19 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 // call itself never asked for either change.
 func (m *Manager) ListMarketplaces(ctx context.Context) (mk Marketplaces, changes StoreChanges, err error) {
 	return m.loadMigratedMarketplaces(ctx, marketplaceAcquireLock)
+}
+
+// rollbackFailed reports that removing marketplace name's clone from disk
+// failed - whether cleaning up after a failed save (AddMarketplace,
+// ensureFetched) or removing it as the operation itself (RemoveMarketplace)
+// - leaving the store changed rather than back as it was found
+// (ErrStoreChanged's own rule). removeErr's own text can carry this
+// machine's absolute plugin-store path (os.RemoveAll returns a *fs.PathError
+// that names it), so it goes to the hub's log instead of the RPC caller; the
+// returned error names only the marketplace.
+func (m *Manager) rollbackFailed(name string, removeErr error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace %q's clone failed: %v\n", name, removeErr)
+	return fmt.Errorf("%w: marketplace %q's clone could not be removed; see the hub's log for detail", ErrStoreChanged, name)
 }
 
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
@@ -305,12 +320,8 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 			// The save already applied - the marketplace is gone from the
 			// listing - so the hub still owes every other client the
 			// broadcast even though this clone is litter Remove could not
-			// clean up. This machine's absolute plugin-store path is
-			// server-side detail (the warning below): the client-facing
-			// error names only the marketplace, since this reaches the RPC
-			// caller as a wire error.
-			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
-			return fmt.Errorf("%w: removing marketplace %q's clone failed; see the hub's log for detail", ErrStoreChanged, name)
+			// clean up.
+			return m.rollbackFailed(name, err)
 		}
 	}
 	return nil
