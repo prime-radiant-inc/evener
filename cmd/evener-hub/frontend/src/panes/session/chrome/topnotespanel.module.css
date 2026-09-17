@@ -1,6 +1,10 @@
 .topNotesPanel {
   display: flex;
   flex-direction: column;
+  /* Flush against the pane's top edge only: PaneScaffold's .body pads
+   * --space-5 (desktop) / --space-4 (phone, below), and this cancels exactly
+   * that. The side padding stays, which is the card's horizontal inset. */
+  margin-top: calc(-1 * var(--space-5));
 }
 
 /* Expanded, the panel is a floating layer over the transcript flow, so it
@@ -90,14 +94,6 @@
   line-height: var(--line-height-ui);
 }
 
-.hint {
-  font-size: var(--font-size-caption);
-  color: var(--ink-low);
-  margin-left: var(--space-3);
-  margin-top: 2px;
-  flex-shrink: 0;
-}
-
 .expandedHeader {
   display: flex;
   align-items: center;
@@ -136,4 +132,10 @@
   max-height: 40vh;
   overflow-y: auto;
   overflow-x: clip;
+}
+
+@media (max-width: 899px) {
+  .topNotesPanel {
+    margin-top: calc(-1 * var(--space-4));
+  }
 }
