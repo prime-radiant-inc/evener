@@ -469,6 +469,15 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		swapErr, undoErr := undoSwap(), runUndo(undo)
 		_ = marketplaceRemoveAll(staging)
 		if swapErr == nil && undoErr == nil {
+			// The directories rolled back cleanly, but err can still be
+			// saveRename's own errStoreBetweenNames: its registry save
+			// landed (re-keying every owned plugin under the new name) and
+			// its own restore-back save then failed too, so the registry
+			// keeps the new keys even though nothing on disk says a rename
+			// is in progress any more.
+			if errors.Is(err, ErrStoreChanged) {
+				return MarketplaceRef{}, changes.Merge(StoreChanges{Marketplaces: true, Plugins: renaming}), err
+			}
 			return MarketplaceRef{}, changes, err
 		}
 		// The rollback could not put every directory back, so the store is

@@ -67,6 +67,55 @@ func TestEditWhoseUndoFailedReportsTheStoreChanged(t *testing.T) {
 	}
 }
 
+// A rename's own directory-level rollback (moveMarketplace's undo) can
+// succeed cleanly while the SAVE step it was guarding still leaves the store
+// changed: saveRename's registry save (the re-key) lands, the marketplaces
+// file's save then fails, and the restore-back registry save fails too -
+// errStoreBetweenNames. The directories are back exactly where the rename
+// found them, but the registry keeps every re-keyed plugin under the new
+// name forever, so this cannot be answered by asking whether the rollback
+// itself failed.
+func TestEditRenameLeftStoreBetweenNamesReportsBothStoresChanged(t *testing.T) {
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "market-a", "widget")
+
+	originalSaveRegistry := installSaveRegistry
+	originalWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() {
+		installSaveRegistry = originalSaveRegistry
+		marketplaceAtomicWriteFile = originalWrite
+	})
+	calls := 0
+	installSaveRegistry = func(path string, reg Registry) error {
+		calls++
+		if calls == 1 {
+			// The re-key: let it land, matching saveRename's own successful
+			// first save.
+			return originalSaveRegistry(path, reg)
+		}
+		// The restore-back call, forced to fail.
+		return errors.New("restoring the registry failed")
+	}
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return errors.New("the marketplaces file could not be written")
+	}
+
+	_, changes, err := m.EditMarketplace(context.Background(), "market-a", "market-b", nil)
+	if err == nil {
+		t.Fatal("EditMarketplace = nil, want the failed save-then-restore reported")
+	}
+	if !errors.Is(err, ErrStoreChanged) {
+		t.Fatalf("err = %v, want it to carry ErrStoreChanged (errStoreBetweenNames)", err)
+	}
+	if !changes.Marketplaces {
+		t.Fatalf("changes = %+v, want Marketplaces true: the marketplaces file was left naming the old marketplace, not the store's actual state", changes)
+	}
+	if !changes.Plugins {
+		t.Fatalf("changes = %+v, want Plugins true: the registry save that landed re-keyed widget under market-b, and the restore back to market-a failed", changes)
+	}
+}
+
 // A directory-source refresh touches nothing on disk: the fetch/pull/reclone
 // block only runs for a fetched source, so a directory source's refresh only
 // ever changes ref.LastUpdated in memory. A failing record is then a plain
