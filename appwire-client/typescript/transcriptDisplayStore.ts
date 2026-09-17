@@ -28,9 +28,10 @@
 // the generation ended, support dropped or the hub was replaced lands nothing.
 
 import type { AppwireClient } from "./client";
+import { createDraftRepository, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
-import { createReadyGenerationFence } from "./readyGenerationFence";
+import { createReadyGenerationFence, lostHub } from "./readyGenerationFence";
 import {
   configFingerprint,
   fromWireConfig,
@@ -59,7 +60,7 @@ export function transcriptDisplaySupport(
   return features.transcriptDisplaySettings === true ? "supported" : "unsupported";
 }
 
-const LAYOUTS: readonly ViewportClass[] = ["desktop", "mobile"];
+export const LAYOUTS: readonly ViewportClass[] = ["desktop", "mobile"];
 
 export function isViewportClass(value: unknown): value is ViewportClass {
   return value === "desktop" || value === "mobile";
@@ -319,21 +320,10 @@ function decodePatchReply(
   return canonical;
 }
 
-/** What the port held is not a checkpoint this build can read. Distinct from
- * a port that could not be reached: the record is the problem, so the section
- * can still load the hub and can still throw the record away. */
-class UnreadableDraftError extends Error {}
-
-/** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
- * raw value goes straight back to the port, which matches its own bytes, so a
- * record no build can decode is still the record removed. A host whose store is
- * gone (no connection, so no client to build one from) needs this to clear an
- * unreadable record; a host with a live store uses discardDraft, which also
- * publishes the state. One implementation either way. */
-export function discardStoredDraft(storage: TranscriptDraftStorage): void {
-  const value = storage.load();
-  if (value !== null && value !== undefined) storage.removeIf(value as TranscriptDraftCheckpoint);
-}
+// discardStoredDraft is re-exported here (not just from draftCheckpointPort
+// directly) so index.ts's existing `discardStoredDraft as
+// discardStoredTranscriptDraft` import keeps working unchanged.
+export { discardStoredDraft } from "./draftCheckpointPort";
 
 function invalidDraft(): never {
   throw new UnreadableDraftError("Invalid transcript preference draft.");
@@ -369,73 +359,6 @@ export function draftCheckpoint(value: unknown): TranscriptDraftCheckpoint {
   };
 }
 
-/** The draft port with every checkpoint normalized through draftCheckpoint in
- * BOTH directions, so a port that compares serialized bytes sees one key
- * order on both sides. load() is the trust boundary: a malformed stored draft
- * surfaces as a storage failure, never as state.
- *
- * draftCheckpoint only keeps the fields this build knows, so a record another
- * build wrote with extra fields decodes to a normalized checkpoint that is
- * not what the stored bytes actually hold - a byte-aware port's own compare
- * (matching what it read against what it is asked to remove) would then
- * refuse to remove a record it just handed back. rawFrom keeps load()'s raw
- * value beside the checkpoint built from it, so removeIf can still hand the
- * port back exactly what it read: the only thing a byte-aware port can name a
- * record by. A checkpoint removeIf is given that load() never produced (a
- * fresh save's own checkpoint, or one rebuilt from published state) has no
- * raw value to recover and falls back to draftCheckpoint's normalized one, as
- * before - such a checkpoint carries no unknown fields to begin with. */
-function draftRepository(storage: TranscriptDraftStorage) {
-  const rawFrom = new WeakMap<TranscriptDraftCheckpoint, unknown>();
-  // The raw value load() most recently classified as unreadable. Named by
-  // WHEN it was classified, not by discardUnreadable's own call: another
-  // store or a newer app version can replace the record between the two, and
-  // a fresh storage.load() at discard time would then name (and remove)
-  // whatever is there NOW - never the record the user was actually shown.
-  let lastUnreadable: unknown;
-  let hasLastUnreadable = false;
-  return {
-    createId: () => storage.createId(),
-    load(): TranscriptDraftCheckpoint | null {
-      const value = storage.load();
-      if (value === null || value === undefined) {
-        hasLastUnreadable = false;
-        return null;
-      }
-      try {
-        const checkpoint = draftCheckpoint(value);
-        hasLastUnreadable = false;
-        rawFrom.set(checkpoint, value);
-        return checkpoint;
-      } catch (error) {
-        lastUnreadable = value;
-        hasLastUnreadable = true;
-        throw error;
-      }
-    },
-    save(checkpoint: TranscriptDraftCheckpoint): void {
-      storage.save(draftCheckpoint(checkpoint));
-    },
-    removeIf(checkpoint: TranscriptDraftCheckpoint): void {
-      storage.removeIf((rawFrom.get(checkpoint) ?? draftCheckpoint(checkpoint)) as TranscriptDraftCheckpoint);
-    },
-    /** Removes the record load() classified unreadable, by the identity of
-     * the bytes it was classified from - never a fresh reload, which could
-     * name a record another writer has since replaced. A byte-aware port's
-     * own compare (removeIf) then refuses on its own if that record is gone;
-     * this falls back to discardStoredDraft's fresh-reload behavior only when
-     * nothing has been classified yet (defensive: the store never calls this
-     * without classifying first). */
-    discardUnreadable(): void {
-      if (!hasLastUnreadable) {
-        discardStoredDraft(storage);
-        return;
-      }
-      storage.removeIf(lastUnreadable as TranscriptDraftCheckpoint);
-    },
-  };
-}
-
 /** A draft composed against one confirmed revision is stale once its layout
  * has confirmed a different one. */
 function staleDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout): boolean {
@@ -446,7 +369,7 @@ function staleDraft(draft: TranscriptDraft | null, hub: HubDefaultsByLayout): bo
 
 export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): TranscriptDisplayStore {
   const { client } = deps;
-  const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
+  const drafts = createDraftRepository(deps.drafts ?? memoryDraftStorage(), draftCheckpoint);
 
   // Ready-generation wiring: every refresh and write captures the generation
   // it started under and fences its reply on the shared fence.
@@ -478,7 +401,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * the guess clears it whether it numbers lower, equal or higher. Not part of
    * `drafts`, which is the host's published shape. */
   const previewBases = new Map<ViewportClass, { generation: number; revision: number }>();
-  let patchSerial = 0;
   const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
     ...initialState(),
     // The draft restore is part of the initial state so a host that builds
@@ -530,7 +452,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * is superseded - whichever path either write came from. Payload retirement
    * takes every layout the same way. */
   function claimLayoutWrite(layout: ViewportClass): number {
-    const token = ++patchSerial;
+    const token = fence.claimWrite();
     patchTokens.set(layout, token);
     return token;
   }
@@ -550,7 +472,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * nothing else will ever settle this write and the editor must not be left
    * mid-write. */
   function whyFenced(generation: number, layout: ViewportClass, token: number): "superseded" | "lost-hub" {
-    return patchTokens.get(layout) === token && fence.isCurrent(generation) ? "lost-hub" : "superseded";
+    return lostHub(fence, generation, patchTokens.get(layout) === token) ? "lost-hub" : "superseded";
   }
 
   /** Publishes the end of a write whose reply can never be settled by anything
@@ -574,7 +496,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
    * one's value. `extra` is the site's own addition in the same publish. */
   function retirePayload(extra: Partial<TranscriptDisplayStoreFields> = {}): void {
     fence.supersede();
-    for (const layout of LAYOUTS) patchTokens.set(layout, ++patchSerial);
+    for (const layout of LAYOUTS) patchTokens.set(layout, fence.writeToken);
     const state = getState();
     setState({
       loaded: false,
@@ -627,16 +549,32 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       preview !== undefined &&
       configFingerprint(value.config) !== configFingerprint(preview) &&
       (previewBase.generation !== fence.generation || value.revision > previewBase.revision);
-    if (contradictsPreview) previewBases.delete(layout);
-    const drafts = { ...state.drafts };
-    if (contradictsPreview) delete drafts[layout];
     setState({
       hub,
-      ...(contradictsPreview ? { drafts } : {}),
+      ...(contradictsPreview ? clearPreview(layout) : {}),
       draftConflict: staleDraft(state.draft, hub),
       ...extra,
     });
     return true;
+  }
+
+  /** Drops one layout's direct-write preview and its basis: the value that
+   * replaced it (this write's own reply, a newer external payload, or the
+   * checkpointed editor's confirmed save) must not sit under a guess that no
+   * longer describes what is out. */
+  function clearPreview(layout: ViewportClass): Partial<TranscriptDisplayStoreFields> {
+    previewBases.delete(layout);
+    const drafts = { ...getState().drafts };
+    delete drafts[layout];
+    return { drafts };
+  }
+
+  /** Drops every layout's preview and its basis: every layer's confirmed
+   * value is gone (a support drop, detaching the hub), so no guess composed
+   * against any of them can still describe what is out. */
+  function clearPreviews(): Partial<TranscriptDisplayStoreFields> {
+    previewBases.clear();
+    return { drafts: {} };
   }
 
   function endReadyGeneration(): void {
@@ -687,8 +625,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // nothing left to retire and would publish a fresh `hub` identity per
       // tick.
       if (state.hubSupport === support) return;
-      previewBases.clear();
-      retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {}, drafts: {} });
+      retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {}, ...clearPreviews() });
       return;
     }
     // The unknown window is the transient-disconnect case: the payload keeps
@@ -820,7 +757,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable && !getState().draftUnreadable) return;
+      const restored = getState();
+      if (restored.storageUnavailable && !restored.draftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -831,8 +769,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // refresh lands they must not present as current or as a base for a
     // write. hubSupport is connection-sourced, not hub state, so it is left
     // to setSupport.
-    previewBases.clear();
-    retirePayload({ hub: {}, hubError: null, hubErrors: {}, drafts: {} });
+    retirePayload({ hub: {}, hubError: null, hubErrors: {}, ...clearPreviews() });
   }
 
   function layoutError(layout: ViewportClass, message: string | undefined): Partial<TranscriptDisplayStoreFields> {
@@ -855,18 +792,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       throw new Error(UNAVAILABLE_MESSAGE);
     }
     const config = normalizeConfig(input);
-    const confirmed = state.hub[layout] ?? shippedDefault(layout);
+    const confirmed = confirmedFor(state.hub, layout);
     const token = claimLayoutWrite(layout);
-    fence.claimWrite();
     const stillMine = () => writeStillMine(generation, layout, token);
     previewBases.set(layout, { generation, revision: confirmed.revision });
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
-    const clearPreview = (): Partial<TranscriptDisplayStoreFields> => {
-      previewBases.delete(layout);
-      const drafts = { ...getState().drafts };
-      delete drafts[layout];
-      return { drafts };
-    };
     try {
       const result = await client.request("evener/settings/transcriptDisplay/patch", {
         layout,
@@ -883,10 +813,14 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         // pre-write value would read as a refusal; here there is a confirmed,
         // newer value already on screen, so the preview would sit on top of it
         // claiming a change the hub has overtaken.
-        setState(clearPreview());
+        setState(clearPreview(layout));
         throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
       }
-      applyHubDefault(layout, canonical, { ...clearPreview(), hubError: null, ...layoutError(layout, undefined) });
+      applyHubDefault(layout, canonical, {
+        ...clearPreview(layout),
+        hubError: null,
+        ...layoutError(layout, undefined),
+      });
       return canonical;
     } catch (error) {
       if (!stillMine()) {
@@ -907,7 +841,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       setState({
         // A malformed success keeps the preview (see above); the overtaken path
         // has already cleared its own.
-        ...(error instanceof InvalidPatchResponseError ? {} : clearPreview()),
+        ...(error instanceof InvalidPatchResponseError ? {} : clearPreview(layout)),
         hubError: message,
         ...layoutError(layout, message),
       });
@@ -924,12 +858,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // An unreadable record is the one storage failure discarding can FIX, so
     // it is not a reason to refuse: throwing the record away is exactly what
     // the user is asking for.
-    if (
-      fence.disposed ||
-      state.saving ||
-      state.writeUncertain ||
-      (state.storageUnavailable && !getState().draftUnreadable)
-    )
+    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable))
       throw new Error(UNAVAILABLE_MESSAGE);
   }
 
@@ -992,7 +921,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const revision = existing?.layout === layout ? existing.revision : confirmed.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ layout, baseRevision: revision, config, writeUncertain: true });
-    fence.claimWrite();
     const token = claimLayoutWrite(layout);
     const generation = fence.generation;
     const stillMine = () => writeStillMine(generation, layout, token);
@@ -1078,13 +1006,11 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // This write took the layer, so any direct write's preview on it belongs to
     // a superseded write and must not outlive the value that replaced it -
     // whether this write's own value landed or a newer external one did.
-    const remainingPreviews = { ...getState().drafts };
-    delete remainingPreviews[layout];
     setState({
       draft: newerExternal || storageError !== null ? getState().draft : null,
-      drafts: remainingPreviews,
       storageUnavailable: storageError !== null,
       draftError: storageError,
+      ...clearPreview(layout),
     });
     return value;
   }
@@ -1144,7 +1070,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       endReadyGeneration();
       missedChangeNotification = false;
       previewBases.clear();
-      setState({ ...initialState() });
+      setState(initialState());
     },
     dispose() {
       if (fence.disposed) return;

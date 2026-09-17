@@ -51,7 +51,9 @@ export interface NativePreferencesSnapshot {
 /** An empty domain: every connection-owned field at its "not yet known"
  * value. Exported for the local preferences controller, which fills in only
  * `draft` and `draftUnreadable` from the persisted record - a connected
- * store's domain is the richer superset once one exists. */
+ * store's domain is the richer superset once one exists - and for test
+ * fixtures (here and preferenceGates.test.ts) to spread instead of writing
+ * out every field. */
 export const initialDomain = <T>(): PreferenceState<T> => ({
 	support: "unknown",
 	loading: false,

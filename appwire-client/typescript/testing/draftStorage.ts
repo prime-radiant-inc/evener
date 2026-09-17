@@ -9,13 +9,7 @@
 // key-order mismatch between what was saved and what removeIf is later given.
 // In-repo test support, not shipped.
 
-/** The shape both stores' storage ports share, over any checkpoint type. */
-interface DraftPort<Checkpoint> {
-  createId(): string;
-  load(): unknown;
-  save(checkpoint: Checkpoint): void;
-  removeIf(checkpoint: Checkpoint): void;
-}
+import type { DraftPort } from "../draftCheckpointPort";
 
 export interface MemoryDraftStorage<Checkpoint> {
   storage: DraftPort<Checkpoint>;

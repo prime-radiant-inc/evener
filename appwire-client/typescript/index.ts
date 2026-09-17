@@ -486,8 +486,8 @@ export {
   discardStoredDraft as discardStoredTranscriptDraft,
   draftCheckpoint as validateTranscriptDraftCheckpoint,
   fromWireChange,
-  InvalidPatchResponseError,
   isViewportClass,
+  LAYOUTS,
   transcriptDisplaySupport,
 } from "./transcriptDisplayStore";
 export type {

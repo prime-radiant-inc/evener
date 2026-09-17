@@ -1,6 +1,7 @@
-/** The device store the draft ports write through, over any synchronous
- * key-value store. Exported as a factory so its compare/remove contract can be
- * tested without the platform store. */
+// The device store the draft ports write through, over any synchronous
+// key-value store. Exported as a factory so its compare/remove contract can be
+// tested without the platform store.
+
 /** A value serialized with object keys in sorted order, so two encodings of the
  * SAME record compare equal however they were written. `JSON.stringify` alone
  * does not: it preserves insertion order, so a checkpoint rebuilt by the store's
@@ -88,4 +89,3 @@ export function draftBackend(
 		},
 	};
 }
-

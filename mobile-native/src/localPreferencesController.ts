@@ -1,6 +1,6 @@
 import {
-	discardStoredKeybindingDraft,
-	discardStoredTranscriptDraft,
+	type KeybindingDraftCheckpoint,
+	type TranscriptDraftCheckpoint,
 	validateKeybindingDraftCheckpoint,
 	validateTranscriptDraftCheckpoint,
 } from "@evener/appwire-client";
@@ -8,6 +8,7 @@ import {
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	type NativePreferenceDraftBackend,
+	retainingDraftStorage,
 } from "./nativePreferenceDrafts";
 import {
 	type ConfirmedKeybindings,
@@ -24,9 +25,17 @@ import {
  * finding was that `bound` stays null in exactly those states, so nothing
  * was exposed at all. This class never touches a client and never needs one:
  * every method reads or writes the same device ports the connected store
- * restores through (nativeTranscriptDrafts/nativeKeybindingDrafts,
- * discardStoredTranscriptDraft/discardStoredKeybindingDraft), so a discard
- * here and a discard through a live model remove the identical record.
+ * restores through.
+ *
+ * Storage is wrapped with retainingDraftStorage (round 17 Medium 1, eighth
+ * raise of the discard-identity asymmetry): getSnapshot() is what classifies
+ * a record, and discardTranscript/discardKeybindings must remove EXACTLY
+ * that record, not a fresh reload - the render that showed "discard
+ * unreadable draft" and the tap that presses it are two different moments,
+ * and nothing re-classifies in between while this controller is the only
+ * thing reading (no model, so no refresh attempt either). A fresh reload at
+ * discard time would name whatever is stored NOW, which another store or app
+ * version may have already replaced with a valid newer checkpoint.
  *
  * A connected model's own domain is the richer superset once one exists
  * (confirmed hub values, conflict, an authoritative writeUncertain) - the
@@ -37,13 +46,15 @@ export class LocalPreferencesController {
 	private readonly keybindingStorage;
 
 	constructor(hubId: string, backend: NativePreferenceDraftBackend) {
-		this.transcriptStorage = nativeTranscriptDrafts(hubId, backend);
-		this.keybindingStorage = nativeKeybindingDrafts(hubId, backend);
+		this.transcriptStorage = retainingDraftStorage<TranscriptDraftCheckpoint>(nativeTranscriptDrafts(hubId, backend));
+		this.keybindingStorage = retainingDraftStorage<KeybindingDraftCheckpoint>(nativeKeybindingDrafts(hubId, backend));
 	}
 
 	/** Re-reads both sections' persisted drafts. Cheap (one JSON parse per
 	 * section) and always current, so callers re-read after a discard rather
-	 * than this class tracking listeners of its own. */
+	 * than this class tracking listeners of its own. Each read is also what
+	 * discardTranscript/discardKeybindings will later remove, whenever they
+	 * are called next - see retainingDraftStorage. */
 	getSnapshot(): NativePreferencesSnapshot {
 		return {
 			transcriptMobile: this.readTranscript(),
@@ -85,15 +96,16 @@ export class LocalPreferencesController {
 		}
 	}
 
-	/** Removes whatever is stored for this section, readable or not, and
-	 * rejects (rather than throwing) on a port failure so a caller awaiting
-	 * this inside an async handler gets the rejection its error handler
-	 * already knows how to show. */
+	/** Removes the record most recently classified by getSnapshot() - never a
+	 * fresh reload, which could name (and remove) a record another store or
+	 * app version has since replaced. Rejects (rather than throwing) on a
+	 * port failure so a caller awaiting this inside an async handler gets the
+	 * rejection its error handler already knows how to show. */
 	async discardTranscript(): Promise<void> {
-		discardStoredTranscriptDraft(this.transcriptStorage);
+		this.transcriptStorage.discardLastLoaded();
 	}
 
 	async discardKeybindings(): Promise<void> {
-		discardStoredKeybindingDraft(this.keybindingStorage);
+		this.keybindingStorage.discardLastLoaded();
 	}
 }
