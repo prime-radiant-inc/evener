@@ -103,14 +103,24 @@ const skillIntegrity = new Plugin({
     // look like a no-op and the typed character unreachable.
     const tr = newState.tr;
     // Back to front, and each atom's own trailing side before its leading one,
-    // so an insertion never invalidates a position still to be used.
+    // so an insertion never invalidates a position still to be used. Two atoms
+    // that end up adjacent share one boundary, and one space is all it needs:
+    // a second insert at the same position would leave the user with whitespace
+    // they never typed.
+    const spaced = new Set<number>();
     for (const atom of broken.reverse()) {
       const prefixBlocked = atom.offset > 0 && isSkillTokenCharacter(text.charAt(atom.offset - 1));
       const separated = prefixBlocked ? `${text.slice(0, atom.offset)} ${text.slice(atom.offset)}` : text;
       const suffixBlocked =
         completeSkillReferenceAt(separated, atom.offset + (prefixBlocked ? 1 : 0), [atom.name]) !== atom.name;
-      if (suffixBlocked) tr.insertText(" ", atom.pos + 1);
-      if (prefixBlocked) tr.insertText(" ", atom.pos);
+      if (suffixBlocked && !spaced.has(atom.pos + 1)) {
+        tr.insertText(" ", atom.pos + 1);
+        spaced.add(atom.pos + 1);
+      }
+      if (prefixBlocked && !spaced.has(atom.pos)) {
+        tr.insertText(" ", atom.pos);
+        spaced.add(atom.pos);
+      }
     }
     return tr;
   },
