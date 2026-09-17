@@ -468,6 +468,30 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
   return pending === undefined ? merged : setItemTextPresence(merged, "provided");
 }
 
+// A settle says nothing about images unless it carries them. `undefined` is what
+// both mappers produce for a field the payload left out — and, for input images,
+// for an empty list too (imagesToItemImagesForSession reads that as "nothing
+// said", the rule the hub applies on its own upsert: `len(incoming.Images) == 0`
+// keeps the existing list, server/appwire_turns.go:884-886, and its twin at
+// internal/apptranscript/logical_turn.go:309) — so a settle must not erase images
+// from the item it replaces, exactly as mergePageItem already refuses to.
+// outputImages keeps its own reading of an explicitly empty list, which its
+// mapper owns; `??` lets an empty array that IS a value win over the old list, so
+// a removal the wire can express is never undone here.
+function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
+  if (!existing) return settled;
+  const images = settled.images ?? existing.images;
+  const outputImages = settled.outputImages ?? existing.outputImages;
+  if (images === settled.images && outputImages === settled.outputImages) return settled;
+  // The text-presence marker is non-enumerable, so a spread drops it: carry it
+  // the way every other merge in this chain does.
+  return copyItemTextPresence(settled, {
+    ...settled,
+    ...(images === undefined ? {} : { images }),
+    ...(outputImages === undefined ? {} : { outputImages }),
+  });
+}
+
 // item/completed's settled wire item never carries observedStartedAt/
 // observedCompletedAt — those are model-only client observations (see
 // ItemModel's doc comment in model.ts), never present on a wire ThreadItem,
@@ -1314,7 +1338,10 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             items: mapItemByIdentity(turn.items, incoming, (old) =>
               mergeObservedTiming(
                 mergeArguments(
-                  mergeReasoning(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                  mergeReasoning(
+                    mergeItemImages(mergeCompletedText(mergeItemIdentityMetadata(old, incoming), old), old),
+                    old,
+                  ),
                   old,
                 ),
                 old,
