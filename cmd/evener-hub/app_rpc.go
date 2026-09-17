@@ -1267,12 +1267,7 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		// or merge - a real change to one or both stores, so every other
 		// client's listings are stale the moment it lands, whether or not
 		// this read asked for it.
-		if changes.Marketplaces {
-			notifyMarketplaceUpdated(server)
-		}
-		if changes.Plugins {
-			notifyPluginUpdated(server)
-		}
+		notifyStoreChanges(server, changes)
 		return resp, err
 	})
 	// Add, Remove and Refresh all answer with the refreshed marketplace list
@@ -1318,24 +1313,14 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		// fails: the clone still landed). changes also covers lockStore's
 		// own legacy-name migration, which can re-key the registry too (see
 		// Install).
-		if changes.Marketplaces {
-			notifyMarketplaceUpdated(server)
-		}
-		if changes.Plugins {
-			notifyPluginUpdated(server)
-		}
+		notifyStoreChanges(server, changes)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		resp, changes, err := pluginsController.ListPlugins(ctx)
 		// See evener/marketplace/list above: a plain plugin list can also
 		// trigger the migration.
-		if changes.Marketplaces {
-			notifyMarketplaceUpdated(server)
-		}
-		if changes.Plugins {
-			notifyPluginUpdated(server)
-		}
+		notifyStoreChanges(server, changes)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
@@ -1360,14 +1345,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		// success, a later catalog/plugin step failing, or the plugin
 		// simply not resolving. changes also covers lockStore's migration,
 		// which can re-key the registry independent of whether the install
-		// itself applied - the || below is what makes that failure still
+		// itself applied - the merge below is what makes that failure still
 		// broadcast the plugin change, not just writeDidApply's own.
-		if writeDidApply(err) || changes.Plugins {
-			notifyPluginUpdated(server)
-		}
-		if changes.Marketplaces {
-			notifyMarketplaceUpdated(server)
-		}
+		notifyStoreChanges(server, changes.Merge(plugins.StoreChanges{Plugins: writeDidApply(err)}))
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
@@ -1375,12 +1355,7 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		// See Install above: the same lazy-fetch marketplace change, or the
 		// same migration, can accompany a successful or a failed upgrade
 		// alike.
-		if writeDidApply(err) || changes.Plugins {
-			notifyPluginUpdated(server)
-		}
-		if changes.Marketplaces {
-			notifyMarketplaceUpdated(server)
-		}
+		notifyStoreChanges(server, changes.Merge(plugins.StoreChanges{Plugins: writeDidApply(err)}))
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
@@ -1407,6 +1382,18 @@ func notifyMarketplaceUpdated(server *appserver.Server) {
 // connected clients.
 func notifyPluginUpdated(server *appserver.Server) {
 	server.BroadcastAll(appwire.NotifyEvenerPluginUpdated, map[string]string{})
+}
+
+// notifyStoreChanges broadcasts evener/marketplace/updated and/or
+// evener/plugin/updated for whichever of changes' two stores actually
+// changed - the two-if broadcast every plugin handler below owes changes.
+func notifyStoreChanges(server *appserver.Server, changes plugins.StoreChanges) {
+	if changes.Marketplaces {
+		notifyMarketplaceUpdated(server)
+	}
+	if changes.Plugins {
+		notifyPluginUpdated(server)
+	}
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option

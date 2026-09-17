@@ -141,7 +141,7 @@ func (m *Manager) Browse(ctx context.Context, name string) (cat Catalog, changes
 	}
 	defer release()
 	ref, fetchChanges, err := m.ensureFetched(ctx, name)
-	changes = changes.merge(fetchChanges)
+	changes = changes.Merge(fetchChanges)
 	if err != nil {
 		return Catalog{}, changes, err
 	}

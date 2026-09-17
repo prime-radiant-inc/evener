@@ -147,7 +147,7 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (entr
 	}
 
 	ref, cp, fetchChanges, err := m.catalogPlugin(ctx, marketplace, plugin)
-	changes = changes.merge(fetchChanges)
+	changes = changes.Merge(fetchChanges)
 	if err != nil {
 		return InstallEntry{}, changes, err
 	}
@@ -220,7 +220,7 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (entr
 	}
 	defer release()
 	entry, _, _, upgradeChanges, err := m.upgradeLocked(ctx, plugin, marketplace, false)
-	return entry, changes.merge(upgradeChanges), err
+	return entry, changes.Merge(upgradeChanges), err
 }
 
 // upgradeLocked contains the actual mechanics of Upgrade. The caller MUST

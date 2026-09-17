@@ -77,10 +77,11 @@ type StoreChanges struct {
 	Plugins      bool
 }
 
-// merge combines two StoreChanges, true wherever either says a store
+// Merge combines two StoreChanges, true wherever either says a store
 // changed - the shape a caller that layers one call's changes onto another's
-// uses (lockStore's migration alongside catalogPlugin's own lazy fetch).
-func (c StoreChanges) merge(other StoreChanges) StoreChanges {
+// uses (lockStore's migration alongside catalogPlugin's own lazy fetch, or
+// the RPC layer folding writeDidApply's own signal into Install/Upgrade's).
+func (c StoreChanges) Merge(other StoreChanges) StoreChanges {
 	return StoreChanges{
 		Marketplaces: c.Marketplaces || other.Marketplaces,
 		Plugins:      c.Plugins || other.Plugins,
