@@ -347,6 +347,28 @@ func (r *ResumeLocks) ResumeCleanupError(aliases []string) error {
 	return nil
 }
 
+// ResumeCleanupErrorStrict reports unconfirmed child cleanup for every active
+// Resume, including one whose handler has not yet completed. Ordinary shutdown
+// uses it so it cannot fall through to the source shutdown path while a failed
+// launch's child cleanup is unconfirmed — the same LaunchFinished-before-Complete
+// window RegisterResume already closes. ResumeCleanupError keeps its
+// handlerDone gate for fresh connections, which must not refuse an operation
+// because of a Resume that is still completing normally.
+func (r *ResumeLocks) ResumeCleanupErrorStrict(aliases []string) error {
+	r.persistenceMu.Lock()
+	defer r.persistenceMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, alias := range aliases {
+		for active := range r.active[alias] {
+			if err := active.cleanupErr; err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases []string, epochs map[string]uint64) (*ActiveResume, error) {
 	aliases = slices.Compact(slices.Sorted(slices.Values(aliases)))
 	if !validRecoveryAlias(target) || !slices.Contains(aliases, target) {

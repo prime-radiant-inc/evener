@@ -26,17 +26,13 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
 		return appwire.Unavailable("local session ownership is not configured")
 	}
-	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
-		return forceStopResumeStopError(err)
-	} else if stopped {
-		refreshAfterForceStop(ctx, cfg)
-		return nil
-	}
 	// A deleted target and a caller-rendered daemon identity are validated
-	// before any cancellation fence: a request that is going to be refused must
-	// not abort the in-flight Resume it can no longer address. A nil identity
-	// preserves the ref-only Stop intent, which may legitimately abort a launch
-	// before an addressable claim exists.
+	// before the confirmed-stopped shortcut or any cancellation fence: a request
+	// that is going to be refused must not abort the in-flight Resume it can no
+	// longer address. confirmedStoppedWithoutClaim itself cancels active resumes
+	// on its stopResumes branch, so its validation and the caller's must both
+	// precede it. A nil identity preserves the ref-only Stop intent, which may
+	// legitimately abort a launch before an addressable claim exists.
 	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
 		return err
 	}
@@ -49,6 +45,12 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		if err := expectedDaemonConflict(addressed, params.ExpectedDaemon); err != nil {
 			return err
 		}
+	}
+	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
+		return forceStopResumeStopError(err)
+	} else if stopped {
+		refreshAfterForceStop(ctx, cfg)
+		return nil
 	}
 	if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
 		defer stop.Release()
@@ -289,6 +291,17 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 	if stopResumes {
 		finish := cfg.ResumeLocks.BeginForceStop(aliases)
 		defer finish(false)
+		// A deletion record may name any alias in the ownership group, not only
+		// the one the request addressed. Refuse a deleted group here, before any
+		// cancellation: the authoritative per-alias re-check runs under the alias
+		// locks, which is only reachable after the in-flight Resume has already
+		// been aborted. That re-check still runs, so a deletion that starts in
+		// this window is still caught.
+		for _, alias := range aliases {
+			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+				return false, err
+			}
+		}
 		releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 		if err != nil {
 			return false, err

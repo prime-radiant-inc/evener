@@ -130,28 +130,6 @@ func lockDeletionTarget(ctx context.Context, cfg hubcore.WebConfig, ref, threadI
 	return lock.Unlock, nil
 }
 
-// tryLockDeletionTarget is the non-blocking counterpart of lockDeletionTarget
-// for a best-effort caller that has no request context and must not park. The
-// relay's per-frame publication broadcast is such a caller: it discards the
-// guard's error, reaches only whatever subscribers are connected, and blocking
-// on a target alias held by a deletion or a long-running Resume would stall
-// the whole fan-out and its publicationDone drain. It reports false when the
-// alias is already owned so the caller can skip the action.
-func tryLockDeletionTarget(cfg hubcore.WebConfig, ref, threadID string) (func(), bool) {
-	if cfg.ResumeLocks == nil {
-		return func() {}, true
-	}
-	threadID = deletionThreadID(ref, threadID)
-	if threadID == "" {
-		return func() {}, true
-	}
-	lock := cfg.ResumeLocks.For(threadID)
-	if !lock.TryLock() {
-		return nil, false
-	}
-	return lock.Unlock, true
-}
-
 func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID string) error {
 	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
 }

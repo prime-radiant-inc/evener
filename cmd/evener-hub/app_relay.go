@@ -122,6 +122,14 @@ var hubRelayIdleInterval = 250 * time.Millisecond
 // acknowledges speculatively or allocates a worker per attacker-chosen target.
 const hubRelayPendingDeliveryLimit = 64
 
+// relayPublicationGuardTimeout bounds how long the per-frame publication guard
+// waits for the target alias. A deletion or a long-running Resume holds that
+// alias; a bounded wait lets transient ownership resolve so an acknowledged
+// frame is still published, while the fan-out and its publicationDone drain can
+// never be parked indefinitely. Matches the 3s discovery budgets in isLive and
+// workspaceData.
+const relayPublicationGuardTimeout = 3 * time.Second
+
 const (
 	relayRetryMinDelay = 100 * time.Millisecond
 	relayRetryMaxDelay = 5 * time.Second
@@ -705,11 +713,17 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 					cfg.RelayHooks.AfterCanonicalPublishEntry(target.relayKey, notification)
 				}
 				// The guard is best-effort: it only keeps a frame from being
-				// published while the target is being deleted, and its error was
-				// already discarded. Acquire the alias without blocking so a
-				// deletion or a long-running Resume holding it cannot park this
-				// fan-out and stall the publicationDone drain.
-				if release, owned := tryLockDeletionTarget(cfg, target.ref, target.threadID); owned {
+				// published while the target is being deleted, and its error is
+				// already discarded. Wait for the alias with a bounded timeout so
+				// transient deletion or Resume ownership does not drop an
+				// acknowledged frame, while the fan-out and its publicationDone
+				// drain still cannot be parked indefinitely. On expiry the frame
+				// is skipped as before: the delivery was already consumed from the
+				// source and the subscriber resyncs.
+				guardCtx, cancelGuard := context.WithTimeout(context.Background(), relayPublicationGuardTimeout)
+				release, lockErr := lockDeletionTarget(guardCtx, cfg, target.ref, target.threadID)
+				cancelGuard()
+				if lockErr == nil {
 					if deletionFenceError(cfg, target.ref, target.threadID, "") == nil {
 						server.Broadcast(target.relayKey, notification.Method, notification.Params)
 					}

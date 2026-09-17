@@ -60,7 +60,7 @@ func withSessionResume[R any](
 func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadShutdownParams) error {
 	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
 		if cfg.ResumeLocks != nil {
-			if err := cfg.ResumeLocks.ResumeCleanupError(cfg.ResumeLocks.RecoveryAliases(ref.ThreadID)); err != nil {
+			if err := cfg.ResumeLocks.ResumeCleanupErrorStrict(cfg.ResumeLocks.RecoveryAliases(ref.ThreadID)); err != nil {
 				return appwire.Unavailable(err.Error())
 			}
 		}

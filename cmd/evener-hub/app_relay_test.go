@@ -2930,12 +2930,12 @@ func TestHubAtomicRelayPublicationStopsAfterDeletionWins(t *testing.T) {
 	}
 }
 
-// TestHubRelayPublicationSkipsWhenTargetAliasIsHeld pins Medium 3: the
-// per-frame publication guard must not park on a target alias held by a
-// deletion or a long-running Resume. The broadcast is best-effort — its error
-// is discarded — so the guard acquires the alias non-blockingly and skips the
-// frame instead of stalling the fan-out and the publicationDone drain.
-func TestHubRelayPublicationSkipsWhenTargetAliasIsHeld(t *testing.T) {
+// TestHubRelayPublicationWaitsForHeldTargetAlias pins the Medium regression: the
+// per-frame publication guard must not skip an acknowledged frame just because a
+// deletion or a long-running Resume transiently holds the target alias. It waits
+// (bounded) for the alias, then publishes. Held ownership delays the frame but
+// does not drop it.
+func TestHubRelayPublicationWaitsForHeldTargetAlias(t *testing.T) {
 	store, err := hubcore.NewDeletionStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -2998,22 +2998,36 @@ func TestHubRelayPublicationSkipsWhenTargetAliasIsHeld(t *testing.T) {
 				Ref:      ref,
 				TurnID:   "turn-held",
 				ItemID:   "item-held",
-				Delta:    "must not park",
+				Delta:    "delayed not dropped",
 			}),
 		},
 		Acknowledge: func() { close(acknowledged) },
 	}
+	// While the alias is held the frame must be neither acknowledged nor
+	// broadcast: the guard is still waiting for the alias.
 	select {
 	case <-acknowledged:
-	case <-time.After(time.Second):
-		release()
-		<-acknowledged
-		t.Fatal("relay publication parked on a held target alias instead of skipping the best-effort broadcast")
+		t.Fatal("held target alias acknowledged the frame before it could publish")
+	case <-time.After(100 * time.Millisecond):
 	}
 	select {
 	case notification := <-client.Notifications():
 		t.Fatalf("held target alias published notification %+v", notification)
 	default:
+	}
+	release()
+	select {
+	case <-acknowledged:
+	case <-time.After(time.Second):
+		t.Fatal("released target alias never published the acknowledged frame")
+	}
+	select {
+	case notification := <-client.Notifications():
+		if notification.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("released target alias published %s, want %s", notification.Method, appwire.NotifyAgentMessageDelta)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("released target alias dropped the acknowledged frame")
 	}
 }
 

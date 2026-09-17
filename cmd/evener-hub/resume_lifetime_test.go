@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
@@ -687,5 +688,42 @@ func TestRegisterResumeCleanupFailureIsUnavailable(t *testing.T) {
 	}
 	if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
 		t.Fatalf("RegisterResume cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+	}
+}
+
+// TestShutdownRefusesCleanupBeforeHandlerDone pins the ordinary-shutdown half of
+// the same window RegisterResume already closes: a failed launch records its
+// unconfirmed child cleanup through LaunchFinished before the handler's deferred
+// Complete sets handlerDone. The handlerDone-gated ResumeCleanupError cannot see
+// that window, so shutdown would fall through to the source shutdown path while
+// child cleanup was still unconfirmed.
+func TestShutdownRefusesCleanupBeforeHandlerDone(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupErr := errors.New("FIXTURE_CHILD_CLEANUP_UNCONFIRMED")
+	// handlerDone stays false: the handler has not reached its deferred Complete.
+	active.LaunchFinished(true, cleanupErr)
+	cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+	err = shutdownThreadTolerateExited(t.Context(), cfg, appsource.NewRegistry(), appwire.ThreadShutdownParams{Ref: "local:" + sessionID})
+	if err == nil {
+		t.Fatal("ordinary shutdown proceeded while a failed launch's child cleanup was unconfirmed")
+	}
+	if !strings.Contains(err.Error(), cleanupErr.Error()) {
+		t.Fatalf("shutdown lost the retained cleanup error: %v", err)
+	}
+	if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+		t.Fatalf("shutdown cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
 	}
 }
