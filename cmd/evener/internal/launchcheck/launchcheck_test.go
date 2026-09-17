@@ -248,6 +248,24 @@ func TestLaunchCheckDiagnosticFindsAStatusUnderAConfigurationWrapper(t *testing.
 	}
 }
 
+// A joined error's branches must not hide a status. The errors.Join node
+// answers only Unwrap() []error — which errors.Unwrap cannot descend into —
+// and errors.As stops at the first llm.Error in branch order, so a status
+// behind a status-zero sibling in the join needs a branch-aware walk.
+func TestLaunchCheckDiagnosticFindsAStatusBehindAJoinedSibling(t *testing.T) {
+	inner := llm.ClassifyHTTPError("models.list", http.StatusNotFound, nil,
+		[]byte("Publisher model `projects/p/locations/us-central1/models/gemini-x` was not found"),
+		registry.Resolved{Instance: "vtx"})
+	err := &llm.ConfigurationError{
+		Message: "a global-only model under a regional location needs `global`; provider said: " + inner.Error(),
+		Cause:   errors.Join(&llm.ConfigurationError{Message: "regional endpoint unusable"}, inner),
+	}
+
+	if got := launchCheckModelDiagnostic("vtx", err).Message; got != "HTTP 404" {
+		t.Fatalf("diagnostic message=%q, want the status from the joined sibling branch", got)
+	}
+}
+
 // An exhausted allowance is its own class, more specific than the status it
 // arrives on (429, or a provider's 403 billing-cycle exhaustion): the line
 // names the spent allowance, and the distinct title must survive the

@@ -197,12 +197,25 @@ func launchCheckDiagnosticMessage(err error) string {
 // protocol's regional-Vertex remap) that bury the classified HTTP error under
 // a ConfigurationError whose own status is zero: errors.As alone would stop at
 // that wrapper, whose cause holds the status whose prose the line must not
-// quote.
+// quote. The spine can branch — an errors.Join node answers only
+// Unwrap() []error, which errors.Unwrap cannot descend into, and errors.As
+// stops at the first llm.Error in branch order — so every branch is visited,
+// in chain order, until a nonzero status is found.
 func launchCheckHTTPStatus(err error) int {
-	for e := err; e != nil; e = errors.Unwrap(e) {
-		var llmErr llm.Error
-		if errors.As(e, &llmErr) && llmErr.StatusCode() != 0 {
-			return llmErr.StatusCode()
+	var llmErr llm.Error
+	if errors.As(err, &llmErr) && llmErr.StatusCode() != 0 {
+		return llmErr.StatusCode()
+	}
+	if u, ok := err.(interface{ Unwrap() error }); ok {
+		if status := launchCheckHTTPStatus(u.Unwrap()); status != 0 {
+			return status
+		}
+	}
+	if branches, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, branch := range branches.Unwrap() {
+			if status := launchCheckHTTPStatus(branch); status != 0 {
+				return status
+			}
 		}
 	}
 	return 0
