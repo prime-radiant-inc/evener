@@ -688,10 +688,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * payload stays retryable and a later `changed` with the same revision is
    * not eaten by the stale guard. `extra` lands in the same publish as the
    * confirmed state. Returns false for an ignored payload. */
-  function applyHubOverrides(payload: KeybindingsOverrides, extra: Partial<KeybindingsStoreFields> = {}): boolean {
+  function applyHubOverrides(
+    payload: KeybindingsOverrides,
+    extra: Partial<KeybindingsStoreFields> | (() => Partial<KeybindingsStoreFields>) = {},
+  ): boolean {
     const state = getState();
     if (payload.revision < state.revision && payload.loadError === undefined) {
-      if (Object.keys(extra).length > 0) setState(extra);
+      const resolved = typeof extra === "function" ? extra() : extra;
+      if (Object.keys(resolved).length > 0) setState(resolved);
       return false;
     }
     const rules = cloneRules(payload.rules);
@@ -699,6 +703,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // The reconcile succeeded, so any rolled-back un-apply's wedge is cleared
     // with it: the rollback hubError is now stale and may clear normally.
     unapplyRolledBack = false;
+    // `extra` is resolved only now, after the reconcile has succeeded: a
+    // settling extra (settledWrite) reclassifies the draft repository as
+    // part of computing itself, and a thunk defers that reclassification
+    // past the one point above that can still throw - a throwing reconcile
+    // never reaches this line, so the repository is never reclassified for a
+    // settle that then fails to publish. Both effects land in the same
+    // setState call below, whether `extra` is a thunk or a plain object.
+    const resolved = typeof extra === "function" ? extra() : extra;
     // A successful apply supersedes any earlier apply failure's hubError AND
     // any earlier patch's revision-race conflict - the store is now confirmed
     // at this payload either way. Clearing one without the other was the
@@ -731,7 +743,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       loadError: payload.loadError ?? null,
       conflict: null,
       draftConflict: staleDraft(state.draft, payload.revision),
-      ...extra,
+      ...resolved,
     });
     return true;
   }
@@ -925,8 +937,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (!replaced) {
         // The checkpoint this write was settling is gone, replaced by
         // another window's edit while the outcome was unknown: adopt
-        // whatever is actually on disk now rather than overwrite it.
-        return restoreDraft(getState());
+        // whatever is actually on disk now rather than overwrite it. Judged
+        // against THIS payload's own revision, not getState()'s: called from
+        // applyHubOverrides before that revision has published, getState()
+        // still reads the PRECEDING confirmed revision, and a caller further
+        // up already computed its own draftConflict against the revision
+        // actually landing - a restore judged against the stale one would
+        // publish last and win, marking a genuinely stale replacement
+        // non-conflicting.
+        return restoreDraft({ loaded: true, revision: payload.revision });
       }
     }
     return { writeUncertain: false };
@@ -946,7 +965,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (!stillMine()) return;
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
-      applyHubOverrides(payload, { hubLoading: false, ...settledWrite(payload, writeSerialAtStart) });
+      applyHubOverrides(payload, () => ({ hubLoading: false, ...settledWrite(payload, writeSerialAtStart) }));
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate

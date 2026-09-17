@@ -295,6 +295,56 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules: otherRules });
   });
 
+  // RoboRev round 22 High: settledWrite reclassified the repository (the
+  // atomic replaceClassified write) as a bare expression evaluated BEFORE
+  // applyHubOverrides ran, so a refresh whose reconcile then throws (a wedged
+  // registry) left the checkpoint reclassified on disk while the throw kept
+  // the settle from ever publishing - non-transactional. Deferring the
+  // reclassification until the apply has actually succeeded means a throwing
+  // refresh leaves the checkpoint exactly as it found it.
+  test("a refresh's reconciler throw does not reclassify the checkpoint ahead of publishing the settle", async () => {
+    const registry = registryWithDefaults();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { registry, drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+    const uncertainCheckpoint = drafts.stored();
+    expect(uncertainCheckpoint).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: true });
+
+    // A foreign binding squats palette.open's default chord: restoring the
+    // default - what reconciling the confirmed empty rules below requires,
+    // since the override this generation applied is going away - throws.
+    const paletteDefault = registryWithDefaults()
+      .getState()
+      .bindings.find((b) => b.id === ACTIONS.paletteOpen);
+    if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
+    registry
+      .getState()
+      .registerBinding({ id: "foreign.squatter", actionId: "foreign", chord: serializeChord(paletteDefault.chord) });
+
+    client.on(getMethod, () => payload(5, []));
+    await store.getState().refreshOverrides();
+    expect(store.getState().hubError).not.toBeNull();
+
+    // The throw happened before any settle publishes: writeUncertain is
+    // unchanged, and the checkpoint on disk is untouched - the repository was
+    // never reclassified for a settle that never actually landed.
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toEqual(uncertainCheckpoint);
+
+    // Once the registry is no longer wedged, the very same settle succeeds
+    // against the SAME still-intact checkpoint.
+    registry.getState().unregisterBinding("foreign.squatter");
+    await store.getState().refreshOverrides();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: false });
+  });
+
   // RoboRev round 21 Medium 2: saveDraft treated every rejection as an
   // unknown outcome, unlike the direct write (patchOverrides), which uses
   // rejectionPayload to tell a structured conflict/post-rename failure from
