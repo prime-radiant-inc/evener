@@ -2527,7 +2527,14 @@ test("a Stop on the resumed identity cancels the stale post-resume publish", asy
 // named during that window by any surface already tracking it (here the tab
 // holds currentRef from a prior load), so the new ref must be fenced against
 // its pre-resume Stop generation, not a post-resume one.
-test("a Stop on the resumed identity during the resume reconnect cancels the resume", async ({ onTestFinished }) => {
+//
+// Staging note (RoboRev Low on fee4eb8): this is the RPC-IN-FLIGHT window -
+// the Stop is issued only after the thread/resume handler runs, so
+// beforeRequest has already passed and the post-resume identityFence is the
+// one that cancels. The reconnect window BEFORE beforeRequest is covered by
+// "a Stop on the resumed identity before the resume RPC leaves suppresses
+// the RPC" below.
+test("a Stop on the resumed identity while the resume RPC is in flight cancels the post-resume hydration", async ({ onTestFinished }) => {
   onTestFinished(stubSessionSlots);
   const stableRef = "local:stable-a";
   const currentRef = "local:current-b";
