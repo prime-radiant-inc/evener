@@ -2461,9 +2461,13 @@ describe("ConversationStore", () => {
   // carries whatever the daemon said.
   describe("the display bound covers every text-bearing row kind", () => {
     const oversized = "x".repeat(MAX_ITEM_BYTES + 5_000);
+    // Bounded means all three things, so every row kind below is held to them: it
+    // fits the byte limit, it says it was cut, and it says so exactly once (a row
+    // re-bound per publish must not accumulate markers).
     const bounded = (text: string): boolean =>
       new TextEncoder().encode(text).length <= MAX_ITEM_BYTES &&
-      text.endsWith(TRUNCATION_MARKER);
+      text.endsWith(TRUNCATION_MARKER) &&
+      text.split(TRUNCATION_MARKER).length - 1 === 1;
 
     it.each([
       [
@@ -2634,64 +2638,6 @@ describe("ConversationStore", () => {
   });
 
   describe("arguments/output stop at 64 KiB UTF-8 and end with truncation marker", () => {
-    it("truncates assistant item markdown at 64 KiB UTF-8 with marker", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      const largeText = "x".repeat(70_000);
-      service.openConv = makeConversation({
-        items: [
-          {
-            kind: "assistant",
-            id: "item-big",
-            markdown: largeText,
-            streaming: true,
-          },
-        ],
-      });
-      await store.getState().open(service, "ref-1");
-      const conv = store.getState().conversation;
-      const item = conv?.items.find((i) => i.id === "item-big");
-      if (item?.kind === "assistant") {
-        // UTF-8 byte length must be <= 64 KiB
-        const encoder = new TextEncoder();
-        expect(encoder.encode(item.markdown).length).toBeLessThanOrEqual(65536);
-        expect(item.markdown.endsWith("… truncated")).toBe(true);
-        const markerCount = item.markdown.split("… truncated").length - 1;
-        expect(markerCount).toBe(1);
-      }
-    });
-
-    it("truncates tool output at 64 KiB UTF-8 with marker exactly once", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      const largeOutput = "y".repeat(70_000);
-      service.openConv = makeConversation({
-        items: [
-          {
-            kind: "activity",
-            id: "tool-big",
-            label: "shell",
-            family: "tool",
-            state: "running",
-            detail: { output: largeOutput },
-          },
-        ],
-      });
-      await store.getState().open(service, "ref-1");
-      const conv = store.getState().conversation;
-      const item = conv?.items.find((i) => i.id === "tool-big");
-      if (item?.kind === "activity") {
-        const encoder = new TextEncoder();
-        expect(
-          encoder.encode(item.detail.output ?? "").length,
-        ).toBeLessThanOrEqual(65536);
-        expect(item.detail.output?.endsWith("… truncated")).toBe(true);
-        const markerCount =
-          (item.detail.output?.split("… truncated").length ?? 1) - 1;
-        expect(markerCount).toBe(1);
-      }
-    });
-
     it("truncates multibyte text at 64 KiB UTF-8 boundary without splitting surrogates", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
@@ -3150,7 +3096,7 @@ describe("ConversationStore", () => {
   // ask_user set included — so the frames that once had to ask for a reread
   // now settle in place; evener/thread/resync stays the authoritative
   // refresh path.
-  describe("F7: item frames settle locally; resync is the reread path", () => {
+  describe("item frames settle locally; resync is the reread path", () => {
     it("projects a started ask_user as its question row, without a reread", async () => {
       const { store, service } = await openRunningTurn();
       const initialReads = service.readProjectionCalls.length;
@@ -3500,7 +3446,7 @@ describe("ConversationStore", () => {
       expect(truncateText("abcdef", 0)).toBe("");
     });
 
-    it("F12: emoji at boundary does not produce U+FFFD", () => {
+    it("an emoji at the bound's boundary does not become U+FFFD", () => {
       // 😀 is U+1F600, 4 bytes in UTF-8. Place it right at the boundary so
       // the code-point iteration must decide whether to include it.
       // 16,381 'a' chars = 16,381 bytes. Plus one 😀 = 4 bytes = 16,385.
@@ -3518,7 +3464,7 @@ describe("ConversationStore", () => {
       expect(decoded).toBe(truncated);
     });
 
-    it("F12: genuine marker suffix in content does not stop a delta appending", async () => {
+    it("content that ends in the truncation marker still takes a delta", async () => {
       // Content that genuinely ends with "… truncated" but is under the byte
       // limit is not treated as already bounded.
       const { store } = await openRunningTurn([
@@ -4651,7 +4597,7 @@ describe("ConversationStore", () => {
 
 
 
-  // --- Task 2A-Scheduler proof: per-key exact completion --------------------
+  // --- the drain scheduler: per-key exact completion ------------------------
 
   // These tests prove the per-key completion promise resolves for the cap
   // key independently of unrelated rereads — the core invariant that the old
@@ -4682,7 +4628,7 @@ describe("ConversationStore", () => {
 
 
 
-  describe("Task 2A-3: same-key reread coalescing through public notifications", () => {
+  describe("same-key reread coalescing through public notifications", () => {
     it("multiple same-key reread requests during a blocker produce exactly one trailing read", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = {
@@ -4743,7 +4689,7 @@ describe("ConversationStore", () => {
 
   });
 
-  // --- Task 2A-4: deferred error-path drain proof ---------------------------
+  // --- the deferred error-path drain ----------------------------------------
   //
   // The first effect (reread) exposes a started barrier, remains in flight,
   // then deterministically errors after release. While in flight, queue
@@ -5429,7 +5375,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Ops-4 (preserved): explicit draft revision — type-then-delete is an edit", () => {
+  describe("explicit draft revision — type-then-delete is an edit", () => {
     it("failure restores draft snapshot only if user has not edited since clear", async () => {
       const service = new FakeConversationService();
       service.sendShouldReject = new Error("send failed");
@@ -5494,7 +5440,7 @@ describe("ConversationStore", () => {
   // the projector has the whole turn, so a settled ask becomes its question
   // row as it lands, and a later user message settles it — no reread in
   // either direction.
-  describe("I4: the question lifecycle through the projection", () => {
+  describe("the question lifecycle through the projection", () => {
     it("shows a completed parseable ask_user as a question row, with no reread", async () => {
       const { store, service } = await openRunningTurn();
       expect(store.getState().conversation?.askPending).toBe(false);
@@ -7382,7 +7328,7 @@ describe("ConversationStore", () => {
   // not the field that row displays. None of them asks for a reread; the
   // next snapshot settles what a mis-addressed frame did (the read response
   // is ordered at the snapshot cut).
-  describe("Task 2A-Items: exact delta families", () => {
+  describe("which frames a delta family applies to", () => {
     // One running turn holding the three activity kinds a delta can name:
     // a tool call (with its callId), a reasoning item, and a
     // forward-compatible unknown item. Their cluster families differ, so
@@ -7496,11 +7442,16 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Items: one byte bound for every row", () => {
+  // The bound is a property of the text a row carries, re-applied on every
+  // publish: nothing remembers "this row was already cut", so an authoritative
+  // short version shows short, a stream that grows past the limit keeps showing
+  // the same bounded prefix, and no row ever collects a second marker. One table,
+  // because the rule is the row shape's and not any one kind's.
+  describe("the byte bound follows a row's own text", () => {
     const toolWithOutput = (output: string): ThreadItem[] => [
       {
         type: "commandExecution",
-        id: "tool-1",
+        id: "row-1",
         toolName: "shell",
         callId: "call-A",
         output,
@@ -7518,62 +7469,88 @@ describe("ConversationStore", () => {
       return row.detail.output;
     };
 
-    it("keeps an oversized activity row at one marker across later deltas", async () => {
-      const { store } = await openRunningTurn(toolWithOutput("x".repeat(70_000)));
-      const bounded = outputOf(store, "tool-1");
-      expect(bounded?.endsWith(TRUNCATION_MARKER)).toBe(true);
-      expect(new TextEncoder().encode(bounded ?? "").length).toBeLessThanOrEqual(65536);
+    const markdownOf = (
+      store: ReturnType<typeof createConversationStore>,
+      id: string,
+    ): string | undefined => {
+      const row = rowById(store, id);
+      expect(row?.kind).toBe("assistant");
+      if (row?.kind !== "assistant") throw new Error("expected an assistant row");
+      return row.markdown;
+    };
 
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "tool-1",
-          callId: "call-A",
-          delta: " MORE",
-        },
-      } as AnyNotification);
-      const after = outputOf(store, "tool-1");
-      expect(after).toBe(bounded);
-      expect((after?.split(TRUNCATION_MARKER).length ?? 0) - 1).toBe(1);
-    });
+    it.each([
+      {
+        kind: "assistant",
+        items: (text: string) => [agentMessageItem("row-1", text, "inProgress")],
+        read: markdownOf,
+        delta: (store: ReturnType<typeof createConversationStore>, delta: string) =>
+          store.getState().applyNotification({
+            method: "item/agentMessage/delta",
+            params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "row-1", delta },
+          } as AnyNotification),
+        settle: (store: ReturnType<typeof createConversationStore>, text: string) =>
+          store.getState().applyNotification({
+            method: "item/completed",
+            params: {
+              threadId: "thread-1",
+              ref: "ref-1",
+              turnId: "t1",
+              item: agentMessageItem("row-1", text, "completed"),
+            },
+          } as AnyNotification),
+      },
+      {
+        kind: "activity",
+        items: toolWithOutput,
+        read: outputOf,
+        delta: (store: ReturnType<typeof createConversationStore>, delta: string) =>
+          store.getState().applyNotification({
+            method: "item/toolOutput/delta",
+            params: {
+              threadId: "thread-1",
+              ref: "ref-1",
+              turnId: "t1",
+              itemId: "row-1",
+              callId: "call-A",
+              delta,
+            },
+          } as AnyNotification),
+        settle: (store: ReturnType<typeof createConversationStore>, text: string) =>
+          store.getState().applyNotification({
+            method: "item/completed",
+            params: {
+              threadId: "thread-1",
+              ref: "ref-1",
+              turnId: "t1",
+              item: {
+                type: "commandExecution",
+                id: "row-1",
+                toolName: "shell",
+                status: "completed",
+                callId: "call-A",
+                output: text,
+              } as ThreadItem,
+            },
+          } as AnyNotification),
+      },
+    ])("holds a $kind row to one bound and one marker", async ({ items, read, delta, settle }) => {
+      const { store } = await openRunningTurn(items("x".repeat(MAX_ITEM_BYTES + 100)));
+      const cut = read(store, "row-1");
+      if (cut === undefined) throw new Error("no row");
+      expect(new TextEncoder().encode(cut).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
+      expect(cut.endsWith(TRUNCATION_MARKER)).toBe(true);
+      expect(cut.split(TRUNCATION_MARKER).length - 1).toBe(1);
 
-    it("shows a short authoritative replacement short, and appends to it", async () => {
-      const { store } = await openRunningTurn(toolWithOutput("x".repeat(70_000)));
-      expect(outputOf(store, "tool-1")?.endsWith(TRUNCATION_MARKER)).toBe(true);
+      // A delta onto an already-cut row shows the same prefix, with one marker.
+      delta(store, " MORE");
+      expect(read(store, "row-1")).toBe(cut);
 
-      store.getState().applyNotification({
-        method: "item/completed",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: {
-            type: "commandExecution",
-            id: "tool-1",
-            toolName: "shell",
-            status: "completed",
-            callId: "call-A",
-            output: "short-result",
-          } as ThreadItem,
-        },
-      } as AnyNotification);
-      expect(outputOf(store, "tool-1")).toBe("short-result");
-
-      store.getState().applyNotification({
-        method: "item/toolOutput/delta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "tool-1",
-          callId: "call-A",
-          delta: " appended",
-        },
-      } as AnyNotification);
-      expect(outputOf(store, "tool-1")).toBe("short-result appended");
+      // An authoritative short version is short, and appends from there.
+      settle(store, "short-result");
+      expect(read(store, "row-1")).toBe("short-result");
+      delta(store, " appended");
+      expect(read(store, "row-1")).toBe("short-result appended");
     });
 
     it("streams from empty again after a reset removes an oversized item", async () => {
@@ -7609,7 +7586,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Items: within-page paging dedupe", () => {
+  describe("dedupe within one page", () => {
     it("dedupes duplicate IDs within the incoming page, preserving order", async () => {
       const service = new FakeConversationService();
       service.readProjectionResult = makeReadProjectionResult(
@@ -7772,7 +7749,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Truncation residual: exact reconciliation of truncation ownership
+  // --- who owns a row's truncation across a page, a reread and the cap
   // from FINAL retained/merged items on every authoritative install path
   // (open/openProjected/rehydrate/page/lifecycle): the byte bound is applied
   // to whatever text a row carries at publish time, so an authoritative short
@@ -7785,7 +7762,7 @@ describe("ConversationStore", () => {
   // paged oversized item bounded with the marker once
   // lifecycle started/completed oversized then short
   // No vacuous `if` assertions — direct expects on the resolved item.
-  describe("Task 2A-Truncation residual: exact reconciliation", () => {
+  describe("who owns a row's truncation", () => {
     // Helper: open a conversation via openProjected with the given raw ThreadItem
     // array (uses projectConversation so families are set from the canonical projector).
     async function openProjectedWithItems(items: ThreadItem[]): Promise<{
@@ -8495,11 +8472,11 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Truncation residual fix round 1: I1 loadOlder preserves
+  // --- loadOlder preserves
   // already-frozen current items; I2 rehydrate preserves only superseded IDs
   // still actually frozen after the accepted live update; M1 observational
   // omission/cap tests through reread/page/delta (no lifecycle clearing).
-  describe("Task 2A-Truncation residual fix round 1", () => {
+  describe("a page load preserves what the reread committed", () => {
     async function openProjectedWithItems(items: ThreadItem[]): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;
@@ -8930,14 +8907,14 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Truncation residual fix round 2: what a page and the 500-cap
+  // --- what a page and the 500-row cap
   // do to a row that was over the byte limit.
   //
   // A page item is judged on the text it carries, never on what a row of the
   // same identity used to hold. When an appended row (item/started,
   // item/completed, a warning) pushes past the cap, the oldest row is trimmed
   // and a later re-introduction of that identity shows its own content.
-  describe("Task 2A-Truncation residual fix round 2", () => {
+  describe("a page against the 500-row cap", () => {
     async function openProjectedWithItems(
       items: ThreadItem[],
       options: { running?: boolean } = {},
@@ -9095,7 +9072,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Truncation residual fix round 3", () => {
+  describe("the cap and the bound on the same publish", () => {
     async function openProjectedWithItems(items: ThreadItem[]): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;
@@ -9214,9 +9191,9 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Cluster: sparse live items and clustered members as live targets ---
+  // --- sparse live items and clustered members as live targets ---
 
-  describe("Task 2A-Cluster: sparse live items inherit the active turn's status", () => {
+  describe("sparse live items inherit the active turn's status", () => {
     async function openWithActiveTurn(): Promise<
       ReturnType<typeof createConversationStore>
     > {
@@ -9339,7 +9316,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Cluster: live updates resolve clustered members", () => {
+  describe("live updates resolve clustered members", () => {
     async function openProjectedWithItems(items: ThreadItem[]): Promise<{
       store: ReturnType<typeof createConversationStore>;
       service: FakeConversationService;
@@ -9687,7 +9664,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("Task 2A-Cluster: paging dedupe spans every incoming identity", () => {
+  describe("paging dedupe spans every incoming identity", () => {
     function member(id: string, transcriptKey: string): ActivityMember {
       return {
         id,
@@ -10054,11 +10031,9 @@ describe("ConversationStore", () => {
     });
   });
 
-  // The byte bound is a property of the text a row carries, re-applied on
-  // every publish: no identity is remembered as "already truncated", so an
-  // authoritative short version is short and a stream that grows past the
-  // limit shows the same bounded prefix.
-  describe("the byte bound follows the row's own text", () => {
+  // The one path the table above does not walk: a reread's own snapshot, where the
+  // authoritative short version arrives as a read rather than a settle.
+  describe("the byte bound across a reread", () => {
     it("bounds an oversized row on open and shows the reread's short version", async () => {
       const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
       const service = new FakeConversationService();
@@ -10079,48 +10054,6 @@ describe("ConversationStore", () => {
       );
       await store.getState().rehydrate(service, createFakeSink());
       expect(rowById(store, "X")).toMatchObject({ kind: "assistant", markdown: "short" });
-    });
-
-    it("keeps showing the same bounded prefix as a stream grows past the limit", async () => {
-      const { store } = await openRunningTurn([
-        agentMessageItem("item-1", "x".repeat(MAX_ITEM_BYTES - 100), "inProgress"),
-      ]);
-      const short = rowById(store, "item-1");
-      expect(short?.kind === "assistant" && short.markdown.endsWith(TRUNCATION_MARKER)).toBe(false);
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "item-1", delta: "x".repeat(200) },
-      } as AnyNotification);
-      const bounded = rowById(store, "item-1");
-      expect(bounded?.kind === "assistant" && bounded.markdown.endsWith(TRUNCATION_MARKER)).toBe(true);
-      const boundedText = bounded?.kind === "assistant" ? bounded.markdown : "";
-
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "item-1", delta: "x".repeat(500) },
-      } as AnyNotification);
-      expect(rowById(store, "item-1")).toMatchObject({ kind: "assistant", markdown: boundedText });
-
-      // The restart after a reset streams from empty again.
-      store.getState().applyNotification({
-        method: "item/agentMessage/reset",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "item-1" },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/started",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          item: agentMessageItem("item-1", "", "inProgress"),
-        },
-      } as AnyNotification);
-      store.getState().applyNotification({
-        method: "item/agentMessage/delta",
-        params: { threadId: "thread-1", ref: "ref-1", turnId: "t1", itemId: "item-1", delta: "new text" },
-      } as AnyNotification);
-      expect(rowById(store, "item-1")).toMatchObject({ kind: "assistant", markdown: "new text" });
     });
   });
 
