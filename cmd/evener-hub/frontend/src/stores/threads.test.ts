@@ -3538,9 +3538,13 @@ describe("reconnect resubscribe", () => {
     expect(threadsStore.getState().threads.get("ref_a")?.turns[0]?.items[0]?.output).toBe("");
 
     reconnectRead.resolve?.(authoritativeSnapshot);
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // hydrateAndSubscribe now awaits peekAcceptCounter's own rehydration
+    // right after this response resolves (ThreadHydration's own `queueCut`),
+    // an extra microtask hop before it reaches
+    // publishAndReconcileThreadHydration - flushed out rather than counted,
+    // since exactly how many turns that hop costs is an implementation
+    // detail, not this test's own contract.
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.activeTurnId === undefined);
     const model = threadsStore.getState().threads.get("ref_a");
     expect(model?.activeTurnId).toBeUndefined();
     expect(model?.turns[0]?.status).toBe("completed");
@@ -4222,6 +4226,92 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
       method: "thread/queueChanged",
       params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 8 } },
     });
+
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
+    independent.close();
+  });
+
+  // RoboRev's High on #1705 round 5: queueChanged names the session by
+  // params.threadId (internal/appprojector/appwire_projection.go:1086's own
+  // p.threadID, set once from the projector's first event.SessionID), while a
+  // hydrate or clear names it by evener.instanceId ?? thread.id. On a remote
+  // hub the two differ: cmd/evener-hub/internal/appsource/local_daemon.go:1109
+  // sources evener.instanceId as firstLocalNonEmpty(entry.InstanceID,
+  // threadID) - a distinct rendezvous field, not threadID itself - and
+  // remote_hub_refs.go's fromRemoteThread/translateThreadRaw pass that
+  // InstanceID through byte-for-byte as an opaque precondition token,
+  // unrelated to the translated Thread.ID. A live queueChanged push for the
+  // SAME session then reads as a brand new instance, superseding the
+  // hydrate's own identity - and once superseded, every LATER snapshot
+  // correctly naming that same live session's own instanceId is rejected
+  // outright, forever.
+  test("queueChanged's threadId identity must not supersede a hydrate's own evener.instanceId for the same live session", async () => {
+    const fake = new FakeClient("ready");
+    let reads = 0;
+    const secondRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    fake.on("thread/read", (params) => {
+      reads += 1;
+      if (reads === 1) {
+        return readResponse(params.ref ?? "ref_a", {
+          turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+          evener: {
+            ref: params.ref ?? "ref_a",
+            capabilities: CAPABILITIES,
+            queue: { revision: 5 },
+            activeTurnId: "turn_1",
+            instanceId: "inst-1",
+          },
+        });
+      }
+      return new Promise<ThreadReadResponse>((resolve) => {
+        secondRead.resolve = resolve;
+      });
+    });
+    connectionStore.getState().connect(fake);
+    await threadsStore.getState().ensureThread("ref_a");
+
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+    await threadsStore.getState().queue("ref_a", "still queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const independent = new MutationOutboxIndexedDB();
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toHaveLength(1));
+
+    // A live push for the SAME session (no clear happened), coverage unknown
+    // (depth>0, no clientMutationIds - a legacy push's own shape) so this
+    // alone retires nothing: isolates the identity mismatch's own effect
+    // from retirement.
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 6, depth: 1 } },
+    });
+    await flushUntil(() => (fake.calls.at(-1)?.method ?? "") !== "");
+
+    // A later authoritative reconnect read for the SAME live session reports
+    // the SAME evener.instanceId ("inst-1") again, with an authoritatively
+    // empty queue (depth and clientMutationIds both omitted, the genuine wire
+    // shape) that must retire the ghost above.
+    fake.emitNotification({ method: "evener/thread/resync", params: { threadId: "thr_ref_a", ref: "ref_a" } });
+    await flushUntil(() => secondRead.resolve !== null);
+    secondRead.resolve?.(
+      readResponse("ref_a", {
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+        evener: {
+          ref: "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 7 },
+          activeTurnId: "turn_1",
+          instanceId: "inst-1",
+        },
+      }),
+    );
 
     await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
     independent.close();

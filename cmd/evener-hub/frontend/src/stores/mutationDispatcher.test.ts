@@ -800,6 +800,33 @@ describe("reconcileQueueSnapshot", () => {
     outbox.close();
   });
 
+  // RoboRev's Medium on #1705 round 5: "unknown coverage must never advance
+  // the gate" (the fix directly above) went too far the other way - the gate
+  // must still reject anything OLDER than an unknown-coverage snapshot
+  // already seen, or a delayed KNOWN snapshot at a LOWER revision than one
+  // whose own coverage we could not even read acts on stale data. The two
+  // cases differ only in whether the later arrival is at the SAME revision
+  // (allowed, above) or a LOWER one (rejected, here).
+  test("an unknown-coverage snapshot still fences the gate against a delayed, lower-revision known snapshot", async () => {
+    const { outbox, dispatcher, queued } = await acceptedQueueIntent("unknown-coverage-fences-lower");
+
+    // A legacy push at revision 5, coverage unknown - retires nothing, but
+    // proves the target has moved past revision 5 regardless.
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: undefined, revision: 5 }));
+
+    // A hydrate at revision 4, delayed in flight since before the push
+    // above, finally arrives with a known (empty) queue. Acting on it would
+    // retire the still-queued intent using a reading revision 5 has already
+    // superseded.
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 4 }));
+
+    expect(settled).toEqual([]);
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      queued.clientMutationId,
+    ]);
+    outbox.close();
+  });
+
   test("a non-authoritative snapshot (a saved or incompatible hydrate) settles and retires nothing", async () => {
     const { outbox, dispatcher, queued } = await acceptedQueueIntent("non-authoritative");
 
@@ -988,7 +1015,7 @@ describe("reconcileQueueSnapshot", () => {
     // The snapshot's own cut is read at its TRUE arrival - before the accept
     // below even happens (a hydrate reads this before reconcileIdentities/
     // restoreProvenAbsent, both real awaits the accept can land during).
-    const cut = dispatcher.peekAcceptCounter("ref-a");
+    const cut = await dispatcher.peekAcceptCounter("ref-a");
 
     const fresh = await outbox.enqueueIntent(queueIntent("ref-a", "fresh"));
     await dispatcher.dispatchTargets(["ref-a"]);
@@ -1003,6 +1030,37 @@ describe("reconcileQueueSnapshot", () => {
       fresh.clientMutationId,
     ]);
     outbox.close();
+  });
+
+  // The cut fix above (#1717's Medium 1) kept its own clock -
+  // #acceptCounters - in memory only, so a page reload or a second tab opens
+  // a fresh MutationDispatcher whose own peekAcceptCounter reads 0
+  // regardless of what a PREVIOUS dispatcher instance already accepted into
+  // this same durable storage. `record.acceptStamp (0) >= cut (0)` then
+  // protects the ghost forever - the ghost's own stamp can never be less
+  // than a clock that never advanced past its starting value.
+  test("a reload's fresh dispatcher still retires a ghost accepted by a previous dispatcher instance", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "reload-retires-ghost", ["queue-a"]);
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    expect(await outbox.listOptimistic("ref-a")).toHaveLength(1);
+
+    // A reload or a second tab: a fresh storage connection and a fresh
+    // dispatcher, sharing only the underlying database - never the first
+    // dispatcher's own in-memory state.
+    const reopened = new MutationOutboxIndexedDB({ indexedDB, databaseName: "reload-retires-ghost" });
+    const reloaded = new MutationDispatcher(reopened, { getClient: () => client });
+    const cut = await reloaded.peekAcceptCounter("ref-a");
+    const settled = await reloaded.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), cut }));
+
+    expect(settled).toEqual([queued.clientMutationId]);
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+    outbox.close();
+    reopened.close();
   });
 
   // RoboRev's review round 3 Medium 2 (#1717, measured there: MutationReceipt

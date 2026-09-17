@@ -12,20 +12,6 @@ import type {
 } from "./mutationOutbox";
 import { createSecureUUID } from "./secureUUID";
 
-// This host's own addition to the stored optimistic record: the target's own
-// accept-order counter value at the moment this record was accepted (see
-// mutationDispatcher.ts's #nextAcceptStamp and QueueSnapshot's own `cut`,
-// #1717's Medium 1 round 4). Never part of the package's own
-// MutationOptimisticRecord (state/mutation/records.ts) - a purely local
-// storage detail settleOptimisticAbsent's own scan reads back, so native and
-// other hosts need not carry it. Absent on a record this feature never
-// stamped (written before it existed, or settled by a path that has no
-// accept-order to record); settleOptimisticAbsent treats that the same as a
-// stamp from before any cut - eligible for retirement, same as today.
-interface StampedOptimisticRecord extends MutationOptimisticRecord {
-  acceptStamp?: number;
-}
-
 type MutationOutboxOperation =
   | "markAttempted"
   | "enqueueIntent"
@@ -187,7 +173,7 @@ export class MutationOutboxIndexedDB {
     });
   }
 
-  async settleReceipt(clientMutationId: string, projectionState: string, acceptStamp?: number): Promise<boolean> {
+  async settleReceipt(clientMutationId: string, projectionState: string): Promise<boolean> {
     return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], "settleReceipt", async (transaction) => {
       const outbox = transaction.objectStore(OUTBOX_STORE);
       const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
@@ -209,7 +195,7 @@ export class MutationOutboxIndexedDB {
         "input" in display &&
         Array.isArray(display.input);
       if (retainsOptimisticDisplay) {
-        const accepted: StampedOptimisticRecord = {
+        const accepted: MutationOptimisticRecord = {
           version: source.version,
           clientMutationId: source.clientMutationId,
           // Provenance survives the outbox -> optimistic transition: dropping
@@ -225,7 +211,6 @@ export class MutationOutboxIndexedDB {
           attachments: source.attachments,
           optimisticDisplay: source.optimisticDisplay,
           state: "accepted",
-          ...(acceptStamp !== undefined ? { acceptStamp } : {}),
         };
         await requestResult(optimistic.put(accepted));
       } else if (optimisticRecord) {
@@ -275,21 +260,20 @@ export class MutationOutboxIndexedDB {
     cut: number,
   ): Promise<string[]> {
     return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], undefined, async (transaction) => {
-      const records = await requestResult<StampedOptimisticRecord[]>(
+      const records = await requestResult<MutationOptimisticRecord[]>(
         transaction.objectStore(OPTIMISTIC_STORE).getAll(),
       );
       const settled: string[] = [];
       for (const record of records) {
         if (record.targetRef !== targetRef || record.method !== method) continue;
         if (authoritativeIds.has(record.clientMutationId)) continue;
-        // Absence alone does not prove this record predates the snapshot
-        // cut - the shared per-target chain only proves no write and this
-        // scan interleave, not causal order (#1717's Medium 1, round 4). A
-        // record accepted at or after the snapshot's own cut postdates what
-        // it can vouch for and survives; one this feature never stamped
-        // (written before it existed) has nothing to protect it either way
-        // and keeps today's behavior.
-        if ((record.acceptStamp ?? -1) >= cut) continue;
+        // Absence alone does not prove this record predates the snapshot cut
+        // - the shared per-target chain only proves no write and this scan
+        // interleave, not causal order (#1717's Medium 1, round 4). A record
+        // accepted after the snapshot's own cut (its own durable
+        // intentSequence, allocated once by #allocateSequence and never
+        // reused) postdates what the snapshot can vouch for and survives.
+        if (record.intentSequence > cut) continue;
         if (await this.#settleAppliedWithinTransaction(transaction, record.clientMutationId)) {
           settled.push(record.clientMutationId);
         }

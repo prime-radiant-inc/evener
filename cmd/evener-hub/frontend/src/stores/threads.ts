@@ -656,7 +656,7 @@ function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: Mut
   }
 }
 
-function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+async function applyClearResponse(targetRef: string, response: ThreadClearResponse): Promise<void> {
   invalidateGoalResponseFallback(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
@@ -696,8 +696,17 @@ function applyClearResponse(targetRef: string, response: ThreadClearResponse): v
     const snapshot = queueSnapshotFromWire(
       response.thread.evener.queue,
       true,
-      response.thread.evener.instanceId ?? response.thread.id,
-      runtime.dispatcher.peekAcceptCounter(targetRef),
+      // thread.id, not evener.instanceId: queueChanged (the third snapshot
+      // source) carries only params.threadId, itself the projector's own
+      // p.threadID - the same value as thread.id (both trace to the
+      // session's own SessionID; internal/appprojector/appwire_projection.go
+      // sets both from it, never evener.InstanceID, a distinct rendezvous
+      // field a remote hub round-trips opaquely and unrelated to Thread.ID).
+      // Naming the SAME live session by two different identities across the
+      // three sources supersedes it against itself (RoboRev's High, #1705
+      // round 5).
+      response.thread.id,
+      await runtime.dispatcher.peekAcceptCounter(targetRef),
     );
     void runtime.dispatcher
       .reconcileQueueSnapshot(targetRef, snapshot)
@@ -1114,6 +1123,15 @@ function threadReadParams(ref: string, includeTurns: boolean, subscribe: boolean
 interface ThreadHydration {
   model: ThreadModel;
   response: ThreadReadResponse;
+  // This ref's queue cut, captured at the response's TRUE arrival (right
+  // after the wire request resolves, in hydrateAndSubscribe) rather than
+  // later, whenever publishAndReconcileThreadHydration's own per-ref
+  // reconciliation chain happens to reach this hydration - a PRIOR pending
+  // reconciliation for the same ref can delay that by an arbitrary amount,
+  // during which an accept could land and be wrongly read as already
+  // reflected (QueueSnapshot's own `cut` comment; #1717's Medium 1).
+  // Undefined only when no mutation runtime existed yet at that moment.
+  queueCut: number | undefined;
 }
 
 // sendThreadUnsubscribe drops this client's wire subscription to a ref the
@@ -1184,10 +1202,28 @@ async function hydrateAndSubscribe(
     scheduleOwnedHydrationRetry("thread", ref, pending);
     throw err;
   }
+  // markSubscribed/hydrateThread/applyHydrationResponseCut must run with no
+  // gap after the response resolves - the response cut a buffered
+  // notification is measured against (applyHydrationResponseCut's own
+  // comment) is exactly this synchronous step, and an await inserted before
+  // it delays the whole cut by however long that await takes.
   markSubscribed();
   const model = hydrateThread(response, ref, now);
   applyHydrationResponseCut(pending, ref, model);
-  return { model, response };
+  // Captured HERE, right after - see ThreadHydration's own `queueCut`
+  // comment for why this cannot wait for
+  // publishAndReconcileThreadHydration's own reconciliation chain to run.
+  // A bare read of `mutationRuntime`, never getMutationRuntime(): calling
+  // the constructing form here would start the outbox's own discovery
+  // (getMutationRuntime's own outbox.start()) one hydration earlier than
+  // today whenever this is the FIRST hydration of the session, racing its
+  // own discovery-driven reconciliation against this one. When no runtime
+  // exists yet, nothing could have accepted anything through it either, so
+  // there is no prior accept this cut needs to protect - the fallback below
+  // (publishAndReconcileThreadHydration's own queueCut comment) covers it.
+  const runtime = mutationRuntime;
+  const queueCut = runtime ? await runtime.dispatcher.peekAcceptCounter(ref) : undefined;
+  return { model, response, queueCut };
 }
 
 // The one place a rejection is checked for the hub's durable deletion fence
@@ -1627,8 +1663,27 @@ async function publishAndReconcileThreadHydration(
   pending: PendingThreadHydration,
   hydration: ThreadHydration,
 ): Promise<ThreadModel | null> {
+  // A later beginThreadHydration call for this ref overwrites
+  // pendingThreadHydrations synchronously, in the SAME tick it also
+  // overwrites inflightHydrates (startHydration's own order) - so this being
+  // true already means inflightHydrates.get(ref) below is that OTHER
+  // attempt's own promise, never this call's own not-yet-resolved one.
+  const supersededByNewerPending = pendingThreadHydrations.get(ref) !== pending;
   const published = publishThreadHydration(ref, pending, hydration.model);
-  if (!published) return null;
+  if (!published) {
+    // Superseded by that later attempt specifically (not a stale epoch or a
+    // released ref - publishThreadHydration's other two null cases, where
+    // nothing else is in flight to join). If it is still in flight, ITS
+    // model and reconciliation are what this call's own caller is actually
+    // waiting for: returning null unconditionally let ensureThread's retry
+    // loop see "no model, but threads.has(ref) is already true" and return
+    // early, without ever joining the replacement's own reconciliation
+    // (measured: the queueCut-at-arrival timing fix made this race reachable
+    // by delaying THIS attempt's hydrateAndSubscribe just enough for a
+    // concurrent handleReady-discovered refresh to win it).
+    const replacement = supersededByNewerPending ? inflightHydrates.get(ref) : undefined;
+    return replacement ?? null;
+  }
   threadsStore.setState((state) => {
     const mutationAuthorityRefs = new Set(state.mutationAuthorityRefs);
     if (hydration.response.thread.evener.mutationStateAuthoritative === true) mutationAuthorityRefs.add(ref);
@@ -1667,12 +1722,12 @@ async function publishAndReconcileThreadHydration(
           (published.status.type === "restartRequired" ||
             (pending.epoch === readyEpoch && pending.client === wiredClient));
         if (!current()) return;
-        // Captured HERE, before reconcileIdentities/restoreProvenAbsent
-        // below - those are real awaits, and an accept that lands during
-        // them must not be mistaken for one this snapshot's own queue data
-        // (already fixed, on the wire, before any of this ran) could have
-        // named (QueueSnapshot's own `cut` comment; #1717's Medium 1).
-        const queueCut = runtime.dispatcher.peekAcceptCounter(ref);
+        // hydration.queueCut was captured at the response's TRUE arrival, in
+        // hydrateAndSubscribe - not here, which a prior pending
+        // reconciliation for this ref can delay arbitrarily (ThreadHydration's
+        // own `queueCut` comment). Falling back to a fresh reading only
+        // covers the one moment no mutation runtime existed yet to capture it.
+        const queueCut = hydration.queueCut ?? (await runtime.dispatcher.peekAcceptCounter(ref));
         const authoritativeIds = collectAuthoritativeMutationIds(hydration.response);
         const mutationStateAuthoritative = hydration.response.thread.evener.mutationStateAuthoritative === true;
         await runtime.dispatcher.reconcileIdentities(authoritativeIds);
@@ -1710,7 +1765,9 @@ async function publishAndReconcileThreadHydration(
             queueSnapshotFromWire(
               hydration.response.thread.evener.queue,
               true,
-              hydration.response.thread.evener.instanceId ?? hydration.response.thread.id,
+              // thread.id, not evener.instanceId - see applyClearResponse's
+              // own comment on this same choice (RoboRev's High, #1705 round 5).
+              hydration.response.thread.id,
               queueCut,
             ),
           );
@@ -1880,23 +1937,21 @@ function handleNotification(n: AnyNotification): void {
     const ref = notificationRef(n);
     const runtime = getMutationRuntime();
     if (ref && runtime) {
-      // No async gap before this: the notification's own arrival IS the
-      // snapshot's arrival, so peekAcceptCounter here already reads it at
-      // the earliest possible moment (QueueSnapshot's own `cut` comment).
-      const snapshot = queueSnapshotFromWire(
-        n.params.queue,
-        true,
-        n.params.threadId,
-        runtime.dispatcher.peekAcceptCounter(ref),
-      );
-      void runtime.dispatcher
-        .reconcileQueueSnapshot(ref, snapshot)
-        .then((settled) =>
-          settled.length > 0 || (snapshot.ids?.size ?? 0) > 0 ? refreshMutationPins(runtime, [ref]) : undefined,
-        )
-        .catch(() => {
+      const params = n.params;
+      void (async () => {
+        // The notification's own arrival IS the snapshot's arrival -
+        // awaited as the very first step, before any other work, so this
+        // reads peekAcceptCounter as close to that arrival as its own
+        // rehydration allows (QueueSnapshot's own `cut` comment).
+        const cut = await runtime.dispatcher.peekAcceptCounter(ref);
+        const snapshot = queueSnapshotFromWire(params.queue, true, params.threadId, cut);
+        try {
+          const settled = await runtime.dispatcher.reconcileQueueSnapshot(ref, snapshot);
+          if (settled.length > 0 || (snapshot.ids?.size ?? 0) > 0) await refreshMutationPins(runtime, [ref]);
+        } catch {
           // A later queueChanged or receipt retries the same settlement.
-        });
+        }
+      })();
     }
   } else {
     const mutationIdentities = notificationMutationIdentities(n);
