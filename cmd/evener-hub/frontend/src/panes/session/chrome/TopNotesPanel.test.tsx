@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ThreadModel } from "@evener/appwire-client";
 import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -6,6 +9,8 @@ import { resetHumanNoteDrafts, useHumanNoteDraft } from "../../../stores/humanNo
 import { putThreadModel, resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { topNotesStore } from "../../../stores/topNotes";
 import { TopNotesPanel } from "./TopNotesPanel";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const FULL_CAPABILITIES = {
   send: true,
@@ -242,15 +247,11 @@ test("read-only sessions show a view-only empty state instead of a write invitat
   expect(screen.getByText("No notes yet")).toBeTruthy();
   expect(screen.queryByText("Add a note…")).toBeNull();
   // The visible preview IS the accessible name - a generic label would hide
-  // the content from screen readers. The hint is aria-hidden so it stays out
-  // of the NAME while aria-describedby still resolves it as the description
-  // (one announcement, not two).
+  // the content from screen readers. No hint text rides along in any state,
+  // so there is no describedby either.
   expect(summary.getAttribute("aria-label")).toBeNull();
-  const describedBy = summary.getAttribute("aria-describedby");
-  expect(describedBy).toBeTruthy();
-  const hint = document.getElementById(describedBy ?? "");
-  expect(hint?.textContent).toContain("Click to view");
-  expect(hint?.getAttribute("aria-hidden")).toBe("true");
+  expect(summary.getAttribute("aria-describedby")).toBeNull();
+  expect(screen.queryByText("Click to view")).toBeNull();
 
   // Reading still works: the body expands, but a read-only session mounts
   // no editor to type into.
@@ -498,13 +499,35 @@ test("a request held from a read-only era does not steal focus after a remount",
   elsewhere.remove();
 });
 
-test("clicking the hint text toggles like the rest of the bar", async () => {
+test("expanded root carries the card marker; no state carries an affordance hint", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
   render(<TopNotesPanel sessionRef={model.ref} model={model} />);
 
-  // The hint is one live part of the whole-bar click target, not dead text
-  // beside it.
-  await user.click(screen.getByText("Click to expand"));
-  expect(topNotesStore.getState().isExpanded(model.ref)).toBe(true);
+  // Collapsed: the root advertises the flat bar, and the bar carries no
+  // "Click to expand" invite - the disclosure affordance is the chevron and
+  // the row itself.
+  const root = screen.getByTestId("top-notes-panel");
+  expect(root.getAttribute("data-expanded")).toBe("false");
+  expect(screen.queryByText("Click to expand")).toBeNull();
+  expect(screen.getByTestId("top-notes-summary").getAttribute("aria-describedby")).toBeNull();
+
+  await user.click(screen.getByTestId("top-notes-summary"));
+
+  // Expanded: the stylesheet keys the floating-card treatment off the root
+  // marker, and the header row carries no hint either.
+  expect(root.getAttribute("data-expanded")).toBe("true");
+  expect(screen.queryByText("Click to collapse")).toBeNull();
+  expect(screen.getByTestId("top-notes-collapse-trigger").getAttribute("aria-describedby")).toBeNull();
+});
+
+test("the panel sits flush against the pane's top edge in both densities", () => {
+  // The transcript column keeps the pane body's side padding, but the notes
+  // panel claims the top edge back: PaneScaffold's .body pads --space-5
+  // (desktop) / --space-4 (phone), and the panel cancels exactly that.
+  const css = readFileSync(join(here, "topnotespanel.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const root = css.match(/\.topNotesPanel\s*\{([^}]*)\}/);
+  expect(root?.[1]).toContain("margin-top: calc(-1 * var(--space-5))");
+  const mobile = css.match(/@media \(max-width: 899px\)\s*\{\s*\.topNotesPanel\s*\{([^}]*)\}/);
+  expect(mobile?.[1]).toContain("margin-top: calc(-1 * var(--space-4))");
 });
