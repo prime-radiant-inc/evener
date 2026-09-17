@@ -116,6 +116,11 @@ export function TranscriptPreferencesEditor({
 		state.saving ||
 		state.writeUncertain ||
 		state.storageUnavailable;
+	// Discard touches only the local port (never the hub), so it is never
+	// gated on `connected` - only on a write in flight, or a storage failure
+	// OTHER than the unreadable record discarding itself would clear (round 14).
+	const discardDisabled =
+		state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable);
 	const dirty = state.draft !== null;
 	// An unreadable stored draft is the one storage failure the user can clear,
 	// and clearing it is the only way out of the disabled state above: there is
@@ -183,7 +188,7 @@ export function TranscriptPreferencesEditor({
 									Keep this draft over current settings
 								</Action>
 								<Action
-									disabled={disabled}
+									disabled={discardDisabled}
 									onPress={() => {
 										discard();
 										setReviewRevision(null);
@@ -356,7 +361,7 @@ export function TranscriptPreferencesEditor({
 							Save changes
 						</Action>
 						{dirty ? (
-							<Action disabled={disabled || state.conflict} onPress={discard}>
+							<Action disabled={discardDisabled || state.conflict} onPress={discard}>
 								Discard draft
 							</Action>
 						) : null}

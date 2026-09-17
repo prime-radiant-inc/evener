@@ -48,7 +48,11 @@ export interface NativePreferencesSnapshot {
 	transcriptMobile: PreferenceState<ConfirmedTranscript>;
 }
 
-const initialDomain = <T>(): PreferenceState<T> => ({
+/** An empty domain: every connection-owned field at its "not yet known"
+ * value. Exported for the local preferences controller, which fills in only
+ * `draft` and `draftUnreadable` from the persisted record - a connected
+ * store's domain is the richer superset once one exists. */
+export const initialDomain = <T>(): PreferenceState<T> => ({
 	support: "unknown",
 	loading: false,
 	saving: false,
@@ -134,31 +138,6 @@ function transcriptDomain(
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
 		draftUnreadable: state.draftUnreadable,
-	};
-}
-
-/** The snapshot after a LOCAL discard cleared one section's unreadable record.
- * Pure, so the provider's reachability table can be pinned without rendering a
- * screen. Only the section discarded changes: one discard clears one record. */
-export function snapshotAfterLocalDiscard(
-	snapshot: NativePreferencesSnapshot,
-	section: "transcript" | "keybindings",
-): NativePreferencesSnapshot {
-	const key = section === "transcript" ? "transcriptMobile" : "keybindings";
-	const domain = snapshot[key];
-	if (!domain.draftUnreadable) return snapshot;
-	return {
-		...snapshot,
-		[key]: {
-			...domain,
-			draft: null,
-			draftUnreadable: false,
-			// The record was the only reason the port read as unavailable, and the
-			// restore failure was the only reason this section reported an error.
-			storageUnavailable: false,
-			conflict: false,
-			error: null,
-		},
 	};
 }
 

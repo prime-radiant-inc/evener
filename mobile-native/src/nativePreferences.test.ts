@@ -6,11 +6,7 @@ import type {
 } from "@evener/appwire-client";
 import { toWireConfig } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import {
-	type NativePreferencesSnapshot,
-	NativePreferences,
-	snapshotAfterLocalDiscard,
-} from "./nativePreferences";
+import { NativePreferences } from "./nativePreferences";
 
 const features = { keybindingsSettings: true, transcriptDisplaySettings: true };
 const keybindings: KeybindingsOverrides = {
@@ -419,50 +415,6 @@ it("an unreadable stored record is surfaced as such and discarding clears it", a
 		storageUnavailable: false,
 		draftUnreadable: false,
 	});
-});
-
-it("a local discard unlocks the section it cleared, and leaves the other alone", () => {
-	const locked: NativePreferencesSnapshot = {
-		keybindings: {
-			support: "supported",
-			loading: false,
-			saving: false,
-			confirmed: null,
-			draft: null,
-			error: "Could not restore the saved shortcut draft. Check current shortcuts to retry.",
-			conflict: true,
-			writeUncertain: false,
-			storageUnavailable: true,
-			draftUnreadable: true,
-		},
-		transcriptMobile: {
-			support: "supported",
-			loading: false,
-			saving: false,
-			confirmed: null,
-			draft: null,
-			error: "Could not restore the saved transcript draft. Check current settings to retry.",
-			conflict: true,
-			writeUncertain: false,
-			storageUnavailable: true,
-			draftUnreadable: true,
-		},
-	};
-
-	const afterKeybindings = snapshotAfterLocalDiscard(locked, "keybindings");
-	expect(afterKeybindings.keybindings).toMatchObject({
-		draftUnreadable: false,
-		storageUnavailable: false,
-		draft: null,
-		conflict: false,
-		error: null,
-	});
-	// The other section's record is untouched: one discard clears one record.
-	expect(afterKeybindings.transcriptMobile).toEqual(locked.transcriptMobile);
-
-	const afterTranscript = snapshotAfterLocalDiscard(locked, "transcript");
-	expect(afterTranscript.transcriptMobile.draftUnreadable).toBe(false);
-	expect(afterTranscript.keybindings).toEqual(locked.keybindings);
 });
 
 it("an unreadable record stays discardable when the hub read fails", async () => {

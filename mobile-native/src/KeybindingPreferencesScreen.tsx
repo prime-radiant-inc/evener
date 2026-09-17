@@ -106,17 +106,26 @@ export function KeybindingPreferencesScreen({
 		!!domain?.writeUncertain ||
 		!!domain?.storageUnavailable ||
 		!!domain?.confirmed?.loadError;
-	/** Runs an operation THROUGH THE SHARED STORE, so it needs a model. Pass
-	 * `requiresHub: false` when it only touches this device, so it still runs
-	 * while disconnected. An operation that does not go through the store at all
-	 * - the unreadable-record escape hatch - does not come here: see its own call
-	 * site, which is why round 11's table lists "NO-OP" for this path. */
+	/** A readable draft's discard touches only the local port
+	 * (`LocalPreferencesController`/a live model's own `discardDraft`, neither
+	 * of which needs a hub) - `busy` is the wrong gate for it, since it also
+	 * requires `available`, which requires `preferences.connected` (round 14). */
+	const discardDisabled =
+		!!domain?.saving ||
+		!!domain?.writeUncertain ||
+		(!!domain?.storageUnavailable && !domain?.draftUnreadable);
+	/** Runs an operation THROUGH THE SHARED STORE by default, so it needs a
+	 * model. Pass `requiresHub: false` when it only touches this device, so it
+	 * still runs while disconnected; pass `requiresModel: false` too for an
+	 * operation `preferences.discardDraft` itself routes to a live model when
+	 * one exists and to the provider's local controller otherwise, so no model
+	 * is required here either. */
 	const run = (
 		operation: () => Promise<unknown>,
 		success?: () => void,
-		{ requiresHub = true }: { requiresHub?: boolean } = {},
+		{ requiresHub = true, requiresModel = true }: { requiresHub?: boolean; requiresModel?: boolean } = {},
 	) => {
-		if (!model || scope.hubId !== route.params.hubId) return;
+		if ((requiresModel && !model) || scope.hubId !== route.params.hubId) return;
 		if (requiresHub && !scope.connected) return;
 		const active = () => mounted.current && currentScope.current === scope;
 		setError(null);
@@ -189,22 +198,22 @@ export function KeybindingPreferencesScreen({
 								The shortcut draft saved on this phone could not be read.
 								Discard it to edit shortcuts again.
 							</Copy>
-							{/* Gated on the RECORD alone - not on `busy` (which the record
-							    itself sets), not on the connection, and not on a live model:
-							    the client goes away while backgrounded or reconnecting, which
-							    is exactly when a user is stuck behind such a record, and the
-							    snapshot still reports it. The provider's path is local-only,
-							    so it runs with no hub. */}
+							{/* Gated on the RECORD alone - not on `busy`/`discardDisabled`
+							    (which the record itself sets), not on the connection, and not
+							    on a live model: the client goes away while backgrounded or
+							    reconnecting, which is exactly when a user is stuck behind such
+							    a record, and the snapshot still reports it. The provider's
+							    `discardDraft` routes to its local controller with no client
+							    bound, so this runs with no hub either way. */}
 							<Action
 								onPress={() => {
-									// Deliberately NOT through `run`: this is the one path out of
-									// an unreadable record, `model` is null in exactly the states
-									// a user meets one in, and `run` requires a model. The
-									// hub-identity check is kept - a discard must never clear a
-									// different hub's record.
+									// Deliberately NOT through `run`: the hub-identity check is
+									// kept - a discard must never clear a different hub's record -
+									// but this keeps its own, more specific error copy rather than
+									// `run`'s shared one.
 									if (scope.hubId !== route.params.hubId) return;
 									setError(null);
-									preferences.discardUnreadableDraft("keybindings").catch(() => {
+									preferences.discardDraft("keybindings").catch(() => {
 										setError(
 											"The draft could not be discarded. Try again in a moment.",
 										);
@@ -334,17 +343,16 @@ export function KeybindingPreferencesScreen({
 													</Action>
 													<Action
 														disabled={
-															busy ||
+															discardDisabled ||
 															reviewedRevision !== domain.confirmed.revision
 														}
 														onPress={() => {
-															if (model)
-																run(
-																	() => model.discardKeybindingsDraft(),
-																	() => setReviewedRevision(null),
-																	// Local-only: no hub needed to drop a draft.
-																	{ requiresHub: false },
-																);
+															run(
+																() => preferences.discardDraft("keybindings"),
+																() => setReviewedRevision(null),
+																// Local-only: no hub and no model needed to drop a draft.
+																{ requiresHub: false, requiresModel: false },
+															);
 														}}
 													>
 														Use hub settings
@@ -364,13 +372,13 @@ export function KeybindingPreferencesScreen({
 												Save changes
 											</Action>
 											<Action
-												disabled={busy}
+												disabled={discardDisabled}
 												onPress={() => {
-													if (model)
-														run(() => model.discardKeybindingsDraft(), undefined, {
-															// Local-only: no hub needed to drop a draft.
-															requiresHub: false,
-														});
+													run(() => preferences.discardDraft("keybindings"), undefined, {
+														// Local-only: no hub and no model needed to drop a draft.
+														requiresHub: false,
+														requiresModel: false,
+													});
 												}}
 											>
 												Discard changes

@@ -56,11 +56,9 @@ export function TranscriptPreferencesScreen({
 					refresh={() => {
 						if (model) run(() => model.refresh());
 					}}
-					discard={() => {
-						if (model) run(() => model.discardTranscriptDraft());
-					}}
+					discard={() => run(() => preferences.discardDraft("transcript"))}
 					discardUnreadable={() =>
-						run(() => preferences.discardUnreadableDraft("transcript"))
+						run(() => preferences.discardDraft("transcript"))
 					}
 					rebase={(revision) => {
 						if (model) run(() => model.rebaseTranscriptDraft(revision));
