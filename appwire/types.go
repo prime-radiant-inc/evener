@@ -2493,6 +2493,19 @@ type ThreadStatusChangedParams struct {
 	// hydrate legitimately gave it. Absence at HYDRATE is where "nobody
 	// counted" is expressed.
 	FailedToolCalls *int `json:"failedToolCalls,omitempty"`
+	// AskPending carries EvenerThread.AskPending — "this session is waiting on
+	// a human answer" — for the reason the failure count rides along above: it
+	// is otherwise snapshot-only, so after the user answers, every OTHER
+	// client keeps showing "question waiting" until its next read (#1613). The
+	// pending set clears only at a turn boundary (a resolving user turn, an
+	// interrupted turn: agent/session_tools_ask.go), which is exactly when a
+	// status change is announced, so this refreshes it when it can have moved
+	// and never polls.
+	//
+	// ABSENT MEANS "NO UPDATE" (an old daemon omits it), never "no question
+	// waiting": a client that cleared the flag on absence would stop showing a
+	// question the hydrate legitimately gave it.
+	AskPending *bool `json:"askPending,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
 	// count rides along above: it is otherwise snapshot-only, and three of its
@@ -3094,13 +3107,16 @@ type InstanceEntry struct {
 	Warnings []string `json:"warnings,omitempty"`
 	// Models is the instance's known models with their effective
 	// disabled state, for the sheet's per-model toggles: exact catalog
-	// rows plus cached live ids. Empty for an instance with no rows.
+	// rows plus cached live ids, alias rows included. Empty for an
+	// instance with no rows.
 	Models []InstanceModelEntry `json:"models,omitempty"`
 }
 
 // InstanceModelEntry is one row of an instance's model inventory: the
-// catalog id and whether the config layer disabled it. The Providers pane's
-// instance sheet renders one toggle per row.
+// catalog id and whether the config layer disabled it, alias rows included.
+// The Providers pane's instance sheet renders one toggle per row; every
+// listed id names a row setModelDisabled can write, and a cross-provider
+// alias toggles on this instance without touching the provider it names.
 type InstanceModelEntry struct {
 	ID       string `json:"id"`
 	Disabled bool   `json:"disabled,omitempty"`
