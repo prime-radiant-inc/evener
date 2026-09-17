@@ -130,7 +130,7 @@ export default defineConfig({
     // Vite's `?raw`: this app's install already provides all of that, while
     // giving the package its own dev dependencies would change what
     // `npm ci --prefix appwire-client/typescript` fetches for the
-    // qualification gate, which needs only typescript and ws.
+    // qualification gate, which needs only typescript, tinykeys and ws.
     include: [
       "**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../../../appwire-client/typescript/**/*.{test,spec}.?(c|m)[jt]s?(x)",
