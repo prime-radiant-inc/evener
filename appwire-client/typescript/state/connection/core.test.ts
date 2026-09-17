@@ -167,17 +167,13 @@ describe("createConnectionStore", () => {
     const first = new FakeClient("ready");
     store.connect(first);
 
-    // Round 3 finding: a caller that replaces `client` through setState
-    // directly - every existing test file that does this (CommandPalette.test.tsx,
-    // commandCatalog.test.ts, threads.test.ts, SessionChrome.test.tsx and
-    // others all call `store.setState({ client: fake, ... })` rather than
-    // `store.connect(fake)`) - never goes through connect()'s wiring at all.
+    // setState is the same write connect() makes, so a caller that replaces
+    // `client` through it directly is wired exactly the same way.
     const second = new FakeClient("ready");
     store.setState({ client: second, state: second.state });
 
-    // (a) the new client's own transitions must reach the store, exactly as
-    // if it had been wired through connect() - nothing else will ever wire
-    // a listener to it otherwise.
+    // (a) the new client's own transitions must reach the store - nothing
+    // else will ever wire a listener to it otherwise.
     second.emitStateChange("closed");
     expect(store.getState().state).toBe("closed");
 
@@ -186,6 +182,25 @@ describe("createConnectionStore", () => {
     // even though that listener itself was never detached.
     first.emitStateChange("reconnecting");
     expect(store.getState().state).toBe("closed");
+  });
+
+  test("clearing the client to null through setState detaches the currently wired listener", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("ready");
+    const tracking = trackStateChangeWiring(client);
+
+    store.connect(client);
+    expect(tracking.registrations).toBe(1);
+    expect(tracking.detachments).toBe(0);
+
+    store.setState({ client: null });
+    expect(tracking.detachments).toBe(1);
+
+    // Detached, not merely guarded: the listener itself is gone, so a later
+    // transition on the cleared client cannot even attempt to publish.
+    client.emitStateChange("closed");
+    expect(store.getState().client).toBeNull();
+    expect(store.getState().state).toBe("ready");
   });
 });
 
