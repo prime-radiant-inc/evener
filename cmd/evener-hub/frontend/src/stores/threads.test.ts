@@ -4223,6 +4223,53 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     independent.close();
   });
 
+  // RoboRev's Medium 2 on #1705's second round: a replayed drain emits no
+  // fresh queueChanged at all (agent/session_client_mutation_queue.go's
+  // clientMutationDispositionReplayed return, before
+  // reflectDurableInputQueue), and a plain missed/dropped push leaves the
+  // same gap - two accepted queue intents this client submitted have
+  // nothing live retiring them. The next authoritative hydrate is what
+  // catches it instead.
+  test("a hydrate whose authoritative queue names neither accepted queue intent retires both (missed push / replayed drain)", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "first queued");
+    await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/queue").length >= 1);
+    await threadsStore.getState().queue("ref_a", "second queued");
+    await flushIndexedDBUntil(() => fake.calls.filter((call) => call.method === "turn/queue").length >= 2);
+
+    const independent = new MutationOutboxIndexedDB();
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toHaveLength(2));
+
+    // The next authoritative read's queue names neither - both were
+    // consumed while this client's own live connection missed the push (or
+    // never got one, per the replayed-drain case).
+    fake.on("thread/read", (params) =>
+      readResponse(params.ref ?? "ref_a", {
+        turns: [{ id: "turn_1", status: "inProgress", itemsView: "" }],
+        evener: {
+          ref: params.ref ?? "ref_a",
+          capabilities: CAPABILITIES,
+          queue: { revision: 99, clientMutationIds: [] },
+          activeTurnId: "turn_1",
+        },
+      }),
+    );
+    await threadsStore.getState().refreshThread("ref_a");
+
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
+    independent.close();
+  });
+
   test("queue includes a base64 image attachment when provided", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
@@ -9119,6 +9166,16 @@ test.each(["active", "idle"].flatMap((status) => [true, false].map((accepted) =>
       expect(threadsStore.getState().mutationAuthorityRefs.has("ref_a")).toBe(true);
       expect(await storage.getOutbox(record.clientMutationId)).toBeUndefined();
       expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(accepted ? 0 : 1);
+      // settled.promise resolves on the first settle call the periodic
+      // tick's own reconciliation makes, not on that reconciliation's own
+      // completion (refreshMutationPins and the rest run after it) - drain
+      // the real IndexedDB queue a few turns so nothing from this test's own
+      // recovery tick is still in flight against the shared default
+      // database when the next parameterized case's beforeEach deletes and
+      // recreates it (this test's own record.clientMutationId, "delegate-
+      // periodic", is reused unchanged across every accepted/status
+      // variant).
+      await flushIndexedDBUntil(() => false, 10);
     } finally {
       vi.useRealTimers();
     }

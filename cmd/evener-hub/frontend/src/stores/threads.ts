@@ -12,6 +12,7 @@ import type {
   AppwireClientLike,
   GoalSetResponse,
   ModelListResponse,
+  QueueState,
   ThreadClearResponse,
   ThreadForkResponse,
   ThreadModel,
@@ -42,7 +43,7 @@ import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
 import { connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
+import { MutationDispatcher, type QueueSnapshot } from "./mutationDispatcher";
 import {
   type MutationAttachment,
   type MutationIntent,
@@ -1410,8 +1411,12 @@ function notificationThreadId(n: AnyNotification): string | undefined {
   return typeof params.threadId === "string" ? params.threadId : undefined;
 }
 
+// thread/queueChanged is handled separately, through reconcileQueueSnapshot
+// (handleNotification) - it needs revision and depth alongside the ids to
+// tell "authoritatively empty" apart from "coverage unknown", which this
+// single-id-shaped list cannot carry (measured on #1705 round 2: `?? []`
+// here silently treated an unknown-coverage push as an empty one).
 function notificationMutationIdentities(n: AnyNotification): string[] {
-  if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
   if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
   }
@@ -1424,6 +1429,21 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
       .filter((clientMutationId): clientMutationId is string => Boolean(clientMutationId));
   }
   return [];
+}
+
+// clientMutationIds is only ever fully populated when the daemon's queue is
+// non-empty (a legacy push path - session_queue.go's queueChangedDataLocked
+// - never sets it at all, #1704/#1705); depth is computed the same way on
+// every path, so depth === 0 is proof of an empty queue even without ids.
+// Anything else with ids missing is coverage this reading cannot vouch for.
+function queueSnapshotFromWire(queue: QueueState, authoritative: boolean): QueueSnapshot {
+  const ids =
+    queue.clientMutationIds !== undefined
+      ? new Set(queue.clientMutationIds)
+      : queue.depth === 0
+        ? new Set<string>()
+        : undefined;
+  return { ids, revision: queue.revision, authoritative };
 }
 
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
@@ -1640,6 +1660,18 @@ async function publishAndReconcileThreadHydration(
           notifyMutationPersistence([ref]);
         } else {
           await runtime.dispatcher.restoreProvenAbsent(ref, authoritativeIds);
+          // restoreProvenAbsent only reopens outbox records; a same-client
+          // turn/queue intent already accepted (optimistic, not outbox) that
+          // this authoritative snapshot's queue no longer names - consumed
+          // by a drain whose own push was lost, or by a replayed drain that
+          // emits no fresh queueChanged (agent/session_client_mutation_queue.go's
+          // clientMutationDispositionReplayed return, before
+          // reflectDurableInputQueue) - is retired here instead, on the next
+          // authoritative reconnect if a live push never arrives.
+          await runtime.dispatcher.reconcileQueueSnapshot(
+            ref,
+            queueSnapshotFromWire(hydration.response.thread.evener.queue, true),
+          );
         }
         if (!current()) return;
         await refreshMutationPins(runtime, [ref]);
@@ -1797,41 +1829,37 @@ function handleNotification(n: AnyNotification): void {
     inflightModelsList = null;
     inflightModelsListIsRefresh = false;
   }
-  // One chain per notification, not two independently-scheduled ones: both
-  // reconcileIdentities and (queueChanged only) retireConsumedQueueIntents
-  // mutate the same durable records this ref's refreshMutationPins reads
-  // pinnedMutationRefs/dropUnpinnedModel from, so two unordered chains could
-  // let a late pass re-pin a ref the other just dropped. queueChanged's own
-  // clientMutationIds are the server's current whole queue, not the partial,
-  // single-id shape notificationMutationIdentities reads for other
-  // notifications - retiring a same-client queue intent absent from it needs
-  // that whole-queue snapshot.
-  const mutationIdentities = notificationMutationIdentities(n);
-  const ref = notificationRef(n);
-  if (mutationIdentities.length > 0 || n.method === "thread/queueChanged") {
+  if (n.method === "thread/queueChanged") {
+    // The dispatcher's own entry point for a fresh queue reading
+    // (reconcileQueueSnapshot) does its own per-target serialization,
+    // revision gating and settle-plus-retire in one call - no second,
+    // independently-scheduled reconcileIdentities chain racing it for the
+    // same ref (measured on #1705 round 2).
+    const ref = notificationRef(n);
     const runtime = getMutationRuntime();
-    if (runtime) {
-      void (async () => {
-        try {
-          // mutationIdentities already non-empty is reason enough to refresh
-          // (unchanged from before this notification carried a second
-          // reconciliation step); retireConsumedQueueIntents's own settled
-          // ids are what decide it otherwise, so an empty queueChanged with
-          // nothing optimistic to retire skips the refresh's own reads too.
-          let settledSomething = mutationIdentities.length > 0;
-          if (settledSomething) await runtime.dispatcher.reconcileIdentities(mutationIdentities);
-          if (n.method === "thread/queueChanged" && ref) {
-            const settled = await runtime.dispatcher.retireConsumedQueueIntents(
-              ref,
-              new Set(n.params.queue.clientMutationIds ?? []),
-            );
-            settledSomething ||= settled.length > 0;
-          }
-          if (ref && settledSomething) await refreshMutationPins(runtime, [ref]);
-        } catch {
-          // A later snapshot or receipt retries the same settlement.
-        }
-      })();
+    if (ref && runtime) {
+      void runtime.dispatcher
+        .reconcileQueueSnapshot(ref, queueSnapshotFromWire(n.params.queue, true))
+        .then((settled) => (settled.length > 0 ? refreshMutationPins(runtime, [ref]) : undefined))
+        .catch(() => {
+          // A later queueChanged or receipt retries the same settlement.
+        });
+    }
+  } else {
+    const mutationIdentities = notificationMutationIdentities(n);
+    if (mutationIdentities.length > 0) {
+      const runtime = getMutationRuntime();
+      if (runtime) {
+        void runtime.dispatcher
+          .reconcileIdentities(mutationIdentities)
+          .then(() => {
+            const ref = notificationRef(n);
+            return ref ? refreshMutationPins(runtime, [ref]) : undefined;
+          })
+          .catch(() => {
+            // A later snapshot or receipt retries the same identity settlement.
+          });
+      }
     }
   }
   const now = Date.now();
