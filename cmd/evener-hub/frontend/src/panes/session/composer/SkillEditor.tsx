@@ -26,7 +26,10 @@ export interface SkillEditorHandle {
   getCursor(): number;
   getSelection(): { start: number; end: number };
   setSelection(start: number, end?: number): void;
-  insertSkill(start: number, end: number, name: string): void;
+  /** False when the editor could not take the insertion (an active IME
+   * composition), so the caller does not dismiss its own affordance for a skill
+   * that never landed. */
+  insertSkill(start: number, end: number, name: string): boolean;
 }
 
 export interface SkillEditorProps {
@@ -203,7 +206,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       },
       insertSkill: (start, end, name) => {
         const view = viewRef.current;
-        if (!view || view.composing) return;
+        if (!view || view.composing) return false;
         const { doc } = view.state;
         const from = textOffsetToDocumentPosition(doc, start);
         const to = textOffsetToDocumentPosition(doc, end, 1);
@@ -211,10 +214,12 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const separator = /^\s/.test(suffix) ? "" : " ";
         const content = [skillSchema.nodes.skill.create({ name })];
         if (separator) content.push(skillSchema.text(separator));
+        const inserted = content.reduce((size, node) => size + node.nodeSize, 0);
         const tr = closeHistory(view.state.tr.replaceWith(from, to, content));
-        tr.setSelection(TextSelection.create(tr.doc, from + content.length));
+        tr.setSelection(TextSelection.create(tr.doc, from + inserted));
         view.dispatch(tr);
         view.focus();
+        return true;
       },
     }),
     [],
@@ -314,6 +319,19 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
         const to = textOffsetToDocumentPosition(view.state.doc, end, -1);
         const inserted = props.value.text.slice(prefix, props.value.text.length - (current.length - end));
         apply(view.state.tr.replaceWith(from, to, inserted ? skillSchema.text(inserted) : Fragment.empty));
+      }
+      // The applied value is not the last word: the integrity plugin separates
+      // a chip from a token this change just joined to it, and the echo is
+      // suppressed for an external value. Reporting what the document actually
+      // became keeps the composer's text, its draft and the screen saying the
+      // same thing.
+      const settled = serializeSkillDocument(view.state.doc);
+      if (
+        settled.text !== props.value.text ||
+        settled.skillNames.length !== props.value.skillNames.length ||
+        !settled.skillNames.every((name, index) => props.value.skillNames[index] === name)
+      ) {
+        latest.current.onChange(settled, documentPositionToTextOffset(view.state.doc, view.state.selection.head));
       }
     }
     view.setProps({

@@ -950,7 +950,11 @@ export function Composer({ ref, focused }: ComposerProps) {
     // The editor replaces this range with one atomic mention and records the
     // text and activation metadata together in its undo history.
     if (item.kind === "skill" && item.canonicalName !== undefined) {
-      editorRef.current?.insertSkill(slashToken.start, slashToken.end, item.canonicalName);
+      // The editor refuses the insertion while an IME composition is live, so
+      // only dismiss the menu for a skill that actually landed: closing it over
+      // a token left as prose would tell the user something was staged that is
+      // not in the request at all.
+      if (!editorRef.current?.insertSkill(slashToken.start, slashToken.end, item.canonicalName)) return;
       setSlashToken(null);
       editorRef.current?.focus();
       return;

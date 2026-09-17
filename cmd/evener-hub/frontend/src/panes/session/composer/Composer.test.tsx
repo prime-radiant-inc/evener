@@ -3940,6 +3940,68 @@ function slashOptions() {
   return within(slashMenu()).getAllByRole("option");
 }
 
+test("removing an attachment that joined a token to a chip keeps the editor and the draft agreeing", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_attachment_joined_chip";
+  writeComposerDraft(ref, { text: "Use /cleanup", skillNames: ["cleanup"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+
+  // Stage an image directly against the chip, then type a token character
+  // after it: the marker keeps the chip's label whole, so nothing separates yet.
+  selectEditorText(editor, "Use /cleanup".length);
+  pastePngInto(editor, "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  await user.keyboard("d");
+  expect(editor.textContent).toBe("Use /cleanup[image 1]d");
+
+  // Removing the tile strips the marker, which joins the token to the chip.
+  // The editor separates them again; the composer's value and draft must
+  // follow the document rather than keep describing the joined text.
+  await user.click(screen.getByRole("button", { name: "Remove shot.png" }));
+  await waitFor(() => expect(editor.textContent).toBe("Use /cleanup d"));
+  expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+});
+
+test("committing a skill during an IME composition leaves the menu open rather than losing it", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_skill_commit_composing";
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  });
+  const editor = textarea();
+
+  await user.type(editor, "Run /skill-1");
+  expect(slashOptions()).toHaveLength(1);
+
+  fireEvent.compositionStart(editor);
+  await user.click(slashOptions()[0]!);
+
+  // The editor refuses an insertion mid-composition; dismissing the menu over
+  // a token left as prose would claim a skill is staged that is not.
+  expect(slashOptions()).toHaveLength(1);
+  expect(readComposerDraft(ref)).toEqual({ text: "Run /skill-1", skillNames: [] });
+  fireEvent.compositionEnd(editor);
+});
+
 test("a trailing slash token opens a completion menu merging session-scoped built-ins with the plugin command catalog", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
   const user = userEvent.setup();
