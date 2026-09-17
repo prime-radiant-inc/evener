@@ -62,6 +62,16 @@
 //     store's data - a read that never landed left none - so it is read off the
 //     state the fence is about to clear, and LATCHED.
 //
+//   replacement while a WRITE is in flight, none of the state a read would have
+//   left | the same recovery, for a mutation issued before anything ever read
+//     the list (a fresh screen's first install). `wantsList` alone would miss
+//     it: nothing has set the loading flag or a prior list, so there is no
+//     state field to read the intent off. Each store's own `wantsList` also
+//     asks its listRevision.hasLive() - the seam readRevisioned and
+//     writeRevisioned share (listRevision.ts), true for a write on the wire
+//     exactly as it already is for a read - so the intent is latched here the
+//     same way either way.
+//
 //   the replacement is named before it is dialled | the same thing, in two
 //     calls: a host connects its fresh client and only then awaits it, so the
 //     store hears "idle" first. That call fences the read and returns, having
@@ -110,10 +120,13 @@ export interface StoreLifecycleOptions<S> {
    * been disposed (nobody is listening then). */
   onFence?(set: FrameworkFreeStore<S>["setState"]): void;
   /** Whether the store wants this list at all: it has one, a read failed and
-   * left its error, or a read is in flight. Only a list something has asked
-   * for is recovered on reconnect - a store whose host never asked must not
-   * start asking on its own - and asking counts from the moment the request
-   * goes out, not from when it lands. */
+   * left its error, a read is in flight, or a list-producing write is (a
+   * mutation issued before anything ever read the list touches none of the
+   * state fields above, so an implementation also asks its own
+   * listRevision.hasLive()). Only a list something has asked for is
+   * recovered on reconnect - a store whose host never asked must not start
+   * asking on its own - and asking counts from the moment the request goes
+   * out, not from when it lands. */
   wantsList(state: S): boolean;
 }
 

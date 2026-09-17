@@ -69,6 +69,12 @@ export interface ListRevision {
   /** Every live revision stops being live: nothing on the wire, and nothing
    * held, publishes. */
   fence(): void;
+  /** Whether any revision is currently live - on the wire, or answered but
+   * held behind a newer owner. A read and a write both issue through next(),
+   * so this is true for either: the seam a store's own "does it want this
+   * list" question (storeLifecycle.ts's wantsList) reads a mutation's intent
+   * off, the same way it already reads a read's own loading flag. */
+  hasLive(): boolean;
 }
 
 export function createListRevision(): ListRevision {
@@ -114,6 +120,7 @@ export function createListRevision(): ListRevision {
     fence() {
       live.clear();
     },
+    hasLive: () => live.size > 0,
   };
 }
 
