@@ -524,8 +524,8 @@ Promise.all([
 });
 `,
     },
-    // The extensions state layer - the marketplaces and installed-plugins
-    // stores, with the directories store to follow - published as one subpath
+    // The extensions state layer - the marketplaces, installed-plugins and
+    // launch-layer stores - published as one subpath
     // for the same
     // reason state/navigation is: a layer both apps build their settings
     // surfaces on, not part of the client surface every consumer takes.
@@ -604,12 +604,14 @@ marketplacesStore
     },
     // The mutation state layer: the durable record shapes both apps' outboxes
     // store, the provenance rule their projections ask (did THIS client
-    // submit it), and the pure reconciliation that turns durable records plus
-    // a live model into the rows a composer's queue renders. Published as its
-    // own subpath because a host's storage and scheduling stay out of the
-    // package - this is the shape, the rule and the reconciliation alone.
-    // Every call here is synchronous, unlike the fetch-backed layers above:
-    // there is no client port to script.
+    // submit it), the pure reconciliation that turns durable records plus a
+    // live model into the rows a composer's queue renders, and the
+    // pending-turns projection store built on that reconciliation. Published
+    // as its own subpath because a host's storage and scheduling stay out of
+    // the package - this is the shape, the rule, the reconciliation and the
+    // store alone. Every call here is synchronous apart from the store's own
+    // triple, and the store's ports are fakes: there is no client port to
+    // script.
     "./state/mutation": {
       esmTypeUses: `const attachmentRef: MutationAttachmentRef = { presentationId: "p1", marker: 1, name: "shot.png", mediaType: "image/png" };
 const intent: MutationIntent = { targetRef: "ref", method: "turn/start", payload: {}, attachments: [attachmentRef], optimisticDisplay: null };
@@ -625,6 +627,15 @@ const pendingState: PendingTurnState = "submitting";
 const pendingEntry: PendingTurnEntry = { id: "cmid", ref: "ref", method: pendingMethod, text: "hi", imageCount: 0, skillNames: [], state: pendingState, source: "outbox", fromThisClient: true };
 const secureRandomSource: SecureRandomSource = { getRandomValues: (array) => array };
 const identity: ClientIdentity = createClientIdentity(storage, secureRandomSource);
+const threadsPort: PendingTurnsThreadsPort = { getThreadModel: () => undefined };
+const draftPort: PendingTurnsDraftPort = {
+  readDraftRevision: () => 0,
+  readComposerDraft: () => ({ text: "", skillNames: [] }),
+  clearDraft: () => undefined,
+};
+const pendingTurnsStore: PendingTurnsStore = createPendingTurnsStore({ threads: threadsPort, draft: draftPort, identity });
+const pendingTurnsState: PendingTurnsState = pendingTurnsStore.getState();
+const submittedDraft: SubmittedDraft = { draftRevisionAtStart: 0, text: "hi", skillNames: [] };
 const outboxStorage: MutationOutboxStorage = {
   enqueueIntent: () => Promise.resolve(outboxRecord),
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
@@ -634,11 +645,16 @@ const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: 
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void identity; void secureRandomSource; void outbox; void reason;`,
+void pendingEntry; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
 const identity: client.ClientIdentity = client.createClientIdentity(storage, secureRandomSource); void identity;
+const pendingTurnsState: client.PendingTurnsState = client.createPendingTurnsStore({
+  threads: { getThreadModel: () => undefined },
+  draft: { readDraftRevision: () => 0, readComposerDraft: () => ({ text: "", skillNames: [] }), clearDraft: () => undefined },
+  identity,
+}).getState(); void pendingTurnsState;
 const channel: client.MutationOutboxChannel = {
   postMessage: () => undefined,
   close: () => undefined,
@@ -655,7 +671,11 @@ void channel;`,
       // and a source with neither proves the non-crypto fallback runs rather
       // than throwing. reconcilePendingEntries needs no model to prove it
       // runs: an absent one is the same "no live projection yet" case a
-      // fresh composer starts from.
+      // fresh composer starts from. The pending-turns store is built over
+      // fake threads/draft ports plus one of the identities below:
+      // beginSubmission's guard, its release and the empty-projection read
+      // all prove the store runs without a real thread store or composer-
+      // draft storage behind it.
       smoke: `const identityStorage = { value: undefined, getItem() { return this.value ?? null; }, setItem(_key, value) { this.value = value; } };
 const identityRandomSource = { getRandomValues: (array) => globalThis.crypto.getRandomValues(array) };
 const identityA = client.createClientIdentity(identityStorage, identityRandomSource);
@@ -677,6 +697,23 @@ assert.deepEqual(
   client.reconcilePendingEntries("ref", [], undefined, new Set(), identityA.isOwnMutationRecord),
   [],
 );
+const draftState = { revision: 0, text: "", skillNames: [] };
+const pendingTurnsStore = client.createPendingTurnsStore({
+  threads: { getThreadModel: () => undefined },
+  draft: {
+    readDraftRevision: () => draftState.revision,
+    readComposerDraft: () => ({ text: draftState.text, skillNames: draftState.skillNames }),
+    clearDraft: () => {
+      draftState.text = "";
+    },
+  },
+  identity: identityA,
+});
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), false);
+pendingTurnsStore.endSubmission("ref-a");
+assert.equal(pendingTurnsStore.beginSubmission("ref-a"), true);
+assert.deepEqual(pendingTurnsStore.pendingTurnEntries("ref-a"), []);
 // The outbox over a memory storage port: no channel, no lifecycle target and
 // no timer, which is exactly what a host without them passes. One enqueue
 // commits through the port and announces the ref it landed under, and stop()
