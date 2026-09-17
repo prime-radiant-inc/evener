@@ -37,13 +37,13 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-async function persisted(note = " \tB\n\u00a0e\u0301🙂  ") {
+async function persisted(note = " \tB\n\u00a0e\u0301🙂  ", optimisticDisplay: unknown = null) {
   return storage.enqueueIntent({
     targetRef: "ref-a",
     method: "notes/human/set",
     payload: { ref: "ref-a", expectedInstanceId: "instance-a", note },
     attachments: [],
-    optimisticDisplay: null,
+    optimisticDisplay,
   });
 }
 
@@ -466,6 +466,69 @@ test("a background save whose blocked row is restored elsewhere mid-retry takes 
     dirty: true,
     saved: false,
     error: null,
+    submitted: { id: original.clientMutationId, state: "submitting" },
+  });
+  expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);
+});
+
+// RoboRev finding (PR 1393 head fee4eb8): the save's post-retry lookup asked
+// only the outbox and recovery stores. When another dispatcher ACCEPTS the
+// note mid-retry - a receipt with projectionState "pending" moves the row
+// from the outbox to the optimistic store - the lookup reads the row as
+// absent and mislabels the draft settled-elsewhere-unsaved while the note is
+// in fact accepted and only waiting on its canonical reflection.
+test("a background save whose blocked row is accepted elsewhere mid-retry stays pending", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const ref = "ref-a";
+  const fake = new FakeClient("ready");
+  fake.on("thread/read", () => hydrationResponse(ref, "instance-a"));
+  connectionStore.getState().connect(fake);
+  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().refreshThread(ref);
+  const original = await persisted("retained blocked note", {
+    input: [{ type: "text", text: "retained blocked note" }],
+  });
+  await storage.markAttempted(original.clientMutationId);
+  await storage.markUnknown(original.clientMutationId, "blockedUnknown");
+  syncHumanNote(ref, "");
+  const { result } = renderHook(() => useHumanNoteDraft(ref));
+  await act(async () => {
+    await storage.listOutbox();
+  });
+  expect(result.current?.submitted?.state).toBe("blockedUnknown");
+  // Another dispatcher's receipt accepts the note with projectionState
+  // "pending" after the retry's initial lookup and before its final one:
+  // settleReceipt moves the row from the outbox to the optimistic store.
+  const getOutbox = storage.getOutbox.bind(storage);
+  let acceptedMidRetry = false;
+  const spy = vi.spyOn(storage, "getOutbox").mockImplementation(async (clientMutationId) => {
+    const record = await getOutbox(clientMutationId);
+    if (!acceptedMidRetry && record?.state === "blockedUnknown") {
+      acceptedMidRetry = true;
+      await storage.settleReceipt(clientMutationId, "pending");
+    }
+    return record;
+  });
+  onTestFinished(() => spy.mockRestore());
+  let saving: Promise<void> | undefined;
+  act(() => blurHumanNote(ref, Symbol("blur owner")));
+  act(() => {
+    saving = Promise.resolve(result.current?.flush?.());
+  });
+  await act(async () => {
+    await saving;
+  });
+  expect(acceptedMidRetry).toBe(true);
+  expect(await storage.getOutbox(original.clientMutationId)).toBeUndefined();
+  expect((await storage.getOptimistic(original.clientMutationId))?.state).toBe("accepted");
+  // Accepted-but-unreflected is pending, never settled-elsewhere-unsaved: the
+  // draft keeps its submitted identity so the canonical note state that
+  // arrives next still acknowledges it.
+  expect(result.current?.error).toBeNull();
+  expect(result.current).toMatchObject({
+    text: "retained blocked note",
+    dirty: true,
+    saved: false,
     submitted: { id: original.clientMutationId, state: "submitting" },
   });
   expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "notes/human/set")).toEqual([]);

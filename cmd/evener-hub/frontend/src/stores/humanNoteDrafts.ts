@@ -169,17 +169,30 @@ export function blurHumanNote(ref: string, owner: symbol): void {
         // what this ref's own records say now, asked of them directly
         // (readMutationPersistence), never a queue-wide freshen, and never a
         // resave.
-        const { outbox, recovery } = await readMutationPersistence(ref);
+        const { outbox, optimistic, recovery } = await readMutationPersistence(ref);
         const refused = recovery.find((record) => record.clientMutationId === blockedId);
         const record = refused ?? outbox.find((record) => record.clientMutationId === blockedId);
+        // The optimistic store holds accepted-but-unreflected rows: another
+        // dispatcher's receipt (projectionState "pending") moved the row there
+        // while its canonical note state is still on the way.
+        const accepted = optimistic.find((record) => record.clientMutationId === blockedId);
         const latest = get(ref);
         // The same generation AND the same submitted identity: a newer edit, or
         // an acknowledgement that landed while the read ran, owns the status now.
         const submitted = latest?.submitted;
         if (!latest || latest.generation !== current.generation || !submitted || submitted.id !== blockedId) return;
         if (!record) {
-          // The row's absence is not a canonical acknowledgement, so the dirty
-          // note stays exactly where it is and only its status changes.
+          if (accepted) {
+            // Accepted but not yet reflected: the note is pending, not
+            // settled-elsewhere. Keeping the submitted identity lets the
+            // acknowledgement that arrives with the canonical note state
+            // settle this same save.
+            put(ref, { ...latest, submitted: { ...submitted, state: "submitting" }, error: null, saved: false });
+            return;
+          }
+          // Absence from every store is not a canonical acknowledgement, so
+          // the dirty note stays exactly where it is and only its status
+          // changes.
           put(ref, { ...latest, error: SETTLED_ELSEWHERE_STATUS });
           return;
         }
