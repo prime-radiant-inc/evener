@@ -62,10 +62,21 @@ export function MarketplaceBrowser({
   // Marketplace writes (add, remove, refresh) are this view's own and end with
   // it; the plugin install is the one that outlives it, so only that one takes
   // the screen's gate. They still wait on pluginBusy (see the three actions
-  // below) without taking the gate themselves: the hub does not serialize a
-  // marketplace removal or refresh against a concurrent install from that
-  // marketplace, so this view has to refuse the overlap the hub won't.
+  // below) without taking the gate themselves: the hub DOES serialize a
+  // marketplace removal or refresh against a concurrent install under the
+  // same store lock (internal/plugins/locks.go's lockStore - install.go's
+  // Install/Upgrade/mutateEntry and marketplaces.go's RemoveMarketplace/
+  // RefreshMarketplace all acquire it), so the write itself is safe either
+  // way. What the lock does not do is refuse: a removal issued mid-install
+  // blocks at the hub until the install's lock releases, which the request's
+  // own 30s timeout (client.ts's DEFAULT_REQUEST_TIMEOUT_MS) matches almost
+  // exactly - so without this gate the button would sit looking hung, or
+  // occasionally time out outright, instead of refusing at once with copy
+  // that says why.
   const [mutating, setMutating] = useState(false);
+  // Any of the three marketplace actions plus the installed-plugin gate: what
+  // every write-disabling site below shares.
+  const busy = mutating || pluginBusy;
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -141,8 +152,12 @@ export function MarketplaceBrowser({
   const marketplace = state.marketplaces?.find(
     (item) => item.name === selected,
   );
+  function refresh() {
+    if (!marketplace || busy) return;
+    void act(() => state.refreshMarketplace(marketplace.name));
+  }
   function remove() {
-    if (!marketplace || mutating || pluginBusy) return;
+    if (!marketplace || busy) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -151,8 +166,17 @@ export function MarketplaceBrowser({
         text: "Remove",
         style: "destructive",
         onPress: () => {
-          if (revision.current === version)
-            void act(() => state.removeMarketplace(name));
+          if (revision.current !== version) return;
+          // busy is this render's snapshot, captured when the button that
+          // opened this dialog was still enabled; the confirm tap can land
+          // much later, so an install started while the dialog was up needs
+          // a live read - the same reason the revision check above is a
+          // fresh comparison rather than a captured boolean.
+          if (gate.isBusy()) {
+            setError(PLUGIN_MUTATION_BUSY);
+            return;
+          }
+          void act(() => state.removeMarketplace(name));
         },
       },
     ]);
@@ -186,15 +210,10 @@ export function MarketplaceBrowser({
           {marketplace && <Copy muted>{marketplaceSourceLabel(marketplace.source)}</Copy>}
           {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
-            <Action
-              disabled={mutating || pluginBusy}
-              onPress={() => {
-                void act(() => state.refreshMarketplace(selected));
-              }}
-            >
+            <Action disabled={busy} onPress={refresh}>
               Refresh source
             </Action>
-            <Action disabled={mutating || pluginBusy} onPress={remove}>
+            <Action disabled={busy} onPress={remove}>
               Remove marketplace
             </Action>
           </View>
@@ -232,11 +251,11 @@ export function MarketplaceBrowser({
           )}
         </>
       ) : (
-        <Action disabled={mutating || pluginBusy} onPress={() => setAdding(true)}>
+        <Action disabled={busy} onPress={() => setAdding(true)}>
           Add marketplace
         </Action>
       )}
-      {(mutating || pluginBusy) && (
+      {busy && (
         <ActivityIndicator accessibilityLabel="Updating marketplace or plugin" />
       )}
     </View>
@@ -285,9 +304,7 @@ export function MarketplaceBrowser({
                 {item.description && <Copy muted>{item.description}</Copy>}
                 {item.author && <Copy muted>{item.author}</Copy>}
                 <Action
-                  disabled={
-                    mutating || pluginBusy || !plugins.plugins || !!installedError
-                  }
+                  disabled={busy || !plugins.plugins || !!installedError}
                   label={`${existing ? "Open" : "Install"} ${item.name} from ${target.marketplace}`}
                   onPress={() => {
                     if (existing) onOpenPlugin(target);
