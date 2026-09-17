@@ -88,6 +88,14 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if resp.ProtocolVersion == "" {
 				resp.ProtocolVersion = handshake.ProtocolVersion
 			}
+		} else {
+			// A false handshake means the installed channel is a different
+			// generation than the dial produced (or nothing is attached at
+			// all): the host the dial attached is already gone, so reporting
+			// Attached:true would hand the UI an online row for a host that is
+			// no longer attached. Refuse with the same typed liveness refusal
+			// the attached-only lookup and the facts seam produce.
+			return appwire.HostAttachResponse{}, appwire.SessionUnavailable("remote hub unavailable: " + name)
 		}
 	}
 	// The facts seam is optional (tests and embedders may leave it unset); when
@@ -98,6 +106,14 @@ func hubHostAttach(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 		if factsErr != nil {
 			if cerr := ctx.Err(); cerr != nil {
 				return appwire.HostAttachResponse{}, cerr
+			}
+			// A typed liveness error means the channel disappeared or changed
+			// generation after Ensure, so the host is no longer attached and
+			// the attach itself failed — surface it rather than reporting
+			// Attached:true. Only non-liveness fact-read errors stay
+			// suppressed below (the dial-authoritative behavior).
+			if isSessionUnavailableError(factsErr) {
+				return appwire.HostAttachResponse{}, factsErr
 			}
 			// The dial succeeded and the host is attached — the attach event has
 			// already flipped it online. A failure reading the post-attach facts

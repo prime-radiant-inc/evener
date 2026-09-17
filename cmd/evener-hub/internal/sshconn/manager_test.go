@@ -3372,10 +3372,10 @@ func TestClientIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 }
 
-// PreflightIfAttached is the attached-only accessor behind
-// hubcore.WebConfig.RemoteHostFacts: it answers from the installed channel's
-// captured preflight alone, never preflighting or attaching a dormant host, and
-// stops answering the moment that channel drops or the manager closes.
+// PreflightIfAttached is a test-only/convenience attached-only accessor: it
+// answers from the installed channel's captured preflight alone, never
+// preflighting or attaching a dormant host, and stops answering the moment
+// that channel drops or the manager closes.
 func TestPreflightIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}
@@ -3422,10 +3422,9 @@ func TestPreflightIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	}
 }
 
-// HandshakeIfAttached is the attached-only accessor behind
-// hubcore.WebConfig.RemoteHostHandshake: component 05's capability probe reads
-// ProtocolVersion/ServerInfo/SourceID/Features through it, so it must offer the
-// InitializeResponse captured at attach for a live channel and never dial.
+// HandshakeIfAttached is a test-only/convenience attached-only accessor: it
+// offers the InitializeResponse captured at attach for a live channel and
+// never dials.
 func TestHandshakeIfAttachedReturnsOnlyALiveChannel(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(nil), startFn: goodStartFn(t)}

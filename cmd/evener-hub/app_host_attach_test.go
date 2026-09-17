@@ -425,3 +425,80 @@ func TestHostAttachKeepsSuccessfulDialWhenFactsReadFails(t *testing.T) {
 		t.Fatalf("handshake identity lost from %+v", resp)
 	}
 }
+
+// A handshake generation mismatch after a successful dial is an attach failure,
+// not a success: the seam reports false when the installed channel is a
+// different generation than the dial produced (or nothing is attached), so the
+// UI must not receive attached:true for a host that is no longer attached.
+func TestHostAttachRefusesHandshakeGenerationMismatch(t *testing.T) {
+	live := &appwire.Client{}
+	var dials atomic.Int64
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			dials.Add(1)
+			return live, nil
+		},
+		RemoteHostHandshake: func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
+			return appwire.InitializeResponse{}, false
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
+	if err == nil {
+		t.Fatalf("handshake-mismatch attach = %+v, want an attach failure (not Attached:true)", resp)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("handshake-mismatch attach error %T=%v, want a typed WireError", err, err)
+	}
+	data, _ := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("handshake-mismatch attach wire=%+v, want session unavailable", wire)
+	}
+	if !strings.Contains(wire.Message, "alpha") {
+		t.Fatalf("handshake-mismatch attach message %q does not name host alpha", wire.Message)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("handshake-mismatch attach dialed %d times, want 1", got)
+	}
+}
+
+// A typed liveness error from the post-attach facts read is an attach failure,
+// not a suppressed read error: SessionUnavailable means the channel disappeared
+// or changed generation after Ensure, so the host is no longer attached. Only
+// non-liveness fact-read errors stay suppressed (the dial-authoritative L1
+// behavior pinned by TestHostAttachKeepsSuccessfulDialWhenFactsReadFails).
+func TestHostAttachRefusesFactsLivenessError(t *testing.T) {
+	live := &appwire.Client{}
+	cfg := hubcore.WebConfig{
+		RemoteHosts: []hostreg.Host{{Name: "alpha", SSH: "alpha"}},
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			return live, nil
+		},
+		RemoteHostFacts: func(context.Context, string, *appwire.Client) (appsource.HostFacts, error) {
+			return appsource.HostFacts{}, appwire.SessionUnavailable("remote hub unavailable: alpha")
+		},
+		RemoteHostHandshake: func(string, *appwire.Client) (appwire.InitializeResponse, bool) {
+			return appwire.InitializeResponse{ServerInfo: appwire.ServerInfo{Name: "evener-hub", Version: "0.1.0"}}, true
+		},
+	}
+	hosts := hostAttachRegistry(t, cfg)
+
+	resp, err := hubHostAttach(context.Background(), cfg, appsource.NewRegistry(), hosts, appwire.HostAttachParams{Host: "alpha"})
+	if err == nil {
+		t.Fatalf("liveness-error attach = %+v, want an attach failure (not Attached:true)", resp)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("liveness-error attach error %T=%v, want a typed WireError", err, err)
+	}
+	data, _ := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("liveness-error attach wire=%+v, want session unavailable", wire)
+	}
+	if !strings.Contains(wire.Message, "alpha") {
+		t.Fatalf("liveness-error attach message %q does not name host alpha", wire.Message)
+	}
+}
