@@ -929,6 +929,29 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()?.writeUncertain).toBe(false);
   });
 
+  // RoboRev round 24 Medium 1: the no-port fallback storage's replaceIf
+  // always returned false, so a settle path composing against it read
+  // "false" as "a concurrent writer replaced the record" and adopted
+  // restoreDraft (which reads null from the same fallback), silently
+  // dropping the in-memory draft even though there is no real backing store
+  // - and so no concurrent writer - to have raced against.
+  test("without a draft port, a revision conflict's settle does not misread the ephemeral fallback as a concurrent replacement", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client); // no drafts port: the ephemeral fallback
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        layout: "mobile",
+        current: toWireDefault(hubDefault(5, desktopConfig)),
+      });
+    });
+    await expect(store.getState().saveDraft("mobile", proposed)).rejects.toThrow("revision conflict");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false, draftConflict: true });
+    // The draft must still be here for review, not silently wiped to null.
+    expect(store.getState().draft).not.toBeNull();
+    expect(store.getState().draft?.config).toEqual(proposed);
+  });
+
   test("a newer external revision keeps the proposal for review instead of reporting it applied", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDraftStorage<TranscriptDraftCheckpoint>();

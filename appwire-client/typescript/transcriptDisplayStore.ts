@@ -96,9 +96,17 @@ export interface TranscriptDraftStorage {
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
- * store's state only and does not survive the instance. */
+ * store's state only and does not survive the instance. There is no real
+ * backing store here - only this one repository instance ever touches it -
+ * so there is no concurrent writer a compare-and-swap could actually lose to;
+ * removeIf/replaceIf report success unconditionally rather than the refusal
+ * a byte-aware port reports when a record it named is gone (round 24 Medium
+ * 1): reporting false there reads as "someone else replaced it" and adopts a
+ * restoreDraft that reads null right back from this same fallback, silently
+ * dropping the in-memory draft over a race that cannot happen without real
+ * storage behind it. */
 function memoryDraftStorage(): TranscriptDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => false, replaceIf: () => false };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => true, replaceIf: () => true };
 }
 
 /** The offline editor's proposal: one layout's configuration and the
