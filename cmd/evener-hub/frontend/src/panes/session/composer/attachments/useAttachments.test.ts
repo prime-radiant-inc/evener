@@ -121,7 +121,7 @@ function makeFakeEditor(initialText = "", initialCursor = initialText.length): F
   let text = initialText;
   let cursor = initialCursor;
   return {
-    read: () => ({ text, cursor }),
+    read: () => ({ text, cursor, selection: { start: cursor, end: cursor } }),
     write: (nextText, nextCursor) => {
       text = nextText;
       cursor = nextCursor;
