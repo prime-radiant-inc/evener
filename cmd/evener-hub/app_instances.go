@@ -1461,17 +1461,16 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		}
 		return restored
 	}
-	// The instance is gone from the registry now, so the sweep reclaims both the
-	// copy this removal set aside and any copy an earlier removal stranded under
-	// the same name - one mechanism for both, in the call that removes the name.
-	// The copies are the user's credentials under a name no reader looks at, so a
-	// failure to delete one is reported even though the removal stands: a caller
-	// told the removal succeeded has no reason to look for what it left behind.
-	// removePersistedError is what tells the RPC handler to announce the removal
-	// and leaves the caller the file the failure names. Nothing is rolled back for
-	// it - the config, the registry and the credential the instance resolved are
-	// all in their post-removal state.
-	if err := c.reclaimOAuthAsides(); err != nil {
+	// The removal stands, so every copy of this name's record is unwanted now:
+	// the one this call set aside and any an earlier removal of the name left
+	// behind. The copies are the user's credentials under a name no reader looks
+	// at, so a failure to delete one is reported even though the removal stands -
+	// a caller told the removal succeeded has no reason to look for what it left
+	// behind. removePersistedError is what tells the RPC handler to announce the
+	// removal and leaves the caller the files the failure names. Nothing is
+	// rolled back for it: the config, the registry and the credential the
+	// instance resolved are all in their post-removal state.
+	if err := c.reclaimOAuthAsides(name); err != nil {
 		return removePersistedError{fmt.Errorf("removed %s, but %w", name, err)}
 	}
 	return nil
@@ -1554,20 +1553,25 @@ func oauthAsideInstance(name string) (string, bool) {
 	return strings.TrimSuffix(record, ".json"), true
 }
 
-// reclaimOAuthAsides deletes the copies removals set aside and did not manage to
-// delete. A copy is the user's credential under a name no reader looks at;
-// nothing else in the hub reads, lists or collects those, so this sweep is what
-// keeps a failed cleanup from leaving one on disk for good. It is run once a
-// removal has stood, after the reload that drops the instance from the registry:
-// both the copy that removal just set aside and any copy an earlier removal
-// stranded under the same name are collected together. What spares a copy is
-// not that its name still resolves but that it resolves to an authored
-// instance: that entry is what a record at the aside path would be restored to,
-// so the copy IS the credential the instance still needs. Every implicit
-// instance owes its existence to something else and its copy is debris. A
-// failure to take one is reported rather than ignored, because the sweep is the
-// only thing that ever takes those copies away.
-func (c *hubInstancesController) reclaimOAuthAsides() error {
+// reclaimOAuthAsides deletes the copies of one name's OAuth record that a
+// removal of that name has just made unwanted: the copy the call set aside and
+// any an earlier removal of the name left behind. It is run once the removal has
+// stood, after the reload that drops the instance from the registry, and it
+// takes copies FILED UNDER THAT NAME ONLY.
+//
+// The name is the whole of what makes a copy safe to take. A removal is the only
+// call that can know the bytes are no longer wanted, so a copy under any other
+// name - including one whose own removal failed after setting the record aside
+// and could not put it back (restoreFailedRemoval) - may be the last surviving
+// credential of an instance the user still has. Taking it from here would turn a
+// repairable file-level failure into a forced sign-in, so it is left where it
+// is, and the failure that stranded it named it at the time. Removing that name
+// again is what reclaims it, because a removal of the name is the caller saying
+// the credential is not wanted any more.
+//
+// A failure to take one is reported rather than ignored: the removal stands, and
+// the caller is the only one left who can delete the copy the report names.
+func (c *hubInstancesController) reclaimOAuthAsides(name string) error {
 	// Where the records live, asked of the function that places them, so the
 	// sweep cannot look somewhere a record never lands.
 	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
@@ -1578,30 +1582,12 @@ func (c *hubInstancesController) reclaimOAuthAsides() error {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("collect the OAuth copies earlier removals set aside: %w", err)
+		return fmt.Errorf("collect the OAuth copies the removal of %s set aside: %w", name, err)
 	}
 	var problems []string
 	for _, e := range entries {
 		inst, aside := oauthAsideInstance(e.Name())
-		if e.IsDir() || !aside {
-			continue
-		}
-		// A copy is spared only when the name still resolves to an AUTHORED
-		// instance. That providers.toml entry is what a record at the aside path
-		// would be restored to, so the copy IS the credential the instance still
-		// needs: a removal that failed after setting the record aside - and then
-		// could not put it back - leaves the instance authored and the record
-		// stranded, and deleting it would turn a repairable file-level mishap
-		// into a forced sign-in. That failure was reported when it happened, so
-		// the copy is left for an explicit cleanup rather than taken.
-		//
-		// An implicit instance is the opposite: it owes its existence to the
-		// environment, the store, a keyless scheme, or the record at its own
-		// canonical path - never to a copy under the aside path - so a copy for
-		// it is debris and is reclaimed. That is what lets a removal whose name
-		// the environment re-supplies still reclaim the copy it set aside: the
-		// name is back as an implicit row, but the copy is not what supplies it.
-		if held, exists := c.reg.Get().Instance(inst); exists && !held.Implicit {
+		if e.IsDir() || !aside || inst != name {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -1610,7 +1596,7 @@ func (c *hubInstancesController) reclaimOAuthAsides() error {
 		}
 	}
 	if len(problems) > 0 {
-		return fmt.Errorf("a credential the removal set aside is still on disk, and deleting it is what takes it away: %s", strings.Join(problems, ", "))
+		return fmt.Errorf("a credential the removal of %s set aside is still on disk, and deleting it is what takes it away: %s", name, strings.Join(problems, ", "))
 	}
 	return nil
 }

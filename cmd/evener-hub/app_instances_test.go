@@ -775,11 +775,12 @@ func authDirEntries(t *testing.T, f *instancesFixture) []string {
 
 // TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete: what a removal moves
 // aside is the user's credential under a name no reader looks at, so a removal
-// that cannot delete it cannot report it gone either. The sweep runs once the
+// that cannot delete it cannot report it gone either. The reclaim runs once the
 // removal has stood - after the reload that drops the instance - so the failure
 // names the path it left while the record is gone from its own path and the
-// instance from the listing. A later removal reclaims the copy, which is what
-// the reported failure says the caller can rely on.
+// instance from the listing. Nothing else takes that copy: a removal of another
+// name cannot know it is unwanted, so the reported path is the caller's to act
+// on, and removing this name again is what reclaims it.
 func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
@@ -809,8 +810,9 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 		t.Fatal("openai-codex is still listed after a removal that reported a leftover")
 	}
 
-	// The next removal reclaims what the failed one left, so the caller that was
-	// told the copy is on disk is not told to wait for nothing.
+	// A removal of another name leaves the copy where it is: that call cannot
+	// know the bytes are unwanted, and the copy may be the last surviving
+	// credential of an instance the user still has.
 	f.ctl.auth.deleteAside = os.Remove
 	if err := f.store.Set("groq", "gk"); err != nil {
 		t.Fatalf("Set: %v", err)
@@ -821,43 +823,53 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
 		t.Fatalf("Remove(groq): %v", err)
 	}
+	if left := authDirEntries(t, f); len(left) != 1 {
+		t.Fatalf("the auth directory holds %v, want the copy another name's removal must leave alone", left)
+	}
+
+	// Removing the name again is what reclaims it, which is what the reported
+	// failure says the caller can rely on.
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err != nil {
+		t.Fatalf("Remove(openai-codex): %v", err)
+	}
 	if left := authDirEntries(t, f); len(left) != 0 {
-		t.Fatalf("the auth directory holds %v, want the next removal to have reclaimed the copy", left)
+		t.Fatalf("the auth directory holds %v, want removing the name again to reclaim both copies", left)
 	}
 }
 
-// TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft: a copy an
-// earlier removal set aside and could not delete is a credential no reader ever
-// looks at, so the sweep of a later removal collects it - after that removal's
-// reload. A copy is spared only beside an AUTHORED instance, whose providers.toml
-// entry is what the record at the aside path would be restored to; an implicit
-// name's copy is debris (see
-// TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName). What
-// counts as a copy is the name the removal builds - the record's path plus a
-// numeric stamp - so an instance whose own name holds the marker keeps its
-// record.
-func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T) {
+// TestInstances_RemoveReclaimsOnlyTheCopiesFiledUnderTheName: a copy an earlier
+// removal of this name set aside and could not delete is a credential no reader
+// ever looks at, so removing the name again collects it - in the same call, after
+// the reload that drops the instance. Copies under OTHER names are left alone,
+// because a removal of this name cannot know they are unwanted: a copy stranded
+// by a removal that failed after setting the record aside and could not put it
+// back is the last surviving credential of an instance the user still has, and
+// taking it would turn a repairable failure into a forced sign-in. What counts
+// as a copy is the name the removal builds - the record's path plus a numeric
+// stamp - so an instance whose own name holds the marker keeps its record.
+func TestInstances_RemoveReclaimsOnlyTheCopiesFiledUnderTheName(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// groq is the instance being removed. mistral is an authored instance that
-	// still exists, with its own record stranded beside it by a removal that
-	// failed after setting the record aside - the copy its entry would be
-	// restored to, so the sweep has to leave it.
-	leftovers := []string{
-		"openai-codex.json.removing-1700000000000000000",
-		"gone.json.removing-1",
+	// groq is the name being removed: the removal makes one copy of its record
+	// itself, and this older one is what an earlier removal of groq left behind.
+	groqCopies := []string{
+		"groq.json.removing-1",
+		"groq.json.removing-1700000000000000000",
 	}
+	// Everything else stays, whatever its name resolves to: another name's copy -
+	// including one a failed removal stranded, which is the credential the user
+	// would otherwise have to sign in again to replace - a record of an instance
+	// whose own name holds the marker, and a file that is not a record at all.
 	kept := map[string]string{
-		// The record of an instance whose own name holds the marker: sweeping it
-		// would take a signed-in account away.
-		"x.removing-1.json":       "{}",
-		"notes.txt":               "not a record at all",
-		"mistral.json.removing-9": `{"access_token":"stranded"}`,
+		"openai-codex.json.removing-7": `{"access_token":"stranded"}`,
+		"x.removing-1.json":            "{}",
+		"notes.txt":                    "not a record at all",
 	}
-	for _, name := range leftovers {
+	for _, name := range groqCopies {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"access_token":"secret"}`), 0o600); err != nil {
 			t.Fatalf("WriteFile(%s): %v", name, err)
 		}
@@ -870,33 +882,27 @@ func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T
 	if err := f.store.Set("groq", "gk"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	if err := f.store.Set("mistral", "mk"); err != nil {
-		t.Fatalf("Set: %v", err)
-	}
-	// mistral is authored: that providers.toml entry is what makes its stranded
-	// record the credential the instance still needs.
-	if err := os.WriteFile(f.tomlPath, []byte("[providers.mistral]\nbase = \"openai\"\n"), 0o644); err != nil {
-		t.Fatalf("write providers.toml: %v", err)
-	}
 	if err := f.ctl.auth.reloadRegistry(); err != nil {
 		t.Fatalf("reloadRegistry: %v", err)
-	}
-	if !listedInstance(f.ctl.List(), "mistral") {
-		t.Fatal("fixture: mistral is not an instance, so its stranded record is not the case under test")
 	}
 
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	for _, name := range leftovers {
+	for _, name := range groqCopies {
 		if _, err := os.Lstat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("the copy at %s survived the next removal (Lstat = %v)", name, err)
+			t.Fatalf("the copy at %s survived the removal of its own name (Lstat = %v)", name, err)
+		}
+	}
+	for _, name := range authDirEntries(t, f) {
+		if strings.HasPrefix(name, "groq.json") {
+			t.Fatalf("the removal left %s behind", name)
 		}
 	}
 	for name, body := range kept {
 		got, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			t.Fatalf("a removal swept %s, which is a record some instance still needs (or is not a copy at all): %v", name, err)
+			t.Fatalf("the removal took %s, which belongs to another name (or is not a copy at all): %v", name, err)
 		}
 		if string(got) != body {
 			t.Fatalf("%s = %q, want %q", name, got, body)
@@ -908,9 +914,9 @@ func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T
 // run before the removal deleted anything, so it skipped a copy whose instance
 // still existed - and the removal then deleted only the copy it made itself.
 // A copy an earlier removal stranded under a name that was re-created and is
-// removed again therefore outlived a removal that reported success. With the
-// sweep run after the reload, the name is gone from the registry and both
-// copies are reclaimed in the call that removes it.
+// removed again therefore outlived a removal that reported success. The reclaim
+// takes every copy filed under the name being removed, so both copies go in the
+// call that removes the name.
 func TestInstances_RemoveReclaimsACopyStrandedForTheSameName(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
@@ -937,11 +943,10 @@ func TestInstances_RemoveReclaimsACopyStrandedForTheSameName(t *testing.T) {
 // TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName: a
 // UI-credentialed instance whose name the environment also supplies is
 // removable, and the reload brings the name straight back as an implicit row -
-// so the name still resolves when the sweep runs. An implicit instance owes its
-// existence to the environment (or the store, or a keyless scheme), never to
-// the record at the aside path, so the copy this removal set aside is debris
-// for that name and has to go. The old sweep skipped any name that still
-// resolved and left this copy on disk for good.
+// so a reclaim that spared any name that still resolved would leave this copy
+// behind for good. What makes it debris is the removal itself: the copy is filed
+// under the name the caller just removed, so it goes with every other copy of
+// that name.
 func TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "env-key"})
 	if err := f.store.Set("groq", "gk"); err != nil {
@@ -966,6 +971,42 @@ func TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName(t *tes
 	}
 	if left := authDirEntries(t, f); len(left) != 0 {
 		t.Fatalf("the auth directory holds %v, want the removal's own copy reclaimed", left)
+	}
+}
+
+// TestInstances_RemoveReportsACopyItCannotReclaim: the copy a removal sets aside
+// is a credential, so a removal that cannot collect it says so rather than
+// reporting the credential gone. The reclaim runs after the reload, so by then
+// the removal has stood: the instance and its key are gone, and what the caller
+// still has to deal with is the copy the failure names. That is the
+// removePersistedError the RPC handler announces.
+func TestInstances_RemoveReportsACopyItCannotReclaim(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	seedOAuthRecord(t, f, "groq", "")
+	f.ctl.auth.deleteAside = func(string) error { return errors.New("delete refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the copy it could not delete reported", err)
+	}
+	if _, persisted := errors.AsType[removePersistedError](err); !persisted {
+		t.Fatalf("Remove = %v (%T), want a removePersistedError so the removal is announced", err, err)
+	}
+	left := authDirEntries(t, f)
+	if len(left) != 1 || !strings.HasPrefix(left[0], "groq.json.removing-") {
+		t.Fatalf("the auth directory holds %v, want the one copy the removal could not delete", left)
+	}
+	if !strings.Contains(err.Error(), left[0]) {
+		t.Fatalf("Remove = %v, want it to name the copy it left as %s", err, left[0])
+	}
+	if v, _ := f.store.Get("groq"); v != "" {
+		t.Fatalf("the removal did not delete the credential: %q", v)
+	}
+	if listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("the removal did not remove the instance")
 	}
 }
 
