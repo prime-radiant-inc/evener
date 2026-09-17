@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -239,6 +240,16 @@ func TestAddMarketplaceWhoseRollbackAlsoFailedReportsTheStoreChanged(t *testing.
 	}
 	if !errors.Is(err, ErrStoreChanged) {
 		t.Fatalf("err = %v, want it to report the store changed: the rollback itself failed", err)
+	}
+	// Both underlying failures have to survive: the save error is why a
+	// rollback was attempted at all, and the rollback error is why it did
+	// not undo anything. Dropping either would tell the caller only half of
+	// what happened.
+	if !strings.Contains(err.Error(), "the store file could not be written") {
+		t.Fatalf("err = %v, want the save failure that triggered the rollback", err)
+	}
+	if !strings.Contains(err.Error(), "the rollback removal failed") {
+		t.Fatalf("err = %v, want the rollback failure reported too", err)
 	}
 }
 

@@ -241,8 +241,12 @@ func (m *Manager) AddMarketplace(ctx context.Context, name string, src Source) (
 				// The name was never recorded, so nothing lists this clone -
 				// but it still sits on disk where a retry of this Add would
 				// find it in the way, which is the store left changed rather
-				// than back as it was found (ErrStoreChanged's own rule).
-				return MarketplaceRef{}, fmt.Errorf("%w: rolling back the clone after a failed save: %w", ErrStoreChanged, rollbackErr)
+				// than back as it was found (ErrStoreChanged's own rule). The
+				// save failure that started this is kept alongside the
+				// rollback failure that compounded it - dropping it would
+				// tell the caller only that a rollback failed, never why the
+				// save it was rolling back needed one at all.
+				return MarketplaceRef{}, fmt.Errorf("%w: saving %q failed (%w); rolling back the clone also failed: %w", ErrStoreChanged, name, err, rollbackErr)
 			}
 		}
 		return MarketplaceRef{}, err
