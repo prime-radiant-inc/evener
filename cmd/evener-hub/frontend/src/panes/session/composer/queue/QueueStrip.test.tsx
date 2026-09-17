@@ -13,9 +13,13 @@ import { IDBFactory } from "fake-indexeddb";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { connectionStore } from "../../../../stores/connection";
-import type { MutationRecoveryKind, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+import type {
+  MutationOutboxRecord,
+  MutationRecoveryKind,
+  MutationRecoveryRecord,
+} from "../../../../stores/mutationOutbox";
 import { MutationOutboxIndexedDB } from "../../../../stores/mutationOutboxIndexedDB";
-import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/threads";
+import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../../stores/threads";
 import { Toast } from "../../../../widgets";
 import { getToasts, resetToastStoreForTests } from "../../../../widgets/toast/store";
 import { PendingChips } from "../../pending/PendingChips";
@@ -167,6 +171,33 @@ function renderStrip(props: ReturnType<typeof defaultProps>) {
       <Toast />
     </>,
   );
+}
+
+// SettleAfterReadStorage arms a one-shot barrier: after the Nth listOutbox
+// read following arming completes, it awaits a caller-supplied real storage
+// write before returning the rows the read already took. That places a
+// concurrent commit exactly between two persistence reads without a sleep or a
+// widened deadline.
+class SettleAfterReadStorage extends MutationOutboxIndexedDB {
+  #reads = 0;
+  #settleAfterRead: number | undefined;
+  #onSettle: (() => Promise<void>) | undefined;
+  settleAfterRead(readIndex: number, fn: () => Promise<void>): void {
+    this.#reads = 0;
+    this.#settleAfterRead = readIndex;
+    this.#onSettle = fn;
+  }
+  override async listOutbox(targetRef?: string): Promise<MutationOutboxRecord[]> {
+    const rows = await super.listOutbox(targetRef);
+    this.#reads += 1;
+    if (this.#settleAfterRead === this.#reads) {
+      const fn = this.#onSettle;
+      this.#settleAfterRead = undefined;
+      this.#onSettle = undefined;
+      await fn?.();
+    }
+    return rows;
+  }
 }
 
 // DrainBusyHarness owns busy/onDrainBusyChange as REAL controlled state
@@ -335,6 +366,47 @@ describe("durable recovery rows", () => {
     expect(isDisabled(retry)).toBe(true);
   });
 
+  async function seedBlockedUnknownFor(targetRef: string, text: string): Promise<void> {
+    const storage = new MutationOutboxIndexedDB();
+    const items = [{ type: "text", text }];
+    const outbox = await storage.enqueueIntent({
+      targetRef,
+      threadId: `thr_${targetRef}`,
+      method: "turn/start",
+      payload: { ref: targetRef, input: items },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: items },
+    });
+    await storage.markUnknown(outbox.clientMutationId, "blockedUnknown");
+    storage.close();
+    await refreshPendingTurnsProjection(targetRef);
+  }
+
+  // Regression for the review finding on the reduced branch: a recovery-fenced
+  // local notLoaded session rendered an ENABLED Retry, but retryBlockedMutation
+  // unconditionally refuses that state (status notLoaded, a restart-blocking
+  // obligation, and no mutation authority), so every press ended in "Delivery
+  // still cannot be checked". Retry must stay disabled until the session is
+  // resumed, exactly as it is for a non-local notLoaded snapshot.
+  test("Retry stays blocked for a recovery-fenced local notLoaded session", async () => {
+    const fake = connectFakeClient();
+    const ref = "local:fenced-retry";
+    await hydrate(fake, ref, {
+      status: { type: "notLoaded" },
+      evener: {
+        ref,
+        capabilities: { ...CAPABILITIES, send: false, steer: false, interrupt: false, queue: false },
+        mutationStateAuthoritative: false,
+        resumeRequired: true,
+        queue: { revision: 0 },
+      },
+    });
+    await seedBlockedUnknownFor(ref, "uncertain local input");
+    renderStrip(defaultProps({ ref }));
+    const retry = await screen.findByRole("button", { name: "Retry" });
+    expect(isDisabled(retry)).toBe(true);
+  });
+
   test("blocked unknown has Retry but no sendable action", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();
@@ -401,6 +473,51 @@ describe("durable recovery rows", () => {
       expect(fake.calls.filter(({ method }) => method === "thread/resume" || method === "turn/start")).toEqual([]);
     },
   );
+
+  // Regression for the review finding on the reduced branch: handleRetry used to
+  // read the record BEFORE refreshing the projection and decide on that
+  // pre-refresh snapshot, so a settle from another tab landing between the two
+  // reported "Delivery still cannot be checked" for a row the retry had already
+  // made moot. The decision must be made on the post-refresh state.
+  test("a settle landing in Retry's read/refresh window leaves no error for the row", async ({ onTestFinished }) => {
+    const ref = "ref_a";
+    const storage = new SettleAfterReadStorage();
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient();
+    await hydrate(fake, ref);
+    await seedBlockedUnknown("uncertain input");
+    renderStrip(defaultProps());
+    await flushPendingTurnsProjectionForTests();
+    // Keep the record blocked through the retry's own reconciliation - the same
+    // fixture the genuinely-blocked case uses - so the decision read still sees
+    // it blocked whenever the settle has not landed.
+    fake.on("thread/read", () =>
+      readResponse(ref, {
+        evener: { ref, capabilities: CAPABILITIES, mutationStateAuthoritative: false, queue: { revision: 0 } },
+      }),
+    );
+    const otherTab = new MutationOutboxIndexedDB();
+    onTestFinished(() => otherTab.close());
+    const original = (await otherTab.listOutbox(ref))[0];
+    if (!original) throw new Error("missing seeded blocked mutation");
+    // The read the retry flow takes immediately before its decision is its 9th
+    // persistence read; the other tab reopens the record right after it.
+    storage.settleAfterRead(9, async () => {
+      await otherTab.restoreProvenAbsent(ref, new Set());
+    });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
+    await flushPendingTurnsProjectionForTests();
+    // Block the same record again so the row returns: a lingering error state
+    // from the window would now be visible on it.
+    await otherTab.markUnknown(original.clientMutationId, "blockedUnknown");
+    await refreshPendingTurnsProjection(ref);
+    await flushPendingTurnsProjectionForTests();
+    const row = (await screen.findByText("uncertain input")).closest("li");
+    if (!row) throw new Error("missing blocked row after the settle window");
+    await within(row).findByRole("button", { name: "Retry" });
+    expect(within(row).queryAllByRole("alert")).toEqual([]);
+    expect(getToasts()).toEqual([]);
+  });
 
   test("a genuinely blocked Retry reports one inline error without a duplicate toast", async ({ onTestFinished }) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });

@@ -8579,6 +8579,43 @@ test("saved snapshots retain restart protection for subsequently discovered outb
   expect(fake.calls.filter((call) => call.method === "turn/queue")).toHaveLength(1);
 });
 
+// RoboRev finding on the reduced branch: the refreshThread beforePublish fence
+// is what keeps a stale post-resume hydration from publishing over a newer Stop.
+// Only the fence's ordering was proven before (the FakeClient tests assert a
+// function was passed, never that a throw cancels the read's result). This
+// proves the invariant at the store boundary: a throwing fence rejects the call
+// and leaves the published model, the mutation-authority set and the hydration
+// counter exactly as they were.
+test("a throwing beforePublish cancels a refreshThread publication", async () => {
+  setMutationStorageForTests(new MutationOutboxIndexedDB());
+  const fake = connectFakeClient("connecting");
+  fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+  fake.emitReady();
+  await threadsStore.getState().ensureThread("ref_a");
+  const before = threadsStore.getState();
+  const publishedModel = before.threads.get("ref_a");
+  expect(publishedModel?.status.type).toBe("idle");
+  expect(before.mutationAuthorityRefs.has("ref_a")).toBe(true);
+  const hydrations = before.hydrations.get("ref_a");
+  // The pending read would replace the model and drop authority if it published.
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      preview: "replacement",
+      evener: { ref: "ref_a", mutationStateAuthoritative: false, capabilities: CAPABILITIES, queue: { revision: 0 } },
+    }),
+  );
+  const fence = new Error("Stop canceled this pending action");
+  await expect(
+    threadsStore.getState().refreshThread("ref_a", () => {
+      throw fence;
+    }),
+  ).rejects.toBe(fence);
+  const after = threadsStore.getState();
+  expect(after.threads.get("ref_a")).toBe(publishedModel);
+  expect(after.mutationAuthorityRefs.has("ref_a")).toBe(true);
+  expect(after.hydrations.get("ref_a")).toBe(hydrations);
+});
+
 for (const state of ["blockedUnknown", "submitting"] as const) {
   test(`incompatible refresh preserves ${state} until a compatible snapshot arrives`, async () => {
     const storage = new MutationOutboxIndexedDB({ createMutationId: () => "upgrade-pending" });
@@ -9252,6 +9289,96 @@ test.each(["accepted", "absent", "unavailable"])(
     }
   },
 );
+
+// RoboRev finding on the reduced branch: a background note save only verifies
+// that the blocked row it retries is a note, but the targeted resync it drives
+// (handleReady) schedules dispatch for the WHOLE target - so saving a note in
+// the background could submit unrelated pending mutations for the same session
+// as a side effect. The background path must not dispatch at all; the durable
+// outbox's own lifecycle scan owns resending the note.
+test("a background note save does not dispatch an unrelated pending mutation", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    fake.on("thread/read", () => readResponse("ref_a", { status: { type: "idle" } }));
+    let sends = 0;
+    fake.on("turn/queue", () => {
+      sends += 1;
+      throw new RequestTimeoutError("response lost");
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // An unrelated pending send for the same target, left submitting by the
+    // first dispatch's lost response.
+    await threadsStore.getState().queue("ref_a", "unrelated queued work");
+    await flushIndexedDBUntil(() => sends === 1);
+    expect(sends).toBe(1);
+    // The blocked note the background save is retrying.
+    const note = await storage.enqueueIntent({
+      targetRef: "ref_a",
+      method: "notes/human/set",
+      payload: { ref: "ref_a", note: "draft", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    await storage.markUnknown(note.clientMutationId, "blockedUnknown");
+    expect(await retryBlockedMutation(note.clientMutationId, "backgroundNote")).toBe(true);
+    await flushIndexedDBUntil(() => sends >= 2);
+    expect(sends).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+// RoboRev finding on the reduced branch: retryBlockedMutation's Stop-generation
+// fence was only evaluated AFTER handleReady, but handleReady's targeted tail
+// schedules dispatch for the whole target - so a Stop acknowledged while the
+// retry's reconciliation was still in flight could be overtaken by a dispatch
+// the call had already earned, sending the very mutation the Stop canceled.
+test("a Stop during the retry's reconciliation is not overtaken by its dispatch", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  const storage = new MutationOutboxIndexedDB();
+  try {
+    setMutationStorageForTests(storage);
+    const fake = connectFakeClient("connecting");
+    let reads = 0;
+    const reconciliationRead = deferred<ThreadReadResponse>();
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 1 ? readResponse("ref_a", { status: { type: "idle" } }) : reconciliationRead.promise;
+    });
+    fake.on("thread/shutdown", () => ({}));
+    let sends = 0;
+    fake.on("turn/start", (params) => {
+      sends += 1;
+      if (sends === 1) throw new RequestTimeoutError("response lost");
+      return {
+        receipt: mutationReceipt(params.clientMutationId),
+        turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+      };
+    });
+    fake.emitReady();
+    await threadsStore.getState().ensureThread("ref_a");
+    // An uncertain send left blockedUnknown by its lost response.
+    await threadsStore.getState().send("ref_a", "uncertain");
+    await flushIndexedDBUntil(() => sends === 1);
+    const uncertain = (await storage.listOutbox("ref_a"))[0];
+    if (!uncertain) throw new Error("missing uncertain send");
+    await storage.markUnknown(uncertain.clientMutationId, "blockedUnknown");
+    const retry = retryBlockedMutation(uncertain.clientMutationId);
+    await flushIndexedDBUntil(() => reads >= 2);
+    // The Stop lands while the retry's authoritative read is still in flight.
+    await threadsStore.getState().shutdown("ref_a");
+    reconciliationRead.resolve(readResponse("ref_a", { status: { type: "idle" } }));
+    await expect(retry).rejects.toThrow("Stop canceled this pending action");
+    await flushIndexedDBUntil(() => sends >= 2);
+    expect(sends).toBe(1);
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 test("persistent journal failures wait for periodic recovery between attempts", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });

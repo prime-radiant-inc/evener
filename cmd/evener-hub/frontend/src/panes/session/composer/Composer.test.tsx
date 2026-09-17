@@ -2984,6 +2984,42 @@ test("a session whose harness advertises no send at all renders NO card, not a d
   expect(screen.queryByRole("textbox", { name: /message/i })).toBeNull();
 });
 
+// Regression for the review finding on the reduced branch. A stopped local
+// session is recovery-fenced (resumeRequired -> the wire advertises send:false
+// and the store holds a restart-blocking obligation). The composer keeps its
+// card so the draft and the recovery notice's explicit Resume action stay
+// reachable, but Send must not be offered: turn/start no longer carries an
+// implicit resume in this branch, so a Send here would either implicitly
+// resume the session or toast a refusal.
+test("a stopped local session offers no Send, only the explicit Resume action", async () => {
+  const user = userEvent.setup();
+  const ref = "local:stopped-recovery";
+  const fake = await mountComposer(ref, {
+    status: { type: "notLoaded" },
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, send: false, queue: false, steer: false, interrupt: false },
+      mutationStateAuthoritative: false,
+      resumeRequired: true,
+      queue: { revision: 0 },
+    },
+  });
+  await waitFor(() => expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(true));
+  // The card stays: it is the writing surface the retained draft lives in.
+  expect(screen.getByTestId("composer-input-card")).toBeTruthy();
+  const editor = textarea();
+  expect(editor.disabled).toBe(false);
+  await user.click(editor);
+  await user.type(editor, "one more thing");
+
+  expect(submitButton().disabled).toBe(true);
+  // The Mod+Enter chord reaches the form by the same route the button does; it
+  // must refuse too, never dispatching a turn/start that resumes the session.
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
 // --- interrupt ---------------------------------------------------------------
 
 test("clicking Stop calls turn/interrupt", async () => {

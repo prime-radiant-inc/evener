@@ -3275,3 +3275,51 @@ test("a fenced notLoaded session keeps force stop reachable in the pane footer",
   );
   expect(fake.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
 });
+
+// RoboRev finding on the reduced branch (Medium): the composer's
+// `followUpEngaged = localNotLoaded || ...` mounts its placement="composer"
+// discoverActivity for every local:notLoaded snapshot, and Session.tsx mounts
+// its placement="menu" fallback for !controlsFor(model).send. The `!restartPending`
+// precondition on that fallback is what keeps the two from co-mounting: a
+// recovery-fenced stopped session is owned by the composer card (whose menu is
+// how force stop stays reachable), and only a local snapshot with no card is
+// owned by the footer. This pins the exactly-one-owner invariant the Composer
+// comment relies on across every local:notLoaded shape.
+test.each([
+  { label: "a recovery-fenced stopped session", send: false, resumeRequired: true },
+  { label: "an unfenced snapshot with no Send", send: false, resumeRequired: false },
+  { label: "an unfenced snapshot that advertises Send", send: true, resumeRequired: false },
+])("exactly one activity-discovery owner mounts for $label", async ({ send, resumeRequired }) => {
+  vi.mocked(SessionChromeModule.SessionChrome).mockRestore();
+  vi.mocked(ComposerModule.Composer).mockRestore();
+  const fake = connectFakeClient();
+  const ref = "local:owner-invariant";
+  setNavigationTitle(ref, "Owner invariant");
+  const activityRefs: unknown[] = [];
+  fake.on("thread/read", () => {
+    const response = readResponse(ref, { status: { type: "notLoaded" } });
+    response.thread.evener.capabilities = { ...CAPABILITIES, send };
+    response.thread.evener.resumeRequired = resumeRequired;
+    response.thread.evener.mutationStateAuthoritative = false;
+    return response;
+  });
+  fake.on("evener/jobs/list", (params) => {
+    activityRefs.push(params.ref);
+    return { data: emptyActivityTree(ref) };
+  });
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref }} paneId="p1" focused={true} />
+      <Toast />
+    </ClientProvider>,
+  );
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/read")).toBe(true));
+  await flushPendingTurnsProjectionForTests();
+  // One menu trigger, one mounted chrome, and exactly one discovery request:
+  // a second owner would double any of them.
+  expect(screen.queryAllByRole("button", { name: /session actions/i })).toHaveLength(1);
+  const chromeMounts =
+    screen.queryAllByTestId("session-chrome-menu").length + screen.queryAllByTestId("session-chrome-inline").length;
+  expect(chromeMounts).toBe(1);
+  await waitFor(() => expect(activityRefs).toEqual([ref]));
+});

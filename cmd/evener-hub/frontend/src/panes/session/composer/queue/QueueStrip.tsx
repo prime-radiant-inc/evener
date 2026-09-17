@@ -347,9 +347,13 @@ export function QueueStrip({
     });
     try {
       if (!(await retryBlockedPendingTurn(record.clientMutationId, sessionRef))) {
+        // Refresh FIRST, then decide on the state the refresh observed. Reading
+        // before the refresh let a settle from another tab that landed between
+        // the two report "Delivery still cannot be checked" for a row the retry
+        // had already made moot.
+        await refreshPendingTurnsProjection(sessionRef);
         const { outbox } = await readMutationPersistence(sessionRef);
         const current = outbox.find((entry) => entry.clientMutationId === record.clientMutationId);
-        await refreshPendingTurnsProjection(sessionRef);
         if (current?.state === "blockedUnknown")
           throw new Error(
             "Delivery still cannot be checked. The original message is kept; you can send a new message.",
@@ -508,7 +512,13 @@ export function QueueStrip({
                       rowBusy ||
                       !model ||
                       model.status.type === "restartRequired" ||
-                      (model.status.type === "notLoaded" ? !sessionRef.startsWith("local:") : !mutationAuthority)
+                      // Retry is offered only when retryBlockedMutation can
+                      // actually act: it refuses every notLoaded snapshot and
+                      // any ref without mutation authority (stores/threads.ts),
+                      // so a recovery-fenced local session keeps Retry disabled
+                      // until the explicit Resume action restores it.
+                      model.status.type === "notLoaded" ||
+                      !mutationAuthority
                     }
                     onClick={() => void handleRetry(record)}
                   >

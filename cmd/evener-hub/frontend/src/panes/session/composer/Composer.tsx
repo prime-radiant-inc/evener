@@ -829,11 +829,12 @@ export function Composer({ ref, focused }: ComposerProps) {
   // outside the narrowing this component does at its top (see that block's own
   // comment on why every handler reads a pre-narrowed local).
   const localNotLoaded = ref.startsWith("local:") && model.status.type === "notLoaded";
-  // A stopped local session keeps its follow-up card and draft usable: the
-  // recovery notice and the explicit Resume action live below it, and sending
-  // still works because the daemon resumes the session on turn/start. So the
-  // card's Send is available even though this snapshot advertises send=false.
-  const canResumeOnSend = localNotLoaded && recoveryRequired;
+  // A stopped local session is recovery-fenced. It keeps its follow-up card so
+  // the retained draft and the recovery notice's explicit Resume action stay
+  // reachable, but Send and Queue are NOT offered: turn/start no longer carries
+  // an implicit resume on this branch, and the wire already advertises
+  // send=false for this snapshot. The explicit Resume action is what resumes it.
+  const recoveryFencedLocal = localNotLoaded && recoveryRequired;
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -841,7 +842,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // submitRouting module. The press handlers below re-derive it from the store
   // at the press (pressRefusal), not from this render.
   const controls = controlsFor(model);
-  const canSendWhenEnded = controls.send || canResumeOnSend;
+  const canSendWhenEnded = controls.send;
   // The target's skillInput capability, same narrowing rule: submission is
   // refused client-side (before any durable write) when a selection is staged
   // and the target never advertised that it consumes skill items.
@@ -877,6 +878,18 @@ export function Composer({ ref, focused }: ComposerProps) {
   // pending send that landed (or cleared) between the two routes the submit
   // rather than the render.
   function availabilityFor(target: ThreadModel, pendingSend: boolean): { canSend: boolean; canQueue: boolean } {
+    // A recovery-fenced local session has no send/queue until the user resumes
+    // it. The wire already advertises send=false for this snapshot, but the
+    // availability table's plain-send default for a notLoaded status would
+    // otherwise route a turn/start - the implicit resume-on-Send this branch
+    // removed. The explicit Resume action is the only thing that resumes it.
+    if (
+      target.ref.startsWith("local:") &&
+      target.status.type === "notLoaded" &&
+      threadsStore.getState().restartBlockingObligations.has(target.ref)
+    ) {
+      return { canSend: false, canQueue: false };
+    }
     const tableAvailability = deriveSendQueueAvailability({
       statusType: target.status.type,
       capabilities: target.capabilities,
@@ -937,7 +950,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // card for exactly the sessions the hub says are resumable. When the wire
   // really advertises no send, no card is rendered at all - an unusable field
   // is worse than no field.
-  const showFollowUpCard = ended && canSendWhenEnded;
+  const showFollowUpCard = ended && (canSendWhenEnded || recoveryFencedLocal);
   // A finished session's card earns its control row once the user engages with
   // it - focused, or holding text or an attachment. Content matters as well as
   // focus: a restored draft, or a blur with text still in the field, must not

@@ -939,6 +939,7 @@ export async function retryBlockedMutation(
   const record = await runtime.storage.getOutbox(clientMutationId);
   if (record?.state !== "blockedUnknown") return false;
   const savedTargetGeneration = stopGenerations.get(record.targetRef) ?? 0;
+  const stoppedSinceBaseline = () => (userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration;
   const checkStopped = () => {
     if ((userIntentStopGenerations.get(record.targetRef) ?? 0) !== savedTargetGeneration) {
       if (mode === "backgroundNote") return true;
@@ -966,7 +967,15 @@ export async function retryBlockedMutation(
   const epoch = dispatchReadyEpoch;
   // Shared storage can become blocked after this tab's authoritative snapshot.
   // Only fresh reconciliation may settle it or restore it for dispatch.
-  await handleReady(client, epoch, record.targetRef);
+  await handleReady(
+    client,
+    epoch,
+    record.targetRef,
+    // A background note save never dispatches (its own resend belongs to the
+    // outbox's lifecycle scan); a user retry dispatches only while no Stop has
+    // landed since it began.
+    mode === "backgroundNote" ? () => false : () => !stoppedSinceBaseline(),
+  );
   if (checkStopped()) return false;
   if (!isCurrentMutationRuntime(runtime) || currentDispatchClient() !== client || dispatchReadyEpoch !== epoch)
     return false;
@@ -2184,7 +2193,20 @@ async function refreshWatchedThread(
 // fires on a FUTURE transition, never retroactively for a client that
 // reached "ready" before this store ever subscribed to it (see
 // rewireClient's own comment).
-async function handleReady(client: AppwireClientLike, epoch: number, targetRef?: string): Promise<void> {
+async function handleReady(
+  client: AppwireClientLike,
+  epoch: number,
+  targetRef?: string,
+  // The targeted tail dispatches every dispatchable record of the target in
+  // FIFO order, which is right when the caller is user intent on that session.
+  // A caller that must not do that - a background note save (which must not
+  // submit other pending mutations for the session) or a retry a Stop has
+  // canceled while its reconciliation was in flight - passes a fence; `false`
+  // suppresses the schedule. Evaluated synchronously at the scheduling point,
+  // after every await, so a Stop acknowledged mid-reconciliation cannot be
+  // overtaken by a dispatch this call already earned.
+  beforeScheduleTargetDispatch?: () => boolean,
+): Promise<void> {
   const targetedResync = targetRef !== undefined;
   if (targetRef) dispatchableMutationRefs.delete(targetRef);
   const runtime = getMutationRuntime();
@@ -2230,7 +2252,7 @@ async function handleReady(client: AppwireClientLike, epoch: number, targetRef?:
     dispatchReadyClient = client;
     dispatchReadyEpoch = epoch;
     await runtime.outbox.connectionReady();
-  } else if (targetRef && dispatchableMutationRefs.has(targetRef)) {
+  } else if (targetRef && dispatchableMutationRefs.has(targetRef) && (beforeScheduleTargetDispatch?.() ?? true)) {
     scheduleMutationDispatch(runtime, [targetRef]);
   }
 }
