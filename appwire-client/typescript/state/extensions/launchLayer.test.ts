@@ -117,12 +117,11 @@ describe("layer ordering", () => {
     releaseRead({ pluginDirs: ["/stale"] });
     await reading;
     expect(store.getState().launchLayer).toEqual({ pluginDirs: ["/written"] });
-    // The loading flag and the error belong to the outrun read as much as its
-    // layer does, so it writes none of the three - the flag it raised on its
-    // way out stays up. Neither section is left spinning by that: both gate
-    // their skeleton on `loading && layer === null`, and the write that
-    // outran the read left a layer behind.
-    expect(store.getState().launchLayerLoading).toBe(true);
+    // The write owns the layer, and the loading flag and the error belong to
+    // it as much as the layer does - a write that lands answers all three,
+    // the same as plugins.ts's and marketplaces.ts's own mutations. The
+    // outrun read behind it writes none of the three.
+    expect(store.getState().launchLayerLoading).toBe(false);
     expect(store.getState().launchLayerError).toBeNull();
   });
 
@@ -141,6 +140,21 @@ describe("layer ordering", () => {
     await reading;
     expect(store.getState().launchLayerError).toBeNull();
     expect(store.getState().launchLayer).toEqual({ pluginDirs: ["/written"] });
+  });
+
+  test("a write clears the loading flag and error a read left behind it", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(GET, failing("boom"));
+    await store.getState().fetchLaunchLayer();
+    expect(store.getState().launchLayerError).toBe("boom");
+
+    fake.on(SET, () => ({ effective: {}, layers: {}, provenance: {} }));
+    await store.getState().setLaunchLayer({ pluginDirs: ["/written"] });
+    expect(store.getState()).toMatchObject({
+      launchLayer: { pluginDirs: ["/written"] },
+      launchLayerLoading: false,
+      launchLayerError: null,
+    });
   });
 });
 
