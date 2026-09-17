@@ -74,7 +74,11 @@ function fakeDraftPort(initial: Partial<FakeDraftState> = {}): PendingTurnsDraft
 
 describe("createPendingTurnsStore", () => {
   test("starts with empty state", () => {
-    const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() , identity: UNATTRIBUTED_ONLY_IDENTITY });
+    const store = createPendingTurnsStore({
+      threads: fakeThreadsPort(),
+      draft: fakeDraftPort(),
+      identity: UNATTRIBUTED_ONLY_IDENTITY,
+    });
     const state = store.getState();
     expect(state.outbox.size).toBe(0);
     expect(state.optimistic.size).toBe(0);
@@ -119,7 +123,11 @@ describe("createPendingTurnsStore", () => {
 
   describe("beginSubmission / endSubmission", () => {
     test("guards a second call for the same ref while one is in flight, and endSubmission releases it", () => {
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() , identity: UNATTRIBUTED_ONLY_IDENTITY });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       expect(store.beginSubmission("ref-a")).toBe(true);
       expect(store.getState().submittingRefs.has("ref-a")).toBe(true);
       expect(store.beginSubmission("ref-a")).toBe(false);
@@ -130,7 +138,11 @@ describe("createPendingTurnsStore", () => {
     });
 
     test("tracks independent refs independently", () => {
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft: fakeDraftPort() , identity: UNATTRIBUTED_ONLY_IDENTITY });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft: fakeDraftPort(),
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       expect(store.beginSubmission("ref-a")).toBe(true);
       expect(store.beginSubmission("ref-b")).toBe(true);
       store.endSubmission("ref-a");
@@ -142,7 +154,11 @@ describe("createPendingTurnsStore", () => {
   describe("settleSubmittedDraft", () => {
     test("clears the draft and returns true when the revision, text and selections all still match", () => {
       const draft = fakeDraftPort({ revision: 1, text: "hello", skillNames: ["a"] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft,
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       const cleared = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "hello",
@@ -154,7 +170,11 @@ describe("createPendingTurnsStore", () => {
 
     test("does not clear the draft when the revision changed (edited since submit started)", () => {
       const draft = fakeDraftPort({ revision: 2, text: "hello", skillNames: [] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft,
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       const cleared = store.settleSubmittedDraft("ref-a", { draftRevisionAtStart: 1, text: "hello", skillNames: [] });
       expect(cleared).toBe(false);
       expect(draft.state.cleared).toEqual([]);
@@ -162,7 +182,11 @@ describe("createPendingTurnsStore", () => {
 
     test("does not clear the draft when the stored text no longer matches what was submitted", () => {
       const draft = fakeDraftPort({ revision: 1, text: "edited", skillNames: [] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft,
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       const cleared = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "original",
@@ -174,7 +198,11 @@ describe("createPendingTurnsStore", () => {
 
     test("does not clear the draft when the selected skills no longer match", () => {
       const draft = fakeDraftPort({ revision: 1, text: "hello", skillNames: ["a", "b"] });
-      const store = createPendingTurnsStore({ threads: fakeThreadsPort(), draft , identity: UNATTRIBUTED_ONLY_IDENTITY });
+      const store = createPendingTurnsStore({
+        threads: fakeThreadsPort(),
+        draft,
+        identity: UNATTRIBUTED_ONLY_IDENTITY,
+      });
       const cleared = store.settleSubmittedDraft("ref-a", {
         draftRevisionAtStart: 1,
         text: "hello",

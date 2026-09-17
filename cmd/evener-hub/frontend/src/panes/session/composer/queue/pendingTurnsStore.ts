@@ -5,6 +5,7 @@ import {
 } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
+import { isOwnMutationRecord } from "../../../../stores/mutationClientIdentity";
 import type {
   MutationAttachment,
   MutationOutboxRecord,
@@ -30,10 +31,10 @@ export type { PendingMethod, PendingTurnEntry } from "./pendingReconcile";
 // The client-swap safety, reconciliation and submission bookkeeping now live
 // in the package's pending-turns projection store
 // (`@evener/appwire-client/state/mutation`); this module is the web's one
-// instance, bound to the browser's thread store and composer-draft storage
-// through the two ports the core takes. Every durable-read op below (the
-// generation fencing, IndexedDB reads, settle tracking) stays here: it is
-// genuinely web-specific, not part of what moved.
+// instance, bound to the browser's thread store, composer-draft storage and
+// client identity through the three ports the core takes. Every durable-read
+// op below (the generation fencing, IndexedDB reads, settle tracking) stays
+// here: it is genuinely web-specific, not part of what moved.
 const threadsPort: PendingTurnsThreadsPort = {
   getThreadModel: (ref) => threadsStore.getState().threads.get(ref),
 };
@@ -42,7 +43,11 @@ const draftPort: PendingTurnsDraftPort = {
   readComposerDraft,
   clearDraft,
 };
-const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({ threads: threadsPort, draft: draftPort });
+const pendingTurnsStore = createPendingTurnsStore<MutationAttachment>({
+  threads: threadsPort,
+  draft: draftPort,
+  identity: { isOwnMutationRecord },
+});
 
 let refreshGeneration = 0;
 let allTargetsRefreshGeneration = 0;
