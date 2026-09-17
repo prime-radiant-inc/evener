@@ -151,7 +151,7 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 			return err
 		}},
 		{"UpdateAutoUpgrade", func(ctx context.Context, m *Manager) error {
-			_, err := m.UpdateAutoUpgrade(ctx)
+			_, _, err := m.UpdateAutoUpgrade(ctx)
 			return err
 		}},
 	}

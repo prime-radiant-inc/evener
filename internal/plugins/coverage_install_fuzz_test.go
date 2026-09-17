@@ -299,18 +299,18 @@ func fuzzAutoUpgradeBranches(t *testing.T) {
 	m := NewManager(t.TempDir())
 	fakeInstallSuccess(t, m)
 	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, errInstallCoverage }
-	if _, _, _, err := m.upgradeAuto(ctx, "p", "m"); err == nil {
+	if _, _, _, _, err := m.upgradeAuto(ctx, "p", "m"); err == nil {
 		t.Fatal("auto lock")
 	}
 	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
 	installLoadRegistry = func(string) (Registry, error) { return Registry{}, errInstallCoverage }
-	if _, err := m.UpdateAutoUpgrade(ctx); err == nil {
+	if _, _, err := m.UpdateAutoUpgrade(ctx); err == nil {
 		t.Fatal("auto load")
 	}
 	installLoadRegistry = func(string) (Registry, error) {
 		return Registry{Plugins: map[string][]InstallEntry{"bad@m": {{AutoUpgrade: true, Source: Source{Kind: SourceGitHub}}}, "skip@m": {{AutoUpgrade: false}}}}, nil
 	}
-	if got, err := m.UpdateAutoUpgrade(ctx); err == nil || len(got) != 0 {
+	if got, _, err := m.UpdateAutoUpgrade(ctx); err == nil || len(got) != 0 {
 		t.Fatalf("auto %#v %v", got, err)
 	}
 }

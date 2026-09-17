@@ -22,18 +22,19 @@ type UpgradedPlugin struct {
 // enabled, git-backed. See upgradeLocked for why the eligibility check and
 // the change-detection both happen fresh, under this same lock acquisition,
 // rather than against a snapshot taken before the lock was acquired.
-func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changed, skipped bool, err error) {
-	release, _, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+//
+// changes folds lockStore's own migration together with upgradeLocked's own
+// answer, the way Upgrade does - UpdateAutoUpgrade merges every call's answer
+// into the one StoreChanges it reports to the hub's auto-upgrade daemon and
+// checkNow handler.
+func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (entry InstallEntry, changed, skipped bool, changes StoreChanges, err error) {
+	release, changes, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, changes, err
 	}
 	defer release()
-	// The auto-upgrade daemon's own tick already refreshes every known
-	// marketplace up front (runPluginAutoUpgradeTick), so a lazy fetch here
-	// is not the interactive path's unbroadcast-marketplace-change gap;
-	// fetched is discarded rather than marked (see upgradeLocked and Upgrade).
-	entry, changed, skipped, _, err = m.upgradeLocked(ctx, plugin, marketplace, true)
-	return entry, changed, skipped, err
+	entry, changed, skipped, upgradeChanges, err := m.upgradeLocked(ctx, plugin, marketplace, true)
+	return entry, changed, skipped, changes.Merge(upgradeChanges), err
 }
 
 // UpdateAutoUpgrade upgrades every installed, git-backed plugin that has
@@ -61,13 +62,18 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 //
 // Failures are collected but do not stop the others (failure-isolated),
 // matching UpdateAll.
-func (m *Manager) UpdateAutoUpgrade(ctx context.Context) ([]UpgradedPlugin, error) {
-	if err := m.migrateStore(ctx); err != nil {
-		return nil, err
+//
+// changes folds migrateStoreChanges's own migration together with every
+// upgradeAuto call's answer - the hub's auto-upgrade daemon and checkNow
+// handler both have a server to broadcast it on, unlike UpdateAll's CLI path.
+func (m *Manager) UpdateAutoUpgrade(ctx context.Context) (updated []UpgradedPlugin, changes StoreChanges, err error) {
+	changes, err = m.migrateStoreChanges(ctx)
+	if err != nil {
+		return nil, changes, err
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return nil, err
+		return nil, changes, err
 	}
 	keys := make([]string, 0, len(reg.Plugins))
 	for key := range reg.Plugins {
@@ -75,11 +81,11 @@ func (m *Manager) UpdateAutoUpgrade(ctx context.Context) ([]UpgradedPlugin, erro
 	}
 	sort.Strings(keys)
 
-	var updated []UpgradedPlugin
 	var errs []string
 	for _, key := range keys {
 		plugin, marketplace := splitKey(key)
-		entry, changed, skipped, err := m.upgradeAuto(ctx, plugin, marketplace)
+		entry, changed, skipped, upgradeChanges, err := m.upgradeAuto(ctx, plugin, marketplace)
+		changes = changes.Merge(upgradeChanges)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %v", key, err))
 			continue
@@ -90,7 +96,7 @@ func (m *Manager) UpdateAutoUpgrade(ctx context.Context) ([]UpgradedPlugin, erro
 		updated = append(updated, UpgradedPlugin{Plugin: plugin, Marketplace: marketplace, Entry: entry})
 	}
 	if len(errs) > 0 {
-		return updated, fmt.Errorf("some auto-upgrades failed:\n%s", strings.Join(errs, "\n"))
+		return updated, changes, fmt.Errorf("some auto-upgrades failed:\n%s", strings.Join(errs, "\n"))
 	}
-	return updated, nil
+	return updated, changes, nil
 }

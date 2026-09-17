@@ -65,13 +65,9 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // answers "do I owe a broadcast" the same way regardless of which of those
 // caused it, or whether the call also failed for an unrelated reason.
 //
-// A caller that owns its own applied-write signal (writeDidApply in the hub)
-// broadcasts on changes.X || writeDidApply(err) for a write endpoint; a plain
-// read endpoint (list, browse) broadcasts on changes.X alone - writeDidApply
-// answers "did a write that this call was itself responsible for land", not
-// "did nothing fail", so it must not be OR'd in for a call that made no
-// write of its own (writeDidApply(nil) is true, which would broadcast on
-// every successful read otherwise).
+// Every caller broadcasts on changes alone, read or write: a plain read
+// endpoint (list, browse) owes the same broadcast as a write endpoint the
+// moment either field is true, with nothing else folded in.
 type StoreChanges struct {
 	Marketplaces bool
 	Plugins      bool
@@ -79,8 +75,9 @@ type StoreChanges struct {
 
 // Merge combines two StoreChanges, true wherever either says a store
 // changed - the shape a caller that layers one call's changes onto another's
-// uses (lockStore's migration alongside catalogPlugin's own lazy fetch, or
-// the RPC layer folding writeDidApply's own signal into Install/Upgrade's).
+// uses (lockStore's migration alongside catalogPlugin's own lazy fetch,
+// internally; the hub's auto-upgrade tick, across package boundaries, folding
+// its listing, refresh and upgrade calls' answers into one broadcast).
 func (c StoreChanges) Merge(other StoreChanges) StoreChanges {
 	return StoreChanges{
 		Marketplaces: c.Marketplaces || other.Marketplaces,
@@ -123,20 +120,31 @@ func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout t
 	return release, changes, nil
 }
 
-// migrateStore takes the store lock for nothing but the migration lockStore
-// runs on the way in, and releases it again. The sweeps (UpdateAll,
-// UpdateAutoUpgrade) call this before they enumerate the registry, because
-// the keys they enumerate have to postdate the migration: otherwise the first
-// per-plugin upgrade's own lock performs it and the rest of the sweep asks
-// for keys the rename has just replaced. The lock is released rather than
-// held across those upgrades, each of which takes it itself.
-func (m *Manager) migrateStore(ctx context.Context) error {
-	release, _, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
+// migrateStoreChanges takes the store lock for nothing but the migration
+// lockStore runs on the way in, releases it again, and reports what it
+// changed. UpdateAutoUpgrade calls this - not migrateStore - before it
+// enumerates the registry, because the keys it enumerates have to postdate
+// the migration (otherwise the first per-plugin upgrade's own lock performs
+// it and the rest of the sweep asks for keys the rename has just replaced),
+// and because the sweep is reachable from the hub's auto-upgrade daemon and
+// its checkNow handler, both of which have a server to broadcast the
+// migration's own change on. The lock is released rather than held across
+// those upgrades, each of which takes it itself.
+func (m *Manager) migrateStoreChanges(ctx context.Context) (StoreChanges, error) {
+	release, changes, err := m.lockStore(ctx, installAcquireLock, 30*time.Second)
 	if err != nil {
-		return err
+		return changes, err
 	}
 	release()
-	return nil
+	return changes, nil
+}
+
+// migrateStore is migrateStoreChanges without its answer, for UpdateAll: the
+// CLI's `evener plugin upgrade --all` sweep has no broadcast context to hand
+// the migration's own change to.
+func (m *Manager) migrateStore(ctx context.Context) error {
+	_, err := m.migrateStoreChanges(ctx)
+	return err
 }
 
 // acquireBundledLock takes the bundled cache's lock for one mutation of

@@ -1411,7 +1411,9 @@ func TestUpdateAll_SweepsTheKeysTheMigrationLeft(t *testing.T) {
 }
 
 // The auto-upgrade sweep enumerates the same way and needs the same thing of
-// its keys.
+// its keys. It also has to report the migration's own StoreChanges: unlike
+// UpdateAll's CLI path, UpdateAutoUpgrade is reachable from the hub's
+// auto-upgrade daemon and its checkNow handler, both of which broadcast on it.
 func TestUpdateAutoUpgrade_SweepsTheKeysTheMigrationLeft(t *testing.T) {
 	for what, src := range map[string]Source{
 		"a git-backed install":       {Kind: SourceGitHub, Repo: "o/widget"},
@@ -1422,10 +1424,17 @@ func TestUpdateAutoUpgrade_SweepsTheKeysTheMigrationLeft(t *testing.T) {
 			m.Stderr = io.Discard
 			plantLegacyDirectoryMarketplace(t, m, "foo@bar", "widget", src)
 
-			if _, err := m.UpdateAutoUpgrade(context.Background()); err != nil {
+			_, changes, err := m.UpdateAutoUpgrade(context.Background())
+			if err != nil {
 				t.Fatalf("UpdateAutoUpgrade: %v", err)
 			}
 			mustBeTheMigratedStore(t, m)
+			if !changes.Marketplaces {
+				t.Fatalf("changes = %+v, want Marketplaces true: the migration renamed foo@bar to foo-bar", changes)
+			}
+			if !changes.Plugins {
+				t.Fatalf("changes = %+v, want Plugins true: the migration re-keyed widget under the new name", changes)
+			}
 		})
 	}
 }

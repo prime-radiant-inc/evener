@@ -91,7 +91,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	// autoUpgrade defaults to false at install; confirm the daemon leaves it alone.
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
 
-	updated, err := m.UpdateAutoUpgrade(context.Background())
+	updated, _, err := m.UpdateAutoUpgrade(context.Background())
 	if err != nil {
 		t.Fatalf("UpdateAutoUpgrade: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	if _, err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
-	updated, err = m.UpdateAutoUpgrade(context.Background())
+	updated, _, err = m.UpdateAutoUpgrade(context.Background())
 	if err != nil {
 		t.Fatalf("UpdateAutoUpgrade after opt-in: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	}
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v3")
 	beforeOptOut := updated[0].Entry.InstallPath
-	updated, err = m.UpdateAutoUpgrade(context.Background())
+	updated, _, err = m.UpdateAutoUpgrade(context.Background())
 	if err != nil {
 		t.Fatalf("UpdateAutoUpgrade after opt-out: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 	// No upstream change: sha is unchanged, so Upgrade is a no-op and must not
 	// be reported as an update (the daemon uses this list to decide whether to
 	// broadcast evener/plugin/updated).
-	updated, err := m.UpdateAutoUpgrade(context.Background())
+	updated, _, err := m.UpdateAutoUpgrade(context.Background())
 	if err != nil {
 		t.Fatalf("UpdateAutoUpgrade: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 		t.Fatalf("SetAutoUpgrade: %v", err)
 	}
 
-	updated, err := m.UpdateAutoUpgrade(context.Background())
+	updated, _, err := m.UpdateAutoUpgrade(context.Background())
 	if err != nil {
 		t.Fatalf("UpdateAutoUpgrade: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	updated, err := m.UpdateAutoUpgrade(context.Background())
+	updated, _, err := m.UpdateAutoUpgrade(context.Background())
 	if err == nil {
 		t.Fatal("expected an aggregated error when broken's upstream repo vanished")
 	}
@@ -304,7 +304,7 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 	var bUpdated []UpgradedPlugin
 	var bErr error
 	wg.Go(func() {
-		bUpdated, bErr = m2.UpdateAutoUpgrade(context.Background())
+		bUpdated, _, bErr = m2.UpdateAutoUpgrade(context.Background())
 	})
 
 	// Bias the scheduler toward sweep B completing its cheap, unlocked "list
