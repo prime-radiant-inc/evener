@@ -1313,7 +1313,45 @@ func (c *hubInstancesController) carryOAuthAsidesForRename(oldName, newName stri
 			problems = append(problems, fmt.Sprintf("check %q before restoring the OAuth copy %q (%v)", record, newest, statErr))
 		}
 	}
+	// The carry must re-stamp the copies in the order the removals made them, so
+	// the new name's stamps keep saying which record is newest. os.ReadDir hands
+	// entries back in lexical order, and lexical is not numeric when stamps
+	// differ in digit length: "...removing-10" sorts before "...removing-9".
+	// freeAsideName bumps a destination to highest+1 when the source stamp is
+	// not greater, so re-stamping in lexical order would push the numerically
+	// older 9 above the newer 10 - and startup restores the newest copy, putting
+	// the older credential back. Ordering the carry by the parsed stamp
+	// ascending preserves the source ordering. A copy whose stamp cannot be
+	// parsed (past an int64) is still carried, but not ranked, exactly as the
+	// newest-copy search above already skips it.
+	type rankedCopy struct {
+		name  string
+		stamp int64
+	}
+	ranked := make([]rankedCopy, 0, len(copies))
+	var unranked []string
 	for _, name := range copies {
+		if s, perr := strconv.ParseInt(oauthAsideStampText(name), 10, 64); perr == nil {
+			ranked = append(ranked, rankedCopy{name, s})
+		} else {
+			unranked = append(unranked, name)
+		}
+	}
+	slices.SortStableFunc(ranked, func(a, b rankedCopy) int {
+		switch {
+		case a.stamp < b.stamp:
+			return -1
+		case a.stamp > b.stamp:
+			return 1
+		}
+		return 0
+	})
+	carryOrder := make([]string, 0, len(copies))
+	for _, r := range ranked {
+		carryOrder = append(carryOrder, r.name)
+	}
+	carryOrder = append(carryOrder, unranked...)
+	for _, name := range carryOrder {
 		if name == promoted {
 			continue
 		}
@@ -1702,6 +1740,14 @@ func (c *hubInstancesController) setAsideOAuthFile(name string, configBacked boo
 	// recovery can decide whether to put it back without asking the registry.
 	marker := oauthAsideMarkerFor(configBacked)
 	stamp := c.auth.now().UnixNano()
+	if stamp < 0 {
+		// A negative stamp is not a name any copy can carry: its decimal text
+		// holds a '-' the all-digits tail oauthAsideInstance requires, so the
+		// copy would be debris the reclaim silently skips - a removal reported
+		// as successful could leave the credential on disk. Refused before
+		// anything is deleted, mirroring the stamp bounds freeAsideName enforces.
+		return "", fmt.Errorf("remove %s: the clock returned the negative stamp %d, which no OAuth aside name can carry", name, stamp)
+	}
 	entries, err := os.ReadDir(filepath.Dir(path))
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		// The stamps already filed for this record path are what orders the
@@ -1753,6 +1799,14 @@ func (c *hubInstancesController) setAsideOAuthFile(name string, configBacked boo
 			// Stepping past it would spin here instead, holding the caller's
 			// credMu, so the whole removal is refused with the cause named.
 			return "", fmt.Errorf("remove %s: check whether %s is free to set its OAuth state aside: %w", name, aside, err)
+		}
+		if stamp >= maxAsideStamp {
+			// Stepping past the maximum would wrap to a negative tail no copy can
+			// carry, exactly the bound freeAsideName enforces. A removal that
+			// cannot name its aside is refused rather than leaving debris the
+			// reclaim skips, which would let a reported removal leave the
+			// credential on disk.
+			return "", fmt.Errorf("remove %s: no aside stamp at or below %d was free to set its OAuth state aside", name, maxAsideStamp)
 		}
 		stamp++
 		aside = fmt.Sprintf("%s%s%d", path, marker, stamp)
@@ -2095,6 +2149,41 @@ func configCarriesName(l *registry.Layer, name string) bool {
 	return l.Default == name
 }
 
+// readAsideConfig reads the providers config restoreUncommittedOAuthAsides
+// classifies config-dependent copies against, and returns the error that stops
+// the pass when there is none it can trust. An EMPTY path is one spelling of an
+// absent config: main.go passes "" when EVENER_PROVIDERS_CONFIG is present and
+// empty, which cmdutil reads as "no user layer at all" (ProvidersConfigPath). A
+// path whose file does not exist is the other: ReadConfigFile returns an EMPTY
+// layer with a NIL error for ANY missing file, which is not evidence that the
+// config carries no name - a fresh install, a broken symlink, or a config
+// removed while the auth directory kept its asides all read that way, and
+// treating it as authoritative would resolve every config-backed in-flight copy
+// forward and delete the sweep's committed copies.
+func readAsideConfig(providersConfigPath string) (*registry.Layer, error) {
+	if providersConfigPath == "" {
+		return nil, errors.New("there is no providers config path (EVENER_PROVIDERS_CONFIG is present and empty), so there is no config evidence to classify the config-backed copies against")
+	}
+	layer, exists, err := registry.ReadConfigFile(providersConfigPath)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("there is no providers config file at %s", providersConfigPath)
+	}
+	return layer, nil
+}
+
+// asideConfigProblem words the config failure that left the config-dependent
+// copies of a pass unclassified, in the two spellings the pass distinguishes: no
+// path at all, and a path it could not read.
+func asideConfigProblem(providersConfigPath string, cfgErr error) string {
+	if providersConfigPath == "" {
+		return fmt.Sprintf("%v, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched", cfgErr)
+	}
+	return fmt.Sprintf("read %s to classify the config-backed copies and sweep the committed ones, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched (%v)", providersConfigPath, cfgErr)
+}
+
 // restoreUncommittedOAuthAsides puts back the in-flight OAuth records a removal
 // set aside for an instance that still exists. It reports what it could not put
 // back - and, for the one deliberate delete whose bytes could be a stranded
@@ -2157,16 +2246,25 @@ func configCarriesName(l *registry.Layer, name string) bool {
 // A record filed under its own name again is the record the instance has now, so
 // a copy beside it stays too.
 //
-// A providers.toml that cannot be read does not abort the pass. The
-// credential-only rule above does not consult the config, so those copies are
-// still put back while their record path is free - an unrelated parse failure
-// must not strand the one credential a credential-only instance ever had. Every
-// config-dependent copy is deferred untouched: a config-backed copy cannot be
-// classified without the config (guessing would either resurrect a removal that
-// stood or delete a credential that did not), and the sweep that deletes
-// committed copies no config names cannot know what the config names. The config
-// failure is reported through the problems path, so a partial pass never reads
-// as clean. When the config reads, the pass is exactly as before.
+// A providers.toml that cannot be read does not abort the pass, and a pass with
+// nothing set aside does not even consult it: the auth directory is read first,
+// and no aside copies means no recovery work a config failure could have
+// prevented, so a fresh install without a providers.toml reports nothing. When
+// there IS work, the credential-only rule above does not consult the config, so
+// those copies are still put back while their record path is free - an unrelated
+// parse failure must not strand the one credential a credential-only instance
+// ever had. Every config-dependent copy is deferred untouched: a config-backed
+// copy cannot be classified without the config (guessing would either resurrect
+// a removal that stood or delete a credential that did not), and the sweep that
+// deletes committed copies no config names cannot know what the config names. A
+// credential-only in-flight copy is deferred too when its instance ALSO has a
+// config-dependent copy deferred here: restoring it first would take the record
+// path, and when the config later reads the newer config-backed copy is either
+// resolved forward (destroyed) or skipped as the path is occupied - a stale
+// credential standing in for the current one. The config failure and any such
+// whole-instance deferral are reported through the problems path, so a partial
+// pass never reads as clean. When the config reads, the pass is exactly as
+// before.
 //
 // An ABSENT config is one of those unreadable configs, and it has two
 // spellings. An EMPTY path is one: main.go passes "" when
@@ -2215,53 +2313,56 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// they are for a later pass with a readable config), and reports the failure
 	// so a partial pass is never read as clean. Deferring, never guessing, is what
 	// keeps an unrelated parse failure from deleting or resurrecting anything.
-	var (
-		layer  *registry.Layer
-		cfgErr error
-	)
-	if providersConfigPath == "" {
-		cfgErr = errors.New("there is no providers config path (EVENER_PROVIDERS_CONFIG is present and empty), so there is no config evidence to classify the config-backed copies against")
-	} else {
-		var exists bool
-		layer, exists, cfgErr = registry.ReadConfigFile(providersConfigPath)
-		if cfgErr == nil && !exists {
-			// ReadConfigFile reports ANY missing file as an empty layer with a
-			// nil error, which is not evidence that the config carries no name:
-			// a fresh install, a broken symlink, or a config removed while the
-			// auth directory kept its asides all read this way. Treat the absent
-			// file exactly as an unreadable config - defer every config-dependent
-			// copy and report it - so a removal interrupted before its config
-			// write is never resolved forward and deleted.
-			cfgErr = fmt.Errorf("there is no providers config file at %s", providersConfigPath)
-		}
-	}
-	var problems []string
-	if cfgErr != nil {
-		if providersConfigPath == "" {
-			problems = append(problems, fmt.Sprintf("%v, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched", cfgErr))
-		} else {
-			problems = append(problems, fmt.Sprintf("read %s to classify the config-backed copies and sweep the committed ones, so only credential-only in-flight copies were put back and every config-dependent copy was left untouched (%v)", providersConfigPath, cfgErr))
-		}
-	}
+	//
+	// The auth directory is read FIRST, and a pass with nothing set aside returns
+	// without consulting or reporting the config: there is then no recovery work
+	// a config failure could have prevented, so every fresh install - whose
+	// default configuration has no providers.toml - starts without a diagnostic
+	// claiming recovery was deferred when there was nothing to recover. A config
+	// failure is reported only when there IS work it deferred.
+	//
 	// Where the records live, asked of the function that places them, so this
 	// cannot look somewhere a record never lands.
 	dir := filepath.Dir(authopenai.AuthFilePath(stateDir, "instance"))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		// No directory is nothing set aside: a state root that never held a
-		// record has no copy of one. A config failure is still reported, so a
-		// partial pass never reads as clean.
 		if errors.Is(err, os.ErrNotExist) {
-			if len(problems) > 0 {
-				return false, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
-			}
+			// No directory is nothing set aside: a state root that never held a
+			// record has no copy of one.
 			return false, nil
+		}
+		// The directory exists but cannot be read. That is recovery work this
+		// pass could not do, and the config failure (which the pass would have
+		// needed) is part of why it could not be completed; both are reported.
+		var problems []string
+		if _, cfgErr := readAsideConfig(providersConfigPath); cfgErr != nil {
+			problems = append(problems, asideConfigProblem(providersConfigPath, cfgErr))
 		}
 		if len(problems) > 0 {
 			problems = append(problems, fmt.Sprintf("read the OAuth state directory %s (%v)", dir, err))
 			return false, fmt.Errorf("startup OAuth recovery could not finish: %s", strings.Join(problems, ", "))
 		}
 		return false, fmt.Errorf("put back the OAuth records a failed removal set aside: %w", err)
+	}
+	hasAside := false
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if _, _, _, aside := oauthAsideInstance(e.Name()); aside {
+			hasAside = true
+			break
+		}
+	}
+	if !hasAside {
+		// Nothing set aside is nothing to recover, so a config failure here
+		// prevented no recovery work and is not reported.
+		return false, nil
+	}
+	layer, cfgErr := readAsideConfig(providersConfigPath)
+	var problems []string
+	if cfgErr != nil {
+		problems = append(problems, asideConfigProblem(providersConfigPath, cfgErr))
 	}
 	// A committed copy carries its name and kind into the delete step, so the
 	// delete can report the credential-only ones that could be a stranded
@@ -2307,6 +2408,43 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 	// already at the committed name are exactly what the no-replace move refused
 	// to overwrite, and deleting them here would lose what it saved.
 	protected := make(map[string]bool)
+	// Names whose copies this pass cannot judge without the config. A config the
+	// pass could not read leaves a config-backed in-flight copy unclassified
+	// (restoring it could resurrect a removal that stood; resolving it forward
+	// could delete a credential that did not), and it leaves every committed copy
+	// the sweep would judge exactly where it is. Neither can be decided, so the
+	// whole INSTANCE is deferred: a credential-only in-flight copy of a name that
+	// has such a copy is deferred with it (deferredRestores below). Otherwise the
+	// credential-only copy would take the record path first, and when the config
+	// later reads, the newer config-backed copy is either resolved forward
+	// (destroyed) or skipped because the path is occupied - a stale credential
+	// standing in for the current one. A name with no config-dependent copy keeps
+	// today's behaviour: its credential-only copies are still put back, because
+	// an unrelated config failure must not strand the only credential an instance
+	// ever had.
+	deferredNames := make(map[string]bool)
+	deferredRestores := make(map[string]bool, len(entries))
+	if cfgErr != nil {
+		for _, e := range entries {
+			inst, isCommitted, configBacked, aside := oauthAsideInstance(e.Name())
+			if e.IsDir() || !aside {
+				continue
+			}
+			switch {
+			case isCommitted:
+				// The sweep would judge this committed copy against the config.
+				deferredNames[inst] = true
+			case paired[inst+"\x00"+oauthAsideStampText(e.Name())]:
+				// The in-flight twin is swept by exactly the committed copy's
+				// rules, so the config judges it too.
+				deferredNames[inst] = true
+			case configBacked:
+				// A config-backed in-flight copy cannot be classified without the
+				// config.
+				deferredNames[inst] = true
+			}
+		}
+	}
 	for _, e := range entries {
 		inst, isCommitted, configBacked, aside := oauthAsideInstance(e.Name())
 		if e.IsDir() || !aside {
@@ -2372,6 +2510,16 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		}
 		// Credential-only copies, and config-backed copies the config still
 		// carries, are put back if their record path is free.
+		if deferredNames[inst] {
+			// The config this copy's disposition depends on could not be read,
+			// and a config-dependent copy of the SAME instance is deferred on it
+			// (deferredNames): putting this copy back first would take the record
+			// path, so the config-backed copy would later be resolved forward or
+			// skipped rather than restored. Defer the whole instance to the pass
+			// that can read the config.
+			deferredRestores[inst] = true
+			continue
+		}
 		stamp, err := strconv.ParseInt(oauthAsideStampText(e.Name()), 10, 64)
 		if err != nil {
 			// A stamp past an int64 is a name no removal wrote, and one that
@@ -2382,6 +2530,14 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			newest[inst] = e.Name()
 			stamps[inst] = stamp
 		}
+	}
+	if len(deferredRestores) > 0 {
+		names := make([]string, 0, len(deferredRestores))
+		for inst := range deferredRestores {
+			names = append(names, inst)
+		}
+		slices.Sort(names)
+		problems = append(problems, fmt.Sprintf("held back the credential-only in-flight copies of %s: the config that would classify a config-dependent copy of the same instance could not be read, so restoring one could stand a stale credential in for the current record", strings.Join(names, ", ")))
 	}
 	restored := false
 	for inst, name := range newest {

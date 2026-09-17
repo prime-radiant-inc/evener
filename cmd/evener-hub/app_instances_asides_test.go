@@ -1802,3 +1802,272 @@ func TestRestoreUncommittedOAuthAsidesPutsBackADefaultNamedConfigBackedCopy(t *t
 		t.Fatalf("the copy is still on disk (Lstat = %v), want it moved", err)
 	}
 }
+
+// TestRestoreUncommittedOAuthAsidesDefersAWholeInstanceWhoseConfigCouldNotBeRead:
+// the high finding. A config that cannot be read defers every config-dependent
+// copy. Before the fix, a credential-only in-flight copy was still put back while
+// its record path was free - even when the SAME instance also had a config-backed
+// copy deferred on the same failure. The older credential-only copy then took
+// the record path, and when the config later read, the newer config-backed copy
+// was either resolved forward (destroyed) or skipped as the path was occupied: a
+// stale credential stood in for the current one. The deferral now applies to the
+// whole instance, so nothing goes back until the config can judge it.
+func TestRestoreUncommittedOAuthAsidesDefersAWholeInstanceWhoseConfigCouldNotBeRead(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	// An unreadable providers.toml: a directory stands where the file was, so
+	// ReadConfigFile fails rather than returning an empty layer.
+	if err := os.Mkdir(f.tomlPath, 0o700); err != nil {
+		t.Fatalf("Mkdir(%s): %v", f.tomlPath, err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	record := authopenai.AuthFilePath(f.stateDir, "work")
+	older := filepath.Join(dir, "work.json"+oauthAsideMarker+"100")
+	newer := filepath.Join(dir, "work.json"+oauthConfigAsideMarker+"200")
+	const olderBytes = "the stale credential-only copy\n"
+	const newerBytes = "the current config-backed copy\n"
+	if err := os.WriteFile(older, []byte(olderBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", older, err)
+	}
+	if err := os.WriteFile(newer, []byte(newerBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", newer, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err == nil || !strings.Contains(err.Error(), f.tomlPath) {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the unreadable config reported", restored, err)
+	}
+	// The crux: the older credential-only copy must not have taken the record
+	// path, which would leave a stale credential standing in for the current one.
+	if _, statErr := os.Lstat(record); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record path holds bytes (Lstat = %v), want neither copy put back while the config cannot judge the instance", statErr)
+	}
+	if restored {
+		t.Fatal("restoreUncommittedOAuthAsides = true, want nothing put back while the config cannot judge the instance")
+	}
+	for _, path := range []string{older, newer} {
+		if _, statErr := os.Lstat(path); statErr != nil {
+			t.Fatalf("the deferred copy %s was taken (%v), want it left for a readable config", path, statErr)
+		}
+	}
+	if !strings.Contains(err.Error(), "held back") {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want the whole-instance deferral reported", err)
+	}
+
+	// A readable config that carries the name: the same classification the first
+	// pass would have made had it deferred everything. The newer config-backed
+	// copy goes back; the older credential-only copy stays for the next removal.
+	if err := os.Remove(f.tomlPath); err != nil {
+		t.Fatalf("Remove(%s): %v", f.tomlPath, err)
+	}
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	restored, err = restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", err)
+	}
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides = false, want the newer config-backed copy put back once the config reads")
+	}
+	got, rerr := os.ReadFile(record)
+	if rerr != nil || string(got) != newerBytes {
+		t.Fatalf("restored bytes = %q (%v), want the newer config-backed copy %q", got, rerr, newerBytes)
+	}
+	if _, statErr := os.Lstat(older); statErr != nil {
+		t.Fatalf("the older copy was taken (%v), want the newer copy put back and the older left", statErr)
+	}
+	if _, statErr := os.Lstat(newer); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the newer copy is still on disk (Lstat = %v), want it moved to the record path", statErr)
+	}
+}
+
+// TestInstances_SetAsideOAuthFileRefusesANegativeStamp: a stamp from before the
+// Unix epoch has a '-' in its decimal text, which oauthAsideInstance does not
+// parse - so the copy would be debris the reclaim skips, and a removal reported
+// as successful could leave the credential on disk. The removal refuses before
+// anything is deleted, mirroring the bounds freeAsideName enforces.
+func TestInstances_SetAsideOAuthFileRefusesANegativeStamp(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	path := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const content = "the record the removal must not lose\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	f.ctl.auth.now = func() time.Time { return time.Unix(-1, 0) }
+
+	aside, err := f.ctl.setAsideOAuthFile("openai-codex", false)
+	if err == nil || !strings.Contains(err.Error(), "negative stamp") {
+		t.Fatalf("setAsideOAuthFile = (%q, %v), want the negative stamp refused", aside, err)
+	}
+	if aside != "" {
+		t.Fatalf("setAsideOAuthFile = %q, want no aside path on a refusal", aside)
+	}
+	if b, rerr := os.ReadFile(path); rerr != nil || string(b) != content {
+		t.Fatalf("the record = %q (%v), want it left in place by the refusal", b, rerr)
+	}
+}
+
+// TestInstances_SetAsideOAuthFileRefusesToStepPastTheMaximumStamp: the aside
+// candidate loop steps one past a taken stamp. A step past maxAsideStamp wraps to
+// a negative tail no recovery parses, so the loop must refuse rather than name a
+// copy the reclaim skips - the same bound freeAsideName enforces. The candidate
+// at the maximum stamp is already taken, so the only step left would exceed it.
+func TestInstances_SetAsideOAuthFileRefusesToStepPastTheMaximumStamp(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	path := authopenai.AuthFilePath(f.stateDir, "openai-codex")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	const content = "the record the removal must not lose\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	taken := path + oauthAsideMarker + strconv.FormatInt(maxAsideStamp, 10)
+	if err := os.WriteFile(taken, []byte("a copy already at the maximum stamp\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", taken, err)
+	}
+	f.ctl.auth.now = func() time.Time { return time.Unix(0, maxAsideStamp) }
+	if got := f.ctl.auth.now().UnixNano(); got != maxAsideStamp {
+		t.Skipf("this clock cannot express the maximum stamp (UnixNano = %d); the premise needs it", got)
+	}
+
+	aside, err := f.ctl.setAsideOAuthFile("openai-codex", false)
+	if err == nil || !strings.Contains(err.Error(), "no aside stamp at or below") {
+		t.Fatalf("setAsideOAuthFile = (%q, %v), want the stepped-past-maximum refusal", aside, err)
+	}
+	if aside != "" {
+		t.Fatalf("setAsideOAuthFile = %q, want no aside path on a refusal", aside)
+	}
+	if b, rerr := os.ReadFile(path); rerr != nil || string(b) != content {
+		t.Fatalf("the record = %q (%v), want it left in place by the refusal", b, rerr)
+	}
+	if _, statErr := os.Lstat(taken); statErr != nil {
+		t.Fatalf("the copy at the maximum stamp was taken (%v), want it left untouched", statErr)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesReportsNothingOnAFreshInstallWithoutAConfig:
+// the default configuration has no providers.toml, and the pass used to report
+// the missing config unconditionally - so every fresh install printed a
+// diagnostic claiming recovery was deferred when there were no copies at all,
+// and a real recovery failure was indistinguishable from that noise. Nothing set
+// aside is no recovery work for a config failure to have prevented, so nothing
+// is reported.
+func TestRestoreUncommittedOAuthAsidesReportsNothingOnAFreshInstallWithoutAConfig(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if _, err := os.Stat(f.tomlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture: %s exists (stat err = %v), want a fresh install", f.tomlPath, err)
+	}
+	// No auth directory at all.
+	if restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil || restored {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want nothing recovered and nothing reported on a fresh install without a providers.toml", restored, err)
+	}
+	// An auth directory that exists but holds no aside entries.
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("not a copy\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); err != nil || restored {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want no config diagnostic when the auth directory holds no asides", restored, err)
+	}
+}
+
+// TestInstances_EditRenameCarriesCopiesInNumericStampOrder: os.ReadDir hands
+// entries back lexically, so "...removing-10" precedes "...removing-9". Re-
+// stamping in that order bumps the numerically older 9 above the newer 10
+// (freeAsideName steps to highest+1 when the source stamp is not greater), and
+// recovery restores the newest copy - so the older credential would win. A live
+// record keeps the old record path occupied, so both copies are carried rather
+// than one promoted. The newer copy must keep the greater carried stamp, and a
+// subsequent recovery must restore it.
+func TestInstances_EditRenameCarriesCopiesInNumericStampOrder(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "work@example.com")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	const olderBytes = "the older credential\n"
+	const newerBytes = "the newer credential\n"
+	older := filepath.Join(dir, "work.json"+oauthAsideMarker+"9")
+	newer := filepath.Join(dir, "work.json"+oauthAsideMarker+"10")
+	if err := os.WriteFile(older, []byte(olderBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", older, err)
+	}
+	if err := os.WriteFile(newer, []byte(newerBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", newer, err)
+	}
+
+	if err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"}); err != nil {
+		t.Fatalf("Edit(rename): %v", err)
+	}
+	type copyAt struct {
+		stamp int64
+		body  string
+	}
+	var carried []copyAt
+	for _, name := range authDirEntries(t, f) {
+		inst, _, _, aside := oauthAsideInstance(name)
+		if !aside || inst != "personal" {
+			continue
+		}
+		s, perr := strconv.ParseInt(oauthAsideStampText(name), 10, 64)
+		if perr != nil {
+			t.Fatalf("carried copy %q carries an unparseable stamp: %v", name, perr)
+		}
+		b, rerr := os.ReadFile(filepath.Join(dir, name))
+		if rerr != nil {
+			t.Fatalf("ReadFile(%s): %v", name, rerr)
+		}
+		carried = append(carried, copyAt{s, string(b)})
+	}
+	if len(carried) != 2 {
+		t.Fatalf("carried copies = %+v, want the two in-flight copies carried to the new name", carried)
+	}
+	var olderStamp, newerStamp int64
+	for _, c := range carried {
+		switch c.body {
+		case olderBytes:
+			olderStamp = c.stamp
+		case newerBytes:
+			newerStamp = c.stamp
+		default:
+			t.Fatalf("carried copy body = %q, want one of the two source copies", c.body)
+		}
+	}
+	if newerStamp <= olderStamp {
+		t.Fatalf("carried stamps older=%d newer=%d, want the newer copy to keep the greater stamp", olderStamp, newerStamp)
+	}
+
+	// Recovery puts the newer one back: remove the carried record so the newest
+	// copy is the renamed instance's only credential.
+	record := authopenai.AuthFilePath(f.stateDir, "personal")
+	if err := os.Remove(record); err != nil {
+		t.Fatalf("Remove(%s): %v", record, err)
+	}
+	restored, rerr := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if rerr != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides: %v", rerr)
+	}
+	if !restored {
+		t.Fatal("startup restored nothing, want the newest carried copy put back")
+	}
+	got, rerr := os.ReadFile(record)
+	if rerr != nil || string(got) != newerBytes {
+		t.Fatalf("restored bytes = %q (%v), want the newer credential %q", got, rerr, newerBytes)
+	}
+}
