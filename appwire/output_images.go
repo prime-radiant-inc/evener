@@ -19,8 +19,8 @@ import "slices"
 
 // CloneOutputImages copies an item's output-image list, keeping nil nil and an
 // empty list empty. slices.Clone is exactly this contract, pinned by
-// TestSlicesCloneCarriesOutputImageListNilness: it answers nil for nil and a
-// fresh non-nil empty slice for a non-nil empty one.
+// TestCloneOutputImages here and by TestCloneThreadKeepsAnExplicitEmptyOutputImageList
+// and TestCloneThreadLeavesAnAbsentOutputImageListAbsent in clone_output_images_test.go.
 func CloneOutputImages(in []OutputImage) []OutputImage {
 	return slices.Clone(in)
 }
