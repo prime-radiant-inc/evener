@@ -6405,6 +6405,8 @@ test("an empty input images list never erases the images an older page carries",
   });
   const images = itemAt(turnAt(merged, 0), 0).images;
   expect(images).toHaveLength(1);
+});
+
 // #1656: a settle says nothing about images unless it carries them. The wire has
 // no "the input images are gone" signal — an item's images are what the user
 // sent — so the hub keeps whatever list it already had whenever the incoming one
