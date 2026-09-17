@@ -286,3 +286,18 @@ export function deferRequest<T>(fake: FakeClient, method: MethodName): (value: T
   );
   return (value: T) => release(value);
 }
+
+/** Scripts `method` to hang and hands back the rejector of the request in
+ * flight: deferRequest's failing half, for the ordering a store only shows
+ * when a request that started earlier fails later. */
+export function deferFailure(fake: FakeClient, method: MethodName): (err: Error) => void {
+  let fail!: (err: Error) => void;
+  fake.on(
+    method,
+    () =>
+      new Promise<never>((_, reject) => {
+        fail = reject;
+      }) as never,
+  );
+  return (err: Error) => fail(err);
+}

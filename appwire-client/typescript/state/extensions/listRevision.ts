@@ -19,37 +19,58 @@
 
 export interface ListRevision {
   /** The revision for a request about to be sent, and from here on the only
-   * one that may commit. */
+   * one that may publish. */
   next(): number;
-  /** Whether the response that took `revision` is still the store's newest
-   * word on the list. */
-  commit(revision: number): boolean;
+  /** Publishes this request's answer if it is the live one, and otherwise
+   * holds it as this revision's candidate: should the requests that
+   * superseded it all retract, the newest held answer becomes the live one and
+   * is published then. `write` is called at most once. */
+  publish(revision: number, write: () => void): void;
   /** Gives `revision` back when its request published nothing at all - a
    * rejection the store records nowhere. Ownership returns to the request
-   * before it, so an answer this one fenced can still land: without it a
-   * failed write silently keeps the loading flag a read raised, and the read
-   * lands superseded with nothing left to lower it. A no-op for a revision
-   * something newer has already superseded. */
+   * before it: if that one's answer has already landed it is published now,
+   * and if it is still on the wire it will publish when it lands. Without this
+   * a failed write keeps the loading flag a read raised, with nothing left to
+   * lower it. A no-op for a revision something newer has already superseded. */
   retract(revision: number): void;
-  /** Fences every response still on the wire: none of them commits. */
+  /** Fences every response still on the wire and every answer held: none of
+   * them publishes. */
   fence(): void;
 }
 
 export function createListRevision(): ListRevision {
   let issued = 0;
+  // Answers that landed while superseded, by the revision that asked. Only a
+  // retraction can make one of them live again, and a live answer clears the
+  // older ones: nothing before the newest published answer can ever apply.
+  const held = new Map<number, () => void>();
+
+  function publishLive(revision: number, write: () => void): void {
+    held.clear();
+    write();
+    void revision;
+  }
+
   return {
     next() {
       issued += 1;
       return issued;
     },
-    commit(revision) {
-      return revision === issued;
+    publish(revision, write) {
+      if (revision === issued) publishLive(revision, write);
+      else if (revision < issued) held.set(revision, write);
     },
     retract(revision) {
-      if (revision === issued) issued -= 1;
+      if (revision !== issued) return;
+      issued -= 1;
+      const landed = held.get(issued);
+      if (!landed) return;
+      held.delete(issued);
+      publishLive(issued, landed);
     },
     fence() {
       issued += 1;
+      held.clear();
     },
   };
 }
