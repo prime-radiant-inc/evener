@@ -98,8 +98,12 @@ what makes the federation fully operable without a terminal.
   peer-forwarded requests are refused before admission** (before dedup and
  before token validation on the 08b phases where those stages exist — 08a
  asserts the guard-before-admission ordering on its own surface), before any handler logic runs. The mutating handlers (`attach`,
- `plan`, `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`) are unreachable
- remotely outright; the reads (`list`/`status`/`operations`/`running`) are guarded
+  `plan`, `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`) are unreachable
+  to honestly-marked peer-forwarded requests — refused before admission for
+  honestly-marked remote-origin requests (a markerless request is
+  local-originated by construction and takes the full admission path — the
+  guard is an honest-peer recursion terminator, not spoof-resistance, see the
+  residual-risk paragraph above); the reads (`list`/`status`/`operations`/`running`) are guarded
   equally because they disclose the controller's topology and operation
   state. (`attach`'s guard routing ships and is test-pinned with #1603; this
  component pins the other eleven.) **The one direction-scoped exception is
@@ -217,7 +221,16 @@ a `finalizingMutation` claim waits for or recovers the claim instead of
 re-finalizing — a live claimant re-runs to completion before responding busy,
 a dead claimant's claim (crashed or vanished holder) is adopted by re-running
 the pinned teardown under the same generation/incarnation guards and
-finalizing under the claimant's attempt token — then releases the lock, runs
+ finalizing under the claimant's attempt token (extending the round-twenty
+ claim work — r20 claimed under the mutation lock but ran the pinned
+ teardown with no per-host gate, while the original committer releases the
+ lock across teardowns yet holds the gate until last, so a different-host
+ mutation or replay could run the same supervisor/channel teardown
+ concurrently with the live committer): the finder try-acquires the
+ remnant's host gate after claiming and before running the teardown — a
+ held gate means a live committer still owns the host, so the finder
+ releases the claim back to `pendingMutation`, responds busy, and finalizes
+ nothing; only a dead claim on a gate-free host is adopted — then releases the lock, runs
 the pinned teardown with no lock held under the marker's
 generation/incarnation guards, and re-takes the lock to persist the finalized
 receipt plus real remnant (verifying the attempt token still owns the claim),
@@ -257,10 +270,14 @@ dedup key is (mutationId, host name, mutation kind, host generation at
 commit — the resulting post-commit generation: for `update`, the post-bump
 value the same commit advances to, pinned into the receipt at stage time, so
 a commit-then-replay names the generation the commit actually landed and hits
-instead of missing as superseded), mirroring the operation store's (host, kind,
-client operation ID,
-generation) scope. A replay matches only a receipt of the same name, kind,
-and current generation. A mutationId colliding with a current-generation
+ instead of missing as superseded — plus the incarnation id minted beside
+ that generation in the same atomic sidecar write), mirroring the operation
+ store's (host, kind, client operation ID, generation) scope plus the same
+ incarnation id (extending the round-twenty generation-only scope — r20 let
+ a boot-merge collision that shares a generation with an open remnant also
+ share dedup and receipts across incarnations). A replay matches only a
+ receipt of the same name, kind, current generation, AND current incarnation
+ id. A mutationId colliding with a current-generation
 receipt of a different name or kind is refused with the typed
 `conflicting-mutation-id` error — never a hit, never a re-apply under the
 colliding key (the operation store's conflicting-operation-ID rule, applied
@@ -274,7 +291,11 @@ re-add recovers its outcome rather than tearing down the new incarnation**
 (extending the round-sixteen dedup ordering and the round-fifteen receipt
 scoping — the generation scope still decides *conflict* vs *hit*, but a
 pinned same-key receipt is always a hit for outcome recovery, never a fresh
-destructive apply). A mutation sent without a
+ destructive apply — including the shared-generation case: a same-key
+ receipt pinned to the open remnant's incarnation returns its outcome
+ against a live entry sharing the generation but carrying a different
+ incarnation id, never a hit authorizing work against the live entry).
+ A mutation sent without a
 key whose response is lost reconciles read-after-unknown through `list`
 before any retry — `add` compares the listed entry hash for the name,
   `update` compares the listed effective row, `remove` treats a missing name
@@ -309,7 +330,24 @@ before any retry — `add` compares the listed entry hash for the name,
   can never strand its own retry as `stale-entry` with no receipt, and a
   lost-response keyless `update` whose post-update row was never observed
   retries as uncommitted while its row is unchanged instead of matching
-  neither branch.**
+ neither branch — and `remove` is excluded from that unguarded retry
+ entirely (extending the round-twenty remove rule — r20 let a keyless
+ `remove` retry re-read and retry unguarded past the tombstone check, but a
+ keyless retry carries neither `mutationId` nor `expectedGeneration`, so a
+ lost-response `remove` followed by a re-add cannot name the original
+ incarnation and the unguarded retry removes the NEW host while the old
+ "refuses as stale" claim covers only keyed retries: no client-side re-read
+ can identify the incarnation either). The `remove` handler rejects an
+ unguarded retry server-side — a `remove` naming a live generation with
+ neither `mutationId` nor `expectedGeneration`, on any name that was
+ re-added (or tombstoned and cleared) after the caller's last observed
+ remove-target state — with the typed `stale-entry` refusal committing
+ nothing, never a teardown of the live entry. The client-side re-read stays
+ the fast path for the still-uncommitted case (name missing or `removed:
+ true` row → treat as committed, send nothing further); every live-name
+ unguarded `remove` retry is therefore a server-side refusal, and only a
+ keyed retry or a guarded `expectedGeneration` retry may stage against a
+ live incarnation.**
 **Processing order is fixed — mirroring
 `deploy` step (1) (extending the round-fourteen receipt and round-twelve
 scoping work):** receipt dedup by (mutationId, name, kind, current
@@ -362,7 +400,12 @@ per the absent-when-unknown rule.
   live set against the cap under the mutation lock before the sidecar
   persist, and the same check runs on the boot load and the registry
   `Add`/`Update` paths, so no sidecar or runtime commit can push the
-  registry over it; over-cap is refused with the typed `ErrTooManyHosts`.**
+ registry over it; over-cap is refused with the typed `ErrTooManyHosts` —
+ and boot over-cap is a hard startup error, not a refusal (boot returns
+ nothing: a merged `hub.toml` + sidecar live set over 63 remote hosts names
+ both sources and their counts and refuses to serve — the same posture as
+ the boot-time hard-error duplicate and the corrupt/schema-invalid
+ sidecar).**
   **Refuses any name already declared in
   `hub.toml` or held as a live sidecar entry — the duplicate refusal applies
   to live entries only: a name present solely as a tombstone is accepted
@@ -437,8 +480,15 @@ per the absent-when-unknown rule.
   generation it removed (re-read from `list` first when unknown). A lost-
   response `remove` retry that lands after a re-add minted a new generation
   and carries no recorded same-key receipt (a fresh key, or a keyless retry
-  past the tombstone check) therefore refuses as stale instead of tearing
-  down the new incarnation — while a retry carrying the original key follows
+ past the tombstone check) therefore refuses as stale instead of tearing
+ down the new incarnation — enforced server-side (a `remove` against a live
+ generation carrying neither `mutationId` nor `expectedGeneration` after a
+ re-add is refused with `stale-entry` without consulting any client-side
+ state: a lost response plus a re-add leaves the retry with no incarnation
+ handle, and no client re-read can recover one — extending the round-twenty
+ keyless rules, whose client-side re-read was the only guard; what changes is
+ the enforcement point, from the caller's `list` comparison to the handler's
+ mutation-lock check) — while a retry carrying the original key follows
   the single superseded-receipt rule above (returns the recorded `committed`
   receipt, never a fresh destructive apply) — and
   an `update` retry that omits the optional `expectedGeneration` stays
@@ -466,6 +516,11 @@ snapshot and the last plan-time refusal (the inputs behind `status`'s
 cannot produce those fields), keyed by the host's registry generation
   and updated on every successful preflight and every attach outcome — **and
   every `plan` call publishes into it under the gate before returning: a
+ (gated `plan` calls publish holding the gate; the pre-acquisition no-token
+ refusals — `unattached`, `refresh-failed`, `probe-failed` — occur before
+ any acquisition and publish gateless, never by acquiring the gate to do
+ so: holding the gate across the SSH preflight refresh or the running
+ channel probe reintroduces the slow-probe busy-refusal bug): a
   refusal publishes its `{terminal, message}` as the generation's plan-time
   refusal (a later success clears it), and every completed probe — success or
   authenticated failure — publishes the probed running revision/health (or
@@ -513,11 +568,22 @@ cannot produce those fields), keyed by the host's registry generation
   `deploy`), so a hand edit is visible without a restart.
   **Generation binding:** the token is bound to the durable incarnation — the
   per-name generation of Host generations, below — and `deploy` validates the
-  generation like every other binding. Live `remove` drops every outstanding
-  token row for the name as part of its staged commit, and re-add mints a new
-  generation that starts with zero valid tokens, so a token minted before a
-  remove/re-add cycle can never validate after it even if the re-added entry
-  is byte-identical.
+ generation like every other binding — AND to the incarnation id minted
+ beside it (extending the round-twenty generation-only binding — r20 scoped
+ tokens, operation dedup, and receipts by generation alone, so a boot-merge
+ collision that keeps the live entry at an open remnant's generation lets
+ old tokens and records validate against the new live entry): every
+ `add`/re-add mints a fresh incarnation id in the same atomic sidecar write
+ that mints the generation, the token binds both values at mint, and
+ `deploy` refuses when either differs from the registry's current pair —
+ sharing a generation with an open remnant therefore never shares
+ validity. Live `remove` revokes every outstanding
+ token row for the name through the `pendingStoreSync` revocation intent
+ (never alongside the tombstone write — the two files share no atomic
+ commit), and re-add mints a new
+ generation that starts with zero valid tokens, so a token minted before a
+ remove/re-add cycle can never validate after it even if the re-added entry
+ is byte-identical.
   **Outstanding-token rule: minting a new token for a host immediately
   supersedes any earlier unconsumed token for that host. Superseded rows do
   not accumulate:** the same atomic store write that persists the new token
@@ -528,7 +594,8 @@ cannot produce those fields), keyed by the host's registry generation
   round-sixteen commit marker): token rows live in the operation-store file
   while tombstones and mutation receipts live in the sidecar — a shared mutex
   never makes two files atomic. So `remove`'s staged commit (token-row purge +
-  tombstone write) and any token consume/delete that must coincide with a
+ tombstone write — the tombstone write carrying a token-row revocation
+ intent, the purge applying only post-swap — and any token consume/delete that must coincide with a
   sidecar commit run a durable two-phase intent: (1) the sidecar's atomic
   write carries a `pendingStoreSync` intent (the exact store rows to
   delete/invalidate plus the sidecar generation the intent belongs to);
@@ -543,8 +610,24 @@ cannot produce those fields), keyed by the host's registry generation
   after the purge compensates the store purge alongside the sidecar restore —
   the purged token rows are re-inserted in the same atomic store write that
   accompanies the stash restore, so compensation resurrects exactly the
-  tokens its own sidecar restore revalidates and the compensated mutation
-  leaves old sidecar bytes beside old store rows. Boot reconciles both
+ tokens its own sidecar restore revalidates and the compensated mutation
+ leaves old sidecar bytes beside old store rows — through a durable two-step
+ protocol, never one cross-file atomic write (extending the round-twenty
+ compensation — r20 re-inserted purged rows in "the same atomic store write
+ that accompanies the stash restore", but no single write spans the sidecar
+ rename and the store file, so a crash after the stash restore and before
+ the reinsert left the restored sidecar without its `pendingStoreSync`
+ intent and boot could not detect the lost store rows): the committer first
+ persists a `pendingCompensation` record holding the purged rows into the
+ operation-store file — which the stash restore cannot touch, since the
+ rename replaces sidecar bytes only — then restores the prior sidecar bytes
+ from the stash, then re-inserts the purged rows in a second store write,
+ then clears the compensation record. Boot reconciles live compensation
+ records before serving (re-inserting their rows, then clearing), so a crash
+ at any point of compensation still converges to the restored sidecar's view
+ with its tokens intact — the compensation record survives the sidecar
+ restoration by construction, and the restored sidecar carries no
+ `pendingStoreSync` intent for the generic rules below to misread. Boot reconciles both
   directions before serving
   (extending the round-eighteen intent work — r18 re-applied and dropped but
   never cleared a stale intent after convergence, so intents lingered across
@@ -670,14 +753,21 @@ cannot produce those fields), keyed by the host's registry generation
   zero outstanding tokens; otherwise only unexpired,
   binding-intact tokens for live hosts remain valid past the restart.
   **Live removal revokes immediately:** `remove`'s staged commit drops every
-  outstanding token row for the name alongside the tombstone write (same
-  commit, same mutation lock), and the re-added generation starts with none —
+ outstanding token row for the name through the `pendingStoreSync` intent —
+ the tombstone write carries the revocation intent under the mutation lock
+ and the store purge applies only post-swap as the compensable second phase
+ (never alongside the tombstone write: the two files share no atomic commit,
+ see the cross-file intent above), and the re-added generation starts with none —
   combined with the generation binding above, no pre-remove token can validate
   after a remove/re-add cycle. Token validation additionally requires the
-  token's generation to equal the registry's current generation for the name.
+ token's generation to equal the registry's current generation for the name
+ AND the token's incarnation id to equal the live entry's — sharing a
+ generation with an open remnant never shares validity (see the generation
+ binding above).
 - `evener/host/deploy` (mutation): **processing order is fixed.** (1) Dedup
   first: if the client operation ID matches an existing durable operation
-  record **of the same host, kind, and current host generation** (a
+  record **of the same host, kind, current host generation, and current
+  incarnation id** (a
   `host-removed` record never matches, and neither does a record pinned to
   a superseded generation — see the operation store), return that record —
   no token validation, no consumption (this
@@ -837,16 +927,20 @@ controller-side operation records; this component defines a
 timestamps, the **pinned host generation (the incarnation the record ran
 against — part of the dedup scope, so polling after client operation-ID reuse
 returns distinguishable records and the current incarnation is selected by
-generation match)**, and a **`host-removed` mark** (set when the host is removed —
+ generation match — plus the pinned incarnation id minted beside that
+ generation, so a boot-merge collision sharing a generation with an open
+ remnant never shares dedup either)**, and a **`host-removed` mark** (set when the host is removed —
   live at remove time, or reconstructed from the sidecar tombstones at boot
   (see crash recovery); still-readable history that never matches a dedup
   lookup either way). **Client
   operation IDs are opaque — non-empty, at most 128 bytes, no required
   internal structure — and deduplication is keyed by (host, kind, client
-  operation ID, host generation at record creation), never the ID alone:**
+ operation ID, host generation at record creation, incarnation id at record
+ creation), never the ID alone:**
   records pin the generation of the incarnation they ran against, and a
   dedup lookup matches only records whose generation equals the registry's
-  current generation for the name — a re-add starts its new generation with
+  current generation for the name AND whose incarnation id equals the live
+  entry's — a re-add starts its new generation with
   a clean dedup slate, so client operation-ID reuse after a remove/re-add
   cycle opens a fresh operation instead of colliding with the removed
   incarnation's history. **Precedence is generation-first — extending the
@@ -986,7 +1080,36 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   interrupted record therefore starts only after local reaping completes and
   under a fresh fencing epoch with the guard advanced past a kill/wait of the
   superseded epoch, so it can never
-  overlap orphaned local or remote work from the crashed incarnation.**
+ overlap orphaned local or remote work from the crashed incarnation.
+ **Fencing helper, install, and version gate (extending the round-twenty
+ fencing machinery — r20 defined the wrapper's register/fence/perform
+ semantics but neither how the wrapper reaches the remote nor what the
+ deploy/restart paths that predate it must do, so a host without the
+ wrapper kept every old mutating SSH command outside the fence): the remote
+ lease wrapper is a versioned shell helper (`evener-fence`, version 1 —
+ install path `~/.local/share/evener/fence`, version pinned in the fencing
+ epoch record) installed on the target host by the deploy bootstrap path
+ before the first fenced operation (reusing the 04b bootstrap-on-bare-host
+ seam: install-or-verify is a pre-mutation step of the worker's guard
+ advance, never a mutation itself); every worker verifies the helper's
+ version string before the kill/wait step and reinstalls or refuses on
+ mismatch (older helper → reinstall under the same guard advance; helper
+ absent and uninstallable → the operation refuses fail-closed with the
+ typed `probe-failed`-class fencing refusal before any remote mutation,
+ never an unfenced push). Migration: remotes first contacted by this
+ component predate the helper, so their first operation takes the
+ bootstrap plan above (install-then-fence, verified by a helper self-test
+ round-trip) before any mutating step; a remote whose platform cannot run
+ the helper (no POSIX shell at the target path) stays fail-closed for
+ deploy/restart — reads and `plan` still serve — until the operator
+ upgrades it out-of-band. Routing: EVERY mutating SSH command the
+ controller issues to the host — deploy pushes, remote deploy/restart
+ commands, `Manager.preflight` one-shots, and the 04b `Ensure`-triggered
+ paths — runs through the wrapper under the worker's epoch; no direct-SSH
+ mutating path survives alongside it (a command that cannot present an
+ epoch is refused by the guard file rule above). A host without the
+ installed helper therefore cannot accept a remote mutation at all — the
+ no-overlap guarantee holds vacuously, never as an unfenced exception.**
   **The same boot pass, after the sidecar is
   loaded and after the interrupted transition, applies every loaded
   tombstone to the store: each tombstone (removed host name) marks that
@@ -1057,7 +1180,8 @@ generation match)**, and a **`host-removed` mark** (set when the host is removed
   so an auto-deploy and a user deploy cannot interleave (the 04b
   `errControllerDirty` posture applies across all of them). **Acquisition is
   try-acquire — nothing waits on a held gate: a new `deploy`/`restart`, a
-  `plan` (which always acquires before checking facts or minting), or an
+ `plan` (which always try-acquires before validation and mint, after its
+ ungated refresh/probe), or an
   `update`/`remove` that finds the gate held fails fast with the typed busy
   error naming the in-flight operation.**
   **Holder classes:** when the gate is held by a deploy/restart operation the
@@ -1278,7 +1402,7 @@ the TTL read as `teardown-unknown-key` not-found instead of
  current-generation receipt returns before this gate — see the fixed ordering
  in mutation idempotency) that would advance or remove the affected name while it
  holds an open remnant — re-add, `update` of the remnant's name, and `remove`
- of the remnant's name — is refused with the typed `remnant-open` busy form
+ of the remnant's name — is refused with the typed `remnant-open` conflict refusal
  (carrying the blocking `remnantId` — extending the round-eleven re-add gate:
  the gate refusal finally has its own contract value rather than borrowing
  `teardown-unknown-key`'s shape) — the operator first resumes the named
@@ -2160,8 +2284,15 @@ surface only — including `teardown-retry`'s origin rejection alongside its
   wiring test mirroring the 05a registration tests.
   **Mutation-idempotency tests (the operation store's cross-name rule,
   applied to mutations): cross-name/cross-kind `mutationId` replay is the
-  typed `conflicting-mutation-id` refusal; same-key replay after remove/
-re-add opens fresh (superseded-generation receipts are not a conflict);
+ typed `conflicting-mutation-id` refusal; same-key replay after remove/
+ re-add returns the retained receipt's original result — never a fresh apply
+ against the new incarnation (a retained same-key superseded-generation
+ receipt is always a hit for outcome recovery, never a conflict and never a
+ fresh destructive apply; a pruned receipt — past the count/TTL prune, or
+ gone with its tombstone — is the typed `stale-entry` pruned-generation
+ refusal, never a fresh apply either; a genuinely new mutation mints a new
+ `mutationId` — extending the round-twenty testing text, which said
+ superseded receipts "open fresh" while the contract replays them);
 commit-then-replay of an `update` returns the receipt pinned to the
 post-bump generation without rebumping.**
  **Commit-point tests: a committed-with-teardown-failure persists the
