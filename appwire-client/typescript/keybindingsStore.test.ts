@@ -718,8 +718,10 @@ describe("the checkpointed draft editor", () => {
       writeUncertain: false,
     });
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    // Classified at construction, before the ready generation begins.
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
+    // Classified at construction with generation: null (before the ready
+    // generation began); readyStore's own refresh is this generation's first
+    // authoritative payload, which stamps it (round 23 High 1).
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
 
     // Another store or app version replaces the SAME record with a valid,
     // newer checkpoint - under different storage bytes - between this
@@ -746,8 +748,10 @@ describe("the checkpointed draft editor", () => {
       writeUncertain: false,
     });
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    // Classified at construction, before the ready generation begins.
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
+    // Classified at construction with generation: null (before the ready
+    // generation began); readyStore's own refresh is this generation's first
+    // authoritative payload, which stamps it (round 23 High 1).
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
 
     // The user edits the restored draft: save() writes a NEW checkpoint. The
     // repository's tracked identity must move with it, or a discard right
@@ -811,6 +815,39 @@ describe("the checkpointed draft editor", () => {
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });
     const store = createKeybindingsStore({ client: new FakeClient("ready"), drafts: drafts.storage });
     expect(store.getState()).toMatchObject({ draft: { revision: 3, rules }, writeUncertain: true });
+  });
+
+  // RoboRev round 23 High 1: a draft restored before any ready generation
+  // began (a store built synchronously, before the host ever connects) keeps
+  // generation: null forever - staleDraft never runs the generation check on
+  // it - so a LATER hub replacement reporting the identical revision by
+  // coincidence would read it as current. The fix stamps the draft with the
+  // generation confirming it the moment the first authoritative payload
+  // lands, before staleness is evaluated for that payload.
+  test("a draft restored before any generation began is stamped by the first authoritative payload, so a later hub replacement at the same revision is caught", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: false });
+    const client = clientServing(3, rules);
+    const store = createKeybindingsStore({ client, drafts: drafts.storage });
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: null });
+
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    // The first authoritative payload lands: the draft is stamped with THIS
+    // generation, even though nothing about it looked stale yet.
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules, generation: 1 });
+    expect(store.getState().draftConflict).toBe(false);
+
+    // The hub is replaced (a reconnect to a different hub, or the same hub
+    // restarted): a new generation begins and its own numbering happens to
+    // confirm the IDENTICAL revision this draft was stamped against.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState().revision).toBe(3);
+    expect(store.getState().draftConflict).toBe(true);
   });
 
   test.each<[string, unknown]>([
