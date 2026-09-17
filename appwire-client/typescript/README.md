@@ -57,7 +57,11 @@ models and which take a plugin selection), the built-in slash invocation
 matcher and argument lookup both composers run a draft through before sending
 it, the transcript display configuration both apps resolve (local over hub
 over shipped), encode for local storage and summarize a transcript's content
-level and advanced toggles with, the keybinding group both apps' shortcut settings are built on (the action
+level and advanced toggles with, the transcript projector
+(`projectThread(model, config)`) that turns a thread's turns and items into
+the rows a transcript renders - content-level filtering, the critical/intent/
+thinking/hidden decision per item, disclosure eligibility and anchors - over
+the same config, framework-free and with no host global, the keybinding group both apps' shortcut settings are built on (the action
 ids, the chord AST with its overlap predicate, the default binding map, the
 display rows, the override primitives and the semantic override validation) -
 its registry is a framework-free store factory, `createKeybindingsRegistry(parse)`
@@ -165,9 +169,13 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   polyfill) passes its own source (the web's lazily-read, guarded `crypto`;
   `expo-crypto` for native) rather than the package assuming one exists.
   `createSecureUUID` documents its own fallback for a source with neither
-  method: a non-cryptographic id, not UUID-shaped, rather than a throw. No
-  storage, scheduling or DOM type lives here - just the shape, the identity
-  and the rule. Resolves to `state/mutation/index.ts`, a barrel.
+  method: a non-cryptographic id, not UUID-shaped, rather than a throw. The
+  pure reconciliation (`reconcilePendingEntries`) turns those durable records
+  plus a live `ThreadModel` into the `PendingTurnEntry` rows a composer's
+  queue renders - identity-based, so an authoritative projection replaces the
+  same outbox entry rather than duplicating it. No storage, scheduling or DOM
+  type lives here - just the shape, the identity and the reconciliation.
+  Resolves to `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure
