@@ -229,6 +229,31 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
     });
 
+    // The recovery read answers "does something still want this list", not
+    // "was the prior state closed or reconnecting" - hasBeenReady only gates
+    // the invalidation a notification would also apply (see plugins.test.ts's
+    // reconnect describe), so closed recovers an established list exactly as
+    // reconnecting does, and leaves an unread one alone exactly as reconnecting
+    // does too.
+    test("closed -> ready recovers an established list exactly as reconnecting does, and leaves an unread one alone", async () => {
+      const { fake, store } = lifecycle.create();
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
+      await lifecycle.fetch(store.getState());
+
+      store.connectionChanged(fake, "closed");
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
+
+      const { fake: fresh, store: unread } = lifecycle.create();
+      answerRequests(fresh, lifecycle.listMethod, lifecycle.listResponse);
+      unread.connectionChanged(fresh, "closed");
+      unread.connectionChanged(fresh, "ready");
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(fresh.calls).toHaveLength(0);
+      expect(lifecycle.list(unread.getState())).toBeNull();
+    });
+
     test("a reconnect inside the debounce window reads once, not twice", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
