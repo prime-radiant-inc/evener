@@ -3787,6 +3787,29 @@ function installFailingDecodeStub(): void {
 // desyncing the draft (a revert that bypasses writeDraft). Reproduction:
 // paste an image whose decode later fails, then type SYNCHRONOUSLY (no
 // yield to the microtask queue) before that rejection settles.
+test("a failed decode strips its marker while a selection is held, caret at that selection's start", async () => {
+  installFailingDecodeStub();
+  await mountComposer("ref_a");
+  const editor = textarea();
+
+  act(() => {
+    pastePngInto(editor);
+  });
+  replaceEditorText(editor, "keep [image 1] tail");
+  expect(editor.textContent).toBe("keep [image 1] tail");
+
+  // Hold a real forward selection while the decode fails. The field this
+  // replaced reported the selection's lower offset, so the caret after the
+  // strip belongs at the selection's start, not at its focus end.
+  selectEditorText(editor, 0, 4);
+
+  await waitFor(() => expect(screen.queryByRole("button", { name: /remove/i })).toBeNull());
+
+  expect(editor.textContent).toBe("keep  tail");
+  expect(editorCursor(editor)).toBe(0);
+  expect(readComposerDraft("ref_a")).toEqual({ text: "keep  tail", skillNames: [] });
+});
+
 test("typing synchronously after a paste whose decode later fails survives - the failed marker alone is stripped (critical)", async () => {
   installFailingDecodeStub();
   await mountComposer("ref_a");
@@ -3966,6 +3989,24 @@ test("removing an attachment that joined a token to a chip keeps the editor and 
   await waitFor(() => expect(editor.textContent).toBe("Use /cleanup d"));
   expect(readComposerDraft(ref)).toEqual({ text: "Use /cleanup d", skillNames: ["cleanup"] });
   expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(1);
+});
+
+test("deleting the separator between two chips restores exactly one space", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_shared_chip_boundary";
+  const text = "Run /cleanup /cleanup.v2";
+  writeComposerDraft(ref, { text, skillNames: ["cleanup", "cleanup.v2"] });
+  await mountComposer(ref);
+  const editor = textarea();
+  expect(within(editor).getAllByTestId("composer-skill-chip")).toHaveLength(2);
+
+  // Removing the shared separator breaks both references at one boundary, so
+  // the repair owes one space - not one per atom.
+  selectEditorText(editor, "Run /cleanup ".length);
+  await user.keyboard("{Backspace}");
+
+  expect(editor.textContent).toBe(text);
+  expect(readComposerDraft(ref)).toEqual({ text, skillNames: ["cleanup", "cleanup.v2"] });
 });
 
 test("a chip at the end of the draft does not reopen the slash menu when its separator is removed", async () => {
@@ -4609,6 +4650,50 @@ test("the open menu wires listbox/option roles and aria-activedescendant on the 
 
   await user.keyboard("{Escape}");
   expect(textarea().getAttribute("aria-activedescendant")).toBeNull();
+});
+
+test("closing the slash menu removes both of the editor's optional ARIA references", async () => {
+  useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
+  const user = userEvent.setup();
+  const ref = "ref_slash_aria_cleanup";
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, skillInput: true },
+      queue: { revision: 0 },
+      diagnostics: {
+        skills: [
+          {
+            name: "skill-1",
+            description: "first skill",
+            disableModelInvocation: false,
+            userInvocable: true,
+            available: true,
+          },
+        ],
+      },
+    },
+  });
+  const editor = textarea();
+
+  await user.type(editor, "hi /re");
+  const listboxId = editor.getAttribute("aria-controls");
+  expect(listboxId).toBeTruthy();
+  expect(document.getElementById(listboxId ?? "")).toBe(slashMenu());
+  expect(editor.getAttribute("aria-activedescendant")).toBeTruthy();
+
+  // Closing must REMOVE the attributes rather than leave empty ones: an empty
+  // reference still points assistive technology at a menu that is gone.
+  await user.keyboard("{Escape}");
+  expect(editor.hasAttribute("aria-controls")).toBe(false);
+  expect(editor.hasAttribute("aria-activedescendant")).toBe(false);
+
+  // Completion closes the menu by the other route, and must clean up the same.
+  await user.type(editor, " /skill-1");
+  expect(slashOptions()).toHaveLength(1);
+  await user.click(slashOptions()[0]!);
+  expect(editor.hasAttribute("aria-controls")).toBe(false);
+  expect(editor.hasAttribute("aria-activedescendant")).toBe(false);
 });
 
 // --- Enter/submit interception: the composer as the session command line

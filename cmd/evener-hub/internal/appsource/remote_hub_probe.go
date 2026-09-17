@@ -54,6 +54,24 @@ type HostFacts struct {
 // mixing two connections' worth of state into one snapshot.
 type HostFactsFunc func(ctx context.Context, host string, client *appwire.Client) (HostFacts, error)
 
+// HostHandshakeFunc returns the InitializeResponse the named remote host's
+// channel captured when it attached, and reports false when no live channel is
+// installed or when the installed channel is not the one client belongs to. It
+// never dials. The capability probe reads ProtocolVersion, SourceID, and
+// Features through it: those three are handshake-only, because the
+// connection-scoped initialize cannot be re-run on the already-initialized
+// channel component 04 handed over and no other wire call reports them. The
+// handshake's ServerInfo is deliberately not consumed — its Version is the
+// hub's package constant, not its running build, so HubVersion stays
+// preflight/buildinfo-owned. client is the exact generation the probe resolved
+// and ran its other reads on, so an implementation must answer from that
+// generation or report false rather than race a reconnect; a false answer makes
+// the probe refuse with the typed SessionUnavailable and cache nothing. In
+// production it is backed by the remoteHostHandshakeForChannel closure over
+// sshconn.Manager.ChannelIfAttached, with the channel-identity check at the call
+// site rather than inside an accessor.
+type HostHandshakeFunc func(host string, client *appwire.Client) (appwire.InitializeResponse, bool)
+
 // remoteHubProbe is one successful probe cached against the client it ran on.
 // Keeping the client pointer lets HostCapabilities re-probe automatically when
 // a component-04 reconnect hands back a new client.
@@ -75,7 +93,7 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	if err := ctx.Err(); err != nil {
 		return HostCapabilities{}, s.mapCallError(err)
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
 		return HostCapabilities{}, s.mapCallError(err)
 	}
@@ -88,6 +106,7 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 	// probe below runs without probeMu so it holds no lock across wire I/O.
 	s.probeMu.Lock()
 	factsFn := s.facts
+	handshakeFn := s.handshake
 	s.probeMu.Unlock()
 
 	var caps HostCapabilities
@@ -134,7 +153,31 @@ func (s *RemoteHubSource) HostCapabilities(ctx context.Context) (HostCapabilitie
 		caps.Arch = facts.Arch
 		caps.Features = facts.Features
 	}
-	caps.HubSourceID = remoteHubNamespace
+	// The attach handshake carries the connection's own ProtocolVersion,
+	// SourceID, and Features. When component 04 exposed it, those three are
+	// authoritative — they describe this exact generation — while OS/Arch and
+	// HubVersion stay preflight-owned: the handshake's ServerInfo.Version is the
+	// hub's package constant, not its running build, so the facts seam's
+	// buildinfo value is the single version source. Without the seam the
+	// preflight-owned fields above stand and the remote namespace is fixed.
+	//
+	// A false answer means the seam could not answer from the generation the
+	// probe resolved — no live channel, or one that is not this client's — so
+	// refuse with the typed SessionUnavailable and cache nothing rather than
+	// serve a snapshot that pairs this client's wire reads with another
+	// generation's handshake facts.
+	if handshakeFn != nil {
+		hs, ok := handshakeFn(s.id, client)
+		if !ok {
+			return HostCapabilities{}, appwire.SessionUnavailable("remote hub unavailable: " + s.id)
+		}
+		caps.ProtocolVersion = hs.ProtocolVersion
+		caps.HubSourceID = hs.SourceID
+		caps.Features = hs.Features
+	}
+	if caps.HubSourceID == "" {
+		caps.HubSourceID = remoteHubNamespace
+	}
 	caps.Roots = append([]string(nil), s.roots...)
 
 	s.probeMu.Lock()

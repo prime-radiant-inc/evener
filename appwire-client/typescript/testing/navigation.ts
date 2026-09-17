@@ -16,6 +16,7 @@ import type {
   NavigationReadParams,
   NavigationReadResponse,
   NavigationSessionSummary,
+  NavigationSnapshot,
 } from "../types.gen";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({
   version,
@@ -235,6 +236,101 @@ export const wireV2 = (
     etag,
     data: { metadata, entities, containers },
   } as NavigationReadResponse;
+};
+
+// A fixed manifest/section/location reconnect fixture, shared by both apps'
+// navigation store contract suites: a same-generation reconnect that returns
+// a fresh v2 snapshot for whichever resource the store re-requests.
+export const reconnectManifestKey: ResourceKey = { kind: "manifest" };
+export const reconnectSectionKey: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
+export const reconnectLocationKey: ResourceKey = { kind: "location", ref: "local:x" };
+const reconnectSessionValue = {
+  ref: "x",
+  host_id: "local",
+  session_id: "x",
+  title: "Session x",
+  project: "project",
+  state: "idle",
+  kind: "session",
+  live: false,
+  children: [],
+};
+export const reconnectSessionSnapshot = (
+  resource: ResourceKey,
+  metadata: Record<string, unknown>,
+  slot: "session" | "sessions",
+): NavigationSnapshot => {
+  const entityKey = `${navigationViewScope(resource)}/entity/${"7".repeat(64)}`;
+  return {
+    metadata,
+    entities: [
+      {
+        key: entityKey,
+        kind: "session",
+        value: resource.kind === "location" ? { ...reconnectSessionValue, ref: resource.ref } : reconnectSessionValue,
+      },
+    ],
+    containers: [
+      {
+        key: navigationRootContainerKey(resource, slot),
+        owner: { kind: "resource_root", slot },
+        children: [entityKey],
+      },
+      {
+        key: navigationOwnedContainerKey(entityKey, "children"),
+        owner: { kind: "entity", entityKey, slot: "children" },
+        children: [],
+      },
+    ],
+  };
+};
+export const reconnectV2Response = (params: NavigationReadParams): NavigationReadResponse => {
+  if (params.resource === "manifest")
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: "generation_test",
+      revision: 11,
+      etag: '"manifest-v2"',
+      data: {
+        metadata: manifest({ revision: 11 }),
+        entities: [],
+        containers: [
+          {
+            key: navigationRootContainerKey(reconnectManifestKey, "manifest"),
+            owner: { kind: "resource_root", slot: "manifest" },
+            children: [],
+          },
+        ],
+      },
+    };
+  if (params.resource === "section")
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: "generation_test",
+      revision: 22,
+      etag: '"section-v2"',
+      data: reconnectSessionSnapshot(
+        reconnectSectionKey,
+        { generation_id: "generation_test", revision: 22, offset: 0, limit: 50, remaining: 0, truncated: false },
+        "sessions",
+      ),
+    };
+  if (params.resource === "location")
+    return {
+      status: "ok",
+      representation: "snapshot",
+      generationId: "generation_test",
+      revision: 33,
+      etag: '"location-v2"',
+      data: reconnectSessionSnapshot(
+        reconnectLocationKey,
+        { generation_id: "generation_test", revision: 33, ref: "local:x", top_level_ref: "local:x", top_level: true },
+        "session",
+      ),
+    };
+  throw new Error(`unexpected reconnect resource ${params.resource}`);
 };
 
 /** Build a NavigationSessionSummary fixture. */

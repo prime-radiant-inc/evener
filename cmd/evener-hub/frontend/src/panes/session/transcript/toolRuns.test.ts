@@ -1,6 +1,5 @@
-import type { ItemModel } from "@evener/appwire-client";
+import type { ItemModel, ProjectedEntry } from "@evener/appwire-client";
 import { expect, test } from "vitest";
-import type { ProjectedEntry } from "../../../transcriptDisplay/projector";
 import { foldToolRuns, runLabel, type ToolRun } from "./toolRuns";
 
 const tool = (
