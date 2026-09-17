@@ -16,6 +16,11 @@ export interface NativePreferenceDraftBackend {
 		key: string,
 		checkpoint: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
 	): boolean;
+	replaceIf(
+		key: string,
+		expected: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
+		next: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
+	): boolean;
 }
 
 export function nativeKeybindingDrafts(
@@ -30,6 +35,7 @@ export function nativeKeybindingDrafts(
 		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
+		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
 	};
 }
 

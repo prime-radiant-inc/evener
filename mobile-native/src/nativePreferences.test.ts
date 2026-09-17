@@ -355,6 +355,10 @@ function draftStorage() {
 			values.delete(key);
 			return true;
 		},
+		// nativeTranscriptDrafts's own storage shape has no replaceIf (the
+		// pre-migration transcript design never settles atomically); only the
+		// backend interface requires it.
+		replaceIf: () => false,
 	};
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
 }

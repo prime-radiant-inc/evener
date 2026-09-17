@@ -45,6 +45,12 @@ const backend = {
 		Storage.removeItemSync(key);
 		return true;
 	},
+	replaceIf(key: string, expected: unknown, next: unknown): boolean {
+		// The atomic twin of deleteIf: same compare, a write instead of a removal.
+		if (Storage.getItemSync(key) !== JSON.stringify(expected)) return false;
+		Storage.setItemSync(key, JSON.stringify(next));
+		return true;
+	},
 };
 
 export function NativePreferencesProvider({
