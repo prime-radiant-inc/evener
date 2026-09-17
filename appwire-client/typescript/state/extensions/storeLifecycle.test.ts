@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import { deferRequest, FakeClient } from "../../testing/fakeClient";
+import { deferRequest, FakeClient, failing } from "../../testing/fakeClient";
 import type { MarketplaceEntry, PluginEntry } from "../../types.gen";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
@@ -37,6 +37,8 @@ interface LifecycleCase<S> {
    * flight and be answered out of order. */
   gateList(fake: FakeClient): (() => void)[];
   deferMutation(fake: FakeClient): () => void;
+  /** Scripts the mutation to fail. */
+  failMutation(fake: FakeClient): void;
   fetch(state: S): Promise<void>;
   /** The mutation deferMutation holds. */
   mutate(state: S): Promise<void>;
@@ -72,6 +74,7 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
     const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
     return () => release({ marketplaces: [] });
   },
+  failMutation: (fake) => fake.on("evener/marketplace/remove", failing("write refused")),
   fetch: (state) => state.fetchMarketplaces(),
   mutate: (state) => state.removeMarketplace("acme"),
   loading: (state) => state.marketplacesLoading,
@@ -104,6 +107,7 @@ const PLUGINS: LifecycleCase<PluginsState> = {
     const release = deferRequest<{ plugins: PluginEntry[] }>(fake, "evener/plugin/remove");
     return () => release({ plugins: [] });
   },
+  failMutation: (fake) => fake.on("evener/plugin/remove", failing("write refused")),
   fetch: (state) => state.fetchPlugins(),
   mutate: (state) => state.removePlugin("linter", "acme"),
   loading: (state) => state.pluginsLoading,
@@ -297,6 +301,27 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
       answerNewer();
       await newer;
+      expect(lifecycle.loading(store.getState())).toBe(false);
+    });
+
+    test("a write that publishes nothing hands the state back to the read it outran", async () => {
+      const { fake, store } = lifecycle.create();
+      const releases = lifecycle.gateList(fake);
+      const reading = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+      expect(lifecycle.loading(store.getState())).toBe(true);
+
+      // A write issued while the read is in flight fences it - and then fails,
+      // publishing nothing. It must not keep what it fenced: otherwise the
+      // read lands superseded, writes none of its three fields, and the flag
+      // it raised stays up with nothing left to lower it.
+      lifecycle.failMutation(fake);
+      await expect(lifecycle.mutate(store.getState())).rejects.toThrow("write refused");
+
+      const answer = releases[0];
+      if (!answer) throw new Error("the read must be in flight");
+      answer();
+      await reading;
       expect(lifecycle.loading(store.getState())).toBe(false);
     });
 

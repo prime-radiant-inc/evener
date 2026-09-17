@@ -975,6 +975,26 @@ describe("reconnect-triggered refetch", () => {
     expect(fake.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(0);
   });
 
+  // This module is lazily loaded, so it usually initializes AFTER the client is
+  // ready: the connection it must learn from is the one that already exists,
+  // not the next transition. Without that first pass the cores' first sight of
+  // the connection is the reconnect itself, which they then read as a first
+  // connection - nothing invalidated, no revision moved, exactly when a
+  // disconnection has just hidden changes from them.
+  // resetExtensionsStoreForTests puts the singleton back the way a fresh load
+  // leaves it, that pass included, which is what lets this be tested at all.
+  test("a module that initializes while the client is ready still recovers on the next reconnect", async () => {
+    const fake = connectFakeClient();
+    resetExtensionsStoreForTests();
+    expect(extensionsStore.getState().pluginRevision).toBe(0);
+
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await drainMicrotasks();
+
+    expect(extensionsStore.getState().pluginRevision).toBe(1);
+  });
+
   test("a reconnect reads nothing for a section that was never opened", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));

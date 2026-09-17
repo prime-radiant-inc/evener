@@ -35,7 +35,7 @@ import {
 } from "@evener/appwire-client/state/extensions";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore, onConnectionNotification } from "./connection";
+import { type ConnectionStoreState, connectionStore, onConnectionNotification } from "./connection";
 import { isLocalHost } from "./hostRouting";
 
 export type { MarketplaceCatalogEntry } from "@evener/appwire-client/state/extensions";
@@ -118,10 +118,18 @@ plugins.start();
 // Each core re-reads its list when this connection is ready again - only if
 // something has read it already, so a section the user never opened still
 // sends nothing.
-connectionStore.subscribe((s) => {
-  marketplaces.connectionChanged(s.client, s.state);
-  plugins.connectionChanged(s.client, s.state);
-});
+function syncConnection(state: Pick<ConnectionStoreState, "client" | "state">): void {
+  marketplaces.connectionChanged(state.client, state.state);
+  plugins.connectionChanged(state.client, state.state);
+}
+connectionStore.subscribe(syncConnection);
+// And the connection that already exists. This module is lazily loaded, so
+// initializing after the client is ready is the common case: without this pass
+// the cores' first sight of the connection is the NEXT transition, which they
+// read as a first connection - invalidating nothing and moving no revision,
+// exactly when a disconnection has just hidden changes from them. Same shape
+// as stores/credentials.ts's own initial pass.
+syncConnection(connectionStore.getState());
 
 export const extensionsStore = createStore<ExtensionsStoreState>((set) => ({
   ...marketplaces.getState(),
@@ -274,6 +282,9 @@ export function resetExtensionsStoreForTests(): void {
     launchLayerLoading: false,
     launchLayerError: null,
   });
+  // A fresh module load reads the connection that already exists; a reset puts
+  // this singleton back the way that load leaves it, so it reads it too.
+  syncConnection(connectionStore.getState());
 }
 
 /** Directory actions shared by settings fields; the widget stays wire-free. */

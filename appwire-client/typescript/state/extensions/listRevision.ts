@@ -2,7 +2,8 @@
 // response replaces whole (a hub's marketplaces, its installed plugins, its
 // global launch layer).
 //
-// The owner is the latest request ISSUED, not the latest response applied. A
+// The owner is the latest request ISSUED and still live, not the latest
+// response applied. A
 // request that has been superseded writes nothing when it lands, even if
 // nothing newer has answered yet: its list is older than the one already on
 // the way, and the loading flag and the error belong to it just as much, so a
@@ -23,6 +24,13 @@ export interface ListRevision {
   /** Whether the response that took `revision` is still the store's newest
    * word on the list. */
   commit(revision: number): boolean;
+  /** Gives `revision` back when its request published nothing at all - a
+   * rejection the store records nowhere. Ownership returns to the request
+   * before it, so an answer this one fenced can still land: without it a
+   * failed write silently keeps the loading flag a read raised, and the read
+   * lands superseded with nothing left to lower it. A no-op for a revision
+   * something newer has already superseded. */
+  retract(revision: number): void;
   /** Fences every response still on the wire: none of them commits. */
   fence(): void;
 }
@@ -36,6 +44,9 @@ export function createListRevision(): ListRevision {
     },
     commit(revision) {
       return revision === issued;
+    },
+    retract(revision) {
+      if (revision === issued) issued -= 1;
     },
     fence() {
       issued += 1;
