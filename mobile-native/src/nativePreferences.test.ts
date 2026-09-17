@@ -335,7 +335,10 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	);
 });
 
-import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
+import {
+	type NativePreferenceDraftCheckpoint,
+	nativeTranscriptDrafts,
+} from "./nativePreferenceDrafts";
 import type { TranscriptDraftCheckpoint } from "@evener/appwire-client";
 
 function draftStorage() {
@@ -350,7 +353,10 @@ function draftStorage() {
 			values.delete(key);
 		},
 		createId: () => String(++id),
-		deleteIf: (key: string, value: TranscriptDraftCheckpoint) => {
+		// The port's own parameter type, not just the type this fixture is used
+		// with: a narrower one only compiles because `deleteIf` is declared as a
+		// method, whose parameters TypeScript compares bivariantly.
+		deleteIf: (key: string, value: NativePreferenceDraftCheckpoint) => {
 			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
 				values.delete(key);
 		},
@@ -407,6 +413,36 @@ it("an unreadable stored record is surfaced as such and discarding clears it", a
 		storageUnavailable: false,
 		draftUnreadable: false,
 	});
+});
+
+it("an unreadable record stays discardable when the hub read fails", async () => {
+	const disk = draftStorage();
+	disk.storage.save({
+		id: "d0",
+		baseRevision: 4,
+		config,
+		writeUncertain: false,
+	} as never);
+	const client = fakeClient();
+	client.handlers.set("evener/settings/transcriptDisplay/get", () => {
+		throw new Error("hub unreachable");
+	});
+	const model = new NativePreferences(
+		client,
+		{ keybindingsSettings: false, transcriptDisplaySettings: true },
+		disk.storage,
+	);
+	await model.refresh();
+
+	// Nothing confirmed and nothing readable - the exact case the escape hatch
+	// exists for, and the one where the screen has no `config` to render a
+	// footer from.
+	const shown = model.getSnapshot().transcriptMobile;
+	expect(shown).toMatchObject({ confirmed: null, draft: null, draftUnreadable: true });
+
+	await model.discardTranscriptDraft();
+	expect(disk.storage.load()).toBeNull();
+	expect(model.getSnapshot().transcriptMobile.draftUnreadable).toBe(false);
 });
 
 it("restores a draft synchronously and preserves its base across read and conflict review", async () => {

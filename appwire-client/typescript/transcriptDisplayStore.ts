@@ -406,6 +406,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   /** The direct write's token per layout: a later write on the same layout
    * supersedes an earlier one's reply. Bumped for every layout by retirement. */
   const patchTokens = new Map<ViewportClass, number>();
+  /** The confirmed revision each direct write's preview was composed against.
+   * A preview is a GUESS at what its layer will hold. A confirmed payload
+   * NEWER than the guess's base that CONTRADICTS it has settled the layer at
+   * something else, so the guess must not keep sitting on top of it - that is
+   * true however the write's own reply ended up, including never landing. A
+   * newer payload that MATCHES it is left alone: the host still has an
+   * unacknowledged write to report, and the preview is what it reports about.
+   * A reconnect read re-confirming the same revision says nothing new either
+   * way. Not part of `drafts`, which is the host's published shape. */
+  const previewBases = new Map<ViewportClass, number>();
   let patchSerial = 0;
   const store = createFrameworkFreeStore<TranscriptDisplayStoreState>(() => ({
     ...initialState(),
@@ -531,8 +541,19 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       return false;
     }
     const hub = { ...state.hub, [layout]: value };
+    const previewBase = previewBases.get(layout);
+    const preview = state.drafts[layout];
+    const contradictsPreview =
+      previewBase !== undefined &&
+      preview !== undefined &&
+      value.revision > previewBase &&
+      configFingerprint(value.config) !== configFingerprint(preview);
+    if (contradictsPreview) previewBases.delete(layout);
+    const drafts = { ...state.drafts };
+    if (contradictsPreview) delete drafts[layout];
     setState({
       hub,
+      ...(contradictsPreview ? { drafts } : {}),
       draftConflict: staleDraft(state.draft, hub),
       ...extra,
     });
@@ -587,6 +608,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // nothing left to retire and would publish a fresh `hub` identity per
       // tick.
       if (state.hubSupport === support) return;
+      previewBases.clear();
       retirePayload({ hubSupport: support, hubError: null, hubErrors: {}, hub: {}, drafts: {} });
       return;
     }
@@ -730,6 +752,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // refresh lands they must not present as current or as a base for a
     // write. hubSupport is connection-sourced, not hub state, so it is left
     // to setSupport.
+    previewBases.clear();
     retirePayload({ hub: {}, hubError: null, hubErrors: {}, drafts: {} });
   }
 
@@ -757,8 +780,10 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     const token = claimLayoutWrite(layout);
     fence.claimWrite();
     const stillMine = () => writeStillMine(generation, layout, token);
+    previewBases.set(layout, confirmed.revision);
     setState({ drafts: { ...state.drafts, [layout]: config }, ...layoutError(layout, undefined) });
     const clearPreview = (): Partial<TranscriptDisplayStoreFields> => {
+      previewBases.delete(layout);
       const drafts = { ...getState().drafts };
       delete drafts[layout];
       return { drafts };
@@ -905,7 +930,14 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         config: toWireConfig(config),
       });
     } catch (error) {
-      if (!stillMine()) throw error;
+      if (!stillMine()) {
+        // Fenced by something that did NOT retire the payload - a support flip
+        // to unknown keeps the state and the in-flight work but makes this
+        // reply not ours. Nothing else will settle this write, so the editor
+        // may not be left mid-write.
+        if (getState().saving) setState({ saving: false, writeUncertain: true });
+        throw error;
+      }
       const canonical = conflictCurrent(error, layout);
       if (canonical !== undefined) {
         // A revision conflict is not a lost reply: the hub REFUSED this write
@@ -1029,6 +1061,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     reset() {
       endReadyGeneration();
       missedChangeNotification = false;
+      previewBases.clear();
       setState({ ...initialState() });
     },
     dispose() {

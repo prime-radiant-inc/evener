@@ -384,6 +384,26 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
+  test("a rejection arriving after support went unknown still clears saving", async () => {
+    const client = clientServing(3);
+    const drafts = memoryKeybindingDraftStorage();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // The transient-disconnect window keeps the payload and the in-flight work
+    // but makes isSupported() false, so the reply is fenced with no retirement
+    // having published saving false.
+    store.setSupport("unknown");
+    expect(store.getState().saving).toBe(true);
+
+    reply.reject(new Error("connection lost"));
+    await expect(save).rejects.toThrow("connection lost");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true });
+  });
+
   test("an unreadable stored record never locks the section", async () => {
     const drafts = memoryKeybindingDraftStorage();
     drafts.corrupt();

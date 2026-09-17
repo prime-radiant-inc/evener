@@ -302,6 +302,20 @@ export function TranscriptPreferencesEditor({
 						</View>
 					</>
 				) : null}
+				{unreadableDraft ? (
+					<>
+						<Copy>
+							The draft saved on this phone could not be read. Discard it to
+							edit these settings again.
+						</Copy>
+						{/* Outside the footer and every hub-state gate: the footer needs a
+						    configuration to render, and the case this exists for is
+						    precisely the one with nothing confirmed and nothing readable.
+						    Never disabled either - discarding writes only to the device, so
+						    it works offline, and it is the way out of a locked section. */}
+						<Action onPress={discard}>Discard unreadable draft</Action>
+					</>
+				) : null}
 				{state.error && !state.writeUncertain ? (
 					<Action
 						disabled={!connected || state.loading || state.saving}
@@ -340,12 +354,6 @@ export function TranscriptPreferencesEditor({
 							<Action disabled={disabled || state.conflict} onPress={discard}>
 								Discard draft
 							</Action>
-						) : null}
-						{unreadableDraft ? (
-							// Never disabled: discarding writes only to the device, so it
-							// works offline, and it is the escape hatch from a section that
-							// is otherwise locked.
-							<Action onPress={discard}>Discard unreadable draft</Action>
 						) : null}
 					</View>
 				</View>

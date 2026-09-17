@@ -462,6 +462,30 @@ describe("the direct write", () => {
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
+  test("a rejection arriving after support went unknown still clears saving", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const drafts = memoryDrafts();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // The transient-disconnect window: support goes unknown, which keeps the
+    // payload and the in-flight work but makes isSupported() false - so the
+    // reply is fenced WITHOUT any retirement having published saving false.
+    store.setSupport("unknown");
+    expect(store.getState().saving).toBe(true);
+
+    reply.reject(new Error("connection lost"));
+    await expect(save).rejects.toThrow("connection lost");
+
+    // Whatever fenced it, the editor may not be left mid-write: nothing else
+    // will ever settle this one.
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().writeUncertain).toBe(true);
+  });
+
   test("a superseded checkpointed reply always clears saving", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const drafts = memoryDrafts();
@@ -498,6 +522,58 @@ describe("the direct write", () => {
     // keep sitting on top of it.
     expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
     expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a newer confirmed payload that contradicts a stranded preview clears it", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    // A transient disconnect fences the reply. The preview stays up, because
+    // the hub may well have applied it.
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await write;
+    expect(store.getState().drafts.mobile).toEqual(proposed);
+
+    // On reconnect the hub confirms a NEWER revision holding something else:
+    // the layer settled at a value this preview contradicts, so the guess must
+    // not keep sitting on top of it.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(4, desktopConfig)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(4, desktopConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a newer confirmed payload MATCHING a stranded preview leaves it for the host to report", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+    store.endReadyGeneration();
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await write;
+
+    // The hub holds what the write asked for, but this write's reply never
+    // landed: the host still has an unacknowledged write to tell the user
+    // about, and the preview is what it tells them about.
+    client.on(getMethod, () => ({
+      desktop: toWireDefault(hubDefault(3, desktopConfig)),
+      mobile: toWireDefault(hubDefault(3, proposed)),
+    }));
+    store.beginReadyGeneration();
+    await store.getState().refreshHubDefaults();
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
+    expect(store.getState().drafts.mobile).toEqual(proposed);
   });
 
   test("a malformed success changes no hub state and reports it", async () => {

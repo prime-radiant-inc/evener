@@ -1201,6 +1201,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
       if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
+      // Fenced by something that did NOT retire the payload - a support flip to
+      // unknown keeps the state and the in-flight work but makes this reply not
+      // ours. Nothing else will settle this write, so the editor may not be
+      // left mid-write.
+      else if (getState().saving) setState({ saving: false, writeUncertain: true });
       throw error;
     }
     // The reply is back. What follows is ONE ordered sequence with no side

@@ -5,15 +5,17 @@ import type {
 	TranscriptDraftStorage,
 } from "@evener/appwire-client";
 
+/** Either section's checkpoint, as the device backend stores them. */
+export type NativePreferenceDraftCheckpoint =
+	| TranscriptDraftCheckpoint
+	| KeybindingDraftCheckpoint;
+
 export interface NativePreferenceDraftBackend {
 	createId(): string;
 	get(key: string): unknown;
 	set(key: string, value: unknown): void;
 	delete(key: string): void;
-	deleteIf(
-		key: string,
-		checkpoint: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
-	): void;
+	deleteIf(key: string, checkpoint: NativePreferenceDraftCheckpoint): void;
 }
 
 /** One hub's drafts for one preference section, under that section's key
