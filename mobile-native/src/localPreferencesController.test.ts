@@ -1,6 +1,7 @@
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import { LocalPreferencesController } from "./localPreferencesController";
+import { draftBackend } from "./nativeDraftBackend";
 import type { NativePreferenceDraftBackend } from "./nativePreferenceDrafts";
 
 const config = makeTranscriptDisplayConfig();
@@ -28,6 +29,23 @@ function backend() {
 		},
 	};
 	return { port, values };
+}
+
+/** The real byte-aware backend (draftBackend), with the raw stored bytes
+ * observable - what a discard's byte identity is actually measured against,
+ * never the hand-rolled JSON.stringify comparison `backend()` above uses. */
+function deviceStore() {
+	const raw = new Map<string, string>();
+	const store = {
+		getItemSync: (key: string) => raw.get(key) ?? null,
+		setItemSync: (key: string, value: string) => {
+			raw.set(key, value);
+		},
+		removeItemSync: (key: string) => {
+			raw.delete(key);
+		},
+	};
+	return { raw, port: draftBackend(store, () => "id-1") };
 }
 
 describe("LocalPreferencesController", () => {
@@ -131,6 +149,29 @@ describe("LocalPreferencesController", () => {
 		};
 		const controller = new LocalPreferencesController("hub", port);
 		await expect(controller.discardTranscript()).rejects.toThrow("disk unavailable");
+	});
+
+	// RoboRev round 18 Medium A: a value getSnapshot() classified carries its
+	// original bytes, so a concurrent writer's replacement under DIFFERENT
+	// bytes must survive a discard attempt even when it compares semantically
+	// equal to what was read - it is a write this controller never classified.
+	it("refuses a discard once the classified record has been replaced under different bytes, though equivalent JSON", async () => {
+		const disk = deviceStore();
+		disk.raw.set(transcriptKey, '{\n  "id" : "a" ,\n  "baseRevision": -1\n}');
+		const controller = new LocalPreferencesController("hub", disk.port);
+		expect(controller.getSnapshot().transcriptMobile.draftUnreadable).toBe(true);
+
+		// Reordered, no whitespace: the same fields, different bytes.
+		const replacement = '{"baseRevision":-1,"id":"a"}';
+		disk.raw.set(transcriptKey, replacement);
+
+		await controller.discardTranscript();
+
+		expect(disk.raw.get(transcriptKey)).toBe(replacement);
+		// A fresh read - never the discard call itself - is what shows the
+		// replaced record is still there: getSnapshot() has no cached result to
+		// go stale (round 18 Medium B's class, avoided here by construction).
+		expect(controller.getSnapshot().transcriptMobile.draftUnreadable).toBe(true);
 	});
 
 	it("keeps one hub's drafts out of another's", () => {
