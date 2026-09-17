@@ -52,6 +52,7 @@ export function TranscriptSection() {
   const drafts = useTranscriptDisplayStore((state) => state.drafts);
   const local = useTranscriptDisplayStore((state) => state.local);
   const hubLoading = useTranscriptDisplayStore((state) => state.hubLoading);
+  const loaded = useTranscriptDisplayStore((state) => state.loaded);
   const hubError = useTranscriptDisplayStore((state) => state.hubError);
   const hubErrors = useTranscriptDisplayStore((state) => state.hubErrors);
   const storageWarning = useTranscriptDisplayStore((state) => state.storageWarning);
@@ -108,7 +109,10 @@ export function TranscriptSection() {
     Object.values(hubErrors).some((message) => message !== undefined) ||
     Object.values(pending).some((state) => state?.state === "saving" || state?.state === "error");
   const serverIssue = hubError !== null && !layoutIssue;
-  const disabled = hubSupport !== "supported" || hubLoading || serverIssue;
+  // `loaded` is the reconnect case: support and hubLoading both look ready
+  // while the confirmed state belongs to a generation that ended, and every
+  // write is refused until the next read confirms.
+  const disabled = hubSupport !== "supported" || hubLoading || !loaded || serverIssue;
   let status: string | undefined;
   if (hubSupport === "unknown") {
     status = "Waiting for the hub connection to report transcript display support.";

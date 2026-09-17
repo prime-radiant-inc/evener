@@ -142,6 +142,11 @@ export interface TranscriptDisplayStoreFields {
   /** The draft port threw; edits stay blocked until refreshHubDefaults can
    * restore the checkpoint again. */
   storageUnavailable: boolean;
+  /** The port answered but what it held could not be read. The RECORD is the
+   * problem, not the port: the section still loads, and discarding is allowed
+   * and is what clears it. A host must offer that discard, or the section is
+   * locked with no way out. */
+  draftUnreadable: boolean;
   /** The draft's base revision is not the confirmed revision of its layout
    * (the hub moved under it, or a write's outcome is unknown): saveDraft
    * refuses until rebaseDraft reviews the current value. */
@@ -228,6 +233,7 @@ function initialState(): TranscriptDisplayStoreFields {
     saving: false,
     writeUncertain: false,
     storageUnavailable: false,
+    draftUnreadable: false,
     draftConflict: false,
     draftError: null,
   };
@@ -392,10 +398,6 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   // it started under and fences its reply on the shared fence.
   const fence = createReadyGenerationFence(isSupported);
   let unwireNotification: (() => void) | null = null;
-  /** The port answered but what it held could not be read. The record is the
-   * problem, not the port: the hub read still runs, and discardDraft can
-   * still throw the record away. */
-  let storedDraftUnreadable = false;
   /** Set when a changed-notification is dropped because the current
    * generation has no confirmed state yet: the refresh that lands the state
    * may carry a response PREDATING the dropped change, so a successful
@@ -434,12 +436,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
         draft,
         writeUncertain: checkpoint?.writeUncertain ?? false,
         storageUnavailable: false,
+        draftUnreadable: false,
         draftError: null,
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.hub),
       };
     } catch (error) {
-      storedDraftUnreadable = error instanceof UnreadableDraftError;
-      return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
+      return {
+        storageUnavailable: true,
+        draftUnreadable: error instanceof UnreadableDraftError,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+      };
     }
   }
 
@@ -488,6 +494,16 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       writeUncertain: state.writeUncertain || state.saving,
       ...extra,
     });
+  }
+
+  /** A valid external payload that is not stale has moved the hub PAST
+   * whatever the store-wide error described, so the retry notice it left goes
+   * with it. Per-layout write errors are the write's own and stay: they say
+   * which layer a user's change did not reach. Keyed on applyHubDefault's
+   * return rather than ridden in as `extra`, which publishes for an IGNORED
+   * payload too - a stale broadcast moves nothing and so clears nothing. */
+  function externalPayloadLanded(applied: boolean): void {
+    if (applied && getState().hubError !== null) setState({ hubError: null });
   }
 
   /** Applies one layout's confirmed default (a GET's layer, a `changed`
@@ -595,7 +611,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       void refreshFor(generation);
       return;
     }
-    applyHubDefault(change.layout, { revision: change.revision, config: change.config });
+    externalPayloadLanded(applyHubDefault(change.layout, { revision: change.revision, config: change.config }));
   }
 
   /** A change arriving before the CURRENT generation's refresh has confirmed
@@ -631,7 +647,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // A malformed change cannot be a confirmed hub record.
       return;
     }
-    applyHubDefault(change.layout, { revision: change.revision, config });
+    externalPayloadLanded(applyHubDefault(change.layout, { revision: change.revision, config }));
   }
 
   /** What an authoritative read settles for the draft editor: an uncertain
@@ -703,7 +719,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable && !storedDraftUnreadable) return;
+      if (getState().storageUnavailable && !getState().draftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -757,8 +773,15 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       const canonical = decodePatchReply(result, layout, confirmed, config);
       // The direct write's host presents the live value, so a reply the store
       // has already moved past cannot be shown as this write's outcome.
-      if (canonical.revision < (getState().hub[layout] ?? confirmed).revision)
+      if (canonical.revision < (getState().hub[layout] ?? confirmed).revision) {
+        // The layer moved on while this write was out. A malformed reply keeps
+        // its preview because the hub MAY have applied the write and the
+        // pre-write value would read as a refusal; here there is a confirmed,
+        // newer value already on screen, so the preview would sit on top of it
+        // claiming a change the hub has overtaken.
+        setState(clearPreview());
         throw new InvalidPatchResponseError(MALFORMED_PATCH_MESSAGE);
+      }
       applyHubDefault(layout, canonical, { ...clearPreview(), hubError: null, ...layoutError(layout, undefined) });
       return canonical;
     } catch (error) {
@@ -778,6 +801,8 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       // as if the write were refused. A refused or lost write drops it.
       const message = errorText(error);
       setState({
+        // A malformed success keeps the preview (see above); the overtaken path
+        // has already cleared its own.
         ...(error instanceof InvalidPatchResponseError ? {} : clearPreview()),
         hubError: message,
         ...layoutError(layout, message),
@@ -795,7 +820,12 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     // An unreadable record is the one storage failure discarding can FIX, so
     // it is not a reason to refuse: throwing the record away is exactly what
     // the user is asking for.
-    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !storedDraftUnreadable))
+    if (
+      fence.disposed ||
+      state.saving ||
+      state.writeUncertain ||
+      (state.storageUnavailable && !getState().draftUnreadable)
+    )
       throw new Error(UNAVAILABLE_MESSAGE);
   }
 
@@ -942,8 +972,14 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
+    // This write took the layer, so any direct write's preview on it belongs to
+    // a superseded write and must not outlive the value that replaced it -
+    // whether this write's own value landed or a newer external one did.
+    const remainingPreviews = { ...getState().drafts };
+    delete remainingPreviews[layout];
     setState({
       draft: newerExternal || storageError !== null ? getState().draft : null,
+      drafts: remainingPreviews,
       storageUnavailable: storageError !== null,
       draftError: storageError,
     });
@@ -957,7 +993,7 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
   function discardDraft(): void {
     assertDiscardable();
     try {
-      if (storedDraftUnreadable) drafts.discardUnreadable();
+      if (getState().draftUnreadable) drafts.discardUnreadable();
       else {
         const checkpoint = drafts.load();
         if (checkpoint) drafts.removeIf(checkpoint);
@@ -966,8 +1002,13 @@ export function createTranscriptDisplayStore(deps: TranscriptDisplayStoreDeps): 
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
     }
-    storedDraftUnreadable = false;
-    setState({ draft: null, draftConflict: false, draftError: null, storageUnavailable: false });
+    setState({
+      draft: null,
+      draftConflict: false,
+      draftError: null,
+      storageUnavailable: false,
+      draftUnreadable: false,
+    });
   }
 
   function rebaseDraft(reviewedRevision: number): void {

@@ -64,7 +64,10 @@ export interface TranscriptDisplayChange {
 
 /** The hub fields the panes read, mirrored from the package store on every
  * transition it publishes. */
-type MirroredHubFields = Pick<HubStoreState, "hub" | "drafts" | "hubLoading" | "hubError" | "hubErrors" | "hubSupport">;
+type MirroredHubFields = Pick<
+  HubStoreState,
+  "hub" | "drafts" | "hubLoading" | "hubError" | "hubErrors" | "hubSupport" | "loaded"
+>;
 
 export interface TranscriptDisplayStoreState extends MirroredHubFields {
   viewport: ViewportClass;
@@ -95,6 +98,10 @@ function mirroredHubFields(state: HubStoreState): MirroredHubFields {
     hubError: state.hubError,
     hubErrors: state.hubErrors,
     hubSupport: state.hubSupport,
+    // A same-client reconnect ends the generation without changing support or
+    // hubLoading, so `loaded` is the only field that says the confirmed state
+    // is gone and every write is refused until the next read lands.
+    loaded: state.loaded,
   };
 }
 

@@ -174,6 +174,25 @@ export function KeybindingPreferencesScreen({
 							phone. Check the hub before making another change.
 						</Copy>
 					)}
+					{model && domain?.draftUnreadable && (
+						<>
+							<Copy>
+								The shortcut draft saved on this phone could not be read.
+								Discard it to edit shortcuts again.
+							</Copy>
+							{/* Not gated on the section's `busy`, which the unreadable record
+							    itself sets: this is the escape hatch out of that state. It
+							    IS gated on the connection, because `run` above refuses while
+							    disconnected and a control that does nothing is worse than a
+							    disabled one. */}
+							<Action
+								disabled={!preferences.connected}
+								onPress={() => run(() => model.discardKeybindingsDraft())}
+							>
+								Discard unreadable draft
+							</Action>
+						</>
+					)}
 					{model && domain?.support === "supported" && (
 						<Action
 							disabled={

@@ -376,6 +376,39 @@ const proposedConfig = {
 	content: { kind: "preset" as const, level: "full" as const },
 };
 
+it("an unreadable stored record is surfaced as such and discarding clears it", async () => {
+	const disk = draftStorage();
+	// The shape written before layouts were recorded; any value this build
+	// cannot read behaves the same.
+	disk.storage.save({
+		id: "d0",
+		baseRevision: 4,
+		config,
+		writeUncertain: false,
+	} as never);
+	const f = persistedPreferences(disk.storage);
+
+	// The RECORD is unreadable, so the screen is told exactly that - not just
+	// "storage unavailable", which it would render as every control disabled.
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		draft: null,
+		storageUnavailable: true,
+		draftUnreadable: true,
+	});
+
+	// The hub is not implicated, so the section still loads its defaults.
+	await f.model.refresh();
+	expect(f.model.getSnapshot().transcriptMobile.confirmed).not.toBeNull();
+
+	// And discarding is allowed, and is what clears the record.
+	await f.model.discardTranscriptDraft();
+	expect(disk.storage.load()).toBeNull();
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		storageUnavailable: false,
+		draftUnreadable: false,
+	});
+});
+
 it("restores a draft synchronously and preserves its base across read and conflict review", async () => {
 	const f = persistedPreferences();
 	await f.model.refresh();

@@ -256,6 +256,45 @@ describe("hub defaults", () => {
     expect(reads).toBe(2);
   });
 
+  test("a valid newer broadcast clears a stale store-wide error", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new Error("hub unreachable");
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("hub unreachable");
+    expect(store.getState().hubError).toBe("hub unreachable");
+
+    // The hub then confirms a newer value by itself. The retry notice describes
+    // a failure the hub has since moved past.
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 5, config: toWireConfig(proposed) },
+    });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(5, proposed));
+    expect(store.getState().hubError).toBeNull();
+    // The layout's own write error is the write's, not the hub's, and stays.
+    expect(store.getState().hubErrors.mobile).toBe("hub unreachable");
+  });
+
+  test("a STALE broadcast leaves the store-wide error alone", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(5, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => {
+      throw new Error("hub unreachable");
+    });
+    await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow("hub unreachable");
+    expect(store.getState().hubError).toBe("hub unreachable");
+
+    // Older than what is confirmed: it moves nothing, so it clears nothing.
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 4, config: toWireConfig(proposed) },
+    });
+    expect(store.getState().hub.mobile).toEqual(hubDefault(5, mobileConfig));
+    expect(store.getState().hubError).toBe("hub unreachable");
+  });
+
   test("a broadcast relayed before the generation's first read does not make that read stale", async () => {
     const client = serving(hubDefault(7, desktopConfig), hubDefault(7, mobileConfig));
     const store = await readyStore(client);
@@ -437,6 +476,28 @@ describe("the direct write", () => {
     reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
     await save;
     expect(store.getState().saving).toBe(false);
+  });
+
+  test("a reply the hub has already moved past drops the preview and keeps the newer value", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    const reply = deferred<TranscriptDisplayPatchResponse>();
+    client.on(patchMethod, () => reply.promise);
+    const write = store.getState().patchHubDefault("mobile", proposed);
+    await vi.waitFor(() => expect(store.getState().drafts.mobile).toEqual(proposed));
+
+    // Someone else moved the layer on while this write was out.
+    client.emitNotification({
+      method: changedMethod,
+      params: { layout: "mobile", revision: 7, config: toWireConfig(mobileConfig) },
+    });
+    reply.resolve(patchAnswer("mobile", hubDefault(3, proposed)));
+    await expect(write).rejects.toThrow(/malformed/);
+
+    // The newer value stands, and the preview of a write it overtook must not
+    // keep sitting on top of it.
+    expect(store.getState().hub.mobile).toEqual(hubDefault(7, mobileConfig));
+    expect(store.getState().drafts.mobile).toBeUndefined();
   });
 
   test("a malformed success changes no hub state and reports it", async () => {

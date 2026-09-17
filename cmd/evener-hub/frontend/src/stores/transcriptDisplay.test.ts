@@ -210,6 +210,30 @@ describe("effective transcript display state", () => {
     heard();
   });
 
+  test("a same-client reconnect reports the hub as unconfirmed, not as ready", async () => {
+    const client = new FakeClient("ready");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 3, config: toWireConfig(preset("full")) },
+      mobile: { revision: 3, config: toWireConfig(preset("chat")) },
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    client.emitReady();
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    expect(transcriptDisplayStore.getState().loaded).toBe(true);
+
+    // The generation ends and support stays "supported" with hubLoading false,
+    // so nothing else the pane reads changes. Every write is refused until the
+    // next read confirms, and the pane has to know that.
+    client.emitStateChange("reconnecting");
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("supported");
+    expect(transcriptDisplayStore.getState().hubLoading).toBe(false);
+    expect(transcriptDisplayStore.getState().loaded).toBe(false);
+    await expect(transcriptDisplayStore.getState().patchHubDefault("desktop", preset("chat"))).rejects.toThrow(
+      /unavailable/,
+    );
+  });
+
   test("does not capture or announce a hub update hidden by a local override", () => {
     const capture = vi.fn(() => viewSnapshot("pane"));
     const announce = vi.fn();

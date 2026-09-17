@@ -124,6 +124,11 @@ export interface KeybindingsStoreFields {
   /** The draft port threw; edits stay blocked until refreshOverrides can
    * restore the checkpoint again. */
   storageUnavailable: boolean;
+  /** The port answered but what it held could not be read. The RECORD is the
+   * problem, not the port: the section still loads, and discarding is allowed
+   * and is what clears it. A host must offer that discard, or the section is
+   * locked with no way out. */
+  draftUnreadable: boolean;
   /** The draft's base revision is not the confirmed revision (the hub moved
    * under it, or a write's outcome is unknown): saveDraft refuses until
    * rebaseDraft reviews the current rules. */
@@ -224,6 +229,7 @@ function initialState(): KeybindingsStoreFields {
     saving: false,
     writeUncertain: false,
     storageUnavailable: false,
+    draftUnreadable: false,
     draftConflict: false,
     draftError: null,
   };
@@ -591,10 +597,6 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   // the generation it started under and lands only through the shared fence.
   const fence = createReadyGenerationFence(isSupported);
   let unwireNotification: (() => void) | null = null;
-  /** The port answered but what it held could not be read. The record is the
-   * problem, not the port: the hub read still runs, and discardDraft can
-   * still throw the record away. */
-  let storedDraftUnreadable = false;
   /** Set when an un-apply rolled back against a wedged registry (findings 31
    * and 32): the overrides are STILL firing, so the rollback hubError is not
    * stale and refreshFor's entry clear must not wipe it. Cleared by the next
@@ -638,12 +640,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         draft,
         writeUncertain: checkpoint?.writeUncertain ?? false,
         storageUnavailable: false,
+        draftUnreadable: false,
         draftError: null,
         draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision),
       };
     } catch (error) {
-      storedDraftUnreadable = error instanceof UnreadableDraftError;
-      return { storageUnavailable: true, draftError: DRAFT_RESTORE_FAILED_MESSAGE };
+      return {
+        storageUnavailable: true,
+        draftUnreadable: error instanceof UnreadableDraftError,
+        draftError: DRAFT_RESTORE_FAILED_MESSAGE,
+      };
     }
   }
 
@@ -953,7 +959,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // they never edited.
     if (getState().storageUnavailable) {
       setState(restoreDraft(getState()));
-      if (getState().storageUnavailable && !storedDraftUnreadable) return;
+      if (getState().storageUnavailable && !getState().draftUnreadable) return;
     }
     if (fence.generation < 0) return;
     await refreshFor(fence.generation);
@@ -1038,7 +1044,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // so a write QUEUED while supported can reach this point, as can one
       // composed while unsupported. Both throw without hubError.
       if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
-      if (state.hubSupport !== "supported" || state.loaded !== true || state.hubLoading) {
+      if (
+        state.hubSupport !== "supported" ||
+        state.loaded !== true ||
+        state.hubLoading ||
+        state.saving ||
+        state.writeUncertain
+      ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
         // is not the store's contract, and a patch composed from a STALE
         // generation's raw set (client replaced, refresh not yet landed) would
@@ -1046,6 +1058,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // `hubLoading` is the same race WITHIN one generation: an in-flight
         // refresh is about to land a payload whose revision may differ from
         // the one a concurrent PATCH would send as expectedRevision.
+        // `saving`/`writeUncertain` are the checkpointed editor's sibling gate,
+        // the same rule the transcript store's direct write follows: both paths
+        // take the same write token, so starting here would fence the
+        // checkpointed write's own reply out and strand it saving.
         setState({ hubError: UNAVAILABLE_MESSAGE });
         throw new Error(UNAVAILABLE_MESSAGE);
       }
@@ -1112,7 +1128,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // An unreadable record is the one storage failure discarding can FIX, so
     // it is not a reason to refuse: throwing the record away is exactly what
     // the user is asking for.
-    if (fence.disposed || state.saving || state.writeUncertain || (state.storageUnavailable && !storedDraftUnreadable))
+    if (
+      fence.disposed ||
+      state.saving ||
+      state.writeUncertain ||
+      (state.storageUnavailable && !getState().draftUnreadable)
+    )
       throw new Error(UNAVAILABLE_MESSAGE);
   }
 
@@ -1209,6 +1230,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     //     with the port marked unavailable, and never turns a confirmed write
     //     back into an unknown outcome.
     if (!stillMine()) {
+      // Whatever fenced this reply out, the editor may not be left mid-write:
+      // the retirement sites already publish saving false, and this makes the
+      // fenced branch say so itself rather than depend on the site that
+      // superseded it.
+      if (getState().saving) setState({ saving: false, writeUncertain: true });
       const state = getState();
       return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
     }
@@ -1254,7 +1280,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function discardDraft(): void {
     assertDiscardable();
     try {
-      if (storedDraftUnreadable) drafts.discardUnreadable();
+      if (getState().draftUnreadable) drafts.discardUnreadable();
       else {
         const checkpoint = drafts.load();
         if (checkpoint) drafts.removeIf(checkpoint);
@@ -1263,8 +1289,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
     }
-    storedDraftUnreadable = false;
-    setState({ draft: null, draftConflict: false, draftError: null, storageUnavailable: false });
+    setState({
+      draft: null,
+      draftConflict: false,
+      draftError: null,
+      storageUnavailable: false,
+      draftUnreadable: false,
+    });
   }
 
   function rebaseDraft(reviewedRevision: number): void {

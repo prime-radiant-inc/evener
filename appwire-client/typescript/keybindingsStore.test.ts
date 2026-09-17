@@ -366,6 +366,45 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft).toBeNull();
   });
 
+  test("a direct write is refused while a checkpointed write owns the payload", async () => {
+    const client = clientServing(3);
+    const drafts = memoryKeybindingDraftStorage();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // Both paths take the same write token, so a direct write starting here
+    // would fence the save's own reply out and strand saving true.
+    await expect(store.getState().patchOverrides(rules)).rejects.toThrow("unavailable");
+
+    reply.resolve(payload(4, rules));
+    await save;
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
+  });
+
+  test("an unreadable stored record never locks the section", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    drafts.corrupt();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+
+    // The RECORD is unreadable, not the port, and the hub is not implicated.
+    expect(store.getState()).toMatchObject({
+      draft: null,
+      storageUnavailable: true,
+      draftUnreadable: true,
+      loaded: true,
+    });
+    expect(store.getState().revision).toBe(3);
+
+    // Discarding is allowed and is what clears the record.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+    expect(() => store.getState().editDraft(rules)).not.toThrow();
+  });
+
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
     const drafts = memoryKeybindingDraftStorage();
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });

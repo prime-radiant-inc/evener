@@ -31,6 +31,10 @@ export interface PreferenceState<T> {
 	conflict: boolean;
 	writeUncertain: boolean;
 	storageUnavailable: boolean;
+	/** The stored draft could not be read. Nothing is wrong with the hub or the
+	 * port: the screen must offer an ENABLED discard, or the section is locked
+	 * with no way out. */
+	draftUnreadable: boolean;
 }
 
 /** The confirmed payload as the shared store holds it: its rule list is the
@@ -54,6 +58,7 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	conflict: false,
 	writeUncertain: false,
 	storageUnavailable: false,
+	draftUnreadable: false,
 });
 
 const HUB_UNCONFIRMED_MESSAGE = "The hub request could not be confirmed.";
@@ -93,6 +98,7 @@ function keybindingsDomain(
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
+		draftUnreadable: state.draftUnreadable,
 	};
 }
 
@@ -127,6 +133,7 @@ function transcriptDomain(
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
+		draftUnreadable: state.draftUnreadable,
 	};
 }
 

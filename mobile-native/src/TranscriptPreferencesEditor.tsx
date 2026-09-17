@@ -114,6 +114,11 @@ export function TranscriptPreferencesEditor({
 		state.writeUncertain ||
 		state.storageUnavailable;
 	const dirty = state.draft !== null;
+	// An unreadable stored draft is the one storage failure the user can clear,
+	// and clearing it is the only way out of the disabled state above: there is
+	// no readable `draft` to hang "Discard draft" off, so it gets its own
+	// ENABLED control.
+	const unreadableDraft = state.draftUnreadable;
 	return (
 		<View style={styles.fill}>
 			<ScrollView contentContainerStyle={{ padding: 20, gap: 16 }}>
@@ -335,6 +340,12 @@ export function TranscriptPreferencesEditor({
 							<Action disabled={disabled || state.conflict} onPress={discard}>
 								Discard draft
 							</Action>
+						) : null}
+						{unreadableDraft ? (
+							// Never disabled: discarding writes only to the device, so it
+							// works offline, and it is the escape hatch from a section that
+							// is otherwise locked.
+							<Action onPress={discard}>Discard unreadable draft</Action>
 						) : null}
 					</View>
 				</View>
