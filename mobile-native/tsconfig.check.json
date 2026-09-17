@@ -7,6 +7,8 @@
       "@evener/appwire-client/state/navigation": ["../appwire-client/typescript/state/navigation/index.ts"],
       "@evener/appwire-client/state/credentials": ["../appwire-client/typescript/state/credentials/index.ts"],
       "@evener/appwire-client/state/extensions": ["../appwire-client/typescript/state/extensions/index.ts"],
+      "@evener/appwire-client/state/mutation": ["../appwire-client/typescript/state/mutation/index.ts"],
+      "@evener/appwire-client/state/connection": ["../appwire-client/typescript/state/connection/index.ts"],
       "@evener/appwire-client/testing/*": ["../appwire-client/typescript/testing/*"],
       "anser": ["./node_modules/anser"],
       "react": ["./node_modules/@types/react"],
