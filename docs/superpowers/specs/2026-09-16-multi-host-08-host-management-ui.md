@@ -228,10 +228,21 @@ a marker still in phase `staged` with `swapStarted: false` finalizes as
 `committed` with no remnant without running any teardown — no runtime swap
 occurred, so there is no swapped-out lifecycle to tear down, and running
 the pinned teardown there would destroy the still-live old runtime before
-the staged runtime is applied — while a marker in phase `staged` with
-`swapStarted: true` is ambiguous (the swap may or may not have applied) and
-recovers conservatively with the pinned teardown like a swapped marker —
-so retries converge instead of reporting busy
+  the staged runtime is applied — while a marker in phase `staged` with
+  `swapStarted: true` is ambiguous (the crash landed between the intent flip
+  and the non-atomic runtime transition, so the swap may or may not have
+  applied — extending the round-thirty-one intent, which re-ran the pinned
+  teardown over that ambiguity: tearing down the pinned OLD runtime without
+  re-applying the staged runtime first strands the live sidecar against the
+  wrong runtime. What changes is the order — recovery re-applies the staged
+  runtime set first (rebind/wire the live handles to the staged values,
+  idempotent: already-swapped handles re-resolve to the same values), THEN
+  re-runs the pinned teardown to completion, then flips the phase to
+  `runtime-swapped` and finalizes the receipt from that observed result with
+  the pre-minted `remnantId` when the re-run actually failed — so recovery
+  converges sidecar and runtime before any teardown destroys a handle, and
+  every ambiguous post-intent state keeps its pinned remnant, never a
+  teardown-first mismatch) — so retries converge instead of reporting busy
 forever. Any mutation-path write that finds a marker it did not stage for its own host
 finalizes that marker first — a marker for a different host rides along untouched in the same atomic writes and never forces finalization, so unrelated-host mutations proceed while serializing only same-host teardown/finalize work plus the sidecar write itself — with the pinned-teardown re-run above executed
 OUTSIDE the mutation lock (extending the round-eighteen marker work and the
@@ -292,12 +303,20 @@ transition): a marker found in phase `runtime-swapped` (or in an unknown
 phase that follows the swap) recovers with the pinned teardown target even
   when `teardownStarted` reads false — the swap may have applied — while
   only a phase-`staged` marker with `teardownStarted: false` AND
-  `swapStarted: false` is the finalize-without-remnant case (extending the
+  `swapStarted: false` is the finalize-without-remnant case — every other
+  post-intent state keeps the pinned remnant (extending the
   round-twenty-four recovery, which finalized every `staged`-with-false
-  marker without a remnant: a crash between the swap-intent write and the
-  non-atomic runtime transition is ambiguous — the swap may or may not have
-  applied — so boot recovers every ambiguous post-intent marker
-  conservatively with the pinned remnant, never without one). Boot finalizes each host entry by the
+  marker without a remnant, and the round-thirty-one state machine, which
+  re-ran the pinned OLD-runtime teardown over the `staged` +
+  `swapStarted: true` + `teardownStarted: false` ambiguity without
+  re-applying the staged runtime first. What changes is the re-apply-before-
+  teardown order on that one ambiguous state: boot first re-applies the
+  staged runtime set to the live handles (the same idempotent rebind the
+  live replay runs — an unapplied swap lands, an applied one re-resolves),
+  then runs the pinned teardown and persists the teardown remnant with the
+  pre-minted `remnantId`, so the recovered live set converges before any
+  teardown destroys a handle and the previously disagreeing state now reads
+  exactly one way — remnant, re-applied first). Boot finalizes each host entry by the
 flag (a leftover `finalizingMutation` claim counts as teardown-started: the
 claim write sets the flag true, since a live claimant is about to run the
 torn-down under the claim): a
@@ -958,6 +977,25 @@ cannot produce those fields), keyed by the host's registry (generation,
   recovery path for the hard startup error above), the store starts with
   zero outstanding tokens; otherwise only unexpired,
   binding-intact tokens for live hosts remain valid past the restart.
+  **Wall-clock rollback detection (extending the round-thirty-one state-
+  transition sequence, which removed wall-clock comparisons from the
+  terminal-operation race scans but left token `expiresAt` and the
+  `factsCapturedAt`-to-deploy age check on wall-clock reads: a backward
+  clock adjustment keeps an expired token valid and makes stale facts look
+  fresh. What changes is the rollback guard — every token validate/consume
+  pass and every facts-age check first compares now against the store's
+  durable high-water wall-clock (the greatest wall-clock value observed by
+  any prior mint/validate/consume/facts-capture write, persisted in the
+  store file in the same write): a now reading behind the high-water mark
+  is a detected rollback — all outstanding token rows for every host are
+  dropped as `token-expired` (never validated, never consumed) and every
+  last-known facts entry reads stale (its rendered age is unknown, so
+  `status` marks the facts stale and `plan` refreshes before minting rather
+  than trusting the captured timestamp) until a fresh capture re-anchors
+  the mark — the high-water mark itself never moves backward, so a rollback
+  can only invalidate, never extend, a deadline. A forward jump past
+  outstanding TTLs simply expires them through the existing `expiresAt`
+  check — no special rule.)**
   **Live removal revokes immediately:** `remove`'s staged commit drops every
  outstanding token row for the name through the `pendingStoreSync` intent —
  the tombstone write carries the revocation intent under the mutation lock
@@ -1202,7 +1240,8 @@ controller-side operation records; this component defines a
   record, which enumerated five states while `orphan-unverified` persisted as
   a durable per-record state: the enum now names all six), the persisted
   orphan boundary identity — the tagged platform-specific boundary below
-  (Linux: cgroup identity + nonce; Darwin: process-group/session + launcher-
+  (Linux: cgroup identity + launcher-observed pid/start time bound to the
+  pre-spawn nonce; Darwin: process-group/session + launcher-
   observed pid/start time — present exactly on `orphan-unverified` records,
   exposed as `orphanBoundary` on the wire record), progress entries
   (timestamped, bounded), terminal result,
@@ -1351,23 +1390,35 @@ returns distinguishable records and the current incarnation is selected by
   persist carries a `pending-spawn` intent holding the nonce; the worker
   spawns every SSH subprocess directly into the pre-created boundary and
   matches the intent post-spawn, so a not-yet-populated boundary can never
-  authorize a kill); on Linux the nonce is part of the verifiable cgroup
-  identity — the worker writes the nonce into a kernel-readable cgroup
-  marker for the pre-created cgroup (a cgroup-scoped marker file carrying
-  the nonce, written before spawn alongside the boundary), so boot verifies
-  ownership by reading the marker back from the cgroup filesystem and
-  comparing it against the persisted nonce in the same enumeration that
-  lists members: boot reaps by enumerating current boundary members and
-  signaling only members of the persisted boundary whose cgroup marker
-  nonce still matches the persisted nonce — an empty boundary is already
-  clean; a boundary whose marker is missing, unreadable, or mismatched is
-  unverifiable, so boot fails closed — reap nothing, keep the
+  authorize a kill); on Linux the boundary is the pre-created cgroup (whose
+  membership itself is kernel-enforced) and the nonce binds to kernel-owned
+  per-process identity — cgroupfs is kernel-managed and exposes no
+  app-created marker files, so the worker never writes the nonce into the
+  cgroup filesystem (extending the round-thirty-one marker, which wrote a
+  cgroup-scoped marker file carrying the nonce: no such file is creatable,
+  so the ownership check was unimplementable and fail-closed left recovery
+  permanently unresolved. What changes is the binding — the pre-spawn
+  persist records the nonce beside the boundary, and the worker's launcher
+  observes each spawned child's kernel-owned process start time beside the
+  same nonce post-spawn exactly like the Darwin launcher marker below: boot
+  enumerates current boundary members and signals only members whose
+  (pid, start time) still matches the launcher-observed pair — membership
+  selects the candidate set, the kernel-owned start time proves the instance,
+  and the persisted nonce ties both to the pre-spawn intent — so boot
+  verifies ownership by reading kernel-owned identity back from the process
+  table and comparing it against the persisted pair in the same enumeration
+  that lists members): an empty boundary is already
+  clean; a boundary whose members match no persisted (pid, start time) pair
+  reads as already clean (reused ids naming different processes), while a
+  boundary whose launcher-observed pair was never persisted (a crash between
+  spawn and the post-spawn persist) is unverifiable, so boot fails closed —
+  reap nothing, keep the
   `pending-spawn` intent open, and mark the record `orphan-unverified` —
   never a kill on membership alone (extending the round-thirty Linux rule,
   which required per-process nonce plus membership with no described
   member↔nonce association: cgroups expose no such association, so the
-  rule was unimplementable as written. What changes is the marker — the
-  nonce lives in kernel-readable cgroup identity the verifier reads back,
+  rule was unimplementable as written. What changes is the association —
+  the kernel-owned (pid, start time) pair bound to the persisted nonce —
   and unverifiable means fail closed, never ignore-the-nonce). On Darwin the reap runs
   process-table enumeration of the persisted (pgid, session id) pair through
   the same `agent/envctx` Darwin probe seam as `probes_darwin.go`, and every
@@ -1407,7 +1458,8 @@ returns distinguishable records and the current incarnation is selected by
   drops the intent and transitions the record to `interrupted`; on members
   still present it refuses with the transient busy form, never a force-clear)
   — the record's persisted tagged boundary (platform discriminator plus the
-  platform's ownership data — Linux cgroup identity + nonce, Darwin pgid +
+  platform's ownership data — Linux cgroup identity + launcher-observed
+  pid/start time bound to the pre-spawn nonce, Darwin pgid +
   session id + launcher-observed pid/start time) is visible through the
   `operations` detail filter, so the
   operator kills the listed members (or confirms them gone) and calls
@@ -1526,7 +1578,7 @@ returns distinguishable records and the current incarnation is selected by
   own kill/wait + guard advance" bypass the refuse list: no refused operation
   can ever run that step, so the bypass was unreachable and the marker had no
   live clearing path. What changes is that the bypass is deleted — the only
-  clearing paths are the two below). The same atomic store write that lands
+  clearing path is the one below). The same atomic store write that lands
   the terminal record also persists the timed-out epoch's remote boundary
   (the guard-file epoch plus the lease-tracked entries of the superseded
   epoch, in the same ownership shape as `orphanBoundary`) on an
@@ -1611,7 +1663,26 @@ returns distinguishable records and the current incarnation is selected by
   entry carries no `helperInstalled` marker yet — never a host with a prior
   fenced epoch, a prior helper version record, or an interrupted record
   from the crashed incarnation, where prior remote work may still run and
-  the unfenced window would overlap it) under the worker's persisted epoch,
+  the unfenced window would overlap it) under the worker's persisted epoch —
+  and the unfenced step is fenced against OTHER controllers' and earlier
+  unrecorded work, not only this controller's markers (extending the
+  round-thirty-one bootstrap, which keyed the exemption on controller-local
+  markers only: a running or orphaned process from another controller or an
+  earlier unrecorded deploy leaves no marker here, so the delivery could
+  overlap or replace live remote work. What changes is the host-side proof —
+  the delivery step is permitted only after a host-side atomic
+  bootstrap/fencing primitive proves the target truly bare: the unfenced
+  delivery opens by atomically claiming a controller-scoped bootstrap guard
+  on the host itself (a single atomic create-if-absent of a guard entry
+  naming this controller's fencing epoch — concurrent claimants serialize on
+  the host, exactly one wins), then verifies no foreign process or foreign
+  guard holder is live (no running evener-managed process outside the
+  claimed guard's ownership, no live foreign guard claim), and only then
+  delivers; a lost claim race or any live foreign presence refuses
+  fail-closed with the typed `fencing-helper-absent` refusal (the helper gate
+  below) —
+  the exemption never degrades to overwrite — so the bare-host proof holds
+  regardless of which controller last touched the host),
   and the delivery converges the marker in the same step: the worker sets
   `helperInstalled` on the host's sidecar entry in the same atomic sidecar
   write that finalizes the bootstrap (or refuses the finalize on failure).
@@ -1640,12 +1711,18 @@ returns distinguishable records and the current incarnation is selected by
  mutation while a crashed-epoch orphan might still run); every worker verifies
  the helper's presence and version string before the kill/wait step with
  read-only remote exec — helper absent → the operation refuses fail-closed
- with the typed `probe-failed`-class fencing refusal before any remote
+  with the typed `fencing-helper-absent` fencing refusal (conflict class,
+  data names the host plus the pinned helper version the operator must
+  install — never the `probe-failed` class, which names only the deploy-step
+  re-probe read failure below, so the client never mistakes the gate for a
+  retryable probe failure) before any remote
  mutation, never an unfenced push and never an auto-install (the operator
  installs the helper out-of-band through the one-time migration path below,
  mirroring `handler-absent`); older, incompatible, or explicitly untrusted
- helper → the operation refuses fail-closed with the same typed
- fencing refusal before any remote mutation, never an in-band migration
+  helper → the operation refuses fail-closed with the typed
+  `fencing-helper-untrusted` fencing refusal (conflict class, same data
+  shape — host plus pinned version — naming the distrusted version in
+  place of the absent one) before any remote mutation, never an in-band migration
  (extending the round-twenty-eight migration primitive, which ran the
  superseded-epoch kill/wait as direct-SSH reads plus a two-consecutive-
  empty-reads quiescence check before the guard advance: an older or
@@ -1665,14 +1742,15 @@ returns distinguishable records and the current incarnation is selected by
  upgrades the remote itself out-of-band.
 Migration: remotes first contacted by this
  component predate the helper, so deploy/restart on them refuses fail-closed
- until the operator installs the helper out-of-band (the next operation's
+  with `fencing-helper-absent` until the operator installs the helper
+  out-of-band (the next operation's
  pre-fence verification runs a helper self-test
  round-trip before the kill/wait) before any mutating step; a remote whose platform cannot run
  the helper (no POSIX shell at the target path) stays fail-closed for
- deploy/restart — reads and `plan` still serve — until the operator
+  deploy/restart with `fencing-helper-absent` — reads and `plan` still serve — until the operator
  upgrades it out-of-band. An older, incompatible, or explicitly untrusted
- helper is likewise an out-of-band case — deploy/restart on it refuses
- fail-closed with the same typed fencing refusal until the operator installs
+  helper is likewise an out-of-band case — deploy/restart on it refuses
+  fail-closed with `fencing-helper-untrusted` until the operator installs
  the pinned helper version out-of-band, so the host upgrades and
  deploy/restart proceed only through the trusted wrapper, never through an
  in-band advance over an untrusted one. Routing: EVERY mutating SSH command the
@@ -2274,12 +2352,12 @@ before the atomic rename, so the swap is compensable;
   set** — the step-(2) staged sidecar write carries a durable `swapStarted`
   intent (false at stage time, flipped to true in its own atomic sidecar
   write under the mutation lock BEFORE the non-atomic runtime transition
-  begins — extending the round-twenty-four staged phases, which persisted
+  begins (a durable marker now exists on both sides of the transition —
+  extending the round-twenty-four staged phases, which persisted
   `runtime-swapped` plus `teardownStarted` only AFTER the swap, so a crash
   between the swap and that write left phase `staged` with
   `teardownStarted: false` and boot finalized without a remnant though the
-  runtime transition had partially applied: a durable marker now exists on
-  both sides of the transition) — then rebinding or wiring the
+  runtime transition had partially applied) — then rebinding or wiring the
   live handles to the new values (flipping the staged phase to
   `runtime-swapped` as that transition lands), and only then executing the planned
   teardowns (supervisor/channel stops, fan-out cancellations) as the
@@ -2431,7 +2509,8 @@ Protocol types)
  first; `refresh-failed` on an attached host surfaces the refresh failure
 with retryable diagnostics and a refresh-retry affordance (never Connect);
 `probe-failed` on an attached host surfaces the probe failure with
- retry (never a Connect loop); `handler-absent` on an attached host surfaces
+  retry (never a Connect loop — and never the helper-gate step below, which
+  rides `fencing-helper-absent`/`fencing-helper-untrusted` instead); `handler-absent` on an attached host surfaces
  the one-time migration step (never Connect-first); `remnant-open` surfaces
  the blocking `remnantId` with a teardown-retry affordance (never Connect,
  never re-plan — a re-plan mints nothing while the remnant is open).
@@ -2867,8 +2946,9 @@ regenerated client carry this arm as its own interface, and the 08a commit-point
   record or a fencing-quarantine record carrying the timed-out epoch's
   persisted remote boundary (see the fencing deadlines); the quarantine marker
   clears in the same atomic write that resolves its record); response the updated
-  `OperationRecord` (with `orphanBoundary` while still unverified, without it
-  once resolved). Admission is session-authenticated like every other
+  `OperationRecord` — always the resolved record, without `orphanBoundary`
+  (members still present never reach the response: they refuse transient-busy
+  above). Admission is session-authenticated like every other
   `evener/host/*` request; unknown `id` → typed not-found, non-unverified
   record → typed validation refusal, members still present → the
   transient busy form (never a force-clear). The call never creates an
@@ -2878,8 +2958,9 @@ regenerated client carry this arm as its own interface, and the 08a commit-point
   is never fenced by the orphan admission gate (it is the gate's way out),
   then the host
   admits new operations past admission again. The 08b protocol-shapes test
-  pins the params/response plus the `orphan-unverified` state and the
-  `orphanBoundary` field.
+  pins the params/response pair (the resolved record, never carrying
+  `orphanBoundary`) plus the `orphan-unverified` state as surfaced through
+  `operations`/`status` listing — the response shape carries no boundary field.
 - `evener/host/operations`: params `{name?: string, operationId?: string,
 state?: OperationState, generation?: number, incarnationId?: string, id?: string, limit?: number,
 cursor?: string}` — `operationId`
@@ -2915,18 +2996,21 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   exactly on records whose `state` is `orphan-unverified` (absent on every
   other state per the absent-when-unknown rule — the `platform`
   discriminator selects the ownership data the verifier needs (Linux:
-  kernel-enforced cgroup identity plus the pre-spawn server nonce read back
-  from the cgroup marker (see the boot reap above) —
-  the kill requires BOTH cgroup membership AND a marker nonce matching the
-  persisted nonce, and a missing/unreadable/mismatched marker fails closed
-  with no kill (extending
-  the round-twenty-seven wire shape, which exposed the nonce on the wire
-  while stating membership alone authorizes the kill — both could not hold:
-  the nonce was either unchecked authorization data or redundant exposure
-  to every `operations` reader. What changes is the single stated rule —
-  marker-verified nonce plus membership, never membership alone — so the
-  wire nonce is the expected marker value the verifier reads back, not
-  redundant data); Darwin:
+  kernel-enforced cgroup identity plus the launcher-observed (pid, start
+  time) instance marker bound to the pre-spawn server nonce (see the boot
+  reap above — cgroupfs hosts no app-written marker file, so the nonce
+  binds to kernel-owned process identity instead) —
+  the kill requires BOTH cgroup membership AND a (pid, start time) matching
+  the launcher-observed pair, and a member matching no persisted pair reads
+  as already clean while a boundary whose pair was never persisted fails
+  closed with no kill (extending
+  the round-twenty-seven wire shape and the round-thirty-one cgroup marker,
+  which exposed the nonce on the wire while stating membership alone
+  authorizes the kill or reading the nonce back from a cgroup marker file
+  cgroupfs cannot host — neither could hold: the kill requires
+  kernel-attested instance identity plus membership, never membership alone —
+  so the wire nonce is the pre-spawn intent value the launcher-observed pair
+  is bound to, not redundant data); Darwin:
   the (pgid, session id) pair
   plus the launcher-observed (pid, start time) instance marker — a pid whose
   start time differs names a different process and reads as already clean) —
@@ -3114,7 +3198,15 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   unauthenticated — data names the host plus which of read-failed, timed-out,
   or unauthenticated; token unconsumed, no record — distinct from `plan`'s
   no-token `reason: "probe-failed"` union-arm value, which is never an
-  envelope), `concurrent-edit` (conflict class; the sidecar final check's
+  envelope), `fencing-helper-absent` (conflict class; the pre-fence helper
+  gate — helper absent, remote unable to run the helper, or the
+  bootstrap-guard claim lost/unverifiable above: data names the host plus
+  the pinned helper version the operator must install out-of-band; the
+  UI surfaces the one-time migration step, never a probe retry),
+  `fencing-helper-untrusted` (conflict class; the same gate for an older,
+  incompatible, or explicitly untrusted helper: same data shape, naming the
+  distrusted version — out-of-band install of the pinned version, never an
+  in-band migration), `concurrent-edit` (conflict class; the sidecar final check's
   bounded stage-validate retries exhausted against a racing `hub.toml` edit —
   data carries the staged `hub.toml` fingerprint plus the observed
   fingerprint; the client re-reads and retries), `teardown-unknown-key` (not-found class;
@@ -3420,7 +3512,21 @@ external edit — including a declared-host removal — survives past the next
 mutation/`plan`/`deploy` admission (a `list`/`status` admission serves the
 last published snapshot immediately and schedules the same sequence
 asynchronously, debounced — see `list`): the step publishes a new snapshot under the lock and
-the admitted mutation-path call then serves from it, and all live consumers (registry,
+ the admitted mutation-path call then serves from it — but only after the
+ reconciled merged set passes the complete merged-config validation first
+ (extending the round-thirty-one cap, which enforced the 63-remote-host
+ limit on sidecar mutations, the boot load, and the registry `Add`/`Update`
+ paths but let the live reconcile adopt added/changed entries straight into
+ the running registry: an external edit adding declared hosts could publish
+ an over-cap live registry no mutation path could have committed. What
+ changes is the gate — the reconcile validates the merged post-adopt live
+ set against the full component-03 rules plus the 63-host cap under the
+ mutation lock BEFORE publishing: valid sets publish exactly as above, while
+ a failed validation publishes nothing — the last-good snapshot stays live,
+ the admitted call serves from it, and the failure surfaces as the typed
+ `too-many-hosts` configuration error (over-cap) or `concurrent-edit`
+ (other merged-config drift), naming both sources and their counts — never
+ a silently over-cap registry), and all live consumers (registry,
 manager
 bindings, sources, manifest, host-admin controller fan-outs, web-config
 view) update atomically under that lock before the admitted call proceeds
@@ -3505,7 +3611,10 @@ name-keyed cache entry can never republish rows for the new host.
   its supervisor, closes its channel, and drains its per-host lifecycle
   handles before the entry is gone), sidecar merge/atomicity tests
   including the refuse rules, **the 63-remote-host cap (63 live remotes
-  add; the 64th fails `ErrTooManyHosts`)**, the boot-time hard-error duplicate, **swap-failure
+  add; the 64th fails `ErrTooManyHosts` — and a live external `hub.toml`
+  edit pushing the merged set over the cap fails the reconcile validation
+  instead of publishing: the last-good snapshot stays live and the failure
+  surfaces as the typed `too-many-hosts` configuration error)**, the boot-time hard-error duplicate, **swap-failure
   compensation (prior sidecar bytes restored, runtime reverted, retry
   re-applies cleanly)**, and **the corrupt/schema-invalid sidecar boot hard
   error**, the host-admin controller live-set tests (forwarded requests reach
@@ -3631,7 +3740,9 @@ Remnant-gate tests: re-add and retention expiry skip names with open
  error. Swap-window tests: a marker with `swapStarted: false` and
  `teardownStarted: false` finalizes without a remnant, while a marker with
  the intent written (`swapStarted: true`) but the swap incomplete recovers
- conservatively with the pinned remnant — never without one.** File-posture tests: sidecar and
+  by re-applying the staged runtime set first and then recovering
+  conservatively with the pinned remnant — never a teardown-first mismatch,
+  never without one.** File-posture tests: sidecar and
  store temp files are `0600`, renames preserve the mode, and startup refuses
 a file readable beyond its owner, and the stash gets the same coverage
 (stash temps `0600`, mode-preserving rename, owner-only startup refusal,
@@ -3647,6 +3758,10 @@ origin rejection is asserted in 08a with its commit-point tests),
   but past its TTL at the step-(4) consume is a `token-expired` refusal with
   no record — expiry is re-checked inside the consume transaction, never
   decided at provisional validation alone),**
+  **clock-rollback (a wall-clock now reading behind the store's durable
+  high-water mark drops every outstanding token row as `token-expired` and
+  every last-known facts entry reads stale until a fresh capture re-anchors
+  the mark — a backward step invalidates, never extends, a deadline),**
   **supersede-between-validate-and-consume (a `plan` mint landing after
   `deploy`'s step (2) provisional pass but before its step (4) compare-and-
   consume is a `token-superseded` refusal with no record — see `deploy`
@@ -3668,7 +3783,8 @@ origin rejection is asserted in 08a with its commit-point tests),
   `OperationRecord` and the `operations` request/response/cursor,
   `compacted: true` exactly on tombstone replays, every `stale-entry` data
   value against its emitting path, the `cursor-invalidated` catalog
-  entry, and the `fencing-failure` + `cursor-too-large` catalog entries with
+  entry, and the `fencing-failure` + `fencing-helper-absent` +
+  `fencing-helper-untrusted` + `cursor-too-large` catalog entries with
   their data shapes)**,
   **operations incarnation scope (a `generation` + `incarnationId` filter
   pair addresses the colliding same-generation incarnation; the response
@@ -3744,13 +3860,16 @@ origin rejection is asserted in 08a with its commit-point tests),
   live mark still never-matches at boot)**, **the corrupt operation-store
   boot hard
   error**, **orphan fencing (a crashed worker's local process group is reaped
-  at boot only through its persisted boundary-plus-nonce — a persisted-but-
+  at boot only through its persisted boundary-plus-kernel-attested-identity
+  (Linux: cgroup membership bound to the launcher-observed (pid, start time)
+  pair; Darwin: (pgid, session id) plus the same launcher marker — a persisted-but-
   empty boundary after a pre-spawn crash reaps nothing and drops the intent —
   and a fresh operation runs under a new fencing epoch through the remote
   lease wrapper (atomic register+fence+perform per mutation; lease ownership
   token verified remotely before any kill) — no overlap with orphaned local
   or remote work; a helper-absent or older/untrusted-helper host refuses
-  fail-closed before any remote mutation with no auto-install and no
+  fail-closed (`fencing-helper-absent` / `fencing-helper-untrusted`)
+  before any remote mutation with no auto-install and no
   in-band migration — out-of-band install only — and first-ever-contact
   bootstrap persists its attempt fence before any remote side effect and
   converges its `helperInstalled` marker in the finalizing write, so a crash
@@ -3785,9 +3904,11 @@ origin rejection is asserted in 08a with its commit-point tests),
   base64url envelope is capped at 8 KiB encoded (over-cap first page refuses
   `cursor-too-large` with `{capBytes: 8192}`, pinned as its own
   discriminator))**,
-  **Darwin orphan ownership (Linux reaps through the cgroup boundary; Darwin
-  reaps through the (pgid, session id) boundary plus the launcher-observed
-  (pid, start time) marker — never the group id alone — with a pid whose
+  **Orphan ownership (Linux reaps through the cgroup boundary plus the
+  launcher-observed (pid, start time) marker bound to the pre-spawn nonce —
+  never a cgroupfs marker file, never the group id alone; Darwin
+  reaps through the (pgid, session id) boundary plus the same launcher
+  marker — with a pid whose
   start time differs reading as already clean (never signaled), and fails
   closed with durable `orphan-unverified` (resolved by retry at a later boot
   or by the authenticated `evener/host/orphan-resolve` call — the record
@@ -3799,8 +3920,8 @@ origin rejection is asserted in 08a with its commit-point tests),
   fencing kill/wait run under bounded contexts (kill/wait timeout → terminal
   fencing-failure outcome plus a durable per-host quarantine carrying the
   timed-out epoch's persisted remote boundary on an `orphan-unverified`-class
-  record — the host admits no new mutation until a later boot's enumeration
-  or the operator resolves through `orphan-resolve` (which verifies the
+  record — the host admits no new mutation until the operator resolves
+  through `orphan-resolve` (which verifies the
   persisted boundary before clearing), and the next `deploy`/`restart` past
   the cleared marker converges the fencing with its kill/wait + guard advance
   — never a stuck host and never an operable-but-unfenced one)**), and
