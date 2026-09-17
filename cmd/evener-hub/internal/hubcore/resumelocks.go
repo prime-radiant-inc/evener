@@ -9,6 +9,8 @@ import (
 	"sync"
 
 	"github.com/spf13/afero"
+
+	"primeradiant.com/evener/appwire"
 )
 
 // ResumeLocks hands out one mutex per session id so concurrent resume attempts
@@ -384,7 +386,10 @@ func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases
 		state := r.recovery[alias]
 		for active := range r.active[alias] {
 			if err := active.cleanupErr; err != nil {
-				return nil, err
+				// A retained child-cleanup failure is a retryable "cleanup remains
+				// unconfirmed" state. It must reach the client as Unavailable, not
+				// unwrapped and mapped to InternalError.
+				return nil, appwire.Unavailable(err.Error())
 			}
 		}
 		if state.Epoch != epochs[alias] || state.Stopping != 0 {

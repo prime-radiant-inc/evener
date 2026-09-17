@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -659,5 +660,32 @@ func TestLongRunningResumeFailedCleanupRetainsOwnership(t *testing.T) {
 	err = newClient().Request(t.Context(), "thread/resume", map[string]string{"ref": "local:" + sessionID}, &out)
 	if err == nil || !strings.Contains(err.Error(), retryErr.Error()) || launches.Load() != 2 {
 		t.Fatalf("actual reaping did not release Resume ownership: launches=%d err=%v", launches.Load(), err)
+	}
+}
+
+// TestRegisterResumeCleanupFailureIsUnavailable pins the RegisterResume
+// boundary: a registration refused because another active Resume's child
+// cleanup is unconfirmed is a retryable "cleanup remains unconfirmed" state and
+// must reach the client as Unavailable, not as a raw resumeCleanupError that
+// maps to InternalError. This is the handler-not-yet-done window that
+// ResumeCleanupError's own handlerDone gate cannot see.
+func TestRegisterResumeCleanupFailureIsUnavailable(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	epochs := map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch}
+	active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, epochs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// LaunchFinished records the cleanup failure before the handler's deferred
+	// Complete sets handlerDone, exactly the window the pre-check bypasses.
+	active.LaunchFinished(true, &resumeCleanupError{cause: errors.New("fixture child cleanup denied")})
+
+	_, err = locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, epochs)
+	if err == nil {
+		t.Fatal("RegisterResume admitted a registration with unconfirmed cleanup")
+	}
+	if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+		t.Fatalf("RegisterResume cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
 	}
 }

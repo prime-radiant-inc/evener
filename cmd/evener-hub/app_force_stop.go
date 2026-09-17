@@ -26,17 +26,35 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if cfg.RunDir == "" || cfg.ResumeLocks == nil {
 		return appwire.Unavailable("local session ownership is not configured")
 	}
-	if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
-		defer stop.Release()
-		if err := stop.Wait(ctx); err != nil {
-			return forceStopResumeStopError(err)
-		}
-	}
 	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
 		return forceStopResumeStopError(err)
 	} else if stopped {
 		refreshAfterForceStop(ctx, cfg)
 		return nil
+	}
+	// A deleted target and a caller-rendered daemon identity are validated
+	// before any cancellation fence: a request that is going to be refused must
+	// not abort the in-flight Resume it can no longer address. A nil identity
+	// preserves the ref-only Stop intent, which may legitimately abort a launch
+	// before an addressable claim exists.
+	if err := deletionFenceError(cfg, params.Ref, ref.ThreadID, ""); err != nil {
+		return err
+	}
+	if params.ExpectedDaemon != nil {
+		recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
+		addressed, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
+		if err != nil {
+			return appwire.Unavailable(err.Error())
+		}
+		if err := expectedDaemonConflict(addressed, params.ExpectedDaemon); err != nil {
+			return err
+		}
+	}
+	if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
+		defer stop.Release()
+		if err := stop.Wait(ctx); err != nil {
+			return forceStopResumeStopError(err)
+		}
 	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
 	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)

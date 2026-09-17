@@ -44,6 +44,11 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 	}
 	pe, ok := s.cfg.Past.Find(threadID)
 	if !ok {
+		// A canceled request must fail before it can scrub decisions for a
+		// session it never decided to delete.
+		if err := ctx.Err(); err != nil {
+			return appwire.SessionDeleteResponse{}, err
+		}
 		if decisionErrors := s.scrubSessionDecisions(threadID); len(decisionErrors) > 0 {
 			return appwire.SessionDeleteResponse{}, appwire.InternalError(strings.Join(decisionErrors, "; "))
 		}
@@ -74,6 +79,11 @@ func (s *WebServer) sessionDelete(ctx context.Context, params appwire.SessionDel
 			release()
 		}
 	}()
+	// Ownership is held but the request may have been abandoned while it waited;
+	// fail before the destructive cleanup, as the fresh project-delete path does.
+	if err := ctx.Err(); err != nil {
+		return appwire.SessionDeleteResponse{}, err
+	}
 
 	deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(pe.StateDir, threadID)
 	if !deleted {

@@ -2180,3 +2180,52 @@ func TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping(t *testing.T
 		t.Fatalf("force stop discovery failure wire code = %d, want %d (Unavailable)", code, appwire.CodeUnavailable)
 	}
 }
+
+// TestForceStopStaleExpectedDaemonDoesNotCancelResume pins the cancellation
+// ordering contract: a force stop whose caller-rendered daemon identity no
+// longer matches the current owner must be refused before it installs any
+// cancellation fence, so the refusal cannot abort the in-flight explicit Resume
+// the frontend's stale resident row can no longer address.
+func TestForceStopStaleExpectedDaemonDoesNotCancelResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		runDir := t.TempDir()
+		sessionID := hubtest.SessionID(t)
+		entry := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, entry)
+		expected := daemonIdentity(entry)
+		expected.Generation = "stale-rendered-identity"
+		locks := hubcore.NewResumeLocks()
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
+		completed := make(chan error, 1)
+		go func() {
+			completed <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		if err := active.Context().Err(); err != nil {
+			t.Errorf("stale force stop canceled the in-flight Resume: %v", err)
+		}
+		assertStaleIdentityConflict := func(err error) {
+			t.Helper()
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("stale force stop error = %v, want conflict", err)
+			}
+		}
+		select {
+		case err := <-completed:
+			assertStaleIdentityConflict(err)
+		default:
+			// Current behavior: the stale request canceled the Resume and is
+			// draining its cleanup. Release it so the refusal can be observed.
+			active.Complete(nil)
+			assertStaleIdentityConflict(<-completed)
+		}
+	})
+}
