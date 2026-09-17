@@ -382,6 +382,31 @@ function requireControl(
   }
 }
 
+// Keep attachments beside their source whenever both rows are retained: a
+// page-owned attachment kept by withPageHistory can land far from wherever
+// its source ends up in the merged list (the source can be dropped as a
+// duplicate and reprojected elsewhere, or simply sit later in the projected
+// snapshot than the page's own front-of-list rows) — an attachment with no
+// source beside it reads as unrelated to any message.
+function attachToSources(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  const sourceItems = items.filter((item) => item.kind !== "attachments");
+  const ids = new Set(sourceItems.flatMap((item) => [...timelineIdentities(item)]));
+  const companions = new Map<string, MobileTimelineItem>();
+  for (const item of items) {
+    const sourceId = attachmentSourceIdentity(item);
+    if (sourceId !== null && ids.has(sourceId)) companions.set(sourceId, item);
+  }
+  return items.flatMap((item) => {
+    const sourceId = attachmentSourceIdentity(item);
+    if (sourceId !== null) return companions.has(sourceId) ? [] : [item];
+    const attachments = [...timelineIdentities(item)].flatMap((identity) => {
+      const companion = companions.get(identity);
+      return companion ? [companion] : [];
+    });
+    return [item, ...attachments];
+  });
+}
+
 // A candidate row is superseded by a set of identities when either: its OWN
 // identity is one of them (it duplicates a row that set already carries), or
 // — for an attachment — its source's identity is, which the hub reissuing
@@ -746,7 +771,15 @@ export function createConversationStore() {
       if (retained !== null) pageRows.push(retained);
     }
     if (pageRows.length === 0) return projected;
-    return { ...projected, items: [...pageRows, ...projected.items] };
+    // A retained page attachment and its source can end up apart: the
+    // source may be dropped here as a duplicate and sit, reprojected, inside
+    // `projected.items` rather than at the front where the page row was.
+    // attachToSources moves every attachment beside its source wherever that
+    // source lands in the concatenated list, not just within `pageRows`.
+    return {
+      ...projected,
+      items: attachToSources([...pageRows, ...projected.items]),
+    };
   }
 
   // What a paged row still owns once the projection has caught up with part of

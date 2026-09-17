@@ -7009,6 +7009,72 @@ describe("ConversationStore", () => {
       expect(rows(store).some((item) => item.id === "wire-Z:attachments")).toBe(true);
     });
 
+    it("keeps a retained page-owned attachment beside its source, not wherever it sat in the page", async () => {
+      // Case (b), placement: a page [P1, P2, P3, attach(P3), P4, P5]. The
+      // snapshot re-emits P3 with no attachment of its own, so P3 itself is
+      // superseded and dropped (its identity is in the snapshot's own
+      // `identities`) while attach(P3) is kept (case b). Concatenating
+      // page rows ahead of the snapshot's, unordered, would leave
+      // attach(P3) between P2 and P4 with P3's reprojected row at the far
+      // end — an image row with no source beside it.
+      const { store, service } = await openRunningTurn([]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          { kind: "user", id: "p1", text: "one" },
+          { kind: "user", id: "p2", text: "two" },
+          {
+            kind: "activity",
+            id: "wire-p3",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "done" },
+            transcriptKey: "key-p3",
+          },
+          {
+            kind: "attachments",
+            id: "wire-p3:attachments",
+            items: [{ id: "att-p3", src: "https://example.com/p3.png" }],
+            sourceTranscriptKey: "key-p3",
+          },
+          { kind: "user", id: "p4", text: "four" },
+          { kind: "user", id: "p5", text: "five" },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      expect(rows(store).map((item) => item.id)).toEqual([
+        "p1",
+        "p2",
+        "wire-p3",
+        "wire-p3:attachments",
+        "p4",
+        "p5",
+      ]);
+
+      // The snapshot re-emits key-p3 under a new wire id, no outputImages.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "wire-p3-new",
+            transcriptKey: "key-p3",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+          },
+        },
+      } as AnyNotification);
+
+      const ids = rows(store).map((item) => item.id);
+      expect(ids).toEqual(["p1", "p2", "p4", "p5", "wire-p3-new", "wire-p3:attachments"]);
+    });
+
     it("drops a page-owned attachment once the snapshot re-emits its source's attachment under the same wire id", async () => {
       // Case (c) of the state table below: the snapshot's attachment row has
       // the SAME own identity as the page's, so ownTimelineIdentities alone
