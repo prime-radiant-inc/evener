@@ -1167,11 +1167,11 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 // missing instance - instead of a failed one. Every other failure is returned
 // unchanged. The bool says whether the removal stood, which is also what the
 // handler broadcasts on.
-func instanceRemoveError(err error) (error, bool) {
+func instanceRemoveError(err error) (bool, error) {
 	if _, persisted := errors.AsType[removePersistedError](err); persisted {
-		return appwire.InstanceRemovePersisted(err.Error()), true
+		return true, appwire.InstanceRemovePersisted(err.Error())
 	}
-	return err, false
+	return false, err
 }
 
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
@@ -1209,7 +1209,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Remove(params); err != nil {
-			wireErr, persisted := instanceRemoveError(err)
+			persisted, wireErr := instanceRemoveError(err)
 			// A removal that stood leaves every other client's list as stale as a
 			// clean removal does, so it is announced too; the error still goes back
 			// to the client that asked, which is the only one that can act on the

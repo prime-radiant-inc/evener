@@ -975,16 +975,16 @@ func TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName(t *tes
 // message; every other failure goes back unchanged and unflagged.
 func TestInstanceRemoveErrorCarriesThePersistedInfo(t *testing.T) {
 	plain := errors.New("removing work was refused")
-	if got, persisted := instanceRemoveError(plain); got != plain || persisted {
+	if persisted, got := instanceRemoveError(plain); !errors.Is(got, plain) || persisted {
 		t.Fatalf("instanceRemoveError(plain) = (%v, %v), want it unchanged and not persisted", got, persisted)
 	}
 
-	got, persisted := instanceRemoveError(removePersistedError{errors.New("removed work, but the copy is still on disk")})
+	persisted, got := instanceRemoveError(removePersistedError{errors.New("removed work, but the copy is still on disk")})
 	if !persisted {
 		t.Fatal("instanceRemoveError(removePersistedError) did not report the removal as persisted")
 	}
-	wire, ok := got.(appwire.WireError)
-	if !ok {
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
 		t.Fatalf("instanceRemoveError = %T, want appwire.WireError", got)
 	}
 	data, ok := wire.Data.(appwire.ErrorData)
