@@ -18,14 +18,9 @@
 // app supplies. No clock, no timer, no DOM.
 import type { AppwireClientLike } from "../../clientLike";
 import { mutationErrorData, WireError } from "../../errors";
-import type {
-  MethodName,
-  MutationReceipt,
-  NotesHumanSetResponse,
-  ThreadClearResponse,
-} from "../../types.gen";
-import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
+import type { MethodName, MutationReceipt, NotesHumanSetResponse, ThreadClearResponse } from "../../types.gen";
 import type { MutationOutboxStorage } from "./outbox";
+import type { MutationAttachmentRef, MutationOutboxRecord, MutationRecord } from "./records";
 
 export interface MutationDispatcherOptions<A extends MutationAttachmentRef = MutationAttachmentRef> {
   getClient: (targetRef: string) => AppwireClientLike | null | undefined;
