@@ -1113,6 +1113,7 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toBeNull();
     expect(store.getState().draft).toBeNull();
   });
+
   test("a checkpoint without a layout is undecodable, like any other malformed one", async () => {
     // The shape the native host wrote before layouts were recorded. A
     // checkpoint that does not say which layer it proposes names no draft:
