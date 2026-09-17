@@ -646,13 +646,38 @@ func TestHubSSHStateInvalidation(t *testing.T) {
 		{sshconn.EventState, false},
 	} {
 		calls := 0
-		hubSSHStateInvalidation(func() { calls++ })(sshconn.Event{Kind: tc.kind})
+		hubSSHStateInvalidation(func() { calls++ }, nil)(sshconn.Event{Kind: tc.kind})
 		if got := calls > 0; got != tc.wantInvalid {
 			t.Fatalf("kind %q invalidated=%v, want %v", tc.kind, got, tc.wantInvalid)
 		}
 	}
 	// A connection event before the WebServer exists must not panic.
-	hubSSHStateInvalidation(nil)(sshconn.Event{Kind: sshconn.EventAttached})
+	hubSSHStateInvalidation(nil, nil)(sshconn.Event{Kind: sshconn.EventAttached})
+}
+
+// TestHubSSHStateInvalidationPokesRemoteRefreshOnAttach pins the round-three
+// finding that an explicit attach must refresh the remote-thread cache: the
+// attached-only snapshot skips a dormant host, so a newly attached host's
+// threads stay out of the navigation tree until the ~30s refresher tick unless
+// the attach event pokes it. Only EventAttached runs onAttach; a detach or a
+// terminal failure is a liveness change, which the last-known-good
+// carry-forward already covers, so poking there would be pointless work.
+func TestHubSSHStateInvalidationPokesRemoteRefreshOnAttach(t *testing.T) {
+	for _, tc := range []struct {
+		kind     sshconn.EventKind
+		wantPoke bool
+	}{
+		{sshconn.EventAttached, true},
+		{sshconn.EventDetached, false},
+		{sshconn.EventFailed, false},
+		{sshconn.EventState, false},
+	} {
+		pokes := 0
+		hubSSHStateInvalidation(nil, func(string) { pokes++ })(sshconn.Event{Kind: tc.kind})
+		if got := pokes > 0; got != tc.wantPoke {
+			t.Fatalf("kind %q poked refresh=%v, want %v", tc.kind, got, tc.wantPoke)
+		}
+	}
 }
 
 // TestRunMainShutsDownAppRPCWithoutTracing pins round eight's fan-out lifecycle
