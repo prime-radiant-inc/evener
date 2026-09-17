@@ -108,8 +108,12 @@ what makes the federation fully operable without a terminal.
   report the remote's real build; the constant is a separate owner decision.
 - Any change to lazy attachment semantics: the attached-only seams (#1603) stay
   exactly as landed. `evener/host/list`, `status`, and `operations` never dial —
-  test-pinned — and `evener/host/attach` remains the only trigger of the
-  attach/bootstrap cycle besides an explicit `SourceID` (`plan`'s gated
+  test-pinned — and `evener/host/attach` remains the only user-facing method trigger of the
+  attach/bootstrap cycle besides an explicit `SourceID` — the operation-owned
+  `attachUnderGate` attach/reattach (restart's reattach and attach-first, plus
+  deploy's planned restart, see `evener/host/restart` and `deploy`) is the
+  sanctioned non-user path (extending the round-fourteen `attachUnderGate` and
+  round-eleven wording) (`plan`'s gated
   preflight refresh is one of the two deliberate non-attach SSH uses — the other is the
  deploy/restart worker's post-operation preflight, the same one-shot preflight
  (see worker lifetime): bounded one-shot preflight
@@ -133,7 +137,12 @@ its AppWire protocol catalog entry + regenerated TypeScript client with the
 exact shapes in Protocol types, below.
 
 **Host mutations are serialized by one process-wide lock** (all of
-`add`/`update`/`remove` take it for their entire staged commit), so concurrent
+`add`/`update`/`remove` take it for their entire staged commit — and so does
+every other sidecar read-modify-write: `teardown-retry`'s remnant clearance,
+retention-expiry pruning, and marker finalization all run under the same lock
+(extending the round-eight serialization; the fixed lock order with the store
+mutex lands in the operation store below — the mutation lock is outermost, the
+store mutex innermost), so concurrent
 read-modify-write on the sidecar cannot lose updates.
 **Mutation idempotency:** every `add`/`update`/`remove` accepts an optional
 opaque `mutationId` (non-empty, at most 128 bytes, no required structure —
@@ -166,8 +175,9 @@ before finalization lands. **Crash-window recovery:** a crash between
 the step-(2) persist and the post-commit write leaves the marker with no
 receipt — boot finalizes it (the disk wins: the runtime rebuilds from the
 on-disk sidecar, so the mutation is committed; no remnant is minted because
-no live handles survive a restart, and the receipt notes `boot-recovered:
-true`), so a lost-response retry after the crash returns the recovered
+no live handles survive a restart, and the receipt records `bootRecovered:
+true` (the optional receipt field in Persistence + hot-apply, below)), so a
+lost-response retry after the crash returns the recovered
 receipt instead of re-applying. Compensation's stash-restore removes the
 marker with the prior bytes, so a compensated mutation leaves neither marker
 nor receipt. **Receipt scope
@@ -184,7 +194,12 @@ commits fresh and overwrites. A mutation sent without a
 key whose response is lost reconciles read-after-unknown through `list`
 before any retry — `add` compares the listed entry hash for the name,
 `update` compares the listed row, `remove` treats a missing name or a
-`removed: true` row as committed.
+`removed: true` row as committed. **Processing order is fixed — mirroring
+`deploy` step (1) (extending the round-fourteen receipt and round-twelve
+scoping work):** receipt dedup by (mutationId, name, kind, current
+generation) runs FIRST for every `add`/`update`/`remove` — a match returns
+the recorded receipt with no `expectedGeneration`, gate, or remnant
+validation; only a non-replay proceeds into those checks.
 
 - `evener/host/list` (read, never dials, lock-free): every configured host — the full
   effective `HostConfig` fields plus live state: `attached`
@@ -247,18 +262,22 @@ per the absent-when-unknown rule.
   live sidecar entry**; a `hub.toml`-declared name is refused with the "edit the file"
   explanation; a name absent from both — or present solely as a tombstone —
   is refused as not-found. **Refused
-  with the typed busy error while the host's per-host gate is held** by an
+  with the typed busy error while the host's per-host gate is held** (past the
+  dedup check above — a replay returns its receipt without consulting the
+  gate) by an
   in-flight deploy/restart/`Ensure` (see the operation store). Mutates every
   field except `name` — **names are immutable** (they key source IDs, cached
   rows, manager state, and file entries; renaming is remove + add, documented
   in the UI). Update never inserts a new name; only `add` can. **An update
-  accepts an optional `expectedGeneration`: when present it is checked under
-  the mutation lock against the target's current generation before staging —
-  a mismatch is a typed `stale-entry` refusal that commits nothing (the UI
-  re-reads the row and retries against the current generation). A delayed
-  retry of an `update` that lands after an intervening `update` advanced the
-  generation carries the pre-bump generation and is refused the same way, so
-  it can never overwrite fields the intervening update changed — while an
+  accepts an optional `expectedGeneration`: when present — and only for a
+  non-replay past the dedup check above (a replay never reaches this check) —
+  it is checked under the mutation lock against the target's current
+  generation before staging — a mismatch is a typed `stale-entry` refusal that
+  commits nothing (the UI re-reads the row and retries against the current
+  generation). A delayed retry of an `update` that carries no matching
+  current-generation receipt and lands after an intervening `update` advanced
+  the generation carries the pre-bump generation and is refused the same way,
+  so it can never overwrite fields the intervening update changed — while an
   `add`-minted new generation after a remove/re-add cycle is NOT a stale
   retry but a new incarnation, and matches the recorded receipt only under
   the same-generation scoping rule (see mutation idempotency): a same-key
@@ -276,7 +295,8 @@ per the absent-when-unknown rule.
 - `evener/host/remove` (mutation): **live sidecar entries only** (same
   refusal for `hub.toml` names as update; a name present solely as a
   tombstone is refused as not-found, never re-removed). **Refused with the same typed
-  busy error while the host's per-host gate is held — remove never waits
+  busy error while the host's per-host gate is held (past the dedup check —
+  a replay returns its receipt without consulting the gate) — remove never waits
   and never cancels**: it proceeds only on a free gate, so its staged
   supervisor/channel teardown cannot race a push or a `waitHealthy`, and a
   refused remove leaves the in-flight operation to finish and record its
@@ -480,8 +500,13 @@ per the absent-when-unknown rule.
   under it **re-resolve the target, re-read the host entry, and re-hash the
   `hub.toml` fingerprint at execution time and reject if any differs from
   the token's bindings — and re-probe the running build/health over the
-  attached channel and reject if it differs from the token-bound running
-  revision or the token-bound running-health flag** (a sidecar edit, a manual `hub.toml` edit — caught
+  attached channel under the same explicit probe timeout as `plan`'s probe —
+  a probe failure or timeout releases the gate and refuses with the typed
+  `probe-failed` refusal (token unconsumed, no operation record), distinct
+  from a genuine running-version mismatch's `stale-entry` refusal (extending
+  the round-fourteen probe deadline) — and reject if it differs from the
+  token-bound running revision or the token-bound running-health flag**
+  (a sidecar edit, a manual `hub.toml` edit — caught
   by the fingerprint, the only way a hand edit is visible without a restart
   — a facts refresh, a target change, a running-build or running-health
   change between plan and deploy invalidates the plan; the UI re-plans). This re-read is the gate protocol's
@@ -562,7 +587,11 @@ per the absent-when-unknown rule.
   worker owns the channel until terminal verification, so no supervisor can
   race it; this is the enforcement behind "no supervisor involvement" —
   then runs the channel re-probe the post-operation refresh
-  requires over the reattached channel. The restart worker MUST use this
+  requires over the reattached channel, then starts (or safely hands off to)
+  a supervisor for the channel under the still-held gate before releasing it
+  — the suppress-supervisor scope of `attachUnderGate` ends at verification,
+  so the host keeps automatic reconnect after the restart (extending the
+  round-fourteen `attachUnderGate` work). The restart worker MUST use this
   primitive — re-running the normal attach path while holding the gate is a
   deadlock (the gate is non-reentrant) and a supervisor race (extending the
   round-ten reattach work).** A restart issued while the host has
@@ -836,10 +865,12 @@ controller-side operation records; this component defines a
   also carries the mutation receipts and teardown-remnant records (sibling
   of the idempotency receipts): `mutationReceipts` maps the scoped receipt
   key (mutationId, host name, mutation kind, commit generation) to
- `{outcome, row, generation, committedAt, remnantId?, remnantResolvedAt?}` —
+ `{outcome, row, generation, committedAt, remnantId?, remnantResolvedAt?, bootRecovered?}` —
  `remnantId` present exactly when the commit staged a remnant (see the commit
  point), `remnantResolvedAt` present exactly after `teardown-retry` resolves
- it (see the commit point); `teardownRemnants` maps the
+ it (see the commit point), `bootRecovered` present (as `true`) exactly when
+ boot finalized a crash-window `pendingMutation` marker (see crash-window
+ recovery above); `teardownRemnants` maps the
  server-generated opaque `remnantId` to `{host, kind, seam, pendingTeardown,
  generation, mutationKey, committedAt}`, and a cleared remnant persists as
  the cleared-remnant marker `remnantId → clearedAt` in the same section
@@ -860,7 +891,9 @@ controller-side operation records; this component defines a
  remnants are dropped in the same atomic write that mints the new generation, so the
   sections stay bounded by the live host set plus at most one superseded
  generation per name. **Remnant gate (extending the round-eight commit
- point): any mutation that would advance or remove the affected name while it
+ point): any non-replay mutation (a same-key replay matching a
+ current-generation receipt returns before this gate — see the fixed ordering
+ in mutation idempotency) that would advance or remove the affected name while it
  holds an open remnant — re-add, `update` of the remnant's name, and `remove`
  of the remnant's name — is refused with the typed `remnant-open` busy form
  (carrying the blocking `remnantId` — extending the round-eleven re-add gate:
@@ -943,7 +976,10 @@ Protocol types)
  arm, never not-found — the remnant carries its own pinned teardown target,
  so lookup never requires a current live entry and later mutations cannot
  strand it (see the remnant schema above)), try-acquires
-  the host's per-host gate (held → typed busy, same classes as `restart`),
+  the host's per-host gate (held → typed busy, same classes as `restart`) —
+ and the clearance runs as one sidecar read-modify-write under the
+ process-wide mutation lock (the same lock as `add`/`update`/`remove`, so a
+ concurrent mutation cannot interleave with it),
  runs the remnant's pinned teardown to completion (never against a live or
  re-added entry — the open-remnant gate above guarantees no newer
  incarnation exists while the remnant is open, and the retry re-checks the
@@ -1066,7 +1102,8 @@ with retryable diagnostics and a refresh-retry affordance (never Connect);
   existing one-shot SSH command sequence re-run on demand, no channel
   involvement — `plan`'s facts-refresh mechanism; see `plan`);
   plus the internal gate-aware `attachUnderGate` primitive (accepts an
-  already-held per-host gate, suppresses supervisor startup — the restart
+  already-held per-host gate, suppresses supervisor startup until the
+  worker's post-verification handoff — the restart
   worker's reattach path, see `evener/host/restart`);
   `Ensure`/`Attached`/`ChannelIfAttached`/facts unchanged.
 - `cmd/evener-hub/config.go` — sidecar load/merge (hard-error duplicate rule)
@@ -1083,9 +1120,10 @@ with retryable diagnostics and a refresh-retry affordance (never Connect);
   `remoteHostAdminMethods` (negative assertion in the allow-list tests).
 - **AppWire protocol catalog** entries for every new method + request/response
   types, and the **regenerated TypeScript client** — both in the same PR as
-  the handlers, so the frontend can consume them — with the exact shapes in
-  Protocol types, below, field-for-field, or the client drifts from the
-  contract.
+  the handlers, so the frontend can consume them — with the shapes in
+  Protocol types, below (the wire contract field-for-field; the generated
+  client through the generator mapping named there), or the client drifts
+  from the contract.
 ### Protocol types
 
 Every new method gets its AppWire protocol catalog entry
@@ -1098,7 +1136,22 @@ every host-management request field and in `HostRow` — distinct from
 `attach`'s shipped `HostAttachParams{host}`, which is unchanged;
 lowerCamel JSON, optional facts/error fields absent — never null — when
 unknown). (`HostPlan.host`/`OperationRecord.host` — the plan/token and
-operation-record bindings, not request fields — keep `host`.)
+ operation-record bindings, not request fields — keep `host`.)
+- **Generator mapping (revising the contract to the generator's supported
+  shapes — generator work is out of this spec PR's scope):** the AppWire
+  TypeScript generator emits Go structs as interfaces and named string types
+  as plain `string`, with no discriminated-union or literal-union emission
+  (`internal/appwirets/emit.go` `typeExpr` — the only unions in
+  `types.gen.ts` are the hardcoded `ThreadItemEventKind` /
+  `NavigationTargetKind` / name-catalog exceptions). The literal string
+  unions below (`origin`, `outcome`, `reason`, `kind`, `state`) are wire
+  value sets carried in the generated client as `string`, with the exact
+  value set pinned by the protocol-shapes test rather than a TS literal
+  union; the response unions below (the mutation-result arms, `plan`'s
+  token vs no-token shapes) are carried as per-arm interfaces selected at
+  runtime by their discriminator (`outcome`, `reason`), never as a
+  generated TS union — the 08b catalog defines one named Go struct per arm
+  so each generates its own interface field-for-field.
 
 - `evener/host/list`: params `{}`; response `{hosts: HostRow[]}`. `HostRow`
   is the full effective `HostConfig` fields (`name`, `ssh`, `user`,
@@ -1145,8 +1198,9 @@ envelope codes; post-commit outcomes return through the union — the failure
 arm names a committed mutation whose teardown needs forward retry) — the `remnantId` is mandatory on
 the failure arm, `seam` names the failed rebind step, and the committed
 `HostRow` is always present so the UI renders the row with a teardown-retry
-affordance. The catalog + regenerated TypeScript client carry both arms
-field-for-field (see Implementation approach); a shape missing `remnantId`
+affordance. The catalog carries both arms field-for-field and the regenerated
+client carries each arm as its own interface through the generator mapping
+above (see Implementation approach); a shape missing `remnantId`
 on the failure arm fails the protocol-shapes test.
 - `evener/host/status`: params `{name: string}`; response is the host's
   `HostRow` plus the deploy plan inputs: `controllerBuild: string`,
@@ -1377,7 +1431,15 @@ stay at or below the mark and live records stay unmarked — never a promotion
 of a pre-collision record into the current generation, never a block on valid
 operation-ID reuse.**
 `hub.toml`-declared hosts carry a
-stable generation as long as their effective entry is unchanged — initial
+stable generation as long as their effective entry is unchanged — the sidecar
+persists each declared host's effective-entry fingerprint (content hash of the
+resolved entry) alongside the generations, and boot compares the freshly read
+entry against it before serving requests: a mismatch advances that host's
+generation and clears or rebinds its name-keyed cached state (the same
+invalidation the sibling rule below applies), so an edit made while the
+controller was stopped can never restore the old generation with old records
+and cached state reading as current (extending the round-thirteen /
+round-fourteen fingerprint work) — initial
 assignment at boot is generation 1 for every `hub.toml`-declared name with no
 persisted high-water mark (extending the round-eleven collision work —
 `add`'s "generation 1 for a never-seen name" above is the same rule, so
@@ -1494,8 +1556,9 @@ name-keyed cache entry can never republish rows for the new host.
  receipt; any remnant-gated mutation — re-add, `update`, or `remove` on the
  remnant's name — refused with `remnant-open` until the retry completes;
  the persisted receipt carries exactly `{outcome, row, generation,
- committedAt, remnantId?, remnantResolvedAt?}` (`remnantId` while the remnant
- is open, `remnantResolvedAt` after resolution) and the cleared marker is
+ committedAt, remnantId?, remnantResolvedAt?, bootRecovered?}` (`remnantId`
+ while the remnant is open, `remnantResolvedAt` after resolution,
+ `bootRecovered` exactly on boot-recovered receipts) and the cleared marker is
  `remnantId → clearedAt` in `teardownRemnants`; a post-`remove` retry
  returns the tombstone removed-row shape, a post-add/update retry the live
  row; the incarnation recheck never touches a newer live incarnation).
@@ -1554,9 +1617,11 @@ name-keyed cache entry can never republish rows for the new host.
  probe failures)**,
   **restart reattach (the worker retains the gate across the channel drop,
   reattaches through `attachUnderGate` for the pinned entry — never the
-  normal attach path, never a supervisor start — and re-probes over the
+  normal attach path, no supervisor start until the post-verification
+  handoff — and re-probes over the
   reattached channel; an initially unattached restart attach-firsts under
-  the same gate and names it in the record)**,
+  the same gate and names it in the record; a reconnect-after-restart test
+  pins that the supervisor owns the channel again once the gate releases)**,
   **the gated refresh: an attached host refreshes via the
   bounded one-shot SSH preflight (no channel initialization, no supervisor,
   no attach state machine) then mints; an unattached host gets the
