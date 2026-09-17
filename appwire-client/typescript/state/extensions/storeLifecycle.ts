@@ -149,6 +149,12 @@ export function createStoreLifecycle<S>(
       // SAME client is not that - its own replies reject when its socket
       // drops, and a flap leaves what it already answered as true as it was.
       if (replaced) fenceInFlight();
+      // A client that is already reconnecting has been ready before: that is
+      // what reconnecting means. A store built while its host's connection was
+      // flapping would otherwise meet it mid-flap, call the ready that follows
+      // its first, and invalidate nothing. "closed" is deliberately not
+      // evidence - a first connection that failed ends there too.
+      if (state === "reconnecting") hasBeenReady = true;
       if (disposed || state !== "ready") return;
       const away = hasBeenReady;
       hasBeenReady = true;
