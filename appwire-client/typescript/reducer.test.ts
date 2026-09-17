@@ -2665,12 +2665,11 @@ test("mergeOlderItemPage merges shared turns and transcript items in position or
   expect(result.olderCursor).toBe("cursor_0");
 });
 
-// The wire's own shape makes the empty list unreachable today —
-// appwire.ThreadItem.Images and OutputImages are `json:",omitempty"`
-// (appwire/types.go:1443,1450) and the producers send nil — so an empty list
-// arrives only once the hub emits one explicitly (a Go change of its own).
-// The client half is pinned here: an explicit [] on the wire is honoured as a
-// value, not folded to "absent".
+// A hydrate reads an empty input-images list the same way a live frame does: as
+// absence. The wire rarely sends one — `appwire.ThreadItem.Images` is
+// `json:",omitempty"` and the producers send nil — but a real fixture does
+// (`fixtures/tool-and-jobs.jsonl:4`), and folding it to absent is what keeps an
+// older page's images from being erased on merge.
 test("an empty input-images list on the wire leaves the item's images unset", () => {
   const thread = testThread({
     turns: [
