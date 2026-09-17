@@ -75,17 +75,20 @@ export function draftBackend(
 		delete(key: string) {
 			store.removeItemSync(key);
 		},
-		deleteIf(key: string, value: unknown) {
+		deleteIf(key: string, value: unknown): boolean {
 			// Synchronous compare/remove cannot interleave with a newer model's checkpoint.
 			const stored = store.getItemSync(key);
-			if (stored === null) return;
-			// Three ways a value names what is stored, all of them about THIS value:
-			// the raw bytes handed back for a record no decoder accepts, the bytes
-			// the very object being handed back was decoded from, and - for a
-			// readable record, which the store's repository rebuilds through its own
-			// validator before handing it back - the record those bytes decode to.
+			if (stored === null) return false;
+			// A value decoded from get() carries the bytes it came from: those exact
+			// bytes are the only thing that names the SAME write, because a
+			// concurrent replacement with equivalent JSON but different formatting
+			// is a DIFFERENT write that only compares semantically equal. Semantic
+			// comparison is for a checkpoint this build constructed itself and never
+			// read back, which has no original bytes to be exact about.
 			const source = typeof value === "object" && value !== null ? decodedFrom.get(value) : undefined;
-			if (stored === value || stored === source || sameRecord(stored, value)) store.removeItemSync(key);
+			const matches = source !== undefined ? stored === source : stored === value || sameRecord(stored, value);
+			if (matches) store.removeItemSync(key);
+			return matches;
 		},
 	};
 }

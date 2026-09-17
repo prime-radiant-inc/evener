@@ -366,8 +366,9 @@ function draftStorage() {
 		// with: a narrower one only compiles because `deleteIf` is declared as a
 		// method, whose parameters TypeScript compares bivariantly.
 		deleteIf: (key: string, value: NativePreferenceDraftCheckpoint) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
+			values.delete(key);
+			return true;
 		},
 	};
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };

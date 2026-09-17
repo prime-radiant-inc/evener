@@ -41,8 +41,9 @@ function backend() {
 			values.delete(key);
 		},
 		deleteIf: (key, value) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
+			values.delete(key);
+			return true;
 		},
 	};
 	return { port, keys: () => [...values.keys()].sort() };
@@ -243,6 +244,29 @@ describe("native preference drafts", () => {
 		expect(disk.raw.has(key)).toBe(false);
 	});
 
+	// RoboRev round 18: a value read back through get() carries its ORIGINAL
+	// bytes (decodedFrom); a concurrent writer's replacement compares
+	// semantically equal but is a DIFFERENT write under different bytes, and
+	// must survive - sameRecord is for a checkpoint this build constructed
+	// itself and never read back, which has no original bytes to be exact about.
+	it("a concurrent replacement with equivalent JSON but different bytes is not removed when the value came from a read", () => {
+		const disk = deviceStore();
+		const storage = nativeTranscriptDrafts("hub", disk.port);
+		const key = "evener.native.transcript-draft.hub";
+
+		disk.raw.set(key, '{\n  "id" : "a" ,\n  "baseRevision": -1\n}');
+		const read = storage.load();
+		expect(read).not.toBeNull();
+
+		// A concurrent writer replaces it with the SAME fields under DIFFERENT
+		// bytes (reordered, no whitespace) - a write this store never read.
+		const replacement = '{"baseRevision":-1,"id":"a"}';
+		disk.raw.set(key, replacement);
+
+		storage.removeIf(read as never);
+		expect(disk.raw.get(key)).toBe(replacement);
+	});
+
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {
 		const disk = backend();
 		expect(() => nativeTranscriptDrafts(" ", disk.port)).toThrow(
@@ -281,15 +305,32 @@ describe("native preference drafts", () => {
 
 		// The no-model discard path names the record load() actually
 		// classified, not whatever is stored now: it refuses, and the newer
-		// checkpoint survives.
-		storage.discardLastLoaded();
+		// checkpoint survives. A refusal reports false - a caller must not
+		// project "discarded" on it - and re-classifies against the newer
+		// record, exactly as a live model's discardUnreadable+restoreDraft
+		// would, so a follow-up discard targets what is actually there now.
+		expect(storage.discardLastLoaded()).toBe(false);
 		expect(disk.raw.get(key)).toBe(JSON.stringify(newer));
+		expect(storage.discardLastLoaded()).toBe(true);
+		expect(disk.raw.has(key)).toBe(false);
+	});
+
+	it("discardLastLoaded reports true once the named record is actually removed", () => {
+		const disk = deviceStore();
+		const key = "evener.native.transcript-draft.hub";
+		const storage = retainingDraftStorage(nativeTranscriptDrafts("hub", disk.port));
+
+		disk.raw.set(key, "{not json");
+		storage.load();
+
+		expect(storage.discardLastLoaded()).toBe(true);
+		expect(disk.raw.has(key)).toBe(false);
 	});
 
 	it("discardLastLoaded is a no-op before anything has ever been loaded", () => {
 		const disk = deviceStore();
 		const storage = retainingDraftStorage(nativeTranscriptDrafts("hub", disk.port));
-		expect(() => storage.discardLastLoaded()).not.toThrow();
+		expect(storage.discardLastLoaded()).toBe(false);
 		expect(disk.raw.size).toBe(0);
 	});
 });

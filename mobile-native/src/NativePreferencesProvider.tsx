@@ -48,12 +48,19 @@ interface Preferences {
 	 * kept from the LAST time something (a now-disposed model's own
 	 * repository, most often) actually loaded it - never a fresh reload, which
 	 * could name a record another writer has since replaced (RoboRev round 17,
-	 * eighth raise). Every row with a record ends the same way: record
-	 * removed, UI unlocked - the store publishes that when it has one, and the
-	 * snapshot projection below does it when it does not. The last column is
-	 * why BOTH screens call this method directly rather than through their
-	 * `run` helper: `run` exists for operations that go through the shared
-	 * store, so it requires a model, which is exactly what these states lack. */
+	 * eighth raise). Every row with a record ends the same way ONLY on a
+	 * CONFIRMED removal: record removed, UI unlocked - the store publishes
+	 * that when it has one, and the snapshot projection below does it when it
+	 * does not. discardLastLoaded reports whether it actually removed the
+	 * record (RoboRev round 18): a refusal (replaced by something else since
+	 * it was loaded) re-classifies internally but leaves the exposed snapshot
+	 * untouched, so the section keeps reporting unreadable and locked rather
+	 * than claiming a discard that did not happen - it unlocks on the next
+	 * connection, which builds a fresh model over the new record. The last
+	 * column is why BOTH screens call this method directly rather than
+	 * through their `run` helper: `run` exists for operations that go through
+	 * the shared store, so it requires a model, which is exactly what these
+	 * states lack. */
 	discardUnreadableDraft(section: "transcript" | "keybindings"): Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);
@@ -138,7 +145,14 @@ export function NativePreferencesProvider({
 		}
 		// The port can throw; awaiting inside an async function turns that into a
 		// rejection the caller's error handler already knows how to show.
-		drafts[section === "transcript" ? "transcript" : "keybindings"].discardLastLoaded();
+		const removed = drafts[
+			section === "transcript" ? "transcript" : "keybindings"
+		].discardLastLoaded();
+		// A refusal means the record this wrapper named is gone, replaced by
+		// something else since it was loaded: nothing to project. The section
+		// keeps reporting unreadable and locked until the next connection
+		// builds a model over whatever is actually stored now.
+		if (!removed) return;
 		// No store to publish the result, so the exposed snapshot is projected
 		// here: without this the record is gone but the section still reports
 		// draftUnreadable and stays locked until the next connection.

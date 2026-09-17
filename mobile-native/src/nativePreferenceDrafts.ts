@@ -15,7 +15,20 @@ export interface NativePreferenceDraftBackend {
 	get(key: string): unknown;
 	set(key: string, value: unknown): void;
 	delete(key: string): void;
-	deleteIf(key: string, checkpoint: NativePreferenceDraftCheckpoint): void;
+	/** Removes the stored record only if `checkpoint` still names it; reports
+	 * whether it did. */
+	deleteIf(key: string, checkpoint: NativePreferenceDraftCheckpoint): boolean;
+}
+
+/** The shape either section's storage has, over its own checkpoint type. */
+interface SectionDraftStorage<Checkpoint> {
+	createId(): string;
+	load(): unknown;
+	save(checkpoint: Checkpoint): void;
+	/** Removes the stored record only if `checkpoint` still names it; reports
+	 * whether it did, so a refusal (the record it named is gone, replaced by
+	 * something else) is never mistaken for success. */
+	removeIf(checkpoint: Checkpoint): boolean;
 }
 
 /** One hub's drafts for one preference section, under that section's key
@@ -25,7 +38,7 @@ function nativeDraftStorage(
 	prefix: string,
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
-): KeybindingDraftStorage & TranscriptDraftStorage {
+): SectionDraftStorage<KeybindingDraftCheckpoint> & SectionDraftStorage<TranscriptDraftCheckpoint> {
 	if (!hubId.trim())
 		throw new Error("A hub id is required for preference drafts.");
 	const key = `evener.native.${prefix}-draft.${hubId}`;
@@ -40,14 +53,14 @@ function nativeDraftStorage(
 export function nativeKeybindingDrafts(
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
-): KeybindingDraftStorage {
+): SectionDraftStorage<KeybindingDraftCheckpoint> & KeybindingDraftStorage {
 	return nativeDraftStorage("keybinding", hubId, backend);
 }
 
 export function nativeTranscriptDrafts(
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
-): TranscriptDraftStorage {
+): SectionDraftStorage<TranscriptDraftCheckpoint> & TranscriptDraftStorage {
 	return nativeDraftStorage("transcript", hubId, backend);
 }
 
@@ -58,18 +71,13 @@ export function nativePreferenceDrafts(
 	section: "transcript" | "keybindings",
 	hubId: string,
 	backend: NativePreferenceDraftBackend,
-): KeybindingDraftStorage & TranscriptDraftStorage {
+): SectionDraftStorage<KeybindingDraftCheckpoint> &
+	SectionDraftStorage<TranscriptDraftCheckpoint> &
+	KeybindingDraftStorage &
+	TranscriptDraftStorage {
 	return section === "transcript"
 		? nativeDraftStorage("transcript", hubId, backend)
 		: nativeDraftStorage("keybinding", hubId, backend);
-}
-
-/** The shape either section's storage has, over its own checkpoint type. */
-interface SectionDraftStorage<Checkpoint> {
-	createId(): string;
-	load(): unknown;
-	save(checkpoint: Checkpoint): void;
-	removeIf(checkpoint: Checkpoint): void;
 }
 
 export type RetainingDraftStorage<Checkpoint> = SectionDraftStorage<Checkpoint> & {
@@ -80,8 +88,13 @@ export type RetainingDraftStorage<Checkpoint> = SectionDraftStorage<Checkpoint> 
 	 * wrapper is what the provider hands the model AND keeps for itself, so
 	 * the identity a model's load() classified survives that model's disposal
 	 * (a client dropped, a hub reconnect) for the no-model discard path to
-	 * use. A no-op before anything has ever been loaded through it. */
-	discardLastLoaded(): void;
+	 * use. A no-op (reporting false) before anything has ever been loaded
+	 * through it. Reports whether the removal actually happened: a refusal
+	 * (the record it named is gone, replaced by something else) re-classifies
+	 * against whatever is stored now - the same thing a live model's
+	 * discardUnreadable+restoreDraft does - so a caller never projects
+	 * "discarded" on a record that is still there. */
+	discardLastLoaded(): boolean;
 };
 
 /** Wraps a section's storage so the identity of whatever load() most
@@ -93,19 +106,25 @@ export function retainingDraftStorage<Checkpoint>(
 ): RetainingDraftStorage<Checkpoint> {
 	let lastLoaded: unknown;
 	let hasLastLoaded = false;
+	function trackLoad(value: unknown): unknown {
+		hasLastLoaded = value !== null && value !== undefined;
+		lastLoaded = value;
+		return value;
+	}
 	return {
 		createId: () => storage.createId(),
-		load: () => {
-			const value = storage.load();
-			hasLastLoaded = value !== null && value !== undefined;
-			lastLoaded = value;
-			return value;
-		},
+		load: () => trackLoad(storage.load()),
 		save: (checkpoint) => storage.save(checkpoint),
 		removeIf: (checkpoint) => storage.removeIf(checkpoint),
 		discardLastLoaded: () => {
-			if (!hasLastLoaded) return;
-			storage.removeIf(lastLoaded as Checkpoint);
+			if (!hasLastLoaded) return false;
+			const removed = storage.removeIf(lastLoaded as Checkpoint);
+			// The record this wrapper named is gone, replaced by something else:
+			// re-classify against whatever is actually there now, so a follow-up
+			// discard targets it instead of repeatedly naming a record that no
+			// longer exists.
+			if (!removed) trackLoad(storage.load());
+			return removed;
 		},
 	};
 }
