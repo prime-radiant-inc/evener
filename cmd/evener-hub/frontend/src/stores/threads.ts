@@ -1812,6 +1812,22 @@ function handleNotification(n: AnyNotification): void {
         });
     }
   }
+  // queueChanged's own clientMutationIds are the server's current queue, not
+  // a partial list like the other notifications notificationMutationIdentities
+  // reads above - retiring a same-client queue intent absent from it needs
+  // this whole-queue snapshot, never the single-id shape those share.
+  if (n.method === "thread/queueChanged") {
+    const ref = notificationRef(n);
+    const runtime = getMutationRuntime();
+    if (ref && runtime) {
+      void runtime.dispatcher
+        .retireConsumedQueueIntents(ref, new Set(n.params.queue.clientMutationIds ?? []))
+        .then(() => refreshMutationPins(runtime, [ref]))
+        .catch(() => {
+          // A later queueChanged or receipt retries the same settlement.
+        });
+    }
+  }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
   // Accepted fallback-invalidating refs, one set per family: goal pushes

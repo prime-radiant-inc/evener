@@ -4187,6 +4187,42 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
   });
 
+  // A drain consumes a queued intent server-side, but no push ever names its
+  // id again by itself - queueChanged carries only the entries still
+  // queued. Wired end to end: handleNotification passes queueChanged's own
+  // clientMutationIds straight to the dispatcher's retireConsumedQueueIntents
+  // (mutationDispatcher.test.ts is that method's own oracle), so an accepted
+  // queue intent absent from a queueChanged snapshot is retired here too.
+  test("a queueChanged snapshot that no longer names an accepted queue intent retires it", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    // "pending" (not the default "reflected") is what keeps the record in the
+    // optimistic store rather than settling it immediately - the accepted
+    // but not-yet-reflected state this fix targets.
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued text");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const independent = new MutationOutboxIndexedDB();
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toHaveLength(1));
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: { threadId: "thr_ref_a", ref: "ref_a", queue: { revision: 8, clientMutationIds: [] } },
+    });
+
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
+    independent.close();
+  });
+
   test("queue includes a base64 image attachment when provided", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
