@@ -1414,8 +1414,7 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 // thread/queueChanged is handled separately, through reconcileQueueSnapshot
 // (handleNotification) - it needs revision and depth alongside the ids to
 // tell "authoritatively empty" apart from "coverage unknown", which this
-// single-id-shaped list cannot carry (measured on #1705 round 2: `?? []`
-// here silently treated an unknown-coverage push as an empty one).
+// single-id-shaped list cannot carry.
 function notificationMutationIdentities(n: AnyNotification): string[] {
   if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
@@ -1838,9 +1837,12 @@ function handleNotification(n: AnyNotification): void {
     const ref = notificationRef(n);
     const runtime = getMutationRuntime();
     if (ref && runtime) {
+      const snapshot = queueSnapshotFromWire(n.params.queue, true);
       void runtime.dispatcher
-        .reconcileQueueSnapshot(ref, queueSnapshotFromWire(n.params.queue, true))
-        .then((settled) => (settled.length > 0 ? refreshMutationPins(runtime, [ref]) : undefined))
+        .reconcileQueueSnapshot(ref, snapshot)
+        .then((settled) =>
+          settled.length > 0 || (snapshot.ids?.size ?? 0) > 0 ? refreshMutationPins(runtime, [ref]) : undefined,
+        )
         .catch(() => {
           // A later queueChanged or receipt retries the same settlement.
         });

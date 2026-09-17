@@ -4190,7 +4190,7 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
   // A drain consumes a queued intent server-side, but no push ever names its
   // id again by itself - queueChanged carries only the entries still
   // queued. Wired end to end: handleNotification passes queueChanged's own
-  // clientMutationIds straight to the dispatcher's retireConsumedQueueIntents
+  // clientMutationIds straight to the dispatcher's reconcileQueueSnapshot
   // (mutationDispatcher.test.ts is that method's own oracle), so an accepted
   // queue intent absent from a queueChanged snapshot is retired here too.
   test("a queueChanged snapshot that no longer names an accepted queue intent retires it", async () => {
@@ -4220,6 +4220,53 @@ describe("useThreadsStore.steer / queue / interrupt", () => {
     });
 
     await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
+    independent.close();
+  });
+
+  // The pins refresh after reconcileQueueSnapshot only fired on its own
+  // return value (ids retired-as-absent); a named id reconcileIdentities
+  // settles inside that same call was invisible to it. A released pane
+  // whose only remaining hold was the now-settled queue intent must still
+  // get dropped once the queueChanged that settles it arrives.
+  test("a queueChanged naming an optimistic id that reconcileIdentities settles still refreshes pins", async () => {
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued text");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const independent = new MutationOutboxIndexedDB();
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toHaveLength(1));
+    const [record] = await independent.listOptimistic("ref_a");
+
+    threadsStore.getState().releaseThread("ref_a");
+    // Still pinned: the queue intent is accepted but not yet reflected by
+    // any live feed, so the released pane's model must not disappear
+    // underneath it.
+    expect(threadsStore.getState().threads.has("ref_a")).toBe(true);
+
+    // The authoritative snapshot NAMES the accepted id (still queued, from
+    // its own point of view) rather than omitting it - settled via
+    // reconcileIdentities, not retired as absent.
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8, clientMutationIds: [record!.clientMutationId] },
+      },
+    });
+
+    await waitFor(async () => expect(await independent.listOptimistic("ref_a")).toEqual([]));
+    await waitFor(() => expect(threadsStore.getState().threads.has("ref_a")).toBe(false));
     independent.close();
   });
 
