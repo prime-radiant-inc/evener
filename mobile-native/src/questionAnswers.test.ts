@@ -3,8 +3,13 @@ import type { AskQuestionRef } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import type { Thread } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/project";
-import { projectConversation } from "../../mobile/src/conversation/project";
 import {
+  MAX_ITEM_BYTES,
+  projectConversation,
+  truncateText,
+} from "../../mobile/src/conversation/project";
+import {
+  boundQuestionForDisplay,
   composeQuestionAnswers,
   pendingQuestions,
   questionAdvanceTarget,
@@ -176,6 +181,37 @@ it("offers the model's answerable asks", () => {
   );
   expect(pendingQuestions(conversation).map((ref) => ref.header)).toEqual(["Choice"]);
   expect(conversation.items.some((row) => row.kind === "question")).toBe(true);
+});
+
+it("bounds a question's display copy while the canonical refs stay uncut", () => {
+  const bound = (text: string) => truncateText(text, MAX_ITEM_BYTES);
+  const huge = "x".repeat(MAX_ITEM_BYTES + 10);
+  const oversized: AskQuestionRef = {
+    ...question,
+    header: huge,
+    question: huge,
+    why: huge,
+    options: [{ label: huge, detail: huge }],
+  };
+  const display = boundQuestionForDisplay(oversized, bound);
+  expect(display.header).toBe(truncateText(huge, MAX_ITEM_BYTES));
+  expect(display.header.length).toBeLessThan(huge.length);
+  expect(display.question).toBe(truncateText(huge, MAX_ITEM_BYTES));
+  expect(display.why).toBe(truncateText(huge, MAX_ITEM_BYTES));
+  expect(display.options[0]?.label).toBe(truncateText(huge, MAX_ITEM_BYTES));
+  expect(display.options[0]?.detail).toBe(truncateText(huge, MAX_ITEM_BYTES));
+  // The refs boundQuestionForDisplay was given are untouched: composition
+  // still names the exact, uncut label the agent's options carried.
+  expect(oversized.header).toBe(huge);
+  expect(oversized.options[0]?.label).toBe(huge);
+  expect(
+    composeQuestionAnswers([oversized], {
+      [oversized.key]: {
+        resolution: { kind: "option", labels: [huge] },
+        note: "",
+      },
+    }),
+  ).toContain(huge);
 });
 
 it("offers nothing when nothing is answerable, whatever the wire's flag says", () => {

@@ -10,9 +10,11 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
+import { MAX_ITEM_BYTES, truncateText } from "../../mobile/src/conversation/project";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {
+  boundQuestionForDisplay,
   composeQuestionAnswers,
   nextUnansweredQuestion,
   type QuestionSelections,
@@ -20,6 +22,11 @@ import {
   seedQuestionAnswers,
 } from "./questionAnswers";
 import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
+
+// The sheet's own rendered text, bounded the same as a timeline row
+// (mobile/src/conversation/project.ts). `questions` stays canonical below:
+// only the strings drawn from `displayQuestions` are ever put on screen.
+const boundQuestionText = (text: string) => truncateText(text, MAX_ITEM_BYTES);
 export function QuestionSheet({
   visible,
   destination,
@@ -134,6 +141,10 @@ export function QuestionSheet({
     selections,
     activeIndex,
   );
+  const displayQuestions = questions.map((question) =>
+    boundQuestionForDisplay(question, boundQuestionText),
+  );
+  const activeDisplay = displayQuestions[activeIndex];
   return (
     <Modal
       visible={visible}
@@ -208,7 +219,7 @@ export function QuestionSheet({
                         index === activeIndex ? colors.accent : "transparent",
                     }}
                   >
-                    <Copy>{`${index + 1}. ${question.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
+                    <Copy>{`${index + 1}. ${displayQuestions[index]?.header ?? question.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
                   </Pressable>
                 ))}
               </ScrollView>
@@ -217,18 +228,25 @@ export function QuestionSheet({
               const answer = selections[question.key];
               return (
                 <View key={question.key} style={{ gap: 12 }}>
-                  <Copy muted>{question.header}</Copy>
-                  <Copy>{question.question}</Copy>
-                  {question.why ? <Copy muted>{question.why}</Copy> : null}
+                  <Copy muted>{activeDisplay?.header ?? question.header}</Copy>
+                  <Copy>{activeDisplay?.question ?? question.question}</Copy>
+                  {question.why ? (
+                    <Copy muted>{activeDisplay?.why ?? question.why}</Copy>
+                  ) : null}
                   {question.multiSelect ? (
                     <Copy muted>Choose any that apply.</Copy>
                   ) : null}
-                  {[...question.options]
+                  {question.options
+                    .map((option, index) => ({
+                      option,
+                      display: activeDisplay?.options[index],
+                    }))
                     .sort(
                       (a, b) =>
-                        Number(!!b.recommended) - Number(!!a.recommended),
+                        Number(!!b.option.recommended) -
+                        Number(!!a.option.recommended),
                     )
-                    .map((option) => {
+                    .map(({ option, display }) => {
                       const checked =
                         answer?.resolution?.kind === "option" &&
                         answer.resolution.labels.includes(option.label);
@@ -277,11 +295,11 @@ export function QuestionSheet({
                         >
                           <Copy>
                             {checked ? "✓ " : ""}
-                            {option.label}
+                            {display?.label ?? option.label}
                             {option.recommended ? " · Recommended" : ""}
                           </Copy>
                           {option.detail ? (
-                            <Copy muted>{option.detail}</Copy>
+                            <Copy muted>{display?.detail ?? option.detail}</Copy>
                           ) : null}
                         </Pressable>
                       );
@@ -308,7 +326,7 @@ export function QuestionSheet({
                   </Pressable>
                   <TextInput
                     ref={input}
-                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${question.header}`}
+                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${activeDisplay?.header ?? question.header}`}
                     placeholder={
                       answer?.resolution?.kind === "free"
                         ? "Type your answer"
