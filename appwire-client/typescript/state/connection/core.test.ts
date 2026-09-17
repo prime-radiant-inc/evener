@@ -101,6 +101,52 @@ describe("createConnectionStore", () => {
     expect(store.getState().state).toBe("ready");
   });
 
+  test("a finite A -> B -> A re-entrant swap cycle leaves exactly one live listener on A", () => {
+    const store = createConnectionStore();
+    const a = new FakeClient("ready");
+    const b = new FakeClient("ready");
+    const aTracking = trackStateChangeWiring(a);
+    const bTracking = trackStateChangeWiring(b);
+
+    // The instant A is wired (synchronously, inside connect(a)'s own
+    // setState dispatch), a subscriber swaps to B and then immediately back
+    // to A - both re-entrant calls completing before connect(a)'s own frame
+    // resumes. `reentered` bounds this to firing once: without it, the
+    // second connect(a) below would trigger this same branch again forever.
+    let reentered = false;
+    const unsubscribe = store.subscribe((state, previous) => {
+      if (!reentered && state.client === a && previous.client !== a) {
+        reentered = true;
+        store.connect(b);
+        store.connect(a);
+      }
+    });
+
+    store.connect(a);
+    unsubscribe();
+
+    expect(store.getState().client).toBe(a);
+    // Two connect(a) calls ran (the outer one and the re-entrant second one),
+    // so two listeners were registered; only the second is live - the
+    // outer's own frame, resuming after both re-entrant calls completed,
+    // must retire its now-stale listener rather than overwrite the tracked
+    // disposer with it.
+    expect(aTracking.registrations).toBe(2);
+    expect(aTracking.detachments).toBe(1);
+    expect(bTracking.registrations).toBe(1);
+    expect(bTracking.detachments).toBe(1);
+
+    // Exactly one live listener on A: one emitted state change publishes
+    // exactly once. A leaked outer listener would double-publish here.
+    let publishes = 0;
+    const stopCounting = store.subscribe(() => {
+      publishes += 1;
+    });
+    a.emitStateChange("closed");
+    stopCounting();
+    expect(publishes).toBe(1);
+  });
+
   test("connect() clears handshake metadata when swapping clients or closing", () => {
     const store = createConnectionStore();
     const first = new FakeClient("ready");
@@ -150,6 +196,23 @@ describe("onConnectionNotification", () => {
     const seen: unknown[] = [];
     onConnectionNotification(store, (n) => seen.push(n));
     client.emitNotification({ method: "evener/plugin/updated", params: {} });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("clearing the store's client to null detaches the currently wired listener", () => {
+    const store = createConnectionStore();
+    const client = new FakeClient("ready");
+    store.connect(client);
+
+    const seen: unknown[] = [];
+    onConnectionNotification(store, (n) => seen.push(n));
+    client.emitNotification({ method: "evener/plugin/updated", params: {} });
+    expect(seen).toHaveLength(1);
+
+    store.setState({ client: null });
+    client.emitNotification({ method: "evener/plugin/updated", params: {} });
+    // Still detached: a client that outlives the store's own reference to it
+    // (a disconnect, a test reset) must not keep delivering notifications.
     expect(seen).toHaveLength(1);
   });
 });

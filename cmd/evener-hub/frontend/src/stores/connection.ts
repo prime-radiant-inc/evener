@@ -58,11 +58,28 @@ function withConnect(state: CoreConnectionStoreState): ConnectionStoreState {
 const originalGetState = core.getState.bind(core);
 const originalGetInitialState = core.getInitialState.bind(core);
 const originalSubscribe = core.subscribe.bind(core);
-// `setState` is deliberately left untouched on `core` - only the three reads
-// are replaced, in place, on the object `connectionStore` below re-exposes.
-const mutableCore = core as unknown as Pick<ConnectionStore, "getState" | "getInitialState" | "subscribe">;
+const originalSetState = core.setState.bind(core);
+// The whole triple is replaced, in place, on the object `connectionStore`
+// below re-exposes: `setState`'s updater form promises its callback a
+// `ConnectionStoreState` (this file's exported type, `connect` included),
+// same as `getState`, so it has to fold `connect` in too - a raw core state
+// with no `connect` field would silently break that promise for any updater
+// that reads it. `connect` is never a state key on the core (round 1), so it
+// is stripped back out of whatever an updater returns before forwarding:
+// a stale `connect` pulled off a snapshot could never mask the live one
+// anyway (the core has no such key to write it into), but forwarding it
+// unstripped would still leave one sitting in the core's state object.
+const mutableCore = core as unknown as Pick<ConnectionStore, "getState" | "getInitialState" | "setState" | "subscribe">;
 mutableCore.getState = () => withConnect(originalGetState());
 mutableCore.getInitialState = () => withConnect(originalGetInitialState());
+mutableCore.setState = (partial) => {
+  originalSetState((state) => {
+    const updates = typeof partial === "function" ? partial(withConnect(state)) : partial;
+    const { connect, ...rest } = updates;
+    void connect;
+    return rest;
+  });
+};
 mutableCore.subscribe = (listener) =>
   originalSubscribe((state, previous) => listener(withConnect(state), withConnect(previous)));
 

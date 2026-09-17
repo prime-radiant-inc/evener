@@ -67,6 +67,19 @@ export function createConnectionStore(): ConnectionStore {
   // are torn down when a ref is released, whereas this is one connection-wide
   // mirror that lives exactly as long as its client is the wired one.
   let unwireStateChange: (() => void) | null = null;
+  // Bumped on every connect() call and captured as each call's own
+  // generation. "Am I still the frame that owns unwireStateChange" cannot be
+  // answered by comparing `client` identity alone: a finite re-entrant swap
+  // cycle (connect(a) re-enters with connect(b), which re-enters back with
+  // connect(a)) has an OUTER and an INNER frame that both target the same
+  // client object, so the outer frame's post-setState identity check passes
+  // even though the inner frame is the one that actually owns the slot -
+  // measured on round 1's own reentrancy test, which happened to never
+  // revisit a client and so never exercised this. The pre-D28 web store
+  // (stores/connection.ts before this migration) carried the same identity-
+  // only check and had the identical hole; this generation counter is new,
+  // not an extension of anything that existed before this round.
+  let connectGeneration = 0;
 
   // Attached onto the triple in place rather than `{ ...store, connect }`
   // (the spread every other core here uses, state/navigation/store.ts and
@@ -85,6 +98,7 @@ export function createConnectionStore(): ConnectionStore {
 
   function connect(client: AppwireClientLike): void {
     if (store.getState().client === client) return;
+    const generation = ++connectGeneration;
     unwireStateChange?.();
     unwireStateChange = null;
     // Register before publishing. setState dispatches to subscribers
@@ -101,12 +115,16 @@ export function createConnectionStore(): ConnectionStore {
     // callback above could not have published it while this client was
     // still not the store's.
     store.setState({ client, state: client.state, serverInfo: undefined, features: undefined });
-    // The synchronous dispatch above can re-enter connect() with a
-    // different client. That frame completed and owns the slot, so this
-    // one is stale: retire its own listener instead of clobbering the
-    // newer entry, which would leak the newer client's subscription for
-    // the life of the store.
-    if (store.getState().client === client) {
+    // The synchronous dispatch above can re-enter connect() one or more
+    // times. Whichever frame ran last owns the slot; every other frame -
+    // including this one, if a later frame already ran and returned - must
+    // retire its own listener instead of touching unwireStateChange. Client
+    // identity alone cannot tell "no one has touched this since me" apart
+    // from "someone touched it and it happens to match me again" (a re-entrant
+    // A -> B -> A cycle targets A twice, as two different frames), so the
+    // generation counter is compared instead: only the frame whose
+    // generation is still the latest one issued may claim the slot.
+    if (connectGeneration === generation) {
       unwireStateChange = unwire;
     } else {
       unwire();
@@ -126,10 +144,14 @@ export function onConnectionNotification(store: ConnectionStore, handler: (n: An
   let wired: AppwireClientLike | null = null;
   let unwire: (() => void) | undefined;
   const attach = (client: AppwireClientLike | null): void => {
-    if (!client || client === wired) return; // already wired to this exact client
+    if (client === wired) return; // already wired to this exact client, including both null
     unwire?.();
     wired = client;
-    unwire = client.onNotification(handler);
+    // A cleared client (the store's `client` set to null - a disconnect, a
+    // test reset) has no listener to attach; detaching the previous one
+    // above is this call's whole job then, not a no-op skipped by the null
+    // check that used to sit ahead of it.
+    unwire = client ? client.onNotification(handler) : undefined;
   };
   const unsubscribe = store.subscribe((state) => attach(state.client));
   attach(store.getState().client);
