@@ -1,9 +1,9 @@
 // The navigation selectors both apps read a navigation store's state through:
 // the manifest's launch sources, section and catalog rows with their remaining
 // counts and next offsets, the pin-section summaries, the project catalog, and
-// a session summary found by ref. Pure over NavigationState - no store handle,
-// no host API - so an app passes whichever instance's state it holds, and a
-// selector that memoizes for one host's render loop stays in that host.
+// a session summary found by ref. Pure over NavigationStoreState - no store
+// handle, no host API - so an app passes whichever instance's state it holds,
+// and a selector that memoizes for one host's render loop stays in that host.
 import type { NavigationProjectSummary, NavigationSessionSummary, Source } from "../../types.gen";
 import type { NavigationStoreState } from "./store";
 import {
@@ -15,9 +15,6 @@ import {
   type ResourceKey,
   type ResourceState,
 } from "./types";
-
-/** What every selector here reads: one navigation store's published state. */
-export type NavigationState = NavigationStoreState;
 
 /** Relative display age for a session's updated_at, mirroring the rail's
  * long-standing row contract (now/m/h/d). Computed at adapter time like the
@@ -77,7 +74,7 @@ export function selectSources(state: NavigationStoreState): Source[] {
 export function selectDisplaySources(state: NavigationStoreState): Source[] {
   return state.manifest?.data?.sources ?? NO_SOURCES;
 }
-export const selectResource = (key: ResourceKey) => {
+const selectResource = (key: ResourceKey) => {
   const resourceKey = canonicalResourceKey(key);
   return (s: NavigationStoreState) => s.resources.get(keyID(resourceKey));
 };
@@ -88,10 +85,7 @@ export const selectProjectPage =
   (s: NavigationStoreState) =>
     s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
 export const selectLocation = (ref: string) => selectResource({ kind: "location", ref });
-export function selectSectionRows(
-  section: "live" | "needs_you",
-  state: NavigationStoreState,
-): NavigationSessionSummary[] {
+function selectSectionRows(section: "live" | "needs_you", state: NavigationStoreState): NavigationSessionSummary[] {
   return loadedSectionRows(state, (key) => key.kind === "section" && key.section === section);
 }
 export function selectNeedsYouRows(state: NavigationStoreState): NavigationSessionSummary[] {
@@ -131,43 +125,6 @@ export function selectNextSectionOffset(section: "live" | "needs_you", state: Na
     0;
   return nextNavigationOffset(last.key.offset, returned);
 }
-export function selectCatalogRemaining(
-  catalog: "projects" | "archived_projects" | "test_runs",
-  state: NavigationStoreState,
-): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null,
-  );
-  const last = pages
-    .sort((a, b) =>
-      a.key.kind === "catalog" && b.key.kind === "catalog"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    )
-    .at(-1);
-  return (last?.data as { remaining?: number } | null)?.remaining ?? 0;
-}
-export function selectNextCatalogOffset(
-  catalog: "projects" | "archived_projects" | "test_runs",
-  state: NavigationStoreState,
-): number {
-  const pages = [...state.resources.values()].filter(
-    (resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog,
-  );
-  const last = pages
-    .sort((a, b) =>
-      a.key.kind === "catalog" && b.key.kind === "catalog"
-        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
-        : 0,
-    )
-    .at(-1);
-  if (last?.key.kind !== "catalog") return 0;
-  const returned =
-    normalizedRootCount(last, "projects") ??
-    (last.data as { projects?: NavigationProjectSummary[] } | null)?.projects?.length ??
-    0;
-  return nextNavigationOffset(last.key.offset, returned);
-}
 export function selectLiveRows(state: NavigationStoreState): NavigationSessionSummary[] {
   return selectSectionRows("live", state);
 }
@@ -202,7 +159,7 @@ export interface NavigationPinSectionSummary {
   name: string;
   member_count: number;
 }
-export interface LoadedPinSection extends NavigationPinSectionSummary {
+interface LoadedPinSection extends NavigationPinSectionSummary {
   sessions: NavigationSessionSummary[];
 }
 export function selectPinSectionSummaries(state: NavigationStoreState): NavigationPinSectionSummary[] {
@@ -230,6 +187,11 @@ export function selectPinSections(state: NavigationStoreState): LoadedPinSection
     sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === section.id),
   }));
 }
+/** No caller outside `selectExpanded` today, but kept exported: the core's
+ * private `selectSummaries` in `store.ts` duplicates this scan for the boot
+ * fan-out, unsorted where this sorts by catalog order then offset. Folding
+ * the two would change which projects hydrate first under the boot pool, so
+ * this stays a public, sorted counterpart until that's resolved (#1596). */
 export function selectProjectSummaries(state: NavigationStoreState): NavigationProjectSummary[] {
   const catalogOrder = { projects: 0, archived_projects: 1, test_runs: 2 } as const;
   return [...state.resources.values()]

@@ -3,9 +3,10 @@
 // the snapshot and delta codec, the graph merge, the deep-freeze helpers the
 // codec and merge share, the rule matching an invalidation target to a loaded
 // resource (invalidation), the revalidator that re-reads loaded resources on
-// the hub's invalidations, and the store an app binds its view layer to
-// (store) - one hub connection's navigation state, which schedules its own
-// boot work and owns navigation's one deadline, the convergence wait.
+// the hub's invalidations, the store an app binds its view layer to (store) -
+// one hub connection's navigation state, which schedules its own boot work
+// and owns navigation's one deadline, the convergence wait - and the graph-
+// shaped selectors both apps read that state through (selectors).
 //
 // Everything a host owns is a port: the client the store reads through and
 // where it persists rail expansion. Nothing here touches a framework, the

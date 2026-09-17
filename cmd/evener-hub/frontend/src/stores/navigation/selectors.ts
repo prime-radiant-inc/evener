@@ -1,20 +1,17 @@
-// The web's navigation selectors: the package's graph-shaped selectors, bound
-// to the web's one store at the two call sites that read them with no state
-// argument, plus the two kinds that cannot leave the browser - the
-// session-watch identity cache, which must outlive a state publication to
-// keep a narrow subscription from re-rendering, and the rail model, typed by
-// the rail's own node shapes (shell/rail/railNodes.ts), which never enters
-// the package.
+// The web's navigation selectors: the package's graph-shaped selectors,
+// re-exported unchanged, plus the two kinds that cannot leave the browser -
+// the session-watch identity cache (the one impure selector here: it mutates
+// a cross-call Map to keep a narrow subscription from re-rendering on
+// unrelated navigation churn), and the rail model, typed by the rail's own
+// node shapes (shell/rail/railNodes.ts), which never enters the package.
 import type { NavigationSessionSummary } from "@evener/appwire-client";
 import {
-  type NavigationState,
+  type NavigationStoreState,
   type NormalizedResource,
   navigationOwnedContainerKey,
   navigationViewScope,
   type ResourceKey,
   relativeAge,
-  selectGlobalRows as selectGlobalRowsIn,
-  selectPinSectionSummaries as selectPinSectionSummariesIn,
   selectSessionSummary,
 } from "@evener/appwire-client/state/navigation";
 import type { IsExpanded, RailSession, SessionRailNode } from "../../shell/rail/railNodes";
@@ -22,41 +19,28 @@ import { navigationStore } from "./store";
 
 export {
   findSessionNode,
-  type LoadedPinSection,
   type NavigationPinSectionSummary,
-  type NavigationState,
+  type NavigationStoreState,
   selectAttentionSummary,
-  selectCatalogRemaining,
   selectDisplaySources,
   selectExpanded,
+  selectGlobalRows,
   selectLiveRows,
   selectLocation,
   selectNeedsYouCount,
   selectNeedsYouRows,
-  selectNextCatalogOffset,
   selectNextSectionOffset,
+  selectPinSectionSummaries,
   selectPinSections,
   selectProjectPage,
   selectProjectResource,
   selectProjectSummaries,
-  selectResource,
   selectSectionRemaining,
-  selectSectionRows,
   selectSessionOmittedArmedWatches,
   selectSessionOmittedWatches,
   selectSources,
 } from "@evener/appwire-client/state/navigation";
 export { relativeAge, selectSessionSummary };
-
-// The only two selectors the app reads with no state argument. Everything
-// else is already handed the state it should read, either by useNavigationStore
-// or by the caller.
-export function selectGlobalRows(state: NavigationState = navigationStore.getState()): NavigationSessionSummary[] {
-  return selectGlobalRowsIn(state);
-}
-export function selectPinSectionSummaries(state: NavigationState = navigationStore.getState()) {
-  return selectPinSectionSummariesIn(state);
-}
 
 type SessionWatchesCacheEntry = Readonly<{ key: string; watches: NavigationSessionSummary["watches"] }>;
 // One entry per session ref, holding the LAST result's content key and the
@@ -92,7 +76,7 @@ export function resetSessionWatchesCacheForTests(): void {
  * navigation churn. */
 export function selectSessionWatches(
   ref: string,
-  state: NavigationState = navigationStore.getState(),
+  state: NavigationStoreState = navigationStore.getState(),
 ): NavigationSessionSummary["watches"] {
   const summary = selectSessionSummary(ref, state);
   if (summary === null) {

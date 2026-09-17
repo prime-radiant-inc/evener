@@ -346,7 +346,7 @@ const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;
 const memoryExpansion = new Map<string, boolean>();
 const navigationPersistence: NavigationPersistence = { readExpansion: () => new Map(memoryExpansion), writeExpansion: () => undefined };
 const navigation: NavigationStore = createNavigationStore({ persistence: navigationPersistence });
-const navigationState: NavigationState = navigation.getState();
+const navigationState: NavigationStoreState = navigation.getState();
 const navigationSources: ReturnType<typeof selectSources> = selectSources(navigationState); void navigationSources;`,
       cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;
 const navigationStoreState: client.NavigationStoreState = client.createNavigationStore({ persistence: { readExpansion: () => new Map(), writeExpansion: () => undefined } }).getState(); void navigationStoreState;`,

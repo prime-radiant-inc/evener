@@ -112,7 +112,7 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   naming a project's row, and the selectors both apps read that state through
   (`selectors`): launch sources, section and catalog rows with their remaining
   counts and next offsets, pin-section summaries, the project catalog and a
-  session summary found by ref, each pure over `NavigationState`. The subpath
+  session summary found by ref, each pure over `NavigationStoreState`. The subpath
   resolves to `state/navigation/index.ts`, a barrel that re-exports the eight
   modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
