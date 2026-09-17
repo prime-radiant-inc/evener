@@ -95,8 +95,9 @@ Besides the root, `package.json` `exports` publishes these subpaths:
 
 - `@evener/appwire-client/docContent` - the doc-pane data layer, where
   `readDocFile` takes the host's `DocPort`.
-- `@evener/appwire-client/state/navigation` - the navigation state layer both
-  apps' navigation stores are built on: the resource-key vocabulary and
+- `@evener/appwire-client/state/navigation` - the navigation state layer the
+  web app's navigation store is built on, adoptable by native if it ever
+  gains one: the resource-key vocabulary and
   classifiers (`types`), the snapshot and delta codec (`codec`), the graph
   merge (`merge`), the deep-freeze helpers they share (`immutable`), the rule
   matching a hub invalidation target to a loaded resource and the revision it
