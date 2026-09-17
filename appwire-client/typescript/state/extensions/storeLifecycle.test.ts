@@ -380,7 +380,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       await reading;
 
       expect(lifecycle.list(store.getState())).toBeNull();
-      expect(lifecycle.loading(store.getState())).toBe(false);
+      // And the store is asking again: something wanted this list and the
+      // replacement is where it has to come from now.
+      expect(lifecycle.loading(store.getState())).toBe(true);
     });
 
     test("a read that landed fenced is applied when the write that fenced it retracts", async () => {
@@ -480,6 +482,30 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(lifecycle.listCalls(fake)).toBe(reads + 1);
     });
 
+    test("a read a replacement interrupted is issued again", async () => {
+      const { fake, store } = lifecycle.create();
+      store.connectionChanged(fake, "ready");
+      lifecycle.gateList(fake);
+      const reading = lifecycle.fetch(store.getState());
+      await Promise.resolve();
+      expect(lifecycle.loading(store.getState())).toBe(true);
+      expect(lifecycle.listCalls(fake)).toBe(1);
+
+      // The replacement fences the read and settles the flag it raised, which
+      // is round 9's half. This is the other half: something asked for this
+      // list and never got it, and that intent outlives the connection the
+      // asking happened on - the host's own loader is a one-shot and will not
+      // ask again.
+      lifecycle.answerList(fake);
+      store.connectionChanged(lifecycle.create().fake, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(lifecycle.listCalls(fake)).toBe(2);
+      expect(lifecycle.list(store.getState())).not.toBeNull();
+      expect(lifecycle.loading(store.getState())).toBe(false);
+      void reading;
+    });
+
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {
       const { fake, store } = lifecycle.create();
       store.connectionChanged(fake, "ready");
@@ -569,7 +595,7 @@ describe("a notification callback that outlives dispose()", () => {
         reads += 1;
       },
       onNotified: () => store.setState((s) => ({ marker: s.marker + 1 })),
-      established: () => true,
+      wantsList: () => true,
     });
     const store = createFrameworkFreeStore<{ marker: number }>((publish) => {
       void lifecycle.guard(publish);

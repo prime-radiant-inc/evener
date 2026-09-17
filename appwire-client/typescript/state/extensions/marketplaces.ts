@@ -171,7 +171,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       // Nothing is coming to lower it.
       set({ marketplacesLoading: false });
     },
-    established: (s) => s.marketplaces !== null || s.marketplacesError !== null,
+    wantsList: (s) => s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading,
   });
 
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {

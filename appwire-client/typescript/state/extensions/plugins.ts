@@ -90,7 +90,7 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
       // Nothing is coming to lower it.
       set({ pluginsLoading: false });
     },
-    established: (s) => s.plugins !== null || s.pluginsError !== null,
+    wantsList: (s) => s.plugins !== null || s.pluginsError !== null || s.pluginsLoading,
   });
 
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
