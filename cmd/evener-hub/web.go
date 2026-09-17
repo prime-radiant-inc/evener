@@ -27,6 +27,11 @@ type WebServer struct {
 	navigation *NavigationService
 	sources    *appsource.Registry
 	startedAt  time.Time
+	// hostAdmin is the remote-admin proxy controller owning the per-host
+	// config-notification fan-outs. main.go binds its hostAttached wakeup to
+	// the sshconn attach-event path so an EventAttached rebinds a
+	// backoff-sleeping fan-out immediately.
+	hostAdmin *hubHostAdminController
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -138,7 +143,9 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
+	web.appRPC = server
+	web.hostAdmin = hostAdmin
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
@@ -204,8 +211,11 @@ func (s *WebServer) Handler() http.Handler {
 	// already authorized browser can read the token.
 	mux.HandleFunc("/manifest.webmanifest", s.handleManifest)
 
-	// App-wire RPC
-	mux.HandleFunc("/rpc", s.appRPC.ServeWebSocket)
+	// App-wire RPC. The edge stamps the cooperative bridge-origin marker onto
+	// the connection's request context before accepting, so every handler can
+	// read the request's routing origin (component 07, §"Host-routing origin
+	// guard").
+	mux.HandleFunc("/rpc", s.serveAppWireRPC)
 
 	// Pages
 	mux.HandleFunc("/", s.handleIndex)
@@ -235,6 +245,20 @@ func (s *WebServer) Handler() http.Handler {
 	// harvesting; identity middleware when unset, so the stack is unchanged.
 	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
 	return record(auth(httpsec.CSPMiddleware(mux)))
+}
+
+// serveAppWireRPC wraps the AppWire edge so a connection presenting the
+// cooperative bridge marker is marked remote-originated for every request it
+// carries. The marker is read here, at accept time, and stamped into the
+// request context the edge derives its per-request handler contexts from, so
+// handlers reach it through hostRoutingOrigin rather than by re-reading a
+// header. A connection without the marker (the local browser, TUI, or CLI) is
+// local-originated.
+func (s *WebServer) serveAppWireRPC(w http.ResponseWriter, r *http.Request) {
+	if isBridgeOriginRequest(r) {
+		r = r.WithContext(withHostRoutingOrigin(r.Context(), hostRoutingOriginBridge))
+	}
+	s.appRPC.ServeWebSocket(w, r)
 }
 
 // handleIndex serves the SPA shell for "/", "/new", and every other page route

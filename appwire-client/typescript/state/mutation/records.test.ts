@@ -18,9 +18,16 @@ function getRandomValuesSource() {
   return { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) };
 }
 
+// A source whose randomUUID hands back one fixed id, for cases that assert
+// on identity rather than on uniqueness: deterministic instead of resting on
+// two real UUIDs never colliding.
+function scriptedRandomUUIDSource(id: string) {
+  return { randomUUID: () => id };
+}
+
 test("two instances over two storages keep separate identities", () => {
-  const a = createClientIdentity(fakeStorage(), getRandomValuesSource());
-  const b = createClientIdentity(fakeStorage(), getRandomValuesSource());
+  const a = createClientIdentity(fakeStorage(), scriptedRandomUUIDSource("11111111-1111-4111-8111-111111111111"));
+  const b = createClientIdentity(fakeStorage(), scriptedRandomUUIDSource("22222222-2222-4222-8222-222222222222"));
   expect(a.ownClientId()).not.toBe(b.ownClientId());
 });
 

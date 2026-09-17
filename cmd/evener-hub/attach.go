@@ -142,6 +142,13 @@ func proxyAppWire(ctx context.Context, addr, token string, stream appwire.Transp
 	if token != "" {
 		header.Set("Authorization", "Bearer "+token)
 	}
+	// Mark the connection remote-originated for the hub it dials (component 05,
+	// §"The origin signal is an explicit bridge marker on the connection"): the
+	// hub stamps this role into every request's context, so its host-routing
+	// origin guard can refuse a remote dispatch — including an attach that would
+	// make the host hub dial yet another host — instead of an honest A→B→A cycle
+	// recursing past depth 1. The marker is cooperative only.
+	header.Set(bridgeOriginHeader, "1")
 	dialCtx, cancel := context.WithTimeout(ctx, attachDialTimeout)
 	defer cancel()
 	ws, err := appwire.DialWebSocketWithHeaders(dialCtx, hubURL, attachDialClient, header)
