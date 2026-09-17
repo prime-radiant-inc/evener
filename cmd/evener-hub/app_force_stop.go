@@ -316,23 +316,41 @@ func tryLockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) 
 	return true
 }
 
+// confirmedStoppedDecision is checkConfirmedStoppedWithoutClaim's outcome.
+// stopped reports the proven no-op. discoveryUncertain reports that strict
+// rendezvous discovery failed for a session already confirmed exited, so the
+// absence of a claim is unproven; ordinary shutdown resolves that uncertainty
+// through its dedicated tolerant source path rather than the session-action
+// gate, which would refuse the attempt as resume-required.
+type confirmedStoppedDecision struct {
+	stopped            bool
+	discoveryUncertain bool
+}
+
 // A missing marker is not proof of exit. Only already-confirmed durable
 // recovery authority can authorize this no-op, and only if strict discovery
 // finds no claim against ANY alias while all those aliases are reserved. A
 // non-nil expectedDaemon identity is reverified against current discovery
 // immediately before the stopResumes cancellation, so a replacement claim
 // appearing after the caller's own validation is refused before the in-flight
-// Resume is aborted.
+// Resume is aborted. confirmedStoppedWithoutClaim reports only the proven
+// no-op; callers that must distinguish the tolerated discovery uncertainty
+// (ordinary shutdown) use checkConfirmedStoppedWithoutClaim.
 func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, sessionID string, stopResumes bool, expectedDaemon *appwire.DaemonIdentity) (bool, error) {
+	decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, sessionID, stopResumes, expectedDaemon)
+	return decision.stopped, err
+}
+
+func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, sessionID string, stopResumes bool, expectedDaemon *appwire.DaemonIdentity) (confirmedStoppedDecision, error) {
 	if cfg.ResumeLocks == nil || cfg.RunDir == "" {
-		return false, nil
+		return confirmedStoppedDecision{}, nil
 	}
 	state := cfg.ResumeLocks.RecoveryState(sessionID)
 	if !state.ResumeRequired || !state.ExitConfirmed || state.ResumeSessionID == "" {
-		return false, nil
+		return confirmedStoppedDecision{}, nil
 	}
 	if !stopResumes && state.Stopping != 0 {
-		return false, nil
+		return confirmedStoppedDecision{}, nil
 	}
 	aliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(aliases)
@@ -347,13 +365,13 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		// this window is still caught.
 		for _, alias := range aliases {
 			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-				return false, err
+				return confirmedStoppedDecision{}, err
 			}
 		}
 	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
 		// Ordinary shutdown is not force stop: do not cancel a pending restore,
 		// change its admission epochs, or wait behind it to manufacture a no-op.
-		return false, nil
+		return confirmedStoppedDecision{}, nil
 	}
 	acquired := 0
 	defer func() {
@@ -372,7 +390,7 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		acquired = len(aliases)
 		for _, alias := range aliases {
 			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-				return false, err
+				return confirmedStoppedDecision{}, err
 			}
 		}
 	}
@@ -386,15 +404,15 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 			// authoritative.
 			addressed, err := forceStopEntry(cfg.RunDir, sessionID, cfg.DaemonProcesses, nil, state.ResumeSessionID, expectedDaemon)
 			if err != nil {
-				return false, appwire.Unavailable(err.Error())
+				return confirmedStoppedDecision{}, appwire.Unavailable(err.Error())
 			}
 			if err := expectedDaemonConflict(addressed, expectedDaemon); err != nil {
-				return false, err
+				return confirmedStoppedDecision{}, err
 			}
 		}
 		releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 		if err != nil {
-			return false, err
+			return confirmedStoppedDecision{}, err
 		}
 		defer releaseResumes()
 	}
@@ -405,16 +423,16 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		current := cfg.ResumeLocks.RecoveryState(alias)
 		if !current.ResumeRequired || !current.ExitConfirmed || current.ResumeSessionID != state.ResumeSessionID {
 			if !stopResumes {
-				return false, nil
+				return confirmedStoppedDecision{}, nil
 			}
-			return false, appwire.Unavailable("session recovery authority changed; retry force stop")
+			return confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop")
 		}
 		expected[alias] = current
 	}
 	if !reservationsHeld {
 		for _, alias := range aliases {
 			if err := cfg.ResumeLocks.For(alias).LockContext(ctx); err != nil {
-				return false, err
+				return confirmedStoppedDecision{}, err
 			}
 			acquired++
 		}
@@ -425,47 +443,50 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 	// success.
 	for _, alias := range aliases {
 		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-			return false, err
+			return confirmedStoppedDecision{}, err
 		}
 	}
 	currentAliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(currentAliases)
 	if !slices.Equal(aliases, currentAliases) {
 		if !stopResumes {
-			return false, nil
+			return confirmedStoppedDecision{}, nil
 		}
-		return false, appwire.Unavailable("session recovery aliases changed; retry force stop")
+		return confirmedStoppedDecision{}, appwire.Unavailable("session recovery aliases changed; retry force stop")
 	}
 	for _, alias := range aliases {
 		if cfg.ResumeLocks.RecoveryState(alias) != expected[alias] {
 			if !stopResumes {
-				return false, nil
+				return confirmedStoppedDecision{}, nil
 			}
-			return false, appwire.Unavailable("session recovery authority changed; retry force stop")
+			return confirmedStoppedDecision{}, appwire.Unavailable("session recovery authority changed; retry force stop")
 		}
 	}
 	if !stopResumes && cfg.ResumeLocks.HasActiveResume(aliases) {
-		return false, nil
+		return confirmedStoppedDecision{}, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return confirmedStoppedDecision{}, err
 	}
 	entries, err := rendezvous.ListStrict(cfg.RunDir)
 	if err != nil {
 		if !stopResumes {
 			// Ordinary shutdown tolerates a transient discovery failure on a
-			// session already confirmed exited: fall through to the source
+			// session already confirmed exited: report the uncertainty so the
+			// caller's dedicated shutdown path runs the tolerant source
 			// attempt, which treats an already-exited session as a no-op.
-			return false, nil
+			// The session-action gate must not see this fall-through: it
+			// refuses every action while the session stays ResumeRequired.
+			return confirmedStoppedDecision{discoveryUncertain: true}, nil
 		}
-		return false, appwire.Unavailable(err.Error())
+		return confirmedStoppedDecision{}, appwire.Unavailable(err.Error())
 	}
 	for _, entry := range entries {
 		for _, alias := range forceStopAliases(entry) {
 			if slices.Contains(aliases, alias) {
 				// An existing claim, even foreign or stale, must take the ordinary
 				// verified process path. Never turn its eventual error into success.
-				return false, nil
+				return confirmedStoppedDecision{}, nil
 			}
 		}
 	}
@@ -479,7 +500,7 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		// must not do — it manufactures no recovery obligation.
 		cfg.ResumeLocks.InvalidateResumeAdmission(aliases)
 	}
-	return true, nil
+	return confirmedStoppedDecision{stopped: true}, nil
 }
 
 // forceStopOwnershipUnchanged revalidates discovery after acquiring every

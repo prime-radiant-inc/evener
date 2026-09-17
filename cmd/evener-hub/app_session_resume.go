@@ -61,18 +61,33 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 	if err := shutdownCleanupError(cfg, params.Ref); err != nil {
 		return err
 	}
+	discoveryUncertain := false
 	if ref, err := appwire.ParseRef(params.Ref); err == nil && ref.SourceID == "local" {
-		if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil); err != nil {
+		decision, err := checkConfirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, false, nil)
+		if err != nil {
 			return err
-		} else if stopped {
+		}
+		if decision.stopped {
 			// Match the force-stop shortcut: report the stopped session only
 			// after the roster re-lists, so the live/stopped projection does
 			// not stay stale until the next watcher pass.
 			refreshAfterForceStop(ctx, cfg)
 			return nil
 		}
+		discoveryUncertain = decision.discoveryUncertain
 	}
-	_, err := withSessionActionOwnership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
+	ownership := withSessionActionOwnership[struct{}]
+	if discoveryUncertain {
+		// Strict discovery failed for a session already confirmed exited, so
+		// the confirmed-stopped check could not prove the absence of a claim.
+		// The resume-required refusal must not gate this fall-through:
+		// shutdown never resurrects the session, and its goal — a stopped
+		// daemon — is what durable authority already asserts. The tolerant
+		// source attempt resolves the uncertainty from the other side under
+		// deletion-fence ownership.
+		ownership = withShutdownDiscoveryUncertainOwnership[struct{}]
+	}
+	_, err := ownership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
 		// A Resume can retain failed child cleanup while shutdown waits for
 		// alias ownership, after the pre-check above already passed. Recheck
 		// under ownership before the shutdown action.
@@ -106,6 +121,16 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		return nil
 	}
 	return err
+}
+
+// withShutdownDiscoveryUncertainOwnership runs a shutdown source attempt when
+// strict rendezvous discovery failed for a session already confirmed exited.
+// It keeps deletion fencing and alias ownership but omits the session-action
+// recovery gate: a ResumeRequired refusal is spurious here because shutdown
+// manufactures no recovery obligation and an already-exited session reported
+// by the source is the desired end state, not an error to mask.
+func withShutdownDiscoveryUncertainOwnership[R any](ctx context.Context, cfg hubcore.WebConfig, ref, threadID string, action func() (R, error)) (R, error) {
+	return withDeletionTargetOwnership(ctx, cfg, ref, threadID, "", action)
 }
 
 // shutdownCleanupError refuses shutdown while any Resume in the session's

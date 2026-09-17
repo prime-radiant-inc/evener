@@ -790,6 +790,54 @@ func (s *shutdownScriptedSource) ShutdownThread(context.Context, appwire.ThreadS
 	return nil
 }
 
+// TestShutdownUncertainDiscoveryAttemptsSource pins the unreachable-fallback
+// RoboRev finding: when strict rendezvous discovery fails for a session already
+// confirmed exited, confirmedStoppedWithoutClaim falls through to the tolerant
+// source attempt — but the fall-through used to die at the session-action
+// ownership gate, which refuses every action while the session stays
+// ResumeRequired, so thread/shutdown failed with the spurious
+// explicit-resume refusal instead of attempting the source operation.
+// Shutdown never resurrects the session and its goal (a stopped daemon) is
+// what durable authority already asserts, so the uncertain-discovery
+// fall-through must reach the source shutdown under deletion-fence ownership.
+func TestShutdownUncertainDiscoveryAttemptsSource(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	runDir := t.TempDir()
+	// A pid-named but undecodable rendezvous file fails the strict read.
+	if err := os.WriteFile(filepath.Join(runDir, "9999.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rendezvous.ListStrict(runDir); err == nil {
+		t.Fatal("fixture discovery did not fail")
+	}
+	source := &shutdownScriptedSource{scriptedAppSource: &scriptedAppSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:     sessionID,
+			Source: "local",
+			Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Shutdown: true}},
+		},
+	}}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
+	if err := shutdownThreadTolerateExited(t.Context(), cfg, sources, appwire.ThreadShutdownParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("uncertain-discovery shutdown refused before the source attempt: %v", err)
+	}
+	if source.shutdowns != 1 {
+		t.Fatalf("uncertain-discovery shutdown invoked the source %d times, want 1", source.shutdowns)
+	}
+}
+
 // TestShutdownRechecksCleanupUnderOwnership pins the race RoboRev found: the
 // pre-ownership ResumeCleanupErrorStrict check has already passed when a
 // Resume retains failed child cleanup while shutdown is still waiting for
