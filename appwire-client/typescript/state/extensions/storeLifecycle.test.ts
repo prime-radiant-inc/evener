@@ -45,6 +45,11 @@ interface LifecycleCase<S> {
   loading(state: S): boolean;
   /** The list fields reset() must restore. */
   initial: Partial<S>;
+  /** A piece of state that changes exactly when the lifecycle's onNotified
+   * runs (a revision it bumps, a cache it retires) - undefined for a store
+   * (launch layer) that passes the lifecycle no onNotified at all, so there
+   * is nothing here to observe. */
+  invalidationMarker?(state: S): unknown;
 }
 
 const MARKETPLACES: LifecycleCase<MarketplacesState> = {
@@ -64,6 +69,7 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
   loading: (state) => state.marketplacesLoading,
   list: (state) => state.marketplaces,
   initial: { marketplaces: null, marketplacesLoading: false, marketplacesError: null },
+  invalidationMarker: (state) => state.browseCatalogs,
 };
 
 const PLUGINS: LifecycleCase<PluginsState> = {
@@ -83,6 +89,7 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   loading: (state) => state.pluginsLoading,
   list: (state) => state.plugins,
   initial: { plugins: null, pluginsLoading: false, pluginsError: null, pluginRevision: 0 },
+  invalidationMarker: (state) => state.pluginRevision,
 };
 
 const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
@@ -103,6 +110,8 @@ const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
   loading: (state) => state.launchLayerLoading,
   list: (state) => state.launchLayer,
   initial: { launchLayer: null, launchLayerLoading: false, launchLayerError: null },
+  // launchLayer's lifecycle passes no onNotified at all, so there is nothing
+  // for invalidationMarker to read: see storeLifecycle.ts's LAUNCH_LAYER wiring.
 };
 
 /** One state a fence drives a replacement connection through, when the
@@ -306,6 +315,28 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(fresh.calls).toHaveLength(0);
       expect(lifecycle.list(unread.getState())).toBeNull();
     });
+
+    const invalidationMarker = lifecycle.invalidationMarker;
+    if (invalidationMarker) {
+      // The case above is the recovery READ, gated by wantsList alone. A
+      // store that was ready before "closed" must not be read as a first
+      // connection: hasBeenReady already latched true, so the "ready" that
+      // follows applies what a notification would have (see #1642) - the
+      // only thing "closed" is not evidence of is a FIRST connection.
+      test("closed -> ready invalidates an established list's derived data the same way a notification would", async () => {
+        const { fake, store } = lifecycle.create();
+        store.connectionChanged(fake, "ready");
+        answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
+        await lifecycle.fetch(store.getState());
+        const before = invalidationMarker(store.getState());
+
+        store.connectionChanged(fake, "closed");
+        store.connectionChanged(fake, "ready");
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(invalidationMarker(store.getState())).not.toBe(before);
+      });
+    }
 
     test("a reconnect inside the debounce window reads once, not twice", async () => {
       const { fake, store } = lifecycle.create();
