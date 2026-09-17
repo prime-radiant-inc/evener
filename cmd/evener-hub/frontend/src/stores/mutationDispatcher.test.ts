@@ -639,6 +639,24 @@ function queueSnapshot(overrides: Partial<QueueSnapshot> = {}): QueueSnapshot {
   return { ids: new Set(), revision: 1, authoritative: true, ...overrides };
 }
 
+// One accepted, not-yet-reflected turn/queue intent ("pending" projectionState
+// keeps it in the optimistic store rather than settling it immediately),
+// dispatched against a fresh database - the shared starting point for the
+// reconcileQueueSnapshot tests below that differ only in what snapshot they
+// feed it next.
+async function acceptedQueueIntent(
+  databaseName: string,
+): Promise<{ outbox: MutationOutboxIndexedDB; dispatcher: MutationDispatcher; queued: MutationOutboxRecord }> {
+  const indexedDB = new IDBFactory();
+  const outbox = storage(indexedDB, databaseName, ["queue-a"]);
+  const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
+  const client = new FakeClient();
+  client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+  const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+  await dispatcher.dispatchTargets(["ref-a"]);
+  return { outbox, dispatcher, queued };
+}
+
 describe("reconcileQueueSnapshot", () => {
   // A drain-as-steer consumes the whole server queue into one steering
   // message, but no push ever names the consumed queue intents' ids again
@@ -677,13 +695,7 @@ describe("reconcileQueueSnapshot", () => {
   // already settles any other durable record a fresh authoritative feed
   // names directly.
   test("settles a queue intent the authoritative snapshot names, same as reconcileIdentities would", async () => {
-    const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "retire-keeps-named", ["queue-a"]);
-    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
-    const client = new FakeClient();
-    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
-    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
-    await dispatcher.dispatchTargets(["ref-a"]);
+    const { outbox, dispatcher, queued } = await acceptedQueueIntent("retire-keeps-named");
 
     const settled = await dispatcher.reconcileQueueSnapshot(
       "ref-a",
@@ -703,13 +715,7 @@ describe("reconcileQueueSnapshot", () => {
   // turn/queue record regardless of whether the server's queue actually
   // still held them. `ids: undefined` must never retire anything.
   test("undefined ids (unknown coverage) leaves every optimistic queue intent alone", async () => {
-    const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "unknown-coverage", ["queue-a"]);
-    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
-    const client = new FakeClient();
-    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
-    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
-    await dispatcher.dispatchTargets(["ref-a"]);
+    const { outbox, dispatcher, queued } = await acceptedQueueIntent("unknown-coverage");
 
     const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: undefined }));
 
@@ -723,13 +729,7 @@ describe("reconcileQueueSnapshot", () => {
   // RoboRev's Medium 1 on #1705's first round: a stale or reordered snapshot
   // processed after a newer one for the same target must not act on it.
   test("a snapshot no newer than the last reconciled revision for the target is ignored", async () => {
-    const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "stale-revision", ["queue-a"]);
-    await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
-    const client = new FakeClient();
-    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
-    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
-    await dispatcher.dispatchTargets(["ref-a"]);
+    const { outbox, dispatcher } = await acceptedQueueIntent("stale-revision");
 
     // Revision 2 first, naming nothing - this one applies and retires.
     await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 2 }));
@@ -750,14 +750,31 @@ describe("reconcileQueueSnapshot", () => {
     outbox.close();
   });
 
+  // The revision gate recorded snapshot.revision BEFORE the ids===undefined
+  // bail, so a legacy push (unknown coverage, RoboRev's own High on #1705's
+  // first round) poisoned the gate against a later, KNOWN snapshot at the
+  // same revision - a hydrate that follows a legacy push with nothing new
+  // to report of its own. Unknown coverage must never advance the gate.
+  test("an unknown-coverage snapshot never poisons the gate against a later known snapshot at the same revision", async () => {
+    const { outbox, dispatcher, queued } = await acceptedQueueIntent("unknown-then-known");
+
+    // A legacy push at revision 5, coverage unknown: retires nothing, and
+    // must not advance the gate either.
+    await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: undefined, revision: 5 }));
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      queued.clientMutationId,
+    ]);
+
+    // A hydrate at the SAME revision, this time authoritatively empty.
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set(), revision: 5 }));
+
+    expect(settled).toEqual([queued.clientMutationId]);
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+    outbox.close();
+  });
+
   test("a non-authoritative snapshot (a saved or incompatible hydrate) settles and retires nothing", async () => {
-    const indexedDB = new IDBFactory();
-    const outbox = storage(indexedDB, "non-authoritative", ["queue-a"]);
-    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "still queued"));
-    const client = new FakeClient();
-    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
-    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
-    await dispatcher.dispatchTargets(["ref-a"]);
+    const { outbox, dispatcher, queued } = await acceptedQueueIntent("non-authoritative");
 
     const settled = await dispatcher.reconcileQueueSnapshot(
       "ref-a",

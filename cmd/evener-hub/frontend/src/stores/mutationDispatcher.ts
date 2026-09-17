@@ -93,7 +93,12 @@ export class MutationDispatcher {
   // revision stamp - out of scope here, tracked with the rest of #1706.
   async reconcileQueueSnapshot(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
     const previous = this.#queueReconciliations.get(targetRef) ?? Promise.resolve();
-    const chained = previous.catch(() => undefined).then(() => this.#reconcileQueueSnapshotNow(targetRef, snapshot));
+    const chained = previous
+      .catch(() => undefined)
+      .then(() => this.#reconcileQueueSnapshotNow(targetRef, snapshot))
+      .finally(() => {
+        if (this.#queueReconciliations.get(targetRef) === chained) this.#queueReconciliations.delete(targetRef);
+      });
     this.#queueReconciliations.set(targetRef, chained);
     return chained;
   }
@@ -102,8 +107,8 @@ export class MutationDispatcher {
     if (!snapshot.authoritative) return [];
     const last = this.#lastReconciledQueueRevision.get(targetRef);
     if (last !== undefined && snapshot.revision <= last) return [];
-    this.#lastReconciledQueueRevision.set(targetRef, snapshot.revision);
     if (snapshot.ids === undefined) return [];
+    this.#lastReconciledQueueRevision.set(targetRef, snapshot.revision);
     await this.reconcileIdentities(snapshot.ids);
     const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", snapshot.ids);
     if (settled.length > 0) this.#onStorageChange([targetRef]);
