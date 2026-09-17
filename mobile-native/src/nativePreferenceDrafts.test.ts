@@ -298,10 +298,13 @@ describe("native preference drafts", () => {
 		storage.load();
 
 		// The model is disposed here (a client dropped, a hub reconnect); no
-		// model exists to reclassify anything. Another store or app version
-		// then replaces the SAME record with a valid, newer checkpoint.
+		// model exists to reclassify anything. Another store or app version -
+		// a DIFFERENT process, writing the raw bytes directly, never through
+		// THIS wrapper's own save() (which now tracks its own writes; round
+		// 19/20) - then replaces the SAME record with a valid, newer
+		// checkpoint.
 		const newer = { id: "d1", layout: "mobile" as const, baseRevision: 4, config, writeUncertain: false };
-		storage.save(newer);
+		disk.raw.set(key, JSON.stringify(newer));
 
 		// The no-model discard path names the record load() actually
 		// classified, not whatever is stored now: it refuses, and the newer
@@ -311,6 +314,30 @@ describe("native preference drafts", () => {
 		// would, so a follow-up discard targets what is actually there now.
 		expect(storage.discardLastLoaded()).toBe(false);
 		expect(disk.raw.get(key)).toBe(JSON.stringify(newer));
+		expect(storage.discardLastLoaded()).toBe(true);
+		expect(disk.raw.has(key)).toBe(false);
+	});
+
+	// RoboRev round 19/20 (package twin: transcriptDisplayStore.ts,
+	// keybindingsStore.ts): save() writes a NEW checkpoint but never moved the
+	// tracked identity, so restore -> edit -> discard named the PRE-EDIT
+	// bytes, refused, and re-classified onto the just-edited (still present)
+	// draft - discard silently no-opped. A live model's edit flows through
+	// THIS wrapper's own save() (NativePreferences hands drafts.transcript/
+	// drafts.keybindings to bindNativePreferences, which the package's
+	// createDraftRepository.save() writes through), so this is the same bug,
+	// not just an analogous one.
+	it("restore, edit, discard: the edited draft is gone on the first discard", () => {
+		const disk = deviceStore();
+		const key = "evener.native.transcript-draft.hub";
+		const storage = retainingDraftStorage(nativeTranscriptDrafts("hub", disk.port));
+
+		disk.raw.set(key, JSON.stringify(transcriptCheckpoint));
+		storage.load();
+
+		const edited = { ...transcriptCheckpoint, id: "t2", baseRevision: 5 };
+		storage.save(edited);
+
 		expect(storage.discardLastLoaded()).toBe(true);
 		expect(disk.raw.has(key)).toBe(false);
 	});
