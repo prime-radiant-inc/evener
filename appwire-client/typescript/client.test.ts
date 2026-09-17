@@ -10,6 +10,7 @@ import {
   HEARTBEAT_INTERVAL_MS,
   HEARTBEAT_TIMEOUT_MS,
   RECONNECT_BASE_MS,
+  RESUME_REQUEST_TIMEOUT_MS,
 } from "./client";
 import type { AppwireClientLike } from "./clientLike";
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
@@ -1020,7 +1021,8 @@ test.each(["success", "failure"])("long-running Resume preserves its late %s and
     if (!replacement) throw new Error("missing replacement");
     replacement.open();
     const request = await requestSent;
-    expect(vi.getTimerCount()).toBe(1); // Only the transport heartbeat owns a timer now.
+    // The transport heartbeat plus the finishable Resume cap own one timer each.
+    expect(vi.getTimerCount()).toBe(2);
     const ordinary = client.request("thread/list", {});
     const ordinaryRejected = expect(ordinary).rejects.toBeInstanceOf(RequestTimeoutError);
 
@@ -1047,6 +1049,41 @@ test.each(["success", "failure"])("long-running Resume preserves its late %s and
     }
     expect(settled).toBe(true);
     expect(sockets).toHaveLength(2);
+  } finally {
+    client.close();
+  }
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+test("a Resume the hub never answers is bounded by a large finite cap and can be retried", async () => {
+  const { requestSent, sockets, client } = createResumeClient();
+  try {
+    const connecting = client.connect();
+    const primary = sockets[0];
+    if (!primary) throw new Error("missing primary");
+    primary.open();
+    await connecting;
+    const resumed = client.resumeThread("local:owner");
+    const rejected = expect(resumed).rejects.toBeInstanceOf(RequestTimeoutError);
+    const replacement = sockets[1];
+    if (!replacement) throw new Error("missing replacement");
+    replacement.open();
+    await requestSent;
+    // The ordinary 30s transport budget must not fail a legitimate restore.
+    await vi.advanceTimersByTimeAsync(30_000);
+    // The bounded cap still settles the promise instead of hanging forever.
+    await vi.advanceTimersByTimeAsync(RESUME_REQUEST_TIMEOUT_MS);
+    await rejected;
+    // resumePending was cleared, so the user can retry without a reload.
+    const retried = client.resumeThread("local:owner");
+    const retriedSettled = retried.then(
+      () => undefined,
+      () => undefined,
+    );
+    expect(sockets).toHaveLength(3);
+    // Retire the retry's replacement transport and let its promise settle.
+    client.close();
+    await retriedSettled;
   } finally {
     client.close();
   }

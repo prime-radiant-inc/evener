@@ -272,6 +272,25 @@ func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliase
 	return release, nil
 }
 
+// tryLockForceStopReservations takes every per-alias reservation without
+// blocking. It returns true only when all of them are held, leaving them held
+// for the caller's deferred release; on any failure it releases the prefix it
+// took. Holding them excludes deletion publication, which takes the same
+// reservations, so a deletion check made while they are held is final.
+func tryLockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) bool {
+	acquired := 0
+	for _, alias := range aliases {
+		if !locks.For(alias).TryLock() {
+			for _, held := range slices.Backward(aliases[:acquired]) {
+				locks.For(held).Unlock()
+			}
+			return false
+		}
+		acquired++
+	}
+	return true
+}
+
 // A missing marker is not proof of exit. Only already-confirmed durable
 // recovery authority can authorize this no-op, and only if strict discovery
 // finds no claim against ANY alias while all those aliases are reserved.
@@ -302,15 +321,38 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 				return false, err
 			}
 		}
+	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
+		// Ordinary shutdown is not force stop: do not cancel a pending restore,
+		// change its admission epochs, or wait behind it to manufacture a no-op.
+		return false, nil
+	}
+	acquired := 0
+	defer func() {
+		for _, alias := range slices.Backward(aliases[:acquired]) {
+			cfg.ResumeLocks.For(alias).Unlock()
+		}
+	}()
+	// Deletion publication takes the same per-alias reservations an in-flight
+	// Resume does. Take them before cancelling whenever they are free, so the
+	// deletion re-check below is the final validation and runs before
+	// cancelActiveResumes aborts a Resume the request may still have to refuse.
+	// A reservation an in-flight launch already holds blocks publication itself,
+	// so that case falls through to the cancel-then-acquire order.
+	reservationsHeld := stopResumes && tryLockForceStopReservations(cfg.ResumeLocks, aliases)
+	if reservationsHeld {
+		acquired = len(aliases)
+		for _, alias := range aliases {
+			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+				return false, err
+			}
+		}
+	}
+	if stopResumes {
 		releaseResumes, err := cancelActiveResumes(ctx, cfg.ResumeLocks, aliases)
 		if err != nil {
 			return false, err
 		}
 		defer releaseResumes()
-	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
-		// Ordinary shutdown is not force stop: do not cancel a pending restore,
-		// change its admission epochs, or wait behind it to manufacture a no-op.
-		return false, nil
 	}
 	// Capture after our own fences and cancellations, then compare the entire
 	// authority (including epochs/group identity) after acquiring ownership.
@@ -325,17 +367,13 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 		}
 		expected[alias] = current
 	}
-	acquired := 0
-	defer func() {
-		for _, alias := range slices.Backward(aliases[:acquired]) {
-			cfg.ResumeLocks.For(alias).Unlock()
+	if !reservationsHeld {
+		for _, alias := range aliases {
+			if err := cfg.ResumeLocks.For(alias).LockContext(ctx); err != nil {
+				return false, err
+			}
+			acquired++
 		}
-	}()
-	for _, alias := range aliases {
-		if err := cfg.ResumeLocks.For(alias).LockContext(ctx); err != nil {
-			return false, err
-		}
-		acquired++
 	}
 	// Every alias in the resolved group is an identity a deletion record may
 	// name. The shortcut is only a no-op while none of them is deleted, or a

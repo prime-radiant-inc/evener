@@ -134,6 +134,14 @@ func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID s
 	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
 }
 
+// deletionTargetState reads the retained deletion state for one stable target.
+// It is a package-level seam so cancellation-ordering tests can publish a
+// deletion between two checks made by a single request; production reads the
+// durable store directly.
+var deletionTargetState = func(store *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
+	return store.TargetState(ref, threadID)
+}
+
 // deletionFenceErrorNaming looks the fence up under (ref, threadID) and names
 // reportRef in the refusal. Fork resolves a stable workspace ref to the session
 // that ref currently names, so the fence belongs to the resolved session while
@@ -143,7 +151,7 @@ func deletionFenceErrorNaming(cfg hubcore.WebConfig, ref, threadID, reportRef, c
 	if cfg.DeletionStore == nil {
 		return nil
 	}
-	if _, deleted := cfg.DeletionStore.TargetState(ref, threadID); !deleted {
+	if _, deleted := deletionTargetState(cfg.DeletionStore, ref, threadID); !deleted {
 		return nil
 	}
 	if reportRef == "" {

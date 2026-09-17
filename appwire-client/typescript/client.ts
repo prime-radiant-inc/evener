@@ -22,6 +22,14 @@ export interface AppwireClientOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+// Explicit Resume is completion-owned: a legitimate restore can run for
+// minutes, so it must not fail on the ordinary 30s transport budget. It still
+// needs an upper bound, because a hub that accepts the socket and answers
+// heartbeats while its resume handler never replies would otherwise leave
+// resumeThread's promise — and resumePending — unsettled forever. This cap is
+// far beyond any real restore, but finite, so the pane recovers without a
+// reload.
+export const RESUME_REQUEST_TIMEOUT_MS = 10 * 60_000;
 export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v5";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
@@ -403,10 +411,13 @@ export class AppwireClient {
     if (!socket) {
       return Promise.reject(new Error(`AppwireClient: cannot call "${method}"; not connected`));
     }
-    // Restore completion is not a transport deadline. Keep its correlation
-    // until the hub replies or the connection ends; an explicit caller budget
-    // still wins. Every other method retains its ordinary request deadline.
-    const timeoutMs = opts?.timeoutMs ?? (method === "thread/resume" ? undefined : DEFAULT_REQUEST_TIMEOUT_MS);
+    // Restore completion is not an ordinary transport deadline, but it is not
+    // unbounded either: a legitimate minutes-long restore must not fail on the
+    // 30s budget, and a hub that never answers must not leave the correlation
+    // (and resumePending) forever. An explicit caller budget still wins, and
+    // every other method retains its ordinary request deadline.
+    const timeoutMs =
+      opts?.timeoutMs ?? (method === "thread/resume" ? RESUME_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer =

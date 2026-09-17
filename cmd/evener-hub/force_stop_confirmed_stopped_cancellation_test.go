@@ -184,3 +184,55 @@ func TestForceStopConfirmedStoppedValidatesSiblingDeletionBeforeCancelingResume(
 		}
 	})
 }
+
+// TestForceStopConfirmedStoppedValidatesDeletionUnderReservationBeforeCancelingResume
+// pins the remaining ordering gap: a deletion published between the
+// pre-cancellation deletion check and the authoritative re-check must still be
+// refused before the in-flight Resume is aborted. The free-reservation path
+// takes the per-alias reservations first, so its re-check is final and runs
+// before cancelActiveResumes; a request that will be refused never cancels the
+// Resume it can no longer address.
+func TestForceStopConfirmedStoppedValidatesDeletionUnderReservationBeforeCancelingResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks, sessionID, active := confirmedStoppedResumeFixture(t)
+		original := deletionTargetState
+		calls := 0
+		// The caller's deletion check and the helper's pre-check pass; the
+		// deletion is published before the final validation under the reservation.
+		deletionTargetState = func(*hubcore.DeletionStore, string, string) (hubcore.DeletionState, bool) {
+			calls++
+			return hubcore.DeletionStateDeleting, calls > 2
+		}
+		defer func() { deletionTargetState = original }()
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := hubcore.WebConfig{
+			RunDir:        t.TempDir(),
+			ResumeLocks:   locks,
+			DeletionStore: store,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				t.Error("deletion-racing force stop reached process control")
+				return nil, errors.New("unexpected process control")
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		// Let force stop reach its cancellation and deletion validation. A
+		// cancel-then-validate order blocks here waiting for the Resume handler;
+		// the fixed order returns before canceling at all.
+		synctest.Wait()
+		// Complete cancels the operation context itself, so sample it first.
+		canceledBeforeComplete := active.Context().Err() != nil
+		active.Complete(nil)
+		if err := <-stopped; err == nil {
+			t.Fatal("force stop with a racing deletion succeeded")
+		}
+		if canceledBeforeComplete {
+			t.Fatal("force stop canceled the in-flight Resume before the final deletion validation under its reservation")
+		}
+	})
+}

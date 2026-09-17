@@ -367,3 +367,40 @@ func TestHubRPCProjectDeleteRetryCanceledPropagatesCancellation(t *testing.T) {
 		synctest.Wait()
 	})
 }
+
+// TestProjectDeleteRetryCanceledAfterOwnershipReportsError pins the retry
+// path's post-acquire cancellation gap: once every ownership reservation is
+// held, a request abandoned before it could decide must fail before
+// cleanupProjectDeletion removes session artifacts, exactly as the fresh path
+// and sessionDelete already do.
+func TestProjectDeleteRetryCanceledAfterOwnershipReportsError(t *testing.T) {
+	root, workDir := t.TempDir(), t.TempDir()
+	project, err := identifier.ResolveProject(workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	id := projectDeleteCanonicalSessionIDs[0]
+	buildRPCSessionWithWorkingDir(t, stateDir, id, workDir)
+	locks := hubcore.NewResumeLocks()
+	web := NewWebServer(hubcore.WebConfig{
+		StateDir: root, HubStateRoot: t.TempDir(), LaunchConfigRoot: t.TempDir(), PluginRoot: t.TempDir(),
+		Past: hubcore.NewPastIndex(filepath.Join(root, "projects", "*")), ResumeLocks: locks,
+		CredsStore: newTestCredentialsStore(t),
+	})
+	// A committed record selects the existing-deletion resume path.
+	if _, err := web.cfg.DeletionStore.Begin(project.ID, []hubcore.DeletionTarget{
+		{Ref: "local:" + id, ThreadID: id},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The acquisition's own post-lock check sees an uncanceled request; the next
+	// check sees it canceled, modeling a request abandoned while it acquired.
+	ctx := &cancelAfterAcquireContext{Context: t.Context(), done: make(chan struct{})}
+	if _, err := web.projectDelete(ctx, appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: workDir}); err == nil {
+		t.Fatal("canceled post-acquisition retry deletion reported success")
+	}
+	if _, statErr := os.Stat(filepath.Join(stateDir, "sessions", id+".meta.json")); statErr != nil {
+		t.Fatalf("canceled retry deletion removed saved data: %v", statErr)
+	}
+}

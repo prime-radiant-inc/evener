@@ -170,6 +170,12 @@ func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDel
 				releaseOwnership()
 			}
 		}()
+		// Ownership is held but the request may have been abandoned while it
+		// waited; fail before the destructive cleanup, as the fresh path and
+		// sessionDelete already do.
+		if err := ctx.Err(); err != nil {
+			return appwire.ProjectDeleteResponse{}, err
+		}
 		result := s.cleanupProjectDeletion(ctx, record, nil)
 		if len(result.DecisionErrors) > 0 {
 			return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
