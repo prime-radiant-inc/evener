@@ -755,12 +755,14 @@ function SpawnForm({
   });
 
   const textEditor: TextEditor = {
-    read: () => ({
-      text: draft.fields.getState().prompt,
-      cursor: isCurrentDraft()
+    read: () => {
+      const text = draft.fields.getState().prompt;
+      const cursor = isCurrentDraft()
         ? (cursorRef.current ?? textareaRef.current?.selectionStart ?? draft.fields.getState().prompt.length)
-        : draft.fields.getState().prompt.length,
-    }),
+        : draft.fields.getState().prompt.length;
+      // Preserve Spawn's existing insertion-at-caret behavior.
+      return { text, cursor, selection: { start: cursor, end: cursor } };
+    },
     write: (next, cursor) => {
       updatePrompt(next);
       if (isCurrentDraft()) cursorRef.current = cursor;
