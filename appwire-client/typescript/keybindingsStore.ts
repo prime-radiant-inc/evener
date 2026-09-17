@@ -390,23 +390,48 @@ export function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
  * before - such a checkpoint carries no unknown fields to begin with. */
 function draftRepository(storage: KeybindingDraftStorage) {
   const rawFrom = new WeakMap<KeybindingDraftCheckpoint, unknown>();
+  // The raw value load() most recently classified as unreadable. Named by
+  // WHEN it was classified, not by discardUnreadable's own call: another
+  // store or a newer app version can replace the record between the two, and
+  // a fresh storage.load() at discard time would then name (and remove)
+  // whatever is there NOW - never the record the user was actually shown.
+  let lastUnreadable: unknown;
+  let hasLastUnreadable = false;
   return {
     createId: () => storage.createId(),
     load(): KeybindingDraftCheckpoint | null {
       const value = storage.load();
-      if (value === null || value === undefined) return null;
-      const checkpoint = draftCheckpoint(value);
-      rawFrom.set(checkpoint, value);
-      return checkpoint;
+      if (value === null || value === undefined) {
+        hasLastUnreadable = false;
+        return null;
+      }
+      try {
+        const checkpoint = draftCheckpoint(value);
+        hasLastUnreadable = false;
+        rawFrom.set(checkpoint, value);
+        return checkpoint;
+      } catch (error) {
+        lastUnreadable = value;
+        hasLastUnreadable = true;
+        throw error;
+      }
     },
     save: (checkpoint: KeybindingDraftCheckpoint) => storage.save(draftCheckpoint(checkpoint)),
     removeIf: (checkpoint: KeybindingDraftCheckpoint) =>
       storage.removeIf((rawFrom.get(checkpoint) ?? draftCheckpoint(checkpoint)) as KeybindingDraftCheckpoint),
-    /** Removes whatever is stored, readable or not. The raw value goes back to
-     * the port, which matches its own bytes, so a record this build cannot
-     * decode is still the record removed - the port needs no clear(). */
+    /** Removes the record load() classified unreadable, by the identity of
+     * the bytes it was classified from - never a fresh reload, which could
+     * name a record another writer has since replaced. A byte-aware port's
+     * own compare (removeIf) then refuses on its own if that record is gone;
+     * this falls back to discardStoredDraft's fresh-reload behavior only when
+     * nothing has been classified yet (defensive: the store never calls this
+     * without classifying first). */
     discardUnreadable(): void {
-      discardStoredDraft(storage);
+      if (!hasLastUnreadable) {
+        discardStoredDraft(storage);
+        return;
+      }
+      storage.removeIf(lastUnreadable as KeybindingDraftCheckpoint);
     },
   };
 }
@@ -1322,12 +1347,23 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * restored draft on a store whose hub read failed. */
   function discardDraft(): void {
     assertDiscardable();
-    try {
-      if (getState().draftUnreadable) drafts.discardUnreadable();
-      else {
-        const checkpoint = drafts.load();
-        if (checkpoint) drafts.removeIf(checkpoint);
+    if (getState().draftUnreadable) {
+      try {
+        drafts.discardUnreadable();
+      } catch {
+        setState({ storageUnavailable: true });
+        throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
       }
+      // The removal above may have refused (the record it named is gone,
+      // replaced by something else): re-read what is actually there now
+      // rather than assume success, so a newer readable checkpoint surfaces
+      // instead of staying reported as the same unreadable record.
+      setState(restoreDraft(getState()));
+      return;
+    }
+    try {
+      const checkpoint = drafts.load();
+      if (checkpoint) drafts.removeIf(checkpoint);
     } catch {
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);

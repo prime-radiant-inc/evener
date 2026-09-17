@@ -9,6 +9,7 @@ import {
 	type TranscriptDisplayConfigV1,
 } from "@evener/appwire-client";
 import type { NativePreferencesSnapshot } from "./nativePreferences";
+import { transcriptEditingDisabled } from "./transcriptPreferencesEditorGates";
 import { Action, Choice, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 const levels: Record<ContentLevel, { label: string; description: string }> = {
@@ -121,6 +122,13 @@ export function TranscriptPreferencesEditor({
 	// OTHER than the unreadable record discarding itself would clear (round 14).
 	const discardDisabled =
 		state.saving || state.writeUncertain || (state.storageUnavailable && !state.draftUnreadable);
+	// A restored draft renders before the hub's first read lands (`draft` is
+	// restored synchronously; `confirmed` only after a successful read), and
+	// every edit/save composes against the confirmed value - `disabled` alone
+	// does not say so. Discard needs none of this: it stays gated on
+	// `discardDisabled` above, with no confirmed-value requirement (round 16
+	// keeps that contract for #1693).
+	const editingDisabled = transcriptEditingDisabled(state, connected);
 	const dirty = state.draft !== null;
 	// An unreadable stored draft is the one storage failure the user can clear,
 	// and clearing it is the only way out of the disabled state above: there is
@@ -212,7 +220,7 @@ export function TranscriptPreferencesEditor({
 										config.content.kind === "preset" &&
 										config.content.level === level
 									}
-									disabled={disabled}
+									disabled={editingDisabled}
 									onPress={() =>
 										edit({ ...config, content: { kind: "preset", level } })
 									}
@@ -221,7 +229,7 @@ export function TranscriptPreferencesEditor({
 							<Choice
 								label="Custom"
 								selected={config.content.kind === "custom"}
-								disabled={disabled}
+								disabled={editingDisabled}
 								onPress={() =>
 									edit({
 										...config,
@@ -246,7 +254,7 @@ export function TranscriptPreferencesEditor({
 									<Toggle
 										key={key}
 										label={label}
-										disabled={disabled}
+										disabled={editingDisabled}
 										value={
 											config.content.kind === "custom" && config.content[key]
 										}
@@ -281,7 +289,7 @@ export function TranscriptPreferencesEditor({
 											key={key}
 											label={label}
 											value={config.advanced[key]}
-											disabled={disabled}
+											disabled={editingDisabled}
 											change={(value) =>
 												edit({
 													...config,
@@ -295,7 +303,7 @@ export function TranscriptPreferencesEditor({
 										<Choice
 											key={detail}
 											label={hookLabels[detail]}
-											disabled={disabled}
+											disabled={editingDisabled}
 											selected={config.advanced.hookExits === detail}
 											onPress={() =>
 												edit({
@@ -355,7 +363,7 @@ export function TranscriptPreferencesEditor({
 					<View style={[styles.row, { flexWrap: "wrap" }]}>
 						<Action
 							tone="primary"
-							disabled={disabled || !dirty || state.conflict}
+							disabled={editingDisabled || !dirty || state.conflict}
 							onPress={save}
 						>
 							Save changes

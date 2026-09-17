@@ -874,6 +874,42 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState().draft?.config).toEqual(proposed);
   });
 
+  test("a discard refuses and re-classifies when the unreadable record has been replaced", async () => {
+    // Classified unreadable at construction, exactly like the test above.
+    const legacy = memoryDraftStorage<TranscriptDraftCheckpoint>({
+      id: "d0",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    });
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client, { drafts: legacy.storage });
+    expect(store.getState().draftUnreadable).toBe(true);
+
+    // Another store or app version replaces the SAME record with a valid,
+    // newer checkpoint before the user ever taps discard.
+    const newer: TranscriptDraftCheckpoint = {
+      id: "d1",
+      layout: "mobile",
+      baseRevision: 2,
+      config: proposed,
+      writeUncertain: false,
+    };
+    legacy.storage.save(newer);
+
+    // The discard must name the record it classified, not whatever is
+    // stored right now: it refuses (the bytes it names are gone), and the
+    // newer checkpoint survives.
+    store.getState().discardDraft();
+    expect(legacy.stored()).toEqual(newer);
+
+    // Refusing is not silence: the state re-classifies against what is
+    // actually there now, which is readable.
+    expect(store.getState().draftUnreadable).toBe(false);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draft).toEqual({ layout: "mobile", revision: 2, config: proposed });
+  });
+
   test("a checkpoint without a layout is undecodable, like any other malformed one", async () => {
     // The shape the native host wrote before layouts were recorded. A
     // checkpoint that does not say which layer it proposes names no draft:
