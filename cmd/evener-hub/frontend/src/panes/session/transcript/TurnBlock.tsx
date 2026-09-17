@@ -7,10 +7,9 @@
 // the real SessionPane composition must never depend on import ORDER to
 // get tool calls rendered correctly.
 
-import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import type { ItemModel, ProjectedEntry, ProjectedTurn, ThreadModel, TurnModel } from "@evener/appwire-client";
 import { scopedDisclosureId } from "@evener/appwire-client";
 import type { ReactNode } from "react";
-import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,

@@ -150,7 +150,7 @@ async function flush(): Promise<void> {
   });
 }
 
-test("an accepted attachment replaces a non-collapsed selection with its marker", () => {
+test("an accepted attachment replaces a non-collapsed selection with its marker", async () => {
   const editor = makeFakeEditor("keep SELECTED tail", 13, { start: 5, end: 13 });
   const { result } = renderHook(() => useAttachments(editor));
 
@@ -162,6 +162,11 @@ test("an accepted attachment replaces a non-collapsed selection with its marker"
   // and the cursor lands after the marker.
   expect(editor.getText()).toBe("keep [image 1] tail");
   expect(editor.getCursor()).toBe("keep [image 1]".length);
+
+  // ingestFiles also starts the encode; drain it so the test leaves nothing
+  // settling after it returns, as its siblings in this file do.
+  await flush();
+  expect(result.current.items[0]).toMatchObject({ pending: false });
 });
 
 test("replaceWithSettled hydrates recovery attachments without re-encoding", () => {

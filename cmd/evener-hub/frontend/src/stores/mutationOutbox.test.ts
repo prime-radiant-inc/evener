@@ -790,6 +790,44 @@ describe("MutationOutbox discovery", () => {
     expect(await storage.listOutbox(TARGET)).toHaveLength(1);
   });
 
+  // A timer that outlives stop() keeps scanning a shut-down outbox. The pair is
+  // injected together (a host that can schedule can cancel), stop() cancels it,
+  // and a callback already in flight when stop() ran discovers nothing.
+  test("a stopped outbox runs no further scan, even from a timer callback that already fired", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      indexedDB,
+      databaseName,
+      createMutationId: idSequence(),
+    });
+    await storage.enqueueIntent(intent("waiting"));
+    const intervals: Array<() => void> = [];
+    const cleared: number[] = [];
+    const discoveries: string[] = [];
+    const outbox = new MutationOutbox(storage, {
+      isReady: () => true,
+      onDiscover: (_targets, reason) => {
+        discoveries.push(reason);
+      },
+      setInterval(callback) {
+        intervals.push(callback);
+        return intervals.length;
+      },
+      clearInterval(id) {
+        cleared.push(id);
+      },
+    });
+    await outbox.start();
+    await outbox.stop();
+    expect(cleared).toEqual([1]);
+
+    // The host's timer fired anyway — a callback can already be queued when
+    // clearInterval lands — and the stopped outbox does nothing with it.
+    discoveries.length = 0;
+    intervals[0]?.();
+    await outbox.stop();
+    expect(discoveries).toEqual([]);
+  });
+
   test("startup, ready, online, focus, visibility, and two-second ready scans only discover durable work", async () => {
     const storage = new MutationOutboxIndexedDB({
       indexedDB,

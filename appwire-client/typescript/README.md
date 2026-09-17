@@ -57,7 +57,11 @@ models and which take a plugin selection), the built-in slash invocation
 matcher and argument lookup both composers run a draft through before sending
 it, the transcript display configuration both apps resolve (local over hub
 over shipped), encode for local storage and summarize a transcript's content
-level and advanced toggles with, the keybinding group both apps' shortcut settings are built on (the action
+level and advanced toggles with, the transcript projector
+(`projectThread(model, config)`) that turns a thread's turns and items into
+the rows a transcript renders - content-level filtering, the critical/intent/
+thinking/hidden decision per item, disclosure eligibility and anchors - over
+the same config, framework-free and with no host global, the keybinding group both apps' shortcut settings are built on (the action
 ids, the chord AST with its overlap predicate, the default binding map, the
 display rows, the override primitives and the semantic override validation) -
 its registry is a framework-free store factory, `createKeybindingsRegistry(parse)`
@@ -172,14 +176,19 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   in the app), announces a commit to sibling clients, and re-scans when a host
   says a scan is worth doing. Every host-shaped capability is an option - the
   channel, the lifecycle and visibility targets, the timer - and none defaults
-  to a browser global, so no storage adapter, scheduling policy or DOM type
-  lives here. It carries `MutationDispatcher` too: one attempt at a time per
-  target ref over the same port, a receipt reconciled into storage before the
-  next attempt, a refusal turned into a recovery record with the daemon's own
-  reason, and an outcome nobody can vouch for left `blockedUnknown` rather than
-  replayed - the rule a client must not break after a lost connection. Every
-  reaction to an outcome (a blocked mutation, a clear's response, a shared
-  note's authority) is a callback the app supplies. Resolves to
+  to a browser global, so no DOM type lives here. It carries
+  `MutationDispatcher` too: one attempt at a time per target ref over the same
+  port, a receipt reconciled into storage before the next attempt, a refusal
+  turned into a recovery record with the daemon's own reason, and an outcome
+  nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
+  client must not break after a lost connection. Every reaction to an outcome (a
+  blocked mutation, a clear's response, a shared note's authority) is a callback
+  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
+  rows a composer's queue renders - identity-based, so an authoritative
+  projection replaces the same outbox entry rather than duplicating it. No
+  storage adapter or scheduling policy lives here either - just the shapes, the
+  identity, the rules, the attempts and the reconciliation. Resolves to
   `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer

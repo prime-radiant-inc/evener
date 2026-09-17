@@ -36,6 +36,7 @@ import type {
   MutationRecoveryKind,
   MutationRecoveryRecord,
 } from "./records";
+import { tryOrUndefined } from "./secureUUID";
 
 // Why discovery ran, carried through to the consumer so a scan can be
 // explained (and, in tests, asserted) rather than guessed at.
@@ -121,15 +122,15 @@ export interface MutationOutboxOptions {
   createBroadcastChannel?: (name: string) => MutationOutboxChannel;
   lifecycleWindow?: MutationLifecycleTarget;
   lifecycleDocument?: MutationVisibilityTarget;
+  // A timer is a PAIR: scheduling what cannot be cancelled would keep scanning
+  // an outbox that has stopped. Pass both or neither — one alone is no timer.
   setInterval?: (callback: () => void, milliseconds: number) => number;
   clearInterval?: (intervalId: number) => void;
-  // How often a host with a timer re-scans. The web's 2s default is the
-  // interval its oracle pins; a host that passes no timer never uses it.
-  scanIntervalMs?: number;
 }
 
 const CHANNEL_NAME = "evener-mutation-outbox-v1";
-const DEFAULT_SCAN_INTERVAL_MS = 2000;
+// How often a host with a timer re-scans — the interval the web's oracle pins.
+const SCAN_INTERVAL_MS = 2000;
 
 interface MutationOutboxWakeup {
   version: 1;
@@ -154,7 +155,6 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   readonly #visibilityTarget: MutationVisibilityTarget | undefined;
   readonly #setInterval: ((callback: () => void, milliseconds: number) => number) | undefined;
   readonly #clearInterval: ((intervalId: number) => void) | undefined;
-  readonly #scanIntervalMs: number;
   #channel: MutationOutboxChannel | undefined;
   #intervalId: number | undefined;
   #started = false;
@@ -187,9 +187,9 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#createChannel = options.createBroadcastChannel;
     this.#lifecycleTarget = options.lifecycleWindow;
     this.#visibilityTarget = options.lifecycleDocument;
-    this.#setInterval = options.setInterval;
-    this.#clearInterval = options.clearInterval;
-    this.#scanIntervalMs = options.scanIntervalMs ?? DEFAULT_SCAN_INTERVAL_MS;
+    const cancellableTimer = options.setInterval !== undefined && options.clearInterval !== undefined;
+    this.#setInterval = cancellableTimer ? options.setInterval : undefined;
+    this.#clearInterval = cancellableTimer ? options.clearInterval : undefined;
   }
 
   async start(): Promise<void> {
@@ -200,7 +200,7 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
     this.#lifecycleTarget?.addEventListener("online", this.#handleOnline);
     this.#lifecycleTarget?.addEventListener("focus", this.#handleFocus);
     this.#visibilityTarget?.addEventListener("visibilitychange", this.#handleVisibility);
-    this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), this.#scanIntervalMs);
+    this.#intervalId = this.#setInterval?.(() => this.#scheduleReadyScan("interval"), SCAN_INTERVAL_MS);
     // Submissions need the runtime's listeners, not a scan of earlier work.
     // Queue startup discovery so a stalled read cannot delay their own commit.
     this.#schedule(() => this.#discoverAll("startup"));
@@ -226,16 +226,14 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   ): Promise<MutationOutboxRecord<A>> {
     const record = await this.#storage.enqueueIntent(intent);
     onCommitted?.(record);
-    try {
+    // The commit owns the message. Lifecycle scans also discover it if a
+    // closing client cannot broadcast; that cannot turn acceptance into failure.
+    tryOrUndefined(() =>
       this.#channel?.postMessage({
         version: 1,
         targetRef: record.targetRef,
-      } satisfies MutationOutboxWakeup);
-    } catch {
-      // The commit owns the message. Lifecycle scans also discover it if a
-      // closing client cannot broadcast; that cannot turn acceptance into
-      // failure.
-    }
+      } satisfies MutationOutboxWakeup),
+    );
     if (this.#isReady()) this.#scheduleDiscovery([record.targetRef], "enqueue");
     return record;
   }
@@ -251,7 +249,11 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   }
 
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {
-    if (!this.#isReady() || this.#scheduledReadyScans.has(reason)) return;
+    // A host's timer callback can already be queued when clearInterval lands, and
+    // a lifecycle event can arrive during shutdown: a stopped outbox scans
+    // nothing. An enqueue is deliberately not gated — its record is durable and
+    // announcing it costs nothing.
+    if (!this.#started || !this.#isReady() || this.#scheduledReadyScans.has(reason)) return;
     this.#scheduledReadyScans.add(reason);
     this.#schedule(async () => {
       try {
