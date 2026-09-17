@@ -145,9 +145,8 @@ test("usePendingTurnEntries returns the same entries array across a submittingRe
   // optimistic, submittedHere or the thread model this hook's entries
   // actually depend on - so the getSnapshot cache must not recompute here.
   await act(async () => {
-    await submitWithPendingTracking(
-      { ref: "ref_a", method: "send", text: "unrelated", onFailure: vi.fn() },
-      () => Promise.resolve(),
+    await submitWithPendingTracking({ ref: "ref_a", method: "send", text: "unrelated", onFailure: vi.fn() }, () =>
+      Promise.resolve(),
     );
   });
 
