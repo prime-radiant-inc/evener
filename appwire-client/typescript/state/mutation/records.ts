@@ -1,5 +1,5 @@
 import type { SecureRandomSource } from "./secureUUID";
-import { createSecureUUID } from "./secureUUID";
+import { createSecureUUID, tryOrUndefined } from "./secureUUID";
 
 // The durable shape of a mutation this client submitted, and the one question
 // every reader of a shared outbox has to answer about it: did THIS client
@@ -139,22 +139,16 @@ export function createClientIdentity(
 
   function ownClientId(): string {
     if (identity !== undefined) return identity;
-    try {
-      const stored = storage?.getItem(STORAGE_KEY);
-      if (stored !== null && stored !== undefined && stored !== "") {
-        identity = stored;
-        return stored;
-      }
-    } catch {
-      // Best-effort: the identity below keeps this client consistent either way.
+    // Best-effort: the identity below keeps this client consistent either way.
+    const stored = tryOrUndefined(() => storage?.getItem(STORAGE_KEY));
+    if (stored !== null && stored !== undefined && stored !== "") {
+      identity = stored;
+      return stored;
     }
-    identity = newClientIdentity(randomSource);
-    try {
-      storage?.setItem(STORAGE_KEY, identity);
-    } catch {
-      // Best-effort, same rationale.
-    }
-    return identity;
+    const generated = newClientIdentity(randomSource);
+    identity = generated;
+    tryOrUndefined(() => storage?.setItem(STORAGE_KEY, generated));
+    return generated;
   }
 
   // Whether a durable record belongs to this client: unattributed records

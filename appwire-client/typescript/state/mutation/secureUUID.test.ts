@@ -34,37 +34,23 @@ describe("createSecureUUID", () => {
   });
 
   it("falls back to a non-cryptographic id when randomUUID throws", () => {
-    expect(() =>
-      createSecureUUID({
-        randomUUID: () => {
-          throw new Error("denied");
-        },
-      }),
-    ).not.toThrow();
-    expect(
-      createSecureUUID({
-        randomUUID: () => {
-          throw new Error("denied");
-        },
-      }),
-    ).toMatch(/^insecure-/);
+    const source = {
+      randomUUID: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(() => createSecureUUID(source)).not.toThrow();
+    expect(createSecureUUID(source)).toMatch(/^insecure-/);
   });
 
   it("falls back to a non-cryptographic id when getRandomValues throws", () => {
-    expect(() =>
-      createSecureUUID({
-        getRandomValues: () => {
-          throw new Error("denied");
-        },
-      }),
-    ).not.toThrow();
-    expect(
-      createSecureUUID({
-        getRandomValues: () => {
-          throw new Error("denied");
-        },
-      }),
-    ).toMatch(/^insecure-/);
+    const source = {
+      getRandomValues: () => {
+        throw new Error("denied");
+      },
+    };
+    expect(() => createSecureUUID(source)).not.toThrow();
+    expect(createSecureUUID(source)).toMatch(/^insecure-/);
   });
 
   it("treats a non-function truthy randomUUID as absent", () => {

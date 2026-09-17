@@ -26,6 +26,9 @@ export default defineConfig({
 			"@evener/appwire-client/state/mutation": fileURLToPath(
 				new URL("../appwire-client/typescript/state/mutation/index.ts", import.meta.url),
 			),
+			"@evener/appwire-client/state/connection": fileURLToPath(
+				new URL("../appwire-client/typescript/state/connection/index.ts", import.meta.url),
+			),
 			"@evener/appwire-client/testing": fileURLToPath(
 				new URL("../appwire-client/typescript/testing", import.meta.url),
 			),

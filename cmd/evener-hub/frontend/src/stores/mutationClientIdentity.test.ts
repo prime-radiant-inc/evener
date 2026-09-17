@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { stubThrowingGetter } from "./throwingGetterTestUtils";
 
 const UUID = "11111111-2222-4333-8444-555555555555";
 const originalSessionStorage = Object.getOwnPropertyDescriptor(globalThis, "sessionStorage");
@@ -102,17 +103,11 @@ test("a fallback identity created before storage was available is never replaced
 // throw on touching window.sessionStorage at all. globalThis.sessionStorage
 // is read lazily inside the shim's adapter methods, one call frame inside the
 // package's own try/catch, so this must not surface as an uncaught throw.
-function stubThrowingSessionStorageGetter(): void {
-  Object.defineProperty(globalThis, "sessionStorage", {
-    configurable: true,
-    get(): never {
-      throw new Error("sessionStorage access denied");
-    },
-  });
-}
+// The file's afterEach restores the descriptor, so the two tests below don't
+// need the helper's own restore function.
 
 test("a sessionStorage getter that throws on access falls back to a generated identity", async () => {
-  stubThrowingSessionStorageGetter();
+  stubThrowingGetter(globalThis, "sessionStorage");
   const { ownClientId } = await import("./mutationClientIdentity");
 
   expect(() => ownClientId()).not.toThrow();
@@ -123,6 +118,6 @@ test("a memoized identity never re-touches a throwing sessionStorage getter", as
   const { ownClientId } = await import("./mutationClientIdentity");
   const first = ownClientId();
 
-  stubThrowingSessionStorageGetter();
+  stubThrowingGetter(globalThis, "sessionStorage");
   expect(ownClientId()).toBe(first);
 });
