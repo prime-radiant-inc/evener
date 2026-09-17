@@ -223,21 +223,54 @@ export class MutationOutboxIndexedDB {
   }
 
   async settleApplied(clientMutationId: string): Promise<boolean> {
+    return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], undefined, (transaction) =>
+      this.#settleAppliedWithinTransaction(transaction, clientMutationId),
+    );
+  }
+
+  async #settleAppliedWithinTransaction(transaction: IDBTransaction, clientMutationId: string): Promise<boolean> {
+    const outbox = transaction.objectStore(OUTBOX_STORE);
+    const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
+    const recovery = transaction.objectStore(RECOVERY_STORE);
+    const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
+      requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
+      requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
+      requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
+    ]);
+    if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
+    await this.#discardSupersededNoteRecovery(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
+    if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
+    if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
+    if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
+    return true;
+  }
+
+  // retireConsumedQueueIntents's own storage half (mutationDispatcher.ts): an
+  // optimistic record of `method` for `targetRef` absent from the caller's
+  // fresh, authoritative snapshot was consumed server-side, same rule
+  // settleApplied's callers already use for a single known id - this scans
+  // for the ids that rule applies to and settles all of them in the one
+  // write transaction, rather than one read transaction (listOptimistic)
+  // plus N separate settleApplied write transactions, each its own race
+  // window against a concurrent write.
+  async settleOptimisticAbsent(
+    targetRef: string,
+    method: string,
+    authoritativeIds: ReadonlySet<string>,
+  ): Promise<string[]> {
     return this.#write([OUTBOX_STORE, OPTIMISTIC_STORE, RECOVERY_STORE], undefined, async (transaction) => {
-      const outbox = transaction.objectStore(OUTBOX_STORE);
-      const optimistic = transaction.objectStore(OPTIMISTIC_STORE);
-      const recovery = transaction.objectStore(RECOVERY_STORE);
-      const [outboxRecord, optimisticRecord, recoveryRecord] = await Promise.all([
-        requestResult<MutationOutboxRecord | undefined>(outbox.get(clientMutationId)),
-        requestResult<MutationOptimisticRecord | undefined>(optimistic.get(clientMutationId)),
-        requestResult<MutationRecoveryRecord | undefined>(recovery.get(clientMutationId)),
-      ]);
-      if (!outboxRecord && !optimisticRecord && !recoveryRecord) return false;
-      await this.#discardSupersededNoteRecovery(transaction, outboxRecord ?? optimisticRecord ?? recoveryRecord);
-      if (outboxRecord) await requestResult(outbox.delete(clientMutationId));
-      if (optimisticRecord) await requestResult(optimistic.delete(clientMutationId));
-      if (recoveryRecord) await requestResult(recovery.delete(clientMutationId));
-      return true;
+      const records = await requestResult<MutationOptimisticRecord[]>(
+        transaction.objectStore(OPTIMISTIC_STORE).getAll(),
+      );
+      const settled: string[] = [];
+      for (const record of records) {
+        if (record.targetRef !== targetRef || record.method !== method) continue;
+        if (authoritativeIds.has(record.clientMutationId)) continue;
+        if (await this.#settleAppliedWithinTransaction(transaction, record.clientMutationId)) {
+          settled.push(record.clientMutationId);
+        }
+      }
+      return settled;
     });
   }
 

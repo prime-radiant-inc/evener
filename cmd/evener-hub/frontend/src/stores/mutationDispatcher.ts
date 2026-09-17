@@ -64,22 +64,12 @@ export class MutationDispatcher {
   // what the server's queue holds right now (queueChanged's own
   // clientMutationIds, most directly): a `turn/queue` record absent from it
   // was consumed, regardless of which dispatcher instance sent the mutation
-  // that consumed it. This replaces an earlier sequence-number comparison
-  // that inferred "accepted before the drain was sent" from "lower
-  // intentSequence than the drain" - true only for one dispatcher instance's
-  // own FIFO, and wrong the moment a second tab (no lease, no leader
-  // election - MutationOutboxIndexedDB's own header comment) sends for the
-  // same target: a lower-sequence queue intent that instance accepts AFTER
-  // this drain was already applied is fresh work, not the drain's leftovers,
-  // and the old rule silently retired it anyway.
-  async retireConsumedQueueIntents(targetRef: string, authoritativeQueueIds: ReadonlySet<string>): Promise<void> {
-    const optimistic = await this.#storage.listOptimistic(targetRef);
-    const consumed = optimistic.filter(
-      (queued) => queued.method === "turn/queue" && !authoritativeQueueIds.has(queued.clientMutationId),
-    );
-    if (consumed.length === 0) return;
-    await Promise.all(consumed.map((queued) => this.#storage.settleApplied(queued.clientMutationId)));
-    this.#onStorageChange([targetRef]);
+  // that consumed it. History (an earlier, cross-tab-unsafe sequence-number
+  // rule this replaced) is in the commit message, not here; see #1704.
+  async retireConsumedQueueIntents(targetRef: string, authoritativeQueueIds: ReadonlySet<string>): Promise<string[]> {
+    const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", authoritativeQueueIds);
+    if (settled.length > 0) this.#onStorageChange([targetRef]);
+    return settled;
   }
 
   async reconcileIdentities(clientMutationIds: Iterable<string>): Promise<void> {
