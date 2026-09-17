@@ -292,6 +292,20 @@ client.rebindAction(keybindingRegistry, client.ACTIONS.sessionNext, "Alt+ArrowUp
 assert.deepEqual(keybindingRegistry.getState().bindings.map((binding) => binding.id), ["session.next#override"]);
 assert.equal(client.validateOverrideRules([{ action: "nope", chord: "Control+K" }], keybindingRegistry, "other").warnings[0].reason, "unknown-action");
 `;
+  // The eleven storage-port methods neither outbox fixture exercises: the
+  // type-use program and the smoke script embed this one definition and add the
+  // two calls each of them actually makes (enqueueIntent, listTargetRefs).
+  const inertOutboxStorageMethods = `  getOutbox: () => Promise.resolve(undefined),
+  getOptimistic: () => Promise.resolve(undefined),
+  listOptimistic: () => Promise.resolve([]),
+  getRecovery: () => Promise.resolve(undefined),
+  nextDispatchable: () => Promise.resolve(undefined),
+  markAttempted: () => Promise.resolve(false),
+  markUnknown: () => Promise.resolve(false),
+  settleReceipt: () => Promise.resolve(false),
+  settleApplied: () => Promise.resolve(false),
+  restoreProvenAbsent: () => Promise.resolve([]),
+  transferToRecovery: () => Promise.resolve(undefined),`;
   // The qualification manifest: every specifier package.json publishes, with
   // the hand-written probes run against it; the names it promises are read off
   // its entry module below. A subpath with no entry here is not qualified,
@@ -561,17 +575,7 @@ const identity: ClientIdentity = createClientIdentity(storage, secureRandomSourc
 const outboxStorage: MutationOutboxStorage = {
   enqueueIntent: () => Promise.resolve(outboxRecord),
   listTargetRefs: () => Promise.resolve([outboxRecord.targetRef]),
-  getOutbox: () => Promise.resolve(undefined),
-  getOptimistic: () => Promise.resolve(undefined),
-  listOptimistic: () => Promise.resolve([]),
-  getRecovery: () => Promise.resolve(undefined),
-  nextDispatchable: () => Promise.resolve(undefined),
-  markAttempted: () => Promise.resolve(false),
-  markUnknown: () => Promise.resolve(false),
-  settleReceipt: () => Promise.resolve(false),
-  settleApplied: () => Promise.resolve(false),
-  restoreProvenAbsent: () => Promise.resolve([]),
-  transferToRecovery: () => Promise.resolve(undefined),
+${inertOutboxStorageMethods}
 };
 const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
@@ -629,17 +633,7 @@ const memoryOutbox = new client.MutationOutbox(
       return Promise.resolve(record);
     },
     listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
-    getOutbox: () => Promise.resolve(undefined),
-    getOptimistic: () => Promise.resolve(undefined),
-    listOptimistic: () => Promise.resolve([]),
-    getRecovery: () => Promise.resolve(undefined),
-    nextDispatchable: () => Promise.resolve(undefined),
-    markAttempted: () => Promise.resolve(false),
-    markUnknown: () => Promise.resolve(false),
-    settleReceipt: () => Promise.resolve(false),
-    settleApplied: () => Promise.resolve(false),
-    restoreProvenAbsent: () => Promise.resolve([]),
-    transferToRecovery: () => Promise.resolve(undefined),
+${inertOutboxStorageMethods}
   },
   {
     isReady: () => true,
