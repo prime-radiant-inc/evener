@@ -4,7 +4,6 @@ import {
   composeAskAnswers,
 } from "@evener/appwire-client";
 import {
-  type BoundText,
   liveAsksFor,
   type MobileConversation,
 } from "../../mobile/src/conversation/project";
@@ -25,29 +24,6 @@ export function pendingQuestions(
   return [...liveAsksFor(conversation).values()].flat();
 }
 
-/** A question's prose and option text, bounded for the sheet a reader
- * scrolls (QuestionSheet.tsx). Option `label` is bounded here too — a
- * provider's option text is exactly as unbounded as a header or a
- * question — but the caller must keep reading the CANONICAL ref (this
- * function's input) for identity: the key `select()` reports back and the
- * value `composeQuestionAnswers` matches against, so a cut label can never
- * become the sent answer. */
-export function boundQuestionForDisplay(
-  question: AskQuestionRef,
-  bound: BoundText,
-): AskQuestionRef {
-  return {
-    ...question,
-    header: bound(question.header),
-    question: bound(question.question),
-    ...(question.why === undefined ? {} : { why: bound(question.why) }),
-    options: question.options.map((option) => ({
-      ...option,
-      label: bound(option.label),
-      detail: bound(option.detail),
-    })),
-  };
-}
 export function composeQuestionAnswers(
   questions: AskQuestionRef[],
   selections: QuestionSelections,

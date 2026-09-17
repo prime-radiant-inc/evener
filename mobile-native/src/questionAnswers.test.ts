@@ -4,12 +4,12 @@ import { hydrateThread } from "@evener/appwire-client";
 import type { Thread } from "@evener/appwire-client";
 import type { MobileConversation } from "../../mobile/src/conversation/project";
 import {
+  boundQuestion,
   MAX_ITEM_BYTES,
   projectConversation,
   truncateText,
 } from "../../mobile/src/conversation/project";
 import {
-  boundQuestionForDisplay,
   composeQuestionAnswers,
   pendingQuestions,
   questionAdvanceTarget,
@@ -193,15 +193,15 @@ it("bounds a question's display copy while the canonical refs stay uncut", () =>
     why: huge,
     options: [{ label: huge, detail: huge }],
   };
-  const display = boundQuestionForDisplay(oversized, bound);
+  const display = boundQuestion(oversized, bound);
   expect(display.header).toBe(truncateText(huge, MAX_ITEM_BYTES));
   expect(display.header.length).toBeLessThan(huge.length);
   expect(display.question).toBe(truncateText(huge, MAX_ITEM_BYTES));
   expect(display.why).toBe(truncateText(huge, MAX_ITEM_BYTES));
   expect(display.options[0]?.label).toBe(truncateText(huge, MAX_ITEM_BYTES));
   expect(display.options[0]?.detail).toBe(truncateText(huge, MAX_ITEM_BYTES));
-  // The refs boundQuestionForDisplay was given are untouched: composition
-  // still names the exact, uncut label the agent's options carried.
+  // The refs boundQuestion was given are untouched: composition still names
+  // the exact, uncut label the agent's options carried.
   expect(oversized.header).toBe(huge);
   expect(oversized.options[0]?.label).toBe(huge);
   expect(

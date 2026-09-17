@@ -912,6 +912,36 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
   };
 }
 
+// One question's prose and option text, bounded like every other row's:
+// header, question, why, ifUnanswered, and every option's label and detail
+// (AskUserOption.detail is a required string, never undefined). Shared by
+// truncateItem's "question" case below and the question sheet
+// (mobile-native/src/questionAnswers.ts, mobile-native/src/QuestionSheet.tsx),
+// so a row a reader scrolls and the sheet a reader answers from are cut the
+// same way. The answer this client composes does NOT read either bounded
+// copy — it asks the model for the canonical refs (questionAnswers.ts's
+// pendingQuestions, through liveAsksFor) — so a cut label here can never
+// name a choice the agent did not offer.
+export function boundQuestion(
+  question: AskQuestionRef,
+  bound: BoundText,
+): AskQuestionRef {
+  return {
+    ...question,
+    header: bound(question.header),
+    question: bound(question.question),
+    ...(question.why === undefined ? {} : { why: bound(question.why) }),
+    ...(question.ifUnanswered === undefined
+      ? {}
+      : { ifUnanswered: bound(question.ifUnanswered) }),
+    options: question.options.map((option) => ({
+      ...option,
+      label: bound(option.label),
+      detail: bound(option.detail),
+    })),
+  };
+}
+
 // Apply the bound to every text a row carries for the reader. Native transcript
 // projection expands a clustered activity's members directly, so each member's
 // own detail is bounded too — not just the cluster's top-level detail (the first
@@ -928,27 +958,9 @@ export function truncateItem(item: MobileTimelineItem, bound: BoundText): Mobile
     case "failure":
       return { ...item, title: bound(item.title), detail: bound(item.detail) };
     case "question":
-      // Every prose field a reader sees, bounded in place like any other row. The
-      // answer this client composes does NOT read these rows — it asks the model
-      // for the canonical refs (questionAnswers.ts's pendingQuestions →
-      // liveAskQuestions) — so a cut label here can never name a choice the agent
-      // did not offer.
       return {
         ...item,
-        questions: item.questions.map((question) => ({
-          ...question,
-          header: bound(question.header),
-          question: bound(question.question),
-          ...(question.why === undefined ? {} : { why: bound(question.why) }),
-          ...(question.ifUnanswered === undefined
-            ? {}
-            : { ifUnanswered: bound(question.ifUnanswered) }),
-          options: question.options.map((option) => ({
-            ...option,
-            label: bound(option.label),
-            ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
-          })),
-        })),
+        questions: item.questions.map((question) => boundQuestion(question, bound)),
       };
     case "activity":
       // The label is rendered twice on the phone — the disclosure line and its

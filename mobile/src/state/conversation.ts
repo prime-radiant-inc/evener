@@ -382,6 +382,26 @@ function requireControl(
   }
 }
 
+// A candidate row is superseded by a set of identities when either: its OWN
+// identity is one of them (it duplicates a row that set already carries), or
+// — for an attachment — its source's identity is, which the hub reissuing
+// the source's wire id (its transcript key unchanged) makes a SEPARATE
+// check: a reissued attachment's own identity never equals the candidate's,
+// so the first clause alone would keep both, one holding the superseded
+// image set. loadOlder (F10, below) and withPageHistory's retainedPageRow
+// both ask this, each against its own pair of sets — see the one-line note
+// at each call site for why that call's second set is broad or narrow.
+function supersededBy(
+  candidate: MobileTimelineItem,
+  ownIdentities: ReadonlySet<string>,
+  attachmentSources: ReadonlySet<string>,
+): boolean {
+  if ([...ownTimelineIdentities(candidate)].some((id) => ownIdentities.has(id)))
+    return true;
+  const sourceId = attachmentSourceIdentity(candidate);
+  return sourceId !== null && attachmentSources.has(sourceId);
+}
+
 export function createConversationStore() {
   let conversationGen = 0;
   let mutationIdCounter = 0;
@@ -740,27 +760,18 @@ export function createConversationStore() {
   // the state is running when any member runs, and a single member is a plain
   // activity row rather than a cluster of one).
   //
-  // duplicates() has two clauses, mirroring loadOlder's own admission rule
-  // (F10, above): ownTimelineIdentities decides every row's own identity —
-  // a page-owned attachment's OWN identity is what makes it a duplicate,
-  // never its source's, since the projected snapshot can hold the source row
-  // without yet holding its attachment. A SECOND, explicit check then asks
-  // whether the snapshot carries its own attachment for this row's source at
-  // all, under ANY wire id: the hub reissues a source's id while its
-  // transcript key stands, so a reissued attachment's own identity never
-  // matches the page's, and the first clause alone would keep both — one
-  // page-owned image row and one fresh one, for the same message.
+  // duplicates() asks supersededBy against `identities` (every projected
+  // row's own identity) and `projectedAttachmentSources` (narrow: only rows
+  // the snapshot has ALREADY reprojected as an attachment) — narrow because a
+  // source row the snapshot has reprojected with no attachment of its own yet
+  // must not supersede a page's only copy.
   function retainedPageRow(
     item: MobileTimelineItem,
     identities: ReadonlySet<string>,
     projectedAttachmentSources: ReadonlySet<string>,
   ): MobileTimelineItem | null {
-    const duplicates = (candidate: MobileTimelineItem): boolean => {
-      if ([...ownTimelineIdentities(candidate)].some((id) => identities.has(id)))
-        return true;
-      const sourceId = attachmentSourceIdentity(candidate);
-      return sourceId !== null && projectedAttachmentSources.has(sourceId);
-    };
+    const duplicates = (candidate: MobileTimelineItem): boolean =>
+      supersededBy(candidate, identities, projectedAttachmentSources);
     if (item.kind !== "activity" || item.members === undefined) {
       return duplicates(item) ? null : item;
     }
@@ -1323,7 +1334,13 @@ export function createConversationStore() {
           if (currentConv !== null) {
             // F10: Dedupe by source item identity — items from older pages
             // that already exist in the current conversation (same id) are
-            // dropped, keeping the newer (live tail) version.
+            // dropped, keeping the newer (live tail) version. `currentIds` (the
+            // conversation's own identities, frozen before this loop) is
+            // supersededBy's SECOND, attachment-source set here — broad,
+            // unlike retainedPageRow's: a bare source row already in the live
+            // conversation means the live model has moved past this position,
+            // so an older page's attachment for that source is stale even
+            // with no attachment row alongside it.
             // Task 2A-Items: also dedupe within the incoming page by updating
             // the seen set during traversal, preserving order and first
             // occurrence semantics.
@@ -1333,15 +1350,7 @@ export function createConversationStore() {
             const currentIds = new Set(existingIds);
             const deduped: MobileTimelineItem[] = [];
             for (const item of result.items) {
-              // A row is a duplicate when ANY identity it carries is already
-              // present — an incoming cluster can reintroduce a member under
-              // a brand-new top-level id.
-              const duplicate = [...ownTimelineIdentities(item)].some((id) =>
-                existingIds.has(id),
-              );
-              if (duplicate) continue;
-              const sourceId = attachmentSourceIdentity(item);
-              if (sourceId !== null && currentIds.has(sourceId)) continue;
+              if (supersededBy(item, existingIds, currentIds)) continue;
               // I3: Defense-in-depth — filter question rows at the state merge
               // boundary too, not only in the service's projectOlderTurns. A
               // pending ask cannot legitimately be older than newer continuation

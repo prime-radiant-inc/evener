@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   KeyboardAvoidingView,
   Modal,
@@ -10,11 +10,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
-import { MAX_ITEM_BYTES, truncateText } from "../../mobile/src/conversation/project";
+import {
+  boundQuestion,
+  MAX_ITEM_BYTES,
+  truncateText,
+} from "../../mobile/src/conversation/project";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {
-  boundQuestionForDisplay,
   composeQuestionAnswers,
   nextUnansweredQuestion,
   type QuestionSelections,
@@ -25,7 +28,7 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 // The sheet's own rendered text, bounded the same as a timeline row
 // (mobile/src/conversation/project.ts). `questions` stays canonical below:
-// only the strings drawn from `displayQuestions` are ever put on screen.
+// only a pair's `display` half is ever put on screen.
 const boundQuestionText = (text: string) => truncateText(text, MAX_ITEM_BYTES);
 export function QuestionSheet({
   visible,
@@ -141,10 +144,18 @@ export function QuestionSheet({
     selections,
     activeIndex,
   );
-  const displayQuestions = questions.map((question) =>
-    boundQuestionForDisplay(question, boundQuestionText),
+  // One pair per question: `question` is the canonical ref every piece of
+  // logic below reads (key, selection, composeQuestionAnswers); `display` is
+  // its bounded copy, read only where text is put on screen. Same length as
+  // `questions` by construction, so a pair is always there to destructure.
+  const shown = useMemo(
+    () =>
+      questions.map((question) => ({
+        question,
+        display: boundQuestion(question, boundQuestionText),
+      })),
+    [questions],
   );
-  const activeDisplay = displayQuestions[activeIndex];
   return (
     <Modal
       visible={visible}
@@ -205,7 +216,7 @@ export function QuestionSheet({
             ) : null}
             {questions.length > 1 ? (
               <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                {questions.map((question, index) => (
+                {shown.map(({ question, display }, index) => (
                   <Pressable
                     key={question.key}
                     accessibilityRole="tab"
@@ -219,27 +230,25 @@ export function QuestionSheet({
                         index === activeIndex ? colors.accent : "transparent",
                     }}
                   >
-                    <Copy>{`${index + 1}. ${displayQuestions[index]?.header ?? question.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
+                    <Copy>{`${index + 1}. ${display.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
                   </Pressable>
                 ))}
               </ScrollView>
             ) : null}
-            {questions.slice(activeIndex, activeIndex + 1).map((question) => {
+            {shown.slice(activeIndex, activeIndex + 1).map(({ question, display }) => {
               const answer = selections[question.key];
               return (
                 <View key={question.key} style={{ gap: 12 }}>
-                  <Copy muted>{activeDisplay?.header ?? question.header}</Copy>
-                  <Copy>{activeDisplay?.question ?? question.question}</Copy>
-                  {question.why ? (
-                    <Copy muted>{activeDisplay?.why ?? question.why}</Copy>
-                  ) : null}
+                  <Copy muted>{display.header}</Copy>
+                  <Copy>{display.question}</Copy>
+                  {question.why ? <Copy muted>{display.why}</Copy> : null}
                   {question.multiSelect ? (
                     <Copy muted>Choose any that apply.</Copy>
                   ) : null}
                   {question.options
                     .map((option, index) => ({
                       option,
-                      display: activeDisplay?.options[index],
+                      display: display.options[index],
                     }))
                     .sort(
                       (a, b) =>
@@ -295,11 +304,11 @@ export function QuestionSheet({
                         >
                           <Copy>
                             {checked ? "✓ " : ""}
-                            {display?.label ?? option.label}
+                            {display.label}
                             {option.recommended ? " · Recommended" : ""}
                           </Copy>
                           {option.detail ? (
-                            <Copy muted>{display?.detail ?? option.detail}</Copy>
+                            <Copy muted>{display.detail}</Copy>
                           ) : null}
                         </Pressable>
                       );
@@ -326,7 +335,7 @@ export function QuestionSheet({
                   </Pressable>
                   <TextInput
                     ref={input}
-                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${activeDisplay?.header ?? question.header}`}
+                    accessibilityLabel={`${answer?.resolution?.kind === "free" ? "Answer" : "Note"} for ${display.header}`}
                     placeholder={
                       answer?.resolution?.kind === "free"
                         ? "Type your answer"
