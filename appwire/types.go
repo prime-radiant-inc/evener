@@ -1440,20 +1440,22 @@ type ThreadItem struct {
 	TranscriptEntryIndex int                 `json:"transcriptEntryIndex,omitempty"`
 	Text                 string              `json:"text,omitempty"`
 	Delta                string              `json:"delta,omitempty"`
-	// Images and OutputImages are omitzero, not omitempty: an item that never
-	// had images sends no key (nil), and one whose images were removed sends
-	// an explicit [] (an empty, non-nil slice), which is the only way the hub
-	// can tell a client the pictures are gone. omitempty cannot say it —
-	// encoding/json drops a zero-length slice whether it is nil or not.
-	Images        []InputItem   `json:"images,omitzero"`
-	ToolName      string        `json:"toolName,omitempty"`
-	CallID        string        `json:"callId,omitempty"`
-	ArgumentsJSON string        `json:"argumentsJson,omitempty"`
-	Description   string        `json:"description,omitempty"`
-	Output        string        `json:"output,omitempty"`
-	Error         string        `json:"error,omitempty"`
-	OutputImages  []OutputImage `json:"outputImages,omitzero"`
-	Status        string        `json:"status,omitempty"`
+	Images               []InputItem         `json:"images,omitempty"`
+	ToolName             string              `json:"toolName,omitempty"`
+	CallID               string              `json:"callId,omitempty"`
+	ArgumentsJSON        string              `json:"argumentsJson,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	Output               string              `json:"output,omitempty"`
+	Error                string              `json:"error,omitempty"`
+	// OutputImages is omitzero, not omitempty, and it is the only image list
+	// that is: an item that never had output images sends no key (nil), and one
+	// whose images were removed sends an explicit [] (an empty, non-nil slice),
+	// which is the only way the hub can say the pictures are gone. omitempty
+	// cannot say it — encoding/json drops a zero-length slice whether it is nil
+	// or not. Images stays omitempty because nothing removes an item's input
+	// images: they are what the user sent.
+	OutputImages []OutputImage `json:"outputImages,omitzero"`
+	Status       string        `json:"status,omitempty"`
 	// PrevalOnly is true when Error came from a pre-dispatch rejection (an
 	// unknown tool name, or arguments that failed schema validation even
 	// after repair) rather than the tool's own execution - the call never
