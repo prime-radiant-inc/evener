@@ -525,11 +525,10 @@ Promise.all([
 });
 `,
     },
-    // The extensions state layer - the marketplaces and installed-plugins
-    // stores, with the directories store to follow - published as one subpath
-    // for the same
-    // reason state/navigation is: a layer both apps build their settings
-    // surfaces on, not part of the client surface every consumer takes.
+    // The extensions state layer - the marketplaces, installed-plugins and
+    // launch-layer stores - published as one subpath for the same reason
+    // state/navigation is: a layer both apps build their settings surfaces on,
+    // not part of the client surface every consumer takes.
     "./state/extensions": {
       esmTypeUses: `const marketplacesClient: MarketplacesClient = { request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined };
 const marketplaces: MarketplacesStore = createMarketplacesStore(marketplacesClient);
@@ -538,9 +537,12 @@ const pluginsClient: PluginsClient = marketplacesClient;
 const plugins: PluginsStore = createPluginsStore(pluginsClient);
 const revision: ListRevision = createListRevision(); void plugins; void revision;
 const keyed: KeyedRevision = createKeyedRevision(); void keyed.issue("acme");
-const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;`,
+const lifecycle: StoreLifecycle<PluginsState> = createStoreLifecycle(pluginsClient, { method: "evener/plugin/updated", debounceMs: 250, store: () => plugins, refetch: (state) => state.fetchPlugins(), wantsList: (state) => state.plugins !== null }); void lifecycle;
+const layerClient: LaunchLayerClient = marketplacesClient;
+const layer: LaunchLayerStore = createLaunchLayerStore(layerClient); void layer;`,
       cjsTypeUses: `const marketplacesState: client.MarketplacesState = client.createMarketplacesStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void marketplacesState;
-const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;`,
+const pluginsState: client.PluginsState = client.createPluginsStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void pluginsState;
+const layerState: client.LaunchLayerState = client.createLaunchLayerStore({ request: () => Promise.reject(new Error("offline")), onNotification: () => () => undefined }).getState(); void layerState;`,
       // Stores built over a client that rejects everything: each list fetch
       // records the rejection as state and resolves, a mutation rejects, and
       // a browse caches the failure - the two conventions the layer keeps. A
@@ -557,6 +559,9 @@ const keyed = client.createKeyedRevision();
 const keyedRevision = keyed.issue("acme");
 keyed.retire("acme");
 assert.equal(keyed.current("acme", keyedRevision), false);
+const layerStore = client.createLaunchLayerStore(offline);
+assert.equal(client.LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, 250);
+assert.equal(layerStore.getState().launchLayer, null);
 const listRevision = client.createListRevision();
 const first = listRevision.next();
 listRevision.fence();
@@ -582,7 +587,15 @@ marketplacesStore
     assert.equal(pluginsStore.getState().pluginsError, "offline");
     return assert.rejects(pluginsStore.getState().installPlugin("linter", "acme"), /offline/);
   })
-  .then(() => pluginsStore.dispose())
+  .then(() => {
+    pluginsStore.dispose();
+    return layerStore.getState().fetchLaunchLayer();
+  })
+  .then(() => {
+    assert.equal(layerStore.getState().launchLayerError, "offline");
+    return assert.rejects(layerStore.getState().setLaunchLayer({ pluginDirs: [] }), /offline/);
+  })
+  .then(() => layerStore.dispose())
   .catch((err) => {
     console.error(err);
     process.exit(1);

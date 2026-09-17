@@ -30,7 +30,15 @@ interface Preferences {
 	 * when one is bound (which also clears its in-memory draft/conflict state),
 	 * or through `LocalPreferencesController` directly when none is - cold
 	 * start, backgrounded, and reconnecting are exactly the states `bound`
-	 * cannot cover, and the controller exists whether or not one ever binds. */
+	 * cannot cover, and the controller exists whether or not one ever binds.
+	 * The no-model path names the record by the identity `LocalPreferencesController`
+	 * kept from the LAST time something classified it - never a fresh reload,
+	 * which could name a record another writer has since replaced (RoboRev
+	 * round 17, eighth raise; round 18 extended the byte identity itself to a
+	 * concurrent replacement that only compares semantically equal). A refused
+	 * discard leaves nothing to project: `getSnapshot()` always re-reads
+	 * storage fresh rather than caching a result, so `refreshLocalSnapshot`
+	 * forcing a re-render shows whatever is actually stored now either way. */
 	discardDraft(section: "transcript" | "keybindings"): Promise<void>;
 }
 const Context = createContext<Preferences | null>(null);
@@ -112,6 +120,11 @@ export function NativePreferencesProvider({
 			return;
 		}
 		if (!controller) return;
+		// The port can throw; awaiting inside an async function turns that into a
+		// rejection the caller's error handler already knows how to show. A
+		// refusal (the record this controller classified is gone, replaced by
+		// something else) has nothing to project: refreshLocalSnapshot forces a
+		// re-render either way, and getSnapshot() always re-reads storage fresh.
 		await (section === "transcript"
 			? controller.discardTranscript()
 			: controller.discardKeybindings());
