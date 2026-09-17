@@ -2,9 +2,11 @@ package tui
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 )
 
@@ -99,5 +101,69 @@ func TestConfigListHandlersLeaveTheErrorForThePanelToRender(t *testing.T) {
 				t.Fatalf("list handler set model err = %v; the panel owns rendering this failure", after.err)
 			}
 		})
+	}
+}
+
+// TestIsInstanceRemovePersisted pins the discriminator read: the wire error's
+// Data is an ErrorData in-process and a decoded map over the socket, so both
+// carry the flag; the code is never the discriminator and any other error is not
+// this one.
+func TestIsInstanceRemovePersisted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"plain", errors.New("nope"), false},
+		{"errorData", appwire.WireError{Code: appwire.CodeInternalError, Data: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorInstanceRemovePersisted}}, true},
+		{"map", appwire.WireError{Code: appwire.CodeInternalError, Data: map[string]any{"evenerErrorInfo": string(appwire.ErrorInstanceRemovePersisted)}}, true},
+		{"otherInfo", appwire.WireError{Code: appwire.CodeInternalError, Data: appwire.ErrorData{EvenerErrorInfo: "somethingElse"}}, false},
+		{"otherType", appwire.WireError{Code: appwire.CodeInternalError, Data: "string-data"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isInstanceRemovePersisted(tc.err); got != tc.want {
+				t.Fatalf("isInstanceRemovePersisted = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleInstanceMutateResultRemovalPersistedWarnsAndReconciles: a removal
+// that stood but left an OAuth copy on disk carries
+// appwire.ErrorInstanceRemovePersisted, so the handler reports the hub's message
+// as a warning notice and re-reads the listing instead of showing a failure.
+// Without a panel/client there is nothing to re-read; a plain error still takes
+// the model-error path (TestConfigResultHandlersSurfaceErrorsAndClearThemOnSuccess).
+func TestHandleInstanceMutateResultRemovalPersistedWarnsAndReconciles(t *testing.T) {
+	persisted := appwire.InstanceRemovePersisted("removed work, but a credential the removal set aside is still on disk: /state/auth/work.json.removing-1 (delete refused)")
+
+	got, cmd := hubModel{}.handleInstanceMutateResult(launchconfig.InstanceMutateResultMsg{Err: persisted})
+	after := got.(hubModel)
+	if after.err != nil {
+		t.Fatalf("model err = %v, want nil: the removal stood", after.err)
+	}
+	if len(after.notices) != 1 {
+		t.Fatalf("notices = %d, want one warning notice", len(after.notices))
+	}
+	if notice := after.notices[0]; notice.State != "warning" || !strings.Contains(notice.Reason, "still on disk") {
+		t.Fatalf("notice = %+v, want a warning carrying the hub's message", notice)
+	}
+	if cmd != nil {
+		t.Fatal("no client: a removal warning should not issue a refresh")
+	}
+
+	// With a panel and a client the listing is re-read, so the removed row leaves
+	// the panel.
+	client, cleanup := newTestHubClient(t, nil)
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.credentialsPanel = newCredentialsPanelForTest()
+	got, cmd = m.handleInstanceMutateResult(launchconfig.InstanceMutateResultMsg{Err: persisted})
+	after = got.(hubModel)
+	if after.err != nil || cmd == nil {
+		t.Fatalf("with a client: err=%v cmd=%v, want a listing refresh", after.err, cmd)
+	}
+	if msg, ok := cmd().(launchconfig.InstanceListResultMsg); !ok {
+		t.Fatalf("cmd msg = %T, want InstanceListResultMsg", msg)
 	}
 }

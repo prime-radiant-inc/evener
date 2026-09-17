@@ -209,3 +209,21 @@ func (m *hubModel) addActionUnavailableNotice(action, summary, reason string) {
 		NextAction: "Open /help to see source-supported actions.",
 	})
 }
+
+// addInstanceRemovalWarningNotice reports a provider-instance removal that stood
+// but could not delete the copy of the OAuth record it set aside
+// (appwire.ErrorInstanceRemovePersisted). The instance is gone, so the notice is
+// a warning about the file the hub's message names rather than a failure to
+// retry; the notice panel is the TUI's surface for a standing condition the user
+// has to act on.
+func (m *hubModel) addInstanceRemovalWarningNotice(err error) {
+	m.addNotice(noticePanel{
+		Title:      "Provider instance removed",
+		Category:   "instance",
+		Summary:    "The instance is gone, but a copy of its OAuth record is still on disk.",
+		Source:     m.sourceLabelForNotice(),
+		Reason:     err.Error(),
+		NextAction: "Delete the file the reason names.",
+		State:      "warning",
+	})
+}

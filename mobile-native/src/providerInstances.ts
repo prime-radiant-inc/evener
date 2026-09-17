@@ -1,6 +1,8 @@
 import {
+  friendlyErrorMessage,
   safeCredentialTestResult,
   sessionActionError,
+  WireError,
 } from "@evener/appwire-client";
 import type {
   AuthTestResponse,
@@ -29,6 +31,24 @@ interface ProviderState {
   busy: boolean;
   error: string | null;
 }
+
+// isInstanceRemovePersisted reads the hub's own discriminator for a removal that
+// stood but left a copy of the removed OAuth record on disk
+// (appwire.ErrorInstanceRemovePersisted, the literal its ErrorData carries - the
+// same way the web pane reads it). A refusal or any other failure carries no
+// such info, so it stays a plain failure.
+export function isInstanceRemovePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "instanceRemovePersisted";
+}
+
+// RemovalOutcome is what a removal resolved to. A removal that stood but could
+// not delete the copy it set aside is not a failure - the instance is gone and a
+// retry can only fail on a missing instance - so it resolves with the hub's own
+// message (it names the copy still on disk) for the screen to warn with. Every
+// other failure rejects, as before.
+export type RemovalOutcome =
+  | { kind: "removed" }
+  | { kind: "removedPersisted"; message: string };
 
 /** Provider data and operations for one hub's provider list: the credential
  * store it is handed, projected into the snapshot the list renders. The
@@ -141,8 +161,25 @@ export class ProviderInstances {
   // holding a listing another client has since re-pointed refuses instead of
   // deleting whatever now answers to the name (the web pane's removal asserts
   // the same value).
-  remove = (name: string, expectedEndpointFingerprint?: string) =>
-    this.mutate(() => this.core.getState().remove(name, expectedEndpointFingerprint), true);
+  remove = async (
+    name: string,
+    expectedEndpointFingerprint?: string,
+  ): Promise<RemovalOutcome> => {
+    try {
+      await this.mutate(
+        () => this.core.getState().remove(name, expectedEndpointFingerprint),
+        true,
+      );
+      return { kind: "removed" };
+    } catch (err) {
+      if (!isInstanceRemovePersisted(err)) throw err;
+      // The removal stood: re-read the listing it left behind so the removed row
+      // leaves it. A lost read is the connection banner's to report, not this
+      // removal's - the hub's message is what the screen has to show.
+      await this.core.getState().fetch().catch(() => {});
+      return { kind: "removedPersisted", message: friendlyErrorMessage(err) };
+    }
+  };
   setDefault = (name: string) =>
     this.mutate(() => this.core.getState().setDefault(name), true);
   setApiKey = (provider: string, value: string) =>

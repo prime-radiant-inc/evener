@@ -33,11 +33,13 @@ import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
   errorText,
+  friendlyErrorMessage,
   fromEnvironment,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
+  WireError,
 } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
@@ -53,6 +55,7 @@ import {
   SURFACE_OPTIONS,
   varRows,
 } from "./instanceEdit";
+import { confirmListingState } from "./reconcileListing";
 
 const CLASS = {
   headingRow: requireClass(styles.headingRow, "InstanceSheet.module.css", "headingRow"),
@@ -83,6 +86,16 @@ const STALE_SAVE_WARNING =
 // edits onto its replacement.
 const CHANGED_INSTANCE_ERROR =
   "This instance was replaced under the same name; the form was reset to the instance now on screen.";
+
+// isInstanceRenamePersisted reads the hub's own discriminator for a rename that
+// stood but could not carry the instance's credentials cleanly
+// (appwire.ErrorInstanceRenamePersisted, read here as the literal its ErrorData
+// carries - the same way CredentialsSection reads instanceRemovePersisted).
+// providers.toml names the new instance either way, so the save is not a failure
+// to report; the hub's message names the credential left behind.
+function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "instanceRenamePersisted";
+}
 
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
@@ -476,6 +489,22 @@ export function InstanceSheet({
           setFormError(CONNECTION_REPLACED_ERROR);
         }
         toast.push("warning", CONNECTION_REPLACED_ERROR);
+        return;
+      }
+      // A rename that stood but could not carry the instance's OAuth record
+      // comes back carrying the hub's own discriminator for it
+      // (isInstanceRenamePersisted). providers.toml already names the new
+      // instance, so the save is not a failure: reconcile the listing and follow
+      // the instance to its new name, surfacing the hub's message - it names the
+      // credential left behind - as a warning rather than a plain failure.
+      if (params.newName !== undefined && isInstanceRenamePersisted(err)) {
+        const landed = await confirmListingState((rows) => renamedInstanceLanded(rows, instance, params) !== undefined);
+        if (shownName.current === instance.name) {
+          setRenamingFrom(undefined);
+          if (landed) onRenamed(params.newName);
+          else setFormError(friendlyErrorMessage(err));
+        }
+        toast.push("warning", friendlyErrorMessage(err));
         return;
       }
       const message = errorText(err);

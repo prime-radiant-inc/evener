@@ -2209,4 +2209,65 @@ describe("rename from the sheet", () => {
     expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
     expect(screen.getByRole("button", { name: /work2/ })).toBeTruthy();
   });
+
+  // A rename that stood still comes back as an error when the hub could not
+  // carry the instance's OAuth record to the new name. The hub discriminates
+  // exactly that case with its own evenerErrorInfo value, so the client steers
+  // to the renamed instance and surfaces the hub's own message as a warning
+  // rather than a failed save: providers.toml already names the new instance.
+  test("a rename error carrying the hub's persisted discriminator is reconciled and warned, not failed", async () => {
+    const fake = connectFakeClient();
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    let renamed = false;
+    fake.on("evener/instance/list", () =>
+      renamed ? { instances: [{ ...WORK, name: "work2" }, PERSONAL], availableProviders: [] } : LIST,
+    );
+    fake.on("evener/instance/edit", () => {
+      renamed = true;
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: "instanceRenamePersisted" });
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(/OAuth record not read/);
+    expect(screen.queryByText(/Save failed/)).toBeNull();
+    // The rename stood: the sheet follows the instance to its new name.
+    await screen.findByRole("dialog", { name: "work2" });
+    expect(screen.queryByRole("dialog", { name: "work" })).toBeNull();
+  });
+
+  // A refusal carries no such discriminator, so it stays the plain save failure
+  // it was, with the sheet left where it was.
+  test("a rename error without the persisted discriminator stays a plain failure", async () => {
+    const fake = connectFakeClient();
+    fake.on("evener/instance/list", () => LIST);
+    fake.on("evener/instance/edit", () => {
+      throw new WireError("renaming work was refused: the new name is taken", -32013);
+    });
+    render(
+      <>
+        <Toast />
+        <CredentialsSection sectionId="credentials" />
+      </>,
+    );
+    await screen.findByText("work");
+    const user = userEvent.setup();
+    const inspector = await openSheet(user, "work");
+    await user.type(within(inspector).getByLabelText("Name"), "2");
+    await user.click(within(inspector).getByRole("button", { name: "Save" }));
+
+    await screen.findByText(/Save failed/);
+    expect(screen.queryByRole("dialog", { name: "work2" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "work" })).toBeTruthy();
+  });
 });

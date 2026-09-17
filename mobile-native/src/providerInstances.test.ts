@@ -7,9 +7,10 @@ import {
   type CredentialListing,
   createCredentialInstancesStore,
 } from "@evener/appwire-client/state/credentials";
+import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
-import { ProviderInstances } from "./providerInstances";
+import { isInstanceRemovePersisted, ProviderInstances } from "./providerInstances";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -396,4 +397,56 @@ it("sends the row's endpoint fingerprint with a removal", async () => {
 
   const removal = requests.find((request) => request.method === "evener/instance/remove");
   expect(removal?.params).toEqual({ name: "test", expectedEndpointFingerprint: "fp-test" });
+});
+
+// A removal that stood but left a copy of the OAuth record on disk comes back as
+// the hub's own discriminator (appwire.ErrorInstanceRemovePersisted). The
+// instance is gone, so the model treats it as the standing removal it was:
+// reconcile the listing the removal left behind and resolve with the hub's
+// message for the screen to warn with - never a failed removal.
+it("reconciles and reports a removal that stood with a leftover OAuth copy", async () => {
+  const { model, io, requests } = boundary();
+  await model.refresh();
+  const HUB_MESSAGE =
+    "removed test, but a credential the removal set aside is still on disk: /state/auth/test.json.removing-1 (delete refused)";
+  io.request = async (method) => {
+    if (method === "evener/instance/remove") {
+      throw new WireError(HUB_MESSAGE, -32603, {
+        evenerErrorInfo: "instanceRemovePersisted",
+      });
+    }
+    return listing("reconciled");
+  };
+
+  await expect(model.remove("test")).resolves.toEqual({
+    kind: "removedPersisted",
+    message: HUB_MESSAGE,
+  });
+  // The listing the removal left behind is re-read, so the removed row leaves it.
+  expect(requests.filter((r) => r.method === "evener/instance/list")).toHaveLength(2);
+  expect(model.getSnapshot().data).toEqual(listing("reconciled"));
+  expect(model.getSnapshot().busy).toBe(false);
+  expect(
+    isInstanceRemovePersisted(
+      new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: "instanceRemovePersisted" }),
+    ),
+  ).toBe(true);
+  expect(isInstanceRemovePersisted(new WireError("refused", -32013))).toBe(false);
+});
+
+// A refusal carries no such discriminator, so it stays the plain failure it was:
+// it rejects and nothing is re-read on its behalf.
+it("a removal failure without the persisted discriminator still rejects and does not reconcile", async () => {
+  const { model, io, requests } = boundary();
+  await model.refresh();
+  io.request = async (method) => {
+    if (method === "evener/instance/remove") {
+      throw new WireError("removing test was refused: the endpoint moved", -32013);
+    }
+    return listing("should-not-read");
+  };
+
+  await expect(model.remove("test")).rejects.toThrow("refused");
+  expect(requests.filter((r) => r.method === "evener/instance/list")).toHaveLength(1);
+  expect(model.getSnapshot().data).toEqual(listing("initial"));
 });

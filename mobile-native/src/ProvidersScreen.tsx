@@ -118,6 +118,10 @@ function Providers({
   const [editingCredential, setEditingCredential] = useState<"apiKey" | "credentialJson" | null>(null);
   const [key, setKey] = useState("");
   const [actionError, setActionError] = useState<string | null>(null);
+  // A removal that stood but left an OAuth copy on disk is not a failure: the
+  // hub's message (it names the copy) is shown as a warning at the list level,
+  // where it survives the detail editor closing on the removed instance.
+  const [warning, setWarning] = useState<string | null>(null);
   const instance = state.data?.instances.find((item) => item.name === selected);
   useEffect(() => {
     model.start();
@@ -145,6 +149,7 @@ function Providers({
     setEditingCredential(null);
     setKey("");
     setActionError(null);
+    setWarning(null);
   }
   async function act(action: () => Promise<void>, secret = false) {
     const version = editorVersion.current;
@@ -162,6 +167,31 @@ function Providers({
         secret
           ? "Could not confirm the credential save. Check the connection and credential status before trying again."
           : "The operation could not be confirmed. Refresh and check the current state before trying again.",
+      );
+    }
+  }
+  // removeInstance runs the removal through the model, which reconciles the
+  // listing and resolves a removal that stood as "removedPersisted" rather than
+  // rejecting it. That outcome is reported the way the web pane reports it:
+  // close the removed instance and surface the hub's own message as a warning.
+  // Every other failure keeps the editor open and reports it as a failure.
+  async function removeInstance(name: string, expectedEndpointFingerprint?: string): Promise<void> {
+    const version = editorVersion.current;
+    setActionError(null);
+    setWarning(null);
+    try {
+      const outcome = await model.remove(name, expectedEndpointFingerprint);
+      if (version !== editorVersion.current) return;
+      if (outcome.kind === "removedPersisted") {
+        close();
+        setWarning(outcome.message);
+      }
+    } catch {
+      if (version !== editorVersion.current) return;
+      // Provider/transport errors may echo submitted credentials. Keep the
+      // editor's error independent of upstream response text.
+      setActionError(
+        "The operation could not be confirmed. Refresh and check the current state before trying again.",
       );
     }
   }
@@ -203,6 +233,7 @@ function Providers({
               Add provider instance
             </Action>
             <ErrorMessage message={state.error} />
+            {warning && <Copy>{warning}</Copy>}
             {state.data?.diagnostics?.map((message) => (
               <Copy key={message}>{message}</Copy>
             ))}
@@ -474,7 +505,7 @@ function Providers({
                             disabled={state.busy || state.data?.writesRefused}
                             onPress={() =>
                               confirm("Remove provider instance?", () =>
-                                model.remove(instance.name, instance.endpointFingerprint),
+                                removeInstance(instance.name, instance.endpointFingerprint),
                               )
                             }
                           >

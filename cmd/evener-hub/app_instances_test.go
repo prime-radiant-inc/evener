@@ -999,6 +999,36 @@ func TestInstanceRemoveErrorCarriesThePersistedInfo(t *testing.T) {
 	}
 }
 
+// TestInstanceRenameErrorCarriesThePersistedInfo: the Edit RPC handler maps a
+// rename that stood onto the wire error the client keys its standing-rename
+// report on (appwire.ErrorInstanceRenamePersisted), carrying the rename's own
+// message; every other failure goes back unchanged and unflagged.
+func TestInstanceRenameErrorCarriesThePersistedInfo(t *testing.T) {
+	plain := errors.New("renaming work was refused")
+	if persisted, got := instanceRenameError(plain); !errors.Is(got, plain) || persisted {
+		t.Fatalf("instanceRenameError(plain) = (%v, %v), want it unchanged and not persisted", got, persisted)
+	}
+
+	persisted, got := instanceRenameError(renamePersistedError{errors.New("renamed work to personal, but: OAuth record not read")})
+	if !persisted {
+		t.Fatal("instanceRenameError(renamePersistedError) did not report the rename as persisted")
+	}
+	var wire appwire.WireError
+	if !errors.As(got, &wire) {
+		t.Fatalf("instanceRenameError = %T, want appwire.WireError", got)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T, want appwire.ErrorData", wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRenamePersisted {
+		t.Fatalf("EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRenamePersisted)
+	}
+	if !strings.Contains(wire.Message, "OAuth record not read") {
+		t.Fatalf("Message = %q, want the rename's message carried through", wire.Message)
+	}
+}
+
 // TestInstances_RemovalRemedyNamesSomethingThatExists: the refusal reaches the
 // CLI and direct RPC callers, so each remedy has to name an action this
 // instance can actually take - the variable it reads, the host's ADC
@@ -3997,6 +4027,63 @@ func TestInstances_EditRenameThatOnlyFailedItsReloadStillPersisted(t *testing.T)
 	}
 }
 
+// A record the hub cannot read cannot be carried to the new name: moveCredentials
+// reads it only after providers.toml is already re-keyed, so an unreadable one
+// would leave the config naming the new instance while the record stayed under
+// the old name. The rename refuses that before it writes anything, so the
+// config, the record and the stored key are all exactly where they were. The
+// source record is stubbed unreadable while the destination is not, so the
+// refusal under test is the source's readability and not the overwrite check.
+func TestInstances_EditRenameRefusesAnUnreadableOAuthRecordWithNothingChanged(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai-codex"}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.store.Set("work", "sk-stored"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := authopenai.SaveAuth(f.stateDir, "work", makeOAuthRecord("work", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	f.ctl.auth.loadAuth = func(_ string, name string) (authopenai.AuthRecord, error) {
+		if name == "work" {
+			return authopenai.AuthRecord{}, errors.New("record is not readable")
+		}
+		return authopenai.AuthRecord{}, authopenai.ErrAuthNotFound
+	}
+
+	err := f.ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "personal"})
+	if err == nil || !strings.Contains(err.Error(), "must be readable") {
+		t.Fatalf("Edit(rename) = %v, want a refusal naming the readable-record precondition", err)
+	}
+	if _, persisted := errors.AsType[renamePersistedError](err); persisted {
+		t.Fatalf("Edit(rename) = %v (%T), want a refusal before the write, not a persisted rename", err, err)
+	}
+	// Nothing moved: providers.toml still names the old instance and not the new
+	// one, the record is still filed under the old name, and the stored key did
+	// not move.
+	authoredEntry(t, f.tomlPath, "work")
+	l, _, err := registry.ReadConfigFile(f.tomlPath)
+	if err != nil {
+		t.Fatalf("ReadConfigFile: %v", err)
+	}
+	if _, moved := l.Providers["personal"]; moved {
+		t.Fatal("[providers.personal] appeared despite the refused rename")
+	}
+	if _, err := authopenai.LoadAuth(f.stateDir, "work"); err != nil {
+		t.Fatalf("the OAuth record left its old name: %v", err)
+	}
+	if _, err := authopenai.LoadAuth(f.stateDir, "personal"); !errors.Is(err, authopenai.ErrAuthNotFound) {
+		t.Fatalf("an OAuth record appeared under the new name (err = %v)", err)
+	}
+	if v, _ := f.store.Get("work"); v != "sk-stored" {
+		t.Fatalf("the stored key moved: work = %q", v)
+	}
+	if v, _ := f.store.Get("personal"); v != "" {
+		t.Fatalf("a stored key appeared under the new name: %q", v)
+	}
+}
+
 // TestInstances_EditRenameWaitsForAnInFlightCredentialWrite pins the lock
 // order the rename's atomicity rests on: it asks which credentials sit under
 // the new name and then moves the old ones onto it, so a credential write
@@ -4820,5 +4907,88 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 	after := entry(t, f.ctl.List(), "work")
 	if after.ActiveSource != "none" || after.HasStoredFile {
 		t.Fatalf("post-logout row = activeSource %q hasStoredFile %v, want the cleared generation", after.ActiveSource, after.HasStoredFile)
+	}
+}
+
+// An aside name the hub already holds must not be renamed over: os.Rename
+// replaces its destination, so a stamp that repeats for one record path would
+// destroy the bytes an earlier removal set aside - the credential the aside
+// exists to preserve. Removals of a name are serialized (credMu), so the stamp
+// steps to the next free value instead, keeping the digits-only tail the reclaim
+// parser (oauthAsideInstance) requires.
+func TestInstances_SetAsideStepsPastAnExistingAside(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	save := func(email string) []byte {
+		t.Helper()
+		if err := authopenai.SaveAuth(f.stateDir, "openai-codex", makeOAuthRecord("openai-codex", email)); err != nil {
+			t.Fatalf("SaveAuth: %v", err)
+		}
+		if err := f.ctl.auth.reloadRegistry(); err != nil {
+			t.Fatalf("reloadRegistry: %v", err)
+		}
+		record, err := os.ReadFile(authopenai.AuthFilePath(f.stateDir, "openai-codex"))
+		if err != nil {
+			t.Fatalf("ReadFile: %v", err)
+		}
+		return record
+	}
+	asides := func() map[string][]byte {
+		t.Helper()
+		dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+		held := map[string][]byte{}
+		for _, name := range authDirEntries(t, f) {
+			if !strings.Contains(name, oauthAsideMarker) {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("ReadFile(%s): %v", name, err)
+			}
+			held[name] = data
+		}
+		return held
+	}
+
+	first := save("first@example.com")
+	// One fixed instant for both removals, so the stamp repeats: that repetition
+	// is the collision the stepping has to survive.
+	fixed := time.Date(2026, 1, 1, 0, 0, 0, 123, time.UTC)
+	f.ctl.auth.now = func() time.Time { return fixed }
+	// The sweep cannot delete, so each removal leaves its aside in place for the
+	// next one to collide with.
+	f.ctl.auth.deleteAside = func(string) error { return errors.New("delete refused") }
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err == nil {
+		t.Fatal("Remove = nil, want the sweep failure reported")
+	}
+	afterFirst := asides()
+	if len(afterFirst) != 1 {
+		t.Fatalf("after the first removal, asides = %v, want one", afterFirst)
+	}
+	for _, data := range afterFirst {
+		if !bytes.Equal(data, first) {
+			t.Fatal("the first removal's aside does not hold its record")
+		}
+	}
+
+	second := save("second@example.com")
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err == nil {
+		t.Fatal("second Remove = nil, want the sweep failure reported")
+	}
+	afterSecond := asides()
+	if len(afterSecond) != 2 {
+		t.Fatalf("after the second removal, asides = %v, want two: the repeated stamp overwrote one", afterSecond)
+	}
+	var sawFirst, sawSecond bool
+	for _, data := range afterSecond {
+		if bytes.Equal(data, first) {
+			sawFirst = true
+		}
+		if bytes.Equal(data, second) {
+			sawSecond = true
+		}
+	}
+	if !sawFirst || !sawSecond {
+		t.Fatalf("asides = %v, want the first record preserved alongside the second", afterSecond)
 	}
 }

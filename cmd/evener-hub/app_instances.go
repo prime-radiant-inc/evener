@@ -998,6 +998,19 @@ func (c *hubInstancesController) Edit(params appwire.InstanceEditParams) error {
 		if held := c.credentialsUnder(newName); len(held) > 0 {
 			return appwire.Conflict(fmt.Sprintf("renaming %q to %q would overwrite %s; clear that first", name, newName, strings.Join(held, " and ")))
 		}
+		// moveCredentials rewrites the record's provider field to the new name,
+		// which means it has to read the record after providers.toml is already
+		// re-keyed. An unreadable record cannot be carried that way: the config
+		// would name the new instance while the credential stayed under the old
+		// one, leaving the rename persisted but the renamed instance without a
+		// usable credential - and the caller told about it only after the write.
+		// Read the record here, under the same lock and before anything is
+		// written, so an unreadable one refuses the rename with nothing changed.
+		// Not-found is the one read failure that is not a problem: an instance
+		// with no record has nothing to carry.
+		if _, err := c.auth.loadAuth(c.auth.stateDir, name); err != nil && !errors.Is(err, authopenai.ErrAuthNotFound) {
+			return fmt.Errorf("renaming %q to %q needs its OAuth record to follow it to the new name, so the record must be readable, but it could not be read: %w", name, newName, err)
+		}
 	}
 	if params.ClearBaseURL {
 		// Drops the authored override and goes back to the registry
@@ -1481,7 +1494,24 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
-	aside := fmt.Sprintf("%s%s%d", path, oauthAsideMarker, c.auth.now().UnixNano())
+	// The stamp steps until it names a path nothing holds. os.Rename replaces an
+	// existing destination, so a stamp that repeats for the same record path -
+	// a clock that steps backward is the realistic route - would have the second
+	// aside destroy the first, losing exactly the bytes the aside exists to
+	// preserve. Stepping is safe here because removals of one name are
+	// serialized: every removal holds the caller's credMu exclusively, so no
+	// other aside for this path can be created between the existence check and
+	// the rename. The candidate keeps the all-digits tail oauthAsideInstance
+	// requires, so a stepped name is still reclaimable rather than debris.
+	stamp := c.auth.now().UnixNano()
+	aside := fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)
+	for {
+		if _, err := os.Lstat(aside); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		stamp++
+		aside = fmt.Sprintf("%s%s%d", path, oauthAsideMarker, stamp)
+	}
 	if err := os.Rename(path, aside); err != nil {
 		return "", fmt.Errorf("remove %s: set its OAuth state aside to preserve it: %w", name, err)
 	}

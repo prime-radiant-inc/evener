@@ -37,6 +37,14 @@ const (
 	// removal as standing rather than as a failed removal - the instance is
 	// gone, and a retry can only fail on a missing instance.
 	ErrorInstanceRemovePersisted ErrorInfo = "instanceRemovePersisted"
+	// ErrorInstanceRenamePersisted marks a provider-instance rename that
+	// APPLIED (providers.toml carries the new name) before the follow-up
+	// credential move or reload failed; the message names what was left behind.
+	// The rename is on disk, so clients must report it as the standing write it
+	// was and steer to the new name rather than report a failed save - the old
+	// name is gone and re-issuing the rename can only fail on a missing
+	// instance.
+	ErrorInstanceRenamePersisted ErrorInfo = "instanceRenamePersisted"
 )
 
 type MutationOutcome string
@@ -202,5 +210,17 @@ func InstanceRemovePersisted(message string) WireError {
 		Code:    CodeInternalError,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRemovePersisted},
+	}
+}
+
+// InstanceRenamePersisted reports a provider-instance rename that stood but
+// could not carry the instance's credentials cleanly: the config carries the
+// new name while a stored key or OAuth record was left behind. The message
+// names what was left; the instance itself is renamed.
+func InstanceRenamePersisted(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRenamePersisted},
 	}
 }
