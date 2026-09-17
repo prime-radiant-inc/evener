@@ -1091,8 +1091,11 @@ func (s *Server) stampFailureCountOnStatusChange(method string, params any) any 
 // the two stampers around it give: the projector maps events to notifications
 // and holds no session handle, and the flag lives on the envelope.
 //
-// Absence means "no update", so an unmeasured envelope leaves the field off
-// rather than announcing a question nobody is waiting on.
+// envelopeAskPending has no unmeasured case, so the stamp always sets the
+// field: false is a real clear, not an absence. It has to be — the client's
+// absent-means-no-update rule (reducer.ts) treats an omitted field as "keep
+// the prior value", so a client showing "question waiting" would never see
+// it clear if this only stamped true and left false off.
 func (s *Server) stampAskPendingOnStatusChange(method string, params any) any {
 	if method != appwire.NotifyThreadStatusChanged {
 		return params
