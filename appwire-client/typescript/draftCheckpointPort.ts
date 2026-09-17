@@ -12,7 +12,9 @@ export interface DraftPort<Checkpoint> {
   createId(): string;
   load(): unknown;
   save(checkpoint: Checkpoint): void;
-  removeIf(checkpoint: Checkpoint): void;
+  /** Removes the stored record only if `checkpoint` still names it; reports
+   * whether it did. */
+  removeIf(checkpoint: Checkpoint): boolean;
 }
 
 /** What the port held is not a checkpoint this build can read. Distinct from
@@ -25,18 +27,20 @@ export class UnreadableDraftError extends Error {}
  * record no build can decode is still the record removed. A host whose store is
  * gone (no connection, so no client to build one from) needs this to clear an
  * unreadable record; a host with a live store uses discardDraft, which also
- * publishes the state. One implementation either way. */
-export function discardStoredDraft<Checkpoint>(storage: DraftPort<Checkpoint>): void {
+ * publishes the state. One implementation either way. Reports whether
+ * anything was actually removed. */
+export function discardStoredDraft<Checkpoint>(storage: DraftPort<Checkpoint>): boolean {
   const value = storage.load();
-  if (value !== null && value !== undefined) storage.removeIf(value as Checkpoint);
+  if (value === null || value === undefined) return false;
+  return storage.removeIf(value as Checkpoint);
 }
 
 export interface DraftRepository<Checkpoint> {
   createId(): string;
   load(): Checkpoint | null;
   save(checkpoint: Checkpoint): void;
-  removeIf(checkpoint: Checkpoint): void;
-  discardUnreadable(): void;
+  removeIf(checkpoint: Checkpoint): boolean;
+  discardClassified(): boolean;
 }
 
 /** The draft port with every checkpoint normalized through `decode` in BOTH
@@ -56,57 +60,52 @@ export interface DraftRepository<Checkpoint> {
  * raw value to recover and falls back to `decode`'s normalized one, as
  * before - such a checkpoint carries no unknown fields to begin with.
  *
- * lastUnreadable keeps the raw value load() most recently classified
- * unreadable, named by WHEN it was classified, not by discardUnreadable's own
- * call: another store or a newer app version can replace the record between
- * the two, and a fresh storage.load() at discard time would then name (and
- * remove) whatever is there NOW - never the record the user was actually
- * shown. */
+ * lastClassified keeps the raw value load() most recently classified -
+ * readable or not - named by WHEN it was classified, not by
+ * discardClassified's own call: another store or a newer app version can
+ * replace the record between the two, and a fresh storage.load() at discard
+ * time would then name (and remove) whatever is there NOW - never the record
+ * the user was actually shown. One field for both cases, because a discard is
+ * the same operation either way: remove the classified record, by its own
+ * identity, and report whether that succeeded. */
 export function createDraftRepository<Checkpoint>(
   storage: DraftPort<Checkpoint>,
   decode: (value: unknown) => Checkpoint,
 ): DraftRepository<Checkpoint> {
   const rawFrom = new WeakMap<object, unknown>();
-  let lastUnreadable: unknown;
-  let hasLastUnreadable = false;
+  let lastClassified: unknown;
+  let hasLastClassified = false;
   return {
     createId: () => storage.createId(),
     load(): Checkpoint | null {
       const value = storage.load();
       if (value === null || value === undefined) {
-        hasLastUnreadable = false;
+        hasLastClassified = false;
         return null;
       }
-      try {
-        const checkpoint = decode(value);
-        hasLastUnreadable = false;
-        rawFrom.set(checkpoint as object, value);
-        return checkpoint;
-      } catch (error) {
-        lastUnreadable = value;
-        hasLastUnreadable = true;
-        throw error;
-      }
+      lastClassified = value;
+      hasLastClassified = true;
+      const checkpoint = decode(value);
+      rawFrom.set(checkpoint as object, value);
+      return checkpoint;
     },
     save(checkpoint: Checkpoint): void {
       storage.save(decode(checkpoint));
     },
-    removeIf(checkpoint: Checkpoint): void {
-      storage.removeIf((rawFrom.get(checkpoint as object) ?? decode(checkpoint)) as Checkpoint);
+    removeIf(checkpoint: Checkpoint): boolean {
+      return storage.removeIf((rawFrom.get(checkpoint as object) ?? decode(checkpoint)) as Checkpoint);
     },
-    /** Removes the record load() classified unreadable, by the identity of
-     * the bytes it was classified from - never a fresh reload, which could
-     * name a record another writer has since replaced. A byte-aware port's
-     * own compare (removeIf) then refuses on its own if that record is gone;
-     * this falls back to discardStoredDraft's fresh-reload behavior only when
-     * nothing has been classified yet (defensive: a store never calls this
-     * without classifying first). */
-    discardUnreadable(): void {
-      if (!hasLastUnreadable) {
-        discardStoredDraft(storage);
-        return;
-      }
-      storage.removeIf(lastUnreadable as Checkpoint);
+    /** Removes the record load() most recently classified, readable or not,
+     * by the identity of the bytes it was classified from - never a fresh
+     * reload, which could name a record another writer has since replaced.
+     * Reports whether it did: a byte-aware port's own compare (removeIf)
+     * refuses on its own if that record is gone, and this falls back to
+     * discardStoredDraft's fresh-reload behavior only when nothing has been
+     * classified yet (defensive: a store never calls this without
+     * classifying first). */
+    discardClassified(): boolean {
+      if (!hasLastClassified) return discardStoredDraft(storage);
+      return storage.removeIf(lastClassified as Checkpoint);
     },
   };
 }
