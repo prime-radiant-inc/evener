@@ -699,6 +699,11 @@ func TestInstances_RemoveDeletesASignedInCodexAccount(t *testing.T) {
 	if !before.Implicit || before.ActiveSource != "oauth" {
 		t.Fatalf("fixture: openai-codex = %+v, want an implicit instance resolving the OAuth record", before)
 	}
+	// The premise: the user has no providers.toml, so the removal has nothing to
+	// write and one must not appear.
+	if _, err := os.Stat(f.tomlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture: %s = %v, want no file", f.tomlPath, err)
+	}
 
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"}); err != nil {
 		t.Fatalf("Remove: %v", err)
@@ -708,6 +713,9 @@ func TestInstances_RemoveDeletesASignedInCodexAccount(t *testing.T) {
 	}
 	if listedInstance(f.ctl.List(), "openai-codex") {
 		t.Fatal("openai-codex is still listed after its account was removed")
+	}
+	if _, err := os.Stat(f.tomlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removing a credential-only instance created %s (Stat = %v)", f.tomlPath, err)
 	}
 }
 
@@ -727,6 +735,11 @@ func TestInstances_RemoveDeletesAStoredKeyForACuratedProvider(t *testing.T) {
 	if !before.Implicit || before.ActiveSource != "store" {
 		t.Fatalf("fixture: groq = %+v, want an implicit instance resolving the stored key", before)
 	}
+	// The premise: the user has no providers.toml, so the removal has nothing to
+	// write and one must not appear.
+	if _, err := os.Stat(f.tomlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("fixture: %s = %v, want no file", f.tomlPath, err)
+	}
 
 	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
 		t.Fatalf("Remove: %v", err)
@@ -736,6 +749,130 @@ func TestInstances_RemoveDeletesAStoredKeyForACuratedProvider(t *testing.T) {
 	}
 	if listedInstance(f.ctl.List(), "groq") {
 		t.Fatal("groq is still listed after its stored key was removed")
+	}
+	if _, err := os.Stat(f.tomlPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removing a credential-only instance created %s (Stat = %v)", f.tomlPath, err)
+	}
+}
+
+// authDirEntries lists the names in the fixture's OAuth state directory, sorted
+// by os.ReadDir, or nil when the directory does not exist.
+func authDirEntries(t *testing.T, f *instancesFixture) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance")))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete: what a removal moves
+// aside is the user's credential under a name no reader looks at, so a removal
+// that cannot delete it cannot report it gone either. The failure names the path
+// it left, and the removal itself stands: the record is gone from its own path
+// and the instance from the listing. The removal that follows reclaims the copy,
+// which is what the reported failure says the caller can rely on.
+func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	seedOAuthRecord(t, f, "openai-codex", "codex@example.com")
+	f.ctl.auth.deleteAside = func(string) error { return errors.New("delete refused") }
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "openai-codex"})
+	if err == nil || !strings.Contains(err.Error(), "delete refused") {
+		t.Fatalf("Remove = %v, want the copy it could not delete reported", err)
+	}
+	left := authDirEntries(t, f)
+	if len(left) != 1 {
+		t.Fatalf("the auth directory holds %v, want the one copy the removal set aside", left)
+	}
+	if !strings.Contains(err.Error(), left[0]) {
+		t.Fatalf("Remove = %v, want it to name the copy it left as %s", err, left[0])
+	}
+	if _, statErr := os.Lstat(authopenai.AuthFilePath(f.stateDir, "openai-codex")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record is still at its own path (Lstat = %v)", statErr)
+	}
+	if listedInstance(f.ctl.List(), "openai-codex") {
+		t.Fatal("openai-codex is still listed after a removal that reported a leftover")
+	}
+
+	// The next removal reclaims what the failed one left, so the caller that was
+	// told the copy is on disk is not told to wait for nothing.
+	f.ctl.auth.deleteAside = os.Remove
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove(groq): %v", err)
+	}
+	if left := authDirEntries(t, f); len(left) != 0 {
+		t.Fatalf("the auth directory holds %v, want the next removal to have reclaimed the copy", left)
+	}
+}
+
+// TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft: a copy an
+// earlier removal set aside and could not delete is a credential no reader ever
+// looks at, so the next removal collects it. What counts as a copy is the name
+// the removal builds - the record's path plus a numeric stamp - so an instance
+// whose own name holds the marker keeps its record.
+func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	leftovers := []string{
+		"openai-codex.json.removing-1700000000000000000",
+		"groq.json.removing-1",
+	}
+	kept := map[string]string{
+		// The record of an instance whose own name holds the marker: sweeping it
+		// would take a signed-in account away.
+		"x.removing-1.json": "{}",
+		"notes.txt":         "not a record at all",
+	}
+	for _, name := range leftovers {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(`{"access_token":"secret"}`), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+	for name, body := range kept {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatalf("WriteFile(%s): %v", name, err)
+		}
+	}
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, name := range leftovers {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the copy at %s survived the next removal (Lstat = %v)", name, err)
+		}
+	}
+	for name, body := range kept {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("a removal swept %s, which is not a copy: %v", name, err)
+		}
+		if string(got) != body {
+			t.Fatalf("%s = %q, want %q", name, got, body)
+		}
 	}
 }
 
@@ -2602,9 +2739,12 @@ func TestInstances_ApiKeySetAcceptsAnEmptyAssertionWithoutAStateRoot(t *testing.
 	}
 }
 
-// removeCredentials documents that it reports which credential layers it
-// actually deleted, and its caller's restore gate relies on that reading: a
-// flag set for a file that was never there says there is something to put back.
+// removeCredentials documents that it reports the credential layer it actually
+// deleted, and its caller's restore gate relies on that reading: a flag set for
+// a file that was never there says there is something to put back. The OAuth
+// record is deliberately not part of that report - the removal moves it aside
+// before this runs, so the seam cannot answer for it - which is why what is
+// checked here is the stored key, and the record's own deletion by path.
 func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	if err := f.ctl.Create(appwire.InstanceCreateParams{Name: "work", Base: "openai"}); err != nil {
@@ -2615,11 +2755,11 @@ func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removeCredentials: %v", err)
 	}
-	if deleted.storedKey || deleted.oauthRecord {
-		t.Fatalf("removeCredentials reported %+v for a name holding nothing", deleted)
+	if deleted.storedKey {
+		t.Fatalf("removeCredentials reported %+v for a name holding no stored key", deleted)
 	}
 
-	// With a layer present the flag follows the deletion it just performed.
+	// With the layer present the flag follows the deletion it just performed.
 	if err := f.store.Set("work", "sk-stored"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -2633,8 +2773,12 @@ func TestInstances_RemoveCredentialsReportsOnlyWhatItDeleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("removeCredentials: %v", err)
 	}
-	if !deleted.storedKey || !deleted.oauthRecord {
-		t.Fatalf("removeCredentials reported %+v for a name holding both layers", deleted)
+	if !deleted.storedKey {
+		t.Fatalf("removeCredentials reported %+v for a name holding a stored key", deleted)
+	}
+	// The record is deleted by path whether or not the report names it.
+	if _, err := os.Lstat(authopenai.AuthFilePath(f.stateDir, "work")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the OAuth record survived the cleanup (Lstat = %v)", err)
 	}
 }
 

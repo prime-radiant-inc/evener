@@ -1319,6 +1319,19 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// removal failed, so the instance the caller still has must still
 	// authenticate. Capture and restore both sit inside this held lock, so no
 	// writer can slip between them.
+	//
+	// A removal whose cleanup failed, or a hub that died between setting a copy
+	// aside and deleting it, leaves the user's credential under a name no reader
+	// reads. Nothing else collects those, so every removal clears them before it
+	// deletes anything: the copies are the user's credentials, and debris nothing
+	// reclaims is how one stays on disk after the instance it belonged to is
+	// gone. Refused rather than ignored, because this sweep is the only thing
+	// that ever takes those copies away; nothing has been deleted yet, so a
+	// failure leaves the caller a removal to retry.
+	if err := c.reclaimOAuthAsides(); err != nil {
+		return err
+	}
+
 	storedKey, hasStoredKey := c.auth.creds.Get(name)
 	oauthAside, err := c.setAsideOAuthFile(name)
 	if err != nil {
@@ -1416,10 +1429,17 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	}
 	if oauthAside != "" {
 		// The instance this record belonged to is gone, so what the removal moved
-		// aside is a copy under a name no reader looks at. Dropping it is
-		// cleanup: a failure here leaves debris, not state anyone reads, so it
-		// does not turn a removal that happened into one that failed.
-		_ = os.Remove(oauthAside)
+		// aside is a copy under a name no reader looks at. It is still the user's
+		// credential, so deleting it is reported when it fails: a caller told the
+		// removal succeeded has no reason to look for the copy it left behind,
+		// and a copy nothing deletes is a credential the user believes is gone.
+		// The removal itself stands - the config, the registry and the credential
+		// the instance resolved are all in their post-removal state - and the
+		// sweep at the top of the next removal reclaims the copy
+		// (reclaimOAuthAsides).
+		if err := c.auth.deleteAside(oauthAside); err != nil {
+			return fmt.Errorf("removed %s, but the copy its OAuth record was set aside as could not be deleted and is still on disk at %s (%w); delete that file to take the credential away", name, oauthAside, err)
+		}
 	}
 	return nil
 }
@@ -1441,11 +1461,67 @@ func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) 
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
-	aside := fmt.Sprintf("%s.removing-%d", path, c.auth.now().UnixNano())
+	aside := fmt.Sprintf("%s%s%d", path, oauthAsideMarker, c.auth.now().UnixNano())
 	if err := os.Rename(path, aside); err != nil {
 		return "", fmt.Errorf("remove %s: set its OAuth state aside to preserve it: %w", name, err)
 	}
 	return aside, nil
+}
+
+// oauthAsideMarker separates a record's path from the stamp of the removal that
+// set it aside (setAsideOAuthFile). It is what tells a copy apart from a record
+// when the leftovers are reclaimed.
+const oauthAsideMarker = ".removing-"
+
+// isOAuthAsideName reports whether name is a copy a removal set aside. The aside
+// name is the record's whole path - its .json suffix included - plus a stamp, so
+// an instance whose own name holds the marker is not one: `x.removing-1`'s
+// record is `x.removing-1.json`, whose tail after the marker is not a number,
+// and no record a load would read is ever swept as debris.
+func isOAuthAsideName(name string) bool {
+	i := strings.LastIndex(name, oauthAsideMarker)
+	if i < 0 {
+		return false
+	}
+	record, stamp := name[:i], name[i+len(oauthAsideMarker):]
+	if !strings.HasSuffix(record, ".json") || stamp == "" {
+		return false
+	}
+	return strings.IndexFunc(stamp, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
+// reclaimOAuthAsides deletes the copies earlier removals set aside and did not
+// manage to delete, and refuses the removal that finds one it still cannot
+// delete. A copy is the user's credential under a name no reader looks at;
+// nothing else in the hub reads, lists or collects those, so this sweep is what
+// keeps a failed cleanup from leaving one on disk for good.
+func (c *hubInstancesController) reclaimOAuthAsides() error {
+	// Where the records live, asked of the function that places them, so the
+	// sweep cannot look somewhere a record never lands.
+	dir := filepath.Dir(authopenai.AuthFilePath(c.auth.stateDir, "instance"))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		// No directory is nothing to reclaim: a state root that never held a
+		// record has no copy of one to collect.
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("collect the OAuth copies earlier removals set aside: %w", err)
+	}
+	var problems []string
+	for _, e := range entries {
+		if e.IsDir() || !isOAuthAsideName(e.Name()) {
+			continue
+		}
+		path := filepath.Join(dir, e.Name())
+		if err := c.auth.deleteAside(path); err != nil {
+			problems = append(problems, fmt.Sprintf("%s (%v)", path, err))
+		}
+	}
+	if len(problems) > 0 {
+		return fmt.Errorf("a credential an earlier removal set aside is still on disk, and deleting it is what takes it away: %s", strings.Join(problems, ", "))
+	}
+	return nil
 }
 
 // restoreFailedRemoval puts back what the cleanup deleted after a failed
@@ -1493,11 +1569,15 @@ func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, ha
 // credential it never had, while the deletion of a missing OAuth record is a
 // no-op by construction.
 //
-// It reports which layers it actually deleted even when it fails, because its
-// caller restores exactly those: Store.Clear puts its own entry back when the
-// persist fails (nothing deleted), while a failed DeleteAuth leaves its file
-// in place - rewriting either would be a false alarm on a disk that is already
-// refusing writes.
+// It reports the stored key it actually deleted even when it fails, because its
+// caller restores exactly that: Store.Clear puts its own entry back when the
+// persist fails (nothing deleted), while a failed DeleteAuth leaves its file in
+// place - rewriting either would be a false alarm on a disk that is already
+// refusing writes. The OAuth record is not reported, and cannot be: the removal
+// moves it aside before this runs (setAsideOAuthFile), so DeleteAuth finds
+// nothing at the record's path and its "removed" answer is always false here. A
+// caller keying a restore on that answer would never put the record back; the
+// aside is what restoreFailedRemoval puts back instead.
 func (c *hubInstancesController) removeCredentials(name string) (deletedCredentials, error) {
 	var deleted deletedCredentials
 	if _, stored := c.auth.creds.Get(name); stored {
@@ -1506,19 +1586,16 @@ func (c *hubInstancesController) removeCredentials(name string) (deletedCredenti
 		}
 		deleted.storedKey = true
 	}
-	removedRecord, err := c.auth.deleteAuth(c.auth.stateDir, name)
-	if err != nil {
+	if _, err := c.auth.deleteAuth(c.auth.stateDir, name); err != nil {
 		return deleted, fmt.Errorf("remove %s: delete OAuth state: %w", name, err)
 	}
-	deleted.oauthRecord = removedRecord
 	return deleted, nil
 }
 
 // deletedCredentials names which credential layers a removal's cleanup
 // actually removed, so a restore rewrites only those.
 type deletedCredentials struct {
-	storedKey   bool
-	oauthRecord bool
+	storedKey bool
 }
 
 // describeImplicit names what makes an implicit instance exist, so the remove

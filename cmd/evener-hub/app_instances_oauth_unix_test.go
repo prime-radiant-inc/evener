@@ -109,3 +109,46 @@ func TestInstances_RemoveRestoresAnUnreadableOAuthRecordWhenTheCleanupFails(t *t
 		t.Fatalf("restored bytes = %q, want the original %q", restored, original)
 	}
 }
+
+// TestInstances_RemoveRefusesWhenAnOAuthCopyCannotBeReclaimed: the copy an
+// earlier removal set aside is a credential, so a removal that cannot collect it
+// says so rather than leaving it there for good. The sweep runs before anything
+// is deleted, so the refusal leaves the instance the caller still has exactly as
+// it was, with its key.
+func TestInstances_RemoveRefusesWhenAnOAuthCopyCannotBeReclaimed(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	leftover := filepath.Join(dir, "openai-codex.json.removing-1700000000000000000")
+	if err := os.WriteFile(leftover, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	// Readable but not writable: the sweep can list the directory and cannot
+	// delete from it.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if err := os.Remove(leftover); err == nil {
+		t.Skip("this process can delete from a directory it cannot write (running as root?); the premise needs one it cannot")
+	}
+
+	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
+	if err == nil || !strings.Contains(err.Error(), leftover) {
+		t.Fatalf("Remove = %v, want it refused over the copy at %s", err, leftover)
+	}
+	if v, _ := f.store.Get("groq"); v != "gk" {
+		t.Fatalf("the refusal deleted the credential anyway: %q", v)
+	}
+	if !listedInstance(f.ctl.List(), "groq") {
+		t.Fatal("the refusal removed the instance anyway")
+	}
+}
