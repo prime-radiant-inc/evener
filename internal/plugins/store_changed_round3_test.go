@@ -324,6 +324,115 @@ func TestRemoveMarketplaceWhoseCloneDeleteFailedReportsTheStoreChanged(t *testin
 	}
 }
 
+// Install's first access to a seeded, unfetched marketplace (catalogPlugin ->
+// ensureFetched) persists InstallLocation/LastUpdated before it even knows
+// whether the plugin it was asked for exists in the catalog. A plugin that
+// turns out missing leaves the marketplace listing changed regardless of
+// whether the plugin itself ever installs.
+func TestInstallWhoseCatalogLookupFailedReportsTheMarketplaceStoreChanged(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	// Seed a pointer (empty InstallLocation) rather than AddMarketplace, so
+	// Install's own access is the lazy fetch this test is about.
+	if err := m.saveMarketplaces(Marketplaces{name: {Source: Source{Kind: SourceURL, URL: mktRepo}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := m.Install(context.Background(), "does-not-exist", name)
+	if err == nil {
+		t.Fatal("Install(missing plugin) = nil, want the missing plugin reported")
+	}
+	if !errors.Is(err, ErrPluginNotFound) {
+		t.Fatalf("Install(missing plugin) = %v, want ErrPluginNotFound", err)
+	}
+	if !errors.Is(err, ErrMarketplaceStoreChanged) {
+		t.Fatalf("Install(missing plugin) = %v, want ErrMarketplaceStoreChanged: the lazy fetch already persisted", err)
+	}
+	mk, listErr := m.ListMarketplaces(context.Background())
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	if mk[name].InstallLocation == "" {
+		t.Fatal("InstallLocation not backfilled by the lazy fetch")
+	}
+}
+
+// The sibling case: the same failure on an already-fetched marketplace never
+// touched the marketplace store, so it is a plain refusal.
+func TestInstallWhoseCatalogLookupFailedOnAnAlreadyFetchedMarketplaceIsAPlainRefusal(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	_, err := m.Install(context.Background(), "does-not-exist", name)
+	if err == nil {
+		t.Fatal("Install(missing plugin) = nil, want the missing plugin reported")
+	}
+	if errors.Is(err, ErrMarketplaceStoreChanged) {
+		t.Fatalf("Install(missing plugin) = %v, want a plain refusal: the marketplace was already fetched", err)
+	}
+}
+
+// The Upgrade sibling of the case above: Upgrade's own catalogPlugin call can
+// lazily fetch too (a seeded marketplace re-pointed since install), and a
+// registry save failure after that fetch must still report the marketplace
+// change even though the upgrade itself never applied.
+func TestUpgradeWhoseSaveFailedAfterALazyFetchReportsTheMarketplaceStoreChanged(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	// A separately git-backed plugin, so advancing it gives Upgrade a real
+	// sha change to act on (a plugin referenced relative to the marketplace
+	// repo has no sha of its own, and upgradeLocked no-ops when the sha is
+	// unchanged - measured).
+	mktRepo, pluginRepo := makeGitBackedMarketplace(t, "widget")
+	const name = "acme"
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
+
+	// Re-seed InstallLocation empty, as if the marketplace had been dropped to
+	// a pointer again (EditMarketplace re-sourcing, or a store repair): the
+	// installed entry stays, but Upgrade's own catalogPlugin call must fetch
+	// the marketplace again.
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatalf("ListMarketplaces: %v", err)
+	}
+	ref := mk[name]
+	ref.InstallLocation = ""
+	if err := m.saveMarketplaces(Marketplaces{name: ref}); err != nil {
+		t.Fatalf("re-seeding the pointer: %v", err)
+	}
+
+	original := installSaveRegistry
+	t.Cleanup(func() { installSaveRegistry = original })
+	installSaveRegistry = func(string, Registry) error {
+		return errors.New("the registry could not be written")
+	}
+
+	_, err = m.Upgrade(context.Background(), "widget", name)
+	if err == nil {
+		t.Fatal("Upgrade = nil, want the failed registry save reported")
+	}
+	if !errors.Is(err, ErrMarketplaceStoreChanged) {
+		t.Fatalf("Upgrade = %v, want ErrMarketplaceStoreChanged: the lazy fetch already persisted", err)
+	}
+}
+
 // writeTestMarketplaceDir plants a directory-source marketplace holding one
 // plugin, which needs no network and no git binary.
 func writeTestMarketplaceDir(t *testing.T, name string) string {

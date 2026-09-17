@@ -34,8 +34,8 @@ func fuzzUpgradeBranches(t *testing.T) {
 			installLoadRegistry = func(string) (Registry, error) { return Registry{}, errInstallCoverage }
 		}},
 		{"catalog", func(*Manager) {
-			installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
-				return MarketplaceRef{}, errInstallCoverage
+			installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, bool, error) {
+				return MarketplaceRef{}, false, errInstallCoverage
 			}
 		}},
 		{"stage", func(*Manager) {
@@ -56,7 +56,7 @@ func fuzzUpgradeBranches(t *testing.T) {
 				return Registry{Plugins: map[string][]InstallEntry{"plugin@market": {{GitCommitSha: "old", AutoUpgrade: true, Source: Source{Kind: SourceGitHub}}}}}, nil
 			}
 			tc.breakIt(m)
-			if _, _, _, err := m.upgradeLocked(ctx, "plugin", "market", false); err == nil {
+			if _, _, _, _, err := m.upgradeLocked(ctx, "plugin", "market", false); err == nil {
 				t.Fatal("upgrade succeeded")
 			}
 		})
@@ -65,7 +65,7 @@ func fuzzUpgradeBranches(t *testing.T) {
 	t.Run("missing", func(t *testing.T) {
 		m := NewManager(t.TempDir())
 		fakeInstallSuccess(t, m)
-		if _, _, _, err := m.upgradeLocked(ctx, "missing", "market", false); err == nil {
+		if _, _, _, _, err := m.upgradeLocked(ctx, "missing", "market", false); err == nil {
 			t.Fatal("missing upgraded")
 		}
 	})
@@ -80,7 +80,7 @@ func fuzzUpgradeBranches(t *testing.T) {
 			installLoadRegistry = func(string) (Registry, error) {
 				return Registry{Plugins: map[string][]InstallEntry{"plugin@market": {entry}}}, nil
 			}
-			if _, changed, skipped, err := m.upgradeLocked(ctx, "plugin", "market", true); err != nil || changed || !skipped {
+			if _, changed, skipped, _, err := m.upgradeLocked(ctx, "plugin", "market", true); err != nil || changed || !skipped {
 				t.Fatalf("skip = %v %v %v", changed, skipped, err)
 			}
 		}
@@ -105,8 +105,8 @@ func fakeInstallSuccess(t *testing.T, m *Manager) {
 	t.Helper()
 	resetInstallSeams(t)
 	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return func() {}, nil }
-	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
-		return MarketplaceRef{Source: Source{Kind: SourceGitHub}, InstallLocation: t.TempDir()}, nil
+	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, bool, error) {
+		return MarketplaceRef{Source: Source{Kind: SourceGitHub}, InstallLocation: t.TempDir()}, false, nil
 	}
 	installParseCatalog = func(string) (Catalog, error) {
 		return Catalog{Plugins: []CatalogPlugin{{Name: "plugin", Source: Source{Kind: SourceGitHub, URL: "fake"}}}}, nil
@@ -129,23 +129,25 @@ func fakeInstallSuccess(t *testing.T, m *Manager) {
 func fuzzInstallHelpers(t *testing.T) {
 	m := NewManager(t.TempDir())
 	resetInstallSeams(t)
-	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
-		return MarketplaceRef{}, errInstallCoverage
+	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, bool, error) {
+		return MarketplaceRef{}, false, errInstallCoverage
 	}
-	if _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err == nil {
+	if _, _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err == nil {
 		t.Fatal("ensure error ignored")
 	}
-	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) { return MarketplaceRef{}, nil }
+	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, bool, error) {
+		return MarketplaceRef{}, false, nil
+	}
 	installParseCatalog = func(string) (Catalog, error) { return Catalog{}, errInstallCoverage }
-	if _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err == nil {
+	if _, _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err == nil {
 		t.Fatal("parse error ignored")
 	}
 	installParseCatalog = func(string) (Catalog, error) { return Catalog{}, nil }
-	if _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err == nil {
+	if _, _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err == nil {
 		t.Fatal("missing plugin ignored")
 	}
 	installParseCatalog = func(string) (Catalog, error) { return Catalog{Plugins: []CatalogPlugin{{Name: "plugin"}}}, nil }
-	if _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err != nil {
+	if _, _, _, err := m.catalogPlugin(context.Background(), "market", "plugin"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,8 +189,8 @@ func fuzzInstallBranches(t *testing.T) {
 			installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, errInstallCoverage }
 		}},
 		{"catalog", func() {
-			installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
-				return MarketplaceRef{}, errInstallCoverage
+			installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, bool, error) {
+				return MarketplaceRef{}, false, errInstallCoverage
 			}
 		}},
 		{"stage", func() {
@@ -281,8 +283,8 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 		t.Fatalf("sorted list %#v %v", got, err)
 	}
 	installSaveRegistry = func(string, Registry) error { return nil }
-	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, error) {
-		return MarketplaceRef{}, errInstallCoverage
+	installEnsureFetched = func(*Manager, context.Context, string) (MarketplaceRef, bool, error) {
+		return MarketplaceRef{}, false, errInstallCoverage
 	}
 	if got, err := m.UpdateAll(ctx); err == nil || len(got) != 0 {
 		t.Fatalf("update %#v %v", got, err)

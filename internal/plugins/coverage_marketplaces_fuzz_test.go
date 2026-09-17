@@ -98,33 +98,33 @@ func fuzzMarketplacesCoverage(t *testing.T) {
 	reset()
 
 	marketplaceReadFile = func(string) ([]byte, error) { return nil, fail }
-	if _, err := m.ensureFetched(ctx, "x"); err == nil {
+	if _, _, err := m.ensureFetched(ctx, "x"); err == nil {
 		t.Fatal("ensure load error accepted")
 	}
 	marketplaceReadFile = func(string) ([]byte, error) { return []byte(`{}`), nil }
-	if _, err := m.ensureFetched(ctx, "x"); err == nil {
+	if _, _, err := m.ensureFetched(ctx, "x"); err == nil {
 		t.Fatal("missing ensure accepted")
 	}
 	installed, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceDirectory, Path: "here"}, InstallLocation: "here"}})
 	marketplaceReadFile = func(string) ([]byte, error) { return installed, nil }
-	if got, err := m.ensureFetched(ctx, "x"); err != nil || got.InstallLocation != "here" {
+	if got, _, err := m.ensureFetched(ctx, "x"); err != nil || got.InstallLocation != "here" {
 		t.Fatalf("installed ensure: %#v %v", got, err)
 	}
 	dirBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceDirectory, Path: "local"}}})
 	marketplaceReadFile = func(string) ([]byte, error) { return dirBody, nil }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return fail }
-	if _, err := m.ensureFetched(ctx, "x"); err == nil {
+	if _, _, err := m.ensureFetched(ctx, "x"); err == nil {
 		t.Fatal("ensure save error accepted")
 	}
 	gitBody, _ := json.Marshal(Marketplaces{"x": {Source: Source{Kind: SourceURL, URL: "u"}}})
 	marketplaceReadFile = func(string) ([]byte, error) { return gitBody, nil }
 	marketplaceGitClone = cloneErr
-	if _, err := m.ensureFetched(ctx, "x"); err == nil {
+	if _, _, err := m.ensureFetched(ctx, "x"); err == nil {
 		t.Fatal("ensure clone error accepted")
 	}
 	marketplaceGitClone = func(context.Context, string, string, string, string) error { return nil }
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return nil }
-	if got, err := m.ensureFetched(ctx, "x"); err != nil || got.InstallLocation == "" {
+	if got, _, err := m.ensureFetched(ctx, "x"); err != nil || got.InstallLocation == "" {
 		t.Fatalf("ensure clone success: %#v %v", got, err)
 	}
 	reset()

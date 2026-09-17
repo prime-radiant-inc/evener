@@ -314,7 +314,7 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Simulate sweep A completing the real upgrade while B is blocked.
-	entry, changed, skipped, err := m1.upgradeLocked(context.Background(), "widget", "acme", false)
+	entry, changed, skipped, _, err := m1.upgradeLocked(context.Background(), "widget", "acme", false)
 	if err != nil || skipped || !changed {
 		t.Fatalf("setup: direct upgradeLocked changed=%v skipped=%v err=%v", changed, skipped, err)
 	}

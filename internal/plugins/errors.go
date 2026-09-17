@@ -22,4 +22,13 @@ var (
 	// exactly as much as after a clean write. Every store-changed state wraps
 	// it, so one errors.Is answers the question for all of them.
 	ErrStoreChanged = errors.New("the plugin store was changed")
+	// ErrMarketplaceStoreChanged marks a failure whose cause is unrelated to
+	// the marketplace store, but that arrived after a lazy fetch (Install or
+	// Upgrade's first access to a seeded, unfetched marketplace) already
+	// persisted that marketplace's InstallLocation and LastUpdated. The
+	// plugin the caller was after may never install, but the marketplace
+	// listing already changed, so the hub owes every other client
+	// evener/marketplace/updated on this one too - distinct from
+	// ErrStoreChanged so a caller can tell which listing changed.
+	ErrMarketplaceStoreChanged = errors.New("the marketplace store was changed by a lazy fetch")
 )

@@ -1299,10 +1299,24 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return resp, err
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Install(ctx, params) })
+		resp, err := pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Install(ctx, params) })
+		// Install's first access to a seeded, unfetched marketplace can
+		// persist its InstallLocation before a later catalog/plugin step
+		// fails: the plugin never installs (no plugin broadcast above), but
+		// the marketplace listing already changed underneath it.
+		if errors.Is(err, plugins.ErrMarketplaceStoreChanged) {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Upgrade(ctx, params) })
+		resp, err := pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Upgrade(ctx, params) })
+		// See Install above: the same lazy-fetch marketplace change can
+		// precede a failed upgrade.
+		if errors.Is(err, plugins.ErrMarketplaceStoreChanged) {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		return pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Remove(ctx, params) })

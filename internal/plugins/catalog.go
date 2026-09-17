@@ -134,7 +134,7 @@ func (m *Manager) Browse(ctx context.Context, name string) (Catalog, error) {
 		return Catalog{}, err
 	}
 	defer release()
-	ref, err := m.ensureFetched(ctx, name)
+	ref, _, err := m.ensureFetched(ctx, name)
 	if err != nil {
 		return Catalog{}, err
 	}

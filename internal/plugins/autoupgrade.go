@@ -28,7 +28,12 @@ func (m *Manager) upgradeAuto(ctx context.Context, plugin, marketplace string) (
 		return InstallEntry{}, false, false, err
 	}
 	defer release()
-	return m.upgradeLocked(ctx, plugin, marketplace, true)
+	// The auto-upgrade daemon's own tick already refreshes every known
+	// marketplace up front (runPluginAutoUpgradeTick), so a lazy fetch here
+	// is not the interactive path's unbroadcast-marketplace-change gap;
+	// fetched is discarded rather than marked (see upgradeLocked and Upgrade).
+	entry, changed, skipped, _, err = m.upgradeLocked(ctx, plugin, marketplace, true)
+	return entry, changed, skipped, err
 }
 
 // UpdateAutoUpgrade upgrades every installed, git-backed plugin that has

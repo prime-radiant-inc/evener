@@ -130,33 +130,40 @@ func (m *Manager) fetchMarketplaceContainer(ctx context.Context, src Source, des
 // locks are per open-file-description, not per-process, so a second internal
 // acquireLock here would self-deadlock (spin until its own 30s timeout) when
 // reached from Install/Upgrade, which already hold that same lock.
-func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRef, error) {
+//
+// fetched reports whether this call persisted the backfill (InstallLocation
+// and LastUpdated) into the marketplaces file: true only on the seeded,
+// never-fetched branch that reaches its own saveMarketplaces successfully.
+// catalogPlugin's callers use it to mark ErrMarketplaceStoreChanged on any
+// later failure of their own — the marketplace listing already changed by
+// then, whether or not the plugin they were after ever installs.
+func (m *Manager) ensureFetched(ctx context.Context, name string) (ref MarketplaceRef, fetched bool, err error) {
 	mk, err := m.loadMarketplaces()
 	if err != nil {
-		return MarketplaceRef{}, err
+		return MarketplaceRef{}, false, err
 	}
 	ref, ok := mk[name]
 	if !ok {
-		return MarketplaceRef{}, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
+		return MarketplaceRef{}, false, fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	if ref.InstallLocation != "" {
-		return ref, nil
+		return ref, false, nil
 	}
 	installLoc := ref.Source.Path // directory source: referenced in place
 	if ref.Source.Kind != SourceDirectory {
 		installLoc = m.marketplaceDir(name)
 		_ = marketplaceRemoveAll(installLoc)
 		if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
-			return MarketplaceRef{}, err
+			return MarketplaceRef{}, false, err
 		}
 	}
 	ref.InstallLocation = installLoc
 	ref.LastUpdated = m.now().UTC()
 	mk[name] = ref
 	if err := m.saveMarketplaces(mk); err != nil {
-		return MarketplaceRef{}, err
+		return MarketplaceRef{}, false, err
 	}
-	return ref, nil
+	return ref, true, nil
 }
 
 // AddMarketplace fetches src, reads its marketplace.json for the name (unless

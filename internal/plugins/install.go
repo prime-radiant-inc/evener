@@ -12,7 +12,7 @@ import (
 
 var (
 	installAcquireLock   = acquireLock
-	installEnsureFetched = func(m *Manager, ctx context.Context, marketplace string) (MarketplaceRef, error) {
+	installEnsureFetched = func(m *Manager, ctx context.Context, marketplace string) (MarketplaceRef, bool, error) {
 		return m.ensureFetched(ctx, marketplace)
 	}
 	installParseCatalog     = ParseCatalog
@@ -53,21 +53,38 @@ func (m *Manager) saveRegistry(reg Registry) error {
 // catalogPlugin finds a named plugin's entry + its marketplace ref, lazily
 // fetching a seeded-but-unfetched marketplace first. Callers (Install/Upgrade)
 // already hold m.lockPath(), which ensureFetched requires.
-func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string) (MarketplaceRef, CatalogPlugin, error) {
-	ref, err := installEnsureFetched(m, ctx, marketplace)
+//
+// fetched reports ensureFetched's own answer: whether this call's lazy fetch
+// persisted the marketplace's backfill. It is set on every return past that
+// point, including plugin-not-found, so a caller that fails afterward can
+// still mark ErrMarketplaceStoreChanged - the marketplace listing already
+// changed regardless of whether this plugin resolves.
+func (m *Manager) catalogPlugin(ctx context.Context, marketplace, plugin string) (ref MarketplaceRef, cp CatalogPlugin, fetched bool, err error) {
+	ref, fetched, err = installEnsureFetched(m, ctx, marketplace)
 	if err != nil {
-		return MarketplaceRef{}, CatalogPlugin{}, err
+		return MarketplaceRef{}, CatalogPlugin{}, false, err
 	}
 	cat, err := installParseCatalog(m.catalogRoot(ref))
 	if err != nil {
-		return MarketplaceRef{}, CatalogPlugin{}, err
+		return MarketplaceRef{}, CatalogPlugin{}, fetched, err
 	}
 	for _, p := range cat.Plugins {
 		if p.Name == plugin {
-			return ref, p, nil
+			return ref, p, fetched, nil
 		}
 	}
-	return MarketplaceRef{}, CatalogPlugin{}, fmt.Errorf("plugin %q in marketplace %q: %w", plugin, marketplace, ErrPluginNotFound)
+	return MarketplaceRef{}, CatalogPlugin{}, fetched, fmt.Errorf("plugin %q in marketplace %q: %w", plugin, marketplace, ErrPluginNotFound)
+}
+
+// markMarketplaceChanged wraps err in ErrMarketplaceStoreChanged when fetched
+// is true: catalogPlugin's lazy fetch already persisted the marketplace's
+// backfill before this later failure, so the marketplace listing is stale
+// even though the plugin operation itself never applied.
+func markMarketplaceChanged(fetched bool, err error) error {
+	if !fetched || err == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrMarketplaceStoreChanged, err)
 }
 
 // stagePlugin resolves a plugin's source. For a directory-marketplace it returns
@@ -129,18 +146,18 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 
-	ref, cp, err := m.catalogPlugin(ctx, marketplace, plugin)
+	ref, cp, fetched, err := m.catalogPlugin(ctx, marketplace, plugin)
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, markMarketplaceChanged(fetched, err)
 	}
 	dir, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, markMarketplaceChanged(fetched, err)
 	}
 	if staged {
 		final, cerr := m.commitStaged(marketplace, plugin, dir, sha)
 		if cerr != nil {
-			return InstallEntry{}, cerr
+			return InstallEntry{}, markMarketplaceChanged(fetched, cerr)
 		}
 		dir = final
 	}
@@ -149,13 +166,13 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = installRemoveAll(dir)
 		}
-		return InstallEntry{}, err
+		return InstallEntry{}, markMarketplaceChanged(fetched, err)
 	}
 	if err := installValidateDir(dir); err != nil {
 		if strings.HasPrefix(dir, m.cacheDir()+string(os.PathSeparator)) {
 			_ = installRemoveAll(dir)
 		}
-		return InstallEntry{}, fmt.Errorf("installed plugin failed validation: %w", err)
+		return InstallEntry{}, markMarketplaceChanged(fetched, fmt.Errorf("installed plugin failed validation: %w", err))
 	}
 
 	now := m.now().UTC()
@@ -172,11 +189,11 @@ func (m *Manager) Install(ctx context.Context, plugin, marketplace string) (Inst
 	}
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, markMarketplaceChanged(fetched, err)
 	}
 	reg.Plugins[registryKey(plugin, marketplace)] = []InstallEntry{entry}
 	if err := m.saveRegistry(reg); err != nil {
-		return InstallEntry{}, err
+		return InstallEntry{}, markMarketplaceChanged(fetched, err)
 	}
 	return entry, nil
 }
@@ -197,8 +214,8 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 		return InstallEntry{}, err
 	}
 	defer release()
-	entry, _, _, err := m.upgradeLocked(ctx, plugin, marketplace, false)
-	return entry, err
+	entry, _, _, fetched, err := m.upgradeLocked(ctx, plugin, marketplace, false)
+	return entry, markMarketplaceChanged(fetched, err)
 }
 
 // upgradeLocked contains the actual mechanics of Upgrade. The caller MUST
@@ -218,56 +235,60 @@ func (m *Manager) Upgrade(ctx context.Context, plugin, marketplace string) (Inst
 // call's own fresh prev/after comparison — never from a caller-supplied
 // snapshot — so callers can trust it even when another sweep or an explicit
 // upgrade races this one.
-func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string, requireAutoUpgrade bool) (entry InstallEntry, changed, skipped bool, err error) {
+//
+// fetched is catalogPlugin's own answer, forwarded so Upgrade (not
+// upgradeAuto - see its own callers) can mark ErrMarketplaceStoreChanged on a
+// later failure the way Install does.
+func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string, requireAutoUpgrade bool) (entry InstallEntry, changed, skipped, fetched bool, err error) {
 	if err := validNameComponent("marketplace", marketplace); err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, false, err
 	}
 	if err := validNameComponent("plugin", plugin); err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, false, err
 	}
 
 	key := registryKey(plugin, marketplace)
 	reg, err := m.loadRegistry()
 	if err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, false, err
 	}
 	entries, ok := reg.Plugins[key]
 	if !ok || len(entries) == 0 {
-		return InstallEntry{}, false, false, fmt.Errorf("%s: %w", key, ErrNotInstalled)
+		return InstallEntry{}, false, false, false, fmt.Errorf("%s: %w", key, ErrNotInstalled)
 	}
 	prev := entries[0]
 
 	if requireAutoUpgrade && (!prev.AutoUpgrade || prev.Source.Rel || prev.Source.Kind == SourceDirectory) {
-		return prev, false, true, nil
+		return prev, false, true, false, nil
 	}
 
-	ref, cp, err := m.catalogPlugin(ctx, marketplace, plugin)
+	ref, cp, fetched, err := m.catalogPlugin(ctx, marketplace, plugin)
 	if err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, fetched, err
 	}
 	staging, sha, staged, err := m.stagePlugin(ctx, marketplace, plugin, ref, cp)
 	if err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, fetched, err
 	}
 	if !staged || sha == prev.GitCommitSha {
 		if staged {
 			_ = installRemoveAll(staging)
 		}
-		return prev, false, false, nil
+		return prev, false, false, fetched, nil
 	}
 
 	final, err := m.commitStaged(marketplace, plugin, staging, sha)
 	if err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, fetched, err
 	}
 	note, err := installManifestFallback(final, true, cp)
 	if err != nil {
 		_ = installRemoveAll(final)
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, fetched, err
 	}
 	if err := installValidateDir(final); err != nil {
 		_ = installRemoveAll(final)
-		return InstallEntry{}, false, false, fmt.Errorf("upgraded plugin failed validation: %w", err)
+		return InstallEntry{}, false, false, fetched, fmt.Errorf("upgraded plugin failed validation: %w", err)
 	}
 
 	prev.InstallPath = final
@@ -278,9 +299,9 @@ func (m *Manager) upgradeLocked(ctx context.Context, plugin, marketplace string,
 	prev.Note = note
 	reg.Plugins[key] = []InstallEntry{prev}
 	if err := m.saveRegistry(reg); err != nil {
-		return InstallEntry{}, false, false, err
+		return InstallEntry{}, false, false, fetched, err
 	}
-	return prev, true, false, nil
+	return prev, true, false, fetched, nil
 }
 
 func (m *Manager) mutateEntry(ctx context.Context, plugin, marketplace string, fn func(*InstallEntry)) error {
