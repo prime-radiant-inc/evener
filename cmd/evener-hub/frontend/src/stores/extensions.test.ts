@@ -1024,6 +1024,30 @@ describe("reconnect-triggered refetch", () => {
     expect(current.calls).toHaveLength(calls);
   });
 
+  // The sections' loader is a one-shot: it latches `started` when it fires the
+  // first fetch (marketplacesPlugins/index.tsx). So a read the client
+  // replacement interrupted is never asked for again by the pane, and the
+  // store has to carry the intent across the replacement itself - otherwise
+  // the settings page keeps a null list with nothing loading.
+  test("a read a client replacement interrupted is issued again, to the replacement", async () => {
+    const interrupted = connectFakeClient();
+    interrupted.on("evener/plugin/list", () => new Promise(() => {}));
+    void extensionsStore.getState().fetchPlugins();
+    await Promise.resolve();
+    expect(extensionsStore.getState().pluginsLoading).toBe(true);
+
+    // Scripted BEFORE it is connected: the recovery read goes out synchronously
+    // with the connection it recovers on.
+    const replacement = new FakeClient("ready");
+    replacement.on("evener/plugin/list", () => ({ plugins: [PLUGIN_A] }));
+    connectionStore.getState().connect(replacement);
+    await drainMicrotasks();
+
+    expect(replacement.calls.filter((c) => c.method === "evener/plugin/list")).toHaveLength(1);
+    expect(extensionsStore.getState().plugins).toEqual([PLUGIN_A]);
+    expect(extensionsStore.getState().pluginsLoading).toBe(false);
+  });
+
   test("a reconnect reads nothing for a section that was never opened", async () => {
     const fake = connectFakeClient();
     fake.on("evener/marketplace/list", () => ({ marketplaces: [MARKETPLACE_A] }));

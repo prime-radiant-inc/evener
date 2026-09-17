@@ -18,10 +18,9 @@
 //
 // CONNECTION IDENTITY
 //
-// Three review rounds asked the same question in three shapes - a replaced
-// connection's in-flight replies, its notifications, and what a reset does to
-// both - so the answer is written out here and the predicate implemented from
-// it.
+// A replaced connection's in-flight replies, its notifications, and what a
+// reset does to both are one question, so the answer is written out here and
+// the predicate implemented from it.
 //
 // Two different things are easy to conflate:
 //   - the SOURCE: the object frames arrive through, `notifications`, fixed for
@@ -52,6 +51,16 @@
 //   reset()                      | none       | unknown      | acted on - nothing has
 //                                |            |              | been reported to compare
 //   dispose()                    | unchanged  | unchanged    | ignored, always
+//
+// One row is about the requests rather than the frames, and it is the reason
+// `wantsList` is asked BEFORE the fence:
+//
+//   replacement while a read is in flight | the read is fenced and the flag it
+//     raised is settled (nothing on the wire will lower it), AND the intent
+//     survives: something asked for this list and never got it, so the read is
+//     issued again once the replacement is ready. The intent is not in the
+//     store's data - a read that never landed left none - so it is read off
+//     the state the fence is about to clear.
 //
 // Replacing the identity also fences every reply the previous connection still
 // owes (see connectionChanged), so neither its answers nor its announcements
@@ -93,9 +102,12 @@ export interface StoreLifecycleOptions<S> {
    * here, through the guarded setter, which drops the write if the store has
    * been disposed (nobody is listening then). */
   onFence?(set: FrameworkFreeStore<S>["setState"]): void;
-  /** Whether the list has been read: a read that landed, or one that failed
-   * and left its error. Only an established list is recovered on reconnect. */
-  established(state: S): boolean;
+  /** Whether the store wants this list at all: it has one, a read failed and
+   * left its error, or a read is in flight. Only a list something has asked
+   * for is recovered on reconnect - a store whose host never asked must not
+   * start asking on its own - and asking counts from the moment the request
+   * goes out, not from when it lands. */
+  wantsList(state: S): boolean;
 }
 
 export interface StoreLifecycle<S> {
@@ -110,7 +122,7 @@ export interface StoreLifecycle<S> {
   /** Tells the lifecycle which connection the list belongs to now, and what
    * state it is in - the host calls it for every transition its connection
    * reports. A connection that becomes ready, or a client that replaces the
-   * one the list was read through, re-reads an established list. */
+   * one the list was read through, re-reads a list something wants. */
   connectionChanged(client: object | null, state: ConnectionState): void;
   /** Terminal: unsubscribes, cancels a pending refetch and drops every reply
    * still in flight, so subscribers hear nothing more. */
@@ -208,6 +220,9 @@ export function createStoreLifecycle<S>(
       // recovery read would replace.
       if (client === previous.client && state === previous.state) return;
       const replaced = client !== previous.client;
+      // Before the fence, which settles the flag a read in flight raised and
+      // so erases the only evidence that one was asked for.
+      const wantsList = options.wantsList(options.store().getState());
       connection = { client, state };
       // A read scheduled on the connection that is changing has nothing left
       // to say: on the way down it would fire against a socket that is gone
@@ -235,7 +250,7 @@ export function createStoreLifecycle<S>(
       // Becoming ready AGAIN says what a notification says, and less
       // precisely: everything the hub answers may have moved while this client
       // was away, with no notification left to say so. What a notification
-      // applies is therefore applied here too, and BEFORE the established
+      // applies is therefore applied here too, and BEFORE the wantsList
       // check, because it is not about this store's own list - a revision a
       // host re-keys host-scoped data on, or a cache of answers to other
       // questions, is stale whether or not anything ever read the list. Only
@@ -244,7 +259,7 @@ export function createStoreLifecycle<S>(
       // A first connection is not a reconnection: nothing was missed, because
       // there was nothing to miss it with.
       if (away) options.onNotified?.();
-      if (!options.established(options.store().getState())) return;
+      if (!wantsList) return;
       void options.refetch(options.store().getState());
     },
     dispose() {
@@ -255,4 +270,16 @@ export function createStoreLifecycle<S>(
       stopNotifications = undefined;
     },
   };
+}
+
+/**
+ * The store a host drives: the store's own reactive triple plus everything of
+ * the lifecycle except `guard`, which stays the store's own business.
+ */
+export function attachLifecycle<S, T extends FrameworkFreeStore<S>>(
+  store: T,
+  lifecycle: StoreLifecycle<S>,
+): T & Omit<StoreLifecycle<S>, "guard"> {
+  const { start, connectionChanged, reset, dispose } = lifecycle;
+  return { ...store, start, connectionChanged, reset, dispose };
 }

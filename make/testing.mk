@@ -1,4 +1,4 @@
-.PHONY: test-web test-web-browser test-native test-native-bundle test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
+.PHONY: test-web test-web-browser test-native test-native-bundle native-preflight test-api-package test test-short test-race merge-approval-gate vet test-timing-budget test-rebaseline
 
 # test-web is the frontend's single gate entry point: typecheck, unit tests,
 # then lint. The three checks are independent readers of the same sources, so
@@ -64,6 +64,23 @@ test-web-browser: web-preflight
 test-native: test-native-bundle
 	@cd mobile-native && NODE_DISABLE_COMPILE_CACHE=1 npm test && NODE_DISABLE_COMPILE_CACHE=1 npm run test:shared && NODE_DISABLE_COMPILE_CACHE=1 npm run check && NODE_DISABLE_COMPILE_CACHE=1 npm run check:scripts
 
+# native-preflight turns the misleading Metro failure a fresh worktree gets into
+# a message naming the missing install and the command to run. The check and the
+# cases it settles live in the script.
+## Ensure the mobile-native dependency install is present and lockfile-compatible
+## before any native target runs.
+## proves: mobile-native/node_modules exists, matches package-lock.json, and
+##   holds an executable .bin/expo, so Metro bundles with the pinned Expo
+##   instead of whatever `npx` finds on PATH.
+## trigger: Setup prerequisite for the native gates.
+## requires: Node 22.13+; never installs, refusing instead with the command to
+##   run.
+## fails-when: node_modules is missing, does not match the lockfile (a symlink
+##   always by content), or has no executable .bin/expo; the message names
+##   `cd mobile-native && npm ci`.
+native-preflight:
+	@scripts/native/native-preflight.sh
+
 # The only gate that runs Metro. Vitest resolves through Vite and `tsc` through
 # TypeScript's own resolver; neither reads metro.config.js, so a resolver
 # regression there passes every other native check and fails first on a device.
@@ -85,7 +102,7 @@ test-native: test-native-bundle
 ##   step's timeout-minutes is the backstop.
 ## fails-when: Metro cannot resolve a module, the export fails, or the export
 ##   writes no iOS bundle.
-test-native-bundle:
+test-native-bundle: native-preflight
 	@scripts/native/test-native-bundle.sh
 
 ## The independently consumable AppWire package qualification gate.

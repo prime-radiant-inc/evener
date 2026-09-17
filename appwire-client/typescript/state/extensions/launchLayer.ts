@@ -77,7 +77,7 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
       // Nothing is coming to lower it.
       set({ launchLayerLoading: false });
     },
-    established: (s) => s.launchLayer !== null || s.launchLayerError !== null,
+    wantsList: (s) => s.launchLayer !== null || s.launchLayerError !== null || s.launchLayerLoading,
   });
 
   const store = createFrameworkFreeStore<LaunchLayerState>((publish) => {

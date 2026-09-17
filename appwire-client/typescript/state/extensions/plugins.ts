@@ -20,8 +20,8 @@ import type { AppwireClient } from "../../client";
 import { errorText } from "../../errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
 import type { PluginEntry, PluginListResponse } from "../../types.gen";
-import { createListRevision } from "./listRevision";
-import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
+import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type PluginsClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -90,7 +90,7 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
       // Nothing is coming to lower it.
       set({ pluginsLoading: false });
     },
-    established: (s) => s.plugins !== null || s.pluginsError !== null,
+    wantsList: (s) => s.plugins !== null || s.pluginsError !== null || s.pluginsLoading,
   });
 
   const store = createFrameworkFreeStore<PluginsState>((publish) => {
@@ -98,24 +98,13 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
 
     /** Runs one mutation: its response's list is written only if no later
      * revision has committed since. Rejects as the request does. */
-    async function mutate(request: () => Promise<PluginListResponse>): Promise<void> {
-      const revision = listRevision.next();
-      let resp: PluginListResponse;
-      try {
-        resp = await request();
-      } catch (err) {
-        // Nothing to publish, so nothing to own: see listRevision's retract.
-        listRevision.retract(revision);
-        throw err;
-      }
-      // The same three fields a read's success writes. A response that
-      // commits is the store's newest word on the list, so it owns the error
-      // and the loading flag too - a read this one outran writes none of the
-      // three when it lands, including the flag it raised on its way out.
-      listRevision.publish(revision, () => {
+    // The same three fields a read's success writes. A response that owns the
+    // list owns the error and the loading flag with it - a read this one
+    // outran publishes none of the three, the flag it raised included.
+    const mutate = (request: () => Promise<PluginListResponse>): Promise<void> =>
+      writeRevisioned(listRevision, request, (resp) => () => {
         set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
       });
-    }
 
     const mutation = (method: PluginRefMethod) => (plugin: string, marketplace: string) =>
       mutate(() => client.request(method, { plugin, marketplace }));
@@ -126,25 +115,17 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
       pluginsError: null,
       pluginRevision: 0,
 
-      async fetchPlugins() {
-        const revision = listRevision.next();
+      fetchPlugins() {
         set({ pluginsLoading: true, pluginsError: null });
-        try {
-          const resp = await client.request("evener/plugin/list", {});
-          // The loading flag and the error belong to this response as much as
-          // its list does, so an outrun fetch publishes none of the three: its
-          // success would clear an error a newer fetch posted or hide a load
-          // still running, and its failure would put "Failed to load" over a
-          // newer mutation's list. Held, not dropped: if everything that
-          // outran it retracts, this is the newest answer there is.
-          listRevision.publish(revision, () => {
-            set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null });
-          });
-        } catch (err) {
-          listRevision.publish(revision, () => {
-            set({ pluginsLoading: false, pluginsError: errorText(err) });
-          });
-        }
+        // The loading flag and the error belong to this answer as much as its
+        // list does, so an outrun read publishes none of the three: its success
+        // would clear an error a newer read posted or hide a load still
+        // running, and its failure would put "Failed to load" over a newer
+        // write's list.
+        return readRevisioned(listRevision, () => client.request("evener/plugin/list", {}), {
+          onAnswer: (resp) => () => set({ plugins: resp.plugins, pluginsLoading: false, pluginsError: null }),
+          onFailure: (err) => () => set({ pluginsLoading: false, pluginsError: errorText(err) }),
+        });
       },
 
       installPlugin: mutation("evener/plugin/install"),
@@ -157,6 +138,5 @@ export function createPluginsStore(client: PluginsClient): PluginsStore {
     };
   });
 
-  const { start, connectionChanged, reset, dispose } = lifecycle;
-  return { ...store, start, connectionChanged, reset, dispose };
+  return attachLifecycle(store, lifecycle);
 }

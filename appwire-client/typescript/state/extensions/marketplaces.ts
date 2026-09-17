@@ -24,8 +24,9 @@ import type {
   MarketplaceEditParams,
   MarketplaceEntry,
 } from "../../types.gen";
-import { createListRevision } from "./listRevision";
-import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
+import { createKeyedRevision } from "./keyedRevision";
+import { createListRevision, readRevisioned, writeRevisioned } from "./listRevision";
+import { attachLifecycle, createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
 
 export type MarketplacesClient = Pick<AppwireClient, "request" | "onNotification">;
 
@@ -94,14 +95,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // change. Each marketplace therefore carries a generation, bumped when its
   // cache entry is retired, and a browse whose generation moved while it was
   // in flight lands nothing.
-  const browseGenerations = new Map<string, number>();
-
-  // The promise of each browse still on the wire, keyed the same way. A caller
-  // that finds a catalog already loading has to wait for it, and the "loading"
-  // marker alone says nothing about when it lands. A retire can leave this
-  // holding the promise of a request whose entry is already gone, which is why
-  // the finally below deletes only its own registration.
-  const browseInFlight = new Map<string, Promise<void>>();
+  const browses = createKeyedRevision();
 
   // Every marketplace mutation, and the notification refetch, replaces the
   // whole list from its own response; see listRevision.ts for the fence. A
@@ -119,17 +113,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
   // state the reset left behind, not the one an older reply belongs to.
   let generation = 0;
 
-  function browseGeneration(name: string): number {
-    return browseGenerations.get(name) ?? 0;
-  }
-
-  /** Moves this name's generation, so a browse of it still on the wire lands
-   * nothing. */
-  function retireGeneration(name: string): void {
-    browseGenerations.set(name, browseGeneration(name) + 1);
-  }
-
-  /** Drops these names' cached catalogs and moves their generations, returning
+  /** Drops these names' cached catalogs and retires their keys, returning
    * the next browseCatalogs map. Called only once a mutation has landed: a bump
    * ahead of a request that then fails would fence out the in-flight browse and
    * strand the "loading" entry it had already written, leaving a permanent
@@ -142,7 +126,7 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     for (const name of names) {
       if (!name) continue;
       next.delete(name);
-      retireGeneration(name);
+      browses.retire(name);
     }
     return next;
   }
@@ -166,12 +150,11 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     onFence: (set) => {
       generation += 1;
       listRevision.fence();
-      for (const name of browseInFlight.keys()) retireGeneration(name);
-      browseInFlight.clear();
+      browses.retireInFlight();
       // Nothing is coming to lower it.
       set({ marketplacesLoading: false });
     },
-    established: (s) => s.marketplaces !== null || s.marketplacesError !== null,
+    wantsList: (s) => s.marketplaces !== null || s.marketplacesError !== null || s.marketplacesLoading,
   });
 
   const store = createFrameworkFreeStore<MarketplacesState>((publish, get) => {
@@ -181,30 +164,23 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
      * revision has committed since, and the catalogs it names are retired
      * either way within the generation it was issued in (retiring is
      * monotonic). Rejects as the request does. */
-    async function mutate(
+    function mutate(
       request: () => Promise<{ marketplaces: MarketplaceEntry[] }>,
       retire: (string | undefined)[],
     ): Promise<void> {
-      const revision = listRevision.next();
       const issuedIn = generation;
-      let resp: { marketplaces: MarketplaceEntry[] };
-      try {
-        resp = await request();
-      } catch (err) {
-        // Nothing to publish, so nothing to own: see listRevision's retract.
-        listRevision.retract(revision);
-        throw err;
-      }
-      if (issuedIn !== generation) return;
-      // The catalogs this mutation names are retired whether or not its list
-      // is the live answer: retiring is monotonic within the generation, so a
-      // catalog stale under an older list is stale under a newer one too.
-      if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
-      // The list, and the two fields that belong to it, go through the fence:
-      // see plugins.ts's mutate for why the live answer owns all three.
-      listRevision.publish(revision, () =>
-        set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
-      );
+      return writeRevisioned(listRevision, request, (resp) => {
+        // A reset or a dispose ended the generation this write was issued in:
+        // its answer is about a store that has forgotten everything it read.
+        if (issuedIn !== generation) return null;
+        // The catalogs this write names are retired whether or not its list is
+        // the live answer: retiring is monotonic within the generation, so a
+        // catalog stale under an older list is stale under a newer one too.
+        if (retire.length) set((s) => ({ browseCatalogs: retireBrowseCatalogs(s.browseCatalogs, retire) }));
+        // The list, and the two fields that belong to it, go through the fence:
+        // see plugins.ts's mutate for why the live answer owns all three.
+        return () => set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null });
+      });
     }
 
     const setCatalog = (name: string, entry: MarketplaceCatalogEntry): void =>
@@ -215,22 +191,18 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
       marketplacesLoading: false,
       marketplacesError: null,
 
-      async fetchMarketplaces() {
-        const revision = listRevision.next();
+      fetchMarketplaces() {
         set({ marketplacesLoading: true, marketplacesError: null });
-        try {
-          const resp = await client.request("evener/marketplace/list", {});
-          // The loading flag and the error belong to this response as much as
-          // its list does, so an outrun fetch writes none of the three: its
-          // success would clear an error a newer fetch posted or hide a load
-          // still running, and its failure would put "Failed to load" over a
-          // newer mutation's list.
-          listRevision.publish(revision, () =>
+        // The loading flag and the error belong to this answer as much as its
+        // list does, so an outrun read publishes none of the three: its success
+        // would clear an error a newer read posted or hide a load still
+        // running, and its failure would put "Failed to load" over a newer
+        // write's list.
+        return readRevisioned(listRevision, () => client.request("evener/marketplace/list", {}), {
+          onAnswer: (resp) => () =>
             set({ marketplaces: resp.marketplaces, marketplacesLoading: false, marketplacesError: null }),
-          );
-        } catch (err) {
-          listRevision.publish(revision, () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }));
-        }
+          onFailure: (err) => () => set({ marketplacesLoading: false, marketplacesError: errorText(err) }),
+        });
       },
 
       addMarketplace: (params) => mutate(() => client.request("evener/marketplace/add", params), []),
@@ -245,31 +217,25 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
         // Loaded, errored, or already in flight - see MarketplaceCatalogEntry's
         // own doc comment. A settled entry has no in-flight promise, so that
         // case resolves straight away.
-        if (get().browseCatalogs.has(name)) return browseInFlight.get(name);
-        const generation = browseGeneration(name);
+        if (get().browseCatalogs.has(name)) return browses.inFlight(name);
+        const revision = browses.issue(name);
         let settled!: (value: void | PromiseLike<void>) => void;
-        const inFlight = new Promise<void>((resolve) => {
+        const read = new Promise<void>((resolve) => {
           settled = resolve;
         });
-        browseInFlight.set(name, inFlight);
+        browses.begin(name, read);
         setCatalog(name, { status: "loading" });
         try {
           const resp = await client.request("evener/marketplace/browse", { name });
-          if (browseGeneration(name) !== generation) return;
+          if (!browses.current(name, revision)) return;
           setCatalog(name, { status: "loaded", description: resp.description, plugins: resp.plugins });
         } catch (err) {
           // Fenced the same way a success is: an error from a catalog that has
           // since been retired says nothing about the one that replaced it.
-          if (browseGeneration(name) !== generation) return;
+          if (!browses.current(name, revision)) return;
           setCatalog(name, { status: "error", error: errorText(err) });
         } finally {
-          // A retire can drop this name's entry while this request is on the
-          // wire and a replacement request take its place; that one is what
-          // the map must keep and what this request's waiters actually want,
-          // since this one's answer is fenced out.
-          const current = browseInFlight.get(name);
-          if (current === inFlight) browseInFlight.delete(name);
-          settled(current === inFlight ? undefined : current);
+          settled(browses.settle(name, read));
         }
       },
 
@@ -280,6 +246,5 @@ export function createMarketplacesStore(client: MarketplacesClient): Marketplace
     };
   });
 
-  const { start, connectionChanged, reset, dispose } = lifecycle;
-  return { ...store, start, connectionChanged, reset, dispose };
+  return attachLifecycle(store, lifecycle);
 }
