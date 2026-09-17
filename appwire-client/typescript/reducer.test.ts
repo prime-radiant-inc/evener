@@ -3304,12 +3304,14 @@ test("item/completed retains legacy display-ID matching when stable identity is 
 
 // askPending is a THREAD-level wire signal (EvenerThread.askPending, mirroring
 // the daemon's long-lived HasPendingAsk - "this session is waiting on a human
-// answer", agent/session_tools_ask.go). It is snapshot-authoritative: only a
-// wire snapshot (hydrateThread) sets it; no notification carries it (askPending
-// appears only on EvenerThread in types.gen.ts). The AskDock derives its OWN,
-// separate in-tool pending signal from ask_user items (composer/askDock), so
-// the reducer must NOT recompute this thread field from item lifecycle - doing
-// so clobbers the wire's authoritative value whenever items churn.
+// answer", agent/session_tools_ask.go). It is wire-authoritative: a wire
+// snapshot (hydrateThread) sets it, and thread/status/changed refreshes it under
+// the absent-means-no-update rule (#1613 - the pending set clears only at a turn
+// boundary, which is when that frame is announced). Nothing else may write it:
+// the AskDock derives its OWN, separate in-tool pending signal from ask_user
+// items (composer/askDock), so the reducer must NOT recompute this thread field
+// from item lifecycle - doing so clobbers the wire's authoritative value
+// whenever items churn.
 test("askPending is wire-authoritative from the thread snapshot", () => {
   const asking = testHydrate({
     evener: { ref: "ref_t", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },

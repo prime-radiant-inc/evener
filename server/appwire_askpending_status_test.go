@@ -3,6 +3,8 @@ package server
 import (
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
+
 	"primeradiant.com/evener/appwire"
 )
 
@@ -62,5 +64,50 @@ func TestStampAskPendingLeavesEverythingElseAlone(t *testing.T) {
 	}
 	if got := srv.stampAskPendingOnStatusChange(appwire.NotifyThreadStatusChanged, "wrong type"); got != "wrong type" {
 		t.Fatal("params that are not status params must pass through")
+	}
+}
+
+// The stamper above is only reached if both notification egress loops call it
+// (appwire_runtime.go:565, :634), so this drives a real session event through
+// the server and reads the frame it recorded — the shape
+// appwire_failure_push_test.go and appwire_capabilities_push_test.go use for the
+// two fields that ride this frame beside askPending. Dropping the call from
+// either loop fails here.
+func TestRecordedStatusFrameCarriesAskPending(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = true })
+
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventUserInput,
+		SessionID: "th_1",
+		Data:      events.UserInputData{Text: "go"},
+	})
+
+	statuses := statusNotifications(t, srv, "th_1")
+	if len(statuses) == 0 {
+		t.Fatal("no thread/status/changed was recorded for the turn going active")
+	}
+	active := statuses[len(statuses)-1]
+	if active.AskPending == nil {
+		t.Fatal("the recorded status frame carries no askPending, so a client cannot learn the flag moved")
+	}
+	if !*active.AskPending {
+		t.Fatal("the recorded status frame says no question is waiting, want the envelope's own value")
+	}
+
+	// And the clear: the answer empties the pending set, and the frame that goes
+	// with the next transition says so.
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) { e.askPending = false })
+	srv.RecordAppEvent(events.SessionEvent{
+		Kind:      events.EventSessionEnd,
+		SessionID: "th_1",
+		Data:      events.SessionEndData{Reason: "input_complete", State: "idle"},
+	})
+
+	statuses = statusNotifications(t, srv, "th_1")
+	settled := statuses[len(statuses)-1]
+	if settled.AskPending == nil || *settled.AskPending {
+		t.Fatalf("recorded askPending=%v after the answer, want an explicit false", settled.AskPending)
 	}
 }
