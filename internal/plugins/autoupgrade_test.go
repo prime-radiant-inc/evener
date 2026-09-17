@@ -84,7 +84,7 @@ func TestUpdateAutoUpgrade_OnlyTouchesAutoUpgradeEnabled(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	first, err := m.Install(context.Background(), "widget", "acme")
+	first, _, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestUpdateAutoUpgrade_NoOpNotReportedAsUpdated(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
+	if _, _, err := m.Install(context.Background(), "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	if err := m.SetAutoUpgrade(context.Background(), "widget", "acme", true); err != nil {
@@ -181,7 +181,7 @@ func TestUpdateAutoUpgrade_SkipsRelativeAndDirectorySources(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+	if _, _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	if err := m.SetAutoUpgrade(context.Background(), "widget", name, true); err != nil {
@@ -213,7 +213,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "broken", "acme"); err != nil {
+	if _, _, err := m.Install(context.Background(), "broken", "acme"); err != nil {
 		t.Fatalf("Install broken: %v", err)
 	}
 	if err := m.SetAutoUpgrade(context.Background(), "broken", "acme", true); err != nil {
@@ -221,7 +221,7 @@ func TestUpdateAutoUpgrade_AggregatesFailuresButKeepsGoing(t *testing.T) {
 	}
 	advanceGitRepo(t, brokenRepo, "extra.txt", "v2")
 
-	healthy, err := m.Install(context.Background(), "healthy", "acme")
+	healthy, _, err := m.Install(context.Background(), "healthy", "acme")
 	if err != nil {
 		t.Fatalf("Install healthy: %v", err)
 	}
@@ -284,7 +284,7 @@ func TestUpdateAutoUpgrade_ConcurrentSweepDoesNotDuplicateReport(t *testing.T) {
 	if _, err := m1.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	first, err := m1.Install(context.Background(), "widget", "acme")
+	first, _, err := m1.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}

@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"net/http/httptest"
@@ -99,7 +100,7 @@ func TestPlugins_EnableWhoseListingFailedIsStillApplied(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := ctl.Install(ctx, appwire.PluginRefParams{Plugin: "demo", Marketplace: "demo-market"}); err != nil {
+	if _, _, err := ctl.Install(ctx, appwire.PluginRefParams{Plugin: "demo", Marketplace: "demo-market"}); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	atPluginWriteBetween(t, func() { breakPluginStoreReads(t, root) })
@@ -371,5 +372,97 @@ func TestInstances_RemoveMarksAppliedWhenTheRollbackSucceedsButTheCredentialCann
 	}
 	if !writeDidApply(err) {
 		t.Fatalf("Remove = %v (%T), want an applied write: the stored key stayed deleted despite the config rollback", err, err)
+	}
+}
+
+// seedUnfetchedMarketplace plants known_marketplaces.json directly under
+// pluginRoot, naming a directory-source marketplace whose InstallLocation is
+// still empty - the state a seeded pointer is in before its first
+// Browse/Install/Upgrade. AddMarketplace always fetches immediately, so a
+// seeded-but-unfetched pointer can only be produced by writing the store's
+// own file, the technique TestPlugins_Marketplace_BrowseRefusalsAreWireErrors
+// already uses for a different case.
+func seedUnfetchedMarketplace(t *testing.T, pluginRoot, name, dir string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{name: map[string]any{
+		"source": map[string]any{"source": "directory", "path": dir},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginRoot, "known_marketplaces.json"), body, 0o644); err != nil {
+		t.Fatalf("seeding known_marketplaces.json: %v", err)
+	}
+}
+
+// countBroadcasts drains every notification a client receives until quiet
+// passes with none arriving, so a test can assert exactly how many times a
+// method fired instead of racing a single select against the first one.
+func countBroadcasts(client *appwire.Client, quiet time.Duration) map[string]int {
+	counts := map[string]int{}
+	for {
+		select {
+		case got := <-client.Notifications():
+			counts[got.Method]++
+		case <-time.After(quiet):
+			return counts
+		}
+	}
+}
+
+// Install and Browse's first access to a seeded, unfetched marketplace
+// persists a backfill (InstallLocation/LastUpdated) whether or not the call
+// itself fails - earlier rounds covered the failure paths (marketplaceChanged
+// wrapped in an error), but a SUCCESSFUL Install or Browse must broadcast
+// evener/marketplace/updated too, exactly once, or every other client keeps
+// an empty install location until something unrelated happens to broadcast.
+// Closes #1672.
+func TestHubRPCInstallBroadcastsMarketplaceUpdatedOnASuccessfulLazyFetch(t *testing.T) {
+	pluginRoot := t.TempDir()
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	seedUnfetchedMarketplace(t, pluginRoot, "acme", dir)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.PluginListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerPluginInstall,
+		appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}, &resp); err != nil {
+		t.Fatalf("evener/plugin/install: %v", err)
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
+	}
+}
+
+func TestHubRPCBrowseBroadcastsMarketplaceUpdatedOnASuccessfulLazyFetch(t *testing.T) {
+	pluginRoot := t.TempDir()
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+	seedUnfetchedMarketplace(t, pluginRoot, "acme", dir)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{PluginRoot: pluginRoot})
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.MarketplaceBrowseResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerMarketplaceBrowse,
+		appwire.MarketplaceBrowseParams{Name: "acme"}, &resp); err != nil {
+		t.Fatalf("evener/marketplace/browse: %v", err)
+	}
+
+	counts := countBroadcasts(client, 200*time.Millisecond)
+	if counts[appwire.NotifyEvenerMarketplaceUpdated] != 1 {
+		t.Fatalf("evener/marketplace/updated fired %d times, want exactly 1 (all broadcasts: %v)", counts[appwire.NotifyEvenerMarketplaceUpdated], counts)
 	}
 }

@@ -28,19 +28,19 @@ func FuzzPluginsMiscCoverage(f *testing.F) {
 func fuzzInstallErrors(t *testing.T) {
 	ctx := context.Background()
 	m := NewManager(t.TempDir())
-	if _, err := m.Install(ctx, "plugin", "../bad"); err == nil {
+	if _, _, err := m.Install(ctx, "plugin", "../bad"); err == nil {
 		t.Fatal("invalid marketplace installed")
 	}
-	if _, err := m.Install(ctx, "../bad", "market"); err == nil {
+	if _, _, err := m.Install(ctx, "../bad", "market"); err == nil {
 		t.Fatal("invalid plugin installed")
 	}
-	if _, err := m.Upgrade(ctx, "plugin", "../bad"); err == nil {
+	if _, _, err := m.Upgrade(ctx, "plugin", "../bad"); err == nil {
 		t.Fatal("invalid marketplace upgraded")
 	}
-	if _, err := m.Upgrade(ctx, "../bad", "market"); err == nil {
+	if _, _, err := m.Upgrade(ctx, "../bad", "market"); err == nil {
 		t.Fatal("invalid plugin upgraded")
 	}
-	if _, err := m.Upgrade(ctx, "missing", "market"); err == nil {
+	if _, _, err := m.Upgrade(ctx, "missing", "market"); err == nil {
 		t.Fatal("missing plugin upgraded")
 	}
 	if err := m.SetEnabled(context.Background(), "missing", "market", true); err == nil {
@@ -179,14 +179,14 @@ func fuzzCatalogEdges(t *testing.T) {
 	}
 
 	m := NewManager(t.TempDir())
-	if _, err := m.Browse(context.Background(), "missing"); err == nil {
+	if _, _, err := m.Browse(context.Background(), "missing"); err == nil {
 		t.Fatal("missing browse succeeded")
 	}
 	blocked := filepath.Join(t.TempDir(), "root")
 	if err := os.WriteFile(blocked, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewManager(blocked).Browse(context.Background(), "missing"); err == nil {
+	if _, _, err := NewManager(blocked).Browse(context.Background(), "missing"); err == nil {
 		t.Fatal("browse lock fault succeeded")
 	}
 }

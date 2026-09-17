@@ -287,10 +287,10 @@ func TestPluginListEffective_ResolverOutputAndDisabledExclusion(t *testing.T) {
 	if _, err := registry.AddMarketplace(context.Background(), "task3-market", plugins.Source{Kind: plugins.SourceDirectory, Path: marketplaceDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := registry.Install(context.Background(), "enabled-plugin", "task3-market"); err != nil {
+	if _, _, err := registry.Install(context.Background(), "enabled-plugin", "task3-market"); err != nil {
 		t.Fatalf("Install enabled: %v", err)
 	}
-	if _, err := registry.Install(context.Background(), "disabled-plugin", "task3-market"); err != nil {
+	if _, _, err := registry.Install(context.Background(), "disabled-plugin", "task3-market"); err != nil {
 		t.Fatalf("Install disabled: %v", err)
 	}
 	if err := registry.SetEnabled(context.Background(), "disabled-plugin", "task3-market", false); err != nil {
@@ -388,7 +388,7 @@ func installDirectoryPluginForTest(t *testing.T, name, marketplace string) {
 	if _, err := m.AddMarketplace(ctx, marketplace, plugins.Source{Kind: plugins.SourceDirectory, Path: mktDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, name, marketplace); err != nil {
+	if _, _, err := m.Install(ctx, name, marketplace); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 }

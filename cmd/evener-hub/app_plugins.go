@@ -306,10 +306,15 @@ func (c *hubPluginsController) EditMarketplace(ctx context.Context, params appwi
 // but that is serialized by the manager's own flock). Its one refusal, an
 // unknown name, is classified like RemoveMarketplace's, by
 // marketplaceRefusalToWire; a fetch that failed is not a refusal.
-func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
-	cat, err := c.mgr.Browse(ctx, params.Name)
+//
+// The second return reports whether that lazy fetch persisted a backfill to
+// the marketplace store - on top of whatever the catalog parse did, success
+// or failure. The caller broadcasts evener/marketplace/updated when it's
+// true, independent of this call's own error.
+func (c *hubPluginsController) Browse(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, bool, error) {
+	cat, marketplaceChanged, err := c.mgr.Browse(ctx, params.Name)
 	if err != nil {
-		return appwire.MarketplaceBrowseResponse{}, marketplaceRefusalToWire(err)
+		return appwire.MarketplaceBrowseResponse{}, marketplaceChanged, marketplaceRefusalToWire(err)
 	}
 	entries := make([]appwire.MarketplaceCatalogPlugin, 0, len(cat.Plugins))
 	for _, p := range cat.Plugins {
@@ -321,7 +326,7 @@ func (c *hubPluginsController) Browse(ctx context.Context, params appwire.Market
 			Author:      p.Author.Name,
 		})
 	}
-	return appwire.MarketplaceBrowseResponse{Name: cat.Name, Description: cat.Description, Plugins: entries}, nil
+	return appwire.MarketplaceBrowseResponse{Name: cat.Name, Description: cat.Description, Plugins: entries}, marketplaceChanged, nil
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -388,21 +393,30 @@ func (c *hubPluginsController) pluginWrite(ctx context.Context, apply func() err
 }
 
 // Install installs a plugin from a marketplace's catalog and returns the
-// updated list.
-func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	return c.pluginWrite(ctx, func() error {
-		_, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace)
-		return err
-	})
+// updated list, plus whether the manager's first access to a seeded,
+// unfetched marketplace persisted a backfill during this call - a different
+// shape than pluginWrite's other callers (a second bool, not just a listing
+// and an error), so it stays inline. The caller broadcasts
+// evener/marketplace/updated when it's true, regardless of this call's own
+// error.
+func (c *hubPluginsController) Install(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, bool, error) {
+	_, marketplaceChanged, err := c.mgr.Install(ctx, params.Plugin, params.Marketplace)
+	if err != nil {
+		return appwire.PluginListResponse{}, marketplaceChanged, marketplaceRefusalToWire(err)
+	}
+	resp, err := c.pluginListAfterWrite(ctx)
+	return resp, marketplaceChanged, err
 }
 
 // Upgrade re-resolves an installed plugin against its marketplace and returns
-// the updated list.
-func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-	return c.pluginWrite(ctx, func() error {
-		_, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace)
-		return err
-	})
+// the updated list. See Install for the second return.
+func (c *hubPluginsController) Upgrade(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, bool, error) {
+	_, marketplaceChanged, err := c.mgr.Upgrade(ctx, params.Plugin, params.Marketplace)
+	if err != nil {
+		return appwire.PluginListResponse{}, marketplaceChanged, marketplaceRefusalToWire(err)
+	}
+	resp, err := c.pluginListAfterWrite(ctx)
+	return resp, marketplaceChanged, err
 }
 
 // Remove deletes an installed plugin's registry entry (and cache dir, if any)

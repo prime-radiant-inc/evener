@@ -128,15 +128,20 @@ func catalogPluginName(raw json.RawMessage) string {
 
 // Browse returns the parsed catalog of a registered marketplace, lazily
 // cloning it first if it was only seeded as an unfetched pointer.
-func (m *Manager) Browse(ctx context.Context, name string) (Catalog, error) {
+//
+// The second return is ensureFetched's own answer: whether this call's lazy
+// fetch persisted a backfill to the marketplace store, on top of whatever
+// the catalog parse below does - true whether or not that parse succeeds.
+func (m *Manager) Browse(ctx context.Context, name string) (cat Catalog, marketplaceChanged bool, err error) {
 	release, err := m.lockStore(ctx, acquireLock, 30*time.Second)
 	if err != nil {
-		return Catalog{}, err
+		return Catalog{}, false, err
 	}
 	defer release()
-	ref, _, err := m.ensureFetched(ctx, name)
+	ref, fetched, err := m.ensureFetched(ctx, name)
 	if err != nil {
-		return Catalog{}, err
+		return Catalog{}, fetched, err
 	}
-	return ParseCatalog(m.catalogRoot(ref))
+	cat, err = ParseCatalog(m.catalogRoot(ref))
+	return cat, fetched, err
 }

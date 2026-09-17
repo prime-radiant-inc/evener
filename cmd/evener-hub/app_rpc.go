@@ -1281,7 +1281,16 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
-		return pluginsController.Browse(ctx, params)
+		resp, marketplaceChanged, err := pluginsController.Browse(ctx, params)
+		// Browse's first access to a seeded, unfetched marketplace persists
+		// its InstallLocation even though Browse itself never writes
+		// anything a caller asked for - every other client's marketplace
+		// listing is stale the moment that backfill lands, whether or not
+		// the catalog parse that follows it succeeds.
+		if marketplaceChanged {
+			notifyMarketplaceUpdated(server)
+		}
+		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		return pluginsController.ListPlugins(ctx)
@@ -1289,8 +1298,11 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 		return pluginsController.Preview(ctx, params)
 	})
-	// Install, Upgrade, Remove, Enable, Disable and SetAutoUpgrade all answer
-	// with the refreshed plugin list and owe the identical broadcast.
+	// Remove, Enable, Disable and SetAutoUpgrade all answer with the
+	// refreshed plugin list and owe the identical broadcast. Install and
+	// Upgrade own the same plugin broadcast too, but also a second,
+	// independent one (see below), so they call notifyPluginUpdated inline
+	// instead of going through this closure.
 	pluginBroadcastWrite := func(call func() (appwire.PluginListResponse, error)) (appwire.PluginListResponse, error) {
 		resp, err := call()
 		if writeDidApply(err) {
@@ -1299,21 +1311,28 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return resp, err
 	}
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Install(ctx, params) })
-		// Install's first access to a seeded, unfetched marketplace can
-		// persist its InstallLocation before a later catalog/plugin step
-		// fails: the plugin never installs (no plugin broadcast above), but
-		// the marketplace listing already changed underneath it.
-		if errors.Is(err, plugins.ErrMarketplaceStoreChanged) {
+		resp, marketplaceChanged, err := pluginsController.Install(ctx, params)
+		if writeDidApply(err) {
+			notifyPluginUpdated(server)
+		}
+		// Install's first access to a seeded, unfetched marketplace persists
+		// its InstallLocation on top of whatever else this call does -
+		// success, a later catalog/plugin step failing, or the plugin
+		// simply not resolving. The marketplace listing is stale the moment
+		// that backfill lands, independent of the plugin broadcast above.
+		if marketplaceChanged {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginBroadcastWrite(func() (appwire.PluginListResponse, error) { return pluginsController.Upgrade(ctx, params) })
+		resp, marketplaceChanged, err := pluginsController.Upgrade(ctx, params)
+		if writeDidApply(err) {
+			notifyPluginUpdated(server)
+		}
 		// See Install above: the same lazy-fetch marketplace change can
-		// precede a failed upgrade.
-		if errors.Is(err, plugins.ErrMarketplaceStoreChanged) {
+		// accompany a successful or a failed upgrade alike.
+		if marketplaceChanged {
 			notifyMarketplaceUpdated(server)
 		}
 		return resp, err

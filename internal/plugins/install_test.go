@@ -27,7 +27,7 @@ func TestInstall_MaterializesAndRegisters(t *testing.T) {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
-	entry, err := m.Install(context.Background(), "widget", name)
+	entry, _, err := m.Install(context.Background(), "widget", name)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestInstall_AcceptsAPluginNameThatCarriesAnAt(t *testing.T) {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
-	if _, err := m.Install(ctx, "wid@get", "acme"); err != nil {
+	if _, _, err := m.Install(ctx, "wid@get", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	reg, err := LoadRegistry(m.registryPath())
@@ -115,7 +115,7 @@ func TestInstall_AcceptsAPluginNamedForAScratchDirectory(t *testing.T) {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
-	entry, err := m.Install(ctx, asideCloneName, "acme")
+	entry, _, err := m.Install(ctx, asideCloneName, "acme")
 	if err != nil {
 		t.Fatalf("installing a plugin named %q: %v", asideCloneName, err)
 	}
@@ -152,7 +152,7 @@ func TestInstall_LazyFetchesSeededPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	entry, err := m.Install(context.Background(), "widget", name)
+	entry, _, err := m.Install(context.Background(), "widget", name)
 	if err != nil {
 		t.Fatalf("Install on seeded-but-unfetched marketplace: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestInstall_FromGitSubdirMarketplace(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), "widget", "acme")
+	entry, _, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install from git-subdir marketplace: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestInstall_ManifestLessPlugin_MCPServerRegisters(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), "bare-mcp", "acme")
+	entry, _, err := m.Install(context.Background(), "bare-mcp", "acme")
 	if err != nil {
 		t.Fatalf("Install of a manifest-less plugin with an mcpServers entry: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestInstall_ManifestLessPlugin_NoUsableFields_Installs(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), "bare-nothing", "acme")
+	entry, _, err := m.Install(context.Background(), "bare-nothing", "acme")
 	if err != nil {
 		t.Fatalf("Install of a manifest-less, component-less plugin: %v", err)
 	}
@@ -311,7 +311,7 @@ func installBareNPMRepo(t *testing.T, pluginName string, files map[string]string
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), pluginName, "acme")
+	entry, _, err := m.Install(context.Background(), pluginName, "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -397,7 +397,7 @@ func TestInstall_PluginWithOwnManifest_EntryIgnored(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), "widget", "acme")
+	entry, _, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}

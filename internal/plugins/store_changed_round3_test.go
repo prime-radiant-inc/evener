@@ -352,15 +352,15 @@ func TestInstallWhoseCatalogLookupFailedReportsTheMarketplaceStoreChanged(t *tes
 		t.Fatal(err)
 	}
 
-	_, err := m.Install(context.Background(), "does-not-exist", name)
+	_, marketplaceChanged, err := m.Install(context.Background(), "does-not-exist", name)
 	if err == nil {
 		t.Fatal("Install(missing plugin) = nil, want the missing plugin reported")
 	}
 	if !errors.Is(err, ErrPluginNotFound) {
 		t.Fatalf("Install(missing plugin) = %v, want ErrPluginNotFound", err)
 	}
-	if !errors.Is(err, ErrMarketplaceStoreChanged) {
-		t.Fatalf("Install(missing plugin) = %v, want ErrMarketplaceStoreChanged: the lazy fetch already persisted", err)
+	if !marketplaceChanged {
+		t.Fatal("Install(missing plugin) marketplaceChanged = false, want true: the lazy fetch already persisted")
 	}
 	mk, listErr := m.ListMarketplaces(context.Background())
 	if listErr != nil {
@@ -383,12 +383,12 @@ func TestInstallWhoseCatalogLookupFailedOnAnAlreadyFetchedMarketplaceIsAPlainRef
 		t.Fatalf("AddMarketplace: %v", err)
 	}
 
-	_, err := m.Install(context.Background(), "does-not-exist", name)
+	_, marketplaceChanged, err := m.Install(context.Background(), "does-not-exist", name)
 	if err == nil {
 		t.Fatal("Install(missing plugin) = nil, want the missing plugin reported")
 	}
-	if errors.Is(err, ErrMarketplaceStoreChanged) {
-		t.Fatalf("Install(missing plugin) = %v, want a plain refusal: the marketplace was already fetched", err)
+	if marketplaceChanged {
+		t.Fatal("Install(missing plugin) marketplaceChanged = true, want false: the marketplace was already fetched")
 	}
 }
 
@@ -410,7 +410,7 @@ func TestUpgradeWhoseSaveFailedAfterALazyFetchReportsTheMarketplaceStoreChanged(
 	if _, err := m.AddMarketplace(context.Background(), name, Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "widget", name); err != nil {
+	if _, _, err := m.Install(context.Background(), "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
@@ -435,12 +435,12 @@ func TestUpgradeWhoseSaveFailedAfterALazyFetchReportsTheMarketplaceStoreChanged(
 		return errors.New("the registry could not be written")
 	}
 
-	_, err = m.Upgrade(context.Background(), "widget", name)
+	_, marketplaceChanged, err := m.Upgrade(context.Background(), "widget", name)
 	if err == nil {
 		t.Fatal("Upgrade = nil, want the failed registry save reported")
 	}
-	if !errors.Is(err, ErrMarketplaceStoreChanged) {
-		t.Fatalf("Upgrade = %v, want ErrMarketplaceStoreChanged: the lazy fetch already persisted", err)
+	if !marketplaceChanged {
+		t.Fatal("Upgrade marketplaceChanged = false, want true: the lazy fetch already persisted")
 	}
 }
 

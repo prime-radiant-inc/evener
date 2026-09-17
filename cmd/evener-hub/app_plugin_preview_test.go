@@ -266,7 +266,7 @@ func TestPluginPreviewControllerMapsFullResolution(t *testing.T) {
 	writeTestMarketplaceManifest(t, marketplaceRoot, "acme", `[{"name":"preview-fixture","description":"preview only","source":"./plugins/preview-fixture"},{"name":"other-fixture","description":"other preview","source":"./plugins/other-fixture"}]`)
 	addTestMarketplace(t, ctl, marketplaceRoot)
 	for _, name := range []string{"preview-fixture", "other-fixture"} {
-		if _, err := ctl.Install(context.Background(), appwire.PluginRefParams{Plugin: name, Marketplace: "acme"}); err != nil {
+		if _, _, err := ctl.Install(context.Background(), appwire.PluginRefParams{Plugin: name, Marketplace: "acme"}); err != nil {
 			t.Fatalf("Install %s: %v", name, err)
 		}
 	}

@@ -61,7 +61,7 @@ func TestBrowse_LazyFetchesSeededPointer(t *testing.T) {
 	if err := m.saveMarketplaces(Marketplaces{"acme": {Source: Source{Kind: SourceURL, URL: mktRepo}}}); err != nil {
 		t.Fatal(err)
 	}
-	cat, err := m.Browse(context.Background(), "acme")
+	cat, _, err := m.Browse(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("Browse lazy-fetch: %v", err)
 	}

@@ -162,7 +162,7 @@ func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
 	if _, err := mgr.AddMarketplace(ctx, "acme", plugins.Source{Kind: plugins.SourceDirectory, Path: mktDir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := mgr.Install(ctx, "greeter", "acme"); err != nil {
+	if _, _, err := mgr.Install(ctx, "greeter", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 

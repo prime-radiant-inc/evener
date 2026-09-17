@@ -27,7 +27,7 @@ func TestUpgrade_NewShaDirOldRemains(t *testing.T) {
 
 	m := NewManager(t.TempDir())
 	m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
-	first, err := m.Install(context.Background(), "widget", "acme")
+	first, _, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestUpgrade_NewShaDirOldRemains(t *testing.T) {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
 
-	second, err := m.Upgrade(context.Background(), "widget", "acme")
+	second, _, err := m.Upgrade(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestUpgrade_NoOpKeepsLiveDir(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	first, err := m.Install(context.Background(), "widget", "acme")
+	first, _, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestUpgrade_NoOpKeepsLiveDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	after, err := m.Upgrade(context.Background(), "widget", "acme")
+	after, _, err := m.Upgrade(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Upgrade no-op: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	first, err := m.Install(context.Background(), "bare-mcp", "acme")
+	first, _, err := m.Install(context.Background(), "bare-mcp", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestUpgrade_ManifestLessPlugin_FallbackAppliedToNewShaDir(t *testing.T) {
 		t.Fatalf("git commit: %v\n%s", err, out)
 	}
 
-	second, err := m.Upgrade(context.Background(), "bare-mcp", "acme")
+	second, _, err := m.Upgrade(context.Background(), "bare-mcp", "acme")
 	if err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}

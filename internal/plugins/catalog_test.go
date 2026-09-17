@@ -89,7 +89,7 @@ func TestBrowse_SkipsUnsupportedSourceAndReturnsTheRest(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	cat, err := m.Browse(context.Background(), "acme")
+	cat, _, err := m.Browse(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("Browse: %v, want the npm plugin skipped rather than Browse failing", err)
 	}

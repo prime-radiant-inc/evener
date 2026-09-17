@@ -169,7 +169,7 @@ func TestPlugins_Marketplace_Browse(t *testing.T) {
 	writeTestMarketplace(t, dir)
 	addTestMarketplace(t, ctl, dir)
 
-	resp, err := ctl.Browse(context.Background(), appwire.MarketplaceBrowseParams{Name: "acme"})
+	resp, _, err := ctl.Browse(context.Background(), appwire.MarketplaceBrowseParams{Name: "acme"})
 	if err != nil {
 		t.Fatalf("Browse: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestPlugins_Marketplace_BrowseRefusalsAreWireErrors(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("browsing an unknown marketplace", func(t *testing.T) {
-		_, err := ctl.Browse(ctx, appwire.MarketplaceBrowseParams{Name: "nope"})
+		_, _, err := ctl.Browse(ctx, appwire.MarketplaceBrowseParams{Name: "nope"})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("Browse = %v, want an InvalidParams wire error", err)
@@ -221,7 +221,7 @@ func TestPlugins_Marketplace_BrowseRefusalsAreWireErrors(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(store, "known_marketplaces.json"), body, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		_, err = ctl.Browse(ctx, appwire.MarketplaceBrowseParams{Name: "../../escape"})
+		_, _, err = ctl.Browse(ctx, appwire.MarketplaceBrowseParams{Name: "../../escape"})
 		var wire appwire.WireError
 		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
 			t.Fatalf("Browse = %v, want an InvalidParams wire error", err)
@@ -307,7 +307,7 @@ func TestPlugins_Install_UnknownPlugin_Errors(t *testing.T) {
 	writeTestMarketplace(t, dir)
 	addTestMarketplace(t, ctl, dir)
 
-	_, err := ctl.Install(context.Background(), appwire.PluginRefParams{Plugin: "nonexistent", Marketplace: "acme"})
+	_, _, err := ctl.Install(context.Background(), appwire.PluginRefParams{Plugin: "nonexistent", Marketplace: "acme"})
 	if err == nil {
 		t.Fatal("expected error installing unknown plugin, got nil")
 	}
@@ -321,7 +321,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 
 	ref := appwire.PluginRefParams{Plugin: "widget", Marketplace: "acme"}
 
-	installResp, err := ctl.Install(context.Background(), ref)
+	installResp, _, err := ctl.Install(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestPlugins_Lifecycle_InstallEnableDisableAutoUpgradeUpgradeRemove(t *testi
 
 	// A directory-source plugin's "upgrade" is inherently current (a true
 	// no-op per internal/plugins' design) but must succeed, not error.
-	upgradeResp, err := ctl.Upgrade(context.Background(), ref)
+	upgradeResp, _, err := ctl.Upgrade(context.Background(), ref)
 	if err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}

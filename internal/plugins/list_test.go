@@ -15,7 +15,7 @@ func TestList_FlagsBroken(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
-	entry, _ := m.Install(context.Background(), "widget", name)
+	entry, _, _ := m.Install(context.Background(), "widget", name)
 
 	items, err := m.List(context.Background())
 	if err != nil {
@@ -58,10 +58,10 @@ func TestUpdateAll_UpgradesGitBackedSkipsRelative(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "gitwidget", "acme"); err != nil {
+	if _, _, err := m.Install(context.Background(), "gitwidget", "acme"); err != nil {
 		t.Fatalf("Install gitwidget: %v", err)
 	}
-	if _, err := m.Install(context.Background(), "relwidget", "acme"); err != nil {
+	if _, _, err := m.Install(context.Background(), "relwidget", "acme"); err != nil {
 		t.Fatalf("Install relwidget: %v", err)
 	}
 

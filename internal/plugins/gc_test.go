@@ -28,7 +28,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	first, err := m.Install(context.Background(), "widget", "acme")
+	first, _, err := m.Install(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestGc_RemovesOrphanedKeepsReferenced(t *testing.T) {
 	// Advance the plugin's upstream HEAD and upgrade — Upgrade never deletes,
 	// so the first sha-dir is left orphaned once the registry repoints.
 	advanceGitRepo(t, pluginRepo, "extra.txt", "v2")
-	second, err := m.Upgrade(context.Background(), "widget", "acme")
+	second, _, err := m.Upgrade(context.Background(), "widget", "acme")
 	if err != nil {
 		t.Fatalf("Upgrade: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestGc_DirectorySourceInstallPathNeverConsidered(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), "widget", name)
+	entry, _, err := m.Install(context.Background(), "widget", name)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}

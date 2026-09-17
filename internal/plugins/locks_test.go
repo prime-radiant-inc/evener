@@ -102,11 +102,11 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 		write func(context.Context, *Manager) error
 	}{
 		{"Install", func(ctx context.Context, m *Manager) error {
-			_, err := m.Install(ctx, "plugin", "marketplace")
+			_, _, err := m.Install(ctx, "plugin", "marketplace")
 			return err
 		}},
 		{"Upgrade", func(ctx context.Context, m *Manager) error {
-			_, err := m.Upgrade(ctx, "plugin", "marketplace")
+			_, _, err := m.Upgrade(ctx, "plugin", "marketplace")
 			return err
 		}},
 		{"Remove", func(ctx context.Context, m *Manager) error {
@@ -135,7 +135,7 @@ func TestStoreWriters_RefuseARootThatIsNotResolved(t *testing.T) {
 		// Browse mutates too: it clones a marketplace that was only seeded as
 		// a pointer, so on a broken root it cloned into the working directory.
 		{"Browse", func(ctx context.Context, m *Manager) error {
-			_, err := m.Browse(ctx, "marketplace")
+			_, _, err := m.Browse(ctx, "marketplace")
 			return err
 		}},
 		// The two sweeps take the store lock before they enumerate the

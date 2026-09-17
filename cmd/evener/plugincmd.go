@@ -21,13 +21,13 @@ type pluginManager interface {
 	AddMarketplace(context.Context, string, plugins.Source) (plugins.MarketplaceRef, error)
 	RemoveMarketplace(context.Context, string) error
 	RefreshMarketplace(context.Context, string) error
-	Browse(context.Context, string) (plugins.Catalog, error)
+	Browse(context.Context, string) (plugins.Catalog, bool, error)
 	List(context.Context) ([]plugins.ListItem, error)
-	Install(context.Context, string, string) (plugins.InstallEntry, error)
+	Install(context.Context, string, string) (plugins.InstallEntry, bool, error)
 	Remove(context.Context, string, string) error
 	SetEnabled(context.Context, string, string, bool) error
 	UpdateAll(context.Context) ([]plugins.InstallEntry, error)
-	Upgrade(context.Context, string, string) (plugins.InstallEntry, error)
+	Upgrade(context.Context, string, string) (plugins.InstallEntry, bool, error)
 	SetAutoUpgrade(context.Context, string, string, bool) error
 	Gc(context.Context) ([]string, error)
 	Doctor() ([]plugins.DoctorFinding, error)
@@ -170,7 +170,7 @@ func runPluginMarketplace(args []string, stdout, stderr io.Writer) error {
 			return errors.New("usage: evener plugin marketplace browse <name> [--json]")
 		}
 		name := fs.Arg(0)
-		cat, err := m.Browse(context.Background(), name)
+		cat, _, err := m.Browse(context.Background(), name)
 		if err != nil {
 			return err
 		}
@@ -424,7 +424,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 			_, _ = fmt.Fprintf(stderr, "Install plugin %s from %s? Plugins are arbitrary code.\nPass --yes to confirm.\n", plugin, marketplace)
 			return errors.New("confirmation required")
 		}
-		entry, err := m.Install(ctx, plugin, marketplace)
+		entry, _, err := m.Install(ctx, plugin, marketplace)
 		if err != nil {
 			return err
 		}
@@ -522,7 +522,7 @@ func runPluginLifecycle(verb string, args []string, _ io.Reader, stdout, stderr 
 		if err != nil {
 			return err
 		}
-		entry, err := m.Upgrade(ctx, plugin, marketplace)
+		entry, _, err := m.Upgrade(ctx, plugin, marketplace)
 		if err != nil {
 			return err
 		}

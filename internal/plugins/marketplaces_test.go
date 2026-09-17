@@ -81,7 +81,7 @@ func TestAddMarketplace_GitSubdirBrowse(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceGitSubdir, URL: repo, Path: "mkt"}); err != nil {
 		t.Fatalf("AddMarketplace git-subdir: %v", err)
 	}
-	cat, err := m.Browse(context.Background(), "acme")
+	cat, _, err := m.Browse(context.Background(), "acme")
 	if err != nil {
 		t.Fatalf("Browse git-subdir marketplace: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -371,7 +371,7 @@ func TestEditMarketplace_RenameMovesCloneCacheAndRegistry(t *testing.T) {
 	if len(items) != 1 || items[0].Plugin != "widget" || items[0].Marketplace != "acme2" {
 		t.Fatalf("List = %+v", items)
 	}
-	cat, err := m.Browse(ctx, "acme2")
+	cat, _, err := m.Browse(ctx, "acme2")
 	if err != nil || len(cat.Plugins) != 1 {
 		t.Fatalf("Browse acme2 = %+v, %v", cat, err)
 	}
@@ -475,7 +475,7 @@ func TestEditMarketplace_DirectorySourceRenameKeepsThePath(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+	if _, _, err := m.Install(ctx, "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	ref, err := m.EditMarketplace(ctx, "acme", "beta", nil)
@@ -518,7 +518,7 @@ func TestEditMarketplace_ResourceSwapsTheClone(t *testing.T) {
 	if !ref.LastUpdated.Equal(stamp) {
 		t.Fatalf("a re-source did not advance LastUpdated: %v, want %v", ref.LastUpdated, stamp)
 	}
-	cat, err := m.Browse(ctx, "acme")
+	cat, _, err := m.Browse(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -558,7 +558,7 @@ func TestEditMarketplace_ResourceClearsAStaleAsideDirectory(t *testing.T) {
 	if _, err := m.EditMarketplace(ctx, "acme", "", &Source{Kind: SourceURL, URL: repoB}); err != nil {
 		t.Fatalf("EditMarketplace: %v", err)
 	}
-	cat, err := m.Browse(ctx, "acme")
+	cat, _, err := m.Browse(ctx, "acme")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -581,7 +581,7 @@ func TestEditMarketplace_RenameAndResourceTogether(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+	if _, _, err := m.Install(ctx, "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	ref, err := m.EditMarketplace(ctx, "acme", "beta", &Source{Kind: SourceURL, URL: repoB})
@@ -595,7 +595,7 @@ func TestEditMarketplace_RenameAndResourceTogether(t *testing.T) {
 	if _, ok := list["beta"]; !ok || len(list) != 1 {
 		t.Fatalf("list = %v", list)
 	}
-	cat, err := m.Browse(ctx, "beta")
+	cat, _, err := m.Browse(ctx, "beta")
 	if err != nil || len(cat.Plugins) != 1 || cat.Plugins[0].Name != "gadget" {
 		t.Fatalf("Browse beta = %+v, %v", cat, err)
 	}
@@ -625,7 +625,7 @@ func TestEditMarketplace_ResourceToDirectoryDropsTheRenamedClone(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -652,7 +652,7 @@ func TestEditMarketplace_ResourceToDirectoryDropsTheRenamedClone(t *testing.T) {
 	if _, err := os.Stat(entries[0].InstallPath); err != nil {
 		t.Fatalf("the installed plugin lives under the cache, not the clone, but its path is gone: %v", err)
 	}
-	cat, err := m.Browse(ctx, "beta")
+	cat, _, err := m.Browse(ctx, "beta")
 	if err != nil || len(cat.Plugins) != 1 || cat.Plugins[0].Name != "gadget" {
 		t.Fatalf("Browse beta = %+v, %v", cat, err)
 	}
@@ -668,7 +668,7 @@ func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	bad := &Source{Kind: SourceURL, URL: filepath.Join(t.TempDir(), "does-not-exist")}
@@ -704,7 +704,7 @@ func TestEditMarketplace_RestoresDirectoriesWhenARenameStepFails(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -752,7 +752,7 @@ func TestEditMarketplace_FailedUndoNamesWhatItCouldNotRestore(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -797,7 +797,7 @@ func TestEditMarketplace_RegistrySaveFailureRestoresTheOldClone(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+	if _, _, err := m.Install(ctx, "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -831,7 +831,7 @@ func TestEditMarketplace_RegistrySaveFailureRestoresTheOldClone(t *testing.T) {
 	}
 	// The restored clone is the recorded source's, not the source the failed
 	// edit had already fetched.
-	cat, err := m.Browse(ctx, "acme")
+	cat, _, err := m.Browse(ctx, "acme")
 	if err != nil || len(cat.Plugins) != 1 || cat.Plugins[0].Name != "widget" {
 		t.Fatalf("Browse acme = %+v, %v; want the recorded source's catalog", cat, err)
 	}
@@ -853,7 +853,7 @@ func TestEditMarketplace_MarketplacesSaveFailureRestoresTheOldClone(t *testing.T
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+	if _, _, err := m.Install(ctx, "widget", "acme"); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	before := map[string]string{
@@ -892,7 +892,7 @@ func TestEditMarketplace_MarketplacesSaveFailureRestoresTheOldClone(t *testing.T
 	}
 	// The restored clone is the recorded source's, so a browse serves the old
 	// catalog without a refresh having to reclone it.
-	cat, err := m.Browse(ctx, "acme")
+	cat, _, err := m.Browse(ctx, "acme")
 	if err != nil || len(cat.Plugins) != 1 || cat.Plugins[0].Name != "widget" {
 		t.Fatalf("Browse acme = %+v, %v; want the recorded source's catalog", cat, err)
 	}
@@ -915,7 +915,7 @@ func TestEditMarketplace_MarketplacesSaveFailureRestoresTheStore(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	before := map[string]string{
@@ -984,7 +984,7 @@ func TestEditMarketplace_RefusesALeftoverPluginCache(t *testing.T) {
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	// What removing a marketplace named beta leaves behind: RemoveMarketplace
@@ -1187,7 +1187,7 @@ func TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent(t *testing.T) {
 		if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 			t.Fatalf("AddMarketplace: %v", err)
 		}
-		if _, err := m.Install(ctx, "widget", name); err != nil {
+		if _, _, err := m.Install(ctx, "widget", name); err != nil {
 			t.Fatalf("Install: %v", err)
 		}
 		return m
@@ -1336,7 +1336,7 @@ func TestEditMarketplace_RefusesADirectorySourceInsideItsOwnClone(t *testing.T) 
 	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	if _, err := m.Install(ctx, "widget", name); err != nil {
+	if _, _, err := m.Install(ctx, "widget", name); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	readMarketplacesFile := func() string {

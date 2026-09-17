@@ -1264,14 +1264,14 @@ func TestMarketplaceNameMigration_RunsUnderEveryStoreLock(t *testing.T) {
 		what string
 		run  func(*Manager, string) error
 	}{
-		{"browse", func(m *Manager, name string) error { _, err := m.Browse(ctx, name); return err }},
+		{"browse", func(m *Manager, name string) error { _, _, err := m.Browse(ctx, name); return err }},
 		{"refresh", func(m *Manager, name string) error { return m.RefreshMarketplace(ctx, name) }},
 		{"remove", func(m *Manager, name string) error { return m.RemoveMarketplace(ctx, name) }},
 		{"edit", func(m *Manager, name string) error {
 			_, err := m.EditMarketplace(ctx, name, "renamed", nil)
 			return err
 		}},
-		{"install", func(m *Manager, name string) error { _, err := m.Install(ctx, "widget", name); return err }},
+		{"install", func(m *Manager, name string) error { _, _, err := m.Install(ctx, "widget", name); return err }},
 	}
 	for _, op := range ops {
 		t.Run(op.what, func(t *testing.T) {
@@ -1314,7 +1314,7 @@ func TestUpgrade_ReadsTheRegistryTheMigrationLeft(t *testing.T) {
 	plantLegacyMarketplace(t, m, "foo@bar", "widget")
 	plantLegacyMarketplace(t, m, "bar", "gadget")
 
-	_, err := m.Upgrade(context.Background(), "widget@foo", "bar")
+	_, _, err := m.Upgrade(context.Background(), "widget@foo", "bar")
 	if !errors.Is(err, ErrNotInstalled) {
 		t.Fatalf("Upgrade = %v, want ErrNotInstalled", err)
 	}

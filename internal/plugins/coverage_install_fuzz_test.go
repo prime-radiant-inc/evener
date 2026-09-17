@@ -209,14 +209,14 @@ func fuzzInstallBranches(t *testing.T) {
 			m := NewManager(t.TempDir())
 			fakeInstallSuccess(t, m)
 			tc.breakIt()
-			if _, err := m.Install(ctx, "plugin", "market"); err == nil {
+			if _, _, err := m.Install(ctx, "plugin", "market"); err == nil {
 				t.Fatal("install succeeded")
 			}
 		})
 	}
 	m := NewManager(t.TempDir())
 	fakeInstallSuccess(t, m)
-	if _, err := m.Install(ctx, "plugin", "market"); err != nil {
+	if _, _, err := m.Install(ctx, "plugin", "market"); err != nil {
 		t.Fatal(err)
 	}
 	installFetchSource = func(_ context.Context, _ Source, _ string, dst string) (string, error) {
@@ -226,7 +226,7 @@ func fuzzInstallBranches(t *testing.T) {
 	installLoadRegistry = func(string) (Registry, error) {
 		return Registry{Plugins: map[string][]InstallEntry{"plugin@market": {{GitCommitSha: "old", Source: Source{Kind: SourceGitHub}}}}}, nil
 	}
-	if _, err := m.Upgrade(ctx, "plugin", "market"); err != nil {
+	if _, _, err := m.Upgrade(ctx, "plugin", "market"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -236,7 +236,7 @@ func fuzzInstallRegistryBranches(t *testing.T) {
 	m := NewManager(t.TempDir())
 	fakeInstallSuccess(t, m)
 	installAcquireLock = func(context.Context, string, time.Duration) (func(), error) { return nil, errInstallCoverage }
-	if _, err := m.Upgrade(ctx, "p", "m"); err == nil {
+	if _, _, err := m.Upgrade(ctx, "p", "m"); err == nil {
 		t.Fatal("upgrade lock")
 	}
 	if err := m.SetEnabled(context.Background(), "p", "m", true); err == nil {

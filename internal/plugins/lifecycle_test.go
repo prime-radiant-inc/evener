@@ -15,7 +15,7 @@ func TestRemoveEnableDisable(t *testing.T) {
 	mktRepo, name := makeInstallableMarketplace(t)
 	m := NewManager(t.TempDir())
 	m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo})
-	entry, _ := m.Install(context.Background(), "widget", name)
+	entry, _, _ := m.Install(context.Background(), "widget", name)
 
 	if err := m.SetEnabled(context.Background(), "widget", name, false); err != nil {
 		t.Fatalf("SetEnabled(false): %v", err)
@@ -63,7 +63,7 @@ func TestRemove_DirectorySourceKeepsContents(t *testing.T) {
 	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceDirectory, Path: dir}); err != nil {
 		t.Fatalf("AddMarketplace: %v", err)
 	}
-	entry, err := m.Install(context.Background(), "widget", "local")
+	entry, _, err := m.Install(context.Background(), "widget", "local")
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
