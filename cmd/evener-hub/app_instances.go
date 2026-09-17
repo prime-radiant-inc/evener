@@ -1174,6 +1174,29 @@ func (c *hubInstancesController) moveCredentials(oldName, newName string) error 
 	return nil
 }
 
+// removalRemedy names the action that really takes an environment-backed
+// instance away, keyed on what makes it exist. Every surface that can reach
+// Remove (the CLI and direct RPC callers, as much as the panes that hide the
+// affordance) reads it, so a remedy has to name something that exists for this
+// instance: the variable it reads, the ADC credentials the host supplies, the
+// stored credential a keyless instance holds, or - when it holds none and
+// needs none - that the row belongs to its provider.
+func removalRemedy(inst registry.Instance) string {
+	if keylessScheme(inst.Auth) {
+		if inst.CredentialSource == "store" {
+			return "clear the stored credential instead"
+		}
+		return "it comes back with its provider and holds no credential of its own to clear"
+	}
+	if varName, ok := strings.CutPrefix(inst.CredentialSource, "env:"); ok {
+		return fmt.Sprintf("unset %s instead", varName)
+	}
+	if inst.CredentialSource == "adc" {
+		return "remove the application-default credentials this host supplies instead"
+	}
+	return "remove the credential that supplies it instead"
+}
+
 // keylessScheme reports whether an auth scheme resolves without a credential, so
 // the registry derives the instance whether or not one is stored
 // (computeInstances): a keyless local endpoint (auth: none) and a gateway on the
@@ -1246,14 +1269,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
 	if environmentBacked(inst) {
-		// The remedy has to name an action that exists. A keyless instance
-		// (auth: none, optional-bearer) is re-derived with or without a
-		// credential, so there may be no variable to unset and no OAuth record
-		// to remove - what can be taken away is the stored credential itself.
-		if keylessScheme(inst.Auth) {
-			return fmt.Errorf("%s comes back with its provider however its credential changes, so it cannot be removed; clear the stored credential instead (%s)", name, describeImplicit(inst))
-		}
-		return fmt.Errorf("%s exists from the environment (%s); unset it or remove the OAuth record instead of deleting the instance", name, describeImplicit(inst))
+		return fmt.Errorf("%s exists without an authored entry (%s), so deleting the instance is not what takes it away: %s", name, describeImplicit(inst), removalRemedy(inst))
 	}
 
 	// Read the authored layer before anything is deleted: this is a pure read,
@@ -1304,14 +1320,14 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	// authenticate. Capture and restore both sit inside this held lock, so no
 	// writer can slip between them.
 	storedKey, hasStoredKey := c.auth.creds.Get(name)
-	oauthBytes, hasOAuth, err := c.captureOAuthFile(name)
+	oauthAside, err := c.setAsideOAuthFile(name)
 	if err != nil {
 		return err
 	}
 
 	removed, err := c.removeCredentials(name)
 	if err != nil {
-		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthBytes, hasOAuth && removed.oauthRecord, err, "the instance is still configured")
+		return c.restoreFailedRemoval(name, storedKey, hasStoredKey && removed.storedKey, oauthAside, err, "the instance is still configured")
 	}
 
 	// An instance the user credentialed through the UI has no authored entry:
@@ -1331,7 +1347,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 	configChanged := authored || l.Default != before.Default
 	if configChanged {
 		if err := c.writeLoadable(l); err != nil {
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth, err, "the instance is still configured")
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside, err, "the instance is still configured")
 		}
 	}
 	if err := c.reg.Reload(); err != nil {
@@ -1344,7 +1360,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// implicit-only view a failed load leaves (writes refused, this row
 			// missing), and the state the file describes is unchanged, so a
 			// second attempt is the recovery rather than a repetition.
-			restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
 				fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
 			if reloadErr := c.reg.Reload(); reloadErr != nil {
 				return fmt.Errorf("%w; the registry could not be reloaded either, so instance writes stay refused until it can be (%w)", restored, reloadErr)
@@ -1366,7 +1382,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// once this removal is reported as standing. No reload: the failure
 			// above already left the registry on the implicit-only view a load
 			// of this file produces, and writing is what is broken, not loading.
-			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+			return c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
 				fmt.Errorf("%w; the rollback could not be written, so the removal stands in the config (%w)", err, restoreErr),
 				"the entry is gone from the config")
 		}
@@ -1378,7 +1394,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		// stored key beside no active source, and the next launch would be
 		// refused for missing credentials, until some later write happened to
 		// reload again.
-		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthBytes, hasOAuth,
+		restored := c.restoreFailedRemoval(name, storedKey, hasStoredKey, oauthAside,
 			fmt.Errorf("removing %q was rolled back: %w", name, err), "the instance is still configured")
 		// The file this rollback put back is the pre-removal one, and the reload
 		// that just failed read the file this call wrote - so if the config was
@@ -1398,25 +1414,38 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 		}
 		return restored
 	}
+	if oauthAside != "" {
+		// The instance this record belonged to is gone, so what the removal moved
+		// aside is a copy under a name no reader looks at. Dropping it is
+		// cleanup: a failure here leaves debris, not state anyone reads, so it
+		// does not turn a removal that happened into one that failed.
+		_ = os.Remove(oauthAside)
+	}
 	return nil
 }
 
-// captureOAuthFile reads the OAuth state file a removal's cleanup is about to
-// unlink, so a later failure can write those bytes back. It captures the raw
-// bytes rather than the parsed record because DeleteAuth deletes by path: a
-// record the hub cannot parse (corrupt) or validate is one it will still
-// delete, and only the bytes can put it back. A missing file is (nil, false,
-// nil); one that exists but cannot be read is refused here, before anything is
-// deleted, because the removal cannot promise to restore what it cannot read.
-func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, error) {
-	raw, err := os.ReadFile(authopenai.AuthFilePath(c.auth.stateDir, name))
-	if err == nil {
-		return raw, true, nil
+// setAsideOAuthFile moves the OAuth state file a removal's cleanup is about to
+// take away out of the way, so a later failure can put it back, and returns the
+// path it now sits at ("" when there was none). It moves the file rather than
+// reading it: the record is taken away by path, so one the hub cannot read - or
+// cannot parse - is still one the removal has to support, and a rename preserves
+// the bytes in exactly the case a read would refuse. A file that cannot be moved
+// is refused here, before anything is deleted, because the removal cannot
+// promise to restore what it could not set aside.
+//
+// The name keeps the record's own suffix and adds one no reader looks for, so an
+// aside left behind by a crash is never mistaken for a record (only .json files
+// are read).
+func (c *hubInstancesController) setAsideOAuthFile(name string) (string, error) {
+	path := authopenai.AuthFilePath(c.auth.stateDir, name)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return "", nil
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, false, nil
+	aside := fmt.Sprintf("%s.removing-%d", path, c.auth.now().UnixNano())
+	if err := os.Rename(path, aside); err != nil {
+		return "", fmt.Errorf("remove %s: set its OAuth state aside to preserve it: %w", name, err)
 	}
-	return nil, false, fmt.Errorf("remove %s: read OAuth state to preserve it: %w", name, err)
+	return aside, nil
 }
 
 // restoreFailedRemoval puts back what the cleanup deleted after a failed
@@ -1427,19 +1456,18 @@ func (c *hubInstancesController) captureOAuthFile(name string) ([]byte, bool, er
 // reads as correct English for the failure that produced it. Its callers pass
 // only the layers the failure actually deleted, so this never rewrites - and
 // never reports a failure to rewrite - a credential that is still where it was.
-func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthBytes []byte, hasOAuth bool, cause error, frame string) error {
+func (c *hubInstancesController) restoreFailedRemoval(name, storedKey string, hasStoredKey bool, oauthAside string, cause error, frame string) error {
 	var problems []string
 	if hasStoredKey {
 		if err := c.auth.setCredential(name, storedKey); err != nil {
 			problems = append(problems, fmt.Sprintf("its stored key could not be restored (%v)", err))
 		}
 	}
-	if hasOAuth {
-		// Through the writer the auth store uses, so the record this puts back
-		// is replaced atomically: an in-place rewrite of a credential is a
-		// file a reader can catch half written, and a crash inside it leaves
-		// truncated state where this call exists to restore the whole thing.
-		if err := authopenai.WriteAuthFile(authopenai.AuthFilePath(c.auth.stateDir, name), oauthBytes); err != nil {
+	if oauthAside != "" {
+		// Moved back rather than rewritten. The bytes were never read, so this
+		// restores a record the hub cannot read as faithfully as one it can, and
+		// a rename cannot leave the half-written file a copy could.
+		if err := os.Rename(oauthAside, authopenai.AuthFilePath(c.auth.stateDir, name)); err != nil {
 			problems = append(problems, fmt.Sprintf("its OAuth record could not be restored (%v)", err))
 		}
 	}

@@ -739,6 +739,56 @@ func TestInstances_RemoveDeletesAStoredKeyForACuratedProvider(t *testing.T) {
 	}
 }
 
+// TestInstances_RemovalRemedyNamesSomethingThatExists: the refusal reaches the
+// CLI and direct RPC callers, so each remedy has to name an action this
+// instance can actually take - the variable it reads, the host's ADC
+// credentials, the stored credential a keyless instance holds, or nothing when
+// it holds none and needs none.
+func TestInstances_RemovalRemedyNamesSomethingThatExists(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		inst    registry.Instance
+		want    string
+		refuses []string
+	}{
+		{
+			name: "an environment variable is unset by name",
+			inst: registry.Instance{Name: "groq", Implicit: true, Auth: registry.AuthBearer, CredentialSource: "env:GROQ_API_KEY"},
+			want: "unset GROQ_API_KEY instead",
+		},
+		{
+			name:    "the ADC file is the host's to remove",
+			inst:    registry.Instance{Name: "vertex", Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"},
+			want:    "application-default credentials",
+			refuses: []string{"unset", "OAuth record"},
+		},
+		{
+			name:    "a keyless instance holding a stored key names that key",
+			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthOptionalBearer, CredentialSource: "store"},
+			want:    "clear the stored credential instead",
+			refuses: []string{"unset", "OAuth record"},
+		},
+		{
+			name:    "a keyless instance holding nothing does not invent one",
+			inst:    registry.Instance{Name: "ollama", Implicit: true, Auth: registry.AuthNone, CredentialSource: "none"},
+			want:    "holds no credential of its own to clear",
+			refuses: []string{"clear the stored credential", "unset", "OAuth record"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := removalRemedy(tt.inst)
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("removalRemedy = %q, want it to name %q", got, tt.want)
+			}
+			for _, wrong := range tt.refuses {
+				if strings.Contains(got, wrong) {
+					t.Fatalf("removalRemedy = %q, which names the action %q that this instance cannot take", got, wrong)
+				}
+			}
+		})
+	}
+}
+
 // TestInstances_RemoveRefusesAKeylessInstanceWithAStoredKey: the keyless
 // schemes are re-derived with or without a credential, so a removal would
 // delete the key and leave the row standing - with the badge the affordance
@@ -1691,8 +1741,10 @@ base = "anthropic"
 	case err := <-done:
 		// Errorf, not Fatalf: the credential check below is the other half of
 		// the finding and is worth reporting in the same run.
-		if err == nil || !strings.Contains(err.Error(), "exists from the environment") {
+		if err == nil || !strings.Contains(err.Error(), "exists without an authored entry") {
 			t.Errorf("Remove = %v, want the refusal for the instance the name holds now", err)
+		} else if !strings.Contains(err.Error(), "unset OPENAI_API_KEY instead") {
+			t.Errorf("Remove = %v, want the remedy this instance can actually take", err)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("Remove never returned after the rename released the lock")
