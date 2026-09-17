@@ -1,15 +1,12 @@
-import type { ItemModel, ThreadModel, TurnModel } from "@evener/appwire-client";
+import { hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   type ContentVector,
   type HookExitDetail,
-  hasFailureStatus,
-  hasItemFailure,
-  isInProgressStatus,
-  isNonZeroExit,
   normalizeConfig,
   presetContent,
   type TranscriptDisplayConfigV1,
-} from "@evener/appwire-client";
+} from "./transcriptDisplayConfig";
 
 export const ACTION_SUMMARY_UNAVAILABLE = "Action summary unavailable";
 

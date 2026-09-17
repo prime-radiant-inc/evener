@@ -1,8 +1,7 @@
 import type { ItemModel } from "@evener/appwire-client";
-import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { makeTranscriptDisplayConfig, projectThread } from "@evener/appwire-client";
 import { describe, expect, test } from "vitest";
 import { makeTranscriptPreviewModel } from "./previewFixture";
-import { projectThread } from "./projector";
 
 const FIXED_TIMESTAMP = "2026-08-25T18:00:00.000Z";
 const EXPECTED_CATEGORIES = [
