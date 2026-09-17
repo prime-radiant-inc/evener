@@ -54,6 +54,7 @@ import {
   readMutationPersistence,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
+  resumeStopBaseline,
   resumeStopFence,
   retryBlockedMutation,
   setMutationStorageForTests,
@@ -9411,7 +9412,10 @@ test("a Stop during refreshThread's reconciliation is not overtaken by its dispa
 // structure when the last holder lets go; the Stop generation goes with it, so
 // the map stays bounded by live refs instead of growing for every stopped ref
 // in the page's lifetime. A fence captured BEFORE the release must keep
-// firing afterwards: release never reads as "no Stop has landed".
+// firing afterwards: release never reads as "no Stop has landed". Pruning is
+// only safe because the values come from one page-wide sequence - a per-ref
+// counter would restart at the value a pre-release fence captured, and a Stop
+// landing after a re-ensure would read to that fence as its own baseline.
 test("releasing a ref prunes its Stop generation, and a fence captured before the release still fires", async () => {
   setMutationStorageForTests(new MutationOutboxIndexedDB());
   const fake = connectFakeClient("connecting");
@@ -9423,6 +9427,7 @@ test("releasing a ref prunes its Stop generation, and a fence captured before th
   // Captures the post-Stop generation; without pruning this reads the same
   // generation after the release and never fires.
   const staleFence = resumeStopFence("ref_a");
+  const staleBaseline = resumeStopBaseline();
   threadsStore.getState().releaseThread("ref_a");
   // Pruned: a fresh fence starts from a zero baseline and stays quiet until
   // the next Stop.
@@ -9430,6 +9435,15 @@ test("releasing a ref prunes its Stop generation, and a fence captured before th
   // The fence captured before the release reads the reset as a changed
   // generation and still cancels its pending action.
   expect(staleFence).toThrow("Stop canceled this pending action");
+  expect(() => staleBaseline("ref_a")).toThrow("Stop canceled this pending action");
+  // A second Stop after a re-ensure must not recycle the released value: the
+  // fence captured before the release must still cancel, not compare the
+  // re-registered generation equal to its own.
+  await threadsStore.getState().ensureThread("ref_a");
+  await threadsStore.getState().shutdown("ref_a");
+  expect(staleFence).toThrow("Stop canceled this pending action");
+  expect(() => staleBaseline("ref_a")).toThrow("Stop canceled this pending action");
+  threadsStore.getState().releaseThread("ref_a");
 });
 
 test("persistent journal failures wait for periodic recovery between attempts", async () => {

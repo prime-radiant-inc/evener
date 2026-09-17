@@ -921,9 +921,17 @@ export async function readMutationPersistence(targetRef?: string): Promise<Mutat
 }
 
 const userIntentStopGenerations = new Map<string, number>();
+// Stop generations come from one page-wide sequence, never a per-ref counter:
+// releaseThread prunes a ref's entry when its last holder lets go, and a
+// per-ref counter would restart at the same value a fence captured before the
+// release - a Stop landing after a re-ensure would then compare equal to that
+// fence's baseline and slip past it. Sequence values are forever-unique and
+// start at 1, so an absent entry's `?? 0` stays below every real generation
+// and pruning the map stays safe.
+let userIntentStopSequence = 0;
 
 function cancelPendingUserIntents(ref: string): void {
-  userIntentStopGenerations.set(ref, (userIntentStopGenerations.get(ref) ?? 0) + 1);
+  userIntentStopGenerations.set(ref, ++userIntentStopSequence);
 }
 
 // The explicit Resume action is the one user intent that still starts a daemon
@@ -2599,6 +2607,8 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // holder lets go; pruning keeps the map bounded by live refs. A fence
     // captured before the release reads the reset as a changed generation and
     // still cancels its pending action - release never reads as "no Stop".
+    // The sequence never recycles a value, so a Stop landing after a
+    // re-ensure cannot resurrect the pruned generation either.
     userIntentStopGenerations.delete(ref);
     // A watched lifecycle may still hold this ref (watchRefCounts), and its
     // model stays; only the pane's own tracking goes. Unsubscribe the wire
@@ -3179,6 +3189,7 @@ export function useThreadsStore<T>(selector?: (state: ThreadsStoreState) => T): 
 // an unrelated, already-discarded FakeClient.
 export function resetThreadsStoreForTests(): void {
   userIntentStopGenerations.clear();
+  userIntentStopSequence = 0;
   resetHumanNoteDrafts();
   notesLatestIntentSequences.clear();
   resetActivityPanelStoreForTests();
