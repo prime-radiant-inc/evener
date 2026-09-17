@@ -361,31 +361,50 @@ entry, wiring `cfg.RemoteHostClient` / `cfg.RemoteHostFacts` /
      §Open questions item 4); until then a multi-hop cycle is not refused and
      configuration is acyclic by convention only.
 
-4. **Wiring** (design settled; **implementation pending merge, not on `main`**):
+4. **Wiring** (design settled; **shipped**):
    `cmd/evener-hub/main.go` converts `cfg.Hosts` into `[]hostreg.Host` and calls
    `hostreg.New` once at startup, then builds the component-04 manager over that
    registry (`sshconn.New(hostRegistry, sshconn.Options{...})`). The same
    converted entries travel through `hubcore.WebConfig` as `RemoteHosts`,
    together with the component-04 seams `RemoteHostClient` (returns the current
-   `ch.Client()`), `RemoteHostFacts` (`sshManager.PreflightIfAttached` — the
-   non-dialing, attached-only preflight accessor mirroring
-   `ClientIfAttached`/`HandshakeIfAttached`; component 04, §"Go surface"), and
+   `ch.Client()`), `RemoteHostFacts` (a non-dialing, attached-only lookup that
+   reads one `sshManager.ChannelIfAttached` value and takes the preflight from
+   that channel only when its client is the exact generation the probe
+   resolved; component 04, §"Go surface"), and
    `RemoteHostOnline` (`sshManager.Attached`), `RemoteHostClientIfAttached`
    (`sshManager.ClientIfAttached` — the non-dialing, attached-only client
    lookup component 05's notification rebind and component 06's snapshot use),
-   and `RemoteHostHandshake` (`sshManager.HandshakeIfAttached` — the
-   attached-only attach handshake facts component 05's capability probe reads
-   for `ProtocolVersion`/`ServerInfo`/`SourceID`/`Features`; component 04,
-   §"Go surface"; component 05, §"Capability probe"). `newHubSourceRegistry`
+   and `RemoteHostHandshake` (a non-dialing, attached-only lookup built on the
+   same `sshManager.ChannelIfAttached` primitive as `RemoteHostFacts`: the
+   `remoteHostHandshakeForChannel` closure answers the attach handshake facts
+   component 05's capability probe reads for
+   `ProtocolVersion`/`ServerInfo`/`SourceID`/`Features`, refusing when the
+   channel's client is not the probe's; component 04, §"Go surface"; component
+   05, §"Capability probe"). Both facts seams read a single
+   `sshManager.ChannelIfAttached` value and apply the generation guard at the
+   call site (`ch.Client() == client`), so a reconnect between the probe's
+   client lookup and its facts read can never produce a mixed-generation
+   snapshot. That guard deliberately lives in the `remoteHostFactsForChannel` /
+   `remoteHostHandshakeForChannel` closures, **not** inside an accessor:
+   `Manager.PreflightIfAttached` and `Manager.HandshakeIfAttached` exist but have
+   no production caller. `newHubSourceRegistry`
    (`cmd/evener-hub/app_rpc.go`) registers one source per `RemoteHosts` entry at
    startup (§"Source registration hook"). No other `WebConfig` field is touched.
    (The earlier revision's `Hosts *hostreg.Registry` field is not the
-   implemented shape.) **Implementation status:** the `hostreg` package and
-   `hostreg.New` are on `main`; the `sshconn` manager and the
-   `hubcore.WebConfig` `RemoteHosts`/`RemoteHost{Client,Facts,Online}` fields are
-   implemented on the component branches (`multi-host-pr04a-ssh-channel`,
-   `multi-host-pr06a-fleet-view-go`) and are **pending merge** — they do not
-   exist on `main`, so this wiring must not be read as shipped.
+   implemented shape.) **Implementation status:** shipped. The `hostreg` package
+   and `hostreg.New`, the `sshconn` manager, and the `hubcore.WebConfig`
+   `RemoteHosts` / `RemoteHostClient` / `RemoteHostFacts` / `RemoteHostOnline`
+   fields landed with components 03/04; the attached-only additions this section
+   names (`Manager.ChannelIfAttached` / `Manager.ClientIfAttached`, wired
+   through `RemoteHostFacts` / `RemoteHostHandshake` /
+   `RemoteHostClientIfAttached`) landed with the attached-only enforcement PR.
+   `RemoteHostFacts` and `RemoteHostHandshake` are non-dialing and
+   generation-guarded (`ChannelIfAttached` + the call-site client-identity
+   check, refusing with `SessionUnavailable`), so the capability probe cannot
+   attach a dormant host through them nor cache two connections' facts as one
+   snapshot; `RemoteHostClient` remains the `Ensure`-backed dial reserved for the
+   explicit attach triggers (an explicit host in `thread/list`'s `SourceIDs`,
+   and component 06's `evener/host/attach` Connect action).
 
 ## Data flow
 

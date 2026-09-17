@@ -9,7 +9,8 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import type { AskQuestionRef, AskResolution } from "@evener/appwire-client";
+import type { AskResolution } from "@evener/appwire-client";
+import type { MobileQuestionRef } from "../../mobile/src/conversation/project";
 import type { DraftDestination } from "./draftRepository";
 import { nativeDrafts } from "./nativeDrafts";
 import {
@@ -33,7 +34,7 @@ export function QuestionSheet({
 }: {
   visible: boolean;
   destination: DraftDestination;
-  questions: AskQuestionRef[];
+  questions: MobileQuestionRef[];
   hubName: string;
   ready: boolean;
   pending: boolean;
@@ -208,7 +209,7 @@ export function QuestionSheet({
                         index === activeIndex ? colors.accent : "transparent",
                     }}
                   >
-                    <Copy>{`${index + 1}. ${question.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
+                    <Copy>{`${index + 1}. ${question.display.header}${selections[question.key]?.resolution ? " ✓" : ""}`}</Copy>
                   </Pressable>
                 ))}
               </ScrollView>
@@ -217,18 +218,28 @@ export function QuestionSheet({
               const answer = selections[question.key];
               return (
                 <View key={question.key} style={{ gap: 12 }}>
-                  <Copy muted>{question.header}</Copy>
-                  <Copy>{question.question}</Copy>
-                  {question.why ? <Copy muted>{question.why}</Copy> : null}
+                  <Copy muted>{question.display.header}</Copy>
+                  <Copy>{question.display.question}</Copy>
+                  {question.display.why ? (
+                    <Copy muted>{question.display.why}</Copy>
+                  ) : null}
                   {question.multiSelect ? (
                     <Copy muted>Choose any that apply.</Copy>
                   ) : null}
-                  {[...question.options]
+                  {/* Pair each option with its bounded display copy BEFORE
+                      sorting: display.options is index-aligned with options, and
+                      recommended-first ordering would break a later lookup. */}
+                  {question.options
+                    .map((option, index) => ({
+                      option,
+                      shown: question.display.options[index] ?? option,
+                    }))
                     .sort(
                       (a, b) =>
-                        Number(!!b.recommended) - Number(!!a.recommended),
+                        Number(!!b.option.recommended) -
+                        Number(!!a.option.recommended),
                     )
-                    .map((option) => {
+                    .map(({ option, shown }) => {
                       const checked =
                         answer?.resolution?.kind === "option" &&
                         answer.resolution.labels.includes(option.label);
@@ -277,11 +288,11 @@ export function QuestionSheet({
                         >
                           <Copy>
                             {checked ? "✓ " : ""}
-                            {option.label}
+                            {shown.label}
                             {option.recommended ? " · Recommended" : ""}
                           </Copy>
-                          {option.detail ? (
-                            <Copy muted>{option.detail}</Copy>
+                          {shown.detail ? (
+                            <Copy muted>{shown.detail}</Copy>
                           ) : null}
                         </Pressable>
                       );

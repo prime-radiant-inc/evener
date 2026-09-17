@@ -378,22 +378,28 @@ function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelin
     case "failure":
       return { ...item, title: bound(item.title), detail: bound(item.detail) };
     case "question":
-      // Only the prose: a question's header, its option labels and its
-      // ifUnanswered text are echoed back in the answer this client composes
-      // (questionAnswers.ts's composeQuestionAnswers → composeAskAnswers), and
-      // answering with a cut label or header would name a choice the agent never
-      // offered. The prompt, the reasoning and an option's explanatory detail are
-      // read, not sent.
+      // The display copy, all of it. The canonical fields beside it stay whole
+      // because the answer this client composes names the header, the chosen
+      // labels and the ifUnanswered text back to the agent that asked
+      // (project.ts's MobileQuestionRef): answering with a cut value would name a
+      // choice nobody offered. Every renderer reads `display`.
       return {
         ...item,
         questions: item.questions.map((question) => ({
           ...question,
-          question: bound(question.question),
-          ...(question.why === undefined ? {} : { why: bound(question.why) }),
-          options: question.options.map((option) => ({
-            ...option,
-            ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
-          })),
+          display: {
+            ...question.display,
+            header: bound(question.display.header),
+            question: bound(question.display.question),
+            ...(question.display.why === undefined ? {} : { why: bound(question.display.why) }),
+            ...(question.display.ifUnanswered === undefined
+              ? {}
+              : { ifUnanswered: bound(question.display.ifUnanswered) }),
+            options: question.display.options.map((option) => ({
+              label: bound(option.label),
+              ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
+            })),
+          },
         })),
       };
     case "activity":

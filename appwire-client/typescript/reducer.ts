@@ -382,20 +382,8 @@ function inlineImageSrc(img: InputItem): string | undefined {
   return `data:${img.mediaType};base64,${img.data}`;
 }
 
-// The OPPOSITE rule to imagesToItemImagesForSession above, and deliberately so.
-// Output images are the one image list a tool can clear, so the contract is:
-// an explicit empty output list IS the removal signal, and the model must be
-// able to hold it (an older page replaying the images it once had must not put
-// them back). The hub's half of that contract is `OutputImages` marshalled
-// `omitzero` with its merge and clone sites keeping nil apart from empty — a
-// wire change landing alongside this one, so read this function as the rule
-// rather than as a description of the hub that is deployed today.
-//
-// Input images have no removal signal at all: there an empty list means
-// "nothing said" (see above). Same shape, opposite reading, on purpose.
 function outputImagesToItemImages(images: OutputImage[] | undefined): ItemImage[] | undefined {
-  if (!images) return undefined;
-  if (images.length === 0) return [];
+  if (!images || images.length === 0) return undefined;
   return images.map((img) => ({
     src: img.url ?? img.path ?? img.name ?? img.source,
     name: img.name,
@@ -502,12 +490,14 @@ function mergeCompletedText(settled: ItemModel, existing: ItemModel | undefined)
 }
 
 // A settle says nothing about images unless it carries them. `undefined` is what
-// both mappers produce for a field the payload left out (and, for input images,
-// for an empty list — see imagesToItemImagesForSession), so the item keeps the
-// images it already has, exactly as the hub keeps them on its own upsert
-// (`len(incoming.Images) == 0` → `incoming.Images = existing.Images`,
-// server/appwire_turns.go:884-889). An explicitly empty OUTPUT list is a value,
-// not an absence, and survives this merge as the removal it is.
+// both mappers produce for a field the payload left out, and for an empty list
+// too: imagesToItemImagesForSession and outputImagesToItemImages each read `[]` as
+// absence, the same rule the hub applies on its own upsert (`len(incoming.Images)
+// == 0` and `len(incoming.OutputImages) == 0` keep the existing list,
+// server/appwire_turns.go:884-889, and its twin at
+// internal/apptranscript/logical_turn.go:309). So `undefined` is the only signal
+// this merge ever sees for either list, and a settle must not erase images from
+// the item it replaces — exactly as mergePageItem already refuses to.
 function mergeItemImages(settled: ItemModel, existing: ItemModel | undefined): ItemModel {
   if (!existing) return settled;
   const images = settled.images ?? existing.images;
@@ -1291,11 +1281,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       if (stamp.itemsView === "full") {
         settledTurn = wireToTurnModel(stamp, imageSessionRouteForSession(model.imageSessionId ?? model.threadId));
         // Same helper composition as item/completed's existing-item branch
-        // below (mergeCompletedText/mergeItemImages/mergeReasoning/mergeArguments/
-        // mergeObservedTiming read/write disjoint fields off the same `old`
-        // reference, so composition order is free) — this branch has its own settled
-        // items rather than item/completed's single one, so it maps instead
-        // of a single mapItem call.
+        // below (mergeCompletedText/mergeItemImages/mergeReasoning/
+        // mergeArguments/mergeObservedTiming read/write disjoint fields off the
+        // same `old` reference, so composition order is free) — this branch has
+        // its own settled items rather than item/completed's single one, so it
+        // maps instead of a single mapItem call. "Full" replaces the item set,
+        // not every field: an image list a payload omits is kept off `old`,
+        // exactly as item/completed keeps it.
         settledTurn.items = settledTurn.items.map((item) => {
           const old = oldTurn?.items.find((o) => itemIdentityMatches(o, item));
           const identitySettled = old ? mergeItemIdentityMetadata(old, item) : item;

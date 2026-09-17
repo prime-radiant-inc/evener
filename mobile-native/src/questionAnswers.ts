@@ -3,14 +3,17 @@ import {
   type AskQuestionRef,
   composeAskAnswers,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import type {
+  MobileConversation,
+  MobileQuestionRef,
+} from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
 >;
 export function pendingQuestions(
   conversation: MobileConversation | null,
-): AskQuestionRef[] {
+): MobileQuestionRef[] {
   // questionsPending, not the wire's askPending: what can be answered here is
   // what the projection found answerable in this window (project.ts).
   return conversation?.questionsPending

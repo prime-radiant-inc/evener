@@ -40,6 +40,15 @@ set -eu
 
 repo_root=$(cd "$(dirname "$0")/../.." && pwd)
 native=${EVENER_NATIVE_DIR:-$repo_root/mobile-native}
+
+# Canonicalize before cd: a relative override would otherwise be re-prefixed
+# against a directory the process has already left when a relative symlink
+# target is resolved below. Logical pwd, so a platform whose /tmp is a symlink
+# does not rewrite the path the user set. If the directory is not enterable
+# this falls through and the cd below still fails.
+if canonical=$( (CDPATH='' cd -- "$native" && pwd) ) 2>/dev/null; then
+	native=$canonical
+fi
 cd "$native"
 
 if [ ! -f package-lock.json ]; then

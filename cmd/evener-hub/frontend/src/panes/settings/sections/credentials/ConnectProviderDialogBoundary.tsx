@@ -6,10 +6,9 @@
 // forever, and Chrome keeps a failed module fetch by URL (see
 // connectDialogChunk.ts).
 //
-// Two callers share this module: the spawn pane's below-the-fold dialog and
-// the session chrome's model-switch trigger, whose "Connect another provider"
-// entry opens the same dialog (previously with only a Suspense fallback, so a
-// rejected chunk took the session UI down with no retry).
+// Two callers mount this module's lazy chunk (ConnectProviderDialog plus its
+// instance-credential editors): the spawn pane's below-the-fold dialog and the
+// credentials section's full editor.
 import {
   Component,
   type JSX,

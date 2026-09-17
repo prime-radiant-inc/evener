@@ -172,7 +172,7 @@ func (s *RemoteHubSource) SubscribeThread(ctx context.Context, params appwire.Th
 	if err != nil {
 		return nil, err
 	}
-	client, err := s.client(ctx, s.id)
+	client, err := s.resolveClient(ctx)
 	if err != nil {
 		return nil, s.mapCallError(err)
 	}
