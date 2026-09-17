@@ -469,19 +469,48 @@ func (r *ResumeLocks) HasActiveResume(aliases []string) bool {
 	return false
 }
 
+// ActiveResumeStopAliases resolves the ownership group BeginActiveResumeStop
+// would fence and drain for alias — the transitive overlap set of the active
+// Resumes reachable from it — without canceling anything, and reports nil when
+// no Resume is active. Force stop validates every alias's deletion fence
+// before it cancels, so a request a sibling-alias fence will refuse does not
+// abort the in-flight Resume first.
+func (r *ResumeLocks) ActiveResumeStopAliases(alias string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.active[alias]) == 0 {
+		return nil
+	}
+	aliases, _ := r.activeResumeOverlapLocked(alias)
+	return aliases
+}
+
 func (r *ResumeLocks) BeginActiveResumeStop(alias string) *ResumeStop {
 	r.mu.Lock()
 	if len(r.active[alias]) == 0 {
 		r.mu.Unlock()
 		return nil
 	}
-	// Follow overlapping reservations as one ownership set. A waiter reached
-	// through a stable/current alias must not retain a live context or escape
-	// the fence merely because Stop named the other alias.
+	aliases, actives := r.activeResumeOverlapLocked(alias)
+	stop := &ResumeStop{active: actives}
+	stop.release = r.beginForceStopLocked(aliases)
+	r.mu.Unlock()
+	for _, active := range stop.active {
+		active.cancel()
+	}
+	return stop
+}
+
+// activeResumeOverlapLocked follows overlapping reservations as one ownership
+// set, returning the sorted alias group and the active Resumes within it. A
+// waiter reached through a stable/current alias must not retain a live context
+// or escape the fence merely because Stop named the other alias. Callers hold
+// r.mu.
+func (r *ResumeLocks) activeResumeOverlapLocked(alias string) ([]string, []*ActiveResume) {
 	seenAliases := make(map[string]bool)
 	seenActive := make(map[*ActiveResume]bool)
 	queue := []string{alias}
-	stop := &ResumeStop{}
+	var actives []*ActiveResume
 	for len(queue) != 0 {
 		current := queue[0]
 		queue = queue[1:]
@@ -492,17 +521,12 @@ func (r *ResumeLocks) BeginActiveResumeStop(alias string) *ResumeStop {
 		for active := range r.active[current] {
 			if !seenActive[active] {
 				seenActive[active] = true
-				stop.active = append(stop.active, active)
+				actives = append(actives, active)
 				queue = append(queue, active.aliases...)
 			}
 		}
 	}
-	stop.release = r.beginForceStopLocked(slices.Sorted(maps.Keys(seenAliases)))
-	r.mu.Unlock()
-	for _, active := range stop.active {
-		active.cancel()
-	}
-	return stop
+	return slices.Sorted(maps.Keys(seenAliases)), actives
 }
 
 // SessionRecoveryState is the action admission state shared by every transport.

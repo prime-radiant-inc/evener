@@ -52,10 +52,38 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 		refreshAfterForceStop(ctx, cfg)
 		return nil
 	}
-	if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
-		defer stop.Release()
-		if err := stop.Wait(ctx); err != nil {
-			return forceStopResumeStopError(err)
+	// A deletion record may name any alias in the ownership group of the
+	// Resume this drain would cancel, not only the requested alias. Resolve
+	// the group first and validate every alias's fence before the abort: a
+	// request a sibling-alias fence refuses must not cancel the in-flight
+	// Resume first — the ordering invariant the verified-process path keeps
+	// under its own reservations. Take the group's reservations before
+	// cancelling whenever they are free, so the validation is final; a
+	// reservation an in-flight launch already holds blocks deletion
+	// publication itself, so that case keeps the cancel-then-check order the
+	// post-ownership re-check below re-validates authoritatively. New Resume
+	// admissions stay fenced across the drain by the stop fence itself.
+	if stopAliases := cfg.ResumeLocks.ActiveResumeStopAliases(ref.ThreadID); stopAliases != nil {
+		reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, stopAliases)
+		for _, alias := range stopAliases {
+			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+				if reservationsHeld {
+					unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
+				}
+				return err
+			}
+		}
+		if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
+			defer stop.Release()
+			if err := stop.Wait(ctx); err != nil {
+				if reservationsHeld {
+					unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
+				}
+				return forceStopResumeStopError(err)
+			}
+		}
+		if reservationsHeld {
+			unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
 		}
 	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
@@ -319,21 +347,27 @@ func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliase
 
 // tryLockForceStopReservations takes every per-alias reservation without
 // blocking. It returns true only when all of them are held, leaving them held
-// for the caller's deferred release; on any failure it releases the prefix it
-// took. Holding them excludes deletion publication, which takes the same
+// for the caller's release; on any failure it releases the prefix it took.
+// Holding them excludes deletion publication, which takes the same
 // reservations, so a deletion check made while they are held is final.
 func tryLockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) bool {
 	acquired := 0
 	for _, alias := range aliases {
 		if !locks.For(alias).TryLock() {
-			for _, held := range slices.Backward(aliases[:acquired]) {
-				locks.For(held).Unlock()
-			}
+			unlockForceStopReservations(locks, aliases[:acquired])
 			return false
 		}
 		acquired++
 	}
 	return true
+}
+
+// unlockForceStopReservations releases reservations tryLockForceStopReservations
+// left held, in reverse acquisition order.
+func unlockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) {
+	for _, alias := range slices.Backward(aliases) {
+		locks.For(alias).Unlock()
+	}
 }
 
 // confirmedStoppedDecision is checkConfirmedStoppedWithoutClaim's outcome.

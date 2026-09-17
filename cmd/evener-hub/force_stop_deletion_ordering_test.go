@@ -232,3 +232,77 @@ func TestForceStopValidatesSiblingDeletionUnderReservationFallback(t *testing.T)
 		}
 	})
 }
+
+// TestForceStopValidatesSiblingDeletionBeforeCancelingActiveResume pins the
+// entry-drain half of the ordering invariant: the top-level Stop used to
+// cancel an already-active Resume before discovering the full alias group or
+// consulting any sibling alias's deletion fence, so a request that the
+// sibling fence would refuse aborted the Resume first. Every ownership alias
+// of the Resume the drain would cancel must be validated before the abort,
+// under the per-alias reservations whenever they are free.
+func TestForceStopValidatesSiblingDeletionBeforeCancelingActiveResume(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		runDir := t.TempDir()
+		sessionID, siblingID := hubtest.SessionID(t), hubtest.SessionID(t)
+		writeRendezvous(t, runDir, rendezvous.Entry{PID: 4242, SessionID: sessionID, ThreadID: siblingID, StartedAt: time.Now()})
+		original := deletionTargetState
+		// The fence names only the sibling alias, so the request's entry check
+		// on the requested alias passes.
+		deletionTargetState = func(_ *hubcore.DeletionStore, _, threadID string) (hubcore.DeletionState, bool) {
+			return hubcore.DeletionStateDeleting, threadID == siblingID
+		}
+		defer func() { deletionTargetState = original }()
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// A Resume on the full ownership group is already active when the
+		// request arrives — the Resume the entry drain would abort before the
+		// sibling fence is ever consulted.
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID, siblingID}, map[string]uint64{
+			sessionID: locks.RecoveryState(sessionID).Epoch,
+			siblingID: locks.RecoveryState(siblingID).Epoch,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var events []string
+		cfg := hubcore.WebConfig{
+			RunDir:        runDir,
+			ResumeLocks:   locks,
+			DeletionStore: store,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				events = append(events, "open")
+				return &forceStopProcess{events: &events}, nil
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-stopped:
+			if err == nil {
+				t.Fatal("force stop with a sibling-alias deletion fence succeeded")
+			}
+			if !isTargetDeletedError(err) {
+				t.Fatalf("force stop error = %v, want the target-deleted refusal", err)
+			}
+		default:
+			// A handler still draining the canceled Resume means the request
+			// aborted the Resume before the sibling fence refused it.
+			active.Complete(nil)
+			<-stopped
+			t.Fatal("force stop canceled the in-flight Resume before validating the sibling deletion fence")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("force stop canceled the in-flight Resume before validating the sibling deletion fence")
+		}
+		active.Complete(nil)
+		if len(events) != 0 {
+			t.Fatalf("a refused force stop reached process control: %v", events)
+		}
+	})
+}
