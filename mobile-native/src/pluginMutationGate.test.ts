@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { createPluginMutationGate } from "./pluginMutationGate";
+import { createPluginMutationGate, PLUGIN_MUTATION_BUSY } from "./pluginMutationGate";
 
 /** A promise plus the resolver for it, to hold a mutation open. */
 function pending(): { promise: Promise<void>; settle: () => void } {
@@ -30,6 +30,24 @@ describe("one plugin mutation at a time", () => {
     install.settle();
     await expect(installing).resolves.toBe(true);
     expect(gate.isBusy()).toBe(false);
+  });
+
+  // The screens tell the two outcomes apart to say different things: a refusal
+  // is "one is already running", a rejection is "this one may not have
+  // landed". A refusal that resolved like a success would be silent, which is
+  // what the deleted InstalledPlugins model surfaced as busy copy.
+  test("a refusal is a distinct outcome with copy of its own, not a failure", async () => {
+    const gate = createPluginMutationGate();
+    const first = pending();
+    const running = gate.run(() => first.promise);
+
+    const refused = gate.run(async () => undefined);
+    await expect(refused).resolves.toBe(false);
+    expect(typeof PLUGIN_MUTATION_BUSY).toBe("string");
+    expect(PLUGIN_MUTATION_BUSY.length).toBeGreaterThan(0);
+
+    first.settle();
+    await expect(running).resolves.toBe(true);
   });
 
   test("the next mutation runs once the first has finished, failure or not", async () => {

@@ -342,14 +342,22 @@ assert.equal(typeof client.readDocFile, "function");
     "./state/navigation": {
       esmTypeUses: `const key: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 50 };
 const graph: NavigationGraph = normalizedGraphFromSnapshot({ metadata: {}, entities: [], containers: [] }); void key; void graph;
-const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;`,
-      cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;`,
+const waiter: NavigationInvalidationWaiter | undefined = undefined; void waiter;
+const memoryExpansion = new Map<string, boolean>();
+const navigationPersistence: NavigationPersistence = { readExpansion: () => new Map(memoryExpansion), writeExpansion: () => undefined };
+const navigation: NavigationStore = createNavigationStore({ persistence: navigationPersistence });
+const navigationState: NavigationStoreState = navigation.getState(); void navigationState;`,
+      cjsTypeUses: `const invalid: client.NavigationBaseInvalidError = new client.NavigationBaseInvalidError(); void invalid;
+const navigationStoreState: client.NavigationStoreState = client.createNavigationStore({ persistence: { readExpansion: () => new Map(), writeExpansion: () => undefined } }).getState(); void navigationStoreState;`,
       // One call per module: types (keyID, the offset rule), immutable (the
       // freeze and the equality), codec (a snapshot normalized into a graph),
       // merge (an empty delta onto a manifest that carries no metadata, which
       // the merge refuses as an invalid base), invalidation (the wildcard
       // reaching a project page), revalidator (an instance carries its
-      // generation).
+      // generation), store (a store built over a memory persistence port
+      // reads its expansion at creation, writes a toggle back through the
+      // port, and re-reads the port on reset - with no client wired, so
+      // nothing opens a socket).
       smoke: `assert.equal(client.keyID({ kind: "section", section: "live", offset: 0, limit: 50 }), '{"kind":"section","limit":50,"offset":0,"section":"live"}');
 assert.equal(client.nextNavigationOffset(50, 25), 75);
 assert.equal(client.isNavigationUnavailable(new Error("boom")), false);
@@ -369,6 +377,17 @@ assert.equal(client.matchesTarget(projectPage, { kind: "all_loaded_projects" }),
 const revalidator = new client.NavigationRevalidator("g");
 assert.equal(revalidator.generationID, "g");
 revalidator.dispose();
+assert.equal(client.projectNodeExpansionKey("p"), "projectnode:p");
+const seededExpansion = new Map([["projectnode:p", true]]);
+const navigationStore = client.createNavigationStore({
+  persistence: { readExpansion: () => new Map(seededExpansion), writeExpansion: (m) => seededExpansion.clear() || m.forEach((v, k) => seededExpansion.set(k, v)) },
+});
+assert.equal(navigationStore.getState().expanded.get("projectnode:p"), true);
+assert.equal(navigationStore.getState().mode, "unknown");
+navigationStore.getState().toggleExpanded("projectnode:p");
+assert.equal(seededExpansion.get("projectnode:p"), false);
+navigationStore.reset();
+assert.equal(navigationStore.getState().expanded.get("projectnode:p"), false);
 `,
     },
     // The credentials state layer: the listing core each app's Providers &

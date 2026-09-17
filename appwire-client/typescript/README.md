@@ -102,8 +102,15 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   matching a hub invalidation target to a loaded resource and the revision it
   obliges it to reach (`invalidation`), and the revalidator that re-reads
   loaded resources on the hub's invalidations through injected request
-  callbacks (`revalidator`). The subpath resolves to
-  `state/navigation/index.ts`, a barrel that re-exports the six modules whole.
+  callbacks (`revalidator`), and the store itself (`store`):
+  `createNavigationStore({ persistence })` is a framework-free store holding
+  one hub connection's navigation state - capability and generation, the
+  revalidator's loaded resources, the attention summary, the boot fan-out and
+  the rail's expand state - over a `connect`/`request`/`onNotification`/`onReady`
+  client port handed to `init(client)` and a `NavigationPersistence` port
+  (`readExpansion`/`writeExpansion`) for expansion, with `projectNodeExpansionKey`
+  naming a project's row. The subpath resolves to `state/navigation/index.ts`,
+  a barrel that re-exports the seven modules whole.
 - `@evener/appwire-client/state/extensions` - the extensions state layer both
   apps' plugin settings surfaces are built on: the marketplaces store
   (`createMarketplacesStore(client)`, a framework-free store over a

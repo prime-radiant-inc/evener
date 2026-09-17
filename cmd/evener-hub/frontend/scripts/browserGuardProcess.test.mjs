@@ -434,6 +434,55 @@ test("keeps the profile until a detached browser process group disappears", asyn
   assert.equal(existsSync(profileDir), false);
 });
 
+// A Chrome helper that outlived the waits above, or the OS still flushing the
+// writes of one that has, can put a file back into the profile between the
+// recursive removal's readdir and its rmdir - so the removal fails ENOTEMPTY
+// after the guard has already printed its verdict (#1563). Node retries that
+// class itself when asked; this pins that it is asked, and that the removal
+// still happens only once everything has exited.
+test("removes the profile with bounded retries, and only after the waits", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-retry-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const removals = [];
+  let groupRunning = true;
+  const groupChecks = [];
+  const child = new FakeChild("/fake/chrome");
+  child.pid = 5150;
+  const lifecycle = createBrowserProcessCleanup({
+    profileDir,
+    processGroupRunning: () => groupRunning,
+    signalProcessGroup: () => true,
+    scheduleGroupCheck(callback) {
+      groupChecks.push(callback);
+      return callback;
+    },
+    cancelGroupCheck() {},
+    removeProfile(dir, options) {
+      removals.push({ dir, options });
+    },
+  });
+  lifecycle.addChild(child, { processGroupId: child.pid, gracefulClose: () => Promise.resolve() });
+
+  const cleanup = lifecycle.cleanup();
+  child.exit();
+  await Promise.resolve();
+  assert.deepEqual(removals, [], "the profile is not removed while its process group is alive");
+
+  groupRunning = false;
+  groupChecks.at(-1)();
+  await cleanup;
+
+  assert.equal(removals.length, 1);
+  assert.equal(removals[0].dir, profileDir);
+  assert.equal(removals[0].options.recursive, true);
+  assert.equal(removals[0].options.force, true);
+  assert.ok(
+    removals[0].options.maxRetries > 0,
+    "a removal racing a helper's last writes must retry rather than fail the guard",
+  );
+  assert.ok(removals[0].options.retryDelay > 0, "retries must back off, not spin");
+});
+
 test("keeps the profile until a captured escaped Chrome helper exits", async (context) => {
   const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-test-"));
   context.after(() => rmSync(profileDir, { recursive: true, force: true }));

@@ -194,6 +194,30 @@ describe("browse cache", () => {
   });
 });
 
+describe("reset fences a mutation's side effects", () => {
+  // reset() is "forget everything this store read": a reply that started
+  // before it writes no list, and the catalogs it names must not be retired
+  // either. Retiring is monotonic WITHIN a generation - which is why an
+  // outrun mutation still retires its own names - but a reset ends the
+  // generation, and a browse started after it is about the state reset left
+  // behind, not the one the reply belongs to.
+  test("a mutation reply that lands after reset() retires nothing", async () => {
+    const { fake, store } = storeWithFake();
+    fake.on(BROWSE, () => ({ name: "acme", plugins: [{ name: "linter" }] }));
+    const release = deferRequest<{ marketplaces: MarketplaceEntry[] }>(fake, "evener/marketplace/remove");
+    const removing = store.getState().removeMarketplace("acme");
+    await Promise.resolve();
+
+    store.reset();
+    await store.getState().browseMarketplace("acme");
+    expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
+
+    release({ marketplaces: [] });
+    await removing;
+    expect(store.getState().browseCatalogs.get("acme")).toMatchObject({ status: "loaded" });
+  });
+});
+
 describe("reconnect", () => {
   // A store belongs to one hub - the web builds one for the app's single
   // connection, native one per client under a screen keyed by hub - so a

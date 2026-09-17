@@ -54,12 +54,14 @@ type delegateShellRepairPlan struct {
 
 type delegateReconcileRequirements struct {
 	evidenceVersion      uint64
+	stopRequestSeq       uint64 // Zero requests general, full-tree attention evidence.
 	shellStores          map[string]string
 	attentionTranscripts map[string]string
 }
 
 type delegateReconcileEvidence struct {
 	evidenceVersion uint64
+	stopRequestSeq  uint64
 	shells          map[string]shellRuntimeLossEvidence
 	attention       map[string][]string
 }
@@ -188,16 +190,37 @@ func delegateRunStartIndex(events []delegatestore.Event) map[delegateLease]deleg
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.reconcileRequirementsLocked(nil)
+}
+
+func (c *delegateTreeController) stopReconcileRequirements(stop *delegateStopState) (delegateReconcileRequirements, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if stop == nil || c.stop != stop {
+		return delegateReconcileRequirements{}, false
+	}
+	return c.reconcileRequirementsLocked(stop), true
+}
+
+func (c *delegateTreeController) reconcileRequirementsLocked(stop *delegateStopState) delegateReconcileRequirements {
 	requirements := delegateReconcileRequirements{
 		evidenceVersion:      c.evidenceVersion,
 		shellStores:          make(map[string]string),
 		attentionTranscripts: make(map[string]string),
+	}
+	if stop != nil {
+		requirements.stopRequestSeq = stop.requestSeq
 	}
 	for id, aggregate := range c.durable {
 		if aggregate == nil {
 			continue
 		}
 		requirements.shellStores[id] = filepath.Join(jobsDir(c.stateDir, aggregate.Descriptor.ChildSessionID), "jobs.jsonl")
+		if stop != nil {
+			if _, member := stop.members[id]; !member {
+				continue
+			}
+		}
 		requirements.attentionTranscripts[id] = aggregate.Descriptor.TranscriptRef
 	}
 	return requirements
@@ -226,7 +249,11 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	if evidence.evidenceVersion != c.evidenceVersion {
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
-	if !delegateReconcileEvidenceMatchesState(evidence, c.durable) {
+	if evidence.stopRequestSeq != 0 {
+		if !delegateStopReconcileEvidenceMatchesState(evidence, c.durable, c.stop) {
+			return delegateMutationPlans{}, errDelegateTargetBusy
+		}
+	} else if !delegateReconcileEvidenceMatchesState(evidence, c.durable) {
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	plans, generationCancel, err := c.reconcileRecoveryRequiredStopLocked()
@@ -571,6 +598,31 @@ func (c *delegateTreeController) repairableShellEvidenceLocked(delegateID string
 		}
 	}
 	return filtered, true
+}
+
+// Scoped evidence proves every shell ledger and exactly the current stop's
+// attention membership. An omitted member is not an empty pending-attention set.
+func delegateStopReconcileEvidenceMatchesState(evidence delegateReconcileEvidence, state delegatestore.State, stop *delegateStopState) bool {
+	if stop == nil || evidence.stopRequestSeq != stop.requestSeq || len(evidence.shells) != len(state) || len(evidence.attention) != len(stop.members) {
+		return false
+	}
+	for id, aggregate := range state {
+		if aggregate == nil {
+			return false
+		}
+		if _, exists := evidence.shells[id]; !exists {
+			return false
+		}
+	}
+	for id := range stop.members {
+		if state[id] == nil {
+			return false
+		}
+		if _, exists := evidence.attention[id]; !exists {
+			return false
+		}
+	}
+	return true
 }
 
 func delegateReconcileEvidenceMatchesState(evidence delegateReconcileEvidence, state delegatestore.State) bool {
