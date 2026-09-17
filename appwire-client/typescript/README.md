@@ -187,8 +187,8 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
   rows a composer's queue renders - identity-based, so an authoritative
   projection replaces the same outbox entry rather than duplicating it. No
-  storage adapter or scheduling policy lives here either - just the shapes, the
-  identity, the rules, the attempts and the reconciliation. Resolves to
+  storage adapter lives here either - just the shapes, the identity, the
+  rules, the attempts and the reconciliation. Resolves to
   `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
