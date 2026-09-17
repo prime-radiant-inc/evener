@@ -42,6 +42,7 @@
     "qualification": "node scripts/qualify-package.mjs"
   },
   "devDependencies": {
+    "tinykeys": "^4.0.0",
     "typescript": "~6.0.3",
     "ws": "^8.18.0"
   }
