@@ -462,6 +462,26 @@ describe("the checkpointed draft editor", () => {
     expect(() => store.getState().editDraft(rules)).not.toThrow();
   });
 
+  test("a restored proposal is discardable while the hub read has failed", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.storage.save({ id: "d1", baseRevision: 2, rules, writeUncertain: false });
+    const client = new FakeClient("ready");
+    client.on(getMethod, () => {
+      throw new Error("hub unreachable");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+    expect(store.getState().loaded).toBe(false);
+    expect(store.getState().draft?.rules).toEqual(rules);
+
+    // Throwing away a proposal needs no confirmed hub state: assertDiscardable
+    // checks nothing about the hub, only that no write is in flight or its
+    // outcome unknown and the port is usable (round 14: `requiresHub: false`
+    // reaches this gate, which was never conditioned on connectivity).
+    store.getState().discardDraft();
+    expect(store.getState().draft).toBeNull();
+    expect(drafts.stored()).toBeNull();
+  });
+
   test("a store built over a stored checkpoint restores the draft synchronously", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });
