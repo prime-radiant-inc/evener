@@ -61,7 +61,10 @@ export function MarketplaceBrowser({
   const [selected, setSelected] = useState<string | null>(null);
   // Marketplace writes (add, remove, refresh) are this view's own and end with
   // it; the plugin install is the one that outlives it, so only that one takes
-  // the screen's gate.
+  // the screen's gate. They still wait on pluginBusy (see the three actions
+  // below) without taking the gate themselves: the hub does not serialize a
+  // marketplace removal or refresh against a concurrent install from that
+  // marketplace, so this view has to refuse the overlap the hub won't.
   const [mutating, setMutating] = useState(false);
   const [adding, setAdding] = useState(false);
   const [query, setQuery] = useState("");
@@ -139,7 +142,7 @@ export function MarketplaceBrowser({
     (item) => item.name === selected,
   );
   function remove() {
-    if (!marketplace || mutating) return;
+    if (!marketplace || mutating || pluginBusy) return;
     const name = marketplace.name;
     const version = revision.current;
     Alert.alert("Remove marketplace?", `${name} on ${hubName}`, [
@@ -184,14 +187,14 @@ export function MarketplaceBrowser({
           {loaded?.description && <Copy>{loaded.description}</Copy>}
           <View style={[styles.row, { flexWrap: "wrap" }]}>
             <Action
-              disabled={mutating}
+              disabled={mutating || pluginBusy}
               onPress={() => {
                 void act(() => state.refreshMarketplace(selected));
               }}
             >
               Refresh source
             </Action>
-            <Action disabled={mutating} onPress={remove}>
+            <Action disabled={mutating || pluginBusy} onPress={remove}>
               Remove marketplace
             </Action>
           </View>
@@ -229,7 +232,7 @@ export function MarketplaceBrowser({
           )}
         </>
       ) : (
-        <Action disabled={mutating} onPress={() => setAdding(true)}>
+        <Action disabled={mutating || pluginBusy} onPress={() => setAdding(true)}>
           Add marketplace
         </Action>
       )}
