@@ -229,7 +229,15 @@ for (const replacement of [
   });
 }
 
-it("does not restore obsolete images from an overlapping older page", async () => {
+// An overlapping older page is the only evidence anybody has about an input
+// image a live frame did not mention. The wire has no "the images are gone"
+// signal for input images — an empty or absent list says nothing, which is how
+// the hub reads it too (`len(incoming.Images) == 0` keeps the existing list:
+// server/appwire_turns.go:884-886, internal/apptranscript/logical_turn.go:309)
+// — so the page restores them rather than a stale removal winning. D23d's own
+// delta: with pages merged into the model, mergePageItem decides this, where the
+// row-level prepend used to leave the live row alone.
+it("restores input images from an overlapping older page when no frame denied them", async () => {
   const item: ThreadItem = {
     type: "userMessage",
     id: "user",
@@ -239,9 +247,12 @@ it("does not restore obsolete images from an overlapping older page", async () =
   };
   const { store, service, publish } = await setup([item]);
   publish({ ...item, images: [] });
+  expect(
+    store.getState().conversation?.items.map((row) => row.kind),
+  ).toEqual(["user"]);
   expect((await store.getState().loadOlder(service)).status).toBe("loaded");
-  expect(store.getState().conversation?.items.map((item) => item.kind)).toEqual(
-    ["user"],
+  expect(store.getState().conversation?.items.map((row) => row.kind)).toEqual(
+    ["user", "attachments"],
   );
 });
 

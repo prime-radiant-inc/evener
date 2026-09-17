@@ -9457,9 +9457,7 @@ describe("ConversationStore", () => {
       ...makeReadProjectionResult(runningTurnThread([agentMessageItem("a1", oversized, "completed")])),
       olderCursor: "cursor-1",
     };
-    service.olderItems = {
-      items: [{ kind: "assistant", id: "old", markdown: "older row", streaming: false }],
-    };
+    service.olderPage = olderPage([agentMessageItem("old", "older row")]);
     const store = createConversationStore();
     await store.getState().openProjected(service, createFakeSink(), "ref-1");
     const row = rowById(store, "a1");
