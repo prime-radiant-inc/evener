@@ -10,11 +10,12 @@ import {
 	isSequenceGap,
 	matchingTargets,
 	materializeNavigationResource,
+	navigationParamsToResourceKey,
 	type NormalizedResource,
-	normalizedGraphFromSnapshot,
 	reconcileSnapshot,
 	requiredRevision,
 	type ResourceKey,
+	snapshotResource,
 } from "@evener/appwire-client/state/navigation";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { singleFlight } from "./singleFlight";
@@ -52,49 +53,6 @@ type NativeNavigationParams = Omit<
 	NavigationReadParams,
 	"representationVersion"
 >;
-export function resourceKeyFor(p: NavigationReadParams): ResourceKey {
-	const offset = p.offset ?? 0,
-		limit = p.limit ?? 50;
-	switch (p.resource) {
-		case "catalog":
-			return {
-				kind: "catalog",
-				catalog: p.catalog as "projects" | "archived_projects" | "test_runs",
-				offset,
-				limit,
-			};
-		case "section":
-			return {
-				kind: "section",
-				section: p.section as "live" | "needs_you",
-				offset,
-				limit,
-			};
-		case "pin_section":
-			return {
-				kind: "pin_section",
-				sectionId: p.sectionId as string,
-				offset,
-				limit,
-			};
-		case "project_page":
-			return {
-				kind: "project_page",
-				projectKey: p.projectKey as string,
-				tier: p.tier as "current" | "recent" | "archived",
-				offset,
-				limit,
-			};
-		case "pin_catalog":
-			return { kind: "pin_catalog", offset, limit };
-		case "project":
-			return { kind: "project", projectKey: p.projectKey as string };
-		case "location":
-			return { kind: "location", ref: p.ref as string };
-		default:
-			return { kind: "manifest" };
-	}
-}
 export class NavigationPages<T> {
 	private state: PageState<T> = {
 		loaded: false,
@@ -133,7 +91,10 @@ export class NavigationPages<T> {
 		private key: (row: T) => string,
 		private limit = 50,
 	) {
-		this.resourceKey = resourceKeyFor({ ...params, representationVersion: 2 });
+		this.resourceKey = navigationParamsToResourceKey({
+			...params,
+			representationVersion: 2,
+		});
 	}
 	/** Follow hub invalidations. Newer data is re-read here without user
 	 * action unless an owner takes every re-read to run a wider read of its
@@ -264,7 +225,7 @@ export class NavigationPages<T> {
 					offset,
 					limit: this.limit,
 				},
-				key = resourceKeyFor(params),
+				key = navigationParamsToResourceKey(params),
 				base =
 					!recovered && reset && offset === 0 && this.normalized
 						? this.normalized.version
@@ -363,12 +324,10 @@ export class NavigationPages<T> {
 			}
 			const incoming =
 				decoded.status === "snapshot"
-					? reconcileSnapshot(reset && offset === 0 ? this.normalized : null, {
-							key,
-							graph: normalizedGraphFromSnapshot(decoded.snapshot),
-							version: decoded.version,
-							presence: "present",
-						})
+					? reconcileSnapshot(
+							reset && offset === 0 ? this.normalized : null,
+							snapshotResource(key, decoded),
+						)
 					: this.normalized
 						? applyDelta(this.normalized, decoded.delta, decoded.version)
 						: null;
