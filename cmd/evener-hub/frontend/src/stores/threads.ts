@@ -1435,14 +1435,14 @@ function notificationMutationIdentities(n: AnyNotification): string[] {
 // - never sets it at all, #1704/#1705); depth is computed the same way on
 // every path, so depth === 0 is proof of an empty queue even without ids.
 // Anything else with ids missing is coverage this reading cannot vouch for.
-function queueSnapshotFromWire(queue: QueueState, authoritative: boolean): QueueSnapshot {
+function queueSnapshotFromWire(queue: QueueState, authoritative: boolean, instanceId: string): QueueSnapshot {
   const ids =
     queue.clientMutationIds !== undefined
       ? new Set(queue.clientMutationIds)
       : queue.depth === 0
         ? new Set<string>()
         : undefined;
-  return { ids, revision: queue.revision, authoritative };
+  return { ids, revision: queue.revision, authoritative, instanceId };
 }
 
 function applyHydrationResponseCut(pending: PendingThreadHydration, ref: string, model: ThreadModel): void {
@@ -1669,7 +1669,11 @@ async function publishAndReconcileThreadHydration(
           // authoritative reconnect if a live push never arrives.
           await runtime.dispatcher.reconcileQueueSnapshot(
             ref,
-            queueSnapshotFromWire(hydration.response.thread.evener.queue, true),
+            queueSnapshotFromWire(
+              hydration.response.thread.evener.queue,
+              true,
+              hydration.response.thread.evener.instanceId ?? hydration.response.thread.id,
+            ),
           );
         }
         if (!current()) return;
@@ -1837,7 +1841,7 @@ function handleNotification(n: AnyNotification): void {
     const ref = notificationRef(n);
     const runtime = getMutationRuntime();
     if (ref && runtime) {
-      const snapshot = queueSnapshotFromWire(n.params.queue, true);
+      const snapshot = queueSnapshotFromWire(n.params.queue, true, n.params.threadId);
       void runtime.dispatcher
         .reconcileQueueSnapshot(ref, snapshot)
         .then((settled) =>

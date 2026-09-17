@@ -636,7 +636,7 @@ describe("MutationDispatcher", () => {
 });
 
 function queueSnapshot(overrides: Partial<QueueSnapshot> = {}): QueueSnapshot {
-  return { ids: new Set(), revision: 1, authoritative: true, ...overrides };
+  return { ids: new Set(), revision: 1, authoritative: true, instanceId: "instance-a", ...overrides };
 }
 
 // One accepted, not-yet-reflected turn/queue intent ("pending" projectionState
@@ -785,6 +785,66 @@ describe("reconcileQueueSnapshot", () => {
     expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
       queued.clientMutationId,
     ]);
+    outbox.close();
+  });
+
+  // RoboRev's simplify-round Medium on #1705: thread/clear installs a new
+  // session instance (server/appwire_runtime.go's handleAppThreadClear
+  // replaces s.appThreadID) whose own queue revision counter restarts, but
+  // targetRef survives the clear unchanged. A revision comparison that
+  // ignores which instance it came from reads the new instance's low
+  // revisions as stale forever, silently disabling reconciliation for the
+  // ref - old-session optimistic queue intents resurface as ghost rows.
+  test("a snapshot from a new session instance is never stale against the old instance's higher revision", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "new-instance", ["queue-a", "queue-b"]);
+    await outbox.enqueueIntent(queueIntent("ref-a", "first session"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    // The old instance reconciles up to a high revision.
+    await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set(), revision: 10, instanceId: "instance-1" }),
+    );
+
+    // thread/clear replaces the instance. The new instance's own queue
+    // starts over at revision 0 with a freshly accepted intent of its own.
+    const second = await outbox.enqueueIntent(queueIntent("ref-a", "second session"));
+    await dispatcher.dispatchTargets(["ref-a"]);
+    const settled = await dispatcher.reconcileQueueSnapshot(
+      "ref-a",
+      queueSnapshot({ ids: new Set(), revision: 0, instanceId: "instance-2" }),
+    );
+
+    expect(settled).toEqual([second.clientMutationId]);
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
+    outbox.close();
+  });
+
+  // RoboRev's simplify-round Medium on #1705: the cursor advanced even when
+  // the write that follows it fails, so a retry delivering the identical
+  // revision again was discarded as stale despite nothing of it ever having
+  // been applied.
+  test("a failed reconcile leaves the cursor where it was, so a retry at the same revision still acts", async () => {
+    const { outbox, dispatcher, queued } = await acceptedQueueIntent("failed-reconcile-retries");
+    const failure = new Error("indexedDB transaction aborted");
+    vi.spyOn(outbox, "settleOptimisticAbsent").mockRejectedValueOnce(failure);
+
+    await expect(dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set() }))).rejects.toThrow(
+      failure,
+    );
+    expect((await outbox.listOptimistic("ref-a")).map((record) => record.clientMutationId)).toEqual([
+      queued.clientMutationId,
+    ]);
+
+    // The identical revision, retried after the failure clears: not stale.
+    const settled = await dispatcher.reconcileQueueSnapshot("ref-a", queueSnapshot({ ids: new Set() }));
+
+    expect(settled).toEqual([queued.clientMutationId]);
+    expect(await outbox.listOptimistic("ref-a")).toEqual([]);
     outbox.close();
   });
 

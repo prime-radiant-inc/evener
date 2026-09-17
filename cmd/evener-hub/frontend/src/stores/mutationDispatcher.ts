@@ -16,7 +16,12 @@ import type { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
 // server push that never populates it, still a real, reachable path: see
 // #1704/#1705) and reconcileQueueSnapshot must not guess, never treating
 // "unknown" as "empty". `revision` orders snapshots for the same target so
-// a stale or reordered one is ignored rather than acted on.
+// a stale or reordered one is ignored rather than acted on, but only within
+// one session instance: `instanceId` is that session's own identity (the
+// thread's instanceId, falling back to its threadId - the same fence
+// expectedInstanceId uses), since a thread/clear installs a new instance
+// whose revision counter restarts, and a revision is meaningless compared
+// across two different instances.
 // `authoritative` is the caller's own answer to "is this data source live
 // and trustworthy right now", separate from ids coverage - false for a
 // saved/incompatible/not-loaded hydrate snapshot.
@@ -24,6 +29,7 @@ export interface QueueSnapshot {
   ids: ReadonlySet<string> | undefined;
   revision: number;
   authoritative: boolean;
+  instanceId: string;
 }
 
 export interface MutationDispatcherOptions {
@@ -49,7 +55,7 @@ export class MutationDispatcher {
   readonly #dispatching = new Map<string, Promise<void>>();
   readonly #requestedRuns = new Map<string, number>();
   readonly #queueReconciliations = new Map<string, Promise<unknown>>();
-  readonly #lastReconciledQueueRevision = new Map<string, number>();
+  readonly #lastReconciledQueue = new Map<string, { instanceId: string; revision: number }>();
 
   constructor(storage: MutationOutboxIndexedDB, options: MutationDispatcherOptions) {
     this.#storage = storage;
@@ -105,12 +111,20 @@ export class MutationDispatcher {
 
   async #reconcileQueueSnapshotNow(targetRef: string, snapshot: QueueSnapshot): Promise<string[]> {
     if (!snapshot.authoritative) return [];
-    const last = this.#lastReconciledQueueRevision.get(targetRef);
-    if (last !== undefined && snapshot.revision <= last) return [];
+    const last = this.#lastReconciledQueue.get(targetRef);
+    // A revision is only comparable within its own instance - see
+    // QueueSnapshot's own comment on why a new instance's low revision is
+    // never stale against an old instance's higher one.
+    if (last !== undefined && last.instanceId === snapshot.instanceId && snapshot.revision <= last.revision) {
+      return [];
+    }
     if (snapshot.ids === undefined) return [];
-    this.#lastReconciledQueueRevision.set(targetRef, snapshot.revision);
     await this.reconcileIdentities(snapshot.ids);
     const settled = await this.#storage.settleOptimisticAbsent(targetRef, "turn/queue", snapshot.ids);
+    // Recorded only once every write above has succeeded: a failed
+    // reconciliation must leave the cursor where it was so a retry at the
+    // same revision is not discarded as stale.
+    this.#lastReconciledQueue.set(targetRef, { instanceId: snapshot.instanceId, revision: snapshot.revision });
     if (settled.length > 0) this.#onStorageChange([targetRef]);
     return settled;
   }
