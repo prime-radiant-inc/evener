@@ -644,16 +644,17 @@ assert.deepEqual(
 // it.
 const enqueued = [];
 const discovered = [];
-const memoryOutbox = new client.MutationOutbox(
-  {
-    enqueueIntent(intent) {
-      const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
-      enqueued.push(record);
-      return Promise.resolve(record);
-    },
-    listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
-${inertOutboxStorageMethods}
+const memoryOutboxStorage = {
+  enqueueIntent(intent) {
+    const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+    enqueued.push(record);
+    return Promise.resolve(record);
   },
+  listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+${inertOutboxStorageMethods}
+};
+const memoryOutbox = new client.MutationOutbox(
+  memoryOutboxStorage,
   {
     isReady: () => true,
     onDiscover: (targetRefs, reason) => {
@@ -684,18 +685,12 @@ memoryOutbox
     assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
   })
   .then(() => {
-    // The dispatcher over the same memory port, with no client wired: a
-    // dispatch for a ref whose record is waiting resolves without sending
-    // anything, which is the whole of what qualification can prove about it
-    // (a real attempt needs a transport; the unit suite drives that).
-    const dispatcher = new client.MutationDispatcher(
-      {
-        enqueueIntent: () => Promise.reject(new Error("not used")),
-        listTargetRefs: () => Promise.resolve(["local:thread-1"]),
-${inertOutboxStorageMethods}
-      },
-      { getClient: () => null },
-    );
+    // MutationDispatcher is a runtime export reachable over the same memory
+    // port as the outbox above: with no client wired, nextDispatchable's own
+    // inert undefined stops dispatchTargets before any transport attempt,
+    // proving the export resolves at all - a real attempt needs a transport,
+    // which is the unit suite's job, not qualification's.
+    const dispatcher = new client.MutationDispatcher(memoryOutboxStorage, { getClient: () => null });
     return dispatcher.dispatchTargets(["local:thread-1"]);
   })
   .catch((err) => {
