@@ -703,9 +703,13 @@ cannot produce those fields), keyed by the host's registry (generation,
   clamp, and the round-thirty unreachable arm, which kept a second guard
   whose lowered-bound trigger validate already subsumed by shortening
   outstanding TTLs to the lowered bound: one rule survives — the deploy
-  step-(3) re-check compares the token-bound facts age against the bound and
-  refuses stale past it, and the mint-clamped `expiresAt` step-(4) check
-  governs liveness — no second arm))**, bound to
+  step-(3) re-check compares the token-bound facts age (measured over the
+  `factsCapturedAt`-to-deploy interval, which includes the ungated
+  refresh→mint gap inside `plan` that the mint clamp cannot see) against
+  the bound and refuses stale past it, and the mint-clamped `expiresAt`
+  step-(4) check governs post-mint liveness alone (so the two checks are
+  decoupled — Mint TTL and facts freshness age over different intervals,
+  and step (3) stays reachable past a slow probe) — no second arm))**, bound to
   (host name, the host's registry generation at mint time, a hash of the resolved host entry, **a fingerprint (content
   hash) of the controller's `hub.toml` file bytes as they are on disk at
   plan time**, the preflight revision the plan was built from, the facts capture timestamp
@@ -766,11 +770,10 @@ cannot produce those fields), keyed by the host's registry (generation,
   before it (extending the round-nineteen intent — r19 purged tokens
   post-sidecar-commit but pre-swap, so a swap-failure compensation restored
   sidecar bytes only and left a live host with purged tokens, violating the
-  pre-commit leave-old-state promise): a swap failure before the purge leaves
-  both files in the old state with nothing to compensate; a swap failure
-  after the purge compensates the store purge alongside the sidecar restore —
-  the purged token rows are re-inserted in the same atomic store write that
-  accompanies the stash restore, so compensation resurrects exactly the
+  pre-commit leave-old-state promise): a failure before the purge leaves
+  both files in the old state with nothing to compensate; a post-swap failure
+  after the purge (still before the commit point) compensates the store purge alongside the sidecar restore —
+  the purged token rows are re-inserted alongside the stash restore, so compensation resurrects exactly the
  tokens its own sidecar restore revalidates and the compensated mutation
  leaves old sidecar bytes beside old store rows — through a durable two-step
  protocol, never one cross-file atomic write (extending the round-twenty
@@ -778,7 +781,18 @@ cannot produce those fields), keyed by the host's registry (generation,
  that accompanies the stash restore", but no single write spans the sidecar
  rename and the store file, so a crash after the stash restore and before
  the reinsert left the restored sidecar without its `pendingStoreSync`
- intent and boot could not detect the lost store rows): the committer first
+ intent and boot could not detect the lost store rows — and extending the
+ round-thirty compensation paragraph, which persisted the purged rows as a
+ `pendingCompensation` record and then described a "swap failure after the
+ purge" against a strictly post-swap purge: "swap" there named two
+ transitions at once. What changes is the single stated ordering — the
+ purge applies once the runtime swap lands, and `pendingCompensation`
+ covers exactly the reachable post-swap window: a failure of the staged
+ swap procedure landing after the purge but before the commit point (the
+ first planned teardown — a late-detected rebind failure or a
+ receipt-persist failure — still compensable, never past the commit
+ point), or, equivalently, a crash after the purge before the post-swap
+ store write lands): the committer first
  persists a `pendingCompensation` record holding the purged rows into the
  operation-store file — which the stash restore cannot touch, since the
  rename replaces sidecar bytes only — then restores the prior sidecar bytes
@@ -816,9 +830,22 @@ cannot produce those fields), keyed by the host's registry (generation,
   validation plus the durable mint — `plan` acquires the gate only after the
   refresh and probe below complete, then re-checks attachment, the registry
   generation of the resolved entry, and facts-freshness against the refreshed
-  facts (a detach, mutation, or facts advance landing between the ungated
-  reads and acquisition is a typed stale-entry refusal or a re-read, never
-  a plan against the superseded entry), and keeps the gate only through
+ facts — and scans the operation store (local read, no network) for any
+ operation on this host that reached a terminal state since the ungated
+ reads started, identified by the monotonic durable state-transition
+ sequence below (the same sequence deploy step (3) and `restart` use — the
+ worker records its pre-read sequence position before the gateless refresh
+ and probe, and any terminal operation with a higher transition sequence
+ is a typed stale-entry re-plan refusal, never a plan minted against the
+ pre-operation process) — (extending the round-thirty gate work, whose
+ recheck covered only attachment/generation/facts-freshness: an operation
+ completing in the probe→acquire window left the minted plan bound to the
+ replaced process and its token failed at deploy. What changes is the
+ durable operation-transition check under the gate — a detach, mutation,
+ facts advance, or completed operation landing between the ungated reads
+ and acquisition is a typed stale-entry refusal or a re-read, never
+ a plan against the superseded entry — the scan is local, so no network
+ wait ever holds the gate), and keeps the gate only through
   validation plus token persistence (mint + durable write), releasing before
   returning — so a fresh-facts plan cannot mint while a deploy/restart/
   `Ensure` holds the gate, but no network wait ever holds it. `plan`
@@ -993,9 +1020,9 @@ cannot produce those fields), keyed by the host's registry (generation,
   entry/target/fingerprint. What changes is the cheap local close of the
   window plus the corrected claim: under the gate, the worker scans the
   operation store (local read, no network) for any operation on this host
-  that reached a terminal state since the probe started — identified by
-  the probe-start timestamp the worker records before the gateless probe
-  against the store's durable `updatedAt` — and any such terminal
+  whose terminal transition sequence (see the state-transition sequence in
+  the operation store) is above the sequence position the worker records
+  before the gateless probe — and any such terminal
   operation is a `stale-entry` re-plan refusal (token unconsumed, no
   record), never a deploy over a possibly-replaced running process. The
   scan catches exactly the dangerous case — a concurrent operation that
@@ -1023,9 +1050,16 @@ cannot produce those fields), keyed by the host's registry (generation,
   (token unconsumed, no record — the UI re-plans), so a token presented at
   minute 4 never deploys on 4-minute-old OS/arch/target-writability facts
   past the 5-minute bound at deploy time (mint clamps `expiresAt` to the
-  bound at deploy time — the single facts-age rule: the step-(3) age
-  comparison plus the mint-clamped `expiresAt` step-(4) check, no second arm
-  — see the TTL above)**
+  bound at mint — the single facts-age rule: the step-(3) age comparison
+  covers end-to-end facts age — the refresh-to-mint gap inside `plan`'s own
+  ungated probe→acquire window plus the deploy-side delay — while the
+  mint-clamped `expiresAt` step-(4) check covers post-mint liveness alone:
+  a slow probe can mint from in-bound facts that age past the bound before
+  deploy presents, so the step-(3) arm is reachable and neither check
+  subsumes the other (extending the round-thirty TTL text, which placed the
+  clamp "at deploy time" and left the arm's trigger unstated: the clamp
+  lands at mint, and the arm fires on the ungated-window aging the clamp
+  cannot see) — no second arm — see the TTL above)**
   (a sidecar edit, a manual `hub.toml` edit — caught
   by the fingerprint, the only way a hand edit is visible without a restart
   — a facts refresh, a target change, a running-build or running-health
@@ -1103,7 +1137,8 @@ cannot produce those fields), keyed by the host's registry (generation,
   a typed stale-entry refusal, never a restart of the superseded entry — and
   under the gate `restart` runs the same terminal-operation scan as
   `deploy` step (3) above (any operation on this host terminal since
-  resolution started is a `stale-entry` refusal, never a restart over a
+  resolution started — identified by the same durable state-transition
+  sequence, never a wall-clock comparison — is a `stale-entry` refusal, never a restart over a
   possibly-replaced process)),
   wraps the 04b restart path (user vs system unit decision,
   `waitHealthy` proven replacement). Restart drops the attached AppWire
@@ -1210,6 +1245,25 @@ returns distinguishable records and the current incarnation is selected by
   the store): the store lives in a private state dir; the store file and its
   temp files carry mode `0600` — replacements preserve the mode, and startup
   validation refuses to load a store readable beyond its owner.**
+  **State-transition sequence (extending the round-thirty gate work and the
+  round-twenty-nine wall-clock scans — r30/r29 identified a terminal
+  operation landing inside the probe→acquire window by comparing a
+  probe-start wall-clock timestamp against the record's durable `updatedAt`:
+  a clock rollback can stamp an operation that completed inside the window
+  as older than the probe start, so the stale result passes through. What
+  changes is the ordering key: every atomic store write that moves a record
+  into a terminal state (`complete`/`failed`/`interrupted`, or the
+  `orphan-unverified`→`interrupted` resolution) also advances a durable
+  monotonic per-store state-transition sequence, persisted in the store file
+  in the same write, and stamps the transitioned record with the sequence
+  value it advanced to. The `plan`/deploy-step-(3)/`restart` race scans
+  compare sequence values only — the worker records the store's current
+  sequence before its gateless probe/resolution, and under the gate refuses
+  `stale-entry` (`concurrent-terminal-op`) when any record for the host
+  carries a terminal transition sequence above the recorded position —
+  never a wall-clock comparison against `updatedAt`, so a rollback cannot
+  hide a concurrent terminal operation. `createdAt`/`updatedAt` stay
+  display-only timestamps and never decide a race scan.**
   **Retention and compaction:** the store keeps at most 50 terminal records
   per host (tunable owner knob; the default ships in the implementing PR)
   plus every non-terminal record regardless of count; exceeding the cap
@@ -1297,10 +1351,24 @@ returns distinguishable records and the current incarnation is selected by
   persist carries a `pending-spawn` intent holding the nonce; the worker
   spawns every SSH subprocess directly into the pre-created boundary and
   matches the intent post-spawn, so a not-yet-populated boundary can never
-  authorize a kill); boot reaps by enumerating current boundary members and
-  signaling only members of the persisted boundary whose nonce still matches
-  — an empty boundary, or members failing the nonce check, are already clean
-  — never an error, never a kill of unrelated work. On Darwin the reap runs
+  authorize a kill); on Linux the nonce is part of the verifiable cgroup
+  identity — the worker writes the nonce into a kernel-readable cgroup
+  marker for the pre-created cgroup (a cgroup-scoped marker file carrying
+  the nonce, written before spawn alongside the boundary), so boot verifies
+  ownership by reading the marker back from the cgroup filesystem and
+  comparing it against the persisted nonce in the same enumeration that
+  lists members: boot reaps by enumerating current boundary members and
+  signaling only members of the persisted boundary whose cgroup marker
+  nonce still matches the persisted nonce — an empty boundary is already
+  clean; a boundary whose marker is missing, unreadable, or mismatched is
+  unverifiable, so boot fails closed — reap nothing, keep the
+  `pending-spawn` intent open, and mark the record `orphan-unverified` —
+  never a kill on membership alone (extending the round-thirty Linux rule,
+  which required per-process nonce plus membership with no described
+  member↔nonce association: cgroups expose no such association, so the
+  rule was unimplementable as written. What changes is the marker — the
+  nonce lives in kernel-readable cgroup identity the verifier reads back,
+  and unverifiable means fail closed, never ignore-the-nonce). On Darwin the reap runs
   process-table enumeration of the persisted (pgid, session id) pair through
   the same `agent/envctx` Darwin probe seam as `probes_darwin.go`, and every
   enumerated member is verified against a launcher-observed marker before
@@ -1323,10 +1391,14 @@ returns distinguishable records and the current incarnation is selected by
   `orphan-unverified` is a durable per-record state (a persisted flag on the
   `pending-spawn` record, never a log-only note — the one exception to the
   boot rule above that every other `pending`/`running` record becomes
-  `interrupted`): every subsequent boot retries the enumeration and resolves
-  the record once it succeeds (boundary empty or start-time mismatch → drop
-  the intent and transition to `interrupted`; verified members reaped →
-  `interrupted`), and the operator resolves it explicitly through the
+  `interrupted`): every subsequent boot retries the enumeration for
+  local-reap records only — whose boundary is local and boot-enumerable —
+  and resolves the record once it succeeds (boundary empty or start-time
+  mismatch → drop the intent and transition to `interrupted`; verified
+  members reaped → `interrupted`; a fencing-quarantine record's remote
+  boundary is never enumerated at boot — boot performs no SSH, so the
+  enumeration is unavailable and fails closed with the record kept open),
+  and the operator resolves it explicitly through the
   authenticated `evener/host/orphan-resolve` mutation below (params
   `{id: string}` — the controller-assigned record id — response the
   updated `OperationRecord`: the call re-runs the persisted-boundary
@@ -1465,11 +1537,20 @@ returns distinguishable records and the current incarnation is selected by
   on every member), drops the intent, transitions the record to `interrupted`,
   and clears the quarantine marker in the same atomic write; on members still
   present it refuses with the transient busy form, never a force-clear. The
-  marker therefore clears exactly two ways — a later boot's boundary
-  enumeration resolving the record, or the operator confirming the old remote
-  command dead out-of-band and resolving through the authenticated
-  `evener/host/orphan-resolve` mutation (which likewise verifies the persisted
-  boundary before clearing) — and the next `deploy`/`restart` past the cleared
+  quarantine marker clears exactly one way — the operator confirming the old
+  remote command dead out-of-band and resolving through the authenticated
+  `evener/host/orphan-resolve` mutation (which verifies the persisted remote
+  boundary before clearing) — never through a later boot's boundary
+  enumeration (extending the round-thirty quarantine, which cleared "exactly
+  two ways" including a later boot's enumeration: boot performs no SSH and
+  remote fencing is lazy, so a remote guard-file/lease boundary is never
+  enumerable at boot and the automatic path was unimplementable. What changes
+  is the scope — boot-enumeration clearing covers only local-reap
+  `orphan-unverified` records, whose boundary is local and boot-enumerable;
+  a fencing-quarantine record's boundary is remote, so boot skips it — its
+  enumeration is unavailable at boot, which fails closed and keeps the
+  record open — and the quarantine clears only through `orphan-resolve`) —
+  and the next `deploy`/`restart` past the cleared
   marker runs its kill/wait + guard advance under a fresh epoch before any
   mutating remote step, converging the fencing the timeout skipped. A fencing
   timeout therefore leaves a terminal record plus a closed host, never a
@@ -1875,7 +1956,21 @@ model). A host without the
   fingerprint mechanism and narrows the round-eight final-check guarantee:
   the same content hash that `plan` binds into confirmation tokens still
   gates the commit, but the commit point can no longer promise the file was
-  untouched — only that any race is detected and reconciled.** **A name found in
+  untouched — only that any race is detected and reconciled. When the
+  post-rename reconcile drops the just-committed sidecar entry as the
+  colliding duplicate, the mutation's finalized receipt and response
+  describe the authoritative `hub.toml` result, never the staged-then-
+  dropped entry: the persisted receipt carries the explicit
+  `collision-dropped` outcome (the staged mutation committed, then lost to
+  the authoritative file in the same call — the receipt names the winning
+  `hub.toml` fingerprint plus the dropped staged entry), and a replay
+  carrying the same key returns that `collision-dropped` receipt, so a
+  suppressed retry can never read it as a live commit (extending the
+  round-thirty collision work, which finalized the staged mutation as
+  `committed` even when the reconcile dropped it: a replay reported
+  success for an entry no longer persisted and suppressed the later retry.
+  What changes is the outcome — the receipt is rewritten to the
+  authoritative result before the mutation returns).** **A name found in
   both `hub.toml` and the
   sidecar's live entries at load time is a hard startup error naming both
   locations — UNLESS the collision is covered by a managed sidecar marker
@@ -2807,7 +2902,7 @@ generation" is reserved for calls that name a host — extending the
 round-twenty-five params text, which promised the first page "of the current
 generation" for a multi-host page that has no single current generation);
 response
-  `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number, presenceEpoch: number}}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per host present on the page — `presenceEpoch` the per-host removal/presence epoch below, validated on every continuation) — `limit` defaults
+  `{operations: OperationRecord[], generation?: number, incarnationId?: string, hostBoundaries?: {[host: string]: {generation: number, incarnationId: string, compactSeq: number, presenceEpoch: number}}, nextCursor?: string}` — `generation`/`incarnationId` are present exactly on host-pinned pages (the single host named by the request — the effective pair listed, echoed back with `cursor` on later pages), and ABSENT on unfiltered cross-host pages spanning hosts and incarnations (extending the round-twenty-four response shape, which declared the pair required top-level as "the effective" pair with no defined value for a mixed page — no convention can name one pair for many: `hostBoundaries` is authoritative there instead, one `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per every host in the query at cursor creation — hosts with no rows on the page encode as the `"absent"` marker, never by omission — `presenceEpoch` the per-host removal/presence epoch below, validated on every continuation) — `limit` defaults
   to 50 and caps at 200; responses never exceed the cap, and an unfiltered
   call pages instead of returning the whole store. `OperationRecord` is `{id,
 clientOperationId, host, generation: number, incarnationId: string, kind: "deploy" | "restart", state:
@@ -2820,14 +2915,18 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   exactly on records whose `state` is `orphan-unverified` (absent on every
   other state per the absent-when-unknown rule — the `platform`
   discriminator selects the ownership data the verifier needs (Linux:
-  kernel-enforced cgroup identity plus the pre-spawn server nonce —
-  the kill requires BOTH cgroup membership AND a matching nonce (extending
+  kernel-enforced cgroup identity plus the pre-spawn server nonce read back
+  from the cgroup marker (see the boot reap above) —
+  the kill requires BOTH cgroup membership AND a marker nonce matching the
+  persisted nonce, and a missing/unreadable/mismatched marker fails closed
+  with no kill (extending
   the round-twenty-seven wire shape, which exposed the nonce on the wire
   while stating membership alone authorizes the kill — both could not hold:
   the nonce was either unchecked authorization data or redundant exposure
   to every `operations` reader. What changes is the single stated rule —
-  nonce plus membership, never membership alone — so the wire nonce is the
-  authorization check the verifier performs, not redundant data); Darwin:
+  marker-verified nonce plus membership, never membership alone — so the
+  wire nonce is the expected marker value the verifier reads back, not
+  redundant data); Darwin:
   the (pgid, session id) pair
   plus the launcher-observed (pid, start time) instance marker — a pid whose
   start time differs names a different process and reads as already clean) —
@@ -2901,10 +3000,7 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   the request, while an unfiltered response carries a per-host boundary map (one
   `(generation, incarnationId, compactSeq, presenceEpoch)` boundary per host
   in the query — every host in the query at cursor creation, not just the
-  hosts present on the page (correcting the stale parenthetical above, which
-  described the already-fixed round-twenty-four bug that recorded boundaries
-  only for present hosts: an implementer following "present hosts only"
-  would reintroduce wrong-incarnation cross-page listing) — and the cursor
+  hosts present on the page — and the cursor
   encodes that map alongside the last row's `id`
   (the cursor is a versioned base64url JSON envelope `{v: 2, pos: [id],
   bounds: {[host]: [generation, incarnationId, compactSeq, presenceEpoch] | "absent"}}`
@@ -2975,7 +3071,8 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   `host-busy-transient` (busy class; no operation reference),
   `stale-entry` (conflict class; data names which of entry, target,
   generation, `hub.toml`-fingerprint, running-version, running-health,
-  facts-age, or pruned-generation mismatched or expired — `entry` (the
+  facts-age, pruned-generation, or concurrent-terminal-op mismatched or
+  expired — `entry` (the
   resolved host entry drifted), `target` (the resolved deploy target drifted),
   `generation` (the registry generation advanced), `hub.toml`-fingerprint (a
   hand edit landed between validation points), `running-version` (deploy's
@@ -2983,10 +3080,11 @@ clientOperationId, host, generation: number, incarnationId: string, kind: "deplo
   step (3)), `running-health` (the re-probed health flag differs the same
   way), `facts-age` (the token-bound preflight facts aged past the freshness
   bound at deploy time — the re-plan refusal), `pruned-generation` (a
-  same-key replay naming a pruned superseded receipt — see retention;
+  same-key replay naming a pruned superseded receipt — see retention),
   `concurrent-terminal-op` (deploy step (3)'s — or `restart`'s — post-
-  acquisition scan found an operation on this host terminal since the
-  gateless probe/resolution started, so the live running state may have
+  acquisition scan found an operation on this host with a terminal
+  transition sequence above the pre-probe position, so the live running
+  state may have
   changed inside the probe→acquire window — the re-plan/retry refusal;
   the 08b protocol-shapes test pins each value against the path that emits it) —
   extending the round-twenty-three stale-entry work, which routed all three
@@ -3130,7 +3228,25 @@ those four fields and its enumeration is the registered-source set), with
 no `removed`/`stale` field to carry a tombstone, so no schema change is in
 scope. The tombstone's surviving surfaces are the stale tree rows and the
 `list` row (`removed: true`) — the Hosts list reads tombstones from the
-controller, never from the sources manifest. **Snapshot merge:** every
+controller, never from the sources manifest. This supersedes the earlier
+source-lifecycle contracts — the component-03 rule that the registry is
+built once at startup with one source per configured host and nothing
+added or removed on attach/detach (`sources.All()` always equals the
+configured list), the component-04 rule that the manager never adds or
+removes a source and no register/unregister path exists, and the
+component-06 rule that the registry always carries the full `[[hosts]]`
+list with detach never reading as removal: those rules hold only for the
+pre-08 lifecycle, where removal was impossible. Under this spec the
+implementing PR adds the registry removal the predecessors lacked — a
+source-registry `Remove(name)` (or equivalent deregistration) invoked as
+part of the staged commit's runtime swap (and its step-(4) rollback, which
+re-registers the prior set), plus the fan-out/consumer changes that follow
+from it: the component-05 `Online()`/broker rebind and the component-06
+navigation poke consume the live host set (removed names leave every
+fan-out, never linger as offline-present), and `refreshRemoteThreadSnapshot`
+enumerates the registered sources post-removal (see the snapshot merge
+below). A removed host therefore leaves navigation and fan-outs by
+deregistration, never as a present-but-offline source. **Snapshot merge:** every
 `refreshRemoteThreadSnapshot` publication merges the retained tombstone rows
 back in AFTER enumerating the registered sources — the refresh replaces only
 live-source rows, then re-applies each unexpired tombstone's last-known-good
@@ -3288,14 +3404,18 @@ reconciliation, which removed hosts and cleared manager bindings with no
 in-flight coordination while `update`/`remove` fail fast on a held gate: a
 reconciliation landing mid-operation could strand the worker on a host
 whose bindings were already cleared. What changes is the gate ordering —
-before dropping a declared host or clearing its manager bindings the
-reconcile try-acquires that host's per-host gate; a held gate defers the
-drop-and-clear for that host until the in-flight operation reaches terminal
-state — the admitted call proceeds on the pre-reconcile snapshot for that
-host meanwhile — while added/changed entries and uncontended drops apply
-immediately under the mutation lock; a deferred drop re-runs the same
-generation bump and cache clear when the gate releases, so no external edit
-survives past the in-flight operation's completion), so no
+before adopting a changed entry, dropping a declared host, or clearing its
+manager bindings the reconcile try-acquires that host's per-host gate; a
+held gate defers the adopt/drop-and-clear for that host until the in-flight
+operation reaches terminal state — the admitted call proceeds on the
+pre-reconcile snapshot for that host meanwhile — while purely added entries
+and uncontended transitions (gate free at try-acquire) apply immediately
+under the mutation lock; a deferred transition re-runs the same generation
+bump and cache clear when the gate releases, so no external edit
+survives past the in-flight operation's completion — a changed entry never
+rebinds the registry entry, generation, channel, or supervisor under an
+in-flight deploy/restart still operating on the pinned old configuration),
+so no
 external edit — including a declared-host removal — survives past the next
 mutation/`plan`/`deploy` admission (a `list`/`status` admission serves the
 last published snapshot immediately and schedules the same sequence
