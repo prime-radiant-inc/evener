@@ -28,6 +28,11 @@ function backend() {
 			values.delete(key);
 			return true;
 		},
+		replaceIf: (key, expected, next) => {
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(expected)) return false;
+			values.set(key, structuredClone(next));
+			return true;
+		},
 	};
 	return { port, values };
 }
@@ -147,6 +152,7 @@ describe("LocalPreferencesController", () => {
 			deleteIf: () => {
 				throw new Error("disk unavailable");
 			},
+			replaceIf: () => false,
 		};
 		const controller = new LocalPreferencesController("hub", port);
 		await expect(controller.discardTranscript()).rejects.toThrow("disk unavailable");
