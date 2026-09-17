@@ -13,6 +13,16 @@
 // them (marketplacesPlugins/BrowseSection.tsx's installBusy and
 // PluginDetailSheet.tsx's four), and the shared core stays the wire truth both
 // frontends agree on rather than one host's UI rule.
+//
+// It is an affordance, not a correctness mechanism, and it does not need to be
+// one: the hub serializes every plugin mutation itself, under an exclusive
+// flock held for the whole write (internal/plugins/install.go - Install :119,
+// Upgrade :195, Remove :318, SetEnabled/SetAutoUpgrade via mutateEntry :287,
+// and gc.go:47 takes the same lock). Two writes that do overlap are ordered
+// there, and the second waits up to 30s for the first. What this gate buys is
+// a user not firing a second write while the first is still in flight and
+// watching the list jump between two intermediate answers - so a mutation that
+// outlives the component it was started from is a UX gap, not a data race.
 
 /** What a screen shows when the gate refuses: the refusal is not a failure of
  * the write the user asked for, so it must not read like one. */

@@ -41,6 +41,9 @@ interface LifecycleCase<S> {
   failMutation(fake: FakeClient): void;
   /** Holds the mutation; the returned function fails it. */
   deferFailingMutation(fake: FakeClient): () => void;
+  /** Holds EVERY mutation, one rejecter per call, so two failing writes can be
+   * in flight and fail in either order. */
+  gateFailingMutations(fake: FakeClient): (() => void)[];
   /** The list the store holds, null until something has read it. */
   list(state: S): unknown;
   fetch(state: S): Promise<void>;
@@ -83,6 +86,14 @@ const MARKETPLACES: LifecycleCase<MarketplacesState> = {
     const fail = deferFailure(fake, "evener/marketplace/remove");
     return () => fail(new Error("write refused"));
   },
+  gateFailingMutations: (fake) => {
+    const rejecters: (() => void)[] = [];
+    fake.on(
+      "evener/marketplace/remove",
+      () => new Promise((_, reject) => rejecters.push(() => reject(new Error("write refused")))) as never,
+    );
+    return rejecters;
+  },
   list: (state) => state.marketplaces,
   fetch: (state) => state.fetchMarketplaces(),
   mutate: (state) => state.removeMarketplace("acme"),
@@ -120,6 +131,14 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   deferFailingMutation: (fake) => {
     const fail = deferFailure(fake, "evener/plugin/remove");
     return () => fail(new Error("write refused"));
+  },
+  gateFailingMutations: (fake) => {
+    const rejecters: (() => void)[] = [];
+    fake.on(
+      "evener/plugin/remove",
+      () => new Promise((_, reject) => rejecters.push(() => reject(new Error("write refused")))) as never,
+    );
+    return rejecters;
   },
   list: (state) => state.plugins,
   fetch: (state) => state.fetchPlugins(),
@@ -258,8 +277,13 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       store.connectionChanged(fake, "reconnecting");
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      // No request, and the list is still unread. What the reconnection DOES
+      // move is whatever a notification moves - a revision a host re-keys
+      // host-scoped data on - which is not about this list and is asserted by
+      // the stores that have such a thing.
       expect(fake.calls).toHaveLength(0);
-      expect(store.getState()).toMatchObject(lifecycle.initial);
+      expect(lifecycle.list(store.getState())).toBeNull();
+      expect(lifecycle.loading(store.getState())).toBe(false);
     });
 
     test("a replacement client that arrives ready reads an established list", async () => {
@@ -384,6 +408,43 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       expect(lifecycle.loading(store.getState())).toBe(false);
       expect(lifecycle.list(store.getState())).not.toBeNull();
     });
+
+    for (const [name, order] of [
+      ["the older", [0, 1]],
+      ["the newer", [1, 0]],
+    ] as const) {
+      test(`${name} of two failed writes failing first still lets the read it fenced land`, async () => {
+        const { fake, store } = lifecycle.create();
+        const reads = lifecycle.gateList(fake);
+        const reading = lifecycle.fetch(store.getState());
+        await Promise.resolve();
+        const fails = lifecycle.gateFailingMutations(fake);
+        const first = lifecycle.mutate(store.getState());
+        await Promise.resolve();
+        const second = lifecycle.mutate(store.getState());
+        await Promise.resolve();
+        expect(fails).toHaveLength(2);
+
+        // Whichever order the two writes fail in, neither published anything,
+        // so neither may keep the read's answer from landing - and that answer
+        // is the only thing left that can lower the flag the read raised.
+        for (const index of order) {
+          const fail = fails[index];
+          if (!fail) throw new Error("both writes must be in flight");
+          fail();
+        }
+        await expect(first).rejects.toThrow("write refused");
+        await expect(second).rejects.toThrow("write refused");
+
+        const answer = reads[0];
+        if (!answer) throw new Error("the read must be in flight");
+        answer();
+        await reading;
+
+        expect(lifecycle.loading(store.getState())).toBe(false);
+        expect(lifecycle.list(store.getState())).not.toBeNull();
+      });
+    }
 
     test("a connection update that changes nothing leaves a scheduled read alone", async () => {
       const { fake, store } = lifecycle.create();

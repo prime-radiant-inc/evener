@@ -165,6 +165,22 @@ describe("reconnect", () => {
   // evener/plugin/updated, so a ready connection moves it exactly as one of
   // those would - the set is no more known to be unchanged than it is after a
   // notification that names nothing.
+  // A client that is already reconnecting when the store first meets it has
+  // been ready before - that is what reconnecting means - so the ready that
+  // follows is a return, not an arrival. A store built by a lazily loaded
+  // module during a flap would otherwise treat it as its first connection and
+  // invalidate nothing.
+  test("a client already reconnecting when the store meets it has been ready before", async () => {
+    const { fake, store } = storeWithFake();
+    store.connectionChanged(fake, "reconnecting");
+    fake.on(LIST, () => ({ plugins: [LINTER] }));
+    await store.getState().fetchPlugins();
+    expect(store.getState().pluginRevision).toBe(0);
+
+    store.connectionChanged(fake, "ready");
+    expect(store.getState().pluginRevision).toBe(1);
+  });
+
   test("a ready connection moves the revision the same way a notification does", async () => {
     const { fake, store } = storeWithFake();
     store.connectionChanged(fake, "ready");
