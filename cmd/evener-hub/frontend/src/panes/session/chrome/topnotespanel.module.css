@@ -43,6 +43,17 @@
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
+/* Both trigger states sit flush inside a clipping boundary (the body's
+ * scrollport collapsed, the card's overflow:hidden expanded), where an
+ * outside outline is cut off. The sanctioned recipe for rows flush inside a
+ * clipping container (sessionchrome.module.css's .right button): the token
+ * ring pulled inset. */
+.summary:focus-visible,
+.expandedHeader:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: -2px;
+}
+
 .summary:hover {
   background: var(--hover-1);
 }

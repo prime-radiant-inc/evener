@@ -538,4 +538,13 @@ test("the panel sits flush in both states, and the card's border cannot clip", (
   const expanded = css.match(/\.topNotesPanel\[data-expanded="true"\]\s*\{([^}]*)\}/);
   expect(expanded?.[1]).toContain("border: 1px solid var(--edge-strong)");
   expect(expanded?.[1]).toContain("box-shadow: 0 8px 28px var(--shadow-color)");
+
+  // Keyboard focus must survive the clipping containers: the card's
+  // overflow:hidden and the body's scrollport cut an outside outline, so
+  // both trigger states carry the sanctioned inset ring (the same recipe
+  // sessionchrome.module.css documents for controls flush inside a clip
+  // boundary).
+  const focus = css.match(/\.summary:focus-visible\s*,\s*\.expandedHeader:focus-visible\s*\{([^}]*)\}/);
+  expect(focus?.[1]).toContain("outline: var(--focus-ring)");
+  expect(focus?.[1]).toContain("outline-offset: -2px");
 });
