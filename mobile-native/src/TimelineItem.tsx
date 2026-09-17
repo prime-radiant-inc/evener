@@ -181,20 +181,16 @@ export function TimelineItem({
 				<>
 					{item.questions.map((question) => (
 						<View key={question.key} style={{ gap: 8 }}>
-							<Copy>{question.display.header}</Copy>
-							<Copy>{question.display.question}</Copy>
-							{question.options.map((option, index) => (
+							<Copy>{question.header}</Copy>
+							<Copy>{question.question}</Copy>
+							{question.options.map((option) => (
 								<Copy key={`${question.key}:${option.label}`}>
-									{question.display.options[index]?.label ?? option.label}
+									{option.label}
 									{option.recommended ? " (recommended)" : ""}
-									{question.display.options[index]?.detail
-										? ` — ${question.display.options[index]?.detail}`
-										: ""}
+									{option.detail ? ` — ${option.detail}` : ""}
 								</Copy>
 							))}
-							{question.display.why ? (
-								<Copy muted>{question.display.why}</Copy>
-							) : null}
+							{question.why ? <Copy muted>{question.why}</Copy> : null}
 						</View>
 					))}
 					<Copy muted>Open Questions to answer by the composer.</Copy>

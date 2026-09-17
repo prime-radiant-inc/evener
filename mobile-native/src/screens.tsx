@@ -74,7 +74,7 @@ import {
 	pendingQuestions,
 	type QuestionSelections,
 } from "./questionAnswers";
-import type { MobileAskBatch } from "./questionBatches";
+import type { AskBatch } from "@evener/appwire-client";
 import { QuestionBatches } from "./questionBatches";
 import {
 	captureReaderAnchor,
@@ -1652,10 +1652,7 @@ export function ConversationScreen({
 			);
 		else replace();
 	}
-	async function sendAnswers(
-		batch: MobileAskBatch,
-		selections: QuestionSelections,
-	) {
+	async function sendAnswers(batch: AskBatch, selections: QuestionSelections) {
 		const current = store.getState();
 		questionBatches.reconcile(pendingQuestions(current.conversation));
 		const text = composeQuestionAnswers(batch.questions, selections);

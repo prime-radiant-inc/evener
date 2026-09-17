@@ -35,12 +35,31 @@ import type {
   ThreadModel,
 } from "@evener/appwire-client";
 import type {
-  ActivityDetail,
+  BoundText,
   MobileConversation,
   MobileTimelineItem,
-  ActivityMember,
 } from "../conversation/project";
-import { projectConversation } from "../conversation/project";
+import {
+  activityIdentity,
+  attachmentSourceIdentity,
+  capItems,
+  MAX_ITEM_BYTES,
+  ownTimelineIdentities,
+  projectConversation,
+  RETAINED_ITEM_CAP,
+  timelineIdentities,
+  timelineIdentity,
+  truncateItem,
+  truncateText,
+} from "../conversation/project";
+// Re-exported where they have always been imported from: the bounds are the row
+// shape's, and project.ts owns that shape.
+export {
+  MAX_ITEM_BYTES,
+  RETAINED_ITEM_CAP,
+  TRUNCATION_MARKER,
+  truncateText,
+} from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -48,48 +67,6 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import type { ActivityIdentity, NotificationOutcome } from "./activity";
-
-function attachmentSourceId(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments" && item.id.endsWith(":attachments")
-    ? item.id.slice(0, -":attachments".length)
-    : null;
-}
-
-function attachmentSourceIdentity(item: MobileTimelineItem): string | null {
-  return item.kind === "attachments"
-    ? (item.sourceTranscriptKey ?? attachmentSourceId(item))
-    : null;
-}
-
-function timelineIdentity(item: MobileTimelineItem): string {
-  return item.transcriptKey ?? item.id;
-}
-
-// The canonical identity of a clustered activity member — the same
-// transcriptKey-first rule timelineIdentity applies to a top-level row.
-function activityIdentity(activity: ActivityMember): string {
-  return activity.transcriptKey ?? activity.id;
-}
-
-// The identities a row IS: its own, plus every clustered member's. Distinct
-// from timelineIdentities, which also carries the identity of the row an
-// attachment belongs to — an attachment is not a duplicate of its source.
-function ownTimelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = new Set([timelineIdentity(item)]);
-  if (item.kind === "activity" && item.members) {
-    for (const member of item.members) {
-      identities.add(activityIdentity(member));
-    }
-  }
-  return identities;
-}
-
-function timelineIdentities(item: MobileTimelineItem): Set<string> {
-  const identities = ownTimelineIdentities(item);
-  const source = attachmentSourceIdentity(item);
-  if (source !== null) identities.add(source);
-  return identities;
-}
 
 export type ConversationStatus =
   | "idle"
@@ -290,151 +267,6 @@ function createDrainScheduler(): DrainScheduler {
 // LiveActivityState (Coordinate B) implements LiveActivitySink directly.
 // Do not fabricate "applied" — use the real applyLiveNotification outcome.
 
-// --- limits and truncation helpers (centralized) ----------------------------
-
-export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
-export const TRUNCATION_MARKER = "… truncated";
-export const RETAINED_ITEM_CAP = 500;
-
-// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
-// once whenever the limit is large enough to hold the marker. Iterates
-// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
-// split and no U+FFFD replacement chars are produced. The result never
-// exceeds maxBytes.
-const textEncoder = new TextEncoder();
-const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
-
-export function truncateText(text: string, maxBytes: number): string {
-  const encoded = textEncoder.encode(text);
-  if (encoded.length <= maxBytes) return text;
-  // The byte limit is the hard contract: the marker is best effort. Every
-  // publish re-applies this to whatever text a row carries, so a limit too
-  // small to hold the marker yields the longest prefix that fits, with no
-  // marker, rather than a marker that busts the limit.
-  const fitsMarker = maxBytes >= markerBytes.length;
-  const marker = fitsMarker ? TRUNCATION_MARKER : "";
-  const markerLength = fitsMarker ? markerBytes.length : 0;
-  const targetBytes = Math.max(0, maxBytes - markerLength);
-  // Iterate code points (for...of iterates Unicode scalar values) to find
-  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
-  // avoids splitting surrogate pairs and never produces U+FFFD.
-  let byteLen = 0;
-  let cutIdx = 0;
-  for (const cp of text) {
-    const cpBytes = textEncoder.encode(cp).length;
-    if (byteLen + cpBytes > targetBytes) break;
-    byteLen += cpBytes;
-    cutIdx += cp.length;
-  }
-  // Trim code points until the result + marker fits within maxBytes.
-  // (May need to trim if a multibyte code point straddles the boundary.)
-  let truncated = text.slice(0, cutIdx);
-  let truncatedBytes = textEncoder.encode(truncated);
-  while (
-    truncatedBytes.length + markerLength > maxBytes &&
-    truncated.length > 0
-  ) {
-    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
-    const codePoints = [...truncated];
-    codePoints.pop();
-    truncated = codePoints.join("");
-    truncatedBytes = textEncoder.encode(truncated);
-  }
-  return truncated + marker;
-}
-
-// One text field, cut to the display bound.
-type BoundText = (text: string) => string;
-
-// Apply the bound to an activity detail's text-bearing fields (description,
-// arguments, output, error). Shared by an activity's own top-level detail and
-// each of its clustered members' details, so both are bounded the same way. The
-// description is the summary line a collapsed row shows
-// (mobile-native/src/transcriptPresentation.ts's actionSummary), so it is read
-// as much as the output is.
-function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): ActivityDetail {
-  return {
-    ...detail,
-    description: detail.description ? bound(detail.description) : detail.description,
-    arguments: detail.arguments ? bound(detail.arguments) : detail.arguments,
-    output: detail.output ? bound(detail.output) : detail.output,
-    error: detail.error ? bound(detail.error) : detail.error,
-  };
-}
-
-// Apply the bound to every text a row carries for the reader. Native transcript
-// projection expands a clustered activity's members directly, so each member's
-// own detail is bounded too — not just the cluster's top-level detail (the first
-// member's). A pasted user message, a daemon notice and a tool failure's stack
-// are as large as anything that streams, so each kind that carries prose is here.
-function truncateItem(item: MobileTimelineItem, bound: BoundText): MobileTimelineItem {
-  switch (item.kind) {
-    case "user":
-      return { ...item, text: bound(item.text) };
-    case "assistant":
-      return { ...item, markdown: bound(item.markdown) };
-    case "notice":
-      return { ...item, text: bound(item.text) };
-    case "failure":
-      return { ...item, title: bound(item.title), detail: bound(item.detail) };
-    case "question":
-      // The display copy, all of it. The canonical fields beside it stay whole
-      // because the answer this client composes names the header, the chosen
-      // labels and the ifUnanswered text back to the agent that asked
-      // (project.ts's MobileQuestionRef): answering with a cut value would name a
-      // choice nobody offered. Every renderer reads `display`.
-      return {
-        ...item,
-        questions: item.questions.map((question) => ({
-          ...question,
-          display: {
-            ...question.display,
-            header: bound(question.display.header),
-            question: bound(question.display.question),
-            ...(question.display.why === undefined ? {} : { why: bound(question.display.why) }),
-            ...(question.display.ifUnanswered === undefined
-              ? {}
-              : { ifUnanswered: bound(question.display.ifUnanswered) }),
-            options: question.display.options.map((option) => ({
-              label: bound(option.label),
-              ...(option.detail === undefined ? {} : { detail: bound(option.detail) }),
-            })),
-          },
-        })),
-      };
-    case "activity":
-      // The label is rendered twice on the phone — the disclosure line and its
-      // accessibility label (mobile-native/src/TimelineItem.tsx) — so it is
-      // bounded like the detail it heads, for the row and for every member.
-      return {
-        ...item,
-        label: bound(item.label),
-        detail: truncateActivityDetail(item.detail, bound),
-        ...(item.members
-          ? {
-              members: item.members.map((member) => ({
-                ...member,
-                label: bound(member.label),
-                detail: truncateActivityDetail(member.detail, bound),
-              })),
-            }
-          : {}),
-      };
-    default:
-      // attachments: an attachment's src IS the image (a data: URI for composer
-      // bytes), so cutting it yields something that cannot decode; the name is a
-      // filename. The wire bounds image payloads at the source instead.
-      return item;
-  }
-}
-
-// Enforce the 500-item retained cap. Always retains the NEWEST items (end
-// of array) so the live tail is preserved for interactive scrolling.
-function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
-  if (items.length <= RETAINED_ITEM_CAP) return items;
-  return items.slice(items.length - RETAINED_ITEM_CAP);
-}
-
 export interface ConversationState {
   readonly ref: string | null;
   readonly profileId: string | null;
@@ -622,14 +454,13 @@ export function createConversationStore() {
     boundedText = new Map();
   }
   // Whether a folded model can change a row. projectConversation reads exactly
-  // two of the model's own fields: `turns` — every turn, item, status and error
-  // a row is made of hangs off it — and `askPending`, the thread-level flag
-  // questionsPending ors with the live asks (which liveAskQuestions derives
-  // from turns alone). Every other field a frame moves (the status, the name,
-  // the queue, the jobs tree, the goal, and lastFrameAt, which moves on EVERY
-  // frame) changes no row.
+  // one of the model's own fields: `turns` — every turn, item, status and error
+  // a row is made of hangs off it, and the answerable asks are derived from it
+  // too (deriveAskQuestions.ts reads turns alone). Every other field a frame
+  // moves (the status, the name, the queue, the jobs tree, the goal, the wire's
+  // askPending, and lastFrameAt, which moves on EVERY frame) changes no row.
   function changesRows(previous: MobileConversation, applied: ThreadModel): boolean {
-    return applied.turns !== previous.turns || applied.askPending !== previous.askPending;
+    return applied.turns !== previous.turns;
   }
 
   function capAndTruncate(conversation: MobileConversation): MobileConversation {
@@ -1841,13 +1672,7 @@ export function createConversationStore() {
             // The model advanced — the frame is the authority on whatever it
             // carried, and lastFrameAt moved — but no row changed, so the rows
             // this conversation already published stand, by reference.
-            set({
-              conversation: {
-                ...applied,
-                items: state.conversation.items,
-                questionsPending: state.conversation.questionsPending,
-              },
-            });
+            set({ conversation: { ...applied, items: state.conversation.items } });
           }
         }
         if (state.ref === null) return;
