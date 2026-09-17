@@ -10,9 +10,11 @@ guard** (bridge origin metadata plus the rule that remote-originated,
 peer-forwarded requests never reach controller-side dialing or SSH-affecting
 handlers) — land with #1603 and MUST be on main before this component starts.
 `evener/host/attach` itself and the spawn picker's Connect trigger also ship in
-#1603 (round three); 08b extends that method with the plan/deploy/restart
-surface and 08c adds the settings section. Do not start this component until
-#1603 is landed.
+#1603 (round three); this component does not extend that method. 08a extends
+the shipped picker/Connect surface with the live host set (persistence +
+hot-apply + `list`/`add`/`update`/`remove`); 08b adds the separate
+`status`/`plan`/`deploy`/`restart`/`operations` methods; 08c adds the Hosts
+settings section. Do not start this component until #1603 is landed.
 
 Related: `2026-09-14-multi-host-evener-design.md` (topology), `…-03-host-config.md`
 (host registry), `…-04-ssh-connection-manager.md` (attach + deploy/restart
@@ -49,7 +51,7 @@ what makes the federation fully operable without a terminal.
   `evener/host/update`, `evener/host/remove`, `evener/host/status`,
   `evener/host/plan`, `evener/host/deploy`, `evener/host/restart`, and
   `evener/host/operations`. `evener/host/attach` ships with #1603 and is
-  extended here, not re-specified.
+  unchanged here — relied on, not re-specified.
 - Durable persistence of host entries with a hot-apply path: the running hub
   picks up add/update/remove without a restart (registry, sshconn manager,
   source registry, web config, host-admin controller, navigation manifest).
@@ -71,7 +73,7 @@ what makes the federation fully operable without a terminal.
   act on the controller's config and its sshconn manager, not on a remote
   hub's surface. They must NOT be added to `remoteHostAdminMethods` (negative
   test required) — **and the allow-list is not the security boundary**: every
-  `evener/host/*` handler (all nine methods, `attach` included) is routed
+  `evener/host/*` handler (all ten methods, `attach` included) is routed
   through #1603's shared origin guard and **rejects remote-originated,
   peer-forwarded requests before any handler logic runs** — before admission,
   before dedup, before token validation. The mutating handlers (`attach`,
@@ -79,7 +81,7 @@ what makes the federation fully operable without a terminal.
   remotely outright; the reads (`list`/`status`/`operations`) are guarded
   equally because they disclose the controller's topology and operation
   state. (`attach`'s guard routing ships and is test-pinned with #1603; this
-  component pins the other eight.) The proxy's *host set* does become live
+  component pins the other nine.) The proxy's *host set* does become live
   (see data flow).
 - Detach/disconnect of an individual host (no `evener/host/detach`; `Manager.Close`
   remains whole-manager). See open questions.
@@ -92,9 +94,11 @@ what makes the federation fully operable without a terminal.
   report the remote's real build; the constant is a separate owner decision.
 - Any change to lazy attachment semantics: the attached-only seams (#1603) stay
   exactly as landed. `evener/host/list`, `status`, and `operations` never dial —
-  test-pinned — and `evener/host/attach` remains the only dialing trigger
-  besides an explicit `SourceID` (`plan`'s stale-facts refresh reads an
-  already-attached channel and never dials; see `plan`).
+  test-pinned — and `evener/host/attach` remains the only trigger of the
+  attach/bootstrap cycle besides an explicit `SourceID` (`plan`'s stale-facts
+  refresh is the one deliberate non-attach SSH use: bounded one-shot preflight
+  command executions over the manager's transport that never initialize a
+  channel or touch a supervisor; see `plan`).
 
 ## Contract / interfaces
 
@@ -122,9 +126,12 @@ read-modify-write on the sidecar cannot lose updates.
 - `evener/host/add` (mutation): body = one host entry. Validate with the
   component-03 rules (name validation, the `[[hosts]]` field validation at
   `cmd/evener-hub/config.go:177`). **Refuses any name already declared in
-  `hub.toml` or in the sidecar** — no duplicate can exist (the boot-time
-  behavior for a hand-created duplicate is a hard startup error; see
-  persistence). Persist, hot-apply. Surfaced validation errors are the
+  `hub.toml` or held as a live sidecar entry — the duplicate refusal applies
+  to live entries only: a name present solely as a tombstone is accepted
+  (re-add), and the same staged commit purges that tombstone in its atomic
+  sidecar write (see data flow)** — no duplicate live entry can exist (the
+  boot-time behavior for a hand-created duplicate is a hard startup error;
+  see persistence). Persist, hot-apply. Surfaced validation errors are the
   dialog's inline errors.
 - `evener/host/update` (mutation): **requires the target name to exist in the
   sidecar**; a `hub.toml`-declared name is refused with the "edit the file"
@@ -133,7 +140,10 @@ read-modify-write on the sidecar cannot lose updates.
   in-flight deploy/restart/`Ensure` (see the operation store). Mutates every
   field except `name` — **names are immutable** (they key source IDs, cached
   rows, manager state, and file entries; renaming is remove + add, documented
-  in the UI). Update never inserts a new name; only `add` can.
+  in the UI). Update never inserts a new name; only `add` can. **An update
+  that changes what a live supervisor or channel is bound to rebinds them to
+  the new entry (or tears them down) as part of its staged commit — commit
+  first, then rebind/teardown, gate released last (see the operation store).**
 - `evener/host/remove` (mutation): **sidecar-declared hosts only** (same
   refusal for `hub.toml` names as update). **Refused with the same typed
   busy error while the host's per-host gate is held — remove never waits
@@ -142,7 +152,9 @@ read-modify-write on the sidecar cannot lose updates.
   refused remove leaves the in-flight operation to finish and record its
   normal terminal state; a successful remove marks that host's operation
   records `host-removed` (readable history, never a dedup match; the mark
-  lands with 08b's store). Persist + hot-apply. Removing an attached host
+  lands with 08b's store — and a crash between the sidecar commit and the
+  mark has the mark reconstructed from the tombstone at boot; see the
+  operation store). Persist + hot-apply. Removing an attached host
   stops its supervisor and detaches. The removed host's cached snapshot rows
   are **not** silently dropped: the source's last-known-good snapshot is
   retained as an explicit **tombstone** (see data flow), and the UI warns
@@ -159,25 +171,42 @@ read-modify-write on the sidecar cannot lose updates.
   target path (as of those facts), whether a restart follows, and any
   plan-time refusal known from the last preflight (`errControllerDirty` is
   terminal; missing curl, unwritable target, unit findings per 04b). This is
-  the pure read the confirmation dialog renders.
+  the pure read behind the host row's informational detail — the deploy
+  confirmation renders `plan`'s minted response, never `status` (see UI).
 - `evener/host/plan` (mutation — it mints durable controller state, so it is
   classified and admitted as one): body `{name}`. Builds a **fresh plan from
   the current facts and configuration** and returns the plan plus a
   **controller-minted confirmation token**: single-use, **expiring (token
   TTL: 10 minutes by default, owner-adjustable)**, bound to
-  (host name, a hash of the resolved host entry, the preflight revision the
-  plan was built from, the resolved target path, controller revision, nonce).
+  (host name, a hash of the resolved host entry, **a fingerprint (content
+  hash) of the controller's `hub.toml` file bytes as they are on disk at
+  plan time**, the preflight revision the plan was built from, the resolved
+  target path, controller revision, nonce). The `hub.toml` fingerprint is
+  what makes a manual edit of that file invalidate outstanding tokens at
+  deploy time even though the running process loads it only at startup (see
+  `deploy`).
   **Outstanding-token rule: minting a new token for a host immediately
   supersedes any earlier unconsumed token for that host.** If the known
   preflight facts are stale (older than the **plan freshness bound — 5
-  minutes by default, owner-adjustable**), `plan` **first refreshes them: a
-  gated preflight re-read through `sshManager.ChannelIfAttached(name)`,
-  under the per-host gate (fail fast with the typed busy error if held),
-  never dialing and deadline-bounded** — then builds the plan from the
-  refreshed facts, so an online (attached) host can always obtain a token
-  without re-attaching. If the host is not attached or the refresh fails or
-  times out, `plan` returns **no token** and names the staleness — the UI
-  must Connect first; a token is only ever minted from fresh facts.
+  minutes by default, owner-adjustable**), `plan` **first refreshes them:
+  a re-run of the same one-shot SSH preflight the deploy path already uses
+  (`Manager.preflight`, `sshconn/preflight.go` — the `uname`/env-probe/
+  `id -u`/`launch-check` command sequence executed over the manager's SSH
+  transport), exposed as a thin deadline-bounded entry point and run under
+  the per-host gate (fail fast with the typed busy error if held), bounded
+  by the same attempt bound that caps the preflight phase of `ensureOnce`**
+  — then builds the plan from the refreshed facts, so an online (attached)
+  host can always obtain a token without a re-attach/bootstrap cycle. The
+  refresh is an SSH command execution, not an attach: it never initializes
+  an AppWire channel, never starts or rebinds a supervisor, and never enters
+  the deploy/restart decision ladder — `ChannelIfAttached` is not involved
+  (an attached channel cannot run SSH shell commands, and the channel's
+  captured preflight is a cache of attach-time facts, not a fresh read). If
+  the host is not attached or the refresh fails or times out, `plan` returns
+  **no token** and names the staleness — the UI must Connect first (the
+  attached precondition is deliberate: `plan` must not become a hidden
+  prober for never-connected hosts); a token is only ever minted from fresh
+  facts.
   The token is generated by the controller, never constructed client-side —
   this is the enforcement behind "the user always sees what will be installed
   where".
@@ -193,10 +222,13 @@ read-modify-write on the sidecar cannot lose updates.
   (2) Otherwise validate the token: **missing,
   mismatched, superseded, or expired → refusal**. (3) Acquire the host's
   per-host gate — **fail fast with the typed busy error if held** — and
-  under it **re-resolve the target and re-read the host entry at execution
-  time and reject if either differs from the token's bindings** (a
-  `hub.toml`/sidecar edit, a facts refresh, or a target change between plan
-  and deploy invalidates the plan; the UI re-plans). (4) **Consume the token
+  under it **re-resolve the target, re-read the host entry, and re-hash the
+  `hub.toml` fingerprint at execution time and reject if any differs from
+  the token's bindings** (a sidecar edit, a manual `hub.toml` edit — caught
+  by the fingerprint, the only way a hand edit is visible without a restart
+  — a facts refresh, or a target change between plan and deploy invalidates
+  the plan; the UI re-plans). This re-read is the gate protocol's
+  post-acquisition check (see the operation store). (4) **Consume the token
   by creating the pending operation record — a single atomic durable write
   that names the token's nonce, so consumption and record creation are one
   event**; return its id. **The operation holds its host's gate from record
@@ -211,8 +243,11 @@ read-modify-write on the sidecar cannot lose updates.
   resolved-target persistence.
 - `evener/host/restart` (mutation): same operation model (**(host, kind)**-
   scoped operation-ID dedup first, busy-fail gate acquisition, atomic record
-  creation — but no token: restart has no install step and nothing to
-  re-resolve), wraps the 04b restart path (user vs system unit decision,
+  creation — but no token: restart has no install step, no target, and no
+  plan to re-verify; the gate protocol's post-acquisition entry re-read still
+  applies — a mutation landing between restart's resolution and its gate
+  acquisition is a typed stale-entry refusal, never a restart of the
+  superseded entry), wraps the 04b restart path (user vs system unit decision,
   `waitHealthy` proven replacement).
 - `evener/host/operations` (read): list/detail of controller-side operations
   (see below). Never dials. **Polling this method is the guaranteed read path
@@ -230,8 +265,10 @@ controller-side operation records; this component defines a
 - Record: operation id (controller-assigned), client operation ID, host, kind
   (deploy/restart), state (`pending`/`running`/`complete`/`failed`/
   `interrupted`), progress entries (timestamped, bounded), terminal result,
-  timestamps, and a **`host-removed` mark** (set when the host is removed;
-  still-readable history that never matches a dedup lookup). **Client
+  timestamps, and a **`host-removed` mark** (set when the host is removed —
+  live at remove time, or reconstructed from the sidecar tombstones at boot
+  (see crash recovery); still-readable history that never matches a dedup
+  lookup either way). **Client
   operation IDs are opaque — non-empty, at most 128 bytes, no required
   internal structure — and deduplication is keyed by (host, kind, client
   operation ID), never the ID alone:** a same-key replay returns the
@@ -249,7 +286,14 @@ controller-side operation records; this component defines a
   record still in `pending`/`running` transitions to `interrupted` (a
   terminal unknown outcome) with a note naming the crash; a retry with the
   same operation ID gets the `interrupted` record back, and a new operation
-  ID starts a fresh operation. Records reach the store only through the
+  ID starts a fresh operation. **The same boot pass, after the sidecar is
+  loaded and after the interrupted transition, applies every loaded
+  tombstone to the store: each tombstone (removed host name) marks that
+  host's records `host-removed`.** A remove's sidecar commit and its
+  operation-store mark are two separate durable writes (different files), so
+  a crash between them leaves the mark to be reconstructed here — the
+  never-match rule holds via the live mark OR this boot reconciliation.
+  Records reach the store only through the
   atomic consume-and-create write, so no crash window can consume a token
   without leaving a recoverable record. No record can stay stuck forever.
 - **Per-host operation gate:** at most one deploy/restart per host at a time;
@@ -268,7 +312,22 @@ controller-side operation records; this component defines a
   the process-wide mutation lock and fail fast if it is held, and a gate is
   not grantable to a new operation while the mutation lock is held — a
   mutation that observes a free gate owns it through the staged commit, and
-  no operation can start under a mutation in flight. This gate is the
+  no operation can start under a mutation in flight. **Post-acquisition
+  re-read:** an operation resolves and validates against the host entry
+  *before* acquiring the gate, and a mutation can legally commit in that
+  window (the gate is grantable whenever the mutation lock is free), so
+  every gate holder — `deploy`, `restart`, or `Ensure`-triggered work —
+  re-reads the registry entry immediately after acquisition and verifies
+  its hash/generation still matches what it resolved; a mismatch is a typed
+  stale-entry refusal (`deploy`'s token-binding check is this rule with the
+  token's bindings as the reference; `restart` refuses; `Ensure` re-resolves
+  from the live registry) — never a proceed on the superseded entry.
+  **Mutation rebind ordering:** `update`/`remove` rebind or cancel the
+  supervisors and channels bound to the superseded entry as part of the
+  staged commit — the commit lands first (sidecar persist + runtime swap),
+  the rebind/teardown completes, and the gate is released LAST, so no gate
+  waiter can acquire a half-rebound host and no supervisor reconnect can
+  race a half-swapped entry. This gate is the
   "safe against in-flight `Ensure`" mechanism of the 08a manager surface.
 - Progress is readable via `evener/host/operations` (guaranteed). If the
   implementing session extends the host-notification stream with a
@@ -286,7 +345,8 @@ controller-side operation records; this component defines a
   only sidecar entries; a `hub.toml`-declared host can never be shadowed or
   UI-removed — its `list` entry says "declared in hub.toml". The sidecar is
   the UI's only writable source. **A name found in both `hub.toml` and the
-  sidecar at load time is a hard startup error naming both locations** — the
+  sidecar's live entries at load time is a hard startup error naming both
+  locations** — the
   refuse rule is enforced at write time AND the boot merge rejects the
   hand-edited collision. Writes are atomic (temp + rename). **The sidecar
   file also carries the tombstone records (see data flow), so a removal's
@@ -349,16 +409,22 @@ controller-side operation records; this component defines a
   existing 06b/07b paths) or failed (typed error shown, retry). The
   spawn-picker Connect trigger shipped with #1603 stays as-is; this section is
   the management view of the same action.
-- **Deploy confirmation:** the dialog first renders the `status` plan —
-  target host, controller revision, resolved remote target path, whether a
-  restart follows, facts freshness, and any plan-time refusal (terminal ones
-  disable the button). Confirm calls `evener/host/plan` (fresh token) and
-  then `evener/host/deploy` with that token and a client operation ID;
-  stale-facts responses from `plan` (only possible when the host is
-  unattached or its refresh failed) direct the UI to Connect first. Progress
-  renders from `operations` polling (with best-effort stream events if
-  implemented); terminal failure surfaces the verbatim 04b error; a retry
-  after a lost response reuses the same operation ID.
+- **Deploy confirmation:** opening the dialog calls `evener/host/plan` and
+  renders the confirmation from **`plan`'s response — the controller-minted,
+  token-bound plan**: target host, controller revision, resolved remote
+  target path, whether a restart follows, facts freshness, and any plan-time
+  refusal (terminal ones disable the button). The deploy confirmation
+  submits exactly the displayed plan: `evener/host/deploy` with that plan's
+  token and a client operation ID — never a plan the user has not seen. If
+  `deploy` rejects the token as stale (expired, superseded, or
+  binding-mismatched), the UI re-plans and re-renders the confirmation from
+  the new response before any retry. Stale-facts responses from `plan` (only
+  possible when the host is unattached or its refresh failed) direct the UI
+  to Connect first. `status` stays the read-only informational surface
+  behind the host row — it mints nothing and is never the confirmation's
+  source. Progress renders from `operations` polling (with best-effort
+  stream events if implemented); terminal failure surfaces the verbatim 04b
+  error; a retry after a lost response reuses the same operation ID.
 - **Stores:** follow the 07b host-store pattern (`hostInstancesStore` /
   per-host request sequences / connection-generation guards as fixed in
   #1605). No shared mutable module state.
@@ -372,7 +438,10 @@ controller-side operation records; this component defines a
   surface (add/update/remove entry, each safe against in-flight `Ensure` and
   running supervisors) and thin exported entry points for deploy/restart
   reusing the 04b internals (`deploy`, `ensureDecision`, `waitHealthy`,
-  `bootstrapHub`); `Ensure`/`Attached`/`ChannelIfAttached`/facts unchanged.
+  `bootstrapHub`), plus an exported deadline-bounded preflight re-read (the
+  existing one-shot SSH command sequence re-run on demand, no channel
+  involvement — `plan`'s facts-refresh mechanism; see `plan`);
+  `Ensure`/`Attached`/`ChannelIfAttached`/facts unchanged.
 - `cmd/evener-hub/config.go` — sidecar load/merge (hard-error duplicate rule)
   + atomic write.
 - `cmd/evener-hub/app_host_manage.go` (new) — the handlers, router
@@ -387,8 +456,9 @@ controller-side operation records; this component defines a
 - The **operation store**: a small durable store (records keyed by operation
   id, **dedup index on client operation ID scoped by (host, kind), with the
   typed conflicting-reuse refusal and the `host-removed` never-match rule**,
-  atomic temp+rename writes, startup reconciliation to
-  `interrupted`) + optional host-notification publisher extension. Where it
+  atomic temp+rename writes, startup reconciliation to `interrupted` plus
+  the tombstone-derived `host-removed` pass) + optional host-notification
+  publisher extension. Where it
   lives on disk follows the hub's existing durable-record conventions (the
   implementing session picks the closest existing store pattern and names it
   in the PR).
@@ -412,13 +482,22 @@ controller-side operation records; this component defines a
 would otherwise drop its rows from the next snapshot. Removal instead writes
 an **explicit tombstone record for the source** (name, last-known-good rows,
 removal timestamp): the rows stay in the navigation tree marked **stale**,
-and the tombstone is **consumed by the tree, the manifest, and the
-action-capability logic** — removed-host rows must be visibly non-actionable
+and the tombstone is **consumed by the tree and the action-capability
+logic** — removed-host rows must be visibly non-actionable
 (markers in the tree/rail; actions disabled), not merely `Complete == false`,
 because liveness alone does not make an unknown source's rows stale in the
-current navigation projection. The tombstone is purged when the same host
-name is re-added, or after a retention period (owner-set; open question).
-Tombstoned hosts appear in `list` with `removed: true`.
+current navigation projection. **Tombstoned hosts are not manifest
+sources:** removal deletes the source-registry entry, so the navigation
+manifest's `sources` array drops the removed host on its next read — the
+manifest element schema is exactly `{id,label,kind,online}`
+(`hubapi.Source`, `hubapi/types.go`; the component-06 read contract pins
+those four fields and its enumeration is the registered-source set), with
+no `removed`/`stale` field to carry a tombstone, so no schema change is in
+scope. The tombstone's surviving surfaces are the stale tree rows and the
+`list` row (`removed: true`) — the Hosts list reads tombstones from the
+controller, never from the sources manifest. The tombstone is purged when
+the same host name is re-added, or after a retention period (owner-set;
+open question).
 
 **Tombstones are durable:** they persist as a section of the managed sidecar
 itself (same file, same atomic writes — see persistence), so a removal's
@@ -445,8 +524,10 @@ name-keyed cache entry can never republish rows for the new host.
   raw chain.
 - Deploy: dedup-first processing order is fixed; **conflicting operation-ID
   reuse → typed refusal**; invalid/expired/superseded
-  tokens → refusal, always; **execution-time re-resolution mismatch →
-  refusal with a re-plan instruction**; **a held per-host gate → typed busy
+  tokens → refusal, always; **execution-time re-resolution mismatch — entry,
+  target, or `hub.toml` fingerprint, on `deploy` or `restart` → typed
+  stale-entry refusal with a re-plan/retry instruction**; **a held per-host
+  gate → typed busy
   refusal naming the in-flight operation**; plan-time refusals surface verbatim
   (`errControllerDirty` is terminal — the UI must not offer retry-anything;
   unmet prerequisites shown before confirmation); runtime failures land in
@@ -473,9 +554,12 @@ name-keyed cache entry can never republish rows for the new host.
   compensation (prior sidecar bytes restored, runtime reverted, retry
   re-applies cleanly)**, and **the corrupt/schema-invalid sidecar boot hard
   error**, the host-admin controller live-set tests (forwarded requests reach
-  newly added hosts; removed hosts' fan-outs stop), tombstone tests (list
+  newly added hosts; removed hosts' fan-outs stop), **update-rebind tests (a
+  running supervisor's next reconnect uses the updated entry; the rebind
+  completes before the gate is released)**, tombstone tests (list
   attached → remove → rows persist and are marked stale/non-actionable in
-  tree + manifest + capabilities; **tombstones survive a controller restart;
+  tree + capabilities while the manifest's `sources` array drops the host;
+  **tombstones survive a controller restart;
   re-add purges, clears the name-keyed caches, and mints a new generation —
   publication from an obsolete generation is rejected**),
   **remote-origin rejection for `list`/`add`/`update`/`remove`** (the #1603
@@ -485,9 +569,14 @@ name-keyed cache entry can never republish rows for the new host.
   `plan`-as-mutation, **remote-origin rejection for
   `status`/`plan`/`deploy`/`restart`/`operations`**, the token matrix:
   missing/mismatched/expired/superseded/consumed-then-replayed-with-new-op-ID,
-  **the stale-facts gated refresh: an attached host refreshes over the
-  channel then mints; an unattached host gets the no-token refusal naming
-  Connect**, execution-time re-resolution mismatch, **(host, kind)-scoped
+  **the stale-facts gated refresh: an attached host refreshes via the
+  bounded one-shot SSH preflight (no channel initialization, no supervisor,
+  no attach state machine) then mints; an unattached host gets the
+  no-token refusal naming Connect**, execution-time re-resolution mismatch
+  **including the `hub.toml` fingerprint (a manual edit between plan and
+  deploy refuses) and the post-acquisition entry re-read (`restart` and
+  `Ensure`-triggered work refuse or re-resolve when a mutation lands between
+  resolution and gate acquisition)**, **(host, kind)-scoped
   operation-ID dedup including the interrupted-record path and the
   conflicting-reuse refusals: same ID different host, deploy-vs-restart,
   and a removed host's `host-removed` record**, per-host gate serialization
@@ -495,7 +584,10 @@ name-keyed cache entry can never republish rows for the new host.
   (`update`/`remove`/`plan`/new-deploy on a held gate) and the atomic
   consume-and-create write (a replayed deploy after a crash in that window
   finds a record, never a silently consumed token)**, startup reconciliation
-  of pending/running → interrupted, **the corrupt operation-store boot hard
+  of pending/running → interrupted **plus the tombstone-derived
+  `host-removed` pass (a crash between a remove's sidecar commit and its
+  live mark still never-matches at boot)**, **the corrupt operation-store
+  boot hard
   error**), and the not-in-forwarded-allow-list assertion.
 - 08c: `make test-web`, browser gate (`env -u DBUS_SESSION_BUS_ADDRESS make
   test-web-browser`), `make lint-generated`; per-flow tests in the section's
@@ -519,7 +611,8 @@ name-keyed cache entry can never republish rows for the new host.
 3. Deploy from the UI: the confirmation renders the controller-minted plan
    (controller revision + resolved remote target path) and cannot proceed
    without a fresh token; an edit between plan and deploy is rejected and
-   re-planned; an edit attempted while the deploy runs is refused with a
+   re-planned — including a manual `hub.toml` edit, caught by the
+   fingerprint; an edit attempted while the deploy runs is refused with a
    busy error and the push is unaffected; after confirm, the host reports
    the new version in `status`, and the version-skew signal (facts vs
    controller build) is truthful; a replayed deploy with the same operation
@@ -529,13 +622,17 @@ name-keyed cache entry can never republish rows for the new host.
    refuse their names; the origin marker shows which file owns each entry; a
    hand-created duplicate name across files is a hard startup error.
 5. Removing a sidecar host retains its last-known-good rows as an explicitly
-   stale, non-actionable tombstone (tree + manifest + capabilities,
-   test-pinned) that survives a controller restart; re-adding the same name
+   stale, non-actionable tombstone (tree + action capabilities, test-pinned)
+   while the manifest's `sources` array drops the host; the tombstone
+   survives a controller restart; re-adding the same name
    purges it, clears its name-keyed caches, and mints a new generation, so
    stale rows from the old incarnation cannot republish; `list` shows it
    with `removed: true`.
 6. No lazy-attachment regression: with no attach call, no explicit source,
-   nothing dials — `list`/`status`/`operations` never attach (test-pinned).
+   no read dials anything — `list`/`status`/`operations` never attach
+   (test-pinned) — and `plan`'s facts refresh, the surface's one deliberate
+   non-attach SSH use, is channel-free by construction (no initialize, no
+   supervisor, no attach state machine; test-pinned).
 7. Standard gates green on every PR (go/build/vet, package races, full hub
    suite, module-lint; web + browser + lint-generated for 08c).
 
