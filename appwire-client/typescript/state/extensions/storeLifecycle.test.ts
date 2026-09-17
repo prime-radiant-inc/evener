@@ -21,6 +21,7 @@ import {
   gateRequests,
 } from "../../testing/fakeClient";
 import type { MethodName } from "../../types.gen";
+import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
 import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
@@ -88,6 +89,26 @@ const PLUGINS: LifecycleCase<PluginsState> = {
   loading: (state) => state.pluginsLoading,
   list: (state) => state.plugins,
   initial: { plugins: null, pluginsLoading: false, pluginsError: null, pluginRevision: 0 },
+};
+
+const LAUNCH_LAYER: LifecycleCase<LaunchLayerState> = {
+  create: () => {
+    const fake = new FakeClient("ready");
+    return { fake, store: createLaunchLayerStore(fake) };
+  },
+  debounceMs: LAUNCH_LAYER_REFETCH_DEBOUNCE_MS,
+  notifyUpdated: (fake) =>
+    fake.emitNotification({ method: "evener/launch/updated", params: { cwd: "/", layer: "global" } }),
+  notifyUnrelated: (fake) => fake.emitNotification({ method: "evener/plugin/updated", params: {} }),
+  listMethod: "evener/launch/getLayer",
+  listResponse: {},
+  mutationMethod: "evener/launch/setLayer",
+  mutationResponse: { effective: {} },
+  fetch: (state) => state.fetchLaunchLayer(),
+  mutate: (state) => state.setLaunchLayer({ pluginDirs: ["/opt/plugins"] }),
+  loading: (state) => state.launchLayerLoading,
+  list: (state) => state.launchLayer,
+  initial: { launchLayer: null, launchLayerLoading: false, launchLayerError: null },
 };
 
 /** Answers the one request in flight, failing loudly if none is. */
@@ -206,6 +227,31 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
       store.connectionChanged(fake, "ready");
       await vi.advanceTimersByTimeAsync(0);
       expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
+    });
+
+    // The recovery read answers "does something still want this list", not
+    // "was the prior state closed or reconnecting" - hasBeenReady only gates
+    // the invalidation a notification would also apply (see plugins.test.ts's
+    // reconnect describe), so closed recovers an established list exactly as
+    // reconnecting does, and leaves an unread one alone exactly as reconnecting
+    // does too.
+    test("closed -> ready recovers an established list exactly as reconnecting does, and leaves an unread one alone", async () => {
+      const { fake, store } = lifecycle.create();
+      answerRequests(fake, lifecycle.listMethod, lifecycle.listResponse);
+      await lifecycle.fetch(store.getState());
+
+      store.connectionChanged(fake, "closed");
+      store.connectionChanged(fake, "ready");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(callsTo(fake, lifecycle.listMethod)).toBe(2);
+
+      const { fake: fresh, store: unread } = lifecycle.create();
+      answerRequests(fresh, lifecycle.listMethod, lifecycle.listResponse);
+      unread.connectionChanged(fresh, "closed");
+      unread.connectionChanged(fresh, "ready");
+      await vi.advanceTimersByTimeAsync(lifecycle.debounceMs);
+      expect(fresh.calls).toHaveLength(0);
+      expect(lifecycle.list(unread.getState())).toBeNull();
     });
 
     test("a reconnect inside the debounce window reads once, not twice", async () => {
@@ -568,6 +614,7 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 
 runLifecycleSuite("marketplaces", MARKETPLACES);
 runLifecycleSuite("plugins", PLUGINS);
+runLifecycleSuite("launch layer", LAUNCH_LAYER);
 
 // dispose() unsubscribes, but unsubscribing is only the cooperative half: a
 // dispatcher that snapshots its handler set - AppwireClient.setState does,
