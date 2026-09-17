@@ -498,6 +498,27 @@ test("a request held from a read-only era does not steal focus after a remount",
   elsewhere.remove();
 });
 
+test("expanded root carries the card marker; the affordance hint belongs to the collapsed bar only", async () => {
+  const user = userEvent.setup();
+  const model = makeModel({ humanNote: "Saved note" });
+  render(<TopNotesPanel sessionRef={model.ref} model={model} />);
+
+  // Collapsed: the root advertises the flat bar and the hint invites the
+  // one action the bar has.
+  const root = screen.getByTestId("top-notes-panel");
+  expect(root.getAttribute("data-expanded")).toBe("false");
+  expect(screen.getByText("Click to expand")).toBeTruthy();
+
+  await user.click(screen.getByTestId("top-notes-summary"));
+
+  // Expanded: the stylesheet keys the floating-card treatment off the root
+  // marker, and the header row carries no "Click to collapse" hint - the
+  // open card states what it is, and the whole row stays the trigger.
+  expect(root.getAttribute("data-expanded")).toBe("true");
+  expect(screen.queryByText("Click to collapse")).toBeNull();
+  expect(screen.getByTestId("top-notes-collapse-trigger").getAttribute("aria-describedby")).toBeNull();
+});
+
 test("clicking the hint text toggles like the rest of the bar", async () => {
   const user = userEvent.setup();
   const model = makeModel({ humanNote: "Saved note" });
