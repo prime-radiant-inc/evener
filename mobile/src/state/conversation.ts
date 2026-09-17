@@ -834,13 +834,52 @@ export function createConversationStore() {
     const identities = new Set(
       projected.items.flatMap((item) => [...timelineIdentities(item)]),
     );
-    const pageRows = previous.items.filter(
-      (item) =>
-        pageOwnedIds.has(timelineIdentity(item)) &&
-        ![...timelineIdentities(item)].some((id) => identities.has(id)),
-    );
+    const pageRows: MobileTimelineItem[] = [];
+    for (const item of previous.items) {
+      if (!pageOwnedIds.has(timelineIdentity(item))) continue;
+      const retained = retainedPageRow(item, identities);
+      if (retained !== null) pageRows.push(retained);
+    }
     if (pageRows.length === 0) return projected;
     return { ...projected, items: [...pageRows, ...projected.items] };
+  }
+
+  // What a paged row still owns once the projection has caught up with part of
+  // it. A row is one identity for most kinds — it duplicates the projection or it
+  // does not — but a clustered activity row IS its members, and the projection
+  // growing to hold ONE of them makes only that member a duplicate. Dropping the
+  // whole row would delete history nobody else has; keeping it whole would show
+  // that member twice. So the cluster is rebuilt from the members the projection
+  // does not hold, exactly the way the projector builds one (project.ts's
+  // clusterActivities: identity, label and detail come from the first member,
+  // the state is running when any member runs, and a single member is a plain
+  // activity row rather than a cluster of one).
+  function retainedPageRow(
+    item: MobileTimelineItem,
+    identities: ReadonlySet<string>,
+  ): MobileTimelineItem | null {
+    const duplicates = (candidate: MobileTimelineItem): boolean =>
+      [...timelineIdentities(candidate)].some((id) => identities.has(id));
+    if (item.kind !== "activity" || item.members === undefined) {
+      return duplicates(item) ? null : item;
+    }
+    const members = item.members.filter(
+      (member) => !identities.has(activityIdentity(member)),
+    );
+    if (members.length === item.members.length) return duplicates(item) ? null : item;
+    const first = members[0];
+    if (first === undefined) return null;
+    return {
+      ...item,
+      id: first.id,
+      label: first.label,
+      family: first.family,
+      detail: first.detail,
+      state: members.some((member) => member.state === "running") ? "running" : "completed",
+      ...(first.transcriptKey === undefined ? {} : { transcriptKey: first.transcriptKey }),
+      ...(first.position === undefined ? {} : { position: first.position }),
+      ...(members.length === 1 ? { members: undefined } : { members }),
+    };
   }
 
   // Prune page ownership for identities the displayed rows no longer carry:
@@ -1408,8 +1447,11 @@ export function createConversationStore() {
             // I3: Record page-owned item IDs — these are items loaded from
             // older pages. They are tracked so the rehydrate page-race merge
             // can distinguish page-owned history from live notifications.
+            // Every identity the row IS, members included: a cluster rebuilt
+            // around a later member (retainedPageRow) must still read as page
+            // history on the next publish.
             for (const item of deduped) {
-              pageOwnedIds.add(timelineIdentity(item));
+              for (const id of ownTimelineIdentities(item)) pageOwnedIds.add(id);
             }
             // Prepend older (deduped) items, then trim from the oldest (front)
             // so the newest live tail is retained (finding 8); the same cap and

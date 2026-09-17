@@ -1739,6 +1739,63 @@ describe("ConversationStore", () => {
       if (withPageHistory) expect(rows(store)[0]?.id).toBe("older");
     });
 
+    // Page history is merged row by row, but a paged row can carry more than one
+    // identity: a clustered activity row IS its members. When the reread's
+    // snapshot has grown to include ONE of those members, only that member is a
+    // duplicate — the others are still history nobody else holds.
+    it("keeps the paged cluster's other members when the snapshot holds one of them", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(runningTurnThread());
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // An older page whose one row is a cluster of three shell calls.
+      const member = (id: string) => ({
+        id,
+        label: "shell",
+        family: "tool" as const,
+        state: "completed" as const,
+        detail: { output: `${id} output` },
+      });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "m1",
+            label: "shell",
+            family: "tool",
+            state: "completed",
+            detail: { output: "m1 output" },
+            members: [member("m1"), member("m2"), member("m3")],
+          },
+        ],
+        nextCursor: undefined,
+      };
+      store.setState({ olderCursor: "older-cursor" });
+      await store.getState().loadOlder(service);
+      expect(rows(store)[0]).toMatchObject({ kind: "activity", id: "m1" });
+
+      // The reread's snapshot has caught up with the middle member only.
+      service.readProjectionResult = makeReadProjectionResult(
+        runningTurnThread([
+          { type: "commandExecution", id: "m2", toolName: "shell", status: "completed", output: "m2 authoritative" } as ThreadItem,
+        ]),
+      );
+      await store.getState().rehydrate(service, sink);
+
+      // The snapshot owns m2. The page still owns m1 and m3.
+      const paged = rows(store).find((row) => row.kind === "activity" && row.id === "m1");
+      expect(paged).toBeDefined();
+      expect(paged?.kind === "activity" ? paged.members?.map((m) => m.id) : undefined).toEqual([
+        "m1",
+        "m3",
+      ]);
+      expect(
+        rows(store).some((row) => row.kind === "activity" && row.detail?.output === "m2 authoritative"),
+      ).toBe(true);
+    });
+
     it("does not resurrect a removed image when an attachment wire ID changes", async () => {
       const { store, service, sink } = await openRunningTurn([
         {
