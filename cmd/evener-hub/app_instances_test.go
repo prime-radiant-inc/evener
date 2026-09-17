@@ -829,19 +829,23 @@ func TestInstances_RemoveReportsAnOAuthCopyItCouldNotDelete(t *testing.T) {
 // TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft: a copy an
 // earlier removal set aside and could not delete is a credential no reader ever
 // looks at, so the sweep of a later removal collects it - after that removal's
-// reload, with the instance it belonged to gone, because a copy still attached
-// to a live instance is the credential that instance needs. What counts as a
-// copy is the name the removal builds - the record's path plus a numeric stamp -
-// so an instance whose own name holds the marker keeps its record.
+// reload. A copy is spared only beside an AUTHORED instance, whose providers.toml
+// entry is what the record at the aside path would be restored to; an implicit
+// name's copy is debris (see
+// TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName). What
+// counts as a copy is the name the removal builds - the record's path plus a
+// numeric stamp - so an instance whose own name holds the marker keeps its
+// record.
 func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T) {
 	f := newInstancesFixture(t, nil)
 	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	// groq is the instance being removed; mistral is another one that still
-	// exists, with its own record stranded beside it by a removal that failed
-	// after setting the record aside.
+	// groq is the instance being removed. mistral is an authored instance that
+	// still exists, with its own record stranded beside it by a removal that
+	// failed after setting the record aside - the copy its entry would be
+	// restored to, so the sweep has to leave it.
 	leftovers := []string{
 		"openai-codex.json.removing-1700000000000000000",
 		"gone.json.removing-1",
@@ -868,6 +872,11 @@ func TestInstances_RemoveReclaimsTheOAuthCopiesAnEarlierRemovalLeft(t *testing.T
 	}
 	if err := f.store.Set("mistral", "mk"); err != nil {
 		t.Fatalf("Set: %v", err)
+	}
+	// mistral is authored: that providers.toml entry is what makes its stranded
+	// record the credential the instance still needs.
+	if err := os.WriteFile(f.tomlPath, []byte("[providers.mistral]\nbase = \"openai\"\n"), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
 	}
 	if err := f.ctl.auth.reloadRegistry(); err != nil {
 		t.Fatalf("reloadRegistry: %v", err)
@@ -922,6 +931,71 @@ func TestInstances_RemoveReclaimsACopyStrandedForTheSameName(t *testing.T) {
 	}
 	if listedInstance(f.ctl.List(), "openai-codex") {
 		t.Fatal("openai-codex is still listed after its removal")
+	}
+}
+
+// TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName: a
+// UI-credentialed instance whose name the environment also supplies is
+// removable, and the reload brings the name straight back as an implicit row -
+// so the name still resolves when the sweep runs. An implicit instance owes its
+// existence to the environment (or the store, or a keyless scheme), never to
+// the record at the aside path, so the copy this removal set aside is debris
+// for that name and has to go. The old sweep skipped any name that still
+// resolved and left this copy on disk for good.
+func TestInstances_RemoveReclaimsItsCopyWhenTheEnvironmentSuppliesTheName(t *testing.T) {
+	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "env-key"})
+	if err := f.store.Set("groq", "gk"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	// A record at the canonical path is what a removal sets the aside from; the
+	// stored key outranks the environment, so the row is the user's and removable.
+	if err := authopenai.SaveAuth(f.stateDir, "groq", makeOAuthRecord("groq", "")); err != nil {
+		t.Fatalf("SaveAuth: %v", err)
+	}
+	if err := f.ctl.auth.reloadRegistry(); err != nil {
+		t.Fatalf("reloadRegistry: %v", err)
+	}
+
+	if err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"}); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// The environment brings the name back as an implicit row; the removal stood.
+	after := entry(t, f.ctl.List(), "groq")
+	if !after.Implicit || after.ActiveSource != "env:GROQ_API_KEY" {
+		t.Fatalf("groq = %+v, want the environment-supplied implicit row back", after)
+	}
+	if left := authDirEntries(t, f); len(left) != 0 {
+		t.Fatalf("the auth directory holds %v, want the removal's own copy reclaimed", left)
+	}
+}
+
+// TestInstanceRemoveErrorCarriesThePersistedInfo: the Remove RPC handler maps a
+// removal that stood onto the wire error the client keys its standing-removal
+// report on (appwire.ErrorInstanceRemovePersisted), carrying the removal's own
+// message; every other failure goes back unchanged and unflagged.
+func TestInstanceRemoveErrorCarriesThePersistedInfo(t *testing.T) {
+	plain := errors.New("removing work was refused")
+	if got, persisted := instanceRemoveError(plain); got != plain || persisted {
+		t.Fatalf("instanceRemoveError(plain) = (%v, %v), want it unchanged and not persisted", got, persisted)
+	}
+
+	got, persisted := instanceRemoveError(removePersistedError{errors.New("removed work, but the copy is still on disk")})
+	if !persisted {
+		t.Fatal("instanceRemoveError(removePersistedError) did not report the removal as persisted")
+	}
+	wire, ok := got.(appwire.WireError)
+	if !ok {
+		t.Fatalf("instanceRemoveError = %T, want appwire.WireError", got)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok {
+		t.Fatalf("Data = %T, want appwire.ErrorData", wire.Data)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorInstanceRemovePersisted {
+		t.Fatalf("EvenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorInstanceRemovePersisted)
+	}
+	if !strings.Contains(wire.Message, "still on disk") {
+		t.Fatalf("Message = %q, want the removal's message carried through", wire.Message)
 	}
 }
 

@@ -1160,6 +1160,20 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 }
 
+// instanceRemoveError is what the Remove handler returns to the client. A
+// removal that stood but could not delete the copy it set the OAuth record
+// aside as carries ErrorInstanceRemovePersisted, so the client reports the
+// standing removal - the instance is gone and a retry can only fail on a
+// missing instance - instead of a failed one. Every other failure is returned
+// unchanged. The bool says whether the removal stood, which is also what the
+// handler broadcasts on.
+func instanceRemoveError(err error) (error, bool) {
+	if _, persisted := errors.AsType[removePersistedError](err); persisted {
+		return appwire.InstanceRemovePersisted(err.Error()), true
+	}
+	return err, false
+}
+
 // registerInstanceHandlers registers the evener/instance/* CRUD handlers. When no
 // instances controller is configured (providers.toml path unset), no handlers
 // are registered — matching the original inline guard. Successful mutations
@@ -1195,14 +1209,17 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
 		if err := instancesController.Remove(params); err != nil {
+			wireErr, persisted := instanceRemoveError(err)
 			// A removal that stood leaves every other client's list as stale as a
 			// clean removal does, so it is announced too; the error still goes back
 			// to the client that asked, which is the only one that can act on the
-			// copy the removal could not delete.
-			if _, persisted := errors.AsType[removePersistedError](err); persisted {
+			// copy the removal could not delete, carrying
+			// ErrorInstanceRemovePersisted so that client reports the standing
+			// removal instead of a failed one.
+			if persisted {
 				notifyInstanceUpdated(server)
 			}
-			return appwire.InstanceListResponse{}, err
+			return appwire.InstanceListResponse{}, wireErr
 		}
 		notifyInstanceUpdated(server)
 		return instancesController.List(), nil

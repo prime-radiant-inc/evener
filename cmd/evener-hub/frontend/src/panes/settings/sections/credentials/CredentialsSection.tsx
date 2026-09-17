@@ -33,6 +33,7 @@ import {
   groupByProvider,
   isEndpointConflict,
   safeCredentialTestResult,
+  WireError,
 } from "@evener/appwire-client";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { credentialsStore, isStaleListingRefusal, useCredentialsStore } from "../../../../stores/credentials";
@@ -69,6 +70,16 @@ const CLASS = {
   diagnosticsHeading: requireClass(styles.diagnosticsHeading, "CredentialsSection.module.css", "diagnosticsHeading"),
   diagnosticsList: requireClass(styles.diagnosticsList, "CredentialsSection.module.css", "diagnosticsList"),
 };
+
+// isInstanceRemovePersisted reads the hub's own discriminator for a removal that
+// stood but left a copy of the removed OAuth record on disk
+// (appwire.ErrorInstanceRemovePersisted, read here as the literal its
+// ErrorData carries - the same way rail/actions.ts reads "resourceNotFound").
+// A refusal or any other failure carries no such info, so it stays a plain
+// failure and is never reported as a removal.
+function isInstanceRemovePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === "instanceRemovePersisted";
+}
 
 type OpenEditor =
   | { kind: "add" }
@@ -355,14 +366,6 @@ export function CredentialsSection({
   async function handleConfirmedAction(): Promise<void> {
     if (!pendingConfirm) return;
     const { kind, name, expectedEndpointFingerprint } = pendingConfirm;
-    // Whether an authored row held this name before the write is what lets the
-    // catch below tell a removal that stood from a refusal. The hub refuses an
-    // environment-backed row, which never had an authored entry; a removal that
-    // stood leaves the name with no authored row (an environment-supplied
-    // implicit row may remain). Read before the call, from the listing this
-    // connection holds.
-    const authoredBeforeCall =
-      kind === "remove" && credentialsStore.getState().instances.some((i) => i.name === name && !i.implicit);
     setConfirmBusy(true);
     try {
       if (kind === "clear") {
@@ -436,25 +439,21 @@ export function CredentialsSection({
         setPendingConfirm(null);
         return;
       }
-      // A removal that stood and a refusal both arrive as errors, so the listing
-      // is the truth: if the authored row this name held is gone on a FRESH read,
-      // the removal landed and what the hub reports is a copy it could not delete.
-      // Report the standing removal as one - close the dialog and the sheet, tell
-      // the guided owner, and surface the hub's own message (it names the copy on
-      // disk and what to do about it) as a warning rather than a plain failure.
-      // confirmListingState is what forces the fresh read: it fetches and reads
-      // the store's rows only once that read applied, never a snapshot this
-      // client may have held before the removal landed.
-      if (kind === "remove" && authoredBeforeCall) {
-        const authoredRowGone = (instances: InstanceEntry[]) =>
-          !instances.some((instance) => instance.name === name && !instance.implicit);
-        if (await confirmListingState(authoredRowGone)) {
-          setPendingConfirm(null);
-          setSelectedInstance(null);
-          onInstanceRemoved?.(name);
-          toast.push("warning", friendlyErrorMessage(err));
-          return;
-        }
+      // A removal that stood but could not delete the copy it set aside comes
+      // back as an error carrying the hub's own discriminator for exactly that
+      // (isInstanceRemovePersisted). The instance is gone, so a retry can only
+      // fail on a missing instance: report the standing removal - close the
+      // dialog and the sheet, tell the guided owner, and surface the hub's
+      // message (it names the copy still on disk and what to do about it) as a
+      // warning rather than a plain failure. Nothing else is inferred from the
+      // listing: a refusal is not a removal, and the listing cannot tell the
+      // two apart for a UI-credentialed instance with no authored entry.
+      if (kind === "remove" && isInstanceRemovePersisted(err)) {
+        setPendingConfirm(null);
+        setSelectedInstance(null);
+        onInstanceRemoved?.(name);
+        toast.push("warning", friendlyErrorMessage(err));
+        return;
       }
       const verb = kind === "clear" ? "Clear" : kind === "clearStoredKey" ? "Clear stored key" : "Remove";
       toast.push("error", `${verb} failed: ${friendlyErrorMessage(err)}`);

@@ -1520,11 +1520,13 @@ func oauthAsideInstance(name string) (string, bool) {
 // keeps a failed cleanup from leaving one on disk for good. It is run once a
 // removal has stood, after the reload that drops the instance from the registry:
 // both the copy that removal just set aside and any copy an earlier removal
-// stranded under the same name are then under a name no instance holds, and are
-// collected together. A copy is taken only once its instance is gone, which is
-// what keeps a copy a live instance still needs from being swept; a failure to
-// take one is reported rather than ignored, because the sweep is the only thing
-// that ever takes those copies away.
+// stranded under the same name are collected together. What spares a copy is
+// not that its name still resolves but that it resolves to an authored
+// instance: that entry is what a record at the aside path would be restored to,
+// so the copy IS the credential the instance still needs. Every implicit
+// instance owes its existence to something else and its copy is debris. A
+// failure to take one is reported rather than ignored, because the sweep is the
+// only thing that ever takes those copies away.
 func (c *hubInstancesController) reclaimOAuthAsides() error {
 	// Where the records live, asked of the function that places them, so the
 	// sweep cannot look somewhere a record never lands.
@@ -1544,14 +1546,22 @@ func (c *hubInstancesController) reclaimOAuthAsides() error {
 		if e.IsDir() || !aside {
 			continue
 		}
-		// Only once the instance is gone. A removal that failed after setting a
-		// record aside - and then could not put it back - leaves that instance
-		// authored and its record stranded, and the copy IS the credential the
-		// instance still needs: deleting it would turn a repairable file-level
-		// mishap into a forced sign-in. That failure was reported when it
-		// happened, so this copy is left for an explicit cleanup rather than
-		// taken by the next removal.
-		if _, exists := c.reg.Get().Instance(inst); exists {
+		// A copy is spared only when the name still resolves to an AUTHORED
+		// instance. That providers.toml entry is what a record at the aside path
+		// would be restored to, so the copy IS the credential the instance still
+		// needs: a removal that failed after setting the record aside - and then
+		// could not put it back - leaves the instance authored and the record
+		// stranded, and deleting it would turn a repairable file-level mishap
+		// into a forced sign-in. That failure was reported when it happened, so
+		// the copy is left for an explicit cleanup rather than taken.
+		//
+		// An implicit instance is the opposite: it owes its existence to the
+		// environment, the store, a keyless scheme, or the record at its own
+		// canonical path - never to a copy under the aside path - so a copy for
+		// it is debris and is reclaimed. That is what lets a removal whose name
+		// the environment re-supplies still reclaim the copy it set aside: the
+		// name is back as an implicit row, but the copy is not what supplies it.
+		if held, exists := c.reg.Get().Instance(inst); exists && !held.Implicit {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())

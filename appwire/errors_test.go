@@ -27,6 +27,7 @@ func TestWireErrorConstructors(t *testing.T) {
 		{"SessionUnavailable", SessionUnavailable("no sess"), -32014, ErrorSessionUnavailable, "no sess"},
 		{"HubLaunchError", HubLaunchError("launch"), -32014, ErrorHubLaunch, "launch"},
 		{"QueuedDrainPartial", QueuedDrainPartial("partial"), -32013, ErrorQueuedDrainPartial, "partial"},
+		{"InstanceRemovePersisted", InstanceRemovePersisted("leftover"), -32603, ErrorInstanceRemovePersisted, "leftover"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if c.err.Code != c.wantCode {

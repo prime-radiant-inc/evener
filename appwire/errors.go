@@ -29,6 +29,14 @@ const (
 	// rename published the new revision) before a follow-up durable step
 	// failed; the error's data carries the applied canonical state.
 	ErrorKeybindingsPostRename ErrorInfo = "keybindingsPostRename"
+	// ErrorInstanceRemovePersisted marks a provider-instance removal that
+	// APPLIED (the authored entry left providers.toml, the registry reloaded,
+	// and the credential the instance resolved is gone) before the removal's
+	// follow-up cleanup failed to delete the copy it set the OAuth record aside
+	// as; the message names the file still on disk. Clients must report the
+	// removal as standing rather than as a failed removal - the instance is
+	// gone, and a retry can only fail on a missing instance.
+	ErrorInstanceRemovePersisted ErrorInfo = "instanceRemovePersisted"
 )
 
 type MutationOutcome string
@@ -183,5 +191,16 @@ func QueuedDrainPartial(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorQueuedDrainPartial},
+	}
+}
+
+// InstanceRemovePersisted reports a provider-instance removal that stood but
+// left a copy of the removed OAuth record on disk, which the removal could not
+// delete. The message names the file; the instance itself is gone.
+func InstanceRemovePersisted(message string) WireError {
+	return WireError{
+		Code:    CodeInternalError,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorInstanceRemovePersisted},
 	}
 }
