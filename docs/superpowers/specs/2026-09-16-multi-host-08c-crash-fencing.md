@@ -1,3 +1,4 @@
+Protocol shapes: the `fencing-failure`, `fencing-helper-absent`, `fencing-helper-untrusted`, and `orphan-fenced-busy` catalog entries with their data shapes; the `orphanBoundary` per-member array (the `kind` discriminator on every entry, the local-linux arm's `pid`/`startTime` fields, the `local-markerless` and `remote-fencing` variants with per-entry `ownership`, the empty and absent cases, and a multi-member case); the `orphan-unverified` state. Remote-origin rejection for `orphan-resolve` is asserted in the deploy-pipeline spec §12 alongside the other pipeline-surface rejections.
 # Component spec 08c — Crash fencing (orphans, epochs, quarantine, helper, boot reaping)
 
 Status: not started. This spec is the hand-off for the implementing session.
@@ -187,6 +188,12 @@ Helper gate: a helper-absent or older/untrusted-helper host refuses fail-closed 
 Orphan ownership: Linux reaps through the cgroup boundary plus the launcher-observed (pid, start time) marker bound to the pre-spawn nonce — never a cgroupfs marker file, never the group id alone. Darwin reaps through the (pgid, session id) boundary plus the same launcher marker — with a pid whose start time differs reading as already clean (never signaled) — and fails closed with durable `orphan-unverified` (resolved by retry at a later boot or by the authenticated `evener/host/orphan-resolve` call; the record carries the `orphanBoundary` per-member array, and the detail filter still resolves through `id`) when enumeration is unavailable. While the record is open the host admits no new operation past admission (transient busy until verified or resolved through `orphan-resolve`; the fresh operation starts only after local reap completion).
 
 Quarantine: fencing kill/wait run under bounded contexts. Kill/wait timeout produces the terminal fencing-failure outcome plus a durable per-host quarantine carrying the timed-out epoch's persisted remote boundary on an `orphan-unverified`-class record. The host admits no new mutation until the operator resolves through `orphan-resolve` (which verifies the persisted boundary before clearing). The next `deploy`/`restart` past the cleared marker converges the fencing with its kill/wait plus guard advance. The host is never stuck and never operable-but-unfenced.
+
+Store-quarantine custody: a corrupt operation store quarantines with its fences
+and boundaries persisted outside the replaceable file — the quarantine-custody
+file defined in the deploy-pipeline spec §4 — and every name the custody file
+names stays closed until its quarantined state resolves explicitly through
+`orphan-resolve`. This section cites that custody rule and never restates it.
 
 Protocol shapes: the `fencing-failure`, `fencing-helper-absent`, `fencing-helper-untrusted`, and `orphan-fenced-busy` catalog entries with their data shapes; the `orphanBoundary` per-member array (the `kind` discriminator on every entry, the local-linux arm's `pid`/`startTime` fields, the `local-markerless` and `remote-fencing` variants with per-entry `ownership`, the empty and absent cases, and a multi-member case); the `orphan-unverified` state. Remote-origin rejection for `orphan-resolve` is asserted alongside the other pipeline-surface rejections.
 

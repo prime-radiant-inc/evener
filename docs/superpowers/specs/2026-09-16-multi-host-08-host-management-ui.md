@@ -111,12 +111,12 @@ This table is the only place the three-document split is defined.
 
 | Method / artifact | Registry (this doc) | Pipeline (08b) | Fencing (08c) |
 |---|---|---|---|
-| `evener/host/list` behavior + hand-written types | ships | union catalog + regenerated client | — |
-| `evener/host/add` behavior + hand-written types | ships | union catalog + regenerated client | — |
-| `evener/host/update` behavior + hand-written types | ships | union catalog + regenerated client | — |
-| `evener/host/remove` behavior + hand-written types | ships | union catalog + regenerated client | — |
-| `evener/host/teardown-retry` behavior + hand-written types | ships | union catalog + regenerated client | — |
-| `evener/host/status` behavior + hand-written types | ships | union catalog + regenerated client | consumes (refusal snapshots) |
+| `evener/host/list` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/add` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/update` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/remove` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/teardown-retry` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | — |
+| `evener/host/status` behavior + hand-written types | ships behavior only (no handler registration) | handler + union catalog + regenerated client | consumes (refusal snapshots) |
 | `evener/host/plan` + token mint | — | ships (handler + catalog + client) | consumes |
 | `evener/host/deploy` | — | ships (handler + catalog + client) | consumes |
 | `evener/host/restart` | — | ships (handler + catalog + client) | consumes |
@@ -127,19 +127,23 @@ This table is the only place the three-document split is defined.
 | Sidecar, staged commit, receipts, remnants, tombstones, generations | ships | mirrors generations in store | — |
 | Operation-store skeleton `remove` depends on (`host-removed` mark path, outstanding-token-row purge path, atomic writes, no pipeline behavior behind them) | ships as store-owned helpers | full store (records, dedup, tokens, reconciliation) | — |
 | Union-registration generator work (`internal/appwirets/emit.go`) | — | ships | — |
-| Origin guard pre-admission hook at request ingress | ships (guard-before-admission ordered on the registry surface) | dedup/token orderings asserted where they ship | — |
-| Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc ships no catalog entry and no regenerated client for a union-shaped response) | ships | — |
+| Origin guard pre-admission hook at request ingress | ships (hook + non-union surface orderings only) | guard-before-admission ordered on the pipeline surface; dedup/token orderings asserted where they ship | — |
+| Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc registers no handler and ships no catalog entry and no regenerated client for a union-shaped response) | ships | — |
 | Non-union registry helpers | register immediately | — | — |
-| Hosts settings section, dialogs, stores, polling, deploy confirmation | ships | consumes (plan inputs) | consumes (resolve affordance) |
+| Hosts settings section, dialogs, stores, polling, deploy confirmation | ships behind the pipeline client (section lands with the pipeline PR's regenerated client) | ships the client it consumes | consumes (resolve affordance) |
 | Registry tests (§16) | ships | — | — |
 | Pipeline tests (§16 of the pipeline spec) | — | ships | — |
 | Fencing tests (§10 of the fencing spec) | — | — | ships |
 
 The pipeline stacks on the registry; fencing stacks on the pipeline.
-Hand-written Go request/response structs land in the same PR as their
-handlers so the backend contract is reviewable; public catalog registration
-plus the regenerated client for union-shaped responses arrive with the
-pipeline PR. No undocumented provisional types ship in any PR.
+The router-vs-catalog test pins registration both ways
+(`cmd/evener-hub/appwire_catalog_test.go` — routed-but-uncataloged fails
+exactly like cataloged-but-unrouted), so a union-returning handler cannot
+land before its catalog entry and generated client. Hand-written Go
+request/response structs land in the same PR as their handlers so the backend
+contract is reviewable; union-returning handlers with their public catalog
+registration plus the regenerated client arrive together with the pipeline
+PR's generator work. No undocumented provisional types ship in any PR.
 
 ## 3. Scope and non-scope
 
@@ -203,8 +207,8 @@ markerless request is local-originated by construction and takes the full
 admission path. The reads (`list`/`status`/`operations`/`running`) are guarded
 equally because they disclose the controller's topology and operation state.
 (`attach`'s guard routing ships and is test-pinned with #1603; this document
-pins its six methods, the pipeline document its six, the fencing document
-its one.) The one direction-scoped exception is the
+pins its six methods, the pipeline document its five, the fencing document
+its one — twelve new methods plus `attach` is thirteen.) The one direction-scoped exception is the
 `evener/host/running` peer probe: a controller-originated request issued only
 through `sshManager.ChannelIfAttached(name)` over a live channel peered by the
 #1603 handshake, admitted on the remote only over that same attached session
@@ -269,8 +273,9 @@ the on-disk `hub.toml` fingerprint against a cached fingerprint lock-free. On a
 match the read serves immediately from the last published snapshot. On a
 mismatch the read still serves immediately, but never the raw stale snapshot:
 it synchronously filters the last published snapshot against the current
-on-disk file state (a lock-free re-read of the file bytes' host set — names,
-not content — plus a synchronous content compare for names present in both:
+on-disk file state. The filter runs one bounded synchronous read: a lock-free
+re-read of the file bytes' host set — names, not content — plus a synchronous
+content compare for names present in both:
 the re-read parses each still-present declared entry and compares its
 effective-entry content hash against the snapshot's persisted per-name
 fingerprint; a name whose content changed renders unavailable — its row omitted
@@ -289,8 +294,9 @@ even while the full reconcile is still in flight; the async reconcile
 converges the full snapshot (facts bindings, generations) behind the
 already-correct admission view. A changed entry is invisible-by-next-read
 exactly like a delete because serving the old entry would serve stale
-connection data; the full reconcile runs async so reads never block on file
-I/O or the mutation lock.
+connection data; the full reconcile runs async so reads never take the
+mutation lock — the only synchronous file read on the path is the bounded
+host-set re-read above.
 
 Read isolation: "no mutation lock" does not mean "no synchronization". Writers
 publish two immutable snapshots through atomic pointers: under the mutation
@@ -904,8 +910,14 @@ persist the committed receipt plus real remnant (verifying the claim's attempt
 token still owns the marker); (4) if the swap itself fails, compensate fully
 before responding: restore the prior sidecar bytes from the stash (atomic
 rename), then revert the runtime to the previous set, then report exactly
-which step failed — a typed swap-failure response is sent only after both
-restores. The commit point is the start of the post-commit rebind phase: once
+which step failed. Compensation runs in persisted phases, tracked on the
+staged-receipt marker (deploy-pipeline spec §9 pins the phase field): the
+sidecar restore lands first, then the runtime revert, and the marker plus its
+stash reference persist until the runtime revert succeeds — so a runtime-revert
+failure or a crash between the two restores still names its restore source,
+and boot resumes the compensation from the persisted phase instead of
+reporting a diverged swap as compensated. A typed swap-failure response is
+sent only after both restores. The commit point is the start of the post-commit rebind phase: once
 the first planned teardown executes, the mutation is committed and there is no
 compensation path back — a failure at or after the commit point is reported as
 a committed-with-teardown-failure with the seam named, and recovery is forward
@@ -1103,7 +1115,9 @@ entry typed as the union over the arm names; the pipeline protocol-shapes test p
 every arm field-for-field (including each arm's discriminator) — and the
 union-shaped catalog/client changes for the registry methods (the mutation-result
 arms, `RemovedRow`, `teardown-retry`'s outcome arms) land in the pipeline PR with that
-generator work, never in the registry PR: the registry ships the sidecar/commit behavior behind
+generator work, never in the registry PR: the union-returning handlers register
+in the pipeline PR with them (§2 — the router-vs-catalog test rejects routed-
+but-uncataloged methods), the registry ships the sidecar/commit behavior behind
 hand-written request/response types plus the store-skeleton helpers, and the
 regenerated client for the union-shaped registry responses arrives with the pipeline PR. The
 single-response-interface alternative is rejected: collapsing the arms would
@@ -1231,7 +1245,9 @@ The `planRefusal` reason values name the refusal the deploy-pipeline spec
   response six declared arms — three outcomes crossed with both host shapes:
   `{outcome: "teardown-complete" | "already-cleared" |
   "committed-with-teardown-failure", hostKind: "live" | "removed", host:
-  HostRow | RemovedRow, remnantId: string, escalationAgeSec?: number}` — a
+  HostRow | RemovedRow, remnantId: string, escalationAgeSec?: number,
+  seam?: string}` — `seam` present exactly on the
+  `committed-with-teardown-failure` arms, naming the failed seam — a
   retry whose bounded teardown run times out returns the timeout arm — the
   same failure outcome as the mutation-result union, carrying the still-open
   remnant's details for a later retry — and the outcome is explicitly not an
@@ -1286,7 +1302,10 @@ registration in the settings section map): host rows with state chip (online /
 offline / connecting / removed-retained), installed version + controller
 version, OS/arch, origin marker, actions: Connect, Deploy, Restart, Edit,
 Remove (each with the confirm pattern used elsewhere in settings), and the Add
-button.
+button. Rows with `removed: true` expose only re-add: Connect, Deploy,
+Restart, Edit, and Remove render disabled (never firing) on tombstone rows,
+and the section's UI test pins a removed row showing the re-add affordance
+with every live-host action disabled.
 
 Add / Edit dialog: fields exactly the `HostConfig` schema — `name`, `ssh`,
 `user`, `evener_path`, `config_path`, `addr`, `roots` (multi-line;
@@ -1358,8 +1377,11 @@ mutable module state.
   shared origin guard — landed by #1603 at the dial + dispatch seams,
   extended by the registry PR to the common request-ingress/router boundary as a
   pre-admission hook running before admission (§3) rather than wrapping
-  handlers one by one, with ordering tests proving guard-before-admission
-  (dedup/token orderings asserted in the pipeline PR where they ship) — explicitly NOT in
+  handlers one by one. The registry PR ships the hook plus the non-union
+  surface ordering tests; the union-returning handlers register in the
+  pipeline PR with the union catalog and regenerated client (§2), which
+  asserts guard-before-admission on the pipeline surface plus the dedup/token
+  orderings where they ship — explicitly NOT in
   `remoteHostAdminMethods` (negative assertion in the allow-list tests).
 - AppWire protocol catalog entries for every new method + request/response
   types (hand-written Go request/response structs in the same PR as the
@@ -1612,15 +1634,17 @@ completion — a changed entry never rebinds the registry entry, generation,
 channel, or supervisor under an in-flight deploy/restart still operating on
 the pinned old configuration), so no external edit — including a
 declared-host removal — survives past the next mutation/`plan`/`deploy`
-admission (a `list`/`status` admission serves the last published snapshot
-immediately and schedules the same sequence asynchronously, debounced — §4):
+admission (a `list`/`status` admission serves the file-filtered view
+immediately — §4: deleted names absent, changed names unavailable — and
+schedules the same sequence asynchronously, debounced):
 the step publishes a new snapshot under the lock and the admitted
 mutation-path call then serves from it — but only after the reconciled merged
 set passes the complete merged-config validation first (the reconcile
 validates the merged post-adopt live set against the full component-03 rules
 plus the 63-host cap under the mutation lock BEFORE publishing: valid sets
 publish exactly as above, while a failed validation publishes nothing — the
-last-good snapshot stays live, the admitted call serves from it, and the
+last-good snapshot stays live, the admitted call serves its file-filtered
+view from it, and the
 failure surfaces as the typed `too-many-hosts` configuration error (over-cap)
 or `concurrent-edit` (other merged-config drift), naming both sources and
 their counts — an external edit adding declared hosts cannot publish an
@@ -1641,8 +1665,8 @@ callback: every read of the live host set — registry, manager bindings,
 sources, manifest, host-admin controller fan-outs, web-config view — goes
 through that callback, which runs the same fingerprint-compare-then-reconcile
 pre-handler step with the same filtered-serve-and-reconcile-async read posture
-(§4 — the callback filters names synchronously against the current file bytes
-and never blocks a read on the mutation lock), so a deleted or changed
+in §4 (the callback applies the same bounded synchronous host-set filter and
+never takes the mutation lock on the read path), so a deleted or changed
 declared host is invisible to every live consumer by its next read — a deleted
 host absent, a content-changed host unavailable (never the old SSH/path
 config) until the reconcile publishes the new runtime snapshot — not only
@@ -1715,10 +1739,11 @@ Registry tests (all bullets in this section ship with the registry PR):
   uncommitted `add` retries while the row is still absent, `stale-entry` once
   an effective field changed; `update` takes no keyless path — missing either
   field is a validation refusal)), remote-origin rejection for
-  `list`/`add`/`update`/`remove` (the #1603 origin guard refuses
+  `list`/`add`/`update`/`remove`/`status` (the #1603 origin guard refuses
   honestly-marked peer-forwarded requests before admission — the registry surface
   only — including `teardown-retry`'s origin rejection alongside its registry
-  commit-point tests), and a wiring test mirroring the 05a registration
+  commit-point tests; `status` rejection is asserted here, never in the
+  pipeline spec), and a wiring test mirroring the 05a registration
   tests. Mutation-idempotency tests (the operation store's cross-name rule,
   applied to mutations): cross-name/cross-kind `mutationId` replay is the
   typed `conflicting-mutation-id` refusal; same-key replay after remove/
@@ -1750,7 +1775,10 @@ Registry tests (all bullets in this section ship with the registry PR):
   removed-row shape, a post-add/update retry the live row; the retry validates
   against the remnant's pinned `(generation, incarnationId)` + `cleanupHandle`
   — the live entry may be absent or newer without blocking it — and never acts
-  against the live entry). Pending-marker tests: a post-commit receipt write
+against the live entry; a bounded-run timeout against a fake teardown
+dependency returns the `committed-with-teardown-failure` arm with `seam`
+naming the failed seam and the remnant still open for a later retry).
+Pending-marker tests: a post-commit receipt write
   lost while the process stays alive leaves the staged-receipt marker staged
   — a replay finalizes carrying the pre-minted `remnantId` and the pinned
   teardown target — a replay by phase (a staged/unswapped marker finalizes as
@@ -1765,11 +1793,14 @@ Registry tests (all bullets in this section ship with the registry PR):
   Lock-free `list` tests: `list` takes no mutation lock and prunes nothing
   durably; expiry filtering is in-memory only and the durable prune lands on
   the next mutation-path write — the `hub.toml`-fingerprint pre-handler check
-  never takes the lock on the read path (mismatch serves the last published
-  snapshot lock-free and schedules the reconcile asynchronously, debounced; no
-  read ever fails busy for a fingerprint reason; the reconcile re-compares
-  fingerprints on completion and reschedules on a still-present mismatch, so a
-  coalesced mid-flight edit is never silently lost). Remnant-gate tests:
+never takes the lock on the read path (mismatch serves the file-filtered
+view lock-free — §4: a name deleted on disk is absent from the response and
+a name whose content changed renders unavailable through the changed-entry
+refusal, never the old SSH/path config — and schedules the reconcile
+asynchronously, debounced; no read ever fails busy for a fingerprint reason;
+the reconcile re-compares fingerprints on completion and reschedules on a
+still-present mismatch, so a coalesced mid-flight edit is never silently
+lost). Remnant-gate tests:
   re-add and retention expiry skip names with open remnants; while a remnant
   is open for a name, `deploy`, `restart`, `Ensure`-triggered work, `plan`
   (no-token `remnant-open` arm with `remnantId`, never a minted token), and
@@ -1798,7 +1829,8 @@ Registry tests (all bullets in this section ship with the registry PR):
   remnant — never a teardown-first mismatch, never without one. File-posture
   tests: sidecar and store temp files are `0600`, renames preserve the mode,
   and startup refuses a file readable beyond its owner, and the stash gets the
-  same coverage (stash temps `0600`, mode-preserving rename, owner-only
+same coverage (stash temps `0600`, mode-preserving rename, owner-only
+readability refusal).
 ## 17. Acceptance criteria
 
 1. A user with zero hosts configured adds one from the UI, sees it connect,

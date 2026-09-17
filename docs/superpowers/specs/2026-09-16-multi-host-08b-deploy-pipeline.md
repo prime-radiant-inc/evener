@@ -84,8 +84,10 @@ factsCapturedAt + freshnessBound)`. Both terms are absolute wall-clock timestamp
 default TTL is 5 minutes, owner-adjustable. The default freshness bound is 5 minutes,
 owner-adjustable. An owner-set TTL above the bound clamps to the bound at mint. The
 minted `expiresAt` already reflects the refresh-to-mint interval, because
-`factsCapturedAt` predates it. Deploy never recomputes `expiresAt`. Lowering the bound
-below outstanding TTLs shortens their effective expiry at validate time, never past it.
+`factsCapturedAt` predates it. Deploy never recomputes `expiresAt`. Freshness is
+immutable for the token lifetime: deploy enforces the minted `expiresAt`
+only, never the live owner knob. Lowering the bound affects only tokens
+minted after the change.
 
 The token binds the host name, the registry generation at mint, a hash of the resolved
 host entry, the `hub.toml` content-hash fingerprint as on disk at plan time, the
@@ -161,14 +163,25 @@ Durability: every operation-store write is atomic (temp file plus rename plus fs
 Token consumption and record creation are one such write (§6 step 4). The store file and
 its temp files carry mode `0600`. Replacements preserve the mode. Startup refuses to
 load a store readable beyond its owner. A corrupt or schema-invalid store file at boot
-quarantines: renamed aside with the boot timestamp, never deleted. The store starts
-empty with zero outstanding tokens plus an operator-visible health signal naming the
+quarantines: renamed aside with the boot timestamp, never deleted. Before the
+replacement store serves, boot snapshots the safety-critical fences the
+quarantined file can no longer prove — per-host fencing quarantines, open
+`orphan-unverified` records with their persisted boundaries, and per-name
+ownership (generation high-water marks plus incarnation ids) — into a
+quarantine-custody file beside the store (same atomic temp-plus-rename-plus-fsync
+write, mode `0600`, never inside the replaceable store file). The replacement
+store opens at epoch + 1 with reset row IDs and `compactSeq` from zero, and
+every name the custody file names stays closed — no new lifecycle or mutation
+call past admission — until the operator resolves its quarantined state
+explicitly through `orphan-resolve` (crash-fencing spec §§4–5), which verifies
+the custodial boundary before clearing. The store starts otherwise empty with
+zero outstanding tokens plus an operator-visible health signal naming the
 quarantined file. The quarantine advances the durable `quarantineEpoch` by exactly one,
-persisted outside the quarantined file. The replacement store opens at epoch + 1 with
-reset row IDs and `compactSeq` from zero. Cursor validation compares the cursor's pinned
+persisted outside the quarantined file. Cursor validation compares the cursor's pinned
 store epoch against the live epoch first: a pre-quarantine cursor is a typed
 `stale-entry` re-list refusal, never an admission against the replacement store. History
-is loss-tolerable; bricking all hosts over bit-rot is not.
+is loss-tolerable; bricking all hosts over bit-rot is not — but no host
+reopens past a fence the quarantine can no longer prove.
 
 State-transition sequence: every atomic store write that moves a record into a terminal
 state (`complete`/`failed`/`interrupted`, or the `orphan-unverified`→`interrupted`
@@ -535,8 +548,9 @@ Boundaries: a host-pinned response carries the effective `generation` and
 `cursor` for subsequent pages. The handler validates the cursor's `(generation,
 incarnationId)` pair against the request's filters; a mismatch is a typed `stale-entry`
 re-list refusal, never a mixed page. An omitted filter on a later page reads as the
-pinned-cursor window, never as a fresh unpinned query. A generation advance between
-pages keeps later pages on the pinned incarnation; a newer generation's records appear
+pinned-cursor window, never as a fresh unpinned query. A generation or presence
+advance between pages rejects the continuation: later pages never serve the
+pinned incarnation past a boundary change; a newer generation's records appear
 only on a fresh unpinned read. A generation-pinned page requires `name`: a cursor
 minted for one pair validated against an unfiltered query is a typed `stale-entry`
 re-list refusal. The map pins every host in the query at cursor creation, not just the
@@ -544,7 +558,8 @@ hosts on the page: a host with no records on the page still contributes its curr
 (generation, incarnation id, `compactSeq`, `presenceEpoch`) boundary, or its absent
 marker when the host holds no records at all. The absent marker encodes as the literal
 string `"absent"`. `presenceEpoch` is the per-host removal/presence counter defined in
-the registry spec §15; a removal advances it even when generation and incarnation are
+the registry spec §1 glossary (advanced on every add, remove, re-add, and
+expiry purge); a removal advances it even when generation and incarnation are
 preserved. A host created after the cursor was minted has no stored triple to validate:
 later pages skip its records. A newer host's records appear only on a fresh unpinned
 read, never mid-pagination. A host removed after mint trips the stored-triple mismatch
@@ -590,10 +605,16 @@ advances the record past `armed`. The preimage persists before the purge, never 
 it. Past the commit point the committer clears the armed record in its own store write:
 the purge stands. Only on the failure path does the restorer run. The record carries
 `phase` (`compensating-armed` → `compensating-sidecar` → `compensating-rows` →
-`compensating-clear`) plus the stash reference the sidecar restore must apply. The
+`compensating-runtime` → `compensating-clear`) plus the stash reference the sidecar restore must apply. The
 restorer advances the phase in its own store write per step: sidecar restore first
 (stash bytes back, phase to `compensating-rows`), then the row re-insert (phase to
-`compensating-clear`), then the record clear.
+`compensating-runtime`), then the runtime revert (phase to
+`compensating-clear`), then the record clear. The marker plus its stash
+reference persist until the runtime revert succeeds: a record in
+`compensating-runtime` re-applies the restored sidecar's runtime set first,
+then clears. A runtime-revert failure leaves the record in
+`compensating-runtime` with the stash reference intact, never a cleared
+compensation beside a diverged runtime.
 
 Boot reconciles a live compensation record by phase, never by blind re-insert. A record
 still in `compensating-armed` checks the purge first: a sidecar whose
@@ -605,7 +626,9 @@ means the purge landed before the crash, so boot advances to `compensating-sidec
 and follows that arm. A record in `compensating-sidecar` restores the sidecar from the
 referenced stash before touching any rows. A record in `compensating-rows` verifies the
 restored sidecar is in place, then re-inserts exactly the rows the restored sidecar's
-generation revalidates. A record in `compensating-clear` clears without resurrecting
+generation revalidates, then advances to `compensating-runtime`. A record in
+`compensating-runtime` re-applies the restored sidecar's runtime set to the
+live handles first, then clears. A record in `compensating-clear` clears without resurrecting
 rows: the rows are already converged. A crash at any point of compensation still
 converges to the restored sidecar's view with its tokens intact. The compensation
 record survives the sidecar restoration by construction, and the restored sidecar
@@ -798,8 +821,11 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
 ## 12. Testing
 
 - Handler tests per method: validation, admission, classification including
-  `plan`-as-mutation, and remote-origin rejection for `status`/`plan`/`deploy`/
-  `restart`/`operations`/`running` (guard-before-admission outranks dedup-first; the
+  `plan`-as-mutation, and remote-origin rejection for `plan`/`deploy`/
+  `restart`/`operations`/`running` plus `orphan-resolve` (the fencing mutation's
+  guard-before-admission ordering is asserted here alongside the other
+  pipeline-surface rejections; the fencing spec owns only the resolve
+  behavior — guard-before-admission outranks dedup-first; the
   before-dedup and before-token-validation orderings are asserted where they ship).
 - The token matrix: missing, mismatched, expired, superseded, consumed-then-replayed
   with a new operation ID (pins to `token-missing`: consume deletes the row — §6 step
@@ -897,8 +923,9 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   as data while the probe itself succeeds — evaluated by the serving hub's local
   predicate, never the `restartRequiredDaemon` probe path.
 - Pinned pagination: stable `id`-ascending order for both sort and resume across
-  concurrent terminal writes (`createdAt` display-only); mid-pagination generation
-  advance keeps later pages on the pinned incarnation; cursor carries `(generation,
+  concurrent terminal writes (`createdAt` display-only); a mid-pagination
+  generation or presence advance rejects the continuation (`stale-entry`
+  re-list); cursor carries `(generation,
   incarnationId, compactSeq, presenceEpoch, lastId)` in the `v: 2` envelope with
   pair-mismatch (`stale-entry` re-list) and post-cursor compaction
   (`cursor-invalidated`) both surfaced as refusals; host-pinned pages carry the
