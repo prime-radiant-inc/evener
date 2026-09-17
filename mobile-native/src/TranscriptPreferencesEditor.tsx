@@ -89,6 +89,7 @@ export function TranscriptPreferencesEditor({
 	save,
 	refresh,
 	discard,
+	discardUnreadable,
 	rebase,
 }: {
 	hubName: string;
@@ -98,6 +99,8 @@ export function TranscriptPreferencesEditor({
 	save(): void;
 	refresh(): void;
 	discard(): void;
+	/** Local-only, so it works with no connection and no live model. */
+	discardUnreadable(): void;
 	rebase(reviewedRevision: number): void;
 }) {
 	const colors = useColors();
@@ -313,7 +316,9 @@ export function TranscriptPreferencesEditor({
 						    precisely the one with nothing confirmed and nothing readable.
 						    Never disabled either - discarding writes only to the device, so
 						    it works offline, and it is the way out of a locked section. */}
-						<Action onPress={discard}>Discard unreadable draft</Action>
+						<Action onPress={discardUnreadable}>
+							Discard unreadable draft
+						</Action>
 					</>
 				) : null}
 				{state.error && !state.writeUncertain ? (

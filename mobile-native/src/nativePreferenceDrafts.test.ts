@@ -1,5 +1,10 @@
-import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import {
+	discardStoredKeybindingDraft,
+	discardStoredTranscriptDraft,
+	makeTranscriptDisplayConfig,
+} from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
+import { draftBackend } from "./nativeDraftBackend";
 import {
 	type NativePreferenceDraftBackend,
 	nativeKeybindingDrafts,
@@ -112,6 +117,55 @@ describe("native preference drafts", () => {
 		// And removable by handing those same bytes back.
 		storage.removeIf("{not json" as never);
 		expect(storage.load()).toBeNull();
+	});
+
+	it("clears an unreadable record whose stored bytes are not canonical JSON", () => {
+		const raw = new Map<string, string>();
+		const store = {
+			getItemSync: (key: string) => raw.get(key) ?? null,
+			setItemSync: (key: string, value: string) => {
+				raw.set(key, value);
+			},
+			removeItemSync: (key: string) => {
+				raw.delete(key);
+			},
+		};
+		const storage = nativeTranscriptDrafts("hub", draftBackend(store, () => "id-1"));
+		const key = "evener.native.transcript-draft.hub";
+
+		// Parses, but is not a checkpoint, and its formatting is not what
+		// JSON.stringify would produce - so its re-encoding cannot name it.
+		raw.set(key, '{\n  "id" : "" ,\n  "baseRevision": -1\n}');
+		const read = storage.load();
+		expect(read).not.toBeNull();
+		expect(JSON.stringify(read)).not.toBe(raw.get(key));
+
+		storage.removeIf(read as never);
+		expect(raw.has(key)).toBe(false);
+	});
+
+	it("clears an unreadable record with no client and no store", () => {
+		// What the provider has while backgrounded or reconnecting: the ports for
+		// this hub, and no model at all. The escape hatch must still work, because
+		// that is exactly when a user is stuck behind such a record.
+		const raw = new Map<string, string>();
+		const store = {
+			getItemSync: (key: string) => raw.get(key) ?? null,
+			setItemSync: (key: string, value: string) => {
+				raw.set(key, value);
+			},
+			removeItemSync: (key: string) => {
+				raw.delete(key);
+			},
+		};
+		const port = draftBackend(store, () => "id-1");
+		raw.set("evener.native.transcript-draft.hub", "{not json");
+		raw.set("evener.native.keybinding-draft.hub", '{"id":""}');
+
+		discardStoredTranscriptDraft(nativeTranscriptDrafts("hub", port));
+		discardStoredKeybindingDraft(nativeKeybindingDrafts("hub", port));
+
+		expect(raw.size).toBe(0);
 	});
 
 	it("refuses a blank hub id rather than colliding every hub on one key", () => {

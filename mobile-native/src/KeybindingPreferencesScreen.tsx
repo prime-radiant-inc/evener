@@ -189,15 +189,12 @@ export function KeybindingPreferencesScreen({
 								Discard it to edit shortcuts again.
 							</Copy>
 							{/* Not gated on the section's `busy`, which the unreadable record
-							    itself sets, nor on the connection: discarding writes only to
-							    this device, so it works offline and is the way out of a
-							    section the unreadable record otherwise locks. */}
+							    itself sets, nor on the connection, nor on a live model: the
+							    client goes away while backgrounded or reconnecting, and that
+							    is exactly when a user is stuck behind such a record. The
+							    provider's path is local-only. */}
 							<Action
-								onPress={() =>
-									run(() => model.discardKeybindingsDraft(), undefined, {
-										requiresHub: false,
-									})
-								}
+								onPress={() => preferences.discardUnreadableDraft("keybindings")}
 							>
 								Discard unreadable draft
 							</Action>

@@ -7,8 +7,14 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+	type AppwireClient,
+	discardStoredKeybindingDraft,
+	discardStoredTranscriptDraft,
+	type TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
+import { draftBackend } from "./nativeDraftBackend";
 import { useConnection } from "./ConnectionProvider";
 import {
 	nativeKeybindingDrafts,
@@ -25,40 +31,15 @@ interface Preferences {
 	snapshot: NativePreferencesSnapshot | null;
 	config: TranscriptDisplayConfigV1 | null;
 	connected: boolean;
+	/** Throws away an unreadable stored draft. Local-only, so it works with no
+	 * connection and no live model: the client goes away while backgrounded or
+	 * reconnecting, and that is exactly when a user is stuck behind such a
+	 * record. With a live model the store does it and publishes the state; with
+	 * none the port is cleared directly. */
+	discardUnreadableDraft(section: "transcript" | "keybindings"): void;
 }
 const Context = createContext<Preferences | null>(null);
-const backend = {
-	createId: () => Crypto.randomUUID(),
-	get(key: string): unknown {
-		const value = Storage.getItemSync(key);
-		if (value === null) return null;
-		try {
-			return JSON.parse(value);
-		} catch {
-			// Bytes this build cannot parse are still A RECORD, and the shared
-			// store's own decoder is what classifies them: handing back the raw
-			// string makes it an unreadable RECORD (draftUnreadable, discardable)
-			// instead of a throw it can only read as a dead port.
-			return value;
-		}
-	},
-	set(key: string, value: unknown) {
-		Storage.setItemSync(key, JSON.stringify(value));
-	},
-	delete(key: string) {
-		Storage.removeItemSync(key);
-	},
-	deleteIf(key: string, value: unknown) {
-		// Synchronous compare/remove cannot interleave with a newer model's checkpoint.
-		const stored = Storage.getItemSync(key);
-		if (stored === null) return;
-		// An unreadable record is handed back to us as the raw bytes `get`
-		// returned, so those bytes are what the comparison is against; a decoded
-		// checkpoint compares by its re-encoding as before.
-		if (stored === value || stored === JSON.stringify(value))
-			Storage.removeItemSync(key);
-	},
-};
+const backend = draftBackend(Storage, () => Crypto.randomUUID());
 
 export function NativePreferencesProvider({
 	children,
@@ -107,14 +88,28 @@ export function NativePreferencesProvider({
 		};
 	}, [client, hubId]);
 	const selected = bound?.hubId === hubId ? bound : null;
+	const liveModel = selected?.client === client ? selected.model : null;
+	const discardUnreadableDraft = (section: "transcript" | "keybindings") => {
+		if (!hubId) return;
+		if (liveModel) {
+			void (section === "transcript"
+				? liveModel.discardTranscriptDraft()
+				: liveModel.discardKeybindingsDraft());
+			return;
+		}
+		if (section === "transcript")
+			discardStoredTranscriptDraft(nativeTranscriptDrafts(hubId, backend));
+		else discardStoredKeybindingDraft(nativeKeybindingDrafts(hubId, backend));
+	};
 	return (
 		<Context.Provider
 			value={{
 				hubId,
-				model: selected?.client === client ? selected.model : null,
+				model: liveModel,
 				snapshot: selected?.snapshot ?? null,
 				config: selected?.config ?? null,
 				connected: !!client && state === "ready" && selected?.client === client,
+				discardUnreadableDraft,
 			}}
 		>
 			{children}
