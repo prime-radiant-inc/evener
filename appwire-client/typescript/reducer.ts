@@ -1438,6 +1438,13 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // "nobody counted": clearing it would blank a figure the hydrate
         // legitimately gave us. Absence at HYDRATE is where unknown lives.
         failedToolCalls: n.params.failedToolCalls ?? model.failedToolCalls,
+        // askPending is snapshot-authoritative and this is the wire refreshing
+        // it, not the reducer deriving it: the hub stamps the flag on the frame
+        // that goes with every clear of the pending set (a resolving user turn,
+        // an interrupt), so a client stops showing "question waiting" without a
+        // reread. Same absent-means-no-update rule as the count above; the ask
+        // dock's own in-tool signal is still separate and still not this.
+        askPending: n.params.askPending ?? model.askPending,
         // Capabilities are snapshot-only too, and two of them (send, queue)
         // are defined BY this very transition: the hub gates send on "no turn
         // in flight" and queue on "a turn in flight"
