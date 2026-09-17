@@ -15,12 +15,14 @@ import (
 	"strconv"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/daemonprocess"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -1963,4 +1965,129 @@ func exitedPID(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return command.Process.Pid
+}
+
+// TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp pins the
+// interleaving RoboRev found: ordinary shutdown's confirmed-stopped no-op holds
+// the session's alias reservation across its final HasActiveResume check and
+// its success return, but a new explicit Resume could still register inside
+// that window (RegisterResume only took the registry mutex), wait on the held
+// alias lock, and launch after shutdown had already reported success. The no-op
+// is blocked on the reservation here, so a registration admitted while that
+// reservation is held is exactly a registration landing in that window.
+func TestConfirmedStopAdmissionBarrierDefersRegistrationDuringNoOp(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID})
+		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish(true)
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		held := locks.For(sessionID)
+		held.Lock()
+		noopDone := make(chan struct{})
+		go func() {
+			if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false); err != nil {
+				t.Errorf("confirmed-stopped no-op: %v", err)
+			}
+			close(noopDone)
+		}()
+		synctest.Wait() // the no-op is now blocked acquiring the alias reservation
+		registered := make(chan error, 1)
+		go func() {
+			_, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+			registered <- err
+		}()
+		synctest.Wait() // a committed registration would now be admitted
+		select {
+		case err := <-registered:
+			held.Unlock()
+			<-noopDone
+			t.Fatalf("RegisterResume was admitted while the confirmed-stopped no-op held the alias reservation: %v", err)
+		default:
+		}
+		held.Unlock()
+		<-noopDone
+		if err := <-registered; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestForceStopResumeCleanupFailureIsUnavailable pins the force-stop boundary
+// classification: a retained child-cleanup failure from stop.Wait is a
+// retryable "cleanup remains unconfirmed" state and must reach the RPC layer as
+// Unavailable, not as a raw resumeCleanupError that maps to Internal.
+func TestForceStopResumeCleanupFailureIsUnavailable(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		locks := hubcore.NewResumeLocks()
+		sessionID := hubtest.SessionID(t)
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: locks.RecoveryState(sessionID).Epoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cleanupErr := &resumeCleanupError{cause: errors.New("fixture child cleanup denied")}
+		cfg := hubcore.WebConfig{RunDir: t.TempDir(), ResumeLocks: locks}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID}, nil)
+		}()
+		synctest.Wait() // force stop canceled the registered Resume and is waiting on cleanup
+		active.Complete(cleanupErr)
+		err = <-stopped
+		if err == nil {
+			t.Fatal("unconfirmed cleanup reported success")
+		}
+		if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+			t.Fatalf("force stop cleanup failure wire code = %d, want %d (Unavailable): %v", code, appwire.CodeUnavailable, err)
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cleanup classification replaced a context error: %v", err)
+		}
+	})
+}
+
+// TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping pins Low 3:
+// for the ordinary shutdown caller (!stopResumes) a transient strict-discovery
+// failure must fall through to the tolerant source attempt rather than failing
+// thread/shutdown for a session whose recovery state is already
+// ResumeRequired && ExitConfirmed. The destructive stopResumes path must keep
+// blocking on the same failure.
+func TestConfirmedStoppedNoOpToleratesDiscoveryErrorWhenNotStopping(t *testing.T) {
+	locks := hubcore.NewResumeLocks()
+	sessionID := hubtest.SessionID(t)
+	finish := locks.BeginForceStop([]string{sessionID})
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err := locks.ConfirmForceStop(sessionID); err != nil {
+		t.Fatal(err)
+	}
+	finish(true)
+	runDir := t.TempDir()
+	// A pid-named but undecodable rendezvous file fails the strict read.
+	if err := os.WriteFile(filepath.Join(runDir, "9999.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rendezvous.ListStrict(runDir); err == nil {
+		t.Fatal("fixture discovery did not fail")
+	}
+	cfg := hubcore.WebConfig{RunDir: runDir, ResumeLocks: locks}
+	stopped, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, false)
+	if err != nil {
+		t.Fatalf("ordinary shutdown no-op failed on a discovery error: %v", err)
+	}
+	if stopped {
+		t.Fatal("a corrupt discovery read must not prove the session stopped")
+	}
+	if _, err := confirmedStoppedWithoutClaim(t.Context(), cfg, sessionID, true); err == nil {
+		t.Fatal("force stop must block on a strict discovery failure")
+	} else if code := appserver.WireError(err).Code; code != appwire.CodeUnavailable {
+		t.Fatalf("force stop discovery failure wire code = %d, want %d (Unavailable)", code, appwire.CodeUnavailable)
+	}
 }

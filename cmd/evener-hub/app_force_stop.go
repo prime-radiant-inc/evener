@@ -29,7 +29,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
 		defer stop.Release()
 		if err := stop.Wait(ctx); err != nil {
-			return err
+			return forceStopResumeStopError(err)
 		}
 	}
 	if stopped, err := confirmedStoppedWithoutClaim(ctx, cfg, ref.ThreadID, true); err != nil {
@@ -215,6 +215,21 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	return nil
 }
 
+// forceStopResumeStopError classifies a Stop wait failure at the force-stop
+// boundary. A retained child-cleanup failure is a retryable "cleanup remains
+// unconfirmed" state and must surface as appwire.Unavailable; a request-context
+// cancellation or deadline keeps propagating unchanged so the ordinary request
+// lifecycle still governs the response.
+func forceStopResumeStopError(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	if _, ok := errors.AsType[*resumeCleanupError](err); ok {
+		return appwire.Unavailable(err.Error())
+	}
+	return err
+}
+
 // cancelActiveResumes is called after Stop installed its admission fences, but
 // before it waits for ownership. It closes the discovery/registration race
 // without waiting for child reaping while holding any session mutex.
@@ -324,6 +339,12 @@ func confirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfig, se
 	}
 	entries, err := rendezvous.ListStrict(cfg.RunDir)
 	if err != nil {
+		if !stopResumes {
+			// Ordinary shutdown tolerates a transient discovery failure on a
+			// session already confirmed exited: fall through to the source
+			// attempt, which treats an already-exited session as a no-op.
+			return false, nil
+		}
 		return false, appwire.Unavailable(err.Error())
 	}
 	for _, entry := range entries {

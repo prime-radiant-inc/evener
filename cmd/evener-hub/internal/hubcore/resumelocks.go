@@ -358,6 +358,23 @@ func (r *ResumeLocks) RegisterResume(ctx context.Context, target string, aliases
 			return nil, errors.New("resume ownership alias has no recovery epoch")
 		}
 	}
+	// Admission must take the same per-alias ownership tokens a confirmed-stopped
+	// no-op holds across its final HasActiveResume check and success return. That
+	// path keeps the aliases reserved until it decides, so registering without
+	// the tokens lets a new explicit Resume land inside that window, wait on the
+	// held alias lock, and launch after shutdown already reported success.
+	acquired := 0
+	defer func() {
+		for _, alias := range slices.Backward(aliases[:acquired]) {
+			r.For(alias).Unlock()
+		}
+	}()
+	for _, alias := range aliases {
+		if err := r.For(alias).LockContext(ctx); err != nil {
+			return nil, err
+		}
+		acquired++
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := ctx.Err(); err != nil {
