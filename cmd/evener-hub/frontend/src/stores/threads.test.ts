@@ -9510,3 +9510,32 @@ test("a healthy authoritative refresh releases the fence after refused force sto
   expect(threadsStore.getState().restartBlockingObligations.has(ref)).toBe(false);
   expect(fake.calls.some((call) => call.method === "thread/resume")).toBe(false);
 });
+
+test("a stale client's ready callback cannot begin a generation for a replaced client", async () => {
+  const stale = new FakeClient("connecting");
+  const current = new FakeClient("ready");
+  current.on("thread/read", () => readResponse("ref_test"));
+  const staleReady = vi.spyOn(stale, "onReady");
+  connectionStore.getState().connect(stale);
+  connectionStore.setState({
+    features: { ...(await stale.connect()).features },
+  });
+  // The callback the module registered on `stale`, captured before it ever
+  // fires - `stale` is still mid-handshake, so nothing has begun yet.
+  const staleReadyCallback = staleReady.mock.calls[0]?.[0];
+  expect(staleReadyCallback).toBeDefined();
+
+  connectionStore.getState().connect(current);
+  connectionStore.setState({
+    features: { ...(await current.connect()).features },
+  });
+  const authorityRefsBeforeStaleReady = threadsStore.getState().mutationAuthorityRefs.size;
+
+  // The race this fixes: `stale`'s own dispatch can snapshot its ready
+  // handlers before rewireClient's unsubscribe removes this one, so it
+  // still runs - after `current` is already the wired client. Without the
+  // guard, the stale callback would clear mutationAuthorityRefs.
+  staleReadyCallback?.(await stale.connect());
+
+  expect(threadsStore.getState().mutationAuthorityRefs.size).toBe(authorityRefsBeforeStaleReady);
+});
