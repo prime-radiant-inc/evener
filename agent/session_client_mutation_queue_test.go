@@ -644,7 +644,7 @@ func TestClientMutation_DrainPreservesMessageBoundaries(t *testing.T) {
 // TestClientMutation_DrainEmitsConsumedClientMutationIDs (issue #1704) verifies
 // the drain's own QueueChanged push names the client mutation ids it consumed,
 // so a client can settle those optimistic records by positive evidence instead
-// of inferring consumption from sequence order (#1705, closed).
+// of inferring consumption from sequence order.
 func TestClientMutation_DrainEmitsConsumedClientMutationIDs(t *testing.T) {
 	sess := newTestSession(t)
 	setTestClientMutationActiveTurn(t, sess, "turn-1")

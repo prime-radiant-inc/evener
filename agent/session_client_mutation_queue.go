@@ -552,10 +552,7 @@ func (s *Session) reflectDurableInputQueue(consumedClientMutationIDs ...string) 
 	s.inputQueue = queue
 	data := s.queueChangedDataLocked()
 	data.Revision = snapshot.QueueRevision
-	data.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
-	for i, entry := range snapshot.InputQueue {
-		data.ClientMutationIDs[i] = entry.ClientMutationID
-	}
+	data.ClientMutationIDs = clientMutationQueueClientMutationIDs(snapshot.InputQueue)
 	s.mu.Unlock()
 	data.ConsumedClientMutationIDs = consumedClientMutationIDs
 	s.emit(events.EventQueueChanged, data)

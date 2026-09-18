@@ -4269,8 +4269,7 @@ describe("useThreadsStore.drainAsSteer", () => {
   // A drain's own thread/queueChanged push names the client mutation ids it
   // consumed (issue #1704), so the client settles those optimistic turn/queue
   // records by positive evidence -- never by inferring consumption from
-  // sequence order (the #1452 heuristic #1705 was built, then closed, to
-  // replace).
+  // sequence order.
   test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
     const fake = connectMutationClient();
     fake.on("turn/queue", (params) => ({

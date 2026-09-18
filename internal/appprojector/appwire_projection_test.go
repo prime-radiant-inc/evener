@@ -1528,13 +1528,9 @@ func TestAppEventProjectorCopiesConsumedClientMutationIDs(t *testing.T) {
 }
 
 // TestAppEventProjectorOmitsConsumedClientMutationIDsWhenAbsent (issue #1704)
-// is the encoding-level half of the wire-shape contract: a non-drain
-// queueChanged carries no ConsumedClientMutationIDs, and the wire must show no
-// such key at all, never an empty array — a client reading "[]" as "the
-// server vouches this list is complete and empty" would settle nothing that
-// was never named, but a client reading a PRESENT empty array the same way
-// the drain's own list is read would wrongly treat every push as consuming
-// nothing, which is what omitempty is for.
+// is the encoding-level half of the wire-shape contract: the set is positive
+// evidence, so an absent key means this push named nothing consumed, and the
+// field is never [].
 func TestAppEventProjectorOmitsConsumedClientMutationIDsWhenAbsent(t *testing.T) {
 	projector := NewAppEventProjector("th_1", "local:th_1")
 	out := projector.Project(events.SessionEvent{
