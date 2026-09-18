@@ -1257,16 +1257,28 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		} else {
 			s.steeringLanded(msg.ClientMutationID)
 		}
-		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
 		s.unparkSteering()
+		// The clear must land before the event publishes: the server refreshes
+		// its ask facet on EventSteeringInjected (server/thread_envelope.go),
+		// so emitting first lets that refresh read a stale askPending=true
+		// until the next ask change (RoboRev #1806 member-3 Medium).
 		s.clearAskPendingForResolvingSteer(t)
+		if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
+			hook()
+		}
+		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
-	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
+	// Same ordering requirement as the client-mutation branch above: clear
+	// before the event that triggers the server's ask-facet refresh.
 	s.clearAskPendingForResolvingSteer(t)
+	if hook := s.cfg.testOnly.beforeSteeringInjectedPublish; hook != nil {
+		hook()
+	}
+	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	return steeringDelivered
 }
 

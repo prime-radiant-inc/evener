@@ -96,11 +96,24 @@ func (s *Session) clearAskPending() {
 // flag this session next reports, not merely a restore-time bug. An
 // interrupted steer (SteeringKindInterrupted) never reaches here — the
 // interrupt branch calls clearAskPending directly before this turn is ever
-// appended — so this checks source alone.
+// appended — so this checks steeringSourceAnswersAsk alone.
 func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
-	if t.SteeringSource == events.SteeringSourceUser {
+	if steeringSourceAnswersAsk(t.SteeringSource, t.SteeringKind) {
 		s.clearAskPending()
 	}
+}
+
+// steeringSourceAnswersAsk reports whether steering carrying source and kind
+// answers a pending ask_user question the way a plain user reply would.
+// SteeringSourceUser marks steering as user-sourced in general, but a
+// human-note update (events.SteeringKindHumanNote) is also user-sourced
+// without addressing the question — saving a note while a question is
+// pending must not clear it (RoboRev #1806 member-0 Medium). Shared by
+// clearAskPendingForResolvingSteer (the live mid-round clear) and
+// turnResolvesAskBoundary (restore's backward scan) so the two boundaries
+// cannot independently drift on which kinds count as an answer.
+func steeringSourceAnswersAsk(source, kind string) bool {
+	return source == events.SteeringSourceUser && kind != events.SteeringKindHumanNote
 }
 
 // minimalExampleQuestionsArray returns a minimal valid example for error messages.
@@ -276,21 +289,25 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 // once so the two can never independently narrow it and drift apart.
 //
 //   - TurnUserInput: the user spoke — resolves.
-//   - TurnSteering carrying SteeringKindInterrupted or SteeringSourceUser:
-//     the runtime already cleared askPending on this turn's behalf before it
-//     ever ran (session_lifecycle.go: the interrupt branch calls
-//     clearAskPending directly; a user steer enters processOneInput as
-//     EntryUserInput, which clears askPending unconditionally on entry) —
-//     resolves. Any other TurnSteering (a daemon-authored nudge, a reminder)
-//     carries neither marker: does not resolve, the scan continues past it
-//     — a trailing steering turn must not resolve a pending ask by looking
-//     like the user moved last (spec §6).
+//   - TurnSteering carrying SteeringKindInterrupted, or a steer that
+//     steeringSourceAnswersAsk reports as answering the user: the runtime
+//     already cleared askPending on this turn's behalf before it ever ran
+//     (session_lifecycle.go: the interrupt branch calls clearAskPending
+//     directly; a resolving user steer clears askPending via
+//     clearAskPendingForResolvingSteer) — resolves. A human-note update
+//     (events.SteeringKindHumanNote) is user-sourced but does not answer the
+//     question, so steeringSourceAnswersAsk excludes it: does not resolve.
+//     Any other TurnSteering (a daemon-authored nudge, a reminder) carries
+//     neither marker: does not resolve, the scan continues past it — a
+//     trailing steering turn must not resolve a pending ask by looking like
+//     the user moved last (spec §6).
 //   - TurnFailure tagged SteeringCarrier (schema.TurnFailureInfo.
 //     SteeringCarrier's own doc comment): the turn's mere acceptance cleared
-//     askPending before its steer failed to append, leaving nothing else
-//     behind — resolves. Every OTHER TurnFailure (a retry-budget
-//     exhaustion, a failed steering-selection prepare, a provider error)
-//     does not resolve: the round it happened to may have posted real
+//     askPending before it recorded nothing else — either its steer failed
+//     to append, or a carrier-claim's own steer failed its selection prepare
+//     — resolves. Every OTHER TurnFailure (a retry-budget exhaustion, a
+//     non-carrier (inline) failed steering-selection prepare, a provider
+//     error) does not resolve: the round it happened to may have posted real
 //     content — an ask_user call among it — before failing, and that
 //     content's own turn is still ahead in the scan to decide the outcome.
 //
@@ -303,7 +320,7 @@ func turnResolvesAskBoundary(turn schema.Turn) bool {
 	case schema.TurnUserInput:
 		return true
 	case schema.TurnSteering:
-		return turn.SteeringKind == events.SteeringKindInterrupted || turn.SteeringSource == events.SteeringSourceUser
+		return turn.SteeringKind == events.SteeringKindInterrupted || steeringSourceAnswersAsk(turn.SteeringSource, turn.SteeringKind)
 	case schema.TurnFailure:
 		return turn.Error != nil && turn.Error.SteeringCarrier
 	default:

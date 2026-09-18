@@ -141,22 +141,28 @@ type TurnFailureInfo struct {
 	// instead of substring-matching Message. Nil means the failure source is
 	// unknown.
 	Cause *TurnFailureCause `json:"cause,omitempty"`
-	// SteeringCarrier marks the one TurnFailure shape that is ALSO a
-	// resolution boundary: a steering carrier turn whose own steer failed to
-	// append, so it recorded nothing else — no TurnSteering, no TurnUserInput,
-	// nothing (agent/session_lifecycle.go's acceptSteeringCarrierInput,
-	// carrierSteerUndelivered). The turn's mere ACCEPTANCE already cleared
+	// SteeringCarrier marks the TurnFailure shapes that are ALSO a resolution
+	// boundary: a steering carrier turn whose acceptance already cleared
+	// askPending before it recorded nothing else useful. Two shapes set it:
+	//   - the carrier's own steer failed to append, so it recorded nothing
+	//     else at all — no TurnSteering, no TurnUserInput, nothing
+	//     (agent/session_lifecycle.go's acceptSteeringCarrierInput,
+	//     carrierSteerUndelivered).
+	//   - the carrier's claimed steer failed its skill-selection prepare
+	//     (agent/session_queue.go's recordFailedSteeringSelection, when the
+	//     failing steer is the one the carrier claim is draining).
+	// Both read the turn's mere ACCEPTANCE as having already cleared
 	// askPending unconditionally on entry, before its steer ever tried to
 	// land (processOneInput's "Pending asks resolve with this accepted turn"),
-	// so restore must read this exact case as resolving too.
+	// so restore must read either case as resolving too.
 	//
-	// Every OTHER TurnFailure (a retry-budget exhaustion, a failed steering-
-	// selection prepare, a provider error mid-round) happens to an
-	// ALREADY-RUNNING round that may have posted real content — an ask_user
-	// call among it — before failing; that content's own turn is still ahead
-	// in the backward scan and decides the outcome, so an unmarked TurnFailure
-	// must not be treated as decisive on its own (agent/session_tools_ask.go's
-	// deriveRestoredAskPending/deriveRestoredState).
+	// Every OTHER TurnFailure (a retry-budget exhaustion, a non-carrier
+	// (inline) failed steering-selection prepare, a provider error mid-round)
+	// happens to an ALREADY-RUNNING round that may have posted real content —
+	// an ask_user call among it — before failing; that content's own turn is
+	// still ahead in the backward scan and decides the outcome, so an
+	// unmarked TurnFailure must not be treated as decisive on its own
+	// (agent/session_tools_ask.go's deriveRestoredAskPending/deriveRestoredState).
 	SteeringCarrier bool `json:"steering_carrier,omitempty"`
 }
 

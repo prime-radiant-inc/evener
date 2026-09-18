@@ -1689,6 +1689,69 @@ func TestAskUser_RestoreResolvesAcrossUserSteer(t *testing.T) {
 	}
 }
 
+// TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt covers RoboRev
+// #1806's member-0 Medium: a human-note update is user-sourced
+// (events.SteeringSourceUser) exactly like an answering steer, but it does
+// not address the pending question, so it must not clear askPending — live
+// (clearAskPendingForResolvingSteer) or on restore (turnResolvesAskBoundary).
+// Driven through the same carrier path as TestAskUser_RestoreResolvesAcrossUserSteer
+// (SetHumanNote queues the note as steering; claimSteeringCarrierTurn +
+// acceptSteeringCarrierInput deliver it as its own turn), with the opposite
+// expectation.
+func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-note pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued note")
+	}
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "note-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after a human-note steer = %d, want 1 (a note update does not answer the pending ask)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 1 {
+		t.Fatalf("restored askPending = %+v, want 1 question (a human-note steer must not resolve a pending ask on restore either)", restored.askPending)
+	}
+}
+
 // TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier covers the case a
 // user steer's OWN turn fails outright before posting anything: processOneInput
 // clears s.askPending unconditionally on entry (session_lifecycle.go's
@@ -1977,6 +2040,77 @@ func TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer(t 
 	}
 	if !requestContainsText(requests[1], "go ahead and pick Postgres") {
 		t.Fatalf("second model request did not carry the drained steer: %+v", requests[1])
+	}
+}
+
+// TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue covers
+// RoboRev #1806's member-3 Medium: a delivered user steer must clear
+// askPending BEFORE EventSteeringInjected publishes, because the server
+// refreshes its ask facet on that event (server/thread_envelope.go); emitting
+// first lets that refresh cache a stale askPending=true until the next ask
+// change. The production fix threads a testOnly hook
+// (cfg.testOnly.beforeSteeringInjectedPublish) that fires synchronously,
+// on the SAME goroutine as consumeSteeringMessage, immediately before the
+// event publishes — so this samples askPendingCount() at exactly that
+// instant with no cross-goroutine race to reason about.
+func TestAskUser_SteeringInjectedNeverObservesAskPendingStillTrue(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	var sess *Session
+	queueSteer := func() {
+		if err := sess.ensureClientMutationStore(); err != nil {
+			t.Fatalf("ensureClientMutationStore: %v", err)
+		}
+		if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+			ClientMutationID: "mid-flight-steer",
+			Input:            clientMutationInput("go ahead and pick Postgres", nil, nil),
+		}); err != nil {
+			t.Fatalf("AcceptClientMutationSteer: %v", err)
+		}
+	}
+	fa := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response {
+				queueSteer()
+				return toolCallResponse(ask)
+			},
+			func(req llm.Request) llm.Response {
+				return finalResponse("using Postgres, thanks")
+			},
+		},
+	}
+	c := llm.NewClient()
+	c.Register(fa)
+	var err error
+	sess, err = NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	var samples []int
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.beforeSteeringInjectedPublish = func() {
+			samples = append(samples, sess.askPendingCount())
+		}
+	})
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	if len(samples) == 0 {
+		t.Fatal("beforeSteeringInjectedPublish never fired; the drain never ran (test setup broken)")
+	}
+	for i, got := range samples {
+		if got != 0 {
+			t.Fatalf("askPendingCount immediately before EventSteeringInjected publish #%d = %d, want 0 (the ask facet must never observe the injected steer before the clear)", i, got)
+		}
 	}
 }
 

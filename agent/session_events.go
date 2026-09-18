@@ -269,12 +269,15 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 
 // emitSteeringCarrierTurnFailure is emitTurnFailure's steering-carrier
 // sibling: identical on the live channel, but tags the persisted TurnFailure
-// as the one shape (schema.TurnFailureInfo.SteeringCarrier's own doc comment)
-// deriveRestoredAskPending/deriveRestoredState (session_tools_ask.go) may
-// treat as a resolution boundary on its own. The ONLY caller is
-// acceptSteeringCarrierInput's carrierSteerUndelivered case
-// (session_lifecycle.go) — the turn whose acceptance already cleared
-// askPending and then recorded nothing else.
+// with one of the two shapes (schema.TurnFailureInfo.SteeringCarrier's own
+// doc comment) deriveRestoredAskPending/deriveRestoredState
+// (session_tools_ask.go) may treat as a resolution boundary on its own. The
+// ONLY caller of THIS function is acceptSteeringCarrierInput's
+// carrierSteerUndelivered case (session_lifecycle.go) — the turn whose
+// acceptance already cleared askPending and then recorded nothing else; the
+// tag's other shape, a carrier-claim's own steer selection failure, is set
+// directly by recordFailedSteeringSelection (session_queue.go) without going
+// through this function.
 func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
 	s.emit(events.EventError, data)
 	s.recordTurnFailure(data, true)
