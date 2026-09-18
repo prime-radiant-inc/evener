@@ -598,13 +598,20 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * rest of the wiring state so a never-resolving write cannot leak into the
    * next test. */
   let writeQueue: Promise<void> = Promise.resolve();
-  /** True from the moment a direct write claims its write token until its
-   * own reply (or fencing) settles. Both write paths share one write token
-   * (fence.claimWrite): a checkpointed save starting here would claim a
-   * NEWER one, fencing the direct write's own reply out as superseded even
-   * though the hub may have already applied it. saveDraft refuses while
-   * this is true, the same posture patchOverrides takes on `saving`. */
-  let directWriteInFlight = false;
+  /** The direct write's own claim on the shared write token, from the
+   * moment it is taken until this write's own settlement clears it. Both
+   * write paths share one write token (fence.claimWrite): a checkpointed
+   * save starting here would claim a NEWER one, fencing the direct write's
+   * own reply out as superseded even though the hub may have already
+   * applied it. saveDraft refuses while the fence still counts this claim
+   * as live - the same posture patchOverrides takes on `saving`. Recording
+   * the generation and token (rather than a bare boolean) means the claim
+   * stops blocking saveDraft the moment the fence retires it (a generation
+   * end, a support flap, a later write's supersede), even if the original
+   * request's own await never settles; and `finally` below only clears an
+   * owner that still matches, so a stale request's cleanup can never clear
+   * a newer direct write's claim. */
+  let directWrite: { generation: number; token: number } | null = null;
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
@@ -1107,7 +1114,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // moment it is claimed until this call's own settlement - every exit
       // path clears it, so saveDraft's sibling gate never stays refused
       // over a write that has already landed or failed.
-      directWriteInFlight = true;
+      directWrite = { generation, token };
       try {
         try {
           const result = await client.request("evener/settings/keybindings/patch", {
@@ -1144,7 +1151,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           throw error;
         }
       } finally {
-        directWriteInFlight = false;
+        // Only this write's own claim: a stale write's finally must not
+        // clear a newer direct write's claim (see the field's own comment).
+        if (directWrite?.token === token) directWrite = null;
       }
     };
     // Chain behind the previous write's SETTLEMENT: a failed write must not
@@ -1251,7 +1260,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // token here while a direct write is in flight would fence that write's
     // own reply out as superseded, racing or conflicting with whichever
     // PATCH the hub actually processes first.
-    if (directWriteInFlight) throw new Error(UNAVAILABLE_MESSAGE);
+    // A direct write's claim stops blocking here the moment the fence would
+    // no longer count its reply as its own to land (see the field's own
+    // comment) - a generation end, a support flap or a later write's
+    // supersede all retire it without waiting for the original request's
+    // own await to settle.
+    if (directWrite !== null && fence.writeStillMine(directWrite.generation, directWrite.token))
+      throw new Error(UNAVAILABLE_MESSAGE);
     const existing = getState().draft;
     if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");
     const checked = keybindingRules(rules ?? existing?.rules ?? current.rules);
@@ -1410,7 +1425,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       missedChangeNotification = false;
       unapplyRolledBack = false;
       writeQueue = Promise.resolve();
-      directWriteInFlight = false;
+      directWrite = null;
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).

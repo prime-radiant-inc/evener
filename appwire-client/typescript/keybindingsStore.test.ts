@@ -15,7 +15,7 @@ import {
 } from "./keybindingsStore";
 import { deferred } from "./testing/deferred";
 import { memoryDraftStorage } from "./testing/draftStorage";
-import { FakeClient } from "./testing/fakeClient";
+import { FakeClient, gateRequests } from "./testing/fakeClient";
 import { registryWithDefaults } from "./testing/keybindingRegistry";
 import type { KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
@@ -43,6 +43,15 @@ async function readyStore(client: FakeClient, deps: Partial<KeybindingsStoreDeps
   store.beginReadyGeneration();
   await store.getState().refreshOverrides();
   return store;
+}
+
+/** The Nth call's resolver from gateRequests, or a loud failure - indexed
+ * access into that array is possibly undefined to the type checker even
+ * once a `toHaveLength` assertion has proven the call landed. */
+function replyAt(replies: ((response: unknown) => void)[], index: number): (response: unknown) => void {
+  const release = replies[index];
+  if (!release) throw new Error(`no gated request at index ${index}`);
+  return release;
 }
 
 function clientServing(revision: number, served: KeybindingsOverrides["rules"] = []): FakeClient {
@@ -794,6 +803,77 @@ describe("the checkpointed draft editor", () => {
     expect(store.getState()).toMatchObject({ revision: 4 });
     // The gate lifts once the direct write has settled.
     await expect(store.getState().saveDraft(rules)).resolves.toBeDefined();
+  });
+
+  test("a direct write retired by a generation reset no longer blocks saveDraft", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const replies = gateRequests(client, patchMethod);
+    const direct = store.getState().patchOverrides(rules);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+
+    // A transient disconnect retires the generation while the direct write's
+    // own request is still out - it never reaches its reply, let alone the
+    // reply's finally cleanup.
+    store.endReadyGeneration();
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    // The gate lifts on retirement; it does not wait for the abandoned
+    // request's own reply to clear it. saveDraft's own PATCH gets its own
+    // gated reply so it can settle without touching the abandoned one.
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    replyAt(replies, 1)(payload(4, rules));
+    await expect(save).resolves.toBeDefined();
+
+    // The abandoned reply, landing later, is superseded and touches nothing.
+    replyAt(replies, 0)(payload(5, rules));
+    await direct;
+  });
+
+  test("a stale direct write's late reply cannot clear a newer direct write's flag", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const replies = gateRequests(client, patchMethod);
+
+    const one = store.getState().patchOverrides(rules);
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+
+    // reset() wipes the write queue without settling the first request, so a
+    // second direct write can start while the first is still out.
+    store.reset();
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    const two = store.getState().patchOverrides(rules);
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+
+    // The stale first request settling must not clear the second write's
+    // claim: saveDraft must stay refused (never issuing a THIRD PATCH)
+    // while the second write is still out. Raced against a bounded timeout
+    // instead of a bare `await` - the bug this guards against is exactly a
+    // saveDraft call slipping past the gate and hanging on a PATCH reply
+    // nothing in this test ever sends.
+    replyAt(replies, 0)(payload(4, rules));
+    await one;
+    const attempt = store.getState().saveDraft(rules);
+    attempt.catch(() => {});
+    const outcome = await Promise.race([
+      attempt.then(
+        () => "resolved",
+        (error: unknown) => `rejected:${error instanceof Error ? error.message : String(error)}`,
+      ),
+      new Promise<string>((resolve) => setTimeout(() => resolve("still pending"), 200)),
+    ]);
+    expect(outcome).toBe("rejected:Hub keybindings settings are unavailable.");
+    expect(replies).toHaveLength(2);
+
+    replyAt(replies, 1)(payload(5, rules));
+    await two;
   });
 
   test("an older save's late reply does not clear a newer save's saving flag", async () => {
