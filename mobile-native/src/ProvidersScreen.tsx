@@ -380,7 +380,7 @@ function Providers({
                         <View style={styles.row}>
                           <Action
                             disabled={state.busy || !key.trim() || !ready}
-                            onPress={whenReady(ready, () => {
+                            onPress={() => {
                               // The clear happens on act()'s own success path
                               // (below), never here: clearing before knowing
                               // whether the request could even be sent would
@@ -392,7 +392,7 @@ function Providers({
                                   : model.setApiKey(instance.name, value),
                                 true,
                               );
-                            })}
+                            }}
                           >
                             {editingCredential === "credentialJson" ? "Save credential JSON" : "Save key"}
                           </Action>
@@ -468,9 +468,9 @@ function Providers({
                         {!instance.isDefault && (
                           <Action
                             disabled={state.busy || state.data?.writesRefused || !ready}
-                            onPress={whenReady(ready, () => {
+                            onPress={() => {
                               void act(() => model.setDefault(instance.name));
-                            })}
+                            }}
                           >
                             Make default
                           </Action>
@@ -479,11 +479,11 @@ function Providers({
                           instance.activeSource !== "store" && (
                             <Action
                               disabled={state.busy || !ready}
-                              onPress={whenReady(ready, () =>
+                              onPress={() =>
                                 confirm(instance.auth === "gcp-adc" ? "Clear stored credential JSON?" : "Clear stored key?", () =>
                                   model.clearStoredKey(instance.name),
                                 )
-                              )}
+                              }
                             >
                               {instance.auth === "gcp-adc" ? "Clear stored credential JSON" : "Clear stored key"}
                             </Action>
@@ -491,11 +491,11 @@ function Providers({
                         {["store", "oauth"].includes(instance.activeSource) && (
                           <Action
                             disabled={state.busy || !ready}
-                            onPress={whenReady(ready, () =>
+                            onPress={() =>
                               confirm("Clear active credentials?", () =>
                                 model.logout(instance.name),
                               )
-                            )}
+                            }
                           >
                             Clear credentials
                           </Action>
@@ -503,11 +503,11 @@ function Providers({
                         {!instance.implicit && (
                           <Action
                             disabled={state.busy || state.data?.writesRefused || !ready}
-                            onPress={whenReady(ready, () =>
+                            onPress={() =>
                               confirm("Remove provider instance?", () =>
                                 model.remove(instance.name),
                               )
-                            )}
+                            }
                           >
                             Remove instance
                           </Action>
