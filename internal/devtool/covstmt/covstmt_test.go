@@ -83,6 +83,29 @@ func TestDuplicatePositionStmtCountIsLastWins(t *testing.T) {
 	assertCounts(t, writeProfile(t, profile), 99, 99)
 }
 
+// TestDedupKeyKeepsRawPositionText pins the equivalence the dedup key owes the
+// deleted Python stmt_counts: it keyed on the RAW regex captures, so `010` and
+// `10` are distinct positions even though they parse to the same integer.
+// Keying on the parsed integer instead would collapse the two blocks and
+// silently drop one from the denominator — Python reports 50/90 here, a
+// parsed-int key reports 50/50.
+func TestDedupKeyKeepsRawPositionText(t *testing.T) {
+	const profile = "mode: set\n" +
+		"pkg/a.go:010.1,20.2 40 0\n" +
+		"pkg/a.go:10.1,20.2 50 1\n"
+	assertCounts(t, writeProfile(t, profile), 50, 90)
+
+	// The per-block view must see both blocks too, or the two views disagree.
+	blocks, err := BlocksReader(strings.NewReader(profile))
+	if err != nil {
+		t.Fatalf("BlocksReader: %v", err)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("BlocksReader returned %d blocks, want 2 (`010` and `10` are distinct positions): %+v",
+			len(blocks), blocks)
+	}
+}
+
 // TestMultipleFiles counts blocks from different files independently: the
 // dedup key is the whole (file, position) tuple, not position alone.
 func TestMultipleFiles(t *testing.T) {

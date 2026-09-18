@@ -196,6 +196,35 @@ func TestCovstmtGapsInMatchesPython(t *testing.T) {
 	}
 }
 
+// TestCovstmtGapsInTopTruncatesTableNotSummary pins the invariant the
+// single-block --in test above cannot exercise: when more matching uncovered
+// blocks exist than --top shows, the TABLE is truncated but the SUMMARY still
+// reports every matching block and their combined statement count. Two matching
+// uncovered blocks (100 and 40 statements) under --top=1 must print one row yet
+// report "1 of 2" and the 140-statement sum; a covered block in a matching file
+// must be neither shown nor counted. Expected bytes are the deleted Python's
+// output for this fixture verbatim.
+func TestCovstmtGapsInTopTruncatesTableNotSummary(t *testing.T) {
+	profile := filepath.Join(t.TempDir(), "fixture.cov")
+	writeCovFixture(t, profile, "mode: set\n"+
+		"pkg/a/file.go:10.1,20.2 100 0\n"+
+		"pkg/a/file.go:30.1,40.2 40 0\n"+
+		"pkg/a/xfile.go:1.1,2.2 5 1\n")
+
+	var out, errOut strings.Builder
+	args := []string{"--gaps", "--in", "file.go", "--top", "1", profile}
+	if code := covstmtRun(args, &out, &errOut); code != 0 {
+		t.Fatalf("covstmtRun(%q) exits %d, want 0 (stderr: %q)", args, code, errOut.String())
+	}
+	want := "   STMTS  location\n" +
+		"     100  pkg/a/file.go:10-20\n" +
+		"\n" +
+		"showing 1 of 2 uncovered blocks (140 statements) in files matching 'file.go'\n"
+	if got := out.String(); got != want {
+		t.Fatalf("covstmtRun(%q) output:\n%q\nwant:\n%q", args, got, want)
+	}
+}
+
 // TestCovstmtGapsNoMatch pins the no-match line: the pattern is repr'd, and the
 // exit is still 0 (an empty result is information, not a failure).
 func TestCovstmtGapsNoMatch(t *testing.T) {

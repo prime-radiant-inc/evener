@@ -51,16 +51,23 @@ type Block struct {
 
 // blockPos is the dedup identity of a block: the whole (file, start, end)
 // position tuple, not position alone — the same position in two different files
-// is two distinct blocks.
+// is two distinct blocks. The position fields are the RAW regex captures, not
+// parsed integers, because the deleted Python stmt_counts keyed on the raw text
+// (`key = (f, sl, sc, el, ec)`): `010` and `10` are the same number but
+// different text, and collapsing them would silently change the totals for an
+// accepted off-toolchain profile. Integers are derived only for validation and
+// for the rendered output.
 type blockPos struct {
-	file                string
-	startLine, startCol int
-	endLine, endCol     int
+	file                                 string
+	startLine, startCol, endLine, endCol string
 }
 
+// blockEntry is a block's decoded values: the parsed position (for output and
+// ordering) alongside the statement count and any-hit coverage the dedup folds.
 type blockEntry struct {
-	stmtCount int
-	covered   bool
+	startLine, startCol, endLine, endCol int
+	stmtCount                            int
+	covered                              bool
 }
 
 // parseProfile reads a Go coverage profile and returns its blocks keyed by
@@ -81,9 +88,12 @@ func parseProfile(r io.Reader) (map[blockPos]blockEntry, error) {
 		if m == nil {
 			continue
 		}
-		// Every numeric field is checked, not just the counts: an out-of-range
-		// line or column would otherwise parse as 0 and collapse two distinct
-		// positions into one, silently changing the total.
+		// Every numeric field is parsed, so a malformed one (a position beyond
+		// int range) fails loudly instead of being carried as an unusable
+		// position. The dedup key itself is the RAW capture, not this integer:
+		// keying on the parsed value would collapse `010` and `10` into one
+		// block and silently change the total, whereas the deleted Python
+		// stmt_counts kept them distinct.
 		sl, err := strconv.Atoi(m[2])
 		if err != nil {
 			return nil, fmt.Errorf("covstmt: parsing start line %q: %w", m[2], err)
@@ -110,7 +120,7 @@ func parseProfile(r io.Reader) (map[blockPos]blockEntry, error) {
 			return nil, fmt.Errorf("covstmt: parsing count %q: %w", m[7], cerr)
 		}
 
-		key := blockPos{file: m[1], startLine: sl, startCol: sc, endLine: el, endCol: ec}
+		key := blockPos{file: m[1], startLine: m[2], startCol: m[3], endLine: m[4], endCol: m[5]}
 		if prev, ok := seen[key]; ok {
 			// stmtCount is the same for every occurrence of a position on
 			// real profiles, but the tie-break is pinned anyway: the deleted
@@ -122,7 +132,14 @@ func parseProfile(r io.Reader) (map[blockPos]blockEntry, error) {
 			prev.covered = prev.covered || count > 0
 			seen[key] = prev
 		} else {
-			seen[key] = blockEntry{stmtCount: stmtCount, covered: count > 0}
+			seen[key] = blockEntry{
+				startLine: sl,
+				startCol:  sc,
+				endLine:   el,
+				endCol:    ec,
+				stmtCount: stmtCount,
+				covered:   count > 0,
+			}
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -193,6 +210,21 @@ func BlocksReader(r io.Reader) ([]Block, error) {
 		if a.file != b.file {
 			return a.file < b.file
 		}
+		ae, be := seen[a], seen[b]
+		if ae.startLine != be.startLine {
+			return ae.startLine < be.startLine
+		}
+		if ae.startCol != be.startCol {
+			return ae.startCol < be.startCol
+		}
+		if ae.endLine != be.endLine {
+			return ae.endLine < be.endLine
+		}
+		if ae.endCol != be.endCol {
+			return ae.endCol < be.endCol
+		}
+		// Same parsed position but different raw text (`010` vs `10`): order by
+		// the raw captures so the order stays total and map-independent.
 		if a.startLine != b.startLine {
 			return a.startLine < b.startLine
 		}
@@ -209,8 +241,8 @@ func BlocksReader(r io.Reader) ([]Block, error) {
 		e := seen[p]
 		out = append(out, Block{
 			File:      p.file,
-			StartLine: p.startLine,
-			EndLine:   p.endLine,
+			StartLine: e.startLine,
+			EndLine:   e.endLine,
 			StmtCount: e.stmtCount,
 			Covered:   e.covered,
 		})
