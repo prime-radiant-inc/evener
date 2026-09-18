@@ -50,7 +50,14 @@ export function discardStoredDraft<Checkpoint>(storage: DraftPort<Checkpoint>): 
 export interface DraftRepository<Checkpoint> {
   createId(): string;
   load(): Checkpoint | null;
-  save(checkpoint: Checkpoint): void;
+  /** Persists `checkpoint`, atomically against whatever this repository most
+   * recently classified (via load() or an earlier save()) - not a blind
+   * overwrite. Reports whether it did; a refusal means another writer
+   * replaced the classified record since, and the caller must not treat its
+   * own checkpoint as durably saved. Nothing classified yet, or classified
+   * as absent, has no existing record to race against and always
+   * succeeds. */
+  save(checkpoint: Checkpoint): boolean;
   removeIf(checkpoint: Checkpoint): boolean;
   discardClassified(): boolean;
   /** Settles the classified record onto `next` atomically against the
@@ -122,9 +129,22 @@ export function createDraftRepository<Checkpoint extends object>(
       rawFrom.set(checkpoint as object, value);
       return checkpoint;
     },
-    save(checkpoint: Checkpoint): void {
+    save(checkpoint: Checkpoint): boolean {
       const decoded = decode(checkpoint);
-      storage.save(decoded);
+      // A record already classified (by an earlier load() or save()) is
+      // replaced atomically against that identity - an unconditional
+      // overwrite would silently discard whatever a concurrent writer put
+      // there since (editDraft, saveDraft's pre-request persist, and
+      // rebaseDraft all reach this through persistDraft, with no compare of
+      // their own). Nothing classified yet, or classified as absent, has no
+      // existing record to race against here - the same posture
+      // discardClassified/replaceClassified take, applied to a brand new
+      // record instead of removing or replacing an existing one.
+      if (classification !== null && classification !== "absent") {
+        if (!storage.replaceIf(classification.raw, decoded)) return false;
+      } else {
+        storage.save(decoded);
+      }
       // What was just written IS now the classified record: no raw bytes to
       // recover (this build built it), so the decoded value is its own
       // identity, the same fallback removeIf already uses for a checkpoint
@@ -134,9 +154,15 @@ export function createDraftRepository<Checkpoint extends object>(
       // name the pre-save bytes, which save() already overwrote.
       classification = { raw: decoded };
       rawFrom.set(checkpoint as object, decoded);
+      return true;
     },
     removeIf(checkpoint: Checkpoint): boolean {
-      return storage.removeIf(rawFrom.get(checkpoint as object) ?? decode(checkpoint));
+      const removed = storage.removeIf(rawFrom.get(checkpoint as object) ?? decode(checkpoint));
+      // A successful removal's postcondition is the same one load() finding
+      // nothing describes: storage is genuinely empty now, so a later save()
+      // must create fresh rather than CAS against this now-stale identity.
+      if (removed) classification = "absent";
+      return removed;
     },
     /** Removes the record load()/save() most recently classified, readable
      * or not, by the identity of the bytes it was classified from - never a
@@ -148,7 +174,9 @@ export function createDraftRepository<Checkpoint extends object>(
      * always restores through load() before a user can reach discard. */
     discardClassified(): boolean {
       if (classification === null || classification === "absent") return false;
-      return storage.removeIf(classification.raw);
+      const removed = storage.removeIf(classification.raw);
+      if (removed) classification = "absent";
+      return removed;
     },
     /** Settles the classified record onto `next` atomically. Nothing
      * classified yet (or classified as absent) has no identity to be atomic

@@ -38,6 +38,56 @@ describe("createDraftRepository", () => {
     expect(drafts.stored()).toBeNull();
   });
 
+  it("save() refuses to overwrite a record another writer replaced after this repository classified it", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    // A second writer replaces the record directly on the port, bypassing
+    // this repository's own classification - the same race
+    // discardClassified/replaceClassified already guard against, but save()
+    // (editDraft/saveDraft/rebaseDraft's own persist) did not.
+    drafts.storage.save({ id: "d2", value: "b" });
+
+    expect(repo.save({ id: "d1", value: "edited" })).toBe(false);
+    expect(drafts.stored()).toEqual({ id: "d2", value: "b" });
+  });
+
+  it("save() succeeds and reclassifies when nothing has replaced the record since it was classified", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+
+    expect(repo.save({ id: "d1", value: "edited" })).toBe(true);
+    expect(drafts.stored()).toEqual({ id: "d1", value: "edited" });
+  });
+
+  it("save() succeeds unconditionally after removeIf classified the store as absent", () => {
+    // removeIf's own success means storage is genuinely empty now, the same
+    // postcondition load() classifying "absent" describes - a later save()
+    // must not CAS against the just-removed (and now stale) identity.
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    const loaded = repo.load() as Checkpoint;
+    expect(repo.removeIf(loaded)).toBe(true);
+
+    expect(repo.save({ id: "d2", value: "b" })).toBe(true);
+    expect(drafts.stored()).toEqual({ id: "d2", value: "b" });
+  });
+
+  it("save() succeeds unconditionally after discardClassified classified the store as absent", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    repo.load();
+    expect(repo.discardClassified()).toBe(true);
+
+    expect(repo.save({ id: "d2", value: "b" })).toBe(true);
+    expect(drafts.stored()).toEqual({ id: "d2", value: "b" });
+  });
+
   it("discardClassified refuses when another writer replaced the classified record", () => {
     const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
     const repo = createDraftRepository(drafts.storage, decode);

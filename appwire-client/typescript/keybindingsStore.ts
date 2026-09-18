@@ -1199,7 +1199,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
     try {
       const checkpoint = { ...input, id: drafts.createId() };
-      drafts.save(checkpoint);
+      // save()'s own refusal (another writer replaced the classified record
+      // since - see createDraftRepository) is treated the same as a storage
+      // exception: either way, this checkpoint was not durably recorded as
+      // the caller (editDraft, saveDraft, rebaseDraft) intended.
+      if (!drafts.save(checkpoint)) throw new Error(DRAFT_SAVE_FAILED_MESSAGE);
       return checkpoint;
     } catch {
       setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });

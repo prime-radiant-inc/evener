@@ -115,6 +115,30 @@ describe("two stores share nothing", () => {
     expect(storeA.getState().draft).toEqual({ version: 1, revision: 3, rules });
     expect(storeB.getState().draft).toBeNull();
   });
+
+  // editDraft/saveDraft/rebaseDraft all persist through the SAME repository
+  // save() that discardClassified/replaceClassified already CAS through - a
+  // second store sharing the port, editing after this store's own classified
+  // record has moved on, must not silently overwrite it.
+  test("editDraft refuses to overwrite a checkpoint replaced by another store sharing the same port", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const storeA = await readyStore(clientServing(3), { drafts: drafts.storage });
+    storeA.getState().editDraft(rules);
+
+    // storeB classifies the record storeA just wrote (its own restoreDraft,
+    // via readyStore, runs against the SAME port and sees it).
+    const storeB = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(storeB.getState().draft).toEqual({ version: 1, revision: 3, rules });
+
+    // storeA edits again, replacing what storeB classified.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    storeA.getState().editDraft(otherRules);
+
+    // storeB's own edit, composed against its now-stale classification, must
+    // refuse rather than clobber storeA's newer checkpoint.
+    expect(() => storeB.getState().editDraft(otherRules)).toThrow("Could not save the shortcut draft locally.");
+    expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: otherRules });
+  });
 });
 
 describe("an undecodable changed broadcast", () => {
