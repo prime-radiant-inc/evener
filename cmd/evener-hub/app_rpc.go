@@ -366,17 +366,17 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 }
 
 func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
-	server, _, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
+	server, _ := newHubAppServerWithNavigationAndTrace(cfg, sources, navigation, resolve, nil)
 	return server
 }
 
 // newHubAppServerWithNavigationAndTrace builds the RPC server and registers
-// every handler. It returns cfg back to the caller alongside the server: cfg
-// is a value, so the PluginResolveManager this function wires onto its own
-// local copy (for the closures it registers here) is invisible to the
-// caller's own copy unless handed back explicitly — the same reason web.go
-// assigns web.cfg from this return rather than reusing what it passed in.
-func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController, hubcore.WebConfig) {
+// every handler. It wires no plugin Manager of its own: cfg.PluginManager,
+// when set, is the one every plugin handler here uses (newWebServer
+// constructs and wires it, after this function returns, to the very server
+// it built); nil falls back to a fresh, unwired plugins.NewManager(cfg.PluginRoot)
+// for callers that never build a server (most tests).
+func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -504,20 +504,19 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			auth:                authController,
 		}
 	}
-	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
-	wirePluginStoreBroadcast(pluginsController.mgr, server)
-	// Offer pluginsController's own wired Manager as cfg.PluginResolveManager
-	// (hubcore.WebConfig), so hubThreadStart and hubSpawnSlashCatalog's
-	// ResolveForLaunch resolves through it instead of a second, unwired
-	// Manager — this cfg value, not a package global, so a second server
-	// built later in the same process never answers for this one. Set before
-	// registerThreadHandlers below, whose closures capture this cfg by value.
-	cfg.PluginResolveManager = func(pluginRoot string) *plugins.Manager {
-		if pluginRoot == cfg.PluginRoot {
-			return pluginsController.mgr
-		}
-		return nil
+	// cfg.PluginManager, when the caller (newWebServer) already set it, is the
+	// one Manager every plugin surface below shares: this controller,
+	// registerPluginAutoUpgradeHandlers, and — via cfg, which
+	// registerThreadHandlers below captures by value — hubThreadStart and
+	// hubSpawnSlashCatalog's ResolveForLaunch. A caller that never builds a
+	// server (most tests) leaves it nil and gets a fresh, unwired Manager
+	// here instead.
+	mgr := cfg.PluginManager
+	if mgr == nil {
+		mgr = plugins.NewManager(cfg.PluginRoot)
 	}
+	cfg.PluginManager = mgr
+	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
 	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
 		observeHubRelayFunctions(relayFunctions)
@@ -543,9 +542,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
 	registerHostAttachHandler(server, cfg, sources)
-	autoUpgradeMgr := plugins.NewManager(cfg.PluginRoot)
-	wirePluginStoreBroadcast(autoUpgradeMgr, server)
-	registerPluginAutoUpgradeHandlers(server, autoUpgradeMgr)
+	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
@@ -573,7 +570,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// sshconn EventAttached path, waking a backoff-sleeping fan-out the
 	// moment its host's fresh channel is installed.
 	hostAdmin := registerHostAdminHandlers(server.Lifetime(), server, cfg, sources)
-	return server, hostAdmin, cfg
+	return server, hostAdmin
 }
 
 func normalizedAdmissionRef(params appwire.ThreadReadParams) string {
@@ -1290,11 +1287,11 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 
 // registerPluginHandlers registers the evener/marketplace/* and evener/plugin/*
 // RPC handlers, routed to the plugins controller. Every mutation here runs
-// through pluginsController.mgr, which wirePluginStoreBroadcast (its caller)
-// already wired to broadcast evener/marketplace/updated and/or
-// evener/plugin/updated for whatever its own lockStore session actually
-// wrote — the sole notification path for this surface; no handler below
-// calls notifyMarketplaceUpdated/notifyPluginUpdated itself.
+// through pluginsController.mgr, which newWebServer wires (wirePluginStoreBroadcast)
+// to broadcast evener/marketplace/updated and/or evener/plugin/updated for
+// whatever its own lockStore session actually wrote — the sole notification
+// path for this surface; no handler below calls
+// notifyMarketplaceUpdated/notifyPluginUpdated itself.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 		return pluginsController.ListMarketplaces(ctx)
@@ -1358,9 +1355,8 @@ func notifyPluginUpdated(server hostNotificationBroadcaster) {
 // the sole path that broadcasts a plugin-store write reaching every Manager
 // this package constructs: the RPC handlers above, the auto-upgrade daemon
 // and its checkNow handler, hubSeedDefaults, hubPluginGC, and the resolver
-// path a Manager the caller wires as cfg.PluginResolveManager reaches by
-// construction, without any of them needing to call notify*/know this
-// happened.
+// path a launch reaches through cfg.PluginManager, without any of them
+// needing to call notify*/know this happened.
 //
 // server takes hostNotificationBroadcaster (app_host_admin.go), the same
 // *appserver.Server-shaped seam the host-admin fan-out tests drive with a
@@ -1375,6 +1371,18 @@ func wirePluginStoreBroadcast(mgr *plugins.Manager, server hostNotificationBroad
 			notifyPluginUpdated(server)
 		}
 	})
+}
+
+// newWiredPluginManager constructs a *plugins.Manager rooted at root and
+// wires it to broadcaster in one step, for a caller that already has a live
+// broadcaster to hand it (main_background.go's three background-maintenance
+// sites, each with web.appRPC in hand): the construct-then-wire pair
+// wirePluginStoreBroadcast's own doc comment describes, without repeating it
+// at every call site.
+func newWiredPluginManager(root string, broadcaster hostNotificationBroadcaster) *plugins.Manager {
+	mgr := plugins.NewManager(root)
+	wirePluginStoreBroadcast(mgr, broadcaster)
+	return mgr
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option
@@ -1435,7 +1443,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors()}, nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerCommandList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.CommandListResponse, error) {
-		return hubCommandList(ctx, cfg, server)
+		return hubCommandList(ctx, cfg)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSpawnSlashCatalog, func(ctx context.Context, params appwire.SpawnSlashCatalogParams) (appwire.SpawnSlashCatalogResponse, error) {
 		return hubSpawnSlashCatalog(ctx, cfg, params)
@@ -1460,10 +1468,8 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // multi-project: project commands are per-session and must never appear here.
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
-func hubCommandList(ctx context.Context, cfg hubcore.WebConfig, server hostNotificationBroadcaster) (appwire.CommandListResponse, error) {
-	mgr := plugins.NewManager(cfg.PluginRoot)
-	wirePluginStoreBroadcast(mgr, server)
-	resolution, err := mgr.ResolveForLaunch(ctx, cfg.PluginDirs, nil)
+func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
+	resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, cfg.PluginDirs, nil, cfg.PluginManager)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: listing plugins: %v\n", err)
 	}

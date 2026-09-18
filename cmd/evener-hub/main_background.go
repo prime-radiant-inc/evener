@@ -23,8 +23,7 @@ var (
 	}
 	hubPluginGC     = func(ctx context.Context, mgr *plugins.Manager) ([]string, error) { return mgr.Gc(ctx) }
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
-		mgr := plugins.NewManager("")
-		wirePluginStoreBroadcast(mgr, web.appRPC)
+		mgr := newWiredPluginManager("", web.appRPC)
 		startPluginAutoUpgradeDaemon(ctx, mgr, cfg.PluginAutoUpgradeInterval)
 	}
 )
@@ -77,8 +76,7 @@ func watchHubAttention(ctx context.Context, poke <-chan struct{}, archive *hubco
 // point of OnStoreChanged (#1634), and that only holds if nothing gets to
 // stay a documented exception.
 func seedHubMarketplaces(ctx context.Context, web *WebServer) {
-	mgr := plugins.NewManager("")
-	wirePluginStoreBroadcast(mgr, web.appRPC)
+	mgr := newWiredPluginManager("", web.appRPC)
 	if err := hubSeedDefaults(ctx, mgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] warning: seeding default marketplaces: %v\n", err)
 	}
@@ -92,8 +90,7 @@ func startHubPluginMaintenance(ctx context.Context, cfg Config, web *WebServer, 
 	// for the same reason: Gc's own lockStore acquisition can run
 	// migrateMarketplaceNames, which writes both store files finishing a
 	// rename an earlier run left half done.
-	gcMgr := plugins.NewManager("")
-	wirePluginStoreBroadcast(gcMgr, web.appRPC)
+	gcMgr := newWiredPluginManager("", web.appRPC)
 	if removed, err := hubPluginGC(ctx, gcMgr); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] plugin gc: %v\n", err)
 	} else if len(removed) > 0 {
