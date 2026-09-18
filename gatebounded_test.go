@@ -90,9 +90,9 @@ rm -rf "$dir"
 	}
 	// Bound plus the 5s TERM grace, with slack; it must not hang on the child.
 	var elapsed int
-	for _, f := range strings.Fields(got) {
-		if strings.HasPrefix(f, "elapsed=") {
-			elapsed, _ = strconv.Atoi(strings.TrimPrefix(f, "elapsed="))
+	for f := range strings.FieldsSeq(got) {
+		if v, ok := strings.CutPrefix(f, "elapsed="); ok {
+			elapsed, _ = strconv.Atoi(v)
 		}
 	}
 	if elapsed > 12 {
@@ -102,19 +102,36 @@ rm -rf "$dir"
 
 // TestStopProcessTreeEscalatesToKill pins the escalation: a child that ignores
 // TERM is KILLed after the grace, and stop_process_tree returns once the grace
-// expires rather than waiting on a process that will not die.
+// expires rather than waiting on a process that will not die. The child signals
+// readiness after installing its TERM handler, so the test cannot race the
+// install and see a plain SIGTERM death (143) instead of the KILL (137).
 func TestStopProcessTreeEscalatesToKill(t *testing.T) {
 	got := runBoundedCase(t, `
 set -uo pipefail
 . `+gateBoundedLib+`
-bash -c 'trap "" TERM; exec sleep 60' &
+dir=$(mktemp -d)
+READY="$dir/ready" bash -c 'trap "" TERM; : > "$READY"; exec sleep 60' &
 pid=$!
-sleep 0.3
+ready=no
+for _ in $(seq 1 100); do
+	[ -f "$dir/ready" ] && { ready=yes; break; }
+	sleep 0.05
+done
+if [ "$ready" != yes ]; then
+	# Kill and reap the child before giving up: it holds CombinedOutput's pipe,
+	# so leaving it alive would block this test until its 60s sleep ended.
+	kill -KILL "$pid" 2>/dev/null || :
+	wait "$pid" 2>/dev/null || :
+	rm -rf "$dir"
+	echo "child never installed its TERM handler"
+	exit 1
+fi
 start=$SECONDS
 stop_process_tree "$pid"
 elapsed=$((SECONDS - start))
 wait "$pid" 2>/dev/null
 printf 'wait_status=%s elapsed=%s\n' "$?" "$elapsed"
+rm -rf "$dir"
 `)
 	if !strings.Contains(got, "wait_status=137") {
 		t.Fatalf("stop_process_tree = %q, want the TERM-ignoring child KILLed (137)", got)
