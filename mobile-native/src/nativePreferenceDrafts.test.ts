@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
-import { nativeKeybindingDrafts } from "./nativePreferenceDrafts";
+import { nativeKeybindingDrafts, parseDraftBytes } from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
 // a discard or a rebase adopting a checkpoint replaced under them) branch on
@@ -30,22 +30,17 @@ describe("nativeKeybindingDrafts", () => {
 		expect(b.store.has("evener.native.keybinding-draft.hub")).toBe(false);
 	});
 
-	it("classifies bytes it cannot parse as an unreadable record, and clears them", () => {
-		// The real backend (NativePreferencesProvider.tsx) hands back a value
-		// it cannot parse as its RAW bytes rather than throwing, so the shared
-		// store reads it as an unreadable record (draftUnreadable) instead of a
-		// dead port.
+	// Mirrors the real backend's own get() (NativePreferencesProvider.tsx),
+	// which is Storage-backed and cannot be reached directly from this
+	// package's tests - a Map of raw bytes plus parseDraftBytes stands in for
+	// it, the same round-trip the real backend runs on stringified values.
+	function rawBytesBackend() {
 		const raw = new Map<string, string>();
 		const b = {
 			createId: () => "draft-1",
 			get: (key: string) => {
 				const value = raw.get(key);
-				if (value === undefined) return null;
-				try {
-					return JSON.parse(value);
-				} catch {
-					return value;
-				}
+				return value === undefined ? null : parseDraftBytes(value);
 			},
 			set: (key: string, value: unknown) => {
 				raw.set(key, JSON.stringify(value));
@@ -68,6 +63,14 @@ describe("nativeKeybindingDrafts", () => {
 				return true;
 			},
 		};
+		return { raw, b };
+	}
+
+	it("classifies bytes it cannot parse as an unreadable record, and clears them", () => {
+		// The real backend hands back a value it cannot parse as its RAW bytes
+		// rather than throwing, so the shared store reads it as an unreadable
+		// record (draftUnreadable) instead of a dead port.
+		const { raw, b } = rawBytesBackend();
 		const storage = nativeKeybindingDrafts("hub", b);
 		raw.set("evener.native.keybinding-draft.hub", "{not json");
 
@@ -76,6 +79,22 @@ describe("nativeKeybindingDrafts", () => {
 
 		// And removable by handing those same bytes back.
 		expect(storage.removeIf("{not json" as never)).toBe(true);
+		expect(storage.load()).toBeNull();
+	});
+
+	it("classifies a stored JSON null as an unreadable record, distinct from no record at all", () => {
+		// A stored key whose bytes parse to JSON null is a PRESENT record - the
+		// DraftPort contract treats a bare `null` as "no record", so handing
+		// that back unchanged would make this record undiscardable through the
+		// unreadable-draft recovery path.
+		const { raw, b } = rawBytesBackend();
+		const storage = nativeKeybindingDrafts("hub", b);
+		raw.set("evener.native.keybinding-draft.hub", "null");
+
+		const loaded = storage.load();
+		expect(loaded).not.toBeNull();
+
+		expect(storage.removeIf(loaded as never)).toBe(true);
 		expect(storage.load()).toBeNull();
 	});
 
@@ -97,5 +116,19 @@ describe("nativeKeybindingDrafts", () => {
 
 		expect(storage.replaceIf(checkpoint, next)).toBe(true);
 		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(next);
+	});
+});
+
+describe("parseDraftBytes", () => {
+	it("parses valid JSON", () => {
+		expect(parseDraftBytes('{"id":"d1"}')).toEqual({ id: "d1" });
+	});
+
+	it("returns bytes it cannot parse unchanged, as a present-but-unreadable record", () => {
+		expect(parseDraftBytes("{not json")).toBe("{not json");
+	});
+
+	it("returns the raw bytes for a stored JSON null, never the absent-record sentinel", () => {
+		expect(parseDraftBytes("null")).toBe("null");
 	});
 });

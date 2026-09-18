@@ -7,13 +7,21 @@ import {
 	useEffect,
 	useState,
 } from "react";
-import { discardStoredKeybindingDraft } from "@evener/appwire-client";
-import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
+import {
+	discardStoredKeybindingDraft,
+	isReadableKeybindingDraft,
+} from "@evener/appwire-client";
+import type {
+	AppwireClient,
+	DiscardStoredDraftResult,
+	TranscriptDisplayConfigV1,
+} from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
+	parseDraftBytes,
 } from "./nativePreferenceDrafts";
 import type {
 	NativePreferences,
@@ -29,10 +37,10 @@ interface Preferences {
 	/** Clears an unreadable keybindings draft record with no live model
 	 * required - the store-free path discardStoredKeybindingDraft documents
 	 * for a host with no connection to build one from (offline, or the
-	 * connection dropped after the record was shown). Returns whether
-	 * anything was actually removed; null when there is no hub to discard
-	 * for. */
-	discardUnreadableKeybindingsDraft(): boolean | null;
+	 * connection dropped after the record was shown). Returns the discard's
+	 * outcome (see DiscardStoredDraftResult); null when there is no hub to
+	 * discard for. */
+	discardUnreadableKeybindingsDraft(): DiscardStoredDraftResult | null;
 }
 const Context = createContext<Preferences | null>(null);
 /** Synchronous compare cannot interleave with a newer model's checkpoint,
@@ -48,16 +56,13 @@ const backend = {
 	createId: () => Crypto.randomUUID(),
 	get(key: string): unknown {
 		const value = Storage.getItemSync(key);
-		if (value === null) return null;
-		try {
-			return JSON.parse(value);
-		} catch {
-			// Bytes this build cannot parse are still A RECORD, and the shared
-			// store's own decoder is what classifies them: handing back the raw
-			// string makes it an unreadable RECORD (draftUnreadable, discardable)
-			// instead of a throw it can only read as a dead port.
-			return value;
-		}
+		// Bytes this build cannot use as a record - including a stored JSON
+		// null, distinct from no key at all - come back as the raw string
+		// (parseDraftBytes), so the shared store's own decoder classifies them
+		// as an unreadable RECORD (draftUnreadable, discardable) instead of
+		// either a throw it can only read as a dead port, or a silent "no
+		// record" that can never be discarded.
+		return value === null ? null : parseDraftBytes(value);
 	},
 	set(key: string, value: unknown) {
 		Storage.setItemSync(key, JSON.stringify(value));
@@ -124,30 +129,39 @@ export function NativePreferencesProvider({
 		};
 	}, [client, hubId]);
 	const selected = bound?.hubId === hubId ? bound : null;
-	const discardUnreadableKeybindingsDraft = (): boolean | null => {
+	const discardUnreadableKeybindingsDraft = (): DiscardStoredDraftResult | null => {
 		if (!hubId) return null;
-		const removed = discardStoredKeybindingDraft(nativeKeybindingDrafts(hubId, backend));
+		const outcome = discardStoredKeybindingDraft(
+			nativeKeybindingDrafts(hubId, backend),
+			isReadableKeybindingDraft,
+		);
 		// No live model to publish through (offline, or the connection
 		// dropped after the record was shown) - the stale snapshot
 		// NativePreferencesProvider otherwise keeps showing is updated here
-		// directly, same fields restoreDraft would publish on a live store.
-		if (removed)
-			setBound((previous) =>
-				previous?.hubId === hubId
-					? {
-							...previous,
-							snapshot: {
-								...previous.snapshot,
-								keybindings: {
-									...previous.snapshot.keybindings,
-									draftUnreadable: false,
-									storageUnavailable: false,
-								},
+		// directly, the same fields restoreDraft would publish on a live
+		// store. Every outcome refreshes it, not only "removed": "absent"
+		// means the record the button named is already gone, and "refused"
+		// means a concurrent writer replaced it with something this build can
+		// read - both make the stale unreadable notice (and its restore-
+		// failure error) exactly as wrong to keep showing as an actual removal
+		// does.
+		setBound((previous) =>
+			previous?.hubId === hubId
+				? {
+						...previous,
+						snapshot: {
+							...previous.snapshot,
+							keybindings: {
+								...previous.snapshot.keybindings,
+								draftUnreadable: false,
+								storageUnavailable: false,
+								error: null,
 							},
-						}
-					: previous,
-			);
-		return removed;
+						},
+					}
+				: previous,
+		);
+		return outcome;
 	};
 	return (
 		<Context.Provider

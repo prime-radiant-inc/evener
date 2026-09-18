@@ -7,6 +7,26 @@ import type {
 	TranscriptDraftStorage,
 } from "./preferenceDraftRepository";
 
+/** Parses a draft record's stored bytes the way a backend's own get() must:
+ * valid JSON decodes normally, and anything this build cannot use as a
+ * record comes back as the RAW bytes instead of throwing, so the shared
+ * store reads it as a present-but-unreadable record (draftUnreadable)
+ * rather than a dead port. That includes a stored JSON `null` - the
+ * DraftPort contract already treats a bare `null` as "no record" (see
+ * draftCheckpointPort.ts), so handing one back unparsed keeps it a PRESENT
+ * record distinct from that absent-record sentinel, and therefore
+ * discardable through the unreadable-draft recovery path instead of
+ * silently stuck. */
+export function parseDraftBytes(raw: string): unknown {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+  return parsed === null ? raw : parsed;
+}
+
 export interface NativePreferenceDraftBackend {
 	createId(): string;
 	get(key: string): unknown;

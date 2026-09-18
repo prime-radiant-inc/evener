@@ -182,18 +182,22 @@ export function KeybindingPreferencesScreen({
 							</Copy>
 							<Action
 								disabled={
-									!!domain.loading || !!domain.saving || !!domain.writeUncertain
+									model && preferences.connected
+										? !!domain.loading || !!domain.saving || !!domain.writeUncertain
+										: !!domain.saving || !!domain.writeUncertain
 								}
 								onPress={() => {
-									if (model) {
+									if (model && preferences.connected) {
 										run(() => model.discardKeybindingsDraft());
 										return;
 									}
-									// No live model (offline, or the connection dropped after
-									// this record was shown): the store-free path
-									// discardStoredKeybindingDraft documents for exactly this
-									// case, so the action still works instead of silently
-									// doing nothing.
+									// Offline, or no live model: the client object survives a
+									// dropped connection (model stays non-null while
+									// preferences.connected is false), so `run` alone cannot
+									// tell disconnected apart from never-connected - checking
+									// connectivity directly is what routes both into the
+									// store-free path discardStoredKeybindingDraft documents,
+									// instead of a dead button.
 									try {
 										preferences.discardUnreadableKeybindingsDraft();
 									} catch {
