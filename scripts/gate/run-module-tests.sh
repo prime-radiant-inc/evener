@@ -154,6 +154,17 @@ if [[ ! "$ROOT_PACKAGE_LIST_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
 	exit 2
 fi
 
+# Deriving the enumeration flags runs `go run`, which compiles evener-dev before
+# it prints anything. That is heavier than the `go list` those flags feed, so it
+# gets its own, larger bound: enough for a cold build cache on a busy host, but
+# still finite, so a stalled cache fails with the diagnostic instead of hanging
+# the gate before its own timeout can speak.
+LIST_BUILD_FLAGS_TIMEOUT=${EVENER_LIST_BUILD_FLAGS_TIMEOUT:-300}
+if [[ ! "$LIST_BUILD_FLAGS_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+	printf 'run-module-tests.sh: EVENER_LIST_BUILD_FLAGS_TIMEOUT must be a positive integer in seconds (got %q)\n' "$LIST_BUILD_FLAGS_TIMEOUT" >&2
+	exit 2
+fi
+
 # The gate's test-selection surface lives in one shared file so the coverage
 # ratchet can measure exactly what this gate proves; see gate-surface-lib.sh.
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/gate-surface-lib.sh"
@@ -281,11 +292,11 @@ logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 root_package_list_timeout_diagnostic() {
-	local what="$1" package_list_log="$2" worktree gocache gomodcache
+	local what="$1" bound="$2" package_list_log="$3" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: %s timed out after %ss.\n' "$what" "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	printf 'run-module-tests.sh: %s timed out after %ss.\n' "$what" "$bound" >&2
 	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
@@ -298,9 +309,9 @@ root_package_list_timeout_diagnostic() {
 # derive_list_flags sets list_flags to the caller's flags that the `go list`
 # enumeration also needs, one per line from evener-dev so a value with a space
 # in it survives into the array. It runs only on the enumeration paths (root and
-# sharded agent), and under the same bound as the `go list` it feeds: this
-# `go run` compiles evener-dev first, and a stalled GOCACHE/GOMODCACHE must not
-# hang the gate before its own timeout diagnostic can speak.
+# sharded agent), and under its own bound: this `go run` compiles evener-dev
+# first, and a stalled GOCACHE/GOMODCACHE must not hang the gate before its own
+# timeout diagnostic can speak.
 derive_list_flags() {
 	local module="$1" out_file err_file list_pid started_at list_status list_flag
 	out_file="$logdir/$module.list-build-flags"
@@ -309,9 +320,9 @@ derive_list_flags() {
 	list_pid="$!"
 	started_at=$SECONDS
 	while kill -0 "$list_pid" 2>/dev/null; do
-		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
+		if [ $((SECONDS - started_at)) -ge "$LIST_BUILD_FLAGS_TIMEOUT" ]; then
 			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic 'evener-dev list-build-flags' "$err_file"
+			root_package_list_timeout_diagnostic 'evener-dev list-build-flags' "$LIST_BUILD_FLAGS_TIMEOUT" "$err_file"
 			return 1
 		fi
 		sleep 0.1
@@ -339,7 +350,7 @@ run_root_package_list() {
 	while kill -0 "$list_pid" 2>/dev/null; do
 		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
 			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic 'go list ./...' "$package_list_stderr"
+			root_package_list_timeout_diagnostic 'go list ./...' "$ROOT_PACKAGE_LIST_TIMEOUT" "$package_list_stderr"
 			return 1
 		fi
 		sleep 0.1
