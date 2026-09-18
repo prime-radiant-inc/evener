@@ -1,12 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
-import { UnreadableDraftError } from "./draftCheckpointPort";
+import { discardStoredDraft as discardStoredKeybindingDraft, UnreadableDraftError } from "./draftCheckpointPort";
 import { WireError } from "./errors";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
-  discardStoredKeybindingDraft,
   fromWireOverrides,
   type KeybindingDraftCheckpoint,
   type KeybindingsStore,

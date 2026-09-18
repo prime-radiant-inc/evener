@@ -28,7 +28,7 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
-import { createDraftRepository, discardStoredDraft, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
+import { createDraftRepository, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -305,19 +305,6 @@ function cloneRules(rules: readonly KeybindingsRule[]): KeybindingsRule[] {
  * confirmed a different one. */
 function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: number): boolean {
   return draft !== null && draft.revision !== confirmedRevision;
-}
-
-// Re-exported under its own generic name too (index.ts does not re-export
-// this one under a keybindings-specific name): a later store built on
-// draftCheckpointPort.ts's shared repository reaches it the same way this
-// one does, through its own store module rather than through this one.
-export { discardStoredDraft } from "./draftCheckpointPort";
-
-/** discardStoredDraft specialized to this store's checkpoint shape: a caller
- * with no store (no connection, so no client to build one from) still gets a
- * typed port instead of the generic repository's own `<Checkpoint>`. */
-export function discardStoredKeybindingDraft(storage: KeybindingDraftStorage): boolean {
-  return discardStoredDraft(storage);
 }
 
 function invalidDraft(): never {
