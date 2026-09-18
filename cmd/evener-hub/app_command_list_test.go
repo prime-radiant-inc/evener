@@ -39,7 +39,7 @@ func TestHubCommandList_ReturnsLoadedPluginCommands(t *testing.T) {
 	pluginDir := t.TempDir()
 	writeCommandListTestPlugin(t, pluginDir, "greeter")
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{pluginDir}}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{pluginDir}})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestHubCommandList_NoPluginDirsReturnsEmpty(t *testing.T) {
 	// ~/.config/evener/plugins.
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestHubCommandList_UserGlobalWithoutPlugins(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(commandsDir, "standup.md"), []byte("standup body"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir()}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir()})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestHubCommandList_ShadowedPluginListsBoth(t *testing.T) {
 	}
 	pluginDir := t.TempDir()
 	writeCommandListTestPlugin(t, pluginDir, "greeter")
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir(), PluginDirs: []string{pluginDir}}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: t.TempDir(), PluginDirs: []string{pluginDir}})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: pluginRoot}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: pluginRoot})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -175,36 +175,23 @@ func TestHubCommandList_IncludesRegistryEnabledPlugin(t *testing.T) {
 	}
 }
 
-// TestHubCommandList_MigratesALegacyNameAndBroadcasts is issue #1734's own
-// case, folded into this PR: hubCommandList's Manager is unwired no longer.
-// ResolveForLaunch -> resolveForLaunch -> List takes the store lock to renamed
-// a marketplace recorded under a name evener refuses today, which writes both
-// store files (saveRename) — a write a command-list request can trigger with
-// no mutation RPC involved at all, and one that broadcast nothing before this
-// fix.
+// TestHubCommandList_MigratesALegacyNameAndBroadcasts proves hubCommandList's
+// Manager broadcasts even when no mutation RPC is involved: ResolveForLaunch
+// -> resolveForLaunch -> List takes the store lock to rename a marketplace
+// recorded under a name evener refuses today, which writes both store files
+// (saveRename).
 func TestHubCommandList_MigratesALegacyNameAndBroadcasts(t *testing.T) {
 	pluginRoot := t.TempDir()
 	mgr := plugins.NewManager(pluginRoot)
 	plantRefusedMarketplace(t, mgr, "foo@bar")
 
 	broadcaster := newRecordingBroadcaster()
-	if _, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginRoot: pluginRoot}, broadcaster); err != nil {
+	wirePluginStoreBroadcast(mgr, broadcaster)
+	cfg := hubcore.WebConfig{PluginRoot: pluginRoot, PluginManager: mgr}
+	if _, err := hubCommandList(context.Background(), cfg); err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
-	got := broadcaster.broadcasts()
-	foundMarketplace, foundPlugin := false, false
-	for _, b := range got {
-		switch b.method {
-		case appwire.NotifyEvenerMarketplaceUpdated:
-			foundMarketplace = true
-		case appwire.NotifyEvenerPluginUpdated:
-			foundPlugin = true
-		}
-	}
-	if !foundMarketplace || !foundPlugin {
-		t.Fatalf("broadcasts = %+v, want both %s and %s (the migration's saveRename writes both files)",
-			got, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
-	}
+	assertBroadcastMethods(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
 }
 
 func TestHubCommandList_MultiplePluginsSortedByName(t *testing.T) {
@@ -229,7 +216,7 @@ func TestHubCommandList_MultiplePluginsSortedByName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{dirA, dirB}}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{dirA, dirB}})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v", err)
 	}
@@ -252,7 +239,7 @@ func TestHubCommandList_BrokenPluginDirDoesNotBrickCatalog(t *testing.T) {
 	healthyDir := t.TempDir()
 	writeCommandListTestPlugin(t, healthyDir, "greeter")
 
-	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{brokenDir, healthyDir}}, newRecordingBroadcaster())
+	resp, err := hubCommandList(context.Background(), hubcore.WebConfig{PluginDirs: []string{brokenDir, healthyDir}})
 	if err != nil {
 		t.Fatalf("hubCommandList: %v, want the broken dir skipped rather than aborting the whole catalog", err)
 	}
