@@ -77,6 +77,7 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 			forbids("artifactId", "expectedSourceRevision", "expectedStateVersion"),
 			{Required: []string{"artifactId", "expectedSourceRevision", "expectedStateVersion"}, Not: &jsonschema.Schema{Required: []string{"initialState"}}},
 		}
+		schema.Properties["html"].MinLength = new(1)
 		schema.Properties["format"].Default = json.RawMessage(`"html"`)
 		schema.Properties["formatVersion"].Default = json.RawMessage(`1`)
 		schema.Properties["initialState"].Default = json.RawMessage(`{}`)
@@ -176,10 +177,31 @@ func Tools() ([]*mcp.Tool, error) {
 // ParseRequest rejects lossy/ambiguous input before typed decoding. Model mode
 // applies the trusted adapter's projection; it is not an authorization grant.
 // Call Fingerprint on the original bytes before using the returned defaults.
-func ParseRequest(tool string, data []byte, model bool) (any, error) {
+func ParseRequest(tool string, data []byte, model bool) (result any, resultErr error) {
+	mutation := tool == "artifact_publish" || tool == "artifact_save_state"
+	if mutation {
+		defer func() {
+			var domain *DomainError
+			if resultErr != nil && !errors.As(resultErr, &domain) {
+				code := InvalidSource
+				if tool == "artifact_save_state" {
+					code = InvalidState
+				}
+				resultErr = &DomainError{Code: code}
+			}
+		}()
+		if len(data) > MaxRequestBytes {
+			return nil, &DomainError{Code: TooLarge}
+		}
+	}
 	value, err := ParseJSON(data, MaxRequestBytes)
 	if err != nil {
 		return nil, err
+	}
+	if mutation {
+		if err := validateMutationFields(tool, value); err != nil {
+			return nil, err
+		}
 	}
 	if err := validateNumbers(value); err != nil {
 		return nil, err
@@ -337,4 +359,46 @@ func schemaInstance(value any) any {
 	default:
 		return value
 	}
+}
+
+// validateMutationFields classifies semantic errors from parsed fields before
+// schema validation. It never depends on a validator's human error wording.
+func validateMutationFields(tool string, value any) error {
+	fields, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	} // The schema rejects nonobjects.
+	stateField := "state"
+	if tool == "artifact_publish" {
+		stateField = "initialState"
+		if format, present := fields["format"]; present && format != "html" {
+			return &DomainError{Code: UnsupportedFormat}
+		}
+		if version, present := fields["formatVersion"]; present {
+			number, ok := version.(json.Number)
+			if !ok {
+				return &DomainError{Code: UnsupportedFormat}
+			}
+			n, integer, safe := exactSafeInteger(string(number))
+			if !integer || !safe || n != 1 {
+				return &DomainError{Code: UnsupportedFormat}
+			}
+		}
+		if source, ok := fields["html"].(string); ok && len(source) > MaxSourceBytes {
+			return &DomainError{Code: TooLarge}
+		}
+	}
+	if state, present := fields[stateField]; present {
+		raw, err := CanonicalJSON(state)
+		if err != nil {
+			return &DomainError{Code: InvalidState}
+		}
+		if len(raw) > MaxStateBytes {
+			return &DomainError{Code: TooLarge}
+		}
+		if _, err := ValidateState(raw); err != nil {
+			return &DomainError{Code: InvalidState}
+		}
+	}
+	return nil
 }
