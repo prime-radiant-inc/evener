@@ -16,11 +16,21 @@ import { fileURLToPath } from "node:url";
 
 const script = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk/rewrite-package-imports.mjs");
 
-// A minimal repo-shaped tree: the package with one root export and one
-// docContent export, plus whatever consumer files the case needs.
+// A minimal repo-shaped tree: the package with one root export, one
+// docContent export and one state subpath, plus whatever consumer files the
+// case needs. The exports map is what the rewriter reads its subpaths from, so
+// the fixture carries one exactly as the real package does.
 function fixture(files) {
   const root = mkdtempSync(path.join(os.tmpdir(), "evener-rewrite-imports-"));
   const written = {
+    "appwire-client/typescript/package.json": JSON.stringify({
+      name: "@evener/appwire-client",
+      exports: {
+        ".": { types: "./dist/index.d.ts" },
+        "./docContent": { types: "./dist/docContent.d.ts" },
+        "./state/navigation": { types: "./dist/state/navigation/index.d.ts" },
+      },
+    }),
     "appwire-client/typescript/index.ts":
       'export { errorText } from "./errors";\nexport { alpha, beta, Thing } from "./model";\n',
     "appwire-client/typescript/errors.ts":
@@ -30,6 +40,7 @@ function fixture(files) {
     "appwire-client/typescript/model.ts":
       "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
     "appwire-client/typescript/docContent.ts": "export function docImageURL() {\n  return '';\n}\n",
+    "appwire-client/typescript/state/navigation/index.ts": "export function parseRoute() {\n  return '';\n}\n",
     "appwire-client/typescript/testing/fakeClient.ts": "export class FakeClient {}\n",
     ...files,
   };
@@ -186,6 +197,42 @@ test("a namespace import of the one published subpath is rewritten", () => {
     assert.match(
       readFileSync(path.join(root, "mobile/src/state.ts"), "utf8"),
       /from "@evener\/appwire-client\/docContent"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a state subpath added to the exports map is rewritten without a code edit", () => {
+  // The rewriter hard-coded docContent as the only subpath, so a symbol only
+  // the state/navigation subpath publishes read as a missing root export and
+  // the whole run refused. The subpaths come from the exports map instead.
+  const root = fixture({
+    "mobile/src/route.ts":
+      'import { parseRoute } from "../../appwire-client/typescript/state/navigation";\nparseRoute();\n',
+  });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 0, run.output);
+    assert.match(
+      readFileSync(path.join(root, "mobile/src/route.ts"), "utf8"),
+      /from "@evener\/appwire-client\/state\/navigation"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a whole-module import of a published state subpath is rewritten to that subpath", () => {
+  const root = fixture({
+    "mobile/src/route.ts": 'import * as nav from "../../appwire-client/typescript/state/navigation";\nvoid nav;\n',
+  });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 0, run.output);
+    assert.match(
+      readFileSync(path.join(root, "mobile/src/route.ts"), "utf8"),
+      /from "@evener\/appwire-client\/state\/navigation"/,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
