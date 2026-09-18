@@ -323,7 +323,14 @@ func (m *Manager) recoverMarkedRename() error {
 				return fail(err)
 			}
 		}
-		return fail(errors.Join(err, undoErr))
+		if undoErr != nil {
+			// restoreRename's own text names this machine's absolute
+			// plugin-store path directly, unlike err, which saveRename has
+			// already scrubbed - so only err (with whatever identity it
+			// carries) goes to the caller, and undoErr goes to the log.
+			_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: rolling back its rename also failed: %v\n", marker.From, undoErr)
+		}
+		return fail(err)
 	}
 	m.removeRenameMarker()
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q was being renamed to %q when an earlier run stopped; finished the rename\n", marker.From, marker.To)
@@ -979,7 +986,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 	var undo []func() error
 	if itsOwn {
 		if ref, reg, undo, err = m.moveMarketplace(name, newName, ref, reg, owners); err != nil {
-			return registryAsFound, m.markerAfterFailedMove(err)
+			return registryAsFound, m.markerAfterFailedMove(name, err)
 		}
 	} else {
 		// An entry whose directories another marketplace owns leaves that
@@ -993,7 +1000,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 		if owner == "" {
 			reg = rekeyRegistry(reg, owners, name, newName, "", "")
 		} else if reg, undo, err = m.movePluginCachesToNewName(reg, name, newName, owners); err != nil {
-			return registryAsFound, m.markerAfterFailedMove(err)
+			return registryAsFound, m.markerAfterFailedMove(name, err)
 		}
 	}
 	if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
@@ -1008,24 +1015,36 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 			m.removeRenameMarker()
 			return registryAsFound, err
 		}
-		return registryAsFound, errors.Join(err, undoErr, m.markerLeftForRecovery("rename"))
+		if undoErr != nil {
+			// restoreRename's own text names this machine's absolute
+			// plugin-store path directly, unlike err, which saveRename has
+			// already scrubbed - so only err goes to the caller, joined with
+			// the marker's own already-scrubbed markerLeftForRecovery.
+			_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: rolling back its rename also failed: %v\n", name, undoErr)
+		}
+		return registryAsFound, errors.Join(err, m.markerLeftForRecovery("rename"))
 	}
 	m.removeRenameMarker()
 	return reg, nil
 }
 
-// markerAfterFailedMove decides the marker's fate after one of the move helpers
-// failed. A helper that put every directory back (no
-// errRenameRollbackIncomplete) leaves the store at the old name with nothing to
-// resume, so the marker goes and the failure is reported as it stands; one that
-// could not leaves the store between the two names, which is what the marker is
-// for, so it stays and the error names it for the next lock holder.
-func (m *Manager) markerAfterFailedMove(err error) error {
+// markerAfterFailedMove decides the marker's fate after one of the move
+// helpers failed, then scrubs err before it reaches the caller: moveMarketplace
+// and movePluginCachesToNewName's own rename and restoreRename failures name
+// this machine's absolute plugin-store path directly, whether or not their
+// own rollback also failed. A helper that put every directory back (no
+// errRenameRollbackIncomplete) leaves the store at the old name with nothing
+// to resume, so the marker goes; one that could not leaves the store between
+// the two names, which is what the marker is for, so it stays and the
+// scrubbed error keeps that identity through %w for markerLeftForRecovery's
+// caller to report.
+func (m *Manager) markerAfterFailedMove(name string, err error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: moving its directories failed: %v\n", name, err)
 	if errors.Is(err, errRenameRollbackIncomplete) {
-		return errors.Join(err, m.markerLeftForRecovery("rename"))
+		return errors.Join(fmt.Errorf("marketplace %q: moving its directories failed; see the hub's log for detail: %w", name, errRenameRollbackIncomplete), m.markerLeftForRecovery("rename"))
 	}
 	m.removeRenameMarker()
-	return err
+	return fmt.Errorf("marketplace %q: moving its directories failed; see the hub's log for detail", name)
 }
 
 // dirsUnder reports whether either directory a name derives is in the store. A
