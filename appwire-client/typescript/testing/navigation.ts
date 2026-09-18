@@ -1,9 +1,8 @@
 // Navigation wire fixtures for both apps' tests and dev previews: builders for
-// the capability, manifest and session-summary shapes, and the wireV2 converter.
+// the capability and manifest shapes, and the wireV2 converter.
 import {
   NAVIGATION_CATALOG_LIMIT,
   NAVIGATION_SECTION_LIMIT,
-  type NavigationResponse,
   navigationOwnedContainerKey,
   navigationParamsToResourceKey,
   navigationRootContainerKey,
@@ -15,7 +14,6 @@ import type {
   NavigationManifest,
   NavigationReadParams,
   NavigationReadResponse,
-  NavigationSessionSummary,
   NavigationSnapshot,
 } from "../types.gen";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({
@@ -24,12 +22,6 @@ export const capability = (generationId = "generation_test", version = 1): Navig
   sequence: 0,
   readVersions: [2],
 });
-export const response = <T>(
-  data: T,
-  generationID = "generation_test",
-  revision = 1,
-  etag = '"test"',
-): NavigationResponse<T> => ({ status: 200, generationID, revision, etag, data });
 export const manifest = (overrides: Partial<NavigationManifest> = {}): NavigationManifest => ({
   generation_id: "generation_test",
   revision: 1,
@@ -39,7 +31,6 @@ export const manifest = (overrides: Partial<NavigationManifest> = {}): Navigatio
   catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   ...overrides,
 });
-export const key = (_kind: ResourceKey["kind"]): ResourceKey => ({ kind: "manifest" }) as ResourceKey;
 
 /** Complete a session fixture with the defaults the store validators require. */
 export const completeSession = (value: Record<string, unknown>): Record<string, unknown> => ({
@@ -332,27 +323,3 @@ export const reconnectV2Response = (params: NavigationReadParams): NavigationRea
     };
   throw new Error(`unexpected reconnect resource ${params.resource}`);
 };
-
-/** Build a NavigationSessionSummary fixture. */
-export function sessionSummary(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
-  return {
-    ref: "local:test",
-    host_id: "local",
-    session_id: "test",
-    title: "test session",
-    project: "test",
-    state: "idle",
-    kind: "session",
-    live: false,
-    children: [],
-    ...overrides,
-  };
-}
-
-/** JSON response helper for fetch mocks. */
-export function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json", etag: '"test"' },
-  });
-}
