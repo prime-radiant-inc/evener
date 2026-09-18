@@ -772,7 +772,7 @@ export function ToolRow({
   // A summary-less row has no summary line at all, so its body trigger always
   // rides the intent line - folded or open - or the reader could not reach
   // the body (#1253).
-  const bodyTriggerOnSummaryLine = twoLevel && summaryOpen && summaryTextPresent;
+  const bodyTriggerOnSummaryLine = summaryToggle && summaryOpen;
   const bodyTriggerOnIntentLine = twoLevel && !bodyTriggerOnSummaryLine && (summaryTextPresent ? expanded : true);
   // The inline slot exists only when there is summary text to carry the
   // chevron; a summary-less line keeps the chevron inside the button.
