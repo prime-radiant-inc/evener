@@ -1238,14 +1238,7 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 		return instanceWrite(func() error { return instancesController.SetModelDisabled(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		resp, err := instancesController.RefreshModels(ctx, params)
-		if writeDidApply(err) {
-			notifyInstanceUpdated(server)
-		}
-		if err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		return resp, nil
+		return instanceWrite(func() error { return instancesController.RefreshModels(ctx, params) })
 	})
 }
 

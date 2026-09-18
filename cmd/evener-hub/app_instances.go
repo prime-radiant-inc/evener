@@ -1479,19 +1479,16 @@ func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEn
 // it stays available while writes are refused. A failed fetch is an error,
 // not a catalog-only list — the sheet keeps its catalog rows and toasts
 // the failure.
-func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) error {
 	reg := c.reg.Get()
 	if reg == nil {
-		return appwire.InstanceListResponse{}, errors.New("providers.toml cannot be read: the provider registry has not loaded")
+		return errors.New("providers.toml cannot be read: the provider registry has not loaded")
 	}
 	name := strings.TrimSpace(params.Name)
 	if _, ok := reg.Instance(name); !ok {
-		return appwire.InstanceListResponse{}, appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
+		return appwire.InvalidParams(fmt.Sprintf("instance %q not found", name))
 	}
-	if err := fetchInstanceLive(ctx, c.reg, name); err != nil {
-		return appwire.InstanceListResponse{}, err
-	}
-	return c.List(), nil
+	return fetchInstanceLive(ctx, c.reg, name)
 }
 
 // writeAndReload persists a mutated layer and reloads the registry: the
