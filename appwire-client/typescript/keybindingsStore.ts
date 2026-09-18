@@ -601,6 +601,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * dispatches immediately (its synchronous prefix runs this tick); a write
    * that finds one chains behind the chain's full settlement. */
   let pendingWrites = 0;
+  /** Bumped by reset(). A write abandoned mid-flight must not decrement the
+   * fresh counter when it settles, so its queue entry remembers the epoch it
+   * was created under. */
+  let writeEpoch = 0;
 
   /** Serializes one write behind the previous write's full settlement (success
    * OR failure): a failed write must not block the queue, and the next write
@@ -608,16 +612,27 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * queue idle starts now, preserving the synchronous dispatch each write path
    * had before the queue was shared. */
   function enqueueWrite<T>(run: () => Promise<T>): Promise<T> {
-    const queued = pendingWrites === 0 ? run() : writeQueue.then(run, run);
+    const epoch = writeEpoch;
+    const idle = pendingWrites === 0;
+    // Count this write BEFORE dispatching so a reentrant enqueue from run()'s
+    // synchronous prefix sees the queue busy, and install its queue entry
+    // before dispatch so the reentrant write chains behind THIS one rather
+    // than racing it.
     pendingWrites += 1;
-    writeQueue = queued.then(
-      () => {
-        pendingWrites -= 1;
-      },
-      () => {
-        pendingWrites -= 1;
-      },
-    );
+    const previous = writeQueue;
+    let releaseTail!: () => void;
+    writeQueue = new Promise<void>((resolve) => {
+      releaseTail = resolve;
+    });
+    const queued = idle ? run() : previous.then(run, run);
+    const settle = () => {
+      // A reset() since this write began already zeroed the counter; its
+      // settlement must not drive a fresh epoch's counter negative.
+      if (epoch !== writeEpoch) return;
+      pendingWrites -= 1;
+      releaseTail();
+    };
+    queued.then(settle, settle);
     return queued;
   }
 
@@ -1041,7 +1056,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // so a write QUEUED while supported can reach this point, as can one
       // composed while unsupported. Both throw without hubError.
       if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
-      if (state.hubSupport !== "supported" || state.loaded !== true || state.hubLoading) {
+      if (
+        state.hubSupport !== "supported" ||
+        state.loaded !== true ||
+        state.hubLoading ||
+        // A checkpointed save owns the write token (in flight, or queued
+        // behind this write) or left its outcome unknown: a direct write must
+        // not start against a state whose write it would race, nor bypass the
+        // authoritative read that an uncertain outcome requires (issue #1801).
+        state.saving ||
+        state.writeUncertain
+      ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
         // is not the store's contract, and a patch composed from a STALE
         // generation's raw set (client replaced, refresh not yet landed) would
@@ -1176,17 +1201,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // guard would have, one tick later.
       throw new Error("Shortcut save was cancelled.");
     }
-    if (
-      state.storageUnavailable ||
-      state.writeUncertain ||
-      state.hubSupport !== "supported" ||
-      !state.loaded ||
-      state.loadError !== null ||
-      revision !== state.revision
-    ) {
-      // The intent is stale. Nothing left the device, so settle the checkpoint
-      // and keep the draft for review rather than sending a PATCH composed
-      // against a revision the hub no longer has.
+    if (revision !== state.revision) {
+      // The draft was composed against a revision the hub no longer has: the
+      // same draftConflict the live editor reports. Nothing left the device,
+      // so the checkpoint is settled and the draft stays for review.
       try {
         persistDraft({ ...checkpoint, writeUncertain: false });
       } catch {
@@ -1194,6 +1212,28 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       }
       setState({ saving: false, draftConflict: true, draftError: null });
       throw new Error("The shortcuts changed before your save could run. Review the current values.");
+    }
+    if (
+      state.storageUnavailable ||
+      state.writeUncertain ||
+      state.hubSupport !== "supported" ||
+      !state.loaded ||
+      state.loadError !== null
+    ) {
+      // The hub is no longer writable. This is the same unavailable refusal
+      // assertEditable gives, NOT a draft conflict. The draft's own durable
+      // uncertainty is left untouched: nothing left the device, so a
+      // checkpoint this save wrote is settled, but an outcome that is already
+      // unknown is not silently cleared.
+      if (!state.writeUncertain) {
+        try {
+          persistDraft({ ...checkpoint, writeUncertain: false });
+        } catch {
+          // persistDraft has already published storageUnavailable/draftError.
+        }
+      }
+      setState({ saving: false, draftError: null });
+      throw new Error(UNAVAILABLE_MESSAGE);
     }
     const token = fence.claimWrite();
     const generation = fence.generation;
@@ -1310,6 +1350,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       unapplyRolledBack = false;
       writeQueue = Promise.resolve();
       pendingWrites = 0;
+      writeEpoch += 1;
       // Restore defaults for every applied override so the registry cannot
       // leak overrides into the next test (the next test rebuilds the
       // registry from scratch, which removes any binding a wedged restore left).

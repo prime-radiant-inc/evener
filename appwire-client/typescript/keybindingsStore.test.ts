@@ -645,6 +645,76 @@ describe("the two write paths serialize through one queue", () => {
     });
     expect(drafts.stored()).toBeNull();
   });
+
+  test("a direct PATCH queued behind a save that loses its reply does not dispatch", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const save = store.getState().saveDraft(proposed);
+    await vi.waitFor(() => expect(callsTo(client, patchMethod)).toBe(1));
+    const patch = store.getState().patchOverrides([applied]);
+    expect(callsTo(client, patchMethod)).toBe(1);
+
+    settlements[0]!.reject(new Error("lost reply"));
+    await expect(save).rejects.toThrow();
+    // The save left its outcome unknown; the queued direct write must not
+    // dispatch and bypass the authoritative read that uncertainty requires.
+    await expect(patch).rejects.toThrow();
+    expect(callsTo(client, patchMethod)).toBe(1);
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true });
+  });
+
+  test("a compose thunk that starts another write does not dispatch it concurrently", async () => {
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    let nested: Promise<KeybindingsOverrides> | null = null;
+    const outer = store.getState().patchOverrides(() => {
+      nested = store.getState().patchOverrides([applied]);
+      return [applied];
+    });
+    // The nested write was created from the outer write's synchronous prefix:
+    // it must queue behind the outer write, not go on the wire beside it.
+    expect(callsTo(client, patchMethod)).toBe(1);
+
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    settlements[0]!.resolve(payload(4, [applied]));
+    await expect(outer).resolves.toMatchObject({ revision: 4 });
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    settlements[1]!.resolve(payload(5, [applied]));
+    await expect(nested!).resolves.toBeDefined();
+  });
+
+  test("reset during an in-flight write does not corrupt the write queue", async () => {
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    const abandoned = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(callsTo(client, patchMethod)).toBe(1));
+
+    store.reset();
+    settlements[0]!.resolve(payload(4, [applied]));
+    await abandoned.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    store.setSupport("supported");
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+
+    // The abandoned write's settlement must not have driven the fresh counter
+    // negative: an idle write still dispatches on the calling tick.
+    const next = store.getState().patchOverrides([applied]);
+    expect(callsTo(client, patchMethod)).toBe(2);
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    settlements[1]!.resolve(payload(5, [applied]));
+    await expect(next).resolves.toMatchObject({ revision: 5 });
+  });
 });
 
 describe("payload rules shared by both apps", () => {
