@@ -78,6 +78,16 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
+export type {
+  DiscardedDraftFields,
+  DraftDiscardableFields,
+  PersistedDraftFields,
+} from "./checkpointedDraftEditor";
+export {
+  assertDraftDiscardable,
+  discardCheckpointedDraft,
+  persistCheckpointedDraft,
+} from "./checkpointedDraftEditor";
 export type { AnyNotification, AppwireClientOptions, ConnectionState, TerminalReason } from "./client";
 export { APPWIRE_PROTOCOL_VERSION, AppwireClient } from "./client";
 export type { AppwireClientLike } from "./clientLike";
