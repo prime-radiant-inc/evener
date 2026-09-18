@@ -1,6 +1,7 @@
 import {
   awaitingFirstFrameSend,
   blockedEntries,
+  submitWithPendingTracking as coreSubmitWithPendingTracking,
   createMutationProjectionFence,
   createMutationProjectionWorkTracker,
   createPendingTurnsStore,
@@ -172,71 +173,47 @@ export function useComposerSubmitting(ref: string): boolean {
 }
 
 // The action resolves at the local IndexedDB commit boundary. Durable state,
-// not a component timer or text echo, is the only optimistic lifecycle.
-//
-// Registered with trackProjectionWork for its whole duration, not just for the
-// refresh it ends with. Every other durable path here is tracked from the call
-// that starts it; this one used to register nothing until `perform` had already
-// resolved, which left a window where a settle round found the set empty and
-// reported the projection settled while a send was still in flight (kata 3p22).
-// Tracking from the click is what makes one zero round genuine proof.
+// not a component timer or text echo, is the only optimistic lifecycle. The
+// begin/epoch-guard/settle-draft/end/refresh sequencing lives in the
+// package's submission lifecycle (state/mutation/submission.ts); this binds
+// it to the browser's projection tracker and fence, and turns what it
+// decided into this file's own composer-submission notification (the
+// recovery tray, the draft UI) - neither of which the package names.
 export function submitWithPendingTracking(
   opts: SubmitWithPendingTrackingOptions,
   perform: () => Promise<void>,
 ): Promise<void> {
-  if (!pendingTurnsStore.beginSubmission(opts.ref)) {
-    return Promise.reject(new Error("A message submission is already pending for this task"));
-  }
-  const epoch = projectionFence.epoch();
-  const draftRevisionAtStart = readDraftRevision(opts.ref);
-  return trackProjectionWork(
-    (async () => {
-      try {
+  const skillNames = [...(opts.skillNames ?? [])];
+  return coreSubmitWithPendingTracking(
+    pendingTurnsStore,
+    projectionFence,
+    trackProjectionWork,
+    {
+      ref: opts.ref,
+      draftRevisionAtStart: readDraftRevision(opts.ref),
+      text: opts.text,
+      skillNames,
+      onFailure: opts.onFailure,
+    },
+    perform,
+    (ref) => void refreshPendingTurnsProjection(ref),
+    ({ clearedDraft, draftUnchanged }) => {
+      if (!clearedDraft && !opts.recoveryId) return;
+      for (const listener of submissionCommittedListeners) {
         try {
-          await perform();
-        } catch (error) {
-          opts.onFailure(error);
-          throw error;
-        }
-        // Submission ownership outlives a mounted composer. A retired mount
-        // must not clear a newer draft written after a tab switch.
-        if (epoch === projectionFence.epoch()) {
-          const skillNames = [...(opts.skillNames ?? [])];
-          const { cleared: clearStoredDraft, draftUnchanged } = pendingTurnsStore.settleSubmittedDraft(opts.ref, {
-            draftRevisionAtStart,
-            text: opts.text,
+          listener(
+            opts.ref,
+            opts.text,
             skillNames,
-          });
-          if (clearStoredDraft || opts.recoveryId) {
-            for (const listener of submissionCommittedListeners) {
-              try {
-                listener(
-                  opts.ref,
-                  opts.text,
-                  skillNames,
-                  opts.recoveryId
-                    ? {
-                        clientMutationId: opts.recoveryId,
-                        draftUnchanged,
-                        attachments: opts.attachments ?? [],
-                      }
-                    : undefined,
-                );
-              } catch (error) {
-                console.error("Composer submission listener failed", error);
-              }
-            }
-          }
+            opts.recoveryId
+              ? { clientMutationId: opts.recoveryId, draftUnchanged, attachments: opts.attachments ?? [] }
+              : undefined,
+          );
+        } catch (error) {
+          console.error("Composer submission listener failed", error);
         }
-      } finally {
-        if (epoch === projectionFence.epoch()) {
-          pendingTurnsStore.endSubmission(opts.ref);
-        }
-        // Projection reads own their tracking, but cannot delay or change the
-        // result of a submission whose durable outcome is already known.
-        void refreshPendingTurnsProjection(opts.ref);
       }
-    })(),
+    },
   );
 }
 

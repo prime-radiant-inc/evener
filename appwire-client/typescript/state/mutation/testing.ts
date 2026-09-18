@@ -6,7 +6,7 @@
 // same shapes.
 
 import type { ThreadModel } from "../../model";
-import { createPendingTurnsStore, type PendingTurnsStore } from "./pendingTurns";
+import { createPendingTurnsStore, type PendingTurnsStore, type PendingTurnsStoreDeps } from "./pendingTurns";
 import type { MutationOutboxRecord, MutationRecoveryRecord } from "./records";
 
 export function threadModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
@@ -69,8 +69,10 @@ export function recoveryRecord(overrides: Partial<MutationRecoveryRecord> = {}):
 // A pending-turns store wired to no-op threads/draft ports and an
 // always-own identity - what a test needs when it exercises the store's own
 // state (recordSubmittedHere, setState) without reading a live thread model
-// or composer draft storage.
-export function testPendingTurnsStore(): PendingTurnsStore {
+// or composer draft storage. `overrides` replaces one dependency wholesale
+// (there is nothing to merge field-by-field within a port), for a test that
+// needs a specific draft or identity behaviour instead of the no-op default.
+export function testPendingTurnsStore(overrides: Partial<PendingTurnsStoreDeps> = {}): PendingTurnsStore {
   return createPendingTurnsStore({
     threads: { getThreadModel: () => undefined },
     draft: {
@@ -79,5 +81,6 @@ export function testPendingTurnsStore(): PendingTurnsStore {
       clearDraft: () => undefined,
     },
     identity: { isOwnMutationRecord: () => true },
+    ...overrides,
   });
 }
