@@ -28,8 +28,13 @@ import {
   readLegacyPreference,
   readTranscriptDisplayLocal,
 } from "./prefs";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
+// This store's own guard: keybindings.ts wires the same connectionStore
+// client through its own instance, so the two never contend over one shared
+// registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
 const LOCAL_KEYS: Record<ViewportClass, string> = {
   desktop: "evener.prefs.transcriptDisplay.desktop",
@@ -422,10 +427,16 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   unwireReady = null;
   wiredClient = client;
-  unwireReady = client.onReady(() => {
-    const epoch = beginReadyGeneration(client);
-    void refreshFor(client, epoch);
-  });
+  unwireReady = client.onReady(
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        const epoch = beginReadyGeneration(client);
+        void refreshFor(client, epoch);
+      },
+    ),
+  );
   if (client.state === "ready") {
     const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);

@@ -35,6 +35,7 @@ import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./keybindingOverrides";
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
 import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
+import { createReadyGenerationFence } from "./readyGenerationFence";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -574,14 +575,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       : registryReconciler(deps.registry, deps.characterKeyTriggers ?? (() => true));
   const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
 
-  // Ready-generation wiring. `activeEpoch` is -1 while no generation is
-  // active; every refresh, write and notification captures the epoch it
-  // started under and lands only while that epoch is still the active one.
-  let epoch = 0;
-  let activeEpoch = -1;
+  // Ready-generation wiring: every refresh, write and notification captures
+  // the generation it started under and lands only through the shared fence.
+  const fence = createReadyGenerationFence(isSupported);
   let unwireNotification: (() => void) | null = null;
-  let disposed = false;
-  let refreshSerial = 0;
   /** Set when an un-apply rolled back against a wedged registry (findings 31
    * and 32): the overrides are STILL firing, so the rollback hubError is not
    * stale and refreshFor's entry clear must not wipe it. Cleared by the next
@@ -599,11 +596,6 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * rest of the wiring state so a never-resolving write cannot leak into the
    * next test. */
   let writeQueue: Promise<void> = Promise.resolve();
-  /** Bumps when any write leaves (a direct PATCH or a checkpointed one). A
-   * reply is a write's own only while no later write has left, and a GET
-   * that started BEFORE a write says nothing about that write's outcome, so
-   * only a read that started after it may settle `writeUncertain`. */
-  let writeSerial = 0;
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
     ...initialState(),
@@ -639,31 +631,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     }
   }
 
-  function isCurrent(generation: number): boolean {
-    return !disposed && generation >= 0 && activeEpoch === generation;
-  }
-
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
-  }
-
-  /** The hub a piece of work started against is still the one being acted
-   * on: its ready generation is current and support is still advertised.
-   * Every post-await site fences through one of the two predicates below. */
-  function liveHub(generation: number): boolean {
-    return isCurrent(generation) && isSupported();
-  }
-
-  /** A read's reply is its own to land: live hub, and no later read or
-   * payload retirement has superseded it. */
-  function readStillMine(generation: number, serial: number): boolean {
-    return liveHub(generation) && serial === refreshSerial;
-  }
-
-  /** A write's reply is its own to land: live hub, and no later write or
-   * payload retirement has superseded it. */
-  function writeStillMine(generation: number, token: number): boolean {
-    return liveHub(generation) && token === writeSerial;
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
@@ -675,8 +644,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * `extra` is the site's own addition (payload arrays, hubError) in the
    * same publish. */
   function retirePayload(extra: Partial<KeybindingsStoreFields> = {}): void {
-    refreshSerial += 1;
-    writeSerial += 1;
+    fence.supersede();
     const state = getState();
     setState({
       loaded: false,
@@ -747,8 +715,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function endReadyGeneration(): void {
-    activeEpoch = -1;
-    epoch += 1;
+    fence.end();
     unwireNotification?.();
     unwireNotification = null;
     // The ready generation that confirmed the loaded state just ended; nothing
@@ -763,13 +730,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function beginReadyGeneration(): void {
-    if (disposed) return;
-    activeEpoch = ++epoch;
+    const generation = fence.begin();
+    if (generation < 0) return;
     missedChangeNotification = false;
-    const generation = activeEpoch;
     unwireNotification?.();
     unwireNotification = client.onNotification((notification) => {
-      if (!isCurrent(generation)) return;
+      if (!fence.isCurrent(generation)) return;
       onNotification(notification);
     });
   }
@@ -794,13 +760,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // the unsupported window itself, and refreshFor's entry guard refuses
       // to run while unsupported.
       if (state.hubSupport === support) return;
-      if (state.hubSupport === "unsupported" && activeEpoch >= 0) beginReadyGeneration();
+      if (state.hubSupport === "unsupported" && fence.generation >= 0) beginReadyGeneration();
       setState({ hubSupport: support });
       // The transition INTO supported with a ready generation active is the
       // load trigger - from unknown (the handshake's features resolving after
       // the client was ready) as much as from unsupported. Before the
       // generation exists the host's first refresh loads.
-      if (activeEpoch >= 0) void refreshFor(activeEpoch);
+      if (fence.generation >= 0) void refreshFor(fence.generation);
       return;
     }
     let unrestored = false;
@@ -893,7 +859,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // The hub says something changed and this build cannot read what: the
       // change is not dropped, the store reads the truth itself. Auto-refresh
       // is what both hosts do here - never a "refresh to inspect" prompt.
-      void refreshFor(activeEpoch);
+      void refreshFor(fence.generation);
       return;
     }
     try {
@@ -913,7 +879,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * nothing about that write and settles nothing. */
   function settledWrite(payload: KeybindingsOverrides, writeSerialAtStart: number): Partial<KeybindingsStoreFields> {
     const { draft, writeUncertain, saving } = getState();
-    if (payload.loadError !== undefined || writeSerialAtStart !== writeSerial || saving) return {};
+    if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
       try {
         persistDraft({ baseRevision: draft.revision, rules: draft.rules, writeUncertain: false });
@@ -925,13 +891,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   async function refreshFor(generation: number): Promise<void> {
-    if (!liveHub(generation)) return;
-    const serial = ++refreshSerial;
-    const writeSerialAtStart = writeSerial;
+    if (!fence.liveHub(generation)) return;
+    const serial = fence.claimRead();
+    const writeSerialAtStart = fence.writeToken;
     // Finding 23: a refresh rejecting after support was lost would otherwise
     // overwrite the support-drop cleanup with a stale "could not load"
     // hubError while the section claims the built-in defaults are in effect.
-    const stillMine = () => readStillMine(generation, serial);
+    const stillMine = () => fence.readStillMine(generation, serial);
     setState({ hubLoading: true, ...(unapplyRolledBack ? {} : { hubError: null }) });
     try {
       const result = await client.request("evener/settings/keybindings/get", {});
@@ -962,8 +928,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState(restoreDraft(getState()));
       if (getState().storageUnavailable) return;
     }
-    if (activeEpoch < 0) return;
-    await refreshFor(activeEpoch);
+    if (fence.generation < 0) return;
+    await refreshFor(fence.generation);
   }
 
   function detachHub(): boolean {
@@ -1021,14 +987,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // default even though the payload would compose cleanly there. It
     // rejects with the same unavailable-class error instead, before any
     // wire request.
-    const callGeneration = activeEpoch;
+    const callGeneration = fence.generation;
     const run = async (): Promise<KeybindingsOverrides> => {
       // Compose at EXECUTION time: a thunk reads the raw set as the
       // previous write left it, folding its confirmed payload into this
       // write's rules instead of racing it.
       const rules = typeof rulesOrCompose === "function" ? rulesOrCompose() : rulesOrCompose;
       const state = getState();
-      const generation = activeEpoch;
+      const generation = fence.generation;
       // The call-time fence is checked SEPARATELY from the current-state
       // guard below (finding 22): this write was created under a ready
       // generation that has since ended, so the rejection belongs to a DEAD
@@ -1036,7 +1002,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // freshly-loaded clean state - "Hub keybindings settings are
       // unavailable" plus the round-3 editing gate would read the new hub
       // read-only until something cleared it. Throw only.
-      if (!liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
+      if (!fence.liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
       // Support resolved to UNSUPPORTED is the same hygiene class as the
       // fence (finding 26): the unsupported state is deliberately clean -
       // the section says the built-in defaults are in effect - and the
@@ -1060,10 +1026,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // hubError/conflict untouched: nothing hub-sourced happened.
       const introduced = reconciler.introducedWarnings(state.rawOverrides, rules);
       if (introduced.length > 0) throw new Error(introduced.map((warning) => warning.message).join("\n"));
-      const token = ++writeSerial;
+      const token = fence.claimWrite();
       // A response landing after support loss must not re-apply - the
       // unsupported branch already un-applied and retired the hub state.
-      const stillMine = () => writeStillMine(generation, token);
+      const stillMine = () => fence.writeStillMine(generation, token);
       try {
         const result = await client.request("evener/settings/keybindings/patch", {
           expectedRevision: state.revision,
@@ -1116,7 +1082,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function assertEditable(): { revision: number; rules: readonly KeybindingsRule[] } {
     const state = getState();
     if (
-      disposed ||
+      fence.disposed ||
       state.saving ||
       state.storageUnavailable ||
       state.writeUncertain ||
@@ -1156,9 +1122,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
-    const token = ++writeSerial;
-    const generation = activeEpoch;
-    const stillMine = () => writeStillMine(generation, token);
+    const token = fence.claimWrite();
+    const generation = fence.generation;
+    const stillMine = () => fence.writeStillMine(generation, token);
     setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
     let result: unknown;
     try {
@@ -1281,9 +1247,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       setState({ ...initialState() });
     },
     dispose() {
-      if (disposed) return;
+      if (fence.disposed) return;
       endReadyGeneration();
-      disposed = true;
+      fence.dispose();
     },
   };
 }
