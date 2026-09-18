@@ -28,7 +28,7 @@ import {
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { useConnectionDisplay } from "./connectionDisplay";
+import { isReady, useConnectionDisplay } from "./connectionDisplay";
 import { useCredentialStore } from "./credentialStore";
 import { ProviderEditor } from "./ProviderEditor";
 import { ProviderSignInSheet } from "./ProviderSignInSheet";
@@ -42,6 +42,7 @@ export function ProvidersScreen({
 }: NativeStackScreenProps<Routes, "Providers">) {
   const { activeProfile, client, state, fatal, retry } = useConnection();
   const display = useConnectionDisplay(state, fatal);
+  const ready = isReady(state);
   const [signIn, setSignIn] = useState<{
     hubId: string;
     name: string;
@@ -61,8 +62,8 @@ export function ProvidersScreen({
       setSignIn(null);
       return;
     }
-    signIn.flow.setConnection(state === "ready" ? client : null);
-  }, [signIn, activeProfile?.id, client, state]);
+    signIn.flow.setConnection(ready ? client : null);
+  }, [signIn, activeProfile?.id, client, state, ready]);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -81,9 +82,15 @@ export function ProvidersScreen({
         key={`${activeProfile.id}:${revision}`}
         store={store}
         hubName={activeProfile.name}
+        ready={ready}
         onSignIn={(name) => {
           const flow = new ProviderSignIn(store, name);
-          flow.setConnection(client);
+          // Signing in must not start on a connection this screen would
+          // otherwise refuse a mutation on (null while a manual retry
+          // dials, or a closed client the same generation guard keeps set) -
+          // see the effect above, which applies the same rule on every later
+          // transition.
+          flow.setConnection(ready ? client : null);
           setSignIn({ hubId: activeProfile.id, name, flow });
           void flow.start();
         }}
@@ -93,7 +100,7 @@ export function ProvidersScreen({
           flow={signIn.flow}
           name={signIn.name}
           hubName={activeProfile.name}
-          connected={state === "ready"}
+          connected={ready}
           onClose={() => {
             signIn.flow.dispose();
             setSignIn(null);
@@ -108,10 +115,12 @@ export function ProvidersScreen({
 function Providers({
   store,
   hubName,
+  ready,
   onSignIn,
 }: {
   store: CredentialInstancesStore;
   hubName: string;
+  ready: boolean;
   onSignIn(name: string): void;
 }) {
   const colors = useColors();
@@ -195,7 +204,7 @@ function Providers({
         contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 20 }}
         refreshing={state.loading}
         onRefresh={() => {
-          void model.refresh();
+          if (ready) void model.refresh();
         }}
         ListHeaderComponent={
           <View style={{ gap: 8, paddingBottom: 12 }}>
@@ -413,7 +422,7 @@ function Providers({
                         </Action>
                         {instance.authModes?.includes("oauth") && (
                           <Action
-                            disabled={state.busy}
+                            disabled={state.busy || !ready}
                             onPress={() => {
                               const name = instance.name;
                               close();
