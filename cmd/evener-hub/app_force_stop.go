@@ -38,11 +38,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	}
 	if params.ExpectedDaemon != nil {
 		recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
-		addressed, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
-		if err != nil {
-			return appwire.Unavailable(err.Error())
-		}
-		if err := expectedDaemonConflict(addressed, params.ExpectedDaemon); err != nil {
+		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
 			return err
 		}
 	}
@@ -191,11 +187,7 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// cancel-then-acquire order, where a claim landing during the drain stays
 	// subject to the authoritative post-ownership reread below.
 	if params.ExpectedDaemon != nil {
-		addressed, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
-		if err != nil {
-			return appwire.Unavailable(err.Error())
-		}
-		if err := expectedDaemonConflict(addressed, params.ExpectedDaemon); err != nil {
+		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
 			return err
 		}
 	}
@@ -436,11 +428,7 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			// in-flight Resume the request may still have to refuse; the
 			// discovery recheck under alias ownership below stays
 			// authoritative.
-			addressed, err := forceStopEntry(cfg.RunDir, sessionID, cfg.DaemonProcesses, nil, state.ResumeSessionID, expectedDaemon)
-			if err != nil {
-				return confirmedStoppedDecision{}, appwire.Unavailable(err.Error())
-			}
-			if err := expectedDaemonConflict(addressed, expectedDaemon); err != nil {
+			if err := expectedDaemonRevalidationError(cfg, sessionID, state.ResumeSessionID, expectedDaemon); err != nil {
 				return confirmedStoppedDecision{}, err
 			}
 		}
@@ -553,6 +541,20 @@ func forceStopRereadEntry(runDir, sessionID string, previous rendezvous.Entry, c
 		return rendezvous.Entry{}, errors.New("daemon ownership changed; refresh the session before force stopping")
 	}
 	return current, nil
+}
+
+// expectedDaemonRevalidationError re-checks a caller-rendered daemon identity
+// against current verified discovery. The force-stop paths run it before
+// canceling an in-flight Resume the request may still have to refuse: a
+// replacement claim can appear after any earlier validation. A discovery
+// failure is a retryable transient state and surfaces as Unavailable; an
+// identity mismatch keeps expectedDaemonConflict's refusal unchanged.
+func expectedDaemonRevalidationError(cfg hubcore.WebConfig, sessionID, recoveryTarget string, expected *appwire.DaemonIdentity) error {
+	addressed, err := forceStopEntry(cfg.RunDir, sessionID, cfg.DaemonProcesses, nil, recoveryTarget, expected)
+	if err != nil {
+		return appwire.Unavailable(err.Error())
+	}
+	return expectedDaemonConflict(addressed, expected)
 }
 
 // expectedDaemonConflict compares a caller-rendered daemon identity (the
