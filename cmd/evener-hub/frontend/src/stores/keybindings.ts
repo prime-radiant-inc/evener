@@ -10,13 +10,12 @@
 import {
   type AppwireClientLike,
   createKeybindingsStore,
-  type KeybindingsClient,
   type KeybindingsStoreState,
   keybindingsSupport,
 } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
 import { createReadyGenerationCallback } from "./readyGenerationCallback";
 
@@ -27,12 +26,6 @@ export type { KeybindingsStoreState };
 // registration slot.
 const readyGenerationCallback = createReadyGenerationCallback();
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) throw new Error("keybindings store: no client connected");
-  return client;
-}
-
 // The client port resolves connectionStore's CURRENT client on every call.
 // Two ordering contracts make the singleton behave like one store per
 // connection: the store subscribes to notifications once per ready
@@ -41,10 +34,7 @@ function requireClient(): AppwireClientLike {
 // so each subscription lands on the client that generation belongs to; and
 // onConnectionChange publishes support BEFORE rewiring, so the refresh a
 // rewire kicks reads the connection's current feature set.
-const connectedClient: KeybindingsClient = {
-  request: async (method, params, opts) => requireClient().request(method, params, opts),
-  onNotification: (cb) => requireClient().onNotification(cb),
-};
+const connectedClient = connectedClientPort("keybindings");
 
 export const keybindingsStore = createKeybindingsStore({
   client: connectedClient,

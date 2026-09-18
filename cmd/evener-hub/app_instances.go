@@ -1641,10 +1641,11 @@ func instanceModels(r *registry.Registry, name string) []appwire.InstanceModelEn
 	return out
 }
 
-// RefreshModels fetches one instance's live listing into the held registry,
-// then answers with the updated list. It is a read: no file is written, so
-// it stays available while writes are refused. A failed fetch is an error,
-// not a catalog-only list — the sheet keeps its catalog rows and toasts
+// RefreshModels fetches one instance's live listing into the held registry
+// and reports only the fetch error; the caller's instanceWrite wrapper
+// produces the updated list. It is a read: no file is written, so it stays
+// available while writes are refused. A failed fetch is an error, not a
+// catalog-only list — the sheet keeps its catalog rows and toasts
 // the failure.
 func (c *hubInstancesController) RefreshModels(ctx context.Context, params appwire.InstanceRefreshModelsParams) error {
 	reg := c.reg.Get()

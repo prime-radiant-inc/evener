@@ -266,6 +266,52 @@ func TestMakeRuntimeAliasesBuildThePair(t *testing.T) {
 		}
 	})
 
+	// The mtime shortcut follows symlinks, so a shared install NEWER than this
+	// worktree's lockfile used to short-circuit the symlink branch entirely and
+	// let a mismatched install through. The symlink check now runs first, so a
+	// newer-but-mismatched shared install must still be refused without any npm
+	// ci.
+	t.Run("build-web/refuses-npm-ci-through-a-newer-symlink", func(t *testing.T) {
+		fixture := newBuildWebFixture(t)
+		frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+		writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+
+		// A shared install standing in for another worktree's node_modules,
+		// carrying its OWN lockfile so the comparison is content-based rather
+		// than a missing-file failure.
+		shared := filepath.Join(fixture.root, "shared-node-modules")
+		writeTestFile(t, filepath.Join(shared, "package-lock.json"), []byte("{\"different\":true}\n"), 0o644)
+		if err := os.Symlink(shared, filepath.Join(frontendDir, "node_modules")); err != nil {
+			t.Fatalf("symlink node_modules: %v", err)
+		}
+		// Newer than this worktree's lockfile: the -nt shortcut would fire if
+		// the symlink check did not run first.
+		future := time.Now().Add(1 * time.Hour)
+		if err := os.Chtimes(shared, future, future); err != nil {
+			t.Fatalf("make shared install newer: %v", err)
+		}
+
+		command := exec.Command("make", "LDFLAGS=make-test-flags", "build-web")
+		command.Dir = fixture.root
+		command.Env = fixture.environment("")
+		output, err := command.CombinedOutput()
+		if err == nil {
+			t.Fatalf("make build-web succeeded through a newer, mismatched symlinked node_modules, want refusal; output = %s", output)
+		}
+		if !strings.Contains(string(output), "symlink") {
+			t.Fatalf("refusal does not explain the symlink, so the reader cannot act on it; output = %s", output)
+		}
+
+		// The point of refusing: the other worktrees' install survives.
+		if _, err := os.Stat(filepath.Join(shared, "package-lock.json")); err != nil {
+			t.Fatalf("shared install was destroyed despite the refusal: %v", err)
+		}
+		_, _, logData := countNpmInvocations(t, fixture.logPath)
+		if strings.Contains(string(logData), "npm ci") {
+			t.Fatalf("npm ci ran against a symlinked node_modules; log = %q", logData)
+		}
+	})
+
 	// An empty node_modules that is merely NEWER than the lockfile skips npm ci
 	// on the -nt gate, so without a health check the build proceeds against a
 	// toolchain that isn't there.

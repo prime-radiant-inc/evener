@@ -537,8 +537,8 @@ func (c *hubAuthController) statusByProvider(name string) (appwire.AuthStatusRes
 // credential write, c.openAIInstanceStatus for one that already landed the
 // OAuth record (LoginComplete, Logout, DevicePoll). A read that fails does
 // not unwrite what it is reading, so it is reported as an applied write,
-// with the provider named for the broadcast and the rest of the status left
-// at what could not be read.
+// with the provider named in the returned status and the rest left at what
+// could not be read.
 func (c *hubAuthController) statusAfterWrite(name string, read func(string) (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
 	status, err := read(name)
 	if err != nil {

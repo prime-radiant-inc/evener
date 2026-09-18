@@ -22,6 +22,25 @@ import {
   visibleCategoryInventory,
 } from "./transcriptDisplayConfig";
 
+// #1431 retired these three type aliases along with the value aliases below:
+// none had a consumer in any app tree, and none had coverage here. A type
+// alias is erased from the program, so its absence is a compile-time property
+// rather than a runtime one: the frontend's `tsc --noEmit` (whose program is
+// this file and so the whole package) proves each reference below errors. If
+// an alias returns, its directive is reported as unused instead. The union
+// keeps the three referenced so biome's noUnusedVariables is satisfied.
+// @ts-expect-error -- deleted zero-consumer alias (#1431)
+type RetiredTranscriptDisplayConfig = import("./transcriptDisplayConfig").TranscriptDisplayConfig;
+// @ts-expect-error -- deleted zero-consumer alias (#1431)
+type RetiredTranscriptHookExitDetail = import("./transcriptDisplayConfig").TranscriptHookExitDetail;
+// @ts-expect-error -- deleted zero-consumer alias (#1431)
+type RetiredTranscriptLevel = import("./transcriptDisplayConfig").TranscriptLevel;
+type RetiredTranscriptAliases =
+  | RetiredTranscriptDisplayConfig
+  | RetiredTranscriptHookExitDetail
+  | RetiredTranscriptLevel;
+void (undefined as RetiredTranscriptAliases | undefined);
+
 describe("transcript display config", () => {
   const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
 

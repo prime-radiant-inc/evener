@@ -318,6 +318,59 @@ func TestLaunch_SetLayerWhoseResolutionFailsIsStillApplied(t *testing.T) {
 	}
 }
 
+// TrustRepo saves the trust decision to meta.toml and then resolves again to
+// answer with the post-trust view. A failed resolution leaves the trust
+// decision on disk, so it is applied however the call ends.
+func TestLaunch_TrustRepoWhoseResolutionFailsIsStillApplied(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	repoPath := filepath.Join(cwd, ".evener", "launch.toml")
+	if err := os.MkdirAll(filepath.Dir(repoPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	contents := []byte(`model = "from-repo"`)
+	if err := os.WriteFile(repoPath, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hash, err := launchconfig.CanonicalHashTOML(contents)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c := newHubLaunchControllerWithEnv(stateRoot, func(string) string { return "" }, true)
+	original := hubLaunchResolve
+	t.Cleanup(func() { hubLaunchResolve = original })
+	var calls int
+	hubLaunchResolve = func(root, dir string, overrides launchconfig.Layer) (launchconfig.Resolved, error) {
+		calls++
+		if calls == 1 {
+			// The pre-save check that reads the repo's current trust state
+			// and hash must succeed so the save is reached.
+			return original(root, dir, overrides)
+		}
+		return launchconfig.Resolved{}, errors.New("the launch config could not be resolved")
+	}
+
+	_, err = c.TrustRepo(context.Background(), appwire.LaunchConfigTrustRepoParams{CWD: cwd, Hash: hash})
+	if err == nil {
+		t.Fatal("TrustRepo = nil, want the failed resolution reported")
+	}
+	if !writeDidApply(err) {
+		t.Fatalf("TrustRepo = %v (%T), want an applied write: the trust decision is already on disk", err, err)
+	}
+	paths, perr := launchconfig.PathsFor(stateRoot, cwd)
+	if perr != nil {
+		t.Fatalf("PathsFor: %v", perr)
+	}
+	meta, merr := launchconfig.LoadMeta(paths.Meta)
+	if merr != nil {
+		t.Fatalf("LoadMeta: %v", merr)
+	}
+	if meta.Trust.Decision != "trusted" || !launchconfig.HashInSet(hash, meta.Trust.Hashes) {
+		t.Fatalf("trust decision = %#v, want %q trusted on disk", meta.Trust, hash)
+	}
+}
+
 // SetDefault writes the new default and then reloads the registry. A failed
 // reload leaves the new default on disk, so it is applied however the call ends.
 func TestInstances_SetDefaultWhoseReloadFailsIsStillApplied(t *testing.T) {

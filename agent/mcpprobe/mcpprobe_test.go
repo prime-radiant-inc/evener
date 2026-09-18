@@ -203,8 +203,8 @@ func TestProbe_ConnectionRefused_Unreachable(t *testing.T) {
 }
 
 // cfg.Headers must reach the server, mirroring transportForConfig's own
-// header-injection behavior for http/sse (agent/internal/mcp's
-// httpClientWithHeaders).
+// header-injection behavior for http/sse (the shared
+// agent/internal/mcphttp.ClientWithHeaders).
 func TestProbe_HTTP_HeadersAttached(t *testing.T) {
 	t.Parallel()
 	var gotAuth string

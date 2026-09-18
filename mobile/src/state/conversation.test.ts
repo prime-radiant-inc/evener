@@ -972,9 +972,11 @@ describe("ConversationStore", () => {
       }
     });
 
-    // A genuine failure ends as turn/completed{status: "failed"} with no
-    // status frame behind it, so the store settles idle on that frame.
-    it("settles idle when the active turn fails", async () => {
+    // A genuine failure ends as turn/completed{status: "failed"} followed by
+    // its own thread/status/changed(idle) frame (the agent's failure exit,
+    // agent/session_lifecycle.go endInputAtTurnFailure, kata hen0); the status
+    // frame owns the settle, exactly as it does for a completed turn.
+    it("settles idle on the status frame when the active turn fails", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: "t1" });
       const store = createConversationStore();
@@ -987,14 +989,21 @@ describe("ConversationStore", () => {
           turn: { id: "t1", itemsView: "", status: "failed", error: { message: "rate limited" } },
         },
       } as AnyNotification);
-      expect(store.getState().conversation?.status.type).toBe("idle");
+      // The failed completion ends the turn; its status frame has not arrived.
+      expect(store.getState().conversation?.status.type).toBe("active");
       expect(store.getState().conversation?.activeTurnId).toBeUndefined();
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status.type).toBe("idle");
     });
 
     // The status is authoritative and the turn id can be absent while the
-    // session is active (a read cut between turns); a failed completion then
-    // still settles idle, while one for a superseded turn is left alone.
-    it("settles idle on a failed completion with no active turn id, not on a superseded one", async () => {
+    // session is active (a read cut between turns); the failed completion's
+    // own status frame settles idle, while one for a superseded turn is left
+    // alone.
+    it("settles idle on a failed completion's status frame, not on a superseded turn", async () => {
       const service = new FakeConversationService();
       service.openConv = makeConversation({ status: { type: "active" }, activeTurnId: undefined });
       const store = createConversationStore();
@@ -1002,6 +1011,11 @@ describe("ConversationStore", () => {
       store.getState().applyNotification({
         method: "turn/completed",
         params: { threadId: "thread-1", ref: "ref-1", turn: { id: "t-x", itemsView: "", status: "failed", error: { message: "boom" } } },
+      } as AnyNotification);
+      expect(store.getState().conversation?.status.type).toBe("active");
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "idle" } },
       } as AnyNotification);
       expect(store.getState().conversation?.status.type).toBe("idle");
 

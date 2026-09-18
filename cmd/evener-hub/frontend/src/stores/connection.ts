@@ -20,7 +20,7 @@
 // calls - invisible to anything that spies on or wraps it, which is exactly
 // how this broke threads.test.ts's `vi.spyOn(connectionStore, "setState")`
 // idempotency check the first time this was tried.
-import type { AnyNotification, FrameworkFreeStore } from "@evener/appwire-client";
+import type { AnyNotification, AppwireClientLike, FrameworkFreeStore } from "@evener/appwire-client";
 import {
   type ConnectionStoreState as CoreConnectionStoreState,
   onConnectionNotification as coreOnConnectionNotification,
@@ -84,6 +84,35 @@ mutableCore.subscribe = (listener) =>
   originalSubscribe((state, previous) => listener(withConnect(state), withConnect(previous)));
 
 export const connectionStore = core as unknown as ConnectionStore;
+
+// The client port every web store that rides this one wiring point shares: the
+// package's adapters all take a `Pick<AppwireClient, "request" | "onNotification">`
+// (keybindingsStore.ts, launchConfig.ts, state/extensions/*), and each store
+// used to spell out the same requireClient()/port pair over connectionStore.
+// `requireClient` resolves connectionStore's CURRENT client at call time -
+// never captured at module load, so a call before AppShell's connect() fails
+// loudly (labelled by the calling store) and a reconnect is picked up without
+// rebuilding the store - and the port forwards to it on every call.
+export interface ConnectedClientPort {
+  requireClient(): AppwireClientLike;
+  request: AppwireClientLike["request"];
+  onNotification: AppwireClientLike["onNotification"];
+}
+
+export function connectedClientPort(label: string): ConnectedClientPort {
+  const requireClient = (): AppwireClientLike => {
+    const client = connectionStore.getState().client;
+    if (!client) {
+      throw new Error(`${label} store: no client connected; call connectionStore.getState().connect(client) first`);
+    }
+    return client;
+  };
+  return {
+    requireClient,
+    request: async (method, params, opts) => requireClient().request(method, params, opts),
+    onNotification: (cb) => requireClient().onNotification(cb),
+  };
+}
 
 // Subscribes `handler` to the client this store holds now and to every client
 // it wires later - a store module that loads before AppShell's own connect()

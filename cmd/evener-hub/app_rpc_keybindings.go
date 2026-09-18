@@ -3,7 +3,6 @@ package hub
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"primeradiant.com/evener/appwire"
@@ -32,15 +31,14 @@ func registerKeybindingsHandlers(server *appserver.Server, store *hubcore.Keybin
 			}
 			result, err := store.Patch(params)
 			if err != nil {
-				// A post-rename durable error means the patch APPLIED: the
-				// store already published the new revision. Returning the
-				// error without broadcasting would leave every other client
-				// on the pre-patch revision, so fan out the canonical
-				// snapshot before surfacing the failure - and carry that same
-				// snapshot in the error itself so the REQUESTING client can
-				// reconcile from it instead of treating its write as rejected
+				// A post-rename durable error means the patch APPLIED -
+				// writeDidApply reads that back from the store's own
+				// hubcore.ErrWriteApplied. Every other client needs the
+				// canonical snapshot or it stays on the pre-patch revision,
+				// and the error carries the same snapshot so the REQUESTING
+				// client reconciles instead of treating its write as rejected
 				// (roborev PR #884 round 2).
-				if _, postRename := errors.AsType[*hubcore.KeybindingsPostRenameError](err); postRename {
+				if writeDidApply(err) {
 					snapshot := store.Snapshot()
 					server.BroadcastAll(appwire.NotifyEvenerSettingsKeybindingsChanged, snapshot)
 					return nil, appwire.WireError{
