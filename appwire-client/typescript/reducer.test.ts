@@ -4647,6 +4647,193 @@ test("an oversized warning frame's fallback text never splits a surrogate pair a
   expect(lastUnit >= 0xd800 && lastUnit <= 0xdbff).toBe(false);
 });
 
+// rawWarningFrame's own JSON.stringify(params) call walks the whole object
+// graph before this file gets a chance to slice anything — a transport-sized
+// (up to 128 MiB) malformed warning can still make that ONE call allocate
+// proportional to the whole frame even though the code-point bound above
+// only ever touches its output. The frame must be pruned (strings truncated,
+// arrays capped, depth capped) before it reaches JSON.stringify at all.
+test("an oversized warning frame's fallback bounds the frame before JSON.stringify walks it, not just its output", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const originalStringify = JSON.stringify;
+  const outputLengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") outputLengths.push(result.length);
+    return result;
+  });
+
+  const HUGE = 5_000_000; // a 5 MB single string field
+  const params = {
+    threadId: "thr_t",
+    ref: "ref_t",
+    warning: 42,
+    extra: "z".repeat(HUGE),
+  };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
+    // Nowhere near the 5 MB field: JSON.stringify itself never walks more
+    // than the pruned (small-string, capped-array, depth-capped) frame.
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
+test("an oversized warning frame's fallback prunes deep nesting before JSON.stringify walks it", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  // A deeply nested structure well past the prune's depth cap — without
+  // pruning, JSON.stringify still walks every level.
+  let deep: unknown = "leaf";
+  for (let i = 0; i < 50; i++) deep = { nested: deep };
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: deep };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  // The pruned representation replaces anything past the depth cap with a
+  // short placeholder, so "leaf" never survives 50 levels of nesting into
+  // the bounded output.
+  expect(item.text).not.toContain("leaf");
+});
+
+// The per-array/per-string/per-depth caps alone leave a gap: many small
+// object keys (each individually tiny, each within the array/string/depth
+// bounds) can still sum to a huge object for JSON.stringify to walk. The
+// prune needs a total node budget too, not just per-level caps.
+test("an oversized warning frame's fallback bounds a many-key object, not just deep nesting or long strings", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const manyKeys: Record<string, string> = {};
+  for (let i = 0; i < 100_000; i++) manyKeys[`key${i}`] = "v";
+
+  const originalStringify = JSON.stringify;
+  const outputLengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") outputLengths.push(result.length);
+    return result;
+  });
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: manyKeys };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
+    // 100,000 keys would stringify to well over a megabyte unbounded;
+    // the total node budget keeps JSON.stringify's own walk small.
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
+// Object.entries(value) (or Object.keys) allocates one [key, value] pair
+// PER OWN KEY before any cap applies, regardless of the array's own later
+// .slice(0, 50) — for a malformed frame with millions of keys, that
+// allocation (and the value access it implies) is the exact O(frame-size)
+// cost this function exists to avoid. A Proxy observes every property
+// GET the prune actually performs, independent of how it enumerates keys.
+test("an oversized warning frame's fallback never accesses more than the key cap's worth of property values", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_OBJECT_KEYS = 50; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_OBJECT_KEYS
+  const target: Record<string, string> = {};
+  for (let i = 0; i < 100_000; i++) target[`key${i}`] = "v";
+  let getCount = 0;
+  const observed = new Proxy(target, {
+    get(t, prop, receiver) {
+      if (typeof prop === "string" && prop.startsWith("key")) getCount++;
+      return Reflect.get(t, prop, receiver);
+    },
+  });
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: observed };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  // A small margin above the cap for any incidental re-reads, but nowhere
+  // near the 100,000 keys an Object.entries/.keys allocation would touch.
+  expect(getCount).toBeLessThanOrEqual(MAX_OBJECT_KEYS + 1);
+});
+
+// The object-key COUNT cap (RAW_WARNING_FRAME_MAX_OBJECT_KEYS) bounds how
+// many properties survive the prune, but says nothing about how long each
+// property NAME is — a single key whose own name is multi-megabyte still
+// rides through verbatim into the pruned object and JSON.stringify's walk.
+test("an oversized warning frame's fallback bounds an oversized property NAME, not just its value", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const HUGE = 5_000_000;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: { [`k${"x".repeat(HUGE)}`]: "v" } };
+
+  const originalStringify = JSON.stringify;
+  const outputLengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") outputLengths.push(result.length);
+    return result;
+  });
+
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
 // A message-less frame that DOES carry a title or hint is something to show:
 // the fold leaves ItemModel.text blank rather than duplicating title/hint
 // with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
