@@ -233,7 +233,7 @@ const pathRows = client.buildPathRows({
   value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
-assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.deepEqual(client.pickablePathRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
 assert.equal(client.parseTaskListData(null), null);
 assert.deepEqual(client.parseTaskListData([]), []);
 const taskRows = client.parseTaskListData([
@@ -643,8 +643,10 @@ ${inertOutboxStorageMethods}
 const outboxOptions: MutationOutboxOptions = { isReady: () => true, onDiscover: () => undefined };
 const outbox: MutationOutbox = new MutationOutbox(outboxStorage, outboxOptions);
 const reason: MutationDiscoveryReason = "enqueue";
+const dispatcherOptions: MutationDispatcherOptions = { getClient: () => null };
+const dispatcher: MutationDispatcher = new MutationDispatcher(outboxStorage, dispatcherOptions);
 void intent; void record; void optimisticRecord; void recoveryRecord; void outboxState; void recoveryKind; void storage;
-void pendingEntry; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason;`,
+void pendingEntry; void identity; void pendingTurnsState; void submittedDraft; void secureRandomSource; void outbox; void reason; void dispatcher;`,
       cjsTypeUses: `const storage: client.ClientIdentityStorage = { getItem: () => null, setItem: () => undefined }; void storage;
 const pendingEntry: client.PendingTurnEntry = { id: "cmid", ref: "ref", method: "send", text: "hi", imageCount: 0, skillNames: [], state: "submitting", source: "outbox", fromThisClient: true }; void pendingEntry;
 const secureRandomSource: client.SecureRandomSource = { getRandomValues: (array) => array }; void secureRandomSource;
@@ -721,16 +723,17 @@ assert.deepEqual(pendingTurnsStore.pendingTurnEntries("ref-a"), []);
 // it.
 const enqueued = [];
 const discovered = [];
-const memoryOutbox = new client.MutationOutbox(
-  {
-    enqueueIntent(intent) {
-      const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
-      enqueued.push(record);
-      return Promise.resolve(record);
-    },
-    listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
-${inertOutboxStorageMethods}
+const memoryOutboxStorage = {
+  enqueueIntent(intent) {
+    const record = { ...intent, version: 1, clientMutationId: "cmid-1", intentSequence: 0, createdAt: 0, state: "submitting" };
+    enqueued.push(record);
+    return Promise.resolve(record);
   },
+  listTargetRefs: () => Promise.resolve(enqueued.map((record) => record.targetRef)),
+${inertOutboxStorageMethods}
+};
+const memoryOutbox = new client.MutationOutbox(
+  memoryOutboxStorage,
   {
     isReady: () => true,
     onDiscover: (targetRefs, reason) => {
@@ -759,6 +762,15 @@ memoryOutbox
       ["startup", "enqueue"],
     );
     assert.deepEqual(discovered[1].targetRefs, ["local:thread-1"]);
+  })
+  .then(() => {
+    // MutationDispatcher is a runtime export reachable over the same memory
+    // port as the outbox above: with no client wired, nextDispatchable's own
+    // inert undefined stops dispatchTargets before any transport attempt,
+    // proving the export resolves at all - a real attempt needs a transport,
+    // which is the unit suite's job, not qualification's.
+    const dispatcher = new client.MutationDispatcher(memoryOutboxStorage, { getClient: () => null });
+    return dispatcher.dispatchTargets(["local:thread-1"]);
   })
   .catch((err) => {
     console.error(err);
