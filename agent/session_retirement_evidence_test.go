@@ -1363,6 +1363,14 @@ func assertRetirementEvidenceBlocked(t *testing.T, c *RetirementController, cate
 
 func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 	t.Helper()
+	// The session namer (launchInitialPromptNamer / launchCompactionNamerGated,
+	// session_namer.go) starts in its own goroutine and is never joined before
+	// the triggering turn returns; while it is in flight it correctly reports
+	// itself as an "autonomous" blocker (session_retirement_evidence.go). Wait
+	// for every such registered sender to settle before reading evidence, or
+	// this call races that goroutine and intermittently reports a settled
+	// owner ineligible (#1879).
+	c.root.sendersWG.Wait()
 	claim, state, err := c.TryClaim(true)
 	if err != nil || claim == nil {
 		t.Fatalf("settled owner not eligible: %+v, %v", state, err)
@@ -1370,6 +1378,38 @@ func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 	if err := c.Abort(claim, ""); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestRetirementEvidenceEligibleAwaitsInFlightNamer is the deterministic
+// regression for #1879: launchInitialPromptNamer (session_namer.go) starts
+// the session namer in its own goroutine and never joins it before the
+// triggering ProcessInput returns, while that goroutine correctly reports
+// itself as an "autonomous" blocker (session_retirement_evidence.go) until it
+// settles. assertRetirementEvidenceEligible is the shared helper more than a
+// dozen retirement tests call right after a turn settles; without waiting
+// for the namer first, that call races the namer's own goroutine and
+// intermittently fails with "settled owner not eligible" on a loaded CI
+// runner. This forces the namer to still be in flight at the exact call,
+// which fails every time before the fix and passes every time after it.
+func TestRetirementEvidenceEligibleAwaitsInFlightNamer(t *testing.T) {
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
+		return finalResponse("turn settled")
+	}))
+	c := retirementEvidenceController(t, root)
+	held, release := make(chan struct{}), make(chan struct{})
+	namer := llm.NewClient()
+	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
+		close(held)
+		<-release
+		return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
+	}})
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
+	if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-held // the namer goroutine is provably still in flight right here
+	close(release)
+	assertRetirementEvidenceEligible(t, c)
 }
 
 func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {
