@@ -653,8 +653,9 @@ func hubForkDeletionFenced(cfg hubcore.WebConfig, ref, threadID, sessionID strin
 // daemon behind it: the resume-and-retry session mutations (compact, clear,
 // change model, shutdown) plus the always-available ones (send, fork, goal,
 // rename), all of them landing once qp94's auto-resume runs. Steer, Interrupt
-// and Queue stay false — they gate on an active turn a cold thread has none of,
-// so the hub deliberately does not resume for them (kata xr4x trues this up to
+// and Queue stay false because the hub cannot carry them out for a thread with
+// no daemon: it resumes on send alone, so a cold set that advertised them would
+// promise a turn action nothing is there to take (kata xr4x trues this up to
 // qp94's wiring).
 //
 // It is the hub's answer to "what can still be done with this thread", which is
