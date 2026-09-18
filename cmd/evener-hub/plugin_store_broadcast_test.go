@@ -12,12 +12,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
@@ -207,6 +210,47 @@ func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.
 	}
 
 	assertOneBroadcast(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated)
+}
+
+// TestNewHubAppServer_NilPluginManagerFallbackBroadcasts proves the
+// nil-cfg.PluginManager fallback in newHubAppServerWithNavigationAndTrace
+// (app_rpc.go:519-523) wires wirePluginStoreBroadcast just like newWebServer's
+// own cfg.PluginManager path does. Every other test in this file either
+// injects its own Manager or drives NewWebServer, which pre-sets
+// cfg.PluginManager before this constructor ever runs
+// (TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer) — neither would
+// notice if the fallback's own wirePluginStoreBroadcast call were deleted.
+// This calls newHubAppServer directly, the same way a caller that never goes
+// through NewWebServer (most tests, and any embedder using
+// newHubAppServer/newHubAppServerWithNavigation) does, leaving
+// cfg.PluginManager nil, and drives a real client connection over it.
+func TestNewHubAppServer_NilPluginManagerFallbackBroadcasts(t *testing.T) {
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+
+	server := newHubAppServer(hubcore.WebConfig{PluginRoot: t.TempDir()}, appsource.NewRegistry())
+	hub := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.MarketplaceAdd(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
+	}); err != nil {
+		t.Fatalf("MarketplaceAdd: %v", err)
+	}
+
+	select {
+	case notif := <-client.Notifications():
+		if notif.Method != appwire.NotifyEvenerMarketplaceUpdated {
+			t.Fatalf("notification method = %q, want %q", notif.Method, appwire.NotifyEvenerMarketplaceUpdated)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for evener/marketplace/updated: the nil-PluginManager fallback never wired a broadcast")
+	}
 }
 
 // TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer proves web.go's
