@@ -1154,6 +1154,136 @@ func TestEditMarketplace_RenameSparesASourceWhoseLinkPassesThroughTheClone(t *te
 	}
 }
 
+// The link into the clone can itself be the target of a second link outside it.
+// The walk has to follow each link's own target, not only the recorded path's
+// components, or the second hop is never inspected and the clone is swept.
+func TestRemoveMarketplace_SparesASourceThroughAChainedLinkIntoTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hop := filepath.Join(clone, "hop")
+	if err := os.Symlink(t.TempDir(), hop); err != nil {
+		t.Fatal(err)
+	}
+	mid := filepath.Join(t.TempDir(), "mid")
+	if err := os.Symlink(hop, mid); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry")
+	if err := os.Symlink(mid, entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: entry},
+		InstallLocation: entry,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Lstat(hop); err != nil {
+		t.Fatalf("the link hop inside the clone was swept through a chained link: %v", err)
+	}
+}
+
+func TestEditMarketplace_RenameSparesASourceThroughAChainedLinkIntoTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	hop := filepath.Join(clone, "hop")
+	if err := os.Symlink(t.TempDir(), hop); err != nil {
+		t.Fatal(err)
+	}
+	mid := filepath.Join(t.TempDir(), "mid")
+	if err := os.Symlink(hop, mid); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(t.TempDir(), "entry")
+	if err := os.Symlink(mid, entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: entry},
+		InstallLocation: entry,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "beta", nil); err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if _, err := os.Lstat(hop); err != nil {
+		t.Fatalf("the link hop inside the clone was swept through a chained link by the rename: %v", err)
+	}
+}
+
+// The sweep is a no-op when the marketplace has no clone, so an unreadable
+// directory source recorded by some other marketplace must not fail the whole
+// removal: the guard short-circuits on the absent clone before inspecting them.
+func TestRemoveMarketplace_SucceedsWithoutACloneDespiteAnUnreadableSource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	unreadable := filepath.Join(t.TempDir(), "beta-source")
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: unreadable}, InstallLocation: unreadable},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	origLstat := marketplaceLstat
+	t.Cleanup(func() { marketplaceLstat = origLstat })
+	marketplaceLstat = func(path string) (os.FileInfo, error) {
+		if path == unreadable {
+			return nil, fmt.Errorf("injected lstat failure for %s: %w", path, os.ErrPermission)
+		}
+		return origLstat(path)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("removing a clone-less marketplace failed on another record's unreadable source: %v", err)
+	}
+}
+
+// When the clone path itself is a symlink, the sweep removes the link, not its
+// target. A source recorded at the target is therefore not deleted and must not
+// be protected, or the stale clone link would survive and hold the name.
+func TestRemoveMarketplace_SweepsACloneSymlinkWithoutProtectingItsTarget(t *testing.T) {
+	m := NewManager(t.TempDir())
+	target := t.TempDir()
+	sentinel := filepath.Join(target, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("target"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, clone); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: target},
+		InstallLocation: target,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Lstat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the clone symlink survived (its target over-protected): %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the source at the link target was deleted: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")

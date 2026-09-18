@@ -349,19 +349,33 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 // The model is what the sweep actually deletes: the tree at the clone path. A
 // source below clone goes with it — even through a symlink, since removing the
 // clone deletes the link — so the source is compared against the clone both as
-// recorded and after symlinks are resolved. The clone itself is resolved the
-// same way, because the store root or its marketplaces directory can be a
-// symlink and a legacy record can name the physical path. An ancestor of clone
-// is not deleted by RemoveAll and must not be protected, or its stale clone
-// would survive and hold the name.
+// recorded and after symlinks are resolved. The clone's ancestors are resolved
+// because the store root or its marketplaces directory can be a symlink and a
+// legacy record can name the physical path, but a final symlink at the clone
+// itself is not followed: RemoveAll removes the link, not its target. An
+// ancestor of clone is not deleted by RemoveAll and must not be protected, or
+// its stale clone would survive and hold the name.
 func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, error) {
+	// Nothing at the clone path makes the sweep a no-op, so there is nothing to
+	// protect and no reason to let an unreadable record somewhere else fail the
+	// whole removal or rename.
+	haveClone, err := pathPresent(clone)
+	if err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: checking marketplace clone %s: %v\n", clone, err)
+		return true, nil
+	}
+	if !haveClone {
+		return false, nil
+	}
 	absClone, err := filepath.Abs(clone)
 	if err != nil {
-		return false, fmt.Errorf("resolving %s: %w", clone, err)
+		_, _ = fmt.Fprintf(m.stderr(), "warning: resolving marketplace clone %s: %v\n", clone, err)
+		return true, nil
 	}
-	resolvedClone, err := resolveForContainment(clone)
+	resolvedClone, err := resolveAncestors(clone)
 	if err != nil {
-		return false, err
+		_, _ = fmt.Fprintf(m.stderr(), "warning: resolving marketplace clone %s: %v\n", clone, err)
+		return true, nil
 	}
 	underClone := func(path string) bool {
 		return pathWithinDir(absClone, path) || pathWithinDir(resolvedClone, path)
@@ -370,9 +384,13 @@ func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, erro
 		if ref.Source.Kind != SourceDirectory || ref.Source.Path == "" {
 			continue
 		}
-		touches, err := sourceTouchesClone(ref.Source.Path, underClone)
+		touches, err := sourceTouchesClone(ref.Source.Path, underClone, 0)
 		if err != nil {
-			return false, err
+			// A source the walk cannot inspect is one the sweep might still be
+			// the thing that deletes: protect it rather than fail the operation
+			// or run the sweep blind.
+			_, _ = fmt.Fprintf(m.stderr(), "warning: checking directory source %s: %v\n", ref.Source.Path, err)
+			return true, nil
 		}
 		if touches {
 			return true, nil
@@ -381,13 +399,41 @@ func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, erro
 	return false, nil
 }
 
+// resolveAncestors canonicalizes every component of path except the last, so a
+// symlinked store root or marketplaces directory is followed but a final
+// symlink is not — RemoveAll and rename act on the link itself.
+func resolveAncestors(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s: %w", path, err)
+	}
+	dir, base := filepath.Split(abs)
+	if dir == "" {
+		return abs, nil
+	}
+	resolved, err := resolveForContainment(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolved, base), nil
+}
+
+// maxSymlinkHops bounds the source-link walk so a symlink cycle cannot spin.
+const maxSymlinkHops = 64
+
 // sourceTouchesClone reports whether deleting the tree at the clone would delete
 // or break the recorded source: whether the source's absolute path, its fully
 // resolved target, or any symlink met while resolving it sits at or beneath the
-// clone. The symlink walk is what catches a chain that passes back out of the
-// clone — a source reached through a link the clone holds is broken even when
-// its final target is elsewhere, and a full EvalSymlinks would hide that hop.
-func sourceTouchesClone(source string, underClone func(string) bool) (bool, error) {
+// clone. The walk follows each link's own target in turn, because a chain can
+// leave the clone and come back — a source reached through a link the clone
+// holds is broken even when its final target is elsewhere, and EvalSymlinks
+// alone would hide both that hop and a second link standing between them.
+func sourceTouchesClone(source string, underClone func(string) bool, depth int) (bool, error) {
+	if depth > maxSymlinkHops {
+		// Deeper than any sane chain: assume the sweep holds a link the source
+		// needs and protect.
+		return true, nil
+	}
 	abs, err := filepath.Abs(source)
 	if err != nil {
 		return false, fmt.Errorf("resolving %s: %w", source, err)
@@ -427,6 +473,15 @@ func sourceTouchesClone(source string, underClone func(string) bool) (bool, erro
 		// The link itself, and the path it names, both go if the clone holds
 		// them — the final target alone would miss a hop back out of the clone.
 		if underClone(next) || underClone(target) {
+			return true, nil
+		}
+		// The target is a path in its own right: its own links can lead back
+		// into the clone even where the recorded path's components do not.
+		touches, err := sourceTouchesClone(target, underClone, depth+1)
+		if err != nil {
+			return false, err
+		}
+		if touches {
 			return true, nil
 		}
 		current = filepath.Clean(target)
