@@ -336,14 +336,23 @@ func cancelActiveResumes(ctx context.Context, locks *hubcore.ResumeLocks, aliase
 // Holding them excludes deletion publication, which takes the same
 // reservations, so a deletion check made while they are held is final.
 func tryLockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) bool {
-	_, held := locks.TryLockAliases(aliases)
-	return held
+	acquired := 0
+	for _, alias := range aliases {
+		if !locks.For(alias).TryLock() {
+			unlockForceStopReservations(locks, aliases[:acquired])
+			return false
+		}
+		acquired++
+	}
+	return true
 }
 
 // unlockForceStopReservations releases reservations tryLockForceStopReservations
 // left held, in reverse acquisition order.
 func unlockForceStopReservations(locks *hubcore.ResumeLocks, aliases []string) {
-	locks.UnlockAliases(aliases)
+	for _, alias := range slices.Backward(aliases) {
+		locks.For(alias).Unlock()
+	}
 }
 
 // confirmedStoppedDecision is checkConfirmedStoppedWithoutClaim's outcome.

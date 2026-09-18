@@ -165,15 +165,22 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	epochs[sessionID] = epoch
 	// Force stop's sorted ownership order, retaining the original mutexes.
-	// This path is context-aware, so it acquires each alias through the
-	// context: LockAliases releases the prefix it holds if a later alias blocks
-	// past cancellation, where an ordinary Lock would hang behind a
-	// long-running explicit Resume and retain every earlier alias.
-	release, err := cfg.ResumeLocks.LockAliases(ctx, aliases)
-	if err != nil {
-		return err
+	// This path is context-aware, so it acquires each alias through the context
+	// and releases the prefix it holds if a later alias blocks past
+	// cancellation; an ordinary Lock here would hang behind a long-running
+	// explicit Resume and retain every earlier alias.
+	acquired := 0
+	defer func() {
+		for _, id := range slices.Backward(aliases[:acquired]) {
+			cfg.ResumeLocks.For(id).Unlock()
+		}
+	}()
+	for _, id := range aliases {
+		if err := cfg.ResumeLocks.For(id).LockContext(ctx); err != nil {
+			return err
+		}
+		acquired++
 	}
-	defer release()
 	for _, id := range aliases {
 		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
 			return err
