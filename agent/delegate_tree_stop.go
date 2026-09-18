@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
@@ -876,8 +877,8 @@ func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) e
 		return nil
 	default:
 	}
-	if observeDelegateStopWait != nil {
-		observeDelegateStopWait()
+	if observe := observeDelegateStopWait.Load(); observe != nil {
+		(*observe)()
 	}
 	select {
 	case <-stop.done:
@@ -898,11 +899,12 @@ func waitForDelegateStopProgress(ctx context.Context, stop *delegateStopState) e
 	}
 }
 
-// observeDelegateStopWait, when non-nil, runs just before a stop drain parks on
-// delegate stop progress. Tests set it to prove the reconcile driver is parked
-// before a close wakes it; nil in production, the same convention as
-// ObserveCloseStopJoin.
-var observeDelegateStopWait func()
+// observeDelegateStopWait, when stored, runs just before a stop drain parks on
+// delegate stop progress. Tests store it to prove the reconcile driver is parked
+// before a close wakes it; empty in production. An atomic pointer keeps the read
+// in waitForDelegateStopProgress race-free against a test storing or clearing
+// the hook, the same convention as ObserveCloseStopJoin.
+var observeDelegateStopWait atomic.Pointer[func()]
 
 func executeDelegateCancelPlan(plan delegateCancelPlan) {
 	for _, cancel := range plan.cancel {

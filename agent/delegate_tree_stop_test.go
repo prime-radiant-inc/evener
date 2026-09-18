@@ -914,11 +914,12 @@ func TestDelegateControllerCloseWakesParkedStopReconcileDriver(t *testing.T) {
 	commitAttachedDelegateControllerStart(t, c, "dlg_target")
 	// Await the driver's own park signal rather than a wall-clock guess: a
 	// driver that never parked would let the assertion below pass vacuously.
-	savedWait := observeDelegateStopWait
+	savedWait := observeDelegateStopWait.Load()
 	parked := make(chan struct{})
 	var parkedOnce sync.Once
-	observeDelegateStopWait = func() { parkedOnce.Do(func() { close(parked) }) }
-	t.Cleanup(func() { observeDelegateStopWait = savedWait })
+	hook := func() { parkedOnce.Do(func() { close(parked) }) }
+	observeDelegateStopWait.Store(&hook)
+	t.Cleanup(func() { observeDelegateStopWait.Store(savedWait) })
 	_, cancelPlan, _, err := c.StopSubtreeAndDrive(rootDelegateActor("root-session"), "dlg_target")
 	if err != nil {
 		t.Fatalf("StopSubtreeAndDrive: %v", err)
