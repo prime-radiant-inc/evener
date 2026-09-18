@@ -4,7 +4,7 @@ import type {
 	KeybindingsOverrides,
 	TranscriptDisplayDefaults,
 } from "@evener/appwire-client";
-import { toWireConfig } from "@evener/appwire-client";
+import { toWireConfig, WireError } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
 
@@ -525,6 +525,39 @@ it("an uncertain write cannot be discarded or replayed until an authoritative re
 	expect(f.storage.load()?.writeUncertain).toBe(false);
 	await f.model.discardTranscriptDraft();
 	expect(f.storage.load()).toBeNull();
+});
+
+it("resolves a post-apply PATCH failure by adopting the applied value, without blocking further edits", async () => {
+	// The hub already published the new revision before a follow-up durable
+	// step failed (hubcore.TranscriptDisplayPostApplyError): the write
+	// applied, so saveTranscript must reconcile from it rather than treat
+	// the write as rejected - mirrors keybindingsStore.ts's handling of
+	// KeybindingsPostRenameError for the sibling store.
+	const f = persistedPreferences();
+	await f.model.refresh();
+	const applied = { ...config, content: { kind: "preset" as const, level: "full" as const } };
+	f.client.handlers.set(transcriptPatch, () => {
+		throw new WireError(
+			"transcript display applied then a follow-up step failed",
+			-32603,
+			{
+				evenerErrorInfo: "transcriptDisplayPostApply",
+				layout: "mobile",
+				applied: { revision: 5, config: toWireConfig(applied) },
+			},
+		);
+	});
+	await f.model.saveTranscript(proposedConfig);
+	expect(f.model.getSnapshot().transcriptMobile).toMatchObject({
+		conflict: false,
+		writeUncertain: false,
+		draft: null,
+		confirmed: { revision: 5, config: applied },
+	});
+	expect(f.storage.load()).toBeNull();
+	// A blocked write would reject further edits (as the writeUncertain
+	// test above does); this one applied, so editing is not blocked.
+	await f.model.editTranscript(config);
 });
 
 it("a corrupt local draft blocks writes until it can be restored", async () => {

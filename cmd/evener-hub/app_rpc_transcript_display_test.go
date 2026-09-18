@@ -78,6 +78,70 @@ func TestHubRPCTranscriptDisplayPatchBroadcastsCanonicalValue(t *testing.T) {
 	}
 }
 
+func TestHubRPCTranscriptDisplayPatchPostApplyErrorStillBroadcasts(t *testing.T) {
+	// A durable failure AFTER the rename means the patch applied: the store
+	// published the new revision, and the error the patching client gets back
+	// must not leave every OTHER client stale. The hub therefore broadcasts
+	// the applied layout before surfacing the failure (mirrors
+	// TestHubRPCKeybindingsPatchPostRenameErrorStillBroadcasts).
+	wantFailure := errors.New("after rename failed")
+	store, err := hubcore.NewTranscriptDisplayStoreForTest(t.TempDir(), func() error { return wantFailure })
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{TranscriptDisplayStore: store})
+	defer hub.Close()
+
+	clientA := dialHubRPC(t, hub)
+	defer clientA.Close()
+	clientB := dialHubRPC(t, hub)
+	defer clientB.Close()
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
+	config.Content.Level = appwire.TranscriptLevelActivity
+	var result appwire.TranscriptDisplayDefaultsPatchResponse
+	err = clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+		appwire.TranscriptDisplayDefaultsPatchParams{
+			Layout:           appwire.TranscriptViewportDesktop,
+			ExpectedRevision: 0,
+			Config:           config,
+		}, &result)
+	if err == nil {
+		t.Fatal("PATCH with a post-apply fault returned no error")
+	}
+	// The error must carry the APPLIED canonical value so the requesting
+	// client reconciles from it rather than treating its write as rejected.
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInternalError {
+		t.Fatalf("error = %T %v, want wire code %d", err, err, appwire.CodeInternalError)
+	}
+	dataJSON, merr := json.Marshal(wire.Data)
+	if merr != nil {
+		t.Fatal(merr)
+	}
+	var data appwire.TranscriptDisplayPostApplyData
+	if err := json.Unmarshal(dataJSON, &data); err != nil {
+		t.Fatalf("decode post-apply error data: %v", err)
+	}
+	if data.EvenerErrorInfo != appwire.ErrorTranscriptDisplayPostApply {
+		t.Fatalf("evenerErrorInfo = %q, want %q", data.EvenerErrorInfo, appwire.ErrorTranscriptDisplayPostApply)
+	}
+	if data.Layout != appwire.TranscriptViewportDesktop || data.Applied.Revision != 1 || data.Applied.Config != config {
+		t.Fatalf("applied = %#v, want desktop revision 1 and the canonical config", data)
+	}
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		notification := receiveTranscriptDisplayChanged(t, client)
+		if notification.Layout != appwire.TranscriptViewportDesktop || notification.Revision != 1 || notification.Config != config {
+			t.Fatalf("notification = %#v, want desktop revision 1 and the canonical config", notification)
+		}
+	}
+}
+
 func TestHubRPCTranscriptDisplayPatchRawUnknownFieldRejectedWithoutNotification(t *testing.T) {
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{HubStateRoot: t.TempDir()})
 	defer hub.Close()
