@@ -147,6 +147,12 @@ func (m *Manager) ensureFetched(ctx context.Context, name string) (MarketplaceRe
 		installLoc = m.marketplaceDir(name)
 		_ = marketplaceRemoveAll(installLoc)
 		if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
+			// The fetch clears this directory before cloning into it, so a
+			// failure leaves a partial clone under the marketplace's name
+			// while the entry records no location. Nothing else removes that
+			// directory, so the failed fetch does — as AddMarketplace does
+			// with its staging directory.
+			_ = marketplaceRemoveAll(installLoc)
 			return MarketplaceRef{}, err
 		}
 	}
@@ -495,8 +501,8 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 			return fail(err)
 		}
 		// Whatever the entry records: a lazy fetch clears and refills this
-		// directory before it writes an install location, so a fetch that
-		// failed leaves one behind that only the move takes with the name.
+		// directory before it writes an install location, so a fetch killed
+		// mid-clone leaves one behind that only the move takes with the name.
 		if haveClone {
 			if err := marketplaceRename(oldDir, newDir); err != nil {
 				return fail(fmt.Errorf("renaming marketplace clone: %w", err))
@@ -898,6 +904,10 @@ func (m *Manager) RefreshMarketplace(ctx context.Context, name string) error {
 			installLoc := m.marketplaceDir(name)
 			_ = marketplaceRemoveAll(installLoc)
 			if _, err := m.fetchMarketplaceContainer(ctx, ref.Source, installLoc); err != nil {
+				// As in ensureFetched: the fetch cleared this directory
+				// before cloning into it, and a failure would leave a
+				// partial clone under the marketplace's name.
+				_ = marketplaceRemoveAll(installLoc)
 				return err
 			}
 			ref.InstallLocation = installLoc
