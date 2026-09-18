@@ -318,41 +318,18 @@ func (m *Manager) cloneRemovalFailed(name string, removeErr error) error {
 	return fmt.Errorf("marketplace %q: %w; see the hub's log for detail", name, ErrMarketplaceUnregisteredCloneRemains)
 }
 
-// notFoundOrCloneRemains decides what a RemoveMarketplace lookup miss means:
-// m.marketplaceDir(name) is a store-managed clone location no directory
-// source ever populates, so its presence can only be litter an earlier
-// RemoveMarketplace call left behind (cloneRemovalFailed) - name was
-// unregistered, not never registered. Where it is present this retries the
-// removal cloneRemovalFailed's caller could not finish, resolving the litter
-// silently on success and reporting the same
-// ErrMarketplaceUnregisteredCloneRemains again on failure, rather than the
-// ErrMarketplaceNotFound a bare lookup miss would report.
-func (m *Manager) notFoundOrCloneRemains(name string) error {
-	present, err := pathPresent(m.marketplaceDir(name))
-	if err != nil {
-		return err
-	}
-	if !present {
-		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
-	}
-	if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
-		return m.cloneRemovalFailed(name, err)
-	}
-	return nil
-}
-
 // RemoveMarketplace unregisters name: the metadata save lands first, so a
 // save failure is a plain refusal that leaves the marketplace registered and
 // its clone untouched. Only once that save has landed does the clone's own
-// removal run - a failure there is litter the hub's caller cannot undo, but
-// the marketplace itself is already gone from the listing.
-//
-// A retry after that litter finds no entry for name (the unregister save
-// already landed), so it is not the plain not-found a first-time lookup miss
-// would be: notFoundOrCloneRemains tells the two apart and, where the clone
-// is what remains, retries removing it - reporting the same
-// ErrMarketplaceUnregisteredCloneRemains while it keeps failing, and nil once
-// it finally succeeds.
+// removal run - a failure there is litter the hub's caller cannot undo
+// (reported as ErrMarketplaceUnregisteredCloneRemains), but the marketplace
+// itself is already gone from the listing. A retry after that litter finds
+// no entry for name and reports the plain ErrMarketplaceNotFound a lookup
+// miss always has: name is caller-controlled and unvalidated here, so
+// deriving m.marketplaceDir(name) and touching the filesystem on a miss -
+// name "" resolves to the marketplaces directory itself, ".." to its parent
+// - is refused rather than attempted. Whoever wants the litter cleaned up
+// retries some other way; this never mutates the filesystem on a miss.
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
@@ -365,7 +342,7 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	}
 	ref, ok := mk[name]
 	if !ok {
-		return m.notFoundOrCloneRemains(name)
+		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
 	delete(mk, name)
 	if err := m.saveMarketplaces(mk); err != nil {

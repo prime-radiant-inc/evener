@@ -201,15 +201,16 @@ func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
 }
 
 // A retry after the litter above finds no entry for "market-a" in
-// known_marketplaces.json (the unregister save already landed), so a bare
-// lookup miss would report ErrMarketplaceNotFound - indistinguishable from a
-// name that was never registered at all, and misleading about whether the
-// clone is still sitting on disk. RemoveMarketplace instead notices the
-// leftover clone and retries removing it: while removal keeps failing, the
-// retry reports the same ErrMarketplaceUnregisteredCloneRemains rather than
-// a bare not-found, and once removal succeeds the retry resolves the litter
-// silently.
-func TestRemoveMarketplaceRetryAfterCloneRemovalFailureReportsLitterNotNotFound(t *testing.T) {
+// known_marketplaces.json (the unregister save already landed), so it reads
+// as a plain lookup miss - ErrMarketplaceNotFound, exactly as a name that was
+// never registered at all. RemoveMarketplace does not touch the filesystem
+// on a miss to tell the two apart: name is caller-controlled here, and
+// deriving m.marketplaceDir(name) from an unvalidated name to stat or remove
+// it would let "", "..", or "../x" reach outside the marketplace it was
+// never validated against (see
+// TestRemoveMarketplace_LookupMissTouchesNothingOnDisk). Whoever wants the
+// litter cleaned up retries some other way.
+func TestRemoveMarketplaceRetryAfterCloneRemovalFailureReportsNotFound(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
 	}
@@ -222,11 +223,10 @@ func TestRemoveMarketplaceRetryAfterCloneRemovalFailureReportsLitterNotNotFound(
 	}
 
 	clonePath := m.marketplaceDir("market-a")
-	failing := true
 	origRemove := marketplaceRemoveAll
 	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
 	marketplaceRemoveAll = func(p string) error {
-		if p == clonePath && failing {
+		if p == clonePath {
 			return &fs.PathError{Op: "remove", Path: clonePath, Err: errors.New("permission denied")}
 		}
 		return origRemove(p)
@@ -235,30 +235,55 @@ func TestRemoveMarketplaceRetryAfterCloneRemovalFailureReportsLitterNotNotFound(
 	if err := m.RemoveMarketplace(ctx, "market-a"); !errors.Is(err, ErrMarketplaceUnregisteredCloneRemains) {
 		t.Fatalf("first RemoveMarketplace = %v, want ErrMarketplaceUnregisteredCloneRemains", err)
 	}
-
-	// The retry: the entry is already gone from known_marketplaces.json, so
-	// this must not report a bare not-found while the clone is still there.
-	err := m.RemoveMarketplace(ctx, "market-a")
-	if !errors.Is(err, ErrMarketplaceUnregisteredCloneRemains) {
-		t.Fatalf("retry RemoveMarketplace = %v, want ErrMarketplaceUnregisteredCloneRemains, not a bare not-found", err)
-	}
-	if errors.Is(err, ErrMarketplaceNotFound) {
-		t.Fatalf("retry RemoveMarketplace = %v, want it not to also read as ErrMarketplaceNotFound", err)
-	}
-	if strings.Contains(err.Error(), clonePath) {
-		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
-	}
 	mustExist(t, clonePath)
 
-	// Once the clone can actually be removed, the retry finishes the litter
-	// cleanup and reports success.
-	failing = false
-	if err := m.RemoveMarketplace(ctx, "market-a"); err != nil {
-		t.Fatalf("final retry RemoveMarketplace: %v", err)
+	// The retry: the entry is already gone from known_marketplaces.json, so
+	// this is a plain lookup miss.
+	err := m.RemoveMarketplace(ctx, "market-a")
+	if !errors.Is(err, ErrMarketplaceNotFound) {
+		t.Fatalf("retry RemoveMarketplace = %v, want ErrMarketplaceNotFound", err)
 	}
-	if _, err := os.Stat(clonePath); !os.IsNotExist(err) {
-		t.Fatalf("clone still present after the retry succeeded: %v", err)
+	mustExist(t, clonePath) // the retry never touches the filesystem on a miss
+}
+
+// RemoveMarketplace derives m.marketplaceDir(name) from name without
+// validating it first. A miss must never reach the filesystem with that
+// unvalidated name: "" resolves to the marketplaces directory itself, and
+// ".." to its parent - either one handed to marketplaceRemoveAll on a
+// caller-controlled miss would delete far more than a leftover clone.
+func TestRemoveMarketplace_LookupMissTouchesNothingOnDisk(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
 	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	var removed []string
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
+	marketplaceRemoveAll = func(p string) error {
+		removed = append(removed, p)
+		return origRemove(p)
+	}
+
+	for _, name := range []string{"", "..", "../x", "does-not-exist"} {
+		err := m.RemoveMarketplace(ctx, name)
+		if !errors.Is(err, ErrMarketplaceNotFound) {
+			t.Fatalf("RemoveMarketplace(%q) = %v, want ErrMarketplaceNotFound", name, err)
+		}
+	}
+	if len(removed) != 0 {
+		t.Fatalf("marketplaceRemoveAll called on a lookup miss: %v", removed)
+	}
+	if _, err := os.Stat(m.marketplacesDir()); err != nil {
+		t.Fatalf("the marketplaces directory itself was touched: %v", err)
+	}
+	mustExist(t, m.marketplaceDir("market-a"))
 }
 
 // RefreshMarketplace's save failure, after a directory-source refresh (which
