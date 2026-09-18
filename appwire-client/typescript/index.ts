@@ -239,6 +239,7 @@ export {
   groupOptions,
   inactivePromptDependent,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   listSupportsExplicitEmpty,
   matchesEnvCredentialError,
