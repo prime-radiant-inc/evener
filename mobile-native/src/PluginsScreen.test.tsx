@@ -19,12 +19,15 @@ vi.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView" 
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
 
 /** A plugins client: every method call is recorded in `methods`, every
- * `evener/plugin/list` answers with `plugins`. */
+ * `evener/plugin/list` answers with `plugins`, and `evener/marketplace/list`
+ * (the browse tab's own read) answers with an empty list - shaped for
+ * whichever surface a test mounts. */
 function pluginsClient(plugins: PluginEntry[]) {
 	const methods: string[] = [];
 	const client = {
 		request: async (method: string) => {
 			methods.push(method);
+			if (method === "evener/marketplace/list") return { marketplaces: [] };
 			return { plugins };
 		},
 		onNotification: () => () => {},
@@ -75,4 +78,37 @@ it("re-reads the installed list once the connection returns to ready after a fla
 	});
 
 	expect(hub.methods.filter((m) => m === "evener/plugin/list")).toHaveLength(2);
+});
+
+it("MarketplaceBrowser re-reads its list once the connection returns to ready after a flap", async () => {
+	const hub = pluginsClient([plugin]);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof PluginsScreen>;
+	const tree = render(<PluginsScreen {...props} />);
+	await act(async () => {});
+	// Switch to the browse tab, which mounts MarketplaceBrowser.
+	await act(async () => {
+		tree.root.findByProps({ accessibilityLabel: "Browse" }).props.onPress();
+	});
+	await act(async () => {});
+	expect(hub.methods.filter((m) => m === "evener/marketplace/list")).toHaveLength(1);
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<PluginsScreen {...props} />);
+	});
+
+	expect(hub.methods.filter((m) => m === "evener/marketplace/list")).toHaveLength(2);
 });

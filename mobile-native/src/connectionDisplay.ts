@@ -74,15 +74,27 @@ export function whenReady<A extends unknown[]>(
 	};
 }
 
-/** The client a ready-only screen renders with while retained through the
- * brief client-null window of a manual retry (hubConnection.ts clears
- * `client` while it dials a fresh one; a passive flap never does - its own
- * generation guard keeps the same client object through the whole flap).
+/** The client a ready-only screen renders with while retained through a
+ * manual retry: hubConnection.ts clears `client` the instant it starts
+ * dialing a fresh one, then reports the REPLACEMENT while it is still
+ * `"connecting"` - not yet safe to hand to a store, whose mount effect would
+ * issue a request AppWire rejects before the client is `"ready"` (a passive
+ * flap never does either of this - its own generation guard keeps the same
+ * client object, already ready, through the whole flap). A new client is
+ * therefore adopted only once `state` is `"ready"` for it; every other
+ * transition - the null gap AND the whole `"connecting"` window before it -
+ * keeps returning whatever was last adopted, the way the web's
+ * ConnectionBanner (cmd/evener-hub/frontend/src/shell/ConnectionBanner.tsx)
+ * only calls its own `onClientReplaced` - which swaps AppShell's
+ * ClientProvider slot - AFTER `await fresh.connect()` resolves, never on
+ * construction.
+ *
  * Scoped to `hubId` for the same reason `useConnectionDisplay` is: a reused
  * screen instance must not go on rendering the previous hub's client once
  * `hubId` has moved past it. */
 export function useRenderClient(
 	client: AppwireClient | null,
+	state: ConnectionState,
 	hubId: string,
 ): AppwireClient | null {
 	const lastClient = useRef<AppwireClient | null>(null);
@@ -91,8 +103,8 @@ export function useRenderClient(
 		scope.current = hubId;
 		lastClient.current = null;
 	}
-	if (client) lastClient.current = client;
-	return client ?? lastClient.current;
+	if (state === "ready") lastClient.current = client;
+	return state === "ready" ? client : lastClient.current;
 }
 
 /** Whether a transition from `previous` to `current` is a return to "ready"

@@ -62,12 +62,13 @@ export function PluginsScreen({
   const { activeProfile, client, state, fatal, retry } = useConnection();
   const display = useConnectionDisplay(route.params.hubId, state, fatal);
   // A flap keeps `client` set (the connection layer's own generation guard -
-  // hubConnection.ts), but a manual retry briefly clears it while it opens a
-  // fresh one; the last client this screen had keeps the list mounted
-  // through that gap too, rather than dropping to the wall for a moment the
-  // banner should cover just as well as a passive reconnect does. Scoped to
-  // the hub: see useRenderClient's own doc.
-  const renderClient = useRenderClient(client, route.params.hubId);
+  // hubConnection.ts), but a manual retry clears it, then reports a fresh
+  // client while it is still dialing; the list keeps rendering the previous
+  // one through the whole gap, never the not-yet-ready replacement, rather
+  // than dropping to the wall for a moment the banner should cover just as
+  // well as a passive reconnect does. Scoped to the hub: see
+  // useRenderClient's own doc.
+  const renderClient = useRenderClient(client, state, route.params.hubId);
   if (activeProfile?.id !== route.params.hubId)
     return (
       <Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -219,7 +220,7 @@ function Plugins({
           hubName={hubName}
           installed={model}
           gate={gate}
-          ready={ready}
+          connectionState={connectionState}
           onOpenPlugin={(target) => {
             close();
             setSelected(target);
