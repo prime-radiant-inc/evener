@@ -1379,8 +1379,12 @@ describe("the form", () => {
 
   /** Answers an evener/instance/list refresh with `instances` and waits for
    * the store to apply it, so the save still in flight becomes superseded. */
-  async function refreshList(fake: FakeClient, instances: InstanceEntry[]): Promise<void> {
-    fake.on("evener/instance/list", () => ({ instances, availableProviders: [OPENAI] }));
+  async function refreshList(
+    fake: FakeClient,
+    instances: InstanceEntry[],
+    providers: ProviderDescriptor[] = [OPENAI],
+  ): Promise<void> {
+    fake.on("evener/instance/list", () => ({ instances, availableProviders: providers }));
     await act(async () => {
       await credentialsStore.getState().fetch();
     });
@@ -1673,5 +1677,138 @@ describe("the form", () => {
     await user.click(saveButton());
     expect(screen.queryByText(/replaced under the same name/)).toBeNull();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // The re-anchor above turns on the listing carrying THIS save's declaration.
+  // A same-name replacement that matches every untouched identity field but
+  // differs in the very field the save edited is not this save's landing:
+  // re-anchoring there would pin the draft to the replacement and let the next
+  // Save write onto it.
+  test("a superseded save is not re-anchored onto a concurrent write in the same field it touched", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+
+    // Another client wrote a different destination into the same field. The
+    // listing's untouched fields all match `before`, but its baseUrl is not the
+    // one this save declared.
+    const foreign = { ...before, baseUrl: "https://other.example.test/y", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // A save's params carry only the variables it changed; every other authored
+  // variable is left alone. Comparing `vars` as one field would therefore
+  // accept a replacement that differs only in an untouched variable. The
+  // re-anchor has to compare the variables key by key.
+  test("a superseded save is not re-anchored onto a look-alike differing only in an untouched variable", async () => {
+    const before = instance({
+      name: "v",
+      providerId: "google-vertex-anthropic",
+      protocol: "anthropic",
+      vars: { GOOGLE_VERTEX_PROJECT: "p1", GOOGLE_VERTEX_LOCATION: "loc1" },
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [VERTEX]);
+    const user = userEvent.setup();
+    await user.clear(field("GOOGLE_VERTEX_PROJECT"));
+    await user.type(field("GOOGLE_VERTEX_PROJECT"), "p9");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "v", vars: { GOOGLE_VERTEX_PROJECT: "p9" } });
+
+    // The listing carries the variable this save declared, but its untouched
+    // variable differs: this is a different instance, not this save's landing.
+    const lookAlike = {
+      ...before,
+      vars: { GOOGLE_VERTEX_PROJECT: "p9", GOOGLE_VERTEX_LOCATION: "loc-other" },
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [lookAlike], [VERTEX]);
+    await act(async () => finish({ instances: [lookAlike], availableProviders: [VERTEX] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // Editing an implicit instance authors a shadow under the same name, so the
+  // listing's implicit legitimately falls true -> false across this save. That
+  // is still this save's own landing: the re-anchor must allow it, or the next
+  // endpoint save is falsely refused and the draft reset.
+  test("editing an implicit instance still re-anchors after it authors a shadow", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      implicit: true,
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+
+    const authored = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      implicit: false,
+    };
+    await refreshList(fake, [authored]);
+    await act(async () => finish({ instances: [authored], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // The transition is one-directional: an authored row does not become
+  // implicit from a plain save, so a listing that flips the other way is a
+  // different instance and the re-anchor must not accept it.
+  test("a superseded save is not re-anchored onto a replacement under a differing implicit", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", baseUrl: "https://gw.example.test/v1/x" });
+
+    const envRow = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      implicit: true,
+    };
+    await refreshList(fake, [envRow]);
+    await act(async () => finish({ instances: [envRow], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
 });

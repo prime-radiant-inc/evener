@@ -179,6 +179,73 @@ function baseCarriedByRename(before: InstanceEntry, listed: InstanceEntry): bool
   return beforeBase === "" && listed.base === before.name;
 }
 
+/** Whether the variables the store's listing carries are the ones this save
+ * left alone. A save's params name only the variables it changed - the wire
+ * leaves every other authored variable untouched - so comparing `vars` as one
+ * field cannot see an untouched variable's change and would mistake a
+ * different instance for this save's own landing. Compare key-by-key across
+ * both sides, skipping only the keys this save declared. */
+function varsCarriedOver(before: InstanceEntry, listed: InstanceEntry, params: InstanceEditParams): boolean {
+  const declared = params.vars ?? {};
+  const keys = new Set([...Object.keys(before.vars ?? {}), ...Object.keys(listed.vars ?? {})]);
+  for (const key of keys) {
+    if (key in declared) continue;
+    if ((before.vars?.[key] ?? "") !== (listed.vars?.[key] ?? "")) return false;
+  }
+  return true;
+}
+
+/** Whether the listed entry carries every identity field this save did not
+ * touch - the confirmation a superseded rename and a superseded plain save
+ * share. `vars` is compared key-by-key (see varsCarriedOver); the derived
+ * endpointFingerprint is not compared when this save edited a field it derives
+ * from (ENDPOINT_AFFECTING_FIELDS). `base` is the one field whose comparison
+ * differs by path - a rename may legitimately pin it, a plain save may not -
+ * so the caller supplies that comparison. */
+function untouchedIdentityMatches(
+  before: InstanceEntry,
+  listed: InstanceEntry,
+  params: InstanceEditParams,
+  matchesBase: (before: InstanceEntry, listed: InstanceEntry) => boolean,
+): boolean {
+  const changed = changedFields(params);
+  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
+  const untouched = RENAME_IDENTITY_FIELDS.filter(
+    (field) => field !== "vars" && !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
+  );
+  const matches = untouched.every((field) =>
+    field === "base" ? matchesBase(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
+  );
+  return matches && varsCarriedOver(before, listed, params);
+}
+
+/** Whether the listed entry carries the exact values this save declared for the
+ * fields it changed. Without it a concurrent write that differs only in those
+ * very fields reads as this save's own landing, and re-anchoring there pins
+ * the draft to a foreign instance and lets the next save write onto it. A
+ * `clear` declares the empty value the listing then shows; a declared variable
+ * has to be present and equal, key by key. */
+function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  const scalarLanded = (
+    declared: string | undefined,
+    clear: boolean | undefined,
+    actual: string | undefined,
+  ): boolean => {
+    if (declared !== undefined && (actual ?? "") !== declared) return false;
+    if (clear && (actual ?? "") !== "") return false;
+    return true;
+  };
+  if (!scalarLanded(params.baseUrl, params.clearBaseUrl, listed.baseUrl)) return false;
+  if (!scalarLanded(params.protocol, params.clearProtocol, listed.protocol)) return false;
+  if (!scalarLanded(params.surface, params.clearSurface, listed.surface)) return false;
+  if (!scalarLanded(params.apiKeyEnv, params.clearApiKeyEnv, listed.apiKeyEnv)) return false;
+  if (!scalarLanded(params.credentialHeader, params.clearCredentialHeader, listed.credentialHeader)) return false;
+  for (const [key, value] of Object.entries(params.vars ?? {})) {
+    if ((listed.vars?.[key] ?? "") !== value) return false;
+  }
+  return true;
+}
+
 /** The name this save's rename landed under, or undefined when the store's own
  * listing cannot say that it did: the new name has to be held by the instance
  * this save renamed, not by a later tenant of the freed name. */
@@ -191,15 +258,7 @@ function renamedInstanceLanded(
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
-  const changed = changedFields(params);
-  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
-  const untouched = RENAME_IDENTITY_FIELDS.filter(
-    (field) => !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
-  );
-  const matches = untouched.every((field) =>
-    field === "base" ? baseCarriedByRename(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
-  );
-  return matches ? newName : undefined;
+  return untouchedIdentityMatches(before, listed, params, baseCarriedByRename) ? newName : undefined;
 }
 
 /** The entry the store's own listing carries for a plain (non-rename) save
@@ -209,10 +268,12 @@ function renamedInstanceLanded(
  * already holds the change the save declared. The seeded identity anchor was
  * taken before the save, so the derived endpointFingerprint the save produced
  * no longer matches it, and the next save would refuse with the replacement
- * error for an instance nothing replaced. The declaration confirms the listing
- * the same way a rename does: every identity field this save did not touch is
- * carried over, and the digest is not compared as untouched when the save
- * edited a field it derives from (ENDPOINT_AFFECTING_FIELDS). */
+ * error for an instance nothing replaced. The listing has to match on the
+ * fields this save left alone *and* carry the values it declared; otherwise a
+ * concurrent replacement is mistaken for this save's own landing. Editing an
+ * implicit instance authors a shadow under the same name, so implicit
+ * legitimately falls true -> false here; the other direction is a different
+ * instance. */
 function supersededSaveLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
@@ -220,14 +281,11 @@ function supersededSaveLanded(
 ): InstanceEntry | undefined {
   if (params.newName !== undefined) return undefined;
   const listed = instances.find((instance) => instance.name === before.name);
-  if (listed === undefined || listed.implicit !== before.implicit) return undefined;
-  const changed = changedFields(params);
-  const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
-  const untouched = RENAME_IDENTITY_FIELDS.filter(
-    (field) => !changed.has(field) && !(endpointChanged && field === "endpointFingerprint"),
-  );
-  const matches = untouched.every((field) => fieldValue(before, field) === fieldValue(listed, field));
-  return matches ? listed : undefined;
+  if (listed === undefined) return undefined;
+  if (listed.implicit !== before.implicit && !(before.implicit && !listed.implicit)) return undefined;
+  const plainBase = (a: InstanceEntry, b: InstanceEntry): boolean => fieldValue(a, "base") === fieldValue(b, "base");
+  if (!untouchedIdentityMatches(before, listed, params, plainBase)) return undefined;
+  return declaredValuesLanded(listed, params) ? listed : undefined;
 }
 
 export interface InstanceSheetProps {
