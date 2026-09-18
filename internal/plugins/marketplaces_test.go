@@ -858,6 +858,180 @@ func TestEditMarketplace_RenameSparesADirectorySourceThatIsTheClonePath(t *testi
 	}
 }
 
+// seedSweepStore creates the clone directory for name and writes the given
+// marketplaces file, so a test can express exactly which record (if any) names
+// the clone path, or an ancestor of it, as a directory source.
+func seedSweepStore(t *testing.T, m *Manager, name string, mk Marketplaces) string {
+	t.Helper()
+	clone := m.marketplaceDir(name)
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(clone, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("clone contents"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	return sentinel
+}
+
+// An ancestor directory source contains the clone but is not deleted by
+// RemoveAll, so it must not protect the sweep: the stale clone still has to go,
+// or the name stays blocked and cannot be reused.
+func TestRemoveMarketplace_SweepsWhenADirectorySourceIsAnAncestor(t *testing.T) {
+	m := NewManager(t.TempDir())
+	ancestor := m.marketplacesDir()
+	clone := m.marketplaceDir("acme")
+	seedSweepStore(t, m, "acme", Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: ancestor},
+		InstallLocation: ancestor,
+	}})
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("an ancestor source over-protected the stale clone %s: %v", clone, err)
+	}
+}
+
+// The rename path shares the guard: an ancestor source must not leave the stale
+// clone in place there either.
+func TestEditMarketplace_RenameSweepsWhenADirectorySourceIsAnAncestor(t *testing.T) {
+	m := NewManager(t.TempDir())
+	ancestor := m.marketplacesDir()
+	clone := m.marketplaceDir("acme")
+	seedSweepStore(t, m, "acme", Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: ancestor},
+		InstallLocation: ancestor,
+	}})
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "beta", nil); err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("an ancestor source over-protected the stale clone %s: %v", clone, err)
+	}
+}
+
+// A source recorded beneath the clone is deleted with it even when it is a
+// symlink resolving outside: RemoveAll removes the link, leaving the registered
+// marketplace pointing at a missing path. The guard must protect the recorded
+// path itself, not only its resolved target.
+func TestRemoveMarketplace_SparesASourceSymlinkedOutOfTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(clone, "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: link},
+		InstallLocation: link,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("the symlinked source beneath the clone was swept: %v", err)
+	}
+}
+
+func TestEditMarketplace_RenameSparesASourceSymlinkedOutOfTheClone(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(clone, "link")
+	if err := os.Symlink(t.TempDir(), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: link},
+		InstallLocation: link,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "beta", nil); err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("the symlinked source beneath the clone was swept by the rename: %v", err)
+	}
+}
+
+// The guard checks every registered marketplace's directory source, not only
+// the one being swept: a hand-seeded store can record one marketplace against
+// another's clone path, and removing one must not delete the other's source.
+func TestRemoveMarketplace_SparesAnotherMarketplacesSourceAtTheClonePath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	sentinel := seedSweepStore(t, m, "acme", Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	})
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("another marketplace's source at the clone path was deleted: %v", err)
+	}
+}
+
+func TestEditMarketplace_RenameSparesAnotherMarketplacesSourceAtTheClonePath(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	sentinel := seedSweepStore(t, m, "acme", Marketplaces{
+		"acme": {Source: Source{Kind: SourceDirectory, Path: t.TempDir()}, InstallLocation: t.TempDir()},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	})
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", nil); err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("another marketplace's source at the clone path was deleted by the rename: %v", err)
+	}
+}
+
+// A git marketplace's rename moves its clone with the name, so when another
+// marketplace records a directory source at that path, the move would strip the
+// source out from under a live record. Refuse rather than do that, and leave the
+// store untouched.
+func TestEditMarketplace_RenameRefusesToMoveAnotherMarketplacesSource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	sentinel := seedSweepStore(t, m, "acme", Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	})
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", nil); err == nil {
+		t.Fatal("rename moved a clone that another marketplace records as its source")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the other marketplace's source was displaced despite the refusal: %v", err)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := mk["acme"]; !ok {
+		t.Fatalf("failed rename lost the marketplace: %v", mk)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
