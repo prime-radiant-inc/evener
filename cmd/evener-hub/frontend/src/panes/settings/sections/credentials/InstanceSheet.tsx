@@ -219,27 +219,65 @@ function untouchedIdentityMatches(
   return matches && varsCarriedOver(before, listed, params);
 }
 
-/** Whether the listed entry carries the exact values this save declared for the
+/** An authored URL reduced to the endpoint identity the listing serves: the hub
+ * strips userinfo, query and fragment before a Base URL crosses the appwire
+ * boundary (cmd/evener-hub/app_instances.go's sanitizeEndpointURL), so a
+ * declared Base URL has to be reduced the same way before it can be matched
+ * against the listing. A URL that does not parse or carries no host sanitizes
+ * to empty, as the hub's does; a trailing slash is normalized away on both
+ * sides because the two URL libraries disagree on it for a bare authority. */
+function listedEndpoint(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed === "") return "";
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return "";
+  }
+  if (parsed.protocol === "" || parsed.host === "") return "";
+  parsed.username = "";
+  parsed.password = "";
+  parsed.search = "";
+  parsed.hash = "";
+  const out = parsed.toString();
+  return out.endsWith("/") ? out.slice(0, -1) : out;
+}
+
+/** Whether the listed value is the endpoint this save declared: the declared
+ * URL sanitized and the listed URL (already sanitized by the hub) reduced to
+ * the same identity. */
+function endpointMatches(declared: string, listed: string | undefined): boolean {
+  const want = listedEndpoint(declared);
+  const got = (listed ?? "").endsWith("/") ? (listed ?? "").slice(0, -1) : (listed ?? "");
+  return want !== "" && want === got;
+}
+
+/** Whether the listed entry carries the values this save declared for the
  * fields it changed. Without it a concurrent write that differs only in those
  * very fields reads as this save's own landing, and re-anchoring there pins
- * the draft to a foreign instance and lets the next save write onto it. A
- * `clear` declares the empty value the listing then shows; a declared variable
- * has to be present and equal, key by key. */
+ * the draft to a foreign instance and lets the next save write onto it.
+ *
+ * The representation differs per field. A declared Base URL is compared as the
+ * sanitized endpoint the listing serves. A `clear` of an endpoint override
+ * (baseUrl/protocol/surface) drops the authored value and the listing then
+ * serves the RESOLVED value - the base provider's URL, protocol or surface -
+ * which the client cannot know, so there is no value to compare and the clear
+ * is accepted on the save's word; the untouched identity fields still bound
+ * the risk. apiKeyEnv and credentialHeader are authored-only, so their clears
+ * do show as empty in the listing and are compared. A declared var has to be
+ * present and equal, key by key. */
 function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
-  const scalarLanded = (
-    declared: string | undefined,
-    clear: boolean | undefined,
-    actual: string | undefined,
-  ): boolean => {
-    if (declared !== undefined && (actual ?? "") !== declared) return false;
-    if (clear && (actual ?? "") !== "") return false;
-    return true;
-  };
-  if (!scalarLanded(params.baseUrl, params.clearBaseUrl, listed.baseUrl)) return false;
-  if (!scalarLanded(params.protocol, params.clearProtocol, listed.protocol)) return false;
-  if (!scalarLanded(params.surface, params.clearSurface, listed.surface)) return false;
-  if (!scalarLanded(params.apiKeyEnv, params.clearApiKeyEnv, listed.apiKeyEnv)) return false;
-  if (!scalarLanded(params.credentialHeader, params.clearCredentialHeader, listed.credentialHeader)) return false;
+  if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
+  // A clear of baseUrl/protocol/surface is deliberately not compared: the
+  // listing carries the inherited resolved value, not the dropped override.
+  if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
+  if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
+  if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
+  if (params.clearApiKeyEnv && (listed.apiKeyEnv ?? "") !== "") return false;
+  if (params.credentialHeader !== undefined && (listed.credentialHeader ?? "") !== params.credentialHeader)
+    return false;
+  if (params.clearCredentialHeader && (listed.credentialHeader ?? "") !== "") return false;
   for (const [key, value] of Object.entries(params.vars ?? {})) {
     if ((listed.vars?.[key] ?? "") !== value) return false;
   }
@@ -248,7 +286,9 @@ function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams)
 
 /** The name this save's rename landed under, or undefined when the store's own
  * listing cannot say that it did: the new name has to be held by the instance
- * this save renamed, not by a later tenant of the freed name. */
+ * this save renamed - matching on the fields this save left alone and carrying
+ * the values it declared - not by a later tenant of the freed name that
+ * differs in a field this rename also edited. */
 function renamedInstanceLanded(
   instances: InstanceEntry[],
   before: InstanceEntry,
@@ -258,7 +298,8 @@ function renamedInstanceLanded(
   if (newName === undefined) return undefined;
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined || listed.implicit !== before.implicit) return undefined;
-  return untouchedIdentityMatches(before, listed, params, baseCarriedByRename) ? newName : undefined;
+  if (!untouchedIdentityMatches(before, listed, params, baseCarriedByRename)) return undefined;
+  return declaredValuesLanded(listed, params) ? newName : undefined;
 }
 
 /** The entry the store's own listing carries for a plain (non-rename) save

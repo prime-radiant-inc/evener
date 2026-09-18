@@ -1811,4 +1811,111 @@ describe("the form", () => {
     expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
   });
+
+  // The listing's Base URL is the endpoint the hub sanitized: userinfo, query
+  // and fragment are stripped before it crosses the appwire boundary. A save
+  // whose declared URL carries a query therefore only matches the listing once
+  // the declared URL is reduced the same way, or the re-anchor is skipped and
+  // the next Save falsely reports a replacement.
+  test("a superseded save whose declared URL carries a query still re-anchors", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x?token=abc");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x?token=abc",
+    });
+
+    // The listing carries the sanitized endpoint (query stripped), not the raw
+    // declared URL.
+    const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // Clearing an override drops the authored value, and the listing then serves
+  // the RESOLVED value (the base provider's), which the client cannot know. A
+  // superseded clear must still re-anchor; requiring an empty listing value
+  // would refuse the retry and reseed the draft.
+  test("a superseded clear of the Base URL still re-anchors on the inherited value", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Base URL"));
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true });
+
+    // The listing does not show an empty Base URL: it shows the inherited
+    // resolved endpoint the clear fell back to.
+    const landed = {
+      ...before,
+      baseUrl: "https://inherited.example.test/v1",
+      endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.queryByText(/replaced under the same name/)).toBeNull();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
+  });
+
+  // A rename confirms the store's own listing only when the entry under the new
+  // name also carries the values this rename declared. A different instance
+  // that happens to hold the new name and differs in a field this rename edited
+  // is not this rename's landing; confirming it would steer the sheet onto
+  // another instance's values.
+  test("a superseded rename is not confirmed by a new-name entry differing only in a field it edited", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    const { handlers } = renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.type(field("Base URL"), "/x");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      newName: "work2",
+      baseUrl: "https://gw.example.test/v1/x",
+    });
+
+    const foreign = {
+      ...before,
+      name: "work2",
+      baseUrl: "https://other.example.test/y",
+      endpointFingerprint: "fp-other",
+    };
+    await refreshList(fake, [foreign]);
+    await act(async () => finish({ instances: [foreign], availableProviders: [OPENAI] }));
+
+    expect(handlers.onRenamed).not.toHaveBeenCalled();
+    expect(getToasts().some((t) => t.text === "Saved work2")).toBe(false);
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(true);
+  });
 });
