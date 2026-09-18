@@ -222,7 +222,7 @@ describe("discardCheckpointedDraft", () => {
       discardCheckpointedDraft(throwingRepo, store.getState, store.setState, restoreDraft, "discard failed"),
     ).toThrow("discard failed");
 
-    expect(store.getState().storageUnavailable).toBe(true);
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftError: "discard failed" });
     expect(restoreDraft).not.toHaveBeenCalled();
   });
 });

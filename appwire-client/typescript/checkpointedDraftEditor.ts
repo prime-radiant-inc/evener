@@ -112,7 +112,7 @@ export function discardCheckpointedDraft<Fields extends DiscardedDraftFields, Ch
   try {
     removed = drafts.discardClassified();
   } catch {
-    setState({ storageUnavailable: true } as Partial<Fields>);
+    setState({ storageUnavailable: true, draftError: draftDiscardFailedMessage } as Partial<Fields>);
     throw new Error(draftDiscardFailedMessage);
   }
   if (!removed) {
