@@ -1026,16 +1026,57 @@ func TestResumeAfterConfirmedRetirementRecordsResolvedSession(t *testing.T) {
 // TestResumeAfterConfirmedRetirementRecordsLifecycle pins that a resume
 // triggered by daemon retirement carries the same correlated lifecycle trace as
 // an explicit resume. resumeThreadLocked (from #1390/#1575) records its eight
-// stages from the trace in the context; the retirement caller entered without
-// one, so every stage was a nil-receiver no-op and the path produced no
-// diagnostics at all. The log destination is the hub's own stderr, not a
-// configurable seam, so capture the real os.Stderr around the call.
+// stages from the trace in the context; before the fix the retirement caller
+// entered without one, so every stage was a nil-receiver no-op and the path
+// produced no diagnostics at all. The records must carry the requested
+// identity in session_id and the resolved target in resolved_session_id, the
+// same pair the explicit alias-resume path records. The log destination is the
+// hub's own stderr, not a configurable seam, so capture the real os.Stderr
+// around the call.
 func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	requested := hubtest.SessionID(t)
-	target := hubtest.SessionID(t)
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	target := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
 	if requested == target {
 		t.Fatal("fixture requires distinct requested and resolved session IDs")
 	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        target,
+			SessionID: target,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: params.Ref, InstanceID: target},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		if req.SessionID != target {
+			t.Fatalf("resume request session = %q, want the resolved target %q", req.SessionID, target)
+		}
+		entry := rendezvous.Entry{
+			PID:        106,
+			Protocol:   appwire.ProtocolVersion,
+			Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+			SourceID:   "local",
+			ThreadID:   target,
+			SessionID:  target,
+			WorkingDir: workingDir,
+		}
+		writeRendezvous(t, runDir, entry)
+		return entry, nil
+	}}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
 	locks := hubcore.NewResumeLocks()
 	if err := locks.PersistForceStop([]string{requested, target}, target); err != nil {
 		t.Fatalf("PersistForceStop: %v", err)
@@ -1046,14 +1087,12 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	}
 	locks.RecordResolvedSession(requested, target, epoch)
 
-	runDir := t.TempDir()
 	cfg := hubcore.WebConfig{
 		RunDir:      runDir,
 		Roster:      hubcore.NewRoster(runDir, nil),
 		ResumeLocks: locks,
-		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
-			return rendezvous.Entry{}, nil
-		}},
+		Spawner:     spawner,
+		Past:        past,
 	}
 
 	original := os.Stderr
@@ -1066,18 +1105,21 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 		_ = readEnd.Close()
 	})
 	os.Stderr = writeEnd
-	_ = resumeAfterConfirmedRetirement(t.Context(), cfg, nil, appwire.TurnStartParams{Ref: "local:" + requested})
+	resumeErr := resumeAfterConfirmedRetirement(t.Context(), cfg, newHubSourceRegistry(cfg), appwire.TurnStartParams{Ref: "local:" + requested})
 	_ = writeEnd.Close()
 	os.Stderr = original
 	data, _ := io.ReadAll(readEnd)
 
+	if resumeErr != nil {
+		t.Fatalf("resumeAfterConfirmedRetirement: %v", resumeErr)
+	}
 	records := assertThreadLifecycleRecords(t, string(data))
 	for _, record := range records {
-		if record["operation"] != "resume" || record["session_id"] != target {
-			t.Fatalf("lost retirement-resume correlation: %#v, want operation=resume session_id=%s", record, target)
+		if record["operation"] != "resume" || record["session_id"] != requested || record["resolved_session_id"] != target {
+			t.Fatalf("lost retirement-resume correlation: %#v, want operation=resume session_id=%s resolved_session_id=%s", record, requested, target)
 		}
 	}
-	for _, stage := range []string{"discovery", "protocol_check", "owner_lookup", "request_preparation", "spawner_resume", "post_launch_discovery"} {
+	for _, stage := range []string{"discovery", "protocol_check", "owner_lookup", "request_preparation", "spawner_resume", "post_launch_discovery", "daemon_read"} {
 		assertThreadLifecycleOutcome(t, records, stage, "success", "none")
 	}
 }

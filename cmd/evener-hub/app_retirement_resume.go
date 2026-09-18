@@ -129,6 +129,12 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	if sessionID == "" || cfg.ResumeLocks == nil || cfg.Roster == nil {
 		return appwire.LifecycleUnavailable("retiring")
 	}
+	// A retirement-triggered resume is a resume, so adopt #1390's correlated
+	// lifecycle trace up front with the requested identity. resumeOwnership may
+	// resolve that alias to a different current target; the target is stamped
+	// onto the trace before the spawn half so these records carry the same
+	// session_id/resolved_session_id pair an explicit resume records.
+	ctx, trace := withThreadLifecycleLog(ctx, "resume", sessionID, nil)
 	epoch := sessionRequestRecoveryEpoch(ctx, cfg, params.Ref, params.ThreadID)
 	if err := retirementAdmissionRecoveryError(cfg, sessionID, epoch); err != nil {
 		return err
@@ -241,11 +247,9 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// same convention resumeThread follows by assigning sessionID = target.
 	//
 	// resumeThreadLocked records its lifecycle stages from the trace in the
-	// context (#1390). An explicit resume stamps that trace on the way in; this
-	// retirement caller enters without one, so stamping it here keeps a
-	// retirement-triggered resume correlated like every other resume instead of
-	// emitting nothing.
-	ctx, _ = withThreadLifecycleLog(ctx, "resume", target, nil)
+	// context (#1390). Stamp the ownership-resolved target so the stages below
+	// record the resolved_session_id the explicit path records.
+	ctx, _ = trace.resolved(ctx, target)
 	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
 	return resumeErr
 }
