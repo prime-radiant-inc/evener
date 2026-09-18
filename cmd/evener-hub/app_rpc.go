@@ -1148,14 +1148,14 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
@@ -1163,33 +1163,33 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
 		return authController.List(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.ApiKeySet(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
+	// ApiKeySet, ApiKeyClear and CredentialJsonSet all answer with a bare
+	// AuthStatusResponse, so one closure covers the broadcast every one of
+	// them owes evener/auth/updated when its write applied.
+	authStatusWrite := func(originClientID string, call func() (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
+		resp, err := call()
+		if writeDidApply(err) {
+			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, originClientID)
 		}
 		return resp, err
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeySet(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.ApiKeyClear(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
-		return resp, err
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeyClear(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.CredentialJsonSet(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
-		return resp, err
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.CredentialJsonSet(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authDevicePoll(authController, ctx, params)
-		if err == nil && resp.State == "authorized" {
+		// A pending poll wrote nothing, which the state says; an authorized one
+		// wrote the record, whether or not the status read after it failed.
+		if writeDidApply(err) && resp.State == "authorized" {
 			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
 		}
 		return resp, err
@@ -1208,54 +1208,43 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Create(params); err != nil {
-			return appwire.InstanceListResponse{}, err
+	// Every instance write answers the same way: a write that applied is
+	// announced, whether or not the step after it failed (writeDidApply), and
+	// the error still goes back to the client that asked, which is the only
+	// one that can act on what was left behind.
+	instanceWrite := func(apply func() error) (appwire.InstanceListResponse, error) {
+		err := apply()
+		if writeDidApply(err) {
+			notifyInstanceUpdated(server)
 		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Edit(params); err != nil {
-			// A rename that persisted before it failed leaves every other
-			// client's list as stale as a clean one does, so it is announced
-			// too; the error still goes back to the client that asked, which
-			// is the only one that can act on the leftover credential.
-			if _, persisted := errors.AsType[renamePersistedError](err); persisted {
-				notifyInstanceUpdated(server)
-			}
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Remove(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.SetDefault(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.SetModelDisabled(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		resp, err := instancesController.RefreshModels(ctx, params)
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		notifyInstanceUpdated(server)
+		return instancesController.List(), nil
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Create(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Edit(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Remove(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.SetDefault(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.SetModelDisabled(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+		resp, err := instancesController.RefreshModels(ctx, params)
+		if writeDidApply(err) {
+			notifyInstanceUpdated(server)
+		}
+		if err != nil {
+			return appwire.InstanceListResponse{}, err
+		}
 		return resp, nil
 	})
 }
@@ -1274,14 +1263,14 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchController.SetLayer(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, params.Layer)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchTrustRepo(launchController, ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, "repo")
 		}
 		return resp, err

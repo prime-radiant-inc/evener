@@ -405,11 +405,8 @@ func (c *hubAuthController) LoginComplete(ctx context.Context, params appwire.Au
 	delete(c.flows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.openAIInstanceStatus(provider)
-	if err != nil {
-		return appwire.AuthLoginCompleteResponse{}, err
-	}
-	return appwire.AuthLoginCompleteResponse{Status: status}, nil
+	status, err := c.openAIStatusAfterWrite(provider)
+	return appwire.AuthLoginCompleteResponse{Status: status}, err
 }
 
 func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
@@ -474,11 +471,8 @@ func (c *hubAuthController) Logout(params appwire.AuthLogoutParams) (appwire.Aut
 		status, _ := c.Status(appwire.AuthStatusParams{Provider: name})
 		return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
 	}
-	status, statusErr := c.openAIInstanceStatus(name)
-	if statusErr != nil {
-		return appwire.AuthLogoutResponse{}, statusErr
-	}
-	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, nil
+	status, err := c.openAIStatusAfterWrite(name)
+	return appwire.AuthLogoutResponse{Removed: removed, Status: status}, err
 }
 
 // credentialWriteBetween runs inside a credential write's critical section,
@@ -529,6 +523,32 @@ func (c *hubAuthController) credentialWriteExclusive(write func() error) error {
 	credentialWriteBetween()
 	_ = c.reloadRegistryLocked() // not returned; see credentialWrite
 	return nil
+}
+
+// statusAfterCredentialWrite answers a credential write that has already landed
+// with the instance's status. A read that fails does not unwrite the
+// credential, so it is reported as an applied write, with the provider named
+// for the broadcast and the rest of the status left at what could not be read.
+func (c *hubAuthController) statusAfterCredentialWrite(name string) (appwire.AuthStatusResponse, error) {
+	status, err := c.Status(appwire.AuthStatusParams{Provider: name})
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
+}
+
+// openAIStatusAfterWrite is statusAfterCredentialWrite's Codex sibling: it
+// answers a write that already landed the OAuth record (LoginComplete,
+// Logout, DevicePoll) with the instance's status. A read that fails does not
+// unwrite the record, so it is reported as an applied write, with the
+// provider named for the broadcast and the rest of the status left at what
+// could not be read (#1543's rule).
+func (c *hubAuthController) openAIStatusAfterWrite(name string) (appwire.AuthStatusResponse, error) {
+	status, err := c.openAIInstanceStatus(name)
+	if err != nil {
+		return appwire.AuthStatusResponse{Provider: name}, writeApplied(err)
+	}
+	return status, nil
 }
 
 // reloadRegistryLocked re-derives the instance set after a credential changed:
@@ -653,7 +673,7 @@ func (c *hubAuthController) ApiKeySet(params appwire.AuthApiKeySetParams) (appwi
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterCredentialWrite(name)
 }
 
 // ApiKeyClear removes a stored file-layer key without touching any other
@@ -686,7 +706,7 @@ func (c *hubAuthController) ApiKeyClear(params appwire.AuthApiKeyClearParams) (a
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterCredentialWrite(name)
 }
 
 func effectiveHubAuthEnv(launchEnv map[string]string) map[string]string {
@@ -853,11 +873,10 @@ func (c *hubAuthController) DevicePoll(ctx context.Context, params appwire.AuthD
 	delete(c.deviceFlows, flowID)
 	c.mu.Unlock()
 
-	status, err := c.openAIInstanceStatus(provider)
-	if err != nil {
-		return appwire.AuthDevicePollResponse{}, err
-	}
-	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, nil
+	// Authorized and applied: the record is saved. The state is what the
+	// handler reads to tell this from a pending poll, which writes nothing.
+	status, err := c.openAIStatusAfterWrite(provider)
+	return appwire.AuthDevicePollResponse{State: "authorized", Status: &status}, err
 }
 
 func (c *hubAuthController) config() authopenai.Config {
@@ -1175,7 +1194,7 @@ func (c *hubAuthController) CredentialJsonSet(params appwire.AuthCredentialJsonS
 	}); err != nil {
 		return appwire.AuthStatusResponse{}, err
 	}
-	return c.Status(appwire.AuthStatusParams{Provider: name})
+	return c.statusAfterCredentialWrite(name)
 }
 
 // requiresGCPADC returns an InvalidParams error when the named instance does
