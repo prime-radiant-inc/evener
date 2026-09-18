@@ -63,6 +63,23 @@ describe("createDraftRepository", () => {
     expect(drafts.stored()).toEqual({ id: "d1", value: "edited" });
   });
 
+  it("save() refuses to overwrite a record another writer inserted after this repository classified as absent", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+
+    const loaded = repo.load() as Checkpoint;
+    expect(repo.removeIf(loaded)).toBe(true);
+
+    // Another writer creates a BRAND NEW record directly on the port while
+    // this repository still classifies the store as absent - there was no
+    // existing record for save() to CAS against, so an unconditional write
+    // (the bug #1884 tracked) would silently clobber it.
+    drafts.storage.save({ id: "external", value: "x" });
+
+    expect(repo.save({ id: "d2", value: "b" })).toBe(false);
+    expect(drafts.stored()).toEqual({ id: "external", value: "x" });
+  });
+
   it("save() succeeds unconditionally after removeIf classified the store as absent", () => {
     // removeIf's own success means storage is genuinely empty now, the same
     // postcondition load() classifying "absent" describes - a later save()

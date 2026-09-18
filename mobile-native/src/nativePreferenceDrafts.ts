@@ -28,6 +28,10 @@ export interface NativePreferenceDraftBackend {
  * atomically), so it stays on this narrower interface instead of widening
  * the shared one for a method only one consumer needs. */
 export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBackend {
+	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
+	 * whether it did. The atomic twin of replaceIf for a record that does not
+	 * exist yet - see DraftPort.insertIfAbsent's own comment. */
+	insertIfAbsent(key: string, checkpoint: KeybindingDraftCheckpoint): boolean;
 	replaceIf(
 		key: string,
 		expected: unknown,
@@ -46,6 +50,7 @@ export function nativeKeybindingDrafts(
 		createId: () => backend.createId(),
 		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
+		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
 		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
 	};

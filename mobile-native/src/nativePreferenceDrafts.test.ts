@@ -30,6 +30,24 @@ describe("nativeKeybindingDrafts", () => {
 		expect(b.store.has("evener.native.keybinding-draft.hub")).toBe(false);
 	});
 
+	it("propagates a refused insertIfAbsent as false through insertIfAbsent, leaving the stored record intact", () => {
+		const b = fakeDraftBackend();
+		const someoneElse = { ...checkpoint, id: "someone-else" };
+		b.store.set("evener.native.keybinding-draft.hub", someoneElse);
+		const storage = nativeKeybindingDrafts("hub", b);
+
+		expect(storage.insertIfAbsent(checkpoint)).toBe(false);
+		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(someoneElse);
+	});
+
+	it("propagates a successful insertIfAbsent as true through insertIfAbsent, writing the new record", () => {
+		const b = fakeDraftBackend();
+		const storage = nativeKeybindingDrafts("hub", b);
+
+		expect(storage.insertIfAbsent(checkpoint)).toBe(true);
+		expect(b.store.get("evener.native.keybinding-draft.hub")).toEqual(checkpoint);
+	});
+
 	it("propagates a refused replaceIf as false through replaceIf, leaving the stored record intact", () => {
 		const b = fakeDraftBackend();
 		const someoneElse = { ...checkpoint, id: "someone-else" };

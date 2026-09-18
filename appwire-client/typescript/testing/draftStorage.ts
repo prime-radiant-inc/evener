@@ -16,7 +16,7 @@ export interface MemoryDraftStorage<Checkpoint> {
    * unknown, not Checkpoint: a corrupt() record is not one, and this
    * accessor must be able to show that raw state too. */
   stored(): unknown;
-  /** Make save() throw (or stop making it throw). */
+  /** Make save() and insertIfAbsent() throw (or stop making them throw). */
   failSave(fail?: boolean): void;
   /** Make replaceIf() throw (or stop making it throw). */
   failReplace(fail?: boolean): void;
@@ -41,6 +41,12 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     save: (checkpoint: Checkpoint) => {
       if (saveFails) throw new Error("disk unavailable");
       stored = structuredClone(checkpoint);
+    },
+    insertIfAbsent: (checkpoint: Checkpoint) => {
+      if (saveFails) throw new Error("disk unavailable");
+      if (stored !== null) return false;
+      stored = structuredClone(checkpoint);
+      return true;
     },
     removeIf: (identity: unknown) => {
       lastRemoveIf = structuredClone(identity);

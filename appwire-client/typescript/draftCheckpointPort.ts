@@ -12,6 +12,13 @@ export interface DraftPort<Checkpoint> {
   createId(): string;
   load(): unknown;
   save(checkpoint: Checkpoint): void;
+  /** Inserts `checkpoint` only if nothing is stored; reports whether it did.
+   * The atomic twin of replaceIf for a record that does not exist yet:
+   * `replaceIf`'s `expected` names an existing record's identity, so it
+   * cannot guard the first-ever write, and two writers racing to create that
+   * first record (both classifying the store as absent) would otherwise let
+   * the second `save()` win unconditionally. */
+  insertIfAbsent(checkpoint: Checkpoint): boolean;
   /** Removes the stored record only if `identity` still names it; reports
    * whether it did. `identity` is usually a Checkpoint this port itself
    * produced (via load() or save()), but discardStoredDraft() also hands it
@@ -136,14 +143,15 @@ export function createDraftRepository<Checkpoint extends object>(
       // overwrite would silently discard whatever a concurrent writer put
       // there since (editDraft, saveDraft's pre-request persist, and
       // rebaseDraft all reach this through persistDraft, with no compare of
-      // their own). Nothing classified yet, or classified as absent, has no
-      // existing record to race against here - the same posture
-      // discardClassified/replaceClassified take, applied to a brand new
-      // record instead of removing or replacing an existing one.
+      // their own). Nothing classified yet, or classified as absent, still
+      // has no EXISTING record to CAS against, but a genuinely new record
+      // races the same way: another writer's first-ever save could land
+      // between this repository's absent classification and this call, so
+      // this inserts atomically too rather than overwriting blind.
       if (classification !== null && classification !== "absent") {
         if (!storage.replaceIf(classification.raw, decoded)) return false;
       } else {
-        storage.save(decoded);
+        if (!storage.insertIfAbsent(decoded)) return false;
       }
       // What was just written IS now the classified record: no raw bytes to
       // recover (this build built it), so the decoded value is its own

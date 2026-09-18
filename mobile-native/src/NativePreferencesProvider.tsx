@@ -41,6 +41,11 @@ const backend = {
 	set(key: string, value: unknown) {
 		Storage.setItemSync(key, JSON.stringify(value));
 	},
+	insertIfAbsent(key: string, value: unknown): boolean {
+		if (Storage.getItemSync(key) !== null) return false;
+		Storage.setItemSync(key, JSON.stringify(value));
+		return true;
+	},
 	delete(key: string) {
 		Storage.removeItemSync(key);
 	},

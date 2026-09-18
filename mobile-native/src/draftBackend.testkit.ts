@@ -22,6 +22,11 @@ export function fakeDraftBackend(): FakeDraftBackend {
 		set: (key, value) => {
 			store.set(key, structuredClone(value));
 		},
+		insertIfAbsent: (key, value) => {
+			if (store.has(key)) return false;
+			store.set(key, structuredClone(value));
+			return true;
+		},
 		delete: (key) => {
 			store.delete(key);
 		},
