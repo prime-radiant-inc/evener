@@ -1,6 +1,5 @@
-import { create } from "zustand";
-import { useStore } from "zustand";
 import type { HostRow } from "@evener/appwire-client";
+import { create, useStore } from "zustand";
 import { connectionStore } from "./connection";
 
 // hosts.ts is the Hosts settings section's store (component 08 slice 1):

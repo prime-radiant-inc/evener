@@ -3,9 +3,9 @@ import { useState } from "react";
 import { hostsStore, useHostsStore } from "../../../stores/hosts";
 import { Button, Chip, ConfirmDialog, Dialog, EmptyState, FormRow, Input, Skeleton, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { useConnectedEffect } from "./useConnectedEffect";
-import { Code } from "./settingsField";
 import styles from "./hosts.module.css";
+import { Code } from "./settingsField";
+import { useConnectedEffect } from "./useConnectedEffect";
 
 const CLASS = {
   root: requireClass(styles.root, "hosts.module.css", "root"),
@@ -125,7 +125,11 @@ export function HostsSection(_props: HostsSectionProps) {
       <EmptyState
         title="Couldn't load hosts"
         hint={load.message}
-        action={<Button size="sm" onClick={() => void hostsStore.getState().fetch()}>Retry</Button>}
+        action={
+          <Button size="sm" onClick={() => void hostsStore.getState().fetch()}>
+            Retry
+          </Button>
+        }
       />
     );
   }
@@ -137,7 +141,13 @@ export function HostsSection(_props: HostsSectionProps) {
         remove it. Hosts declared in <Code>hub.toml</Code> are read-only here — edit the file to change them.
       </p>
       <div>
-        <Button size="sm" onClick={() => { setAddOpen(true); setAddError(null); }}>
+        <Button
+          size="sm"
+          onClick={() => {
+            setAddOpen(true);
+            setAddError(null);
+          }}
+        >
           Add host
         </Button>
       </div>
@@ -172,14 +182,20 @@ export function HostsSection(_props: HostsSectionProps) {
       )}
       <Dialog
         open={addOpen}
-        onClose={() => { if (!adding) setAddOpen(false); }}
+        onClose={() => {
+          if (!adding) setAddOpen(false);
+        }}
         title="Add host"
         footer={
           <>
             <Button variant="quiet" disabled={adding} onClick={() => setAddOpen(false)}>
               Cancel
             </Button>
-            <Button variant="primary" disabled={adding || name.trim() === "" || address.trim() === ""} onClick={() => void handleAdd()}>
+            <Button
+              variant="primary"
+              disabled={adding || name.trim() === "" || address.trim() === ""}
+              onClick={() => void handleAdd()}
+            >
               {adding ? "Adding…" : "Add host"}
             </Button>
           </>
@@ -189,10 +205,23 @@ export function HostsSection(_props: HostsSectionProps) {
           <FormRow label="Name" htmlFor="hosts-add-name" help="The source ID used in refs and URLs.">
             <Input id="hosts-add-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="off" />
           </FormRow>
-          <FormRow label="SSH address" htmlFor="hosts-add-address" help="SSH destination, e.g. host.example or user@host.example.">
-            <Input id="hosts-add-address" value={address} onChange={(e) => setAddress(e.target.value)} autoComplete="off" />
+          <FormRow
+            label="SSH address"
+            htmlFor="hosts-add-address"
+            help="SSH destination, e.g. host.example or user@host.example."
+          >
+            <Input
+              id="hosts-add-address"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              autoComplete="off"
+            />
           </FormRow>
-          <FormRow label="Key path" htmlFor="hosts-add-key" help="Optional SSH private-key path used when dialing this host.">
+          <FormRow
+            label="Key path"
+            htmlFor="hosts-add-key"
+            help="Optional SSH private-key path used when dialing this host."
+          >
             <Input id="hosts-add-key" value={keyPath} onChange={(e) => setKeyPath(e.target.value)} autoComplete="off" />
           </FormRow>
           {addError !== null && (
@@ -208,7 +237,9 @@ export function HostsSection(_props: HostsSectionProps) {
         confirmLabel="Remove"
         busy={removing}
         onConfirm={() => void handleRemove()}
-        onCancel={() => { if (!removing) setPendingRemove(null); }}
+        onCancel={() => {
+          if (!removing) setPendingRemove(null);
+        }}
       >
         {pendingRemove !== null && pendingRemove.origin === "hub.toml"
           ? "This host is declared in hub.toml and cannot be removed here. Edit the file to remove it."

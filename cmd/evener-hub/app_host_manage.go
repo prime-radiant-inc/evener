@@ -96,16 +96,19 @@ type hostSidecarFile struct {
 }
 
 // hostSidecarFileEntry is one persisted sidecar entry: the seven HostConfig
-// fields in lowerCamel (the wire spelling) plus the key path.
+// fields in snake_case (hub.toml's spelling for the same fields) plus the key
+// path. The sidecar never crosses the wire — the hub is its only writer and
+// reader — so it follows the repo's snake_case json default; the appwire
+// package's camelCase HostRow is what clients see.
 type hostSidecarFileEntry struct {
 	Name       string   `json:"name"`
 	SSH        string   `json:"ssh"`
 	User       string   `json:"user,omitempty"`
-	EvenerPath string   `json:"evenerPath,omitempty"`
-	ConfigPath string   `json:"configPath,omitempty"`
+	EvenerPath string   `json:"evener_path,omitempty"`
+	ConfigPath string   `json:"config_path,omitempty"`
 	Addr       string   `json:"addr,omitempty"`
 	Roots      []string `json:"roots,omitempty"`
-	KeyPath    string   `json:"keyPath,omitempty"`
+	KeyPath    string   `json:"key_path,omitempty"`
 }
 
 // sidecarPathFor returns the sidecar path beside the selected hub.toml. An
@@ -524,7 +527,12 @@ func (m *hubHostManager) Remove(_ context.Context, params appwire.HostRemovePara
 		return appwire.HostRemoveResponse{}, appwire.InvalidParams(fmt.Sprintf("host %q is declared in hub.toml; remove it by editing the file", host.Name))
 	}
 	if m.cfg.manager != nil {
-		m.cfg.manager.DetachHost(host.Name)
+		// A detach failure refuses the removal before anything is dropped:
+		// the entry, source, and sidecar row all stay in place, so the caller
+		// can retry rather than inherit a half-removed host.
+		if err := m.cfg.manager.DetachHost(host.Name); err != nil {
+			return appwire.HostRemoveResponse{}, fmt.Errorf("detach host %q: %w", host.Name, err)
+		}
 	}
 	if m.cfg.sources != nil {
 		m.cfg.sources.Remove(host.Name)

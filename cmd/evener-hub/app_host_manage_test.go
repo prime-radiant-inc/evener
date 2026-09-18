@@ -48,14 +48,14 @@ func TestHostManageAddValidation(t *testing.T) {
 		{Name: "a/b", Address: "h.example"},
 		{Name: "a..b", Address: "h.example"},
 	} {
-		if _, err := m.Add(context.Background(), params); err == nil {
+		_, err := m.Add(context.Background(), params)
+		if err == nil {
 			t.Errorf("Add(%+v) accepted, want InvalidParams", params)
 			continue
-		} else {
-			var wire appwire.WireError
-			if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
-				t.Errorf("Add(%+v) error = %v, want InvalidParams", params, err)
-			}
+		}
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+			t.Errorf("Add(%+v) error = %v, want InvalidParams", params, err)
 		}
 	}
 	if got := m.cfg.hosts.All(); len(got) != 0 {
