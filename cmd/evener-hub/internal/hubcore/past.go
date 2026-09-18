@@ -3,6 +3,7 @@ package hubcore
 import (
 	"database/sql"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -299,10 +300,13 @@ func (i *PastIndex) reportSkips(skipped map[string]string) {
 
 // UpdateMeta targets one existing entry: it replaces the meta, re-inserts the
 // entry at its new sorted position (the title is a sort-key component), and
-// re-numbers the FTS rows so search ordering stays correct — without a
-// synchronous disk Rebuild the rename response path cannot afford (round-2
-// A5/B1, round-3 H3). StateDir is preserved (rename never moves the files).
-// No-op when the id is not already indexed.
+// publishes the change to the FTS mirror incrementally — only the renamed row
+// is rewritten, while every other row keeps its stored sort_rank (search
+// re-sorts the FTS ∪ memory union from the in-memory index, so a shifted row's
+// stale rank is not observable). That keeps the rename response off the full
+// disk Rebuild it cannot afford (round-2 A5/B1, round-3 H3). StateDir is
+// preserved (rename never moves the files). No-op when the id is not already
+// indexed.
 //
 // The reordered index is built into a freshly-allocated slice and only then
 // swapped into i.all under the lock — mirroring Rebuild's own
@@ -511,6 +515,15 @@ const insertPastSessionsFTS = `INSERT INTO past_sessions_fts(id, name, original_
 // write flips it back true. When no usable prior snapshot exists (the first
 // publish, or a previous failure left the mirror stale) this falls back to a
 // full rebuildFTS.
+//
+// The delta's baseline (i.published) is read under ftsMu, so it is always the
+// table's actual current content: every delta transforms between adjacent
+// snapshots and the table can never end up a non-snapshot mix. The remaining
+// hazard is only ordering — a publisher holding an older snapshot can take
+// ftsMu, and thus win the write, after a newer one — which is the
+// fold-vs-Rebuild stale-publish race tracked in #723 (fixed by making a
+// superseded publisher abandon its write); this delta preserves the same
+// last-writer-wins semantics the whole-table rewrite had.
 func (i *PastIndex) publishFTS(all []PastEntry) {
 	i.ftsMu.Lock()
 	defer i.ftsMu.Unlock()
@@ -523,6 +536,11 @@ func (i *PastIndex) publishFTS(all []PastEntry) {
 	var err error
 	if healthy && i.published != nil {
 		err = i.rewriteFTSDelta(i.published, all)
+		if errors.Is(err, errFTSBaselineStale) {
+			// The mirror no longer holds the snapshot the delta was computed
+			// against (its DB file was deleted or replaced); rebuild it whole.
+			err = i.rebuildFTS(all)
+		}
 	} else {
 		err = i.rebuildFTS(all)
 	}
@@ -557,12 +575,22 @@ func ftsRowEqual(a, b PastEntry) bool {
 // one table scan.
 const ftsDeleteChunk = 500
 
+// errFTSBaselineStale signals that the mirror's row count no longer matches the
+// snapshot the delta was computed against: its DB file was deleted or replaced
+// outside the index. The delta cannot repair that (it would insert only the
+// changed rows and leave the rest missing), so publishFTS falls back to a full
+// rebuildFTS, which is what made the old whole-table rewrite self-healing here.
+var errFTSBaselineStale = errors.New("fts mirror does not match the published snapshot")
+
 // rewriteFTSDelta transforms the FTS table from prev to next by touching only
 // the rows that differ: removed ids are deleted, and new or content-changed ids
 // are (re)inserted at their next-snapshot rank. Rows unchanged in both id and
 // mirrored content — including rows that merely shifted rank — are left alone.
+//
 // It assumes the table currently reflects prev, which publishFTS guarantees by
-// serializing on ftsMu.
+// serializing on ftsMu, and verifies it inside the transaction by row count
+// (returning errFTSBaselineStale when it does not) so an externally lost DB file
+// cannot leave a truncated mirror marked healthy.
 func (i *PastIndex) rewriteFTSDelta(prev, next []PastEntry) error {
 	prevIdx := make(map[string]int, len(prev))
 	for k, e := range prev {
@@ -590,10 +618,17 @@ func (i *PastIndex) rewriteFTSDelta(prev, next []PastEntry) error {
 			removals = append(removals, e.ID)
 		}
 	}
-	if len(removals) == 0 && len(inserts) == 0 {
-		return nil
-	}
 	return i.writeFTSTx(func(tx *sql.Tx) error {
+		var rows int
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM past_sessions_fts`).Scan(&rows); err != nil { //nolint:noctx
+			return err
+		}
+		if rows != len(prev) {
+			return errFTSBaselineStale
+		}
+		if len(removals) == 0 && len(inserts) == 0 {
+			return nil
+		}
 		for start := 0; start < len(removals); start += ftsDeleteChunk {
 			end := min(start+ftsDeleteChunk, len(removals))
 			chunk := removals[start:end]

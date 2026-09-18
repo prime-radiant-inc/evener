@@ -1326,3 +1326,98 @@ func fuzzScenarioPastIndex_IncrementalPublishLeavesUnchangedRows(t *testing.T) {
 		t.Fatalf("searchFTS did not serve the renamed session (ok=%v, %d results)", ok, len(got))
 	}
 }
+
+// fuzzScenarioPastIndex_IncrementalPublishRemovesRows covers the delta's
+// removal branch: a session whose meta disappears between Rebuilds must be
+// DELETEd from past_sessions_fts while every surviving row keeps its stored
+// sort_rank. The leak is invisible to Search (searchFTS filters ids through
+// i.byID), so only a direct read of the mirror catches it — and a leak would
+// grow the FTS table without bound, eroding the per-publish cost this change
+// bounds.
+func fuzzScenarioPastIndex_IncrementalPublishRemovesRows(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	base := time.Unix(1_700_000_000, 0)
+	const alpha = "02wMz5Txv1C3Hut0M8GCeB"
+	const bravo = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{ID: alpha, Name: "alpha", UpdatedAt: base, OriginalPrompt: "keep", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: bravo, Name: "bravo", UpdatedAt: base.Add(time.Minute), OriginalPrompt: "drop", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	before := ftsMirrorRows(t, dbPath)
+	if _, ok := before[bravo]; !ok {
+		t.Fatal("mirror is missing the session about to be removed; test setup is wrong")
+	}
+
+	// The session's meta file disappears (session cleanup), then Rebuild drops
+	// it from the snapshot; the delta must delete the mirrored row.
+	if err := os.Remove(filepath.Join(proj, "sessions", bravo+".meta.json")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	after := ftsMirrorRows(t, dbPath)
+	if _, leaked := after[bravo]; leaked {
+		t.Fatal("removed session's row leaked in the FTS mirror; the delta's removal branch did not delete it")
+	}
+	if got, ok := after[alpha]; !ok || got.rank != before[alpha].rank {
+		t.Fatalf("surviving row was rewritten across a removal: %+v (was rank %d)", got, before[alpha].rank)
+	}
+	if got, ok := idx.searchFTS("drop"); ok && slices.ContainsFunc(got, func(e PastEntry) bool { return e.ID == bravo }) {
+		t.Fatal("searchFTS still served the removed session")
+	}
+}
+
+// fuzzScenarioPastIndex_IncrementalPublishRecoversFromLostDB pins the delta's
+// baseline guard: if the SQLite index file is deleted out from under the index,
+// the tracked `published` snapshot no longer matches the (recreated, empty)
+// table, so the delta must refuse and fall back to a full rebuild rather than
+// insert only the changed row and mark a truncated mirror healthy — the
+// self-healing the old whole-table rewrite provided.
+func fuzzScenarioPastIndex_IncrementalPublishRecoversFromLostDB(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	base := time.Unix(1_700_000_000, 0)
+	const alpha = "02wMz5Txv1C3Hut0M8GCeB"
+	const bravo = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{ID: alpha, Name: "alpha", UpdatedAt: base, OriginalPrompt: "alpha needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: bravo, Name: "bravo", UpdatedAt: base.Add(time.Minute), OriginalPrompt: "bravo needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Lose the DB file and its sidecars outside the index's lock.
+	for _, p := range []string{dbPath, dbPath + "-journal", dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+
+	// A rename must not leave a truncated mirror marked healthy: the guard sees
+	// the empty table and rebuilds every row, unchanged ones included.
+	idx.UpdateMeta(alpha, schema.SessionMeta{ID: alpha, Name: "alpha2", UpdatedAt: base.Add(2 * time.Minute), OriginalPrompt: "alpha needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	rows := ftsMirrorRows(t, dbPath)
+	if len(rows) != 2 {
+		t.Fatalf("mirror holds %d rows after a lost DB + rename, want 2 (baseline guard did not rebuild)", len(rows))
+	}
+	if _, ok := rows[bravo]; !ok {
+		t.Fatal("unchanged row was permanently dropped after the DB file was lost")
+	}
+	if got := rows[alpha]; got.name != "alpha2" {
+		t.Fatalf("renamed row not mirrored: %+v", got)
+	}
+}
