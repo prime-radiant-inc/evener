@@ -1407,9 +1407,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function editDraft(rules: readonly KeybindingsRule[]): void {
     const current = assertEditable();
     const checked = keybindingRules(rules);
-    const revision = getState().draft?.revision ?? current.revision;
+    const existing = getState().draft;
+    const revision = existing?.revision ?? current.revision;
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
-    const draft: KeybindingsDraft = { version: 1, revision, rules: checked, generation: currentGeneration() };
+    // An edit keeps the draft's EXISTING generation stamp, including null -
+    // never currentGeneration(), which would restamp it fresh every time.
+    // A draft's generation names the hub session it was last known good
+    // for; only rebaseDraft (an explicit review) or an authoritative
+    // payload landing (applyHubOverrides' own stamp-on-first-payload) may
+    // re-earn it. Restamping here would launder a cross-generation conflict:
+    // after a hub replacement that coincidentally reports the same
+    // revision, an edit would silently clear staleDraft's generation check
+    // and let saveDraft proceed without the rebase the conflict requires.
+    // Only a brand NEW draft (no existing one to preserve) takes the
+    // current generation, the same as any other first stamp.
+    const generation = existing !== null ? existing.generation : currentGeneration();
+    const draft: KeybindingsDraft = { version: 1, revision, rules: checked, generation };
     setState({ draft, draftConflict: staleDraft(draft, current.revision, fence.generation), draftError: null });
   }
 
