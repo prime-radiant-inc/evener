@@ -6348,7 +6348,7 @@ test("an absent outputImages field keeps the images the other page carries", () 
   expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
 });
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 test("an empty input images list never erases the images an older page carries", () => {
   const thread = testThread({
     turns: [
