@@ -228,17 +228,7 @@ function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
 }
 
-// A live item can arrive without any status of its own while the turn that
-// contains it is still running — a sparse running tool/reasoning row would
-// otherwise read as settled. Such an item is active exactly when its turn
-// is; an item that carries its own status always keeps it.
 // --- activity state ----------------------------------------------------------
-
-function activityStateInModel(item: ItemModel, turn: Pick<TurnModel, "status">): ActivityState {
-  if (hasItemFailure(item)) return "failed";
-  if (isActiveItemInModel(item, turn.status)) return "running";
-  return "completed";
-}
 
 function toolLabel(item: ItemModel): string {
   return item.toolName ?? item.description?.trim() ?? "Tool";
@@ -275,10 +265,9 @@ export function itemAttachments(item: ItemModel): AttachmentRef[] | undefined {
 // --- kept for the store's live path (state/conversation.ts) -----------------
 // The store's live path (item/started, item/completed) still holds a wire
 // ThreadItem and settles a tool item or a sparse running row itself, ahead of
-// this projection catching up on the next publish. These are main's originals,
-// unchanged: the cutover that reads every row from projectConversation and
-// deletes the row appliers that call them is its own change (D23c-2b's D
-// piece), not this one.
+// this projection catching up on the next publish. These are main's
+// originals, unchanged: the cutover that reads every row from
+// projectConversation deletes the row appliers that call them, and this too.
 
 // A live item can arrive without any status of its own while the turn that
 // contains it is still running — a sparse running tool/reasoning row would
@@ -526,7 +515,7 @@ function projectItem(
           id: item.id,
           label: toolLabel(item),
           family: "tool",
-          state: activityStateInModel(item, turn),
+          state: activityState(item, turn.status),
           detail: activityDetail(item),
         },
       },
@@ -592,7 +581,7 @@ function projectItem(
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
   // as plain text the renderer escapes; the label stays neutral. family is
   // "unknown" for any item type the projection does not recognize.
-  const state = activityStateInModel(item, turn);
+  const state = activityState(item, turn.status);
   return {
     kind: "activity",
     pre: {
@@ -700,10 +689,11 @@ function clusterActivityRun(
 }
 
 // Kept for the store's incremental projection (state/conversation.ts), which
-// still groups its own preItems by family before this D23c-2b cutover exists:
-// main's original grouping loop, rebuilt on clusterActivityRun so the run
-// math itself has one copy. Exported so the store settles a run of activities
-// exactly as projectTimeline does.
+// still groups its own preItems by family: main's original grouping loop,
+// rebuilt on clusterActivityRun so the run math itself has one copy.
+// Exported so the store settles a run of activities exactly as
+// projectTimeline does; the cutover that reads every row from
+// projectConversation deletes this too.
 export function clusterActivities(
   preItems: PreActivity[],
 ): Extract<MobileTimelineItem, { kind: "activity" }>[] {
@@ -961,11 +951,9 @@ export function timelineIdentities(item: MobileTimelineItem): Set<string> {
   return identities;
 }
 
-// --- display bounds -----------------------------------------------------------
+// --- display bounds: limits and truncation helpers (centralized) -----------
 // What a row may cost the reader's device. The store applies these on every
 // publish; they live here with the row shape they cut.
-
-// --- limits and truncation helpers (centralized) ----------------------------
 
 export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
 export const TRUNCATION_MARKER = "… truncated";
@@ -1014,21 +1002,7 @@ export function truncateText(text: string, maxBytes: number): string {
     byteLen += cpBytes;
     cutIdx += cp.length;
   }
-  // Trim code points until the result + marker fits within maxBytes.
-  // (May need to trim if a multibyte code point straddles the boundary.)
-  let truncated = text.slice(0, cutIdx);
-  let truncatedBytes = textEncoder.encode(truncated);
-  while (
-    truncatedBytes.length + markerLength > maxBytes &&
-    truncated.length > 0
-  ) {
-    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
-    const codePoints = [...truncated];
-    codePoints.pop();
-    truncated = codePoints.join("");
-    truncatedBytes = textEncoder.encode(truncated);
-  }
-  return truncated + marker;
+  return text.slice(0, cutIdx) + marker;
 }
 
 // One text field, cut to the display bound.
@@ -1141,6 +1115,11 @@ export function truncateItem(item: MobileTimelineItem, bound: BoundText): Mobile
 export function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
   if (items.length <= RETAINED_ITEM_CAP) return items;
   const sliced = items.slice(items.length - RETAINED_ITEM_CAP);
+  // The identity set is only ever consulted for a leading run of orphaned
+  // attachments (the loop below breaks the moment sliced[orphaned] is not an
+  // attachment) — skip building it over all 500 rows on the common publish
+  // where the cut did not land on an attachment at all.
+  if (attachmentSourceIdentity(sliced[0]) === null) return sliced;
   const keptIds = new Set(sliced.flatMap((item) => [...ownTimelineIdentities(item)]));
   let orphaned = 0;
   while (orphaned < sliced.length) {

@@ -2248,27 +2248,33 @@ it("falls back to a reasoning item's own text when no chunks were kept", () => {
   ]);
 });
 
-it("counts a question row on screen as a pending question, without touching the wire flag", () => {
+// A question row on screen and the wire's askPending must agree: #1731 round
+// 4 made ThreadModel.askPending the single source for "is anything pending",
+// and liveAskQuestions (which askQuestionsByCall/liveAsksFor call) now gates
+// its whole item scan on it, so an answerable ask_user call in the
+// transcript renders as a question row if and only if askPending is true.
+it("a question row on screen implies askPending is true — the wire is the single source", () => {
   const askArgs =
     '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
-  const projected = projectThread(
-    thread([
-      turn("t", [
-        item({
-          id: "ask-1",
-          type: "commandExecution",
-          toolName: "ask_user",
-          status: "completed",
-          argumentsJson: askArgs,
-        }),
-      ]),
-    ]),
+  const askItem = item({
+    id: "ask-1",
+    type: "commandExecution",
+    toolName: "ask_user",
+    status: "completed",
+    argumentsJson: askArgs,
+  });
+  const pending = projectThread(
+    thread([turn("t", [askItem])], { evener: evenerThread({ askPending: true }) }),
   );
-  // The answerable question the projection found is the whole signal; the wire's
-  // own askPending keeps whatever the snapshot gave it and means something else
-  // (an ask this window may not even hold).
-  expect(projected.items.some((row) => row.kind === "question")).toBe(true);
-  expect(projected.askPending).toBe(false);
+  expect(pending.items.some((row) => row.kind === "question")).toBe(true);
+  expect(pending.askPending).toBe(true);
+
+  // The identical transcript with the wire saying nothing is pending renders
+  // no question row at all — the item scan never runs.
+  const resolved = projectThread(
+    thread([turn("t", [askItem])], { evener: evenerThread({ askPending: false }) }),
+  );
+  expect(resolved.items.some((row) => row.kind === "question")).toBe(false);
 });
 
 it("renders no question row when the ask arguments do not parse", () => {
