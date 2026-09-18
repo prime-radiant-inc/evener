@@ -226,6 +226,24 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	return notification
 }
 
+// relayGaveUpCapabilities is the action set the relay advertises beside the
+// idle status it synthesizes when a mid-turn daemon stops answering. It is the
+// hub's own answer, so it applies the same gate stampClosedThreadCapabilities
+// uses: only a local thread is this hub's to answer for, because only a local
+// session is the past index's to resume. A non-local (federated) source keeps
+// the masked set it sent — nil means "no update", and advertising a resume
+// story the hub cannot honour would offer actions it would refuse. The fork
+// field is resolved through the same ownership fence a past read uses, so the
+// pushed set and the read that follows it cannot drift.
+func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appwire.Thread) *appwire.ThreadCapabilities {
+	if !strings.HasPrefix(relayKey, "local:") {
+		return nil
+	}
+	set := pastThreadCapabilities()
+	set.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+	return &set
+}
+
 // stampResyncTarget names the route a fanned-out daemon-gone resync is being
 // delivered to. The relay publishes that frame with no target so it reaches
 // every route the relay serves (a read-only child alias shares the root's
@@ -1727,8 +1745,9 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// mobile reducer now does, would keep the session active with Stop
 			// and Steer still showing and Send withheld — the exact stall this
 			// synthesis exists to end. The capabilities are the hub's own answer
-			// for a session whose daemon is gone (the set a past read returns),
-			// because the departing daemon's set describes the turn that is over.
+			// for a session whose daemon is gone (relayGaveUpCapabilities, the set
+			// a past read returns), because the departing daemon's set describes
+			// the turn that is over.
 			giveUpOnActiveTurn := func(cause error) {
 				if activeTurnID == "" {
 					return
@@ -1751,13 +1770,11 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 						},
 					},
 				})
-				capabilities := pastThreadCapabilities()
-				capabilities.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
 				server.Broadcast(relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
 					ThreadID:     threadID,
 					Ref:          subscribeParams.Ref,
 					Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
-					Capabilities: &capabilities,
+					Capabilities: relayGaveUpCapabilities(cfg, relayKey, thread),
 				})
 			}
 			recordFailure := func(cause error) {

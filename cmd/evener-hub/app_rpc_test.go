@@ -4287,9 +4287,10 @@ func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwir
 // relay now broadcasts right behind the synthesized failure. The session
 // status belongs to thread/status/changed, so without this the reducer keeps
 // the session active (Stop and Steer still showing, Send withheld) after the
-// failure it was just told about. It must carry the relay's target and the
-// hub's own action set for a session whose daemon is gone.
-func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string) {
+// failure it was just told about. It must carry the relay's target. The action
+// set is the hub's own only for a local (resumable) session; a non-local
+// source must carry none, preserving the masked set it sent.
+func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string, wantCapabilities bool) {
 	t.Helper()
 	select {
 	case got := <-notifications:
@@ -4306,14 +4307,41 @@ func expectRelaySynthesizedIdleStatus(t *testing.T, notifications <-chan appwire
 		if params.Status.Type != appwire.ThreadStatusIdle {
 			t.Fatalf("status.type=%q, want %q", params.Status.Type, appwire.ThreadStatusIdle)
 		}
-		if params.Capabilities == nil {
+		if !wantCapabilities {
+			if params.Capabilities != nil {
+				t.Fatalf("capabilities present for a non-local source, want absent: %+v", *params.Capabilities)
+			}
+		} else if params.Capabilities == nil {
 			t.Fatal("capabilities absent, want the hub's past-session set")
-		}
-		if !params.Capabilities.Send {
+		} else if !params.Capabilities.Send {
 			t.Fatal("capabilities.send=false, want true so the reader can resume the session")
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for the synthesized idle status")
+	}
+}
+
+// relayGaveUpCapabilities decides the action set the synthesized idle status
+// carries: the hub's past-session set for a local thread it can resume, and
+// nothing for a non-local source, whose own masked set must stand (absent
+// means "no update"). A federated source told it could Send or Compact would
+// be offered actions the hub cannot honour.
+func TestRelayGaveUpCapabilitiesOnlyForLocalThreads(t *testing.T) {
+	cfg := hubcore.WebConfig{}
+	local := appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:th_caps"}}
+	got := relayGaveUpCapabilities(cfg, "local:th_caps", local)
+	want := pastThreadCapabilities()
+	// No state dir and no past entry: the fork fence floors ForkFromTurn
+	// exactly as applyHubForkCapability does on a past read.
+	want.ForkFromTurn = false
+	if got == nil || *got != want {
+		t.Fatalf("local relay: capabilities=%v, want %+v", got, want)
+	}
+	for _, relayKey := range []string{"codex:th_caps", "host:th_caps"} {
+		thread := appwire.Thread{Evener: appwire.EvenerThread{Ref: relayKey}}
+		if nonLocal := relayGaveUpCapabilities(cfg, relayKey, thread); nonLocal != nil {
+			t.Fatalf("relay %q: capabilities=%+v, want nil (source keeps its own set)", relayKey, *nonLocal)
+		}
 	}
 }
 
@@ -4402,7 +4430,7 @@ func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFai
 	awaitRelaySubscribeCall(t, subscribeCalls)
 	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
 	expectRelaySynthesizedTurnFailure(t, client.Notifications(), threadID, "codex:"+threadID, turnID, "connection refused (3)")
-	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID)
+	expectRelaySynthesizedIdleStatus(t, client.Notifications(), threadID, "codex:"+threadID, false)
 	retryClock.releaseWait(t, 400*time.Millisecond)
 
 	// The loop keeps retrying afterward (recovery is still worth having if
