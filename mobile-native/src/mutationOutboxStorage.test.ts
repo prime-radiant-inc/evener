@@ -1,8 +1,8 @@
-// D25d-1a: the write half only (D25d-1b, stacked on this, adds the read
-// methods - getOutbox/getOptimistic/listOptimistic/getRecovery/
-// nextDispatchable/listTargetRefs/restoreProvenAbsent - so these tests
-// verify each write's effect against the raw SQLite row rather than through
-// a read method that does not exist yet).
+// The write-path tests below verify each write's effect against the raw
+// SQLite row directly (they predate the read methods this storage now also
+// has, landed as a separate PR); the read-path tests verify through the
+// port's own getOutbox/getOptimistic/listOptimistic/getRecovery/
+// nextDispatchable/listTargetRefs/restoreProvenAbsent instead.
 //
 // Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
 // describe("MutationOutboxIndexedDB", ...) block - these assertions mirror
@@ -361,4 +361,109 @@ test("a failed recovery transfer leaves the outbox record durable with no recove
 	await expect(storage.transferToRecovery(record.clientMutationId, "rejected")).rejects.toThrow("transfer failed");
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeDefined();
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
+});
+
+// --- D25d-1b: the read path -------------------------------------------------
+
+test("listTargetRefs reports every ref with a waiting outbox or optimistic record", async () => {
+	await storage.enqueueIntent(intent("a", "local:a"));
+	const b = await storage.enqueueIntent({
+		...intent("b", "local:b"),
+		optimisticDisplay: { input: [{ type: "text", text: "b" }] },
+	});
+	await storage.settleReceipt(b.clientMutationId, "pending");
+	await expect(storage.listTargetRefs()).resolves.toEqual(["local:a", "local:b"]);
+});
+
+test("getOptimistic and getRecovery read back what settleReceipt and transferToRecovery wrote", async () => {
+	const accepted = await storage.enqueueIntent({
+		...intent("accepted"),
+		optimisticDisplay: { input: [{ type: "text", text: "accepted" }] },
+	});
+	await storage.settleReceipt(accepted.clientMutationId, "pending");
+	await expect(storage.getOptimistic(accepted.clientMutationId)).resolves.toMatchObject({ state: "accepted" });
+	await expect(storage.getOptimistic("missing")).resolves.toBeUndefined();
+
+	const recovered = await storage.enqueueIntent(intent("recovered"));
+	await storage.transferToRecovery(recovered.clientMutationId, "rejected", "turn is not active");
+	await expect(storage.getRecovery(recovered.clientMutationId)).resolves.toMatchObject({
+		recoveryReason: "turn is not active",
+	});
+});
+
+test("listOptimistic scopes to a target ref and sorts by intentSequence", async () => {
+	const a = await storage.enqueueIntent({
+		...intent("a"),
+		optimisticDisplay: { input: [{ type: "text", text: "a" }] },
+	});
+	const b = await storage.enqueueIntent({
+		...intent("b"),
+		optimisticDisplay: { input: [{ type: "text", text: "b" }] },
+	});
+	const other = await storage.enqueueIntent({
+		...intent("other target", "local:thread-2"),
+		optimisticDisplay: { input: [{ type: "text", text: "other target" }] },
+	});
+	await storage.settleReceipt(a.clientMutationId, "pending");
+	await storage.settleReceipt(b.clientMutationId, "pending");
+	await storage.settleReceipt(other.clientMutationId, "pending");
+
+	const scoped = await storage.listOptimistic(TARGET);
+	expect(scoped.map((record) => record.clientMutationId)).toEqual([a.clientMutationId, b.clientMutationId]);
+	await expect(storage.listOptimistic()).resolves.toHaveLength(3);
+});
+
+// Oracle: "a blocked lower sequence prevents later dispatch without blocking
+// another target" (mutationOutbox.test.ts:540).
+test("nextDispatchable returns the lowest-sequence submitting record, blocked by an earlier blockedUnknown on the same target only", async () => {
+	const first = await storage.enqueueIntent(intent("first"));
+	const second = await storage.enqueueIntent(intent("second"));
+	const other = await storage.enqueueIntent(intent("other", "local:thread-2"));
+	await storage.markAttempted(first.clientMutationId);
+	await storage.markUnknown(first.clientMutationId, "blockedUnknown");
+
+	await expect(storage.nextDispatchable(TARGET)).resolves.toBeUndefined();
+	await expect(storage.nextDispatchable("local:thread-2")).resolves.toMatchObject({
+		clientMutationId: other.clientMutationId,
+	});
+
+	await storage.settleApplied(first.clientMutationId);
+	await expect(storage.nextDispatchable(TARGET)).resolves.toMatchObject({ clientMutationId: second.clientMutationId });
+});
+
+test("restoreProvenAbsent reopens a blockedUnknown record the authoritative snapshot omits, and leaves one it names alone", async () => {
+	const omitted = await storage.enqueueIntent(intent("omitted"));
+	const named = await storage.enqueueIntent(intent("named", "local:thread-2"));
+	await storage.markUnknown(omitted.clientMutationId, "blockedUnknown");
+	await storage.markUnknown(named.clientMutationId, "blockedUnknown");
+
+	await expect(storage.restoreProvenAbsent(TARGET, new Set([named.clientMutationId]))).resolves.toEqual([
+		omitted.clientMutationId,
+	]);
+	await expect(storage.getOutbox(omitted.clientMutationId)).resolves.toMatchObject({ state: "submitting" });
+
+	await expect(storage.restoreProvenAbsent("local:thread-2", new Set([named.clientMutationId]))).resolves.toEqual([]);
+	await expect(storage.getOutbox(named.clientMutationId)).resolves.toMatchObject({ state: "blockedUnknown" });
+});
+
+// Falsifies restoreProvenAbsent's atomicity: a trigger fails the UPDATE for
+// the second of two blockedUnknown records on the same target, so the loop
+// throws partway through. The savepoint must roll back the first record's
+// reopen too, matching every other compound write in this file, instead of
+// leaving a partial restore.
+test("a failed restore leaves every blockedUnknown record on the target unreopened", async () => {
+	const first = await storage.enqueueIntent(intent("first blocked"));
+	const second = await storage.enqueueIntent(intent("second blocked"));
+	await storage.markUnknown(first.clientMutationId, "blockedUnknown");
+	await storage.markUnknown(second.clientMutationId, "blockedUnknown");
+
+	database.exec(
+		`CREATE TRIGGER reject_second_restore BEFORE UPDATE ON mutation_outbox
+		 WHEN NEW.client_mutation_id = '${second.clientMutationId}'
+		 BEGIN SELECT RAISE(ABORT, 'restore failed'); END`,
+	);
+
+	await expect(storage.restoreProvenAbsent(TARGET, new Set())).rejects.toThrow("restore failed");
+	expect(rawRow("mutation_outbox", first.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
+	expect(rawRow("mutation_outbox", second.clientMutationId)).toMatchObject({ state: "blockedUnknown" });
 });
