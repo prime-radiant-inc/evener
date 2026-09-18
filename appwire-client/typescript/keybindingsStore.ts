@@ -28,6 +28,7 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
+import { createDraftRepository, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -66,14 +67,19 @@ export interface KeybindingDraftStorage {
   createId(): string;
   load(): unknown;
   save(checkpoint: KeybindingDraftCheckpoint): void;
-  /** Removes the stored checkpoint only if it is still this one. */
-  removeIf(checkpoint: KeybindingDraftCheckpoint): void;
+  /** Removes the stored checkpoint only if it is still this one; reports
+   * whether it did. */
+  removeIf(checkpoint: KeybindingDraftCheckpoint): boolean;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
- * store's state only and does not survive the instance. */
+ * store's state only and does not survive the instance. There is no real
+ * backing store here - only this one repository instance ever touches it -
+ * so there is no concurrent writer a compare-and-swap could actually lose to;
+ * removeIf reports success unconditionally rather than the refusal a
+ * byte-aware port reports when a record it named is gone. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf() {} };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => true };
 }
 
 export interface KeybindingsStoreFields {
@@ -302,8 +308,13 @@ function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: numbe
   return draft !== null && draft.revision !== confirmedRevision;
 }
 
+// discardStoredDraft is re-exported here (not just from draftCheckpointPort
+// directly) so index.ts's existing `discardStoredDraft as
+// discardStoredKeybindingDraft` import keeps working unchanged.
+export { discardStoredDraft } from "./draftCheckpointPort";
+
 function invalidDraft(): never {
-  throw new Error("Invalid keybinding draft.");
+  throw new UnreadableDraftError("Invalid keybinding draft.");
 }
 
 /** The strict rule check the draft editor runs on user input and on a
@@ -341,25 +352,6 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
     baseRevision: item.baseRevision,
     rules: keybindingRules(item.rules),
     writeUncertain: item.writeUncertain,
-  };
-}
-
-/** The draft port with every checkpoint normalized through draftCheckpoint in
- * BOTH directions. load() is the trust boundary (a malformed stored draft
- * surfaces as a storage failure, never as state); save() and removeIf() go
- * through the same constructor so a port that compares serialized bytes
- * (native compares JSON strings) sees one key order on both sides - a
- * checkpoint spread as `{ ...input, id }` and one rebuilt by load() would
- * otherwise differ only in where `id` sits, and removeIf would never match. */
-function draftRepository(storage: KeybindingDraftStorage) {
-  return {
-    createId: () => storage.createId(),
-    load(): KeybindingDraftCheckpoint | null {
-      const value = storage.load();
-      return value === null || value === undefined ? null : draftCheckpoint(value);
-    },
-    save: (checkpoint: KeybindingDraftCheckpoint) => storage.save(draftCheckpoint(checkpoint)),
-    removeIf: (checkpoint: KeybindingDraftCheckpoint) => storage.removeIf(draftCheckpoint(checkpoint)),
   };
 }
 
@@ -573,7 +565,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     deps.registry === undefined
       ? verbatimReconciler()
       : registryReconciler(deps.registry, deps.characterKeyTriggers ?? (() => true));
-  const drafts = draftRepository(deps.drafts ?? memoryDraftStorage());
+  const drafts = createDraftRepository(deps.drafts ?? memoryDraftStorage(), draftCheckpoint);
 
   // Ready-generation wiring: every refresh, write and notification captures
   // the generation it started under and lands only through the shared fence.
@@ -1210,8 +1202,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function discardDraft(): void {
     assertEditable();
     try {
-      const checkpoint = drafts.load();
-      if (checkpoint) drafts.removeIf(checkpoint);
+      drafts.discardClassified();
     } catch {
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
