@@ -2469,19 +2469,20 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		}
 		paired[a.inst+"\x00"+a.stampText] = true
 	}
-	// Names a config-backed in-flight copy resolves forward: the config is the
-	// durable evidence the removal reached its providers.toml write, and that fact
-	// is about the INSTANCE, not one copy. Every other copy of the name -
-	// whatever its kind or stamp - is treated exactly as a committed copy is and
-	// never restored, because putting one back would resurrect the instance whose
-	// config-backed removal already deleted its configuration and credential.
-	// Collected BEFORE the classification loop so the answer cannot depend on the
-	// order os.ReadDir hands the copies back: a credential-only copy read first
-	// would otherwise reach the newest map before the config-backed copy proved
-	// the removal stood. A copy whose stamp is paired with a committed copy is
-	// already treated as committed by the pair rule and is not what resolves
-	// forward here.
-	resolvedForward := make(map[string]bool, len(entries))
+	// The highest stamp a config-backed in-flight copy PROVES per instance: the
+	// config is the durable evidence a removal reached its providers.toml write,
+	// and that proof is dated - it says the removal's durable work had landed only
+	// as of this copy's stamp. A later credential-only removal of the same name
+	// has no such proof, and if its own removal was interrupted its copy must stay
+	// restorable, so the classification loop resolves a copy forward only at or
+	// before the recorded proof. Collected BEFORE the classification loop so the
+	// answer cannot depend on the order os.ReadDir hands the copies back: a
+	// credential-only copy read first would otherwise reach the newest map before
+	// the config-backed copy proved the removal stood. A copy whose stamp is paired
+	// with a committed copy is already treated as committed by the pair rule and is
+	// not what resolves forward here; a stamp that does not parse cannot order
+	// copies against the proof and is skipped.
+	resolvedForward := make(map[string]int64, len(entries))
 	if cfgErr == nil {
 		for _, e := range entries {
 			a, aside := parseOAuthAside(e.Name())
@@ -2491,8 +2492,15 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 			if paired[a.inst+"\x00"+a.stampText] {
 				continue
 			}
-			if !configCarriesName(layer, a.inst) {
-				resolvedForward[a.inst] = true
+			if configCarriesName(layer, a.inst) {
+				continue
+			}
+			stamp, perr := strconv.ParseInt(a.stampText, 10, 64)
+			if perr != nil {
+				continue
+			}
+			if prev, ok := resolvedForward[a.inst]; !ok || stamp > prev {
+				resolvedForward[a.inst] = stamp
 			}
 		}
 	}
@@ -2602,18 +2610,6 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 				continue
 			}
 		}
-		// The instance resolves forward: a config-backed in-flight copy of it
-		// proved the removal reached its providers.toml write, so this copy -
-		// whatever its kind or stamp - is treated exactly as a committed copy is
-		// and never put back. It is swept when the config does not carry the name
-		// (which is what made the instance resolve forward) and left beside a
-		// carried name otherwise, so nothing is left for a later pass to restore.
-		if resolvedForward[inst] {
-			if !configCarriesName(layer, inst) {
-				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
-			}
-			continue
-		}
 		// Credential-only copies, and config-backed copies the config still
 		// carries, are put back if their record path is free.
 		if deferredNames[inst] {
@@ -2629,7 +2625,26 @@ func restoreUncommittedOAuthAsides(stateDir, providersConfigPath string) (bool, 
 		stamp, err := strconv.ParseInt(a.stampText, 10, 64)
 		if err != nil {
 			// A stamp past an int64 is a name no removal wrote, and one that
-			// cannot be ordered against the copies beside it.
+			// cannot be ordered against the copies beside it, so it can take
+			// neither the forward nor the restore path.
+			continue
+		}
+		// A copy resolves forward only when a config-backed copy of the same
+		// instance proved the removal reached its providers.toml write AND this
+		// copy's stamp is at or before that proof's stamp. The config-backed copy
+		// proves the removal stood only up to its own stamp; a later
+		// credential-only copy has no such proof, and its interrupted removal must
+		// stay restorable, so it falls through to the newest-restorable path
+		// below. At or before (not strictly before) keeps a same-stamp copy
+		// resolving forward. Such a copy - whatever its kind - is treated exactly
+		// as a committed copy is and never put back: swept when the config does
+		// not carry the name (which is what made the instance resolve forward) and
+		// left beside a carried name otherwise, so nothing is left for a later
+		// pass to restore.
+		if proof, ok := resolvedForward[inst]; ok && stamp <= proof {
+			if !configCarriesName(layer, inst) {
+				committed = append(committed, committedCopy{e.Name(), inst, configBacked})
+			}
 			continue
 		}
 		if seen, ok := newest[inst]; !ok || stamp > seen.stamp {

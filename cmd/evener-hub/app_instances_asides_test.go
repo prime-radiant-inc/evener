@@ -1429,6 +1429,148 @@ func TestRestoreUncommittedOAuthAsidesResolvesAWholeInstanceForward(t *testing.T
 	}
 }
 
+// TestRestoreUncommittedOAuthAsidesRestoresACopyNewerThanTheProof: the high
+// finding. A config-backed in-flight copy whose name the config no longer
+// carries proves the removal reached its providers.toml write only as of its own
+// stamp. A NEWER credential-only copy of the same name is a later, different
+// removal, and its interrupted removal has no such proof - putting its
+// credential back is exactly what keeps a re-sign-in from being lost. Resolving
+// the whole instance forward would sweep it instead and permanently delete the
+// newer credential.
+func TestRestoreUncommittedOAuthAsidesRestoresACopyNewerThanTheProof(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	// A readable providers.toml that does not carry the instance's name.
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	record := authopenai.AuthFilePath(f.stateDir, "gone")
+	proof := "gone.json" + oauthConfigAsideMarker + "100"
+	newer := "gone.json" + oauthAsideMarker + "200"
+	const newerBytes = "the newer credential-only copy a later re-sign-in left\n"
+	if err := os.WriteFile(filepath.Join(dir, proof), []byte("the older config-backed proof\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", proof, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, newer), []byte(newerBytes), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", newer, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if !restored {
+		t.Fatal("restoreUncommittedOAuthAsides = false, want the copy newer than the proof put back")
+	}
+	// The crux: the newer credential-only copy must not be reported as a swept
+	// committed credential, because it is not one.
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want no problem reported", err)
+	}
+	got, rerr := os.ReadFile(record)
+	if rerr != nil || string(got) != newerBytes {
+		t.Fatalf("the record = %q (%v), want the stamp-200 credential-only copy restored", got, rerr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(dir, newer)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the copy %s survived (Lstat = %v), want it moved to the record path", newer, statErr)
+	}
+	// The older config-backed proof still resolves itself forward and is swept.
+	if _, statErr := os.Lstat(filepath.Join(dir, proof)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the proof copy %s survived (Lstat = %v), want it swept", proof, statErr)
+	}
+	if restored2, err2 := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); restored2 || err2 != nil {
+		t.Fatalf("a later pass = (%v, %v), want nothing left to restore", restored2, err2)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesResolvesACopyAtTheProofStamp: the boundary of
+// the scoped rule. A copy whose stamp EQUALS the proof stamp is at or before the
+// proof and resolves forward like any older one - strictly-before would restore
+// it. The credential-only copy at the proof's own stamp is the older, different
+// removal the proof covers, so it is swept as a committed copy.
+func TestRestoreUncommittedOAuthAsidesResolvesACopyAtTheProofStamp(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	record := authopenai.AuthFilePath(f.stateDir, "gone")
+	atProof := "gone.json" + oauthAsideMarker + "100"
+	proof := "gone.json" + oauthConfigAsideMarker + "100"
+	if err := os.WriteFile(filepath.Join(dir, atProof), []byte("the credential-only copy at the proof's stamp\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", atProof, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, proof), []byte("the config-backed proof\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", proof, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if restored {
+		t.Fatal("restoreUncommittedOAuthAsides = true, want the copy at the proof's stamp resolved forward")
+	}
+	if err == nil || !strings.Contains(err.Error(), "deleted the committed credential-only copy "+atProof) {
+		t.Fatalf("restoreUncommittedOAuthAsides = (%v, %v), want the swept copy %s reported", restored, err, atProof)
+	}
+	if _, statErr := os.Lstat(record); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record path holds bytes (Lstat = %v), want the copy at the proof's stamp swept", statErr)
+	}
+	for _, name := range []string{atProof, proof} {
+		if _, statErr := os.Lstat(filepath.Join(dir, name)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("the copy %s survived (Lstat = %v), want both swept", name, statErr)
+		}
+	}
+	if restored2, err2 := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); restored2 || err2 != nil {
+		t.Fatalf("a later pass = (%v, %v), want nothing left to restore", restored2, err2)
+	}
+}
+
+// TestRestoreUncommittedOAuthAsidesResolvesANewerConfigBackedCopy: a later
+// config-backed copy is its own proof. It resolves itself forward through the
+// config-backed branch without depending on the recorded proof, so a proof
+// recorded by an OLDER config-backed copy must not leave the newer one
+// restorable.
+func TestRestoreUncommittedOAuthAsidesResolvesANewerConfigBackedCopy(t *testing.T) {
+	f := newInstancesFixture(t, nil)
+	if err := os.WriteFile(f.tomlPath, []byte(codexInstanceToml), 0o644); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
+	}
+	dir := filepath.Dir(authopenai.AuthFilePath(f.stateDir, "instance"))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	record := authopenai.AuthFilePath(f.stateDir, "gone")
+	older := "gone.json" + oauthConfigAsideMarker + "100"
+	newer := "gone.json" + oauthConfigAsideMarker + "200"
+	if err := os.WriteFile(filepath.Join(dir, older), []byte("the older config-backed proof\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", older, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, newer), []byte("the newer config-backed proof\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s): %v", newer, err)
+	}
+
+	restored, err := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath)
+	if restored {
+		t.Fatal("restoreUncommittedOAuthAsides = true, want every config-backed copy resolved forward")
+	}
+	if err != nil {
+		t.Fatalf("restoreUncommittedOAuthAsides = %v, want no problem reported", err)
+	}
+	if _, statErr := os.Lstat(record); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("the record path holds bytes (Lstat = %v), want nothing restored", statErr)
+	}
+	for _, name := range []string{older, newer} {
+		if _, statErr := os.Lstat(filepath.Join(dir, name)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("the copy %s survived (Lstat = %v), want both swept", name, statErr)
+		}
+	}
+	if restored2, err2 := restoreUncommittedOAuthAsides(f.stateDir, f.tomlPath); restored2 || err2 != nil {
+		t.Fatalf("a later pass = (%v, %v), want nothing left to restore", restored2, err2)
+	}
+}
+
 // TestRestoreUncommittedOAuthAsidesRecoversCredentialOnlyCopiesWhenTheConfigCannotBeRead:
 // a credential-only in-flight copy's recovery does not need providers.toml - the
 // record file was the whole of what made the instance exist, and the copy goes
