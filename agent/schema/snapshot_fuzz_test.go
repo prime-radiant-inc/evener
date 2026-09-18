@@ -67,7 +67,6 @@ func FuzzSessionMetaRoundTrip(f *testing.F) {
 		// well-formed regardless of the fuzzed id; re-derive the baseline after
 		// the override so the comparison is against the persisted shape.
 		m1.ID = "fuzz"
-		baseline := mustMarshalMeta(t, m1)
 		dir := t.TempDir()
 		if err := SaveSessionMeta(dir, m1); err != nil {
 			t.Fatalf("SaveSessionMeta: %v", err)
@@ -76,6 +75,10 @@ func FuzzSessionMetaRoundTrip(f *testing.F) {
 		if err != nil {
 			t.Fatalf("LoadSessionMeta: %v", err)
 		}
+		// SaveSessionMeta bumps the per-save Revision counter; adopt the
+		// persisted value so the comparison covers every other field.
+		m1.Revision = m3.Revision
+		baseline := mustMarshalMeta(t, m1)
 		if got := mustMarshalMeta(t, m3); !bytes.Equal(baseline, got) {
 			t.Fatalf("session meta save/load round-trip diverged:\n saved=%s\n loaded=%s", baseline, got)
 		}

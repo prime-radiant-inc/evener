@@ -9,7 +9,6 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -1206,23 +1205,21 @@ func (i *PastIndex) foldOne(entry PastEntry) {
 }
 
 // metaNewer reports whether a is a newer revision of the same session than b.
-// UpdatedAt orders content/activity and NameUpdatedAt orders renames, but
-// several mutations re-save metadata without advancing either — a fork tag
-// sets ForkLabel, AppendSessionObservedBy unions ObservedBy — so when the
-// timestamps tie, differing content means the probe read a newer re-save and
-// must win over the possibly-stale indexed row.
+// Revision, bumped on every save by schema.saveSessionMetaLocked, is the
+// authoritative order: a fork tag (ForkLabel) or an ObservedBy append re-saves
+// without advancing UpdatedAt or NameUpdatedAt, so timestamps alone cannot
+// order those. Timestamps remain the fallback for metas written before Revision
+// existed, and an undecidable tie returns false so foldOne keeps the indexed row
+// rather than clobbering it with a probe whose order cannot be established.
 func metaNewer(a, b schema.SessionMeta) bool {
+	if a.Revision != b.Revision {
+		return a.Revision > b.Revision
+	}
 	if a.UpdatedAt.After(b.UpdatedAt) {
 		return true
 	}
 	if b.UpdatedAt.After(a.UpdatedAt) {
 		return false
 	}
-	if a.NameUpdatedAt.After(b.NameUpdatedAt) {
-		return true
-	}
-	if b.NameUpdatedAt.After(a.NameUpdatedAt) {
-		return false
-	}
-	return !reflect.DeepEqual(a, b)
+	return a.NameUpdatedAt.After(b.NameUpdatedAt)
 }

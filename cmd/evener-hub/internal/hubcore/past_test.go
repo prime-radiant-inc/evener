@@ -104,6 +104,49 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_StaleProbeDoesNotClobberNewerIndexedRow pins the
+// tie-break direction: with equal timestamps a stale probe must not overwrite a
+// newer indexed row. The probe reads v1, an external timestamp-neutral re-save
+// produces v2, and a Rebuild indexes v2; folding the stale v1 probe must keep v2.
+func fuzzScenarioPastIndex_StaleProbeDoesNotClobberNewerIndexedRow(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "s", UpdatedAt: base, NameUpdatedAt: base})
+	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	probe, ok := idx.probeOne(id) // reads v1
+	if !ok {
+		t.Fatal("expected probeOne to read the session")
+	}
+
+	// External timestamp-neutral re-save to v2, indexed by a concurrent Rebuild.
+	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "s", UpdatedAt: base, NameUpdatedAt: base, ForkLabel: "child"})
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := idx.findCached(id); got.Meta.ForkLabel != "child" {
+		t.Fatalf("setup: the index did not take the re-save: ForkLabel=%q", got.Meta.ForkLabel)
+	}
+
+	idx.foldOne(probe) // stale v1 must not clobber the indexed v2
+
+	got, ok := idx.findCached(id)
+	if !ok {
+		t.Fatal("session missing from the index after the fold")
+	}
+	if got.Meta.ForkLabel != "child" {
+		t.Fatalf("stale probe clobbered the newer indexed row: ForkLabel=%q, want %q", got.Meta.ForkLabel, "child")
+	}
+}
+
 // fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowWithoutTimestampChange pins
 // that freshness is not gated on timestamps alone: a fork tag (ForkLabel) and an
 // observer append (ObservedBy) re-save the meta without advancing UpdatedAt or
@@ -185,7 +228,7 @@ func fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold(t *testing.T) {
 		// A concurrent writer indexed a newer row for the same id first.
 		idx.foldOne(PastEntry{
 			ID:       id,
-			Meta:     schema.SessionMeta{ID: id, Name: "live-v2", UpdatedAt: base.Add(time.Minute)},
+			Meta:     schema.SessionMeta{ID: id, Name: "live-v2", UpdatedAt: base.Add(time.Minute), Revision: 2},
 			StateDir: proj,
 		})
 	}

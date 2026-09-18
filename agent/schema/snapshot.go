@@ -144,15 +144,20 @@ type SessionMeta struct {
 	// WithCheapModel ref ("provider/model" when cross-provider, else bare model).
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
-	CheapModel               string          `json:"cheap_model,omitempty"`
-	VisionModel              string          `json:"vision_model,omitempty"`
-	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
-	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
-	CreatedAt                time.Time       `json:"created_at"` // when the session was first created
-	UpdatedAt                time.Time       `json:"updated_at"` // last time the meta was written
-	TurnCount                int             `json:"turn_count"` // number of model responses processed
-	AcceptedInputTurns       int             `json:"accepted_input_turns,omitempty"`
-	TurnBudgetWarningEmitted bool            `json:"turn_budget_warning_emitted,omitempty"`
+	CheapModel  string          `json:"cheap_model,omitempty"`
+	VisionModel string          `json:"vision_model,omitempty"`
+	Config      ConfigSnapshot  `json:"config"`     // the session's configuration
+	EnvInfo     EnvironmentInfo `json:"env_info"`   // captured environment description
+	CreatedAt   time.Time       `json:"created_at"` // when the session was first created
+	UpdatedAt   time.Time       `json:"updated_at"` // last time the meta was written
+	// Revision is a monotonic per-session counter bumped on every save, so two
+	// revisions that share a timestamp (a fork tag or an ObservedBy append
+	// re-saves without advancing UpdatedAt) can still be ordered. Zero on metas
+	// written before it existed.
+	Revision                 uint64 `json:"revision,omitempty"`
+	TurnCount                int    `json:"turn_count"` // number of model responses processed
+	AcceptedInputTurns       int    `json:"accepted_input_turns,omitempty"`
+	TurnBudgetWarningEmitted bool   `json:"turn_budget_warning_emitted,omitempty"`
 	// LastInputTokens is the prompt-token count from the most recent LLM call,
 	// used to display context-window pressure on resume.
 	LastInputTokens int `json:"last_input_tokens,omitempty"`
@@ -389,8 +394,11 @@ func saveSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta) error {
 	previous, err := loadSessionMetaFS(fs, dir, meta.ID)
 	if err == nil {
 		meta.ObservedBy = stableUnion(previous.ObservedBy, meta.ObservedBy)
+		meta.Revision = previous.Revision + 1
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
+	} else {
+		meta.Revision = 1
 	}
 	sessDir := filepath.Join(dir, sessionsSubdir)
 	if err := fs.MkdirAll(sessDir, 0o755); err != nil {
