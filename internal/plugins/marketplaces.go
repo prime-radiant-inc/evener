@@ -305,8 +305,8 @@ func (m *Manager) ListMarketplaces(ctx context.Context) (Marketplaces, error) {
 
 // cloneRemovalFailed reports that removing marketplace name's clone from disk
 // failed as a cleanup step whose own metadata change already applied - not a
-// write failure itself, and RemoveMarketplace's only caller has already
-// saved the unregistration by the time this runs. The error wraps
+// write failure itself, since RemoveMarketplace has already saved the
+// unregistration by the time this runs. The error wraps
 // ErrMarketplaceUnregisteredCloneRemains, so a caller can tell this
 // applied-with-litter outcome from a plain refusal by errors.Is instead of
 // assuming a non-nil error means the marketplace is still registered.
