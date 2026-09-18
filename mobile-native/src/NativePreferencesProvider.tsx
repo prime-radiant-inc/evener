@@ -22,11 +22,11 @@ import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {
 	draftUnreadableAfterDiscard,
-	matchesStoredBytes,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
-	parseDraftBytes,
+	rawStringDraftBackend,
 	readDraftOutcome,
+	readDraftOutcomeWithValue,
 } from "./nativePreferenceDrafts";
 import type {
 	NativePreferences,
@@ -64,47 +64,11 @@ interface Preferences {
 	discardUnreadableKeybindingsDraft(): DiscardStoredDraftResult | "storageUnavailable" | null;
 }
 const Context = createContext<Preferences | null>(null);
-/** Synchronous compare cannot interleave with a newer model's checkpoint,
- * so deleteIf and replaceIf below share it as their one atomic check. See
- * matchesStoredBytes for why a byte-for-byte re-encoding compare is not
- * enough on its own. */
-function matches(key: string, value: unknown): boolean {
-	return matchesStoredBytes(Storage.getItemSync(key), value);
-}
-const backend = {
-	createId: () => Crypto.randomUUID(),
-	get(key: string): unknown {
-		const value = Storage.getItemSync(key);
-		// Bytes this build cannot use as a record - including a stored JSON
-		// null, distinct from no key at all - come back as the raw string
-		// (parseDraftBytes), so the shared store's own decoder classifies them
-		// as an unreadable RECORD (draftUnreadable, discardable) instead of
-		// either a throw it can only read as a dead port, or a silent "no
-		// record" that can never be discarded.
-		return value === null ? null : parseDraftBytes(value);
-	},
-	set(key: string, value: unknown) {
-		Storage.setItemSync(key, JSON.stringify(value));
-	},
-	insertIfAbsent(key: string, value: unknown): boolean {
-		if (Storage.getItemSync(key) !== null) return false;
-		Storage.setItemSync(key, JSON.stringify(value));
-		return true;
-	},
-	delete(key: string) {
-		Storage.removeItemSync(key);
-	},
-	deleteIf(key: string, value: unknown): boolean {
-		if (!matches(key, value)) return false;
-		Storage.removeItemSync(key);
-		return true;
-	},
-	replaceIf(key: string, expected: unknown, next: unknown): boolean {
-		if (!matches(key, expected)) return false;
-		Storage.setItemSync(key, JSON.stringify(next));
-		return true;
-	},
-};
+// The production draft backend: rawStringDraftBackend over the real
+// Storage, the SAME function tests exercise over a Map-backed fake (see
+// nativePreferenceDrafts.test.ts's rawBytesBackend) - one implementation,
+// not a parallel reimplementation of the parse/compare logic.
+const backend = rawStringDraftBackend(Storage, () => Crypto.randomUUID());
 
 export function NativePreferencesProvider({
 	children,
@@ -177,8 +141,10 @@ export function NativePreferencesProvider({
 		}
 		// A second, independent re-read (see draftUnreadableAfterDiscard): the
 		// CURRENT record, not the one discardStoredDraft last saw, is what
-		// decides whether the notice still belongs up. This may also throw.
-		const current = readDraftOutcome(storage, isReadableKeybindingDraft);
+		// decides whether the notice still belongs up. Read once - the decode
+		// below reuses `loaded` rather than calling storage.load() again
+		// outside this same guard.
+		const { outcome: current, value: loaded } = readDraftOutcomeWithValue(storage, isReadableKeybindingDraft);
 		if (current === "storageUnavailable") {
 			setOfflineStorageUnavailable(true);
 			// The follow-up read cannot say what is there now - preserve the
@@ -201,9 +167,10 @@ export function NativePreferencesProvider({
 		// "readable") is a NEW draft the store-free path just discovered, and
 		// restoreDraft would publish its draft/writeUncertain fields on a live
 		// store; decodeKeybindingDraftFields does the same decode here so this
-		// path is not left at stale nulls until a reconnect.
+		// path is not left at stale nulls until a reconnect. Decodes `loaded`,
+		// never a fresh storage.load() - see readDraftOutcomeWithValue.
 		const { draft, writeUncertain } =
-			current === "readable" ? decodeKeybindingDraftFields(storage.load()) : { draft: null, writeUncertain: false };
+			current === "readable" ? decodeKeybindingDraftFields(loaded) : { draft: null, writeUncertain: false };
 		setBound((previous) =>
 			previous?.hubId === hubId
 				? {
