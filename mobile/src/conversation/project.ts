@@ -402,18 +402,24 @@ function projectItem(
     const state: ActivityState = isActiveItem(item, turn.status)
       ? "running"
       : "completed";
-    // item.text is preferred first: it is always the item's most
-    // authoritative settled value (reducer.ts's mergeCompletedText), while
-    // reasoningSummaries can be stale — wireItemToModel seeds it from ANY
-    // non-empty initial wire text, and mergeReasoning then keeps that seed
-    // across later merges once it's set, so a later completion carrying
-    // different authoritative text must not be masked by it. Only when
-    // text is genuinely blank (a mid-stream item with no settle yet) does
-    // this fall back to the same joined-paragraphs source the web's think
-    // block reads, so live deltas (reducer.ts's appendReasoningDelta) still
-    // show before the item settles.
+    // Two different fields can be stale, depending on whether the item is
+    // still running. A SETTLED item's text is always authoritative
+    // (reducer.ts's mergeCompletedText) — reasoningSummaries can instead be
+    // the stale one: wireItemToModel seeds it from ANY non-empty initial
+    // wire text, and mergeReasoning keeps that seed across later merges
+    // once it's set, so a later completion's real text must not be masked
+    // by it. An ACTIVE (still-streaming) item is the other way around:
+    // appendReasoningDelta (reducer.ts) appends every live delta to
+    // reasoningSummaries ONLY, never to text, so text can be a stale
+    // partial seed from item/started while reasoningSummaries has grown
+    // well past it — preferring text there would lose the streamed growth.
+    // Comparing lengths distinguishes the two without a third model field:
+    // a settled item's text is the longer, complete value once summaries
+    // stop growing; an active item's joined summary overtakes its seed as
+    // soon as a delta arrives.
+    const joinedSummary = joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
     const reasoningOutput =
-      item.text || joinedReasoningParagraphs(item.reasoningSummaries).join("\n\n");
+      state === "running" && joinedSummary.length > item.text.length ? joinedSummary : item.text || joinedSummary;
     return {
       kind: "activity",
       pre: {

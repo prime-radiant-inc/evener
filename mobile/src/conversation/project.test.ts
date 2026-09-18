@@ -519,6 +519,59 @@ describe("projectThread", () => {
         expect(a.detail.output).toBe("final thought");
       }
     });
+
+    // reducer.ts's appendReasoningDelta appends ONLY to reasoningSummaries,
+    // never to item.text — so an ACTIVE item whose item/started carried a
+    // non-empty partial seed keeps that stale seed in item.text while later
+    // deltas grow reasoningSummaries past it. Preferring item.text
+    // unconditionally (as a settled item correctly does) loses the
+    // streamed growth for an item that is still running.
+    it("shows the growing joined summary over a stale partial seed for an ACTIVE item", () => {
+      let model = hydrateThread(
+        { thread: thread([turn("t1", [], { status: "inProgress" })]) },
+        "ref-1",
+        0,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            item: { type: "reasoning", id: "r1", turnId: "t1", status: "inProgress", text: "partial seed" },
+          },
+        } as AnyNotification,
+        1000,
+      );
+      model = applyNotification(
+        model,
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            itemId: "r1",
+            summaryIndex: 0,
+            // wireItemToModel already seeded reasoningSummaries[0] from
+            // item/started's "partial seed" text; this delta is the
+            // CONTINUATION appended after it (appendReasoningDelta), not a
+            // restatement, so the joined chunk list reads as one growing
+            // whole: "partial seed" + this delta.
+            delta: " continues growing well past the seed",
+          },
+        } as AnyNotification,
+        1001,
+      );
+      const c = projectConversation(model);
+      const a = c.items.find((row) => row.kind === "activity" && row.id === "r1");
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.detail.output).toBe("partial seed continues growing well past the seed");
+      }
+    });
   });
 
   describe("shell/tool/MCP call items", () => {
