@@ -7,6 +7,7 @@ import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
   fromWireOverrides,
+  isReadableKeybindingDraft,
   type KeybindingDraftCheckpoint,
   type KeybindingsStore,
   type KeybindingsStoreDeps,
@@ -761,15 +762,24 @@ describe("the checkpointed draft editor", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.corrupt();
 
-    expect(discardStoredKeybindingDraft(drafts.storage)).toBe(true);
+    expect(discardStoredKeybindingDraft(drafts.storage)).toBe("removed");
 
     expect(drafts.stored()).toBeNull();
   });
 
-  test("discardStoredKeybindingDraft reports false when nothing is stored to remove", () => {
+  test("discardStoredKeybindingDraft reports absent when nothing is stored to remove", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
 
-    expect(discardStoredKeybindingDraft(drafts.storage)).toBe(false);
+    expect(discardStoredKeybindingDraft(drafts.storage)).toBe("absent");
+  });
+
+  test("discardStoredKeybindingDraft, given isReadableKeybindingDraft, refuses a record a concurrent writer replaced with a valid one", () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.storage.save({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+
+    expect(discardStoredKeybindingDraft(drafts.storage, isReadableKeybindingDraft)).toBe("refused");
+
+    expect(drafts.stored()).toEqual({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
   });
 
   test("an unreadable stored record never locks the section", async () => {

@@ -163,7 +163,7 @@ describe("discardStoredDraft", () => {
     const drafts = memoryDraftStorage<Checkpoint>();
     drafts.corrupt();
 
-    discardStoredDraft(drafts.storage);
+    expect(discardStoredDraft(drafts.storage)).toBe("removed");
 
     expect(drafts.stored()).toBeNull();
   });
@@ -171,7 +171,44 @@ describe("discardStoredDraft", () => {
   it("does nothing when nothing is stored", () => {
     const drafts = memoryDraftStorage<Checkpoint>();
 
-    discardStoredDraft(drafts.storage);
+    expect(discardStoredDraft(drafts.storage)).toBe("absent");
+
+    expect(drafts.stored()).toBeNull();
+  });
+
+  // A discard call with no live repository has no identity from when the
+  // caller was originally shown the unreadable record - only what is
+  // stored NOW. Without isReadable, that gap would let it delete a record a
+  // concurrent writer replaced with something this build can read since.
+  it("refuses to remove a record that now decodes as valid, given an isReadable check", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const isReadable = (value: unknown) => {
+      try {
+        decode(value);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(discardStoredDraft(drafts.storage, isReadable)).toBe("refused");
+
+    expect(drafts.stored()).toEqual({ id: "d1", value: "a" });
+  });
+
+  it("still removes a record isReadable reports as unreadable", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+    drafts.corrupt();
+    const isReadable = (value: unknown) => {
+      try {
+        decode(value);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(discardStoredDraft(drafts.storage, isReadable)).toBe("removed");
 
     expect(drafts.stored()).toBeNull();
   });

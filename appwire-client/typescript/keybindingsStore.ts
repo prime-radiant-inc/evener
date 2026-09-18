@@ -371,6 +371,20 @@ function draftCheckpoint(value: unknown): KeybindingDraftCheckpoint {
   }
 }
 
+/** Whether `value` decodes as a valid keybindings draft checkpoint - the
+ * check a store-free discard (no live repository to hold identity) runs
+ * before removing a record shown as unreadable, so it refuses instead of
+ * deleting one a concurrent writer has since replaced with something this
+ * build can actually read (see draftCheckpointPort's discardStoredDraft). */
+export function isReadableKeybindingDraft(value: unknown): boolean {
+  try {
+    draftCheckpoint(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Extracts a payload the hub attached to a rejection under `key` when the
  * rejection is the `evenerErrorInfo` kind named: the conflict rejection's
  * `current` (the server's state after a lost revision race) and the

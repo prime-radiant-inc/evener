@@ -34,17 +34,33 @@ export interface DraftPort<Checkpoint> {
  * can still load the hub and can still throw the record away. */
 export class UnreadableDraftError extends Error {}
 
+/** discardStoredDraft's own outcome: "removed" when the record was actually
+ * deleted, "absent" when there was nothing stored to discard, and "refused"
+ * when the current record now decodes as valid. A caller with no live
+ * repository has no memory of the identity it showed the user earlier - only
+ * what `load()` returns right now - so between then and now a concurrent
+ * writer may have replaced the unreadable record with something this build
+ * can actually read; "refused" is what keeps that newer, legitimate draft
+ * from being deleted as if it were the stale unreadable one. */
+export type DiscardStoredDraftResult = "removed" | "absent" | "refused";
+
 /** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
  * raw value goes straight back to the port, which matches its own bytes, so a
  * record no build can decode is still the record removed. A host whose store is
  * gone (no connection, so no client to build one from) needs this to clear an
  * unreadable record; a host with a live store uses discardDraft, which also
- * publishes the state. One implementation either way. Reports whether
- * anything was actually removed. */
-export function discardStoredDraft<Checkpoint>(storage: DraftPort<Checkpoint>): boolean {
+ * publishes the state. One implementation either way. `isReadable`, when
+ * given, refuses rather than removing a record that decodes fine now (see
+ * DiscardStoredDraftResult); a caller with no decoder of its own gets the
+ * original always-remove behavior. */
+export function discardStoredDraft<Checkpoint>(
+  storage: DraftPort<Checkpoint>,
+  isReadable: (value: unknown) => boolean = () => false,
+): DiscardStoredDraftResult {
   const value = storage.load();
-  if (value === null || value === undefined) return false;
-  return storage.removeIf(value);
+  if (value === null || value === undefined) return "absent";
+  if (isReadable(value)) return "refused";
+  return storage.removeIf(value) ? "removed" : "absent";
 }
 
 export interface DraftRepository<Checkpoint> {

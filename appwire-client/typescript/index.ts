@@ -130,6 +130,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // host, and a consumer that supplies one (or spies on the module) wants the
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
+export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
 export { discardStoredDraft as discardStoredKeybindingDraft } from "./draftCheckpointPort";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
@@ -210,7 +211,12 @@ export type {
   KeybindingsStoreState,
   KeybindingsSupport,
 } from "./keybindingsStore";
-export { createKeybindingsStore, fromWireOverrides, keybindingsSupport } from "./keybindingsStore";
+export {
+  createKeybindingsStore,
+  fromWireOverrides,
+  isReadableKeybindingDraft,
+  keybindingsSupport,
+} from "./keybindingsStore";
 export type {
   KeybindingsPlatform,
   OverrideRule,
