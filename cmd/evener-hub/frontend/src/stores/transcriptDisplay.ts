@@ -28,9 +28,13 @@ import {
   readLegacyPreference,
   readTranscriptDisplayLocal,
 } from "./prefs";
-import { readyGenerationCallback } from "./readyGenerationCallback";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 
 export const TRANSCRIPT_DISPLAY_CHANNEL = "evener.transcript-display.v1";
+// This store's own guard: keybindings.ts wires the same connectionStore
+// client through its own instance, so the two never contend over one shared
+// registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 export const TRANSCRIPT_DISPLAY_CHANNEL_NAME = TRANSCRIPT_DISPLAY_CHANNEL;
 const LOCAL_KEYS: Record<ViewportClass, string> = {
   desktop: "evener.prefs.transcriptDisplay.desktop",
