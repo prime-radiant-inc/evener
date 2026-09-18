@@ -65,7 +65,6 @@ describe("createCommandCatalog", () => {
 
     await a.getState().refresh();
     expect(a.getState().commands.map((c) => c.name)).toEqual(["one"]);
-    expect(a.getState().loaded).toBe(true);
     expect(b.getState()).toBe(b.getInitialState());
     expect(second.requests).toEqual([]);
 
@@ -90,7 +89,7 @@ describe("createCommandCatalog", () => {
     const listener = vi.fn();
     catalog.subscribe(listener);
     await catalog.getState().refresh();
-    expect(catalog.getState()).toMatchObject({ loaded: true, loading: false, error: null });
+    expect(catalog.getState()).toMatchObject({ loading: false, error: null });
     expect(catalog.getState().commands).toHaveLength(1);
 
     io.read = async () => {
@@ -98,7 +97,6 @@ describe("createCommandCatalog", () => {
     };
     await catalog.getState().refresh();
     expect(catalog.getState().commands).toHaveLength(1);
-    expect(catalog.getState().loaded).toBe(true);
     expect(catalog.getState().error).toContain("down");
     expect(listener.mock.calls.some(([state]) => state.loading)).toBe(true);
     expect(catalog.getState().loading).toBe(false);

@@ -26,8 +26,6 @@ export type CommandCatalogClient = Pick<AppwireClient, "request" | "onNotificati
 export interface CommandCatalogState {
   /** The hub-wide catalog, unfiltered: every consumer scopes it to a session itself. */
   commands: CommandDescriptor[];
-  /** A catalog has arrived at least once; a later failed re-read leaves it and this set. */
-  loaded: boolean;
   loading: boolean;
   error: string | null;
   /** Re-reads the catalog; refreshLoop below holds the coalescing rule. */
@@ -43,19 +41,18 @@ export interface CommandCatalog extends FrameworkFreeStore<CommandCatalogState> 
 
 export function createCommandCatalog(client: CommandCatalogClient): CommandCatalog {
   const store = createFrameworkFreeStore<CommandCatalogState>((set) => {
-    const loop = refreshLoop(
-      set,
-      async () => ({ commands: await readCatalog(client), loaded: true }),
-      "Could not load commands",
-    );
-    return { commands: [], loaded: false, loading: false, error: null, refresh: loop.refresh };
+    const loop = refreshLoop(set, async () => ({ commands: await readCatalog(client) }), "Could not load commands");
+    return { commands: [], loading: false, error: null, refresh: loop.refresh };
   });
   return {
     ...store,
     watch: () =>
       client.onNotification((n) => {
-        const { loaded, refresh } = store.getState();
-        if (n.method === "evener/plugin/updated" && loaded) void refresh();
+        // A catalog has arrived once the published list is no longer the initial
+        // one: a failed or superseded read leaves it untouched, and a reset
+        // restores the initial list, so an unread catalog stays unread.
+        const { commands, refresh } = store.getState();
+        if (n.method === "evener/plugin/updated" && commands !== store.getInitialState().commands) void refresh();
       }),
   };
 }
