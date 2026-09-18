@@ -1123,7 +1123,7 @@ func TestResumeAfterConfirmedRetirementRecordsLifecycle(t *testing.T) {
 	assertThreadLifecycleOutcome(t, records, "ownership", "success", "none")
 	// Only the stages recorded after resumeOwnership resolves the alias carry the
 	// resolved identity, exactly as the explicit path's post-resolution stages do.
-	for _, stage := range []string{"discovery", "protocol_check", "owner_lookup", "request_preparation", "spawner_resume", "post_launch_discovery", "daemon_read"} {
+	for _, stage := range []string{"lock_wait", "lock_held", "discovery", "protocol_check", "owner_lookup", "request_preparation", "spawner_resume", "post_launch_discovery", "daemon_read"} {
 		assertThreadLifecycleOutcome(t, records, stage, "success", "none")
 		for _, record := range records {
 			if record["stage"] == stage && record["resolved_session_id"] != target {

@@ -185,13 +185,18 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	}
 	epochs[sessionID] = epoch
 	// Force stop's sorted ownership order, retaining the original mutexes.
+	lockDone := trace.stage(ctx, "lock_wait")
 	for _, id := range aliases {
 		cfg.ResumeLocks.For(id).Lock()
 	}
+	lockDone(nil)
+	heldStarted := time.Now()
+	trace.record(ctx, "lock_held", "begin", heldStarted, nil, 0, 0)
 	defer func() {
 		for _, id := range slices.Backward(aliases) {
 			cfg.ResumeLocks.For(id).Unlock()
 		}
+		trace.record(ctx, "lock_held", "complete", heldStarted, nil, 0, 0)
 	}()
 	for _, id := range aliases {
 		if err := retirementAdmissionRecoveryError(cfg, id, epochs[id]); err != nil {
