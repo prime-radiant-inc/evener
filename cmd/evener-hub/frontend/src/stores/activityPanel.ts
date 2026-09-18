@@ -39,7 +39,11 @@ export type ActivityFetchResult =
   | { kind: "unsupported" }
   | { kind: "ended" }
   | { kind: "failed"; error: PanelLoadFailure }
-  | { kind: "continuation-failed"; nodeID: string; message: string };
+  | { kind: "continuation-failed"; nodeID: string; message: string }
+  // A continuation page minted against a different revision than the retained
+  // tree. It is not a failure to show the reader: the page is discarded and the
+  // consumer re-fetches a fresh root, so no continuation failure is recorded.
+  | { kind: "continuation-discarded"; nodeID: string };
 
 /** What a settled continuation page owes the summary store: the summary
  * generation it began under (absent when no summary entry existed then) and
@@ -232,6 +236,19 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
             ...current,
             continuationLoadingID: undefined,
             continuationFailures: { ...current.continuationFailures, [result.nodeID]: result.message },
+            pending: undefined,
+          };
+        } else if (result.kind === "continuation-discarded") {
+          // The page belongs to another revision: leave the retained tree and
+          // the badge alone (no debt) and let the caller's fresh root fetch
+          // re-anchor pagination. Clearing any prior failure for this node keeps
+          // the discard from reading as a branch error.
+          const continuationFailures = { ...current.continuationFailures };
+          delete continuationFailures[result.nodeID];
+          next = {
+            ...current,
+            continuationLoadingID: undefined,
+            continuationFailures,
             pending: undefined,
           };
         } else if (result.kind === "ready") {

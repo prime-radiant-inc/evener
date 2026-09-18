@@ -2150,6 +2150,13 @@ type JobActivitySession struct {
 	Branch      JobActivityBranchState `json:"branch"`
 }
 
+// JobActivityTree is ONE bounded page of a session's job-activity tree, not a
+// complete snapshot: Root.Branch carries a continuation token when the page
+// stopped short of what the session retains. Revision identifies the page
+// generation the page was rendered against; a continuation is only meaningful
+// within the revision it was minted from, so a client that receives a page at a
+// different revision must discard it and fetch a fresh root page rather than
+// splice its positions into the tree it already holds.
 type JobActivityTree struct {
 	Revision uint64             `json:"revision"`
 	Root     JobActivitySession `json:"root"`

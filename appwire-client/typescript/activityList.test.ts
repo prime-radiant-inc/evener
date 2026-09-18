@@ -143,6 +143,27 @@ test("rejects wrong identity and stale revision responses without replacing the 
   expect(list.getSnapshot().error).toContain("older");
 });
 
+test("a continuation page from a different revision is discarded for a fresh root", async () => {
+  const requests: unknown[] = [];
+  const client = {
+    onNotification: () => () => undefined,
+    request: async (_method: string, params: unknown) => {
+      requests.push(params);
+      // The continuation answers at a newer revision than the retained tree.
+      if (requests.length === 1) return { data: tree("next", 2) };
+      return { data: tree() };
+    },
+  } as unknown as ActivityClient;
+  const list = new ActivityList(client, "local:session", "session", tree("next"));
+  const branch = list.branches()[0];
+  if (!branch) throw new Error("missing continuation");
+  await list.loadMore(branch.id, "next");
+  // The mismatched page is not grafted; the list re-fetches the root instead.
+  expect(requests).toEqual([{ ref: "local:session", continuation: "next" }, { ref: "local:session" }]);
+  expect(list.getSnapshot().tree?.revision).toBe(1);
+  expect(list.getSnapshot().error).toBeNull();
+});
+
 test("maps a continuation branch error while retaining its continuation", async () => {
   let response: unknown = { data: tree("cursor") };
   const client = {

@@ -876,6 +876,76 @@ func savePastActivityMeta(t *testing.T, stateDir, sessionID, name string) {
 	savePastActivityMetaWithTreeRevision(t, stateDir, sessionID, name, "", 0)
 }
 
+// TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce drives
+// the public historical entry point through a session whose retained job count
+// exceeds activityMaxWorkUnits, following each minted continuation exactly as a
+// client would. The first page stops at the work-unit bound and must hand back a
+// continuation that resumes AFTER the entries it already rendered; following it
+// must deliver every remaining job exactly once, in order, and terminate rather
+// than replaying the page's prefix. Every page must also stay within the
+// activityMaxWorkUnits bound.
+func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *testing.T) {
+	stateDir := t.TempDir()
+	rootID := "workbudgetwalkroot"
+	const jobCount = activityMaxWorkUnits + 1
+	events := make([]jobstore.Event, 0, jobCount)
+	for i := range jobCount {
+		ts := time.Unix(int64(1000+i), 0).UTC()
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: ts, JobID: fmt.Sprintf("job_%04d", i),
+			Type: jobstore.JobShell, OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: &ts,
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMeta(t, stateDir, rootID, "Root")
+
+	var delivered []string
+	seenContinuations := map[string]bool{}
+	continuation := ""
+	pages := 0
+	for {
+		pages++
+		if pages > 3 {
+			t.Fatalf("walked %d pages without terminating -- a work-unit continuation is replaying instead of advancing", pages)
+		}
+		tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: continuation})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages, err)
+		}
+		if len(tree.Root.Entries) > activityMaxWorkUnits {
+			t.Fatalf("page %d returned %d entries, want at most activityMaxWorkUnits=%d", pages, len(tree.Root.Entries), activityMaxWorkUnits)
+		}
+		for _, entry := range tree.Root.Entries {
+			if entry.Job == nil {
+				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
+			}
+			delivered = append(delivered, entry.Job.JobID)
+		}
+		next := tree.Root.Branch.Continuation
+		if next == "" {
+			break
+		}
+		if seenContinuations[next] {
+			t.Fatalf("page %d re-minted a continuation already handed out -- the walk can never advance past it", pages)
+		}
+		seenContinuations[next] = true
+		continuation = next
+	}
+	if pages < 2 {
+		t.Fatalf("got %d page(s), want at least 2 -- the fixture must be large enough to exhaust the work-unit budget", pages)
+	}
+	if len(delivered) != jobCount {
+		t.Fatalf("delivered %d entries across %d pages, want exactly %d (zero overlap, zero gap): %v", len(delivered), pages, jobCount, delivered)
+	}
+	for i, id := range delivered {
+		want := fmt.Sprintf("job_%04d", i)
+		if id != want {
+			t.Fatalf("delivered[%d] = %q, want %q -- every page must resume after the last rendered entry: %v", i, id, want, delivered)
+		}
+	}
+}
+
 func savePastActivityMetaWithTreeRevision(t *testing.T, stateDir, sessionID, name, rootID string, revision uint64) {
 	t.Helper()
 	meta := schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.2", Name: name, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(), JobTreeRevision: revision}
@@ -959,6 +1029,13 @@ func TestLoadSessionJobActivityTree_SizeTrimResumesAfterRemovedEntriesWithoutOve
 				t.Fatalf("page %d entry without a Job: %+v", pages, entry)
 			}
 			delivered = append(delivered, entry.Job.JobID)
+		}
+		raw, err := json.Marshal(tree)
+		if err != nil {
+			t.Fatalf("page %d: marshal: %v", pages, err)
+		}
+		if len(raw) > activityMaxEncodedBytes {
+			t.Fatalf("page %d encoded %d bytes, over the %d-byte bound", pages, len(raw), activityMaxEncodedBytes)
 		}
 		if tree.Root.Branch.Continuation == "" {
 			break

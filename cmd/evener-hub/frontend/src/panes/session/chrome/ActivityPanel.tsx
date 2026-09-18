@@ -7,7 +7,12 @@ import {
   parseActivityTree,
 } from "@evener/appwire-client";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { activityPanelStore, EMPTY_ACTIVITY_PANEL_ENTRY, useActivityPanelStore } from "../../../stores/activityPanel";
+import {
+  activityPanelStore,
+  EMPTY_ACTIVITY_PANEL_ENTRY,
+  retainedActivityTree,
+  useActivityPanelStore,
+} from "../../../stores/activityPanel";
 import {
   activitySummaryStore,
   EMPTY_ACTIVITY_SUMMARY_ENTRY,
@@ -181,6 +186,19 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({
             });
             return;
           }
+          const retained = retainedActivityTree(activityPanelStore.getState().entries.get(sessionRef));
+          if (retained && parsed.revision !== retained.revision) {
+            // The page was minted against a different revision than the tree on
+            // screen, so its cursor names positions that no longer line up.
+            // Discard it rather than grafting mismatched entries, and re-fetch a
+            // fresh root at the current revision.
+            activityPanelStore.getState().publishFetch(sessionRef, requestID, {
+              kind: "continuation-discarded",
+              nodeID: continuation.nodeID,
+            });
+            refreshActivityRoot(sessionRef, model.jobsUpdatedAt, handleRefreshFailure, true);
+            return;
+          }
           activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "ready", tree: parsed });
         })
         .catch((err) => {
@@ -191,7 +209,7 @@ export const ActivityPanelBody = memo(function ActivityPanelBody({
           });
         });
     },
-    [model.jobsUpdatedAt, sessionRef, toasts],
+    [handleRefreshFailure, model.jobsUpdatedAt, sessionRef, toasts],
   );
 
   function handleContinue(nodeID: string, token: string) {
