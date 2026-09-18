@@ -82,6 +82,15 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 	return mk, nil
 }
 
+// saveMarketplaces is the shared boundary every caller (ensureFetched,
+// AddMarketplace, RefreshMarketplace, RemoveMarketplace, EditMarketplace,
+// saveRename, SeedDefaultMarketplaces) writes known_marketplaces.json
+// through, so scrubbing here once - atomicWriteFile's own error can name
+// this machine's absolute plugin-store path directly - covers every present
+// and future caller instead of relying on each one to wrap it. Callers that
+// need the marketplace name in the message (saveFailed/
+// storeChangeRollbackFailed) wrap this already-scrubbed error with it; no
+// path can reach the wire either way.
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 	path, err := m.storePath(marketplacesFileName)
 	if err != nil {
@@ -92,7 +101,8 @@ func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 		return fmt.Errorf("marshalling marketplaces: %w", err)
 	}
 	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
-		return err
+		_, _ = fmt.Fprintf(m.stderr(), "warning: saving %s failed: %v\n", marketplacesFileName, err)
+		return fmt.Errorf("saving %s failed; see the hub's log for detail", marketplacesFileName)
 	}
 	m.markStoreChanged(StoreChanged{Marketplaces: true})
 	return nil
