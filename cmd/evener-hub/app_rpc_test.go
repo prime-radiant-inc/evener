@@ -12035,9 +12035,10 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	}
 
 	// A rename that persisted before it failed announces as loudly as a clean
-	// one, and it must still name the client that asked: the error reply is not
-	// the only signal every other client's list is stale.
-	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdated(t, client), "tab-a")
+	// one - the error reply is not the only signal every other client's list is
+	// stale - but it names no origin: the caller's mutation errored, so its echo
+	// must not be consumable as that client's own success.
+	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdated(t, client), "")
 }
 
 // The sibling case: the credential move succeeded and the reload that follows

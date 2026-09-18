@@ -1208,12 +1208,20 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	// Every instance write answers the same way: a write that applied is
 	// announced, whether or not the step after it failed (writeDidApply), and
 	// the error still goes back to the client that asked, which is the only
-	// one that can act on what was left behind. The broadcast echoes the
-	// caller's own originClientId so that client recognizes its own change.
+	// one that can act on what was left behind. Only a CLEANLY applied write
+	// echoes the caller's own originClientId, so that client recognizes its own
+	// change; an applied write that still returned an error broadcasts without
+	// one, because the issuing client cannot treat an errored mutation's echo as
+	// its own success - the broadcast can beat the failing reply, and consuming
+	// the marker then would suppress the invalidation a failed operation owes.
 	instanceWrite := func(originClientId string, apply func() error) (appwire.InstanceListResponse, error) {
 		err := apply()
 		if writeDidApply(err) {
-			notifyInstanceUpdated(server, originClientId)
+			if err != nil {
+				notifyInstanceUpdated(server, "")
+			} else {
+				notifyInstanceUpdated(server, originClientId)
+			}
 		}
 		if err != nil {
 			return appwire.InstanceListResponse{}, err

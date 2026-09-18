@@ -853,7 +853,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   function consumeOwnEcho(provider: string | undefined, originClientId: string | undefined): boolean {
     if (originClientId) {
       if (originClientId !== deps.ownClientId()) return false;
-      const marker = firstMarker(provider);
+      // The id proves this echo is ours, so the stale markers firstLiveMarker
+      // retires on the way are safe to drop. Consuming the OLDEST marker
+      // instead - stale or not - would leave a live marker behind for a later
+      // foreign id-less notification to absorb, presenting that foreign change
+      // as this store's own refresh.
+      const marker = firstLiveMarker(provider);
       if (marker === undefined) return false;
       retireLocalMutation(marker);
       return true;

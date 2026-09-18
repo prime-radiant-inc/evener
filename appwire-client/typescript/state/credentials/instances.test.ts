@@ -567,30 +567,36 @@ describe("credential mutations", () => {
     vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
-    const aged = deferred<AuthStatusResponse>();
-    const fresh = deferred<AuthStatusResponse>();
+    const first = deferred<AuthStatusResponse>();
     let sets = 0;
-    fake.on("evener/auth/apiKey/set", () => (++sets === 1 ? aged.promise : fresh.promise));
+    fake.on("evener/auth/apiKey/set", () => (++sets === 1 ? first.promise : SIGNED_IN));
     store.connectionChanged(fake, "ready");
     await store.getState().fetch();
 
-    const first = store.getState().setApiKey("work", API_KEY);
-    // The first marker ages out with no echo (past the 2000ms echo window); the
-    // second mutation arms a live marker behind it.
-    await vi.advanceTimersByTimeAsync(2500);
-    const second = store.getState().setApiKey("work", API_KEY);
-    const marked = store.getState().selfRefresh;
+    // The first mutation SETTLES (its response lands), then ages past the echo
+    // window without its echo; the second is issued inside that window, so it is
+    // still live when the echo arrives.
+    const aged = store.getState().setApiKey("work", API_KEY);
+    first.resolve(SIGNED_IN);
+    await aged;
+    await vi.advanceTimersByTimeAsync(1000);
+    await store.getState().setApiKey("work", API_KEY);
+    // 2500ms after the first mutation's stamp: that marker is stale, the
+    // second's 1500ms-old one is live.
+    await vi.advanceTimersByTimeAsync(1500);
 
-    // An id-less auth echo must look past the stale marker to the live one and
-    // refresh self-marked, not read as another client's change.
+    const marked = store.getState().selfRefresh;
     fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "api_key" } });
     await vi.advanceTimersByTimeAsync(300);
     expect(store.getState().selfRefresh).toBeGreaterThan(marked);
 
-    aged.resolve(SIGNED_IN);
-    fresh.resolve(SIGNED_IN);
-    await first;
-    await second;
+    // The skip is what makes this second notification foreign: had the echo
+    // consumed the stale marker instead, the live one would still be here to
+    // absorb this unrelated change and present it as the store's own refresh.
+    const afterOwn = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "oidc" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBe(afterOwn);
   });
 
   test("a notification on one store's client never refetches another store", async () => {
@@ -778,6 +784,40 @@ describe("instance mutations and their own echo", () => {
 
     fast.resolve(LISTING);
     await b;
+  });
+
+  test("an id-bearing echo spends the live marker, not a settled stale one", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    const first = deferred<AuthStatusResponse>();
+    let sets = 0;
+    fake.on("evener/auth/apiKey/set", () => (++sets === 1 ? first.promise : SIGNED_IN));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    const aged = store.getState().setApiKey("work", API_KEY);
+    first.resolve(SIGNED_IN);
+    await aged;
+    await vi.advanceTimersByTimeAsync(1000);
+    await store.getState().setApiKey("work", API_KEY);
+    await vi.advanceTimersByTimeAsync(1500); // the first marker is stale, the second live
+
+    const marked = store.getState().selfRefresh;
+    fake.emitNotification({
+      method: "evener/auth/updated",
+      params: { provider: "work", originClientId: "tab-1" },
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+
+    // The id-bearing echo must have spent the LIVE marker (retiring the stale
+    // one on the way). Had it spent the stale marker instead, the live one
+    // would still be here to absorb this unrelated change as the store's own.
+    const afterOwn = store.getState().selfRefresh;
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "oidc" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBe(afterOwn);
   });
 
   test("every instance mutation stamps originClientId", async () => {
