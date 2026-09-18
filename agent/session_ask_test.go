@@ -2416,7 +2416,7 @@ func TestAskUser_RecordFailedSteeringSelectionDoesNotTagAHumanNoteClaim(t *testi
 // (session_tools_ask.go:539-542): a successful human-note carrier does not
 // clear askPending live (steeringCarrierClaimAnswersAsk skips the entry
 // clear, and the note itself is not an answering steer per
-// steeringSourceAnswersAsk), but its round still runs a real model
+// steeringAnswersAsk), but its round still runs a real model
 // completion to acknowledge the note. deriveRestoredAskPending's
 // TurnToolResults branch treated ANY non-ask_user completion (e.g. a
 // communicate ack) as decisive, on the unstated assumption that every

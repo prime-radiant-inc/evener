@@ -96,29 +96,29 @@ func (s *Session) clearAskPending() {
 // flag this session next reports, not merely a restore-time bug. An
 // interrupted steer (SteeringKindInterrupted) never reaches here — the
 // interrupt branch calls clearAskPending directly before this turn is ever
-// appended — so this checks steeringSourceAnswersAsk alone.
+// appended — so this checks steeringAnswersAsk alone.
 func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
-	if steeringSourceAnswersAsk(t.SteeringSource, t.SteeringKind) {
+	if steeringAnswersAsk(t.SteeringSource, steeringOrigin{kind: t.SteeringKind}, "") {
 		s.clearAskPending()
 	}
 }
 
 // steeringCarrierClaimAnswersAsk reports whether the steer a steering-carrier
 // identity is about to carry (queuedClientMutationIdentity.SteeringCarrier)
-// answers a pending ask per steeringSourceAnswersAsk. processOneInput's entry
+// answers a pending ask per steeringAnswersAsk. processOneInput's entry
 // clear runs before acceptSteeringCarrierInput ever drains the steer — before
-// its turn even knows the steer's kind — so this reads the kind from the
-// durable client-mutation journal (steeringOriginFromJournal) instead of a
-// live steeringMessage. Every steer a carrier exists for is user-sourced
+// its turn even knows the steer's kind — so this reads the provenance from
+// the durable client-mutation journal (steeringOriginFromJournal) instead of
+// a live steeringMessage. Every steer a carrier exists for is user-sourced
 // (acceptSteeringCarrierInput's own doc: "already-accepted user steering"),
-// so only the kind can vary. A non-carrier identity, or one with nothing to
-// look up, answers by definition, preserving the entry clear's ordinary
-// unconditional behavior for a genuine user reply. A carrier identity whose
-// journal record is MISSING entirely (as opposed to present but kindless)
-// fails CLOSED — does not answer — rather than defaulting to "answers": an
-// unknown id is exactly the case where a lost or not-yet-visible record
-// (rather than an ordinary steer that simply never recorded a kind) could
-// silently resolve a still-unanswered human note.
+// so only the provenance can vary. A non-carrier identity, or one with
+// nothing to look up, answers by definition, preserving the entry clear's
+// ordinary unconditional behavior for a genuine user reply. A carrier
+// identity whose journal record is MISSING entirely (as opposed to present
+// but kindless) fails CLOSED — does not answer — rather than defaulting to
+// "answers": an unknown id is exactly the case where a lost or
+// not-yet-visible record (rather than an ordinary steer that simply never
+// recorded a kind) could silently resolve a still-unanswered human note.
 func (s *Session) steeringCarrierClaimAnswersAsk(identity queuedClientMutationIdentity) bool {
 	if !identity.SteeringCarrier || identity.ClientMutationID == "" || s.clientMutations == nil {
 		return true
@@ -128,21 +128,26 @@ func (s *Session) steeringCarrierClaimAnswersAsk(identity queuedClientMutationId
 		return false
 	}
 	origin := steeringOriginFromJournal(journal, identity.ClientMutationID)
-	return steeringSourceAnswersAsk(events.SteeringSourceUser, origin.steeringKind())
+	return steeringAnswersAsk(events.SteeringSourceUser, origin, "")
 }
 
-// steeringSourceAnswersAsk reports whether steering carrying source and kind
-// answers a pending ask_user question the way a plain user reply would.
-// SteeringSourceUser marks steering as user-sourced in general, but a
-// human-note update (events.SteeringKindHumanNote) is also user-sourced
-// without addressing the question — saving a note while a question is
-// pending must not clear it (RoboRev #1806 member-0 Medium). Used by
-// clearAskPendingForResolvingSteer (the live mid-round clear) above; the
-// restore-side backward scan (#1806 piece 2) shares this same predicate
-// once it lands in the next change stacked on this one, so the two
-// boundaries cannot independently drift on which kinds count as an answer.
-func steeringSourceAnswersAsk(source, kind string) bool {
-	return source == events.SteeringSourceUser && kind != events.SteeringKindHumanNote
+// steeringAnswersAsk reports whether steering carrying this source and
+// provenance answers a pending ask_user question the way a plain user reply
+// would. SteeringSourceUser marks steering as user-sourced in general, but a
+// human-note update is also user-sourced without addressing the question —
+// saving a note while a question is pending must not clear it (RoboRev
+// #1806 member-0 Medium) — so origin.isHumanNoteSteer excludes it.
+// textEvidence is the turn's text where the caller has it (turnResolvesAskBoundary's
+// restore scan) and "" where it does not (a journal-only lookup): exactly
+// where isHumanNoteSteer's last-resort write-path-shape check has nothing to
+// read anyway, since a journal record that reached this far already decided
+// by kind or method. One predicate for the live mid-round clear
+// (clearAskPendingForResolvingSteer), the carrier-claim check
+// (steeringCarrierClaimAnswersAsk), and the restore boundary scan
+// (turnResolvesAskBoundary) so the three cannot independently drift on which
+// kinds count as an answer.
+func steeringAnswersAsk(source string, origin steeringOrigin, textEvidence string) bool {
+	return source == events.SteeringSourceUser && !origin.isHumanNoteSteer(textEvidence)
 }
 
 // steeringOriginBoundary clamps divergenceTurn (expressed exactly as
@@ -350,15 +355,17 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 //
 //   - TurnUserInput: the user spoke — resolves.
 //   - TurnSteering carrying SteeringKindInterrupted, or a steer whose
-//     provenance (steeringOriginForTurn(turn, origins)) steeringSourceAnswersAsk
+//     provenance (steeringOriginForTurn(turn, origins)) steeringAnswersAsk
 //     reports as answering the user: the runtime already cleared askPending
 //     on this turn's behalf before it ever ran (session_lifecycle.go: the
 //     interrupt branch calls clearAskPending directly; a resolving user
 //     steer clears askPending via clearAskPendingForResolvingSteer) —
 //     resolves. A human-note update (events.SteeringKindHumanNote, by its
-//     own kind or by its journal record's provenance) is user-sourced but
-//     does not answer the question, so steeringSourceAnswersAsk excludes it:
-//     does not resolve. Any other TurnSteering (a daemon-authored nudge, a
+//     own kind or by its journal record's provenance, or — for a kindless,
+//     provenance-less inherited fork prefix — by the write-path text shape
+//     isHumanNoteSteer falls back to) is user-sourced but does not answer
+//     the question, so steeringAnswersAsk excludes it: does not resolve.
+//     Any other TurnSteering (a daemon-authored nudge, a
 //     reminder) carries neither marker: does not resolve, the scan continues
 //     past it — a trailing steering turn must not resolve a pending ask by
 //     looking like the user moved last (spec §6).
@@ -385,19 +392,7 @@ func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin
 			return true
 		}
 		origin := steeringOriginForTurn(turn, origins)
-		// isHumanNoteSteer is origin.steeringKind()'s own fallback chain plus
-		// one more link: when neither a recorded kind nor a notes/human/set
-		// method is reachable (a kindless, provenance-less turn -- exactly an
-		// inherited fork prefix's legacy note, since steeringOriginBoundary
-		// nils the journal lookup for it regardless of what origins carries),
-		// it still reads the write-path text shape (humanNoteSteerPrefix) the
-		// same way escapeNotesHistoryTurns already does. Checked directly
-		// here instead of through steeringKind(), which stops one link short
-		// and would default an unreachable-provenance note to "answers".
-		if origin.isHumanNoteSteer(turn.Message.Text()) {
-			return false
-		}
-		return turn.SteeringSource == events.SteeringSourceUser
+		return steeringAnswersAsk(turn.SteeringSource, origin, turn.Message.Text())
 	case schema.TurnFailure:
 		return turn.Error != nil && turn.Error.SteeringCarrier
 	default:
