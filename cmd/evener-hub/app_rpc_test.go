@@ -11848,19 +11848,79 @@ func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
 	}
 }
 
-// TestHubRPCInstanceCreateBroadcastEchoesOriginClientId is the instance-side
-// counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: an
-// evener/instance/create from a client that names itself must broadcast an
-// evener/auth/updated carrying that same id, so the originator recognizes its
-// own echo by id instead of treating its own mutation as another client's
-// change and refetching.
-func TestHubRPCInstanceCreateBroadcastEchoesOriginClientId(t *testing.T) {
-	client := newAuthOriginTestClient(t)
+// TestHubRPCInstanceBroadcastEchoesOriginClientId is the instance-side
+// counterpart of TestAuthApiKeySetBroadcastEchoesOriginClientId: a mutation
+// from a client that names itself must broadcast an evener/auth/updated
+// carrying that same id, so the originator recognizes its own echo by id
+// instead of treating its own mutation as another client's change and
+// refetching. Every registered instance mutation is covered, each against its
+// own hub so one case's write cannot perturb the next.
+func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
+	cases := []struct {
+		name   string
+		method string
+		params func(origin string) any
+	}{
+		{"create", appwire.MethodEvenerInstanceCreate, func(origin string) any {
+			return appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork", OriginClientId: origin}
+		}},
+		{"edit", appwire.MethodEvenerInstanceEdit, func(origin string) any {
+			return appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test", OriginClientId: origin}
+		}},
+		{"remove", appwire.MethodEvenerInstanceRemove, func(origin string) any {
+			return appwire.InstanceRemoveParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setDefault", appwire.MethodEvenerInstanceSetDefault, func(origin string) any {
+			return appwire.InstanceSetDefaultParams{Name: "base", OriginClientId: origin}
+		}},
+		{"setModelDisabled", appwire.MethodEvenerInstanceSetModelDisabled, func(origin string) any {
+			return appwire.InstanceSetModelDisabledParams{Name: "base", Model: "claude-opus-4-6", Disabled: true, OriginClientId: origin}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newAuthOriginTestClient(t)
+
+			var resp appwire.InstanceListResponse
+			if err := client.Request(context.Background(), tc.method, tc.params("tab-a"), &resp); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+
+			params := waitForAuthUpdated(t, client)
+			if params.OriginClientId != "tab-a" {
+				t.Errorf("%s params=%+v: originClientId=%q, want %q (the caller's own id echoed back)",
+					tc.method, params, params.OriginClientId, "tab-a")
+			}
+		})
+	}
+}
+
+// TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId covers the sixth
+// mutation handler, whose success needs a live /models endpoint: its broadcast
+// must echo the caller's id like the other five.
+func TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId(t *testing.T) {
+	tomlPath := refreshGateway(t, `{"data":[{"id":"gpt-live"}]}`)
+	dir := filepath.Dir(tomlPath)
+	credsStore := newTestCredentialsStore(t)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		Registry:            newTestRegistry(t, t.TempDir(), tomlPath, credsStore, nil),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+		CredsStore:          credsStore,
+	})
+	t.Cleanup(hub.Close)
+	client := dialHubRPC(t, hub)
+	t.Cleanup(func() { client.Close() })
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
 
 	var resp appwire.InstanceListResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate,
-		appwire.InstanceCreateParams{Base: "anthropic", Name: "mywork", OriginClientId: "tab-a"}, &resp); err != nil {
-		t.Fatalf("evener/instance/create: %v", err)
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRefreshModels,
+		appwire.InstanceRefreshModelsParams{Name: "gw", OriginClientId: "tab-a"}, &resp); err != nil {
+		t.Fatalf("evener/instance/refreshModels: %v", err)
 	}
 
 	params := waitForAuthUpdated(t, client)
@@ -11871,7 +11931,7 @@ func TestHubRPCInstanceCreateBroadcastEchoesOriginClientId(t *testing.T) {
 }
 
 // TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
-// for TestHubRPCInstanceCreateBroadcastEchoesOriginClientId: the identical
+// for TestHubRPCInstanceBroadcastEchoesOriginClientId: the identical
 // create with no id must broadcast an empty one, so the id the first test
 // observes is the caller's value rather than one the hub supplies on its own.
 func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T) {

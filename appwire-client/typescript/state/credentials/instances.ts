@@ -498,17 +498,16 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const before = new Map(refreshedInstances);
     // An instance mutation's echo names no provider, so its marker is the one
     // with an undefined subject (see the own-echo section below).
-    noteLocalMutation(undefined);
+    const marker = noteLocalMutation(undefined);
     try {
       const response = await request({ originClientId: deps.ownClientId() });
       const sameClient = connection.client === client;
-      if (sameClient) {
-        bump(landedMutations, reconcile.instance);
-        // The write reached the hub - whether or not a newer request outran its
-        // answer - so the broadcast that follows is ours: re-stamp so a late
-        // echo inside the window still correlates.
-        restampLocalMutation(undefined);
-      }
+      if (sameClient) bump(landedMutations, reconcile.instance);
+      // The write reached the hub - whether or not a newer request outran its
+      // answer, since every return below is still this request's own echo - so
+      // re-stamp so a late echo inside the window still correlates. A reconnect
+      // already cleared the marker, making this a no-op.
+      restampLocalMutation(marker);
       if (version !== requestVersion) {
         // A superseded answer from a client that is gone describes a listing
         // this client never had: reconciling it would write the dead client's
@@ -528,9 +527,11 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       store.setState(landedListing(applied));
       return true;
     } catch (err) {
-      // Refused: the marker retires, so an echo that follows after all - the
-      // write landed and only its reply was lost - reads as foreign and re-reads.
-      if (connection.client === client) retireLocalMutation(undefined);
+      // Refused: this mutation's marker retires, so an echo that follows after
+      // all - the write landed and only its reply was lost - reads as foreign
+      // and re-reads. A reconnect already cleared the marker, making this a
+      // no-op.
+      retireLocalMutation(marker);
       throw err;
     } finally {
       settleLoading(version);
@@ -618,7 +619,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const basis = landedMutations.get(name) ?? 0;
     const version = (refreshVersions.get(name) ?? 0) + 1;
     refreshVersions.set(name, version);
-    noteLocalMutation(undefined);
+    const marker = noteLocalMutation(undefined);
     try {
       const response = await client.request("evener/instance/refreshModels", {
         name,
@@ -626,8 +627,9 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       });
       // The refresh reached the hub - whether or not a newer request outran its
       // answer, since every return below is still this request's own echo - so
-      // re-stamp so a late echo inside the window still correlates.
-      if (connectionStillCurrent(client)) restampLocalMutation(undefined);
+      // re-stamp so a late echo inside the window still correlates. A reconnect
+      // already cleared the marker, making this a no-op.
+      restampLocalMutation(marker);
       if (
         refreshVersions.get(name) !== version ||
         (landedMutations.get(name) ?? 0) !== basis ||
@@ -667,9 +669,11 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       bump(refreshedInstances, name);
       store.setState({ instances: merged, error: null });
     } catch (err) {
-      // Refused: the marker retires, so an echo that follows after all - the
-      // refresh landed and only its reply was lost - reads as foreign and re-reads.
-      if (connectionStillCurrent(client)) retireLocalMutation(undefined);
+      // Refused: this refresh's marker retires, so an echo that follows after
+      // all - the refresh landed and only its reply was lost - reads as foreign
+      // and re-reads. A reconnect already cleared the marker, making this a
+      // no-op.
+      retireLocalMutation(marker);
       throw err;
     } finally {
       // Only this client's entry: a reconnect clears the map, and the next
@@ -722,62 +726,69 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   //   came last - issue or response. A marker records the subject its echo can
   //   name: the provider an auth write targeted, or nothing for an instance
   //   mutation, whose echo names no provider.
-  // - COUNTED BY SUBJECT, not a single timestamp: back-to-back mutations
-  //   (two saves in a guided flow, a retry, a poll landing on top of a save, an
-  //   edit on top of a create) each broadcast one echo, so a lone marker would
-  //   let the first echo consume the second mutation's marker and leave the
-  //   second self echo to be misread as an unrelated client's change. Each
-  //   matching notification consumes exactly one marker, and only a
-  //   notification beyond the outstanding count is foreign and still refetches.
+  // - COUNTED BY SUBJECT, not a single timestamp: back-to-back mutations (two
+  //   saves in a guided flow, a retry, a poll landing on top of a save, an edit
+  //   on top of a create) each broadcast one echo, so a lone marker would be
+  //   spent by the first echo and leave the second self echo to be misread as an
+  //   unrelated client's change. Each matching notification consumes exactly one
+  //   marker - the oldest outstanding one for its subject, since echoes arrive
+  //   in issue order - and only a notification beyond the outstanding count is
+  //   foreign and still refetches.
   // - Cleared when the response proves no broadcast will follow: a failed RPC,
-  //   or a device poll that comes back pending/expired rather than authorized.
-  //   One marker is retired per such outcome (a floor, not an unconditional
-  //   clear): which mutation failed does not matter, only how many echoed
-  //   mutations remain outstanding.
+  //   or a device poll that came back pending/expired rather than authorized.
+  //   Each mutation retires exactly the marker it armed (never a later
+  //   mutation's), so an older reply that lands after a newer mutation was
+  //   issued cannot spend the newer mutation's echo.
   // - Bounded by a short age window from the marker's latest stamp, so a marker
   //   that is never consumed (the echo was lost, or the notification arrived
   //   pre-response and the client disconnected) cannot outlive its meaning.
   //
-  // Anything unmatched still refetches - other providers, unattributed
-  // notifications, a subject with no live marker - so unrelated clients'
+  // Anything unmatched still refetches - other providers, an id-less
+  // provider-instance notification (which names no mutation this client could
+  // correlate on), a subject with no live marker - so unrelated clients'
   // changes keep arriving.
   let localMutations: LocalMutationMarker[] = [];
   let unsubscribeNotifications: (() => void) | undefined;
 
-  // lastMarker finds the most recently issued outstanding marker for a subject:
-  // the provider an auth notification named, or undefined for a
-  // provider-instance one.
-  function lastMarker(provider: string | undefined): LocalMutationMarker | undefined {
-    for (let i = localMutations.length - 1; i >= 0; i--) {
-      const marker = localMutations[i];
-      if (marker !== undefined && marker.provider === provider) return marker;
+  // firstMarker finds the OLDEST outstanding marker for a subject: the provider
+  // an auth notification named, or undefined for a provider-instance one.
+  // Echoes for one subject arrive on one connection in issue order, so the
+  // oldest is the one an arriving echo is for; taking the newest instead would
+  // let an early echo spend a LATER mutation's marker and leave that mutation's
+  // own echo to read as foreign.
+  function firstMarker(provider: string | undefined): LocalMutationMarker | undefined {
+    for (const marker of localMutations) {
+      if (marker.provider === provider) return marker;
     }
     return undefined;
   }
 
-  function noteLocalMutation(provider: string | undefined): void {
-    localMutations.push({ provider, issuedAt: Date.now() });
+  // noteLocalMutation arms one marker for a mutation the store is about to
+  // issue and returns it, so that mutation can re-stamp or retire exactly its
+  // own marker. Acting on "the latest marker for the subject" instead would let
+  // one mutation's reply retarget another's marker when same-subject mutations
+  // overlap.
+  function noteLocalMutation(provider: string | undefined): LocalMutationMarker {
+    const marker: LocalMutationMarker = { provider, issuedAt: Date.now() };
+    localMutations.push(marker);
+    return marker;
   }
 
-  // retireLocalMutation consumes one outstanding marker: an echo that arrived,
-  // or an outcome that proves no echo will (a failed RPC, a device poll that
-  // came back pending/expired). Which mutation ended does not matter, only how
-  // many echoed mutations remain outstanding, so this drops one whether or not
-  // it was the mutation that failed; once none remain the next notification for
-  // this subject is foreign again.
-  function retireLocalMutation(provider: string | undefined): void {
-    const marker = lastMarker(provider);
-    if (marker !== undefined) localMutations.splice(localMutations.indexOf(marker), 1);
+  // retireLocalMutation drops the exact marker a mutation armed, if it is still
+  // outstanding: its echo arrived, or an outcome proved no echo will (a failed
+  // RPC, a device poll that came back pending/expired). A marker an echo already
+  // consumed - or a reconnect already cleared - is gone, so this is then a
+  // no-op.
+  function retireLocalMutation(marker: LocalMutationMarker): void {
+    const index = localMutations.indexOf(marker);
+    if (index !== -1) localMutations.splice(index, 1);
   }
 
-  // restampLocalMutation moves a subject's outstanding markers' echo window to
-  // now, when an RPC response lands; a marker an early echo already consumed is
-  // gone, so this is then a no-op.
-  function restampLocalMutation(provider: string | undefined): void {
-    const now = Date.now();
-    for (const marker of localMutations) {
-      if (marker.provider === provider) marker.issuedAt = now;
-    }
+  // restampLocalMutation moves the exact marker a mutation armed to now, when
+  // its RPC response lands; a marker an early echo already consumed is gone, so
+  // this is then a no-op.
+  function restampLocalMutation(marker: LocalMutationMarker): void {
+    if (localMutations.includes(marker)) marker.issuedAt = Date.now();
   }
 
   // True exactly when this notification is this client's own echo of a
@@ -788,21 +799,27 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // The broadcast carries the id the originating mutation sent, so an echo is
   // attributed by identity first: a notification whose originClientId is this
   // client's own is its echo, and one naming a different client is foreign
-  // however close in time. The subject-plus-latest-stamp rule stays for a
-  // notification with no id - an older build, or a mutation made from the TUI -
+  // however close in time. The provider-plus-latest-stamp rule stays for an
+  // id-less AUTH notification - an older build, or a mutation made from the TUI -
   // where it is still as exact as that wire allows, and where the residual stays
   // bounded: a matched notification still re-reads the listing, so only the
-  // guided flow's invalidation is skipped, and only within the window.
+  // guided flow's invalidation is skipped, and only within the window. A
+  // provider-less notification with no id gets no such fallback: it names no
+  // provider to correlate on, so it could be any client's instance write or the
+  // server's own live-prefetch pass, and it stays foreign.
   function consumeOwnEcho(provider: string | undefined, originClientId: string | undefined): boolean {
-    const marker = lastMarker(provider);
+    const marker = firstMarker(provider);
     if (marker === undefined) return false;
     if (originClientId) {
       if (originClientId !== deps.ownClientId()) return false;
-    } else if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
-      localMutations.splice(localMutations.indexOf(marker), 1); // stale: no marker, no echo of ours left
-      return false;
+    } else {
+      if (provider === undefined) return false;
+      if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
+        retireLocalMutation(marker); // stale: no marker, no echo of ours left
+        return false;
+      }
     }
-    localMutations.splice(localMutations.indexOf(marker), 1);
+    retireLocalMutation(marker);
     return true;
   }
 
@@ -859,22 +876,22 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const client = requireWritableClient();
     const issued = connection;
     const version = ++requestVersion;
-    noteLocalMutation(provider);
+    const marker = noteLocalMutation(provider);
     try {
       const result = await request(client, { originClientId: deps.ownClientId() });
       if (connection !== issued) return result;
       if (landed(result)) {
-        restampLocalMutation(provider);
+        restampLocalMutation(marker);
         scheduleRefetch(true);
         // A write landed: count it against the instance it named so only that
         // instance's in-flight refreshModels is retired (see landedMutations).
         bump(landedMutations, provider);
-      } else retireLocalMutation(provider);
+      } else retireLocalMutation(marker);
       return result;
     } catch (err) {
       // Refused: the marker retires, so an echo that follows after all - the
       // write landed and only its reply was lost - reads as foreign and re-reads.
-      if (connection === issued) retireLocalMutation(provider);
+      if (connection === issued) retireLocalMutation(marker);
       throw err;
     } finally {
       settleLoading(version);

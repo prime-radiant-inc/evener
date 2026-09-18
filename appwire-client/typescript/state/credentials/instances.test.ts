@@ -632,6 +632,60 @@ describe("instance mutations and their own echo", () => {
     expect(foreign.some(Boolean)).toBe(true);
   });
 
+  test("a provider-less notification with no id stays foreign, not spent on an outstanding mutation", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/instance/create", () => LISTING);
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    await store.getState().create({ name: "work", base: "anthropic" });
+    const marked = store.getState().selfRefresh;
+    const foreign: boolean[] = [];
+    store.subscribe((state, previous) => foreign.push(foreignListingChange(state, previous)));
+
+    // The server's own live-prefetch pass - or a write from an older/TUI client -
+    // broadcasts with neither a provider nor an id, so it names no mutation this
+    // client could correlate on and must not be read as its own echo.
+    fake.emitNotification({ method: "evener/auth/updated", params: {} });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
+    expect(store.getState().selfRefresh).toBe(marked);
+    expect(foreign.some(Boolean)).toBe(true);
+  });
+
+  test("an early echo spends the issuing mutation's marker, so a later refusal cannot steal a newer one", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => LISTING);
+    const first = deferred<InstanceListResponse>();
+    const second = deferred<InstanceListResponse>();
+    let edits = 0;
+    fake.on("evener/instance/edit", () => (++edits === 1 ? first.promise : second.promise));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    const a = store.getState().edit({ name: "work", baseUrl: "https://a" });
+    const b = store.getState().edit({ name: "work", baseUrl: "https://b" });
+    // A's echo arrives first and must spend A's marker, not B's.
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    // A is refused after its echo; retiring A's (already spent) marker must not
+    // take B's.
+    first.reject(new Error("refused"));
+    await a.catch(() => {});
+    const marked = store.getState().selfRefresh;
+
+    // B's own echo is still this client's, so it refreshes self-marked.
+    fake.emitNotification({ method: "evener/auth/updated", params: { originClientId: "tab-1" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+    second.resolve(LISTING);
+    await b;
+  });
+
   test("every instance mutation stamps originClientId", async () => {
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
     const fake = readyClient();
