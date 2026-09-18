@@ -5784,6 +5784,59 @@ test("a known /model value starts before the pane catalog lands instead of fail-
   expect(getToasts()).toEqual([]);
 });
 
+test("a shapeless /model value still refuses while the pane catalog is unloaded", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // Pending catalog = the unloaded window. The value never resolves against a
+  // catalog here, so only the provider/model shape check can refuse it: an
+  // expression that regressed to matching `matched.id` (undefined) would
+  // forward `modelProvider: "foo", model: ""` and silently drop the request.
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => f.on("model/list", () => catalog.promise));
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model foo");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(screen.getByText(/\/model: unknown value "foo"/)).toBeTruthy());
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
+test("a /model value bootstraps past the required-model guard after a failed catalog load", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // The background model/list rejects, so the pane catalog never commits (null
+  // stamp). The hub also reports no default, so Start is gated on a model -
+  // and the old bootstrap, which required a catalog match, left Start disabled
+  // through this window even though thread/start would accept the value.
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+    f.on("model/list", () => {
+      throw new Error("list down");
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "model/list")).toBe(true));
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  expect(button.disabled).toBe(false);
+  await user.click(button);
+
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({ modelProvider: "openai", model: "gpt-5" });
+});
+
 test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
