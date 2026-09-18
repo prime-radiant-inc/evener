@@ -58,10 +58,14 @@ interface TargetSequence {
 }
 
 // The rows a Stop may honestly cancel: still waiting ("submitting" or
-// "blockedUnknown") and never attempted. An attempted row may already be on
-// the wire; it is reported in-flight/uncertain, not canceled.
+// "blockedUnknown") and proven unattempted by the flag the dispatcher's
+// pre-transport write sets. An attempted row may already be on the wire; it is
+// reported in-flight/uncertain, not canceled. A row missing the flag entirely -
+// the pre-#936 shape, before markAttempted existed - has unknown attempt state
+// too, so it gets the same conservative treatment rather than a cancellation
+// the client cannot honor.
 function isCancelableByStop(record: MutationOutboxRecord): boolean {
-  return (record.state === "submitting" || record.state === "blockedUnknown") && record.attempted !== true;
+  return (record.state === "submitting" || record.state === "blockedUnknown") && record.attempted === false;
 }
 
 function requestResult<T>(request: IDBRequest<T>): Promise<T> {
