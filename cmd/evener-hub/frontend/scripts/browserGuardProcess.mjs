@@ -544,6 +544,7 @@ export function profileProcessIdentityRunning(
 function waitForProcessTargetExit({
   targetRunning,
   signalTarget,
+  targetName,
   subscribeToExit = null,
   unsubscribeFromExit = null,
   pollTarget,
@@ -559,11 +560,13 @@ function waitForProcessTargetExit({
     let gracefulDeadline = null;
     let processCheck = null;
     let killEscalation = null;
+    let exitDeadline = null;
     let settled = false;
     let termStarted = false;
     const cancelScheduled = () => {
       if (gracefulDeadline !== null) cancelEscalation(gracefulDeadline);
       if (killEscalation !== null) cancelEscalation(killEscalation);
+      if (exitDeadline !== null) cancelEscalation(exitDeadline);
       if (processCheck !== null) cancelCheck(processCheck);
     };
     const targetExitListener = () => finish();
@@ -599,11 +602,33 @@ function waitForProcessTargetExit({
       if (gracefulDeadline !== null) cancelEscalation(gracefulDeadline);
       killEscalation = scheduleEscalation(() => {
         try {
-          if (targetRunning() && signalTarget("SIGKILL") === false) finish();
+          if (targetRunning() && signalTarget("SIGKILL") === false) {
+            finish();
+            return;
+          }
         } catch (error) {
           if (error?.code === "ESRCH") finish();
           else fail(error);
+          return;
         }
+        // Signaling is exhausted (SIGTERM, then SIGKILL). The poll above must
+        // not run unbounded: a group that answers EPERM to every signal exists
+        // but can never be killed, so waiting forever would hang the guard
+        // until the CI job timeout. Keep polling for one more grace, then give
+        // up and report the leak by name (#1429), mirroring the helper path's
+        // "did not exit" deadline.
+        if (!pollTarget) return;
+        exitDeadline = scheduleEscalation(() => {
+          try {
+            if (!targetRunning()) {
+              finish();
+              return;
+            }
+            fail(new Error(`${targetName} did not exit after SIGKILL`));
+          } catch (error) {
+            fail(error);
+          }
+        }, CHILD_EXIT_GRACE_MS);
       }, CHILD_EXIT_GRACE_MS);
 
       try {
@@ -653,6 +678,7 @@ function waitForChildExit(
   return waitForProcessTargetExit({
     targetRunning: () => (processGroupId === null ? !childHasExited(child) : isProcessGroupRunning(processGroupId)),
     signalTarget: (signal) => (processGroupId === null ? child.kill(signal) : signalGroup(processGroupId, signal)),
+    targetName: processGroupId === null ? `browser process ${child.pid}` : `browser process group ${processGroupId}`,
     subscribeToExit: processGroupId === null ? (listener) => child.once("exit", listener) : null,
     unsubscribeFromExit: processGroupId === null ? (listener) => child.removeListener("exit", listener) : null,
     pollTarget: processGroupId !== null,
