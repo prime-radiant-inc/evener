@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1419,5 +1420,151 @@ func fuzzScenarioPastIndex_IncrementalPublishRecoversFromLostDB(t *testing.T) {
 	}
 	if got := rows[alpha]; got.name != "alpha2" {
 		t.Fatalf("renamed row not mirrored: %+v", got)
+	}
+}
+
+// fuzzScenarioPastIndex_SupersededPublishAbandonsStaleRebuild pins the publish
+// generation guard (roborev Medium: "FTS publish ordering races on lock
+// acquisition, not snapshot freshness"). ftsMu only orders writes; without a
+// freshness check a Rebuild whose scan predates a concurrent fold can take the
+// lock after the fold published and rewrite the mirror back to its older
+// snapshot, marking it healthy so Search never repairs it. The
+// pastBeforePublishFTS seam parks the Rebuild at the top of publishFTS so the
+// fold deterministically publishes first.
+func fuzzScenarioPastIndex_SupersededPublishAbandonsStaleRebuild(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	base := time.Unix(1_700_000_000, 0)
+	const seededID = "02wMz5Txv1C3Hut0M8GCeB"
+	const foldedID = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{ID: seededID, Name: "seeded", UpdatedAt: base, OriginalPrompt: "seeded needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var parked atomic.Bool
+	prev := pastBeforePublishFTS
+	pastBeforePublishFTS = func() {
+		if parked.CompareAndSwap(false, true) {
+			close(reached)
+			<-release
+		}
+	}
+	defer func() { pastBeforePublishFTS = prev }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = idx.Rebuild()
+	}()
+	<-reached
+
+	// The fold lands while the Rebuild's stale (1-session) snapshot is parked
+	// before its write; it publishes the 2-session snapshot first.
+	writeMeta(t, proj, schema.SessionMeta{ID: foldedID, Name: "folded", UpdatedAt: base.Add(time.Minute), OriginalPrompt: "folded needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	if _, ok := idx.Find(foldedID); !ok {
+		t.Fatal("expected Find to fold the newly persisted session")
+	}
+
+	close(release)
+	<-done
+
+	// The superseded Rebuild must have abandoned its write, leaving the fold's
+	// snapshot in the mirror rather than rewriting it back to 1 stale row.
+	rows := ftsMirrorRows(t, dbPath)
+	if _, ok := rows[foldedID]; !ok {
+		t.Fatal("superseded Rebuild wiped the folded row from the FTS mirror")
+	}
+	if _, ok := rows[seededID]; !ok {
+		t.Fatal("superseded Rebuild wiped the seeded row from the FTS mirror")
+	}
+	if len(rows) != 2 {
+		t.Fatalf("mirror holds %d rows after the race, want 2", len(rows))
+	}
+	if got, ok := idx.searchFTS("folded"); !ok || !slices.ContainsFunc(got, func(e PastEntry) bool { return e.ID == foldedID }) {
+		t.Fatal("searchFTS did not serve the folded session after the superseded Rebuild")
+	}
+}
+
+// fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB pins the second
+// baseline check: a replaced index.db whose row count matches the tracked
+// snapshot but whose rows are foreign must be detected and repaired with a full
+// rebuild, not accepted because the count lines up. Without it the delta skips
+// the "unchanged" ids, leaves the foreign text in a mirror marked healthy, and
+// searchFTS can match content the session's real name/prompt does not have.
+func fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	base := time.Unix(1_700_000_000, 0)
+	const alpha = "02wMz5Txv1C3Hut0M8GCeB"
+	const bravo = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{ID: alpha, Name: "alpha", UpdatedAt: base, OriginalPrompt: "alpha needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	writeMeta(t, proj, schema.SessionMeta{ID: bravo, Name: "bravo", UpdatedAt: base.Add(time.Minute), OriginalPrompt: "bravo needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the index with a same-cardinality foreign snapshot: 2 rows, wrong
+	// ids/content, and a user_version token this index never wrote (0).
+	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DELETE FROM past_sessions_fts`); err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := db.Prepare(insertPastSessionsFTS)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []struct{ id, name, prompt string }{
+		{"foreign000000000000000A", "foreign-one", "foreign text one"},
+		{"foreign000000000000000B", "foreign-two", "foreign text two"},
+	} {
+		if _, err := stmt.Exec(row.id, row.name, row.prompt, "/foreign", "/foreign", 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = stmt.Close()
+	if _, err := db.Exec(`PRAGMA user_version = 0`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A rename triggers a delta, which must notice the foreign baseline and
+	// rebuild the whole mirror from the real index.
+	idx.UpdateMeta(alpha, schema.SessionMeta{ID: alpha, Name: "alpha2", UpdatedAt: base.Add(2 * time.Minute), OriginalPrompt: "alpha needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	rows := ftsMirrorRows(t, dbPath)
+	if len(rows) != 2 {
+		t.Fatalf("mirror holds %d rows after the foreign-DB replacement, want 2 (baseline token not enforced)", len(rows))
+	}
+	if _, leaked := rows["foreign000000000000000A"]; leaked {
+		t.Fatal("foreign row survived the delta; the same-cardinality replacement was not detected")
+	}
+	if _, leaked := rows["foreign000000000000000B"]; leaked {
+		t.Fatal("foreign row survived the delta; the same-cardinality replacement was not detected")
+	}
+	if _, ok := rows[bravo]; !ok {
+		t.Fatal("untouched real row was dropped when repairing the foreign DB")
+	}
+	if got := rows[alpha]; got.name != "alpha2" {
+		t.Fatalf("renamed row not mirrored after repair: %+v", got)
 	}
 }

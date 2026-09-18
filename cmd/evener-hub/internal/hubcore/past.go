@@ -47,18 +47,30 @@ type PastIndex struct {
 	all  []PastEntry // sorted by the Hub session ordering contract
 	byID map[string]PastEntry
 	fts  bool
+	// gen is a monotonic generation bumped under mu by every index-mutating
+	// swap (Rebuild, UpdateMeta, foldOne, SeedForTest). A publisher captures the
+	// generation of the snapshot it built and abandons its (FTS + fingerprint)
+	// write once a newer mutation has superseded it, so an older snapshot can
+	// never clobber a fresher one's mirror or lock the mirror into stale data.
+	gen uint64
 
 	// ftsMu serializes every write to the SQLite FTS mirror so an incremental
 	// publish's delta is applied against exactly the snapshot the previous
-	// publish left (tracked in published). Serializing here preserves the
-	// last-writer-wins snapshot semantics the old whole-table rewrite got from
-	// its transaction-per-publish across the concurrent writers (Rebuild,
-	// UpdateMeta, foldOne, Search's repair).
+	// publish left (tracked in published). Serializing here keeps concurrent
+	// writers from interleaving table writes; the generation check, not the lock
+	// order, decides which snapshot wins (see publishFTS).
 	ftsMu sync.Mutex
 	// published is the snapshot the FTS mirror currently reflects, or nil when
 	// the mirror is absent, unknown, or stale. Guarded by ftsMu; only touched
 	// inside publishFTS.
 	published []PastEntry
+	// ftsStamp is the value stamped into the DB's PRAGMA user_version by the
+	// most recent successful FTS write (lastStamp), and the running counter the
+	// next write uses. A delta verifies the table still carries lastStamp, so a
+	// replaced or restored index.db with matching row count is detected as a
+	// stale baseline. Guarded by ftsMu.
+	ftsStamp  int
+	lastStamp int
 
 	// skipped maps every path the last Rebuild refused to index to the reason
 	// it was refused, so the next Rebuild can report only what is newly
@@ -193,8 +205,10 @@ func (i *PastIndex) Rebuild() (bool, error) {
 	i.mu.Lock()
 	i.all = all
 	i.byID = byID
+	i.gen++
+	gen := i.gen
 	i.mu.Unlock()
-	return i.publishAndSignal(all), nil
+	return i.publishAndSignal(all, gen), nil
 }
 
 // maxReportedSkips bounds how many individual unindexable paths one Rebuild
@@ -338,8 +352,10 @@ func (i *PastIndex) UpdateMeta(id string, meta schema.SessionMeta) bool {
 	fresh = insertSorted(fresh, pe)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
+	i.gen++
+	gen := i.gen
 	i.mu.Unlock()
-	return i.publishAndSignal(all)
+	return i.publishAndSignal(all, gen)
 }
 
 // insertSorted returns a new slice with pe inserted at its sorted position
@@ -357,15 +373,27 @@ func insertSorted(entries []PastEntry, pe PastEntry) []PastEntry {
 // publishAndSignal mirrors a freshly-swapped index snapshot into the FTS
 // index and the content fingerprint, firing onChange when the content
 // actually changed. all must be an immutable snapshot of i.all taken under
-// the lock (publishFTS and contentFingerprint run unlocked). The bool is
+// the lock (publishFTS and contentFingerprint run unlocked), and gen the
+// generation that snapshot belongs to (see PastIndex.gen). The bool is
 // Rebuild/UpdateMeta's contract: whether content changed AND a registered
 // onChange fired for it.
-func (i *PastIndex) publishAndSignal(all []PastEntry) bool {
+//
+// A newer mutation (a fold or update landing after this snapshot was taken)
+// bumps i.gen. This publisher then abandons its tail entirely: the newer
+// publisher owns both the FTS mirror and the fingerprint, so writing this stale
+// snapshot would regress the fingerprint (a spurious onChange on unchanged
+// disk) and could lock stale rows into the mirror — the fold-vs-Rebuild
+// stale-publish race (#724).
+func (i *PastIndex) publishAndSignal(all []PastEntry, gen uint64) bool {
 	if i.dbPath != "" {
-		i.publishFTS(all)
+		i.publishFTS(all, gen)
 	}
 	fp := contentFingerprint(all)
 	i.mu.Lock()
+	if i.gen != gen {
+		i.mu.Unlock()
+		return false
+	}
 	changed := fp != i.fingerprint
 	i.fingerprint = fp
 	i.mu.Unlock()
@@ -405,11 +433,18 @@ func (i *PastIndex) RefreshOne(id string) {
 
 // All returns the full index sorted by the Hub session ordering contract.
 func (i *PastIndex) All() []PastEntry {
+	all, _ := i.snapshot()
+	return all
+}
+
+// snapshot returns a copy of i.all together with the generation it was taken
+// at, under a single lock, so a caller can publish exactly the state it saw.
+func (i *PastIndex) snapshot() ([]PastEntry, uint64) {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	out := make([]PastEntry, len(i.all))
 	copy(out, i.all)
-	return out
+	return out, i.gen
 }
 
 // Search returns the limit results starting at offset whose indexed text
@@ -429,7 +464,8 @@ func (i *PastIndex) Search(q string, limit, offset int) []PastEntry {
 		ftsStale := i.dbPath != "" && !i.fts
 		i.mu.RUnlock()
 		if ftsStale {
-			i.publishAndSignal(i.All())
+			all, gen := i.snapshot()
+			i.publishAndSignal(all, gen)
 		}
 		if fts, ok := i.searchFTS(q); ok {
 			mem := i.searchMemoryMatches(q)
@@ -518,17 +554,28 @@ const insertPastSessionsFTS = `INSERT INTO past_sessions_fts(id, name, original_
 //
 // The delta's baseline (i.published) is read under ftsMu, so it is always the
 // table's actual current content: every delta transforms between adjacent
-// snapshots and the table can never end up a non-snapshot mix. The remaining
-// hazard is only ordering — a publisher holding an older snapshot can take
-// ftsMu, and thus win the write, after a newer one — which is the
-// fold-vs-Rebuild stale-publish race tracked in #723 (fixed by making a
-// superseded publisher abandon its write); this delta preserves the same
-// last-writer-wins semantics the whole-table rewrite had.
-func (i *PastIndex) publishFTS(all []PastEntry) {
+// snapshots and the table can never end up a non-snapshot mix.
+//
+// ftsMu only orders writes; it does not decide which snapshot may win. Before
+// writing, and again before calling the mirror healthy, this checks that gen is
+// still the newest mutation (i.gen). A publisher whose snapshot a concurrent
+// fold or rename superseded abandons its write outright rather than rewriting
+// the mirror back to stale content; the newer publisher owns the mirror and
+// Search's repair gate. This is the fold-vs-Rebuild stale-publish race (#724).
+func (i *PastIndex) publishFTS(all []PastEntry, gen uint64) {
+	if pastBeforePublishFTS != nil {
+		pastBeforePublishFTS()
+	}
 	i.ftsMu.Lock()
 	defer i.ftsMu.Unlock()
 
 	i.mu.Lock()
+	if i.gen != gen {
+		// A newer mutation superseded this snapshot before we could write; the
+		// newer publisher owns the mirror. Abandon without touching it.
+		i.mu.Unlock()
+		return
+	}
 	healthy := i.fts
 	i.fts = false
 	i.mu.Unlock()
@@ -552,9 +599,18 @@ func (i *PastIndex) publishFTS(all []PastEntry) {
 	}
 	i.published = all
 	i.mu.Lock()
-	i.fts = true
+	// Only call the mirror healthy while this snapshot is still the newest: a
+	// mutation that landed during the write leaves a newer snapshot unpublished,
+	// so flag the mirror stale for Search to repair.
+	i.fts = i.gen == gen
 	i.mu.Unlock()
 }
+
+// pastBeforePublishFTS, when non-nil, runs at the top of publishFTS just before
+// it takes ftsMu. It is a deterministic test seam for interleaving a newer
+// mutation between an older publisher's snapshot capture and its write; nil in
+// production.
+var pastBeforePublishFTS func()
 
 // ftsRowEqual reports whether two entries write identical content to
 // past_sessions_fts. sort_rank is deliberately not compared: a row whose only
@@ -575,10 +631,10 @@ func ftsRowEqual(a, b PastEntry) bool {
 // one table scan.
 const ftsDeleteChunk = 500
 
-// errFTSBaselineStale signals that the mirror's row count no longer matches the
-// snapshot the delta was computed against: its DB file was deleted or replaced
-// outside the index. The delta cannot repair that (it would insert only the
-// changed rows and leave the rest missing), so publishFTS falls back to a full
+// errFTSBaselineStale signals that the mirror no longer matches the snapshot the
+// delta was computed against: its DB file was deleted or replaced outside the
+// index. The delta cannot repair that (it would insert only the changed rows and
+// leave the rest missing or foreign), so publishFTS falls back to a full
 // rebuildFTS, which is what made the old whole-table rewrite self-healing here.
 var errFTSBaselineStale = errors.New("fts mirror does not match the published snapshot")
 
@@ -588,9 +644,13 @@ var errFTSBaselineStale = errors.New("fts mirror does not match the published sn
 // mirrored content — including rows that merely shifted rank — are left alone.
 //
 // It assumes the table currently reflects prev, which publishFTS guarantees by
-// serializing on ftsMu, and verifies it inside the transaction by row count
-// (returning errFTSBaselineStale when it does not) so an externally lost DB file
-// cannot leave a truncated mirror marked healthy.
+// serializing on ftsMu, and verifies that inside the transaction two ways: the
+// row count must equal len(prev), and the DB must carry the PRAGMA user_version
+// token writeFTSTx stamped on the last successful write. The token is what
+// catches a replaced or restored index.db whose row count happens to match but
+// whose rows/ids differ — a count-only check would accept it, skip the
+// "unchanged" ids, and leave foreign text in a mirror marked healthy. Either
+// mismatch returns errFTSBaselineStale for publishFTS to repair with a rewrite.
 func (i *PastIndex) rewriteFTSDelta(prev, next []PastEntry) error {
 	prevIdx := make(map[string]int, len(prev))
 	for k, e := range prev {
@@ -624,6 +684,13 @@ func (i *PastIndex) rewriteFTSDelta(prev, next []PastEntry) error {
 			return err
 		}
 		if rows != len(prev) {
+			return errFTSBaselineStale
+		}
+		var stamp int
+		if err := tx.QueryRow(`PRAGMA user_version`).Scan(&stamp); err != nil { //nolint:noctx
+			return err
+		}
+		if stamp != i.lastStamp {
 			return errFTSBaselineStale
 		}
 		if len(removals) == 0 && len(inserts) == 0 {
@@ -693,9 +760,19 @@ func (i *PastIndex) writeFTSTx(fn func(*sql.Tx) error) error {
 	if err := fn(tx); err != nil {
 		return err
 	}
+	// Stamp a fresh identity token into the DB so the next delta can tell that
+	// the table is still the one this index wrote (a replaced/restored file, or
+	// one written by a previous run, carries a different value). Bump the
+	// counter before the write so a failed commit never leaves lastStamp
+	// claiming a token the file does not have.
+	i.ftsStamp++
+	if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i.ftsStamp)); err != nil { //nolint:noctx
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	i.lastStamp = i.ftsStamp
 	if err := db.Close(); err != nil {
 		return err
 	}
@@ -820,6 +897,7 @@ func (i *PastIndex) SeedForTest(metas []schema.SessionMeta) {
 	defer i.mu.Unlock()
 	i.all = i.all[:0]
 	i.byID = map[string]PastEntry{}
+	i.gen++
 	for _, m := range metas {
 		pe := PastEntry{ID: m.ID, Meta: m}
 		i.all = append(i.all, pe)
@@ -1003,6 +1081,8 @@ func (i *PastIndex) foldOne(entry PastEntry) {
 	fresh = insertSorted(fresh, entry)
 	i.all = fresh
 	all := append([]PastEntry(nil), i.all...)
+	i.gen++
+	gen := i.gen
 	i.mu.Unlock()
-	i.publishAndSignal(all)
+	i.publishAndSignal(all, gen)
 }
