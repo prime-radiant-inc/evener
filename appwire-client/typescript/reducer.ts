@@ -893,7 +893,7 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
 // close — retires the card. So a client merely watching the session drops its
 // now-stale copy live off the broadcast instead of waiting for its next
 // snapshot.
-export function resolvePendingEscalation(model: ThreadModel, escalationId: string): ThreadModel {
+export function resolvePendingEscalation<M extends ThreadModel>(model: M, escalationId: string): M {
   if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
   return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
 }
@@ -1074,7 +1074,7 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // and lose the item-routing anchor for a turn that is still in flight. The
 // snapshot reduction clears its own active turn only on an id match, for the
 // same reason.
-function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: Turn, now: number): ThreadModel {
+function foldNonActiveTurnCompleted<M extends ThreadModel>(model: M, turnId: string, stamp: Turn, now: number): M {
   const existing = model.turns.find((t) => t.id === turnId);
   const settled = mergeTurnCompletionStamp(
     existing,
@@ -1161,7 +1161,12 @@ function warningMessage(params: WarningParams): string {
 // model's active turn: the active turn's own settle ends the turn, while any
 // other turn's is the no-active-turn announcement path and folds through
 // foldNonActiveTurnCompleted instead.
-export function applyNotification(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+//
+// Generic over the model: every case builds its result by spreading `model`
+// and overriding only the fields it owns, so a caller's extra fields (a
+// wrapper type narrower than ThreadModel, say) survive the fold at runtime
+// AND in the return type — the caller needs no cast and no re-spread.
+export function applyNotification<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
   const next = applyNotificationToThread(model, n, now);
   if (!next.modelRetry || !notificationTargetsThread(n, model)) return next;
   // A pending retry is sticky (design doc Component 1): it survives deltas
@@ -1171,11 +1176,12 @@ export function applyNotification(model: ThreadModel, n: AnyNotification, now: n
   const turnBoundary = n.method === "turn/completed" || n.method === "turn/started";
   const modelOutputCompleted = n.method === "item/completed" && MODEL_OUTPUT_ITEM_TYPES.has(n.params.item.type);
   if (!turnBoundary && !modelOutputCompleted) return next;
-  const { modelRetry: _superseded, ...cleared } = next;
+  const cleared = { ...next };
+  delete cleared.modelRetry;
   return cleared;
 }
 
-function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: number): ThreadModel {
+function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
   switch (n.method) {
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;

@@ -6751,3 +6751,88 @@ test("item/completed carrying an explicit empty outputImages list clears the ima
   model = settle([], 1004, model);
   expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
 });
+
+// applyNotification is generic over the model: a caller whose model is a
+// ThreadModel plus its own fields (native's MobileConversation = ThreadModel
+// & { items }, say) gets that SAME type back, extra fields intact — at runtime
+// and in the type. The WrappedModel annotations are the compile-time half of
+// this test: if applyNotification returned ThreadModel again, these assignments
+// would not typecheck, and `npm run typecheck` (the frontend's tsc program,
+// which includes the package's test files) is what fails then.
+type WrappedModel = ThreadModel & { wrapperMarker: number };
+
+test("applyNotification keeps a wrapper model's extra fields and type through every fold shape", () => {
+  const wrapped: WrappedModel = { ...testHydrate(), wrapperMarker: 7 };
+
+  // turn/started builds its result from `{ ...model, ... }` — the case the
+  // wrapper used to need a cast for.
+  const started: WrappedModel = applyNotification(
+    wrapped,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  expect(started.wrapperMarker).toBe(7);
+  expect(started.activeTurnId).toBe("turn_1");
+
+  // A scalar patch spreads the same way.
+  const status: WrappedModel = applyNotification(
+    started,
+    { method: "thread/status/changed", params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } } },
+    1002,
+  );
+  expect(status.wrapperMarker).toBe(7);
+  expect(status.status).toEqual({ type: "active" });
+
+  // A frame for another thread is the same-reference no-op; the extra field
+  // rides along because the object is the same one.
+  const untouched: WrappedModel = applyNotification(
+    status,
+    { method: "thread/status/changed", params: { threadId: "thr_other", ref: "ref_other", status: { type: "idle" } } },
+    1003,
+  );
+  expect(untouched).toBe(status);
+  expect(untouched.wrapperMarker).toBe(7);
+
+  // The modelRetry-clearing branch rebuilds the model without its retry field;
+  // the wrapper field survives that rebuild too, and the cleared key is gone
+  // rather than present-and-undefined.
+  const retrying: WrappedModel = applyNotification(
+    started,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        groupElapsedMs: 500,
+        attemptCap: 3,
+      },
+    },
+    1004,
+  );
+  expect(retrying.modelRetry).toBeDefined();
+  const cleared: WrappedModel = applyNotification(
+    retrying,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "completed", text: "done" },
+      },
+    },
+    1005,
+  );
+  expect(cleared.wrapperMarker).toBe(7);
+  expect(cleared.modelRetry).toBeUndefined();
+  expect("modelRetry" in cleared).toBe(false);
+});
