@@ -31,6 +31,7 @@ import type {
 
 import {
   hasItemFailure,
+  isActiveItem,
   isInProgressStatus,
   liveAskQuestions,
   parseAskUserQuestions,
@@ -223,20 +224,6 @@ function isSteering(item: ItemModel): boolean {
 
 function isSystemMessage(item: ItemModel): boolean {
   return item.type === "systemMessage";
-}
-
-// A live item can arrive without any status of its own while the turn that
-// contains it is still running — a sparse running tool/reasoning row would
-// otherwise read as settled. Such an item is active exactly when its turn
-// is; an item that carries its own status always keeps it. Exported so the
-// store's incremental projection applies the same rule against the turn
-// status it derives from the active turn.
-export function isActiveItem(
-  item: ItemFailureSignals,
-  turnStatus: string | undefined,
-): boolean {
-  if (item.status !== undefined) return isInProgressStatus(item.status);
-  return isInProgressStatus(turnStatus);
 }
 
 // --- activity state ----------------------------------------------------------

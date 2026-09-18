@@ -268,6 +268,19 @@ export function pendingTextJoined(chunks: string[]): string {
   return chunks.join("");
 }
 
+// joinedReasoningParagraphs turns ItemModel.reasoningSummaries (string[][] —
+// per-summaryIndex chunk lists) into one string per summaryIndex, dropping
+// any paragraph that joins to nothing or to whitespace alone: a summary the
+// model opened but nothing ever streamed into is not a blank paragraph on
+// screen. Every per-summary join goes through pendingTextJoined, so a live
+// chunk view answers from its brand-cached text in O(1) rather than an
+// element-by-element Proxy walk on every render. THE reading of that field
+// for both hosts: the web's think block and native's reasoning row.
+export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
+  if (!summaries) return [];
+  return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
+}
+
 // Test-only white-box accessor: the backing array a view reads (undefined
 // for a plain array). The O(1) test discriminates append from copy by
 // asserting this reference is IDENTICAL across consecutive folds — the one
