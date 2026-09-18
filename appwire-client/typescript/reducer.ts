@@ -1010,13 +1010,15 @@ function warningMessage(params: WarningParams): string {
 // title/hint, so the raw-frame fallback below and the structured fields it
 // would otherwise duplicate never disagree about which one has something to
 // show. A type predicate so a caller narrows `unknown` in one step instead of
-// repeating the typeof/trim check to get the same narrowing. Checks a bounded
-// prefix rather than the whole string: params is unknown on the wire, and
-// `.trim()` on a transport-sized (up to 128 MiB) string is an O(length)
-// allocation just to answer "is there any content here" - the same class of
-// cost boundedCodePoints below exists to avoid for the value itself.
+// repeating the typeof/trim check to get the same narrowing. A regex test
+// scans for the first non-whitespace character without allocating a copy of
+// the candidate (unlike bounding-then-trimming, which also answered wrong
+// for a value with more than RAW_WARNING_FRAME_MAX_CHARS leading blank code
+// points followed by real content — the bound never reached it). Bounding
+// happens separately, only when a value is actually stored (boundedCodePoints
+// below, applied at each call site that assigns into the model).
 export function hasWarningText(value: unknown): value is string {
-  return typeof value === "string" && boundedCodePoints(value).trim() !== "";
+  return typeof value === "string" && /\S/.test(value);
 }
 
 // A frame with no message anywhere is surfaced as the frame itself
@@ -1051,13 +1053,41 @@ const RAW_WARNING_FRAME_MAX_NODES = 500;
 // rawWarningFrame gets a chance to slice anything; bounding the input, not
 // just the output, is what keeps that walk small regardless of how large
 // or how shaped the wire frame actually is.
+// Truncates a string to maxCodePoints code points, safely (a UTF-16 slice
+// can otherwise cut a surrogate pair in half). The one primitive every
+// string bound in this file goes through — prunedForStringify's per-field
+// and per-key truncation, and boundedCodePoints below — so a wire string
+// too big to reach ItemModel unbounded is always cut on a code-point
+// boundary, never mid-pair. A fast path for the common (short) case:
+// UTF-16 length is always >= code-point count, so no huge value means no
+// work.
+function boundedPrefix(s: string, maxCodePoints: number): string {
+  if (s.length <= maxCodePoints) return s;
+  // Bound the allocation before expanding to code points: a UTF-16 prefix
+  // twice the code-point limit always contains at least that many code
+  // points (every code point is at most two UTF-16 units), so slicing the
+  // string first — a cheap view, no per-character array — never drops real
+  // content.
+  let bounded = s.slice(0, maxCodePoints * 2);
+  // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
+  // as the last unit of `bounded`. Array.from would treat that lone unit as
+  // its own broken "character" rather than dropping it; strip it before
+  // expanding so the final bounded frame never ends on one.
+  const lastUnit = bounded.charCodeAt(bounded.length - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) bounded = bounded.slice(0, -1);
+  // Array.from splits a string into code points, not UTF-16 units, so a
+  // surrogate pair (an emoji, or anything outside the BMP) straddling the
+  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
+  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
+  return Array.from(bounded).slice(0, maxCodePoints).join("");
+}
+
 function prunedForStringify(value: unknown, depth: number, budget: { remaining: number }): unknown {
   if (budget.remaining <= 0) return typeof value === "string" ? "" : "…";
   budget.remaining -= 1;
   if (typeof value === "string") {
-    return value.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS
-      ? `${value.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…`
-      : value;
+    const bounded = boundedPrefix(value, RAW_WARNING_FRAME_MAX_FIELD_CHARS);
+    return bounded === value ? value : `${bounded}…`;
   }
   if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
     return typeof value === "object" && value !== null ? "…" : value;
@@ -1092,8 +1122,8 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
       // says nothing about how long any one property NAME is — an
       // oversized key would otherwise ride through verbatim, the same
       // vector the value-length bound above closes for string values.
-      const boundedKey =
-        key.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS ? `${key.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…` : key;
+      const boundedKeyPrefix = boundedPrefix(key, RAW_WARNING_FRAME_MAX_FIELD_CHARS);
+      const boundedKey = boundedKeyPrefix === key ? key : `${boundedKeyPrefix}…`;
       pruned[boundedKey] = prunedForStringify((value as Record<string, unknown>)[key], depth + 1, budget);
     }
     return pruned;
@@ -1101,33 +1131,12 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
   return value;
 }
 
-// Truncates a string to RAW_WARNING_FRAME_MAX_CHARS code points, safely (a
-// UTF-16 slice can otherwise cut a surrogate pair in half). Applied to
-// every string a warning frame can put into the model — message, title,
-// hint, source, and the raw fallback — so a multi-megabyte value anywhere
-// in the frame can never reach ItemModel unbounded, not just via the
-// message-less fallback path. A fast path for the common (short) case:
-// UTF-16 length is always >= code-point count, so no huge value means no
-// work.
+// Applied to every string a warning frame can put into the model — message,
+// title, hint, source, and the raw fallback — so a multi-megabyte value
+// anywhere in the frame can never reach ItemModel unbounded, not just via
+// the message-less fallback path.
 function boundedCodePoints(s: string): string {
-  if (s.length <= RAW_WARNING_FRAME_MAX_CHARS) return s;
-  // Bound the allocation before expanding to code points: a UTF-16 prefix
-  // twice the code-point limit always contains at least that many code
-  // points (every code point is at most two UTF-16 units), so slicing the
-  // string first — a cheap view, no per-character array — never drops real
-  // content.
-  let bounded = s.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
-  // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
-  // as the last unit of `bounded`. Array.from would treat that lone unit as
-  // its own broken "character" rather than dropping it; strip it before
-  // expanding so the final bounded frame never ends on one.
-  const lastUnit = bounded.charCodeAt(bounded.length - 1);
-  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) bounded = bounded.slice(0, -1);
-  // Array.from splits a string into code points, not UTF-16 units, so a
-  // surrogate pair (an emoji, or anything outside the BMP) straddling the
-  // bound is kept or dropped whole - a plain String#slice(0, N) can instead
-  // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
-  return Array.from(bounded).slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+  return boundedPrefix(s, RAW_WARNING_FRAME_MAX_CHARS);
 }
 
 function rawWarningFrame(params: WarningParams): string {
