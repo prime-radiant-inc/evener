@@ -15,9 +15,12 @@ import { AgentsSection } from "./agents";
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "agents.module.css"), "utf8");
 
 afterEach(() => {
+  // Unmount first: resetting the settingsOverview singleton then notifies
+  // subscribers, and doing that while AgentsSection is still mounted is an
+  // unwrapped state update (React's act warning).
+  cleanup();
   resetSettingsOverviewStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  cleanup();
 });
 
 function fixture(overrides: Partial<SettingsOverviewStoreState> = {}): () => SettingsOverviewStoreState {
