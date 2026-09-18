@@ -62,6 +62,41 @@ func TestExplainSchemaError_OneOfConstraintDoesNotReportMissingArgument(t *testi
 	}
 }
 
+// multipleMatchOneOfParams is the schema from issue #623: two oneOf arms that
+// both require the same property, so an argument object supplying it matches
+// both. The validator's failing cause is the bare /oneOf node with no per-arm
+// child causes (contrast the no-match delegate shape, whose /oneOf carries one
+// child per failing arm).
+func multipleMatchOneOfParams() map[string]any {
+	return map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+		"oneOf": []any{
+			map[string]any{"required": []any{"a"}},
+			map[string]any{"required": []any{"a"}},
+		},
+	}
+}
+
+// Issue #623: a oneOf failure caused by matching MORE THAN ONE arm (oneOf means
+// exactly-one) must not enumerate branch requirements the arguments already
+// satisfy — a model cannot infer what to change from satisfied requirements.
+// The bare /oneOf cause has no failing arm to describe, so the message must
+// name the over-match and the actual recovery instead.
+func TestExplainSchemaError_MultipleMatchOneOfNamesOverMatch(t *testing.T) {
+	args := map[string]any{"a": "x"}
+	msg := ExplainSchemaError("probe_tool", multipleMatchOneOfParams(), args, "", "oneOf")
+	if strings.Contains(msg, "Branch 0 requires") || strings.Contains(msg, "Branch 1 requires") {
+		t.Fatalf("multiple-match oneOf rendered branch requirements the args already satisfy (issue #623): %q", msg)
+	}
+	if !strings.Contains(msg, "matched more than one branch") {
+		t.Fatalf("message must name the over-match, not just the constraint: %q", msg)
+	}
+	if !strings.Contains(msg, "satisfy exactly one") {
+		t.Fatalf("message must give the recovery direction (satisfy exactly one branch): %q", msg)
+	}
+}
+
 // delegateOneOfEnumParams mirrors delegateOneOfParams with a single
 // non-string-enum property in place of the string-enum "sandbox": the
 // second oneOf branch requires prop and constrains it to enum. enum takes

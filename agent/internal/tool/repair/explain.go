@@ -750,6 +750,16 @@ func isBranchKeyword(keyword string) bool {
 // combination to change or omit. Returns "" when params carries no usable
 // branch list for the failing keyword or no branch can be described, letting
 // the caller fall back to the generic message.
+//
+// A bare combinator — the deepest cause is the combinator node itself, with no
+// per-arm child causes — is the multiple-match shape: oneOf means exactly-one,
+// so the arguments matched more than one branch. There is no failing branch to
+// describe (every branch's requirements are already satisfied), so enumerating
+// them would coach nothing; name the over-match and its recovery instead
+// (issue #623). offendingKeyword walks into Causes[0] while one exists, so this
+// shape surfaces the combinator's own keyword ("oneOf"), while a no-match
+// failure surfaces the failing arm's inner keyword ("not" for the delegate
+// shape).
 func oneOfConstraintMessage(toolName string, params map[string]any, keyword string) string {
 	branches, source := branchList(params, keyword)
 	if len(branches) == 0 {
@@ -757,17 +767,24 @@ func oneOfConstraintMessage(toolName string, params map[string]any, keyword stri
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: arguments violate a conditional rule on the combination of arguments (the schema's %s constraint), not any single argument's type or value.", toolName, source)
-	rendered := false
-	for i, br := range branches {
-		desc := branchRequirement(br)
-		if desc == "" {
-			continue
+	if keyword == "oneOf" {
+		// The multiple-match shape: no failing branch to describe, so name the
+		// over-match and its recovery instead of enumerating requirements the
+		// arguments already satisfy.
+		fmt.Fprintf(&b, "\nThe arguments matched more than one branch; make them satisfy exactly one.")
+	} else {
+		rendered := false
+		for i, br := range branches {
+			desc := branchRequirement(br)
+			if desc == "" {
+				continue
+			}
+			rendered = true
+			fmt.Fprintf(&b, "\nBranch %d requires: %s.", i, desc)
 		}
-		rendered = true
-		fmt.Fprintf(&b, "\nBranch %d requires: %s.", i, desc)
-	}
-	if !rendered {
-		return ""
+		if !rendered {
+			return ""
+		}
 	}
 	fmt.Fprintf(&b, "\nExample: %s", minimalExample(params))
 	return b.String()
