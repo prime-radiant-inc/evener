@@ -26,8 +26,8 @@ func (c StoreChanged) any() bool {
 //
 // Meant to be installed once, right after NewManager, by whoever constructs
 // the Manager — the hub, wiring it to a broadcast. A Manager with none
-// installed just accumulates and discards: reportStoreChanged is always safe
-// to call.
+// installed just accumulates and discards: reportingRelease's call into
+// captureStoreChanged and this callback is always safe, callback or not.
 func (m *Manager) OnStoreChanged(fn func(StoreChanged)) {
 	m.storeChangedMu.Lock()
 	defer m.storeChangedMu.Unlock()
