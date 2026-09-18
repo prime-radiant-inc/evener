@@ -4442,6 +4442,9 @@ func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
 		{"env-backed bearer", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "env:OPENAI_API_KEY"}, true},
 		{"application-default credentials", registry.Instance{Implicit: true, Auth: registry.AuthGCPADC, CredentialSource: "adc"}, true},
 		{"stored curated key", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "store"}, false},
+		{"credential-required, no source", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "none"}, false},
+		{"credential-required, empty source", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: ""}, false},
+		{"credential-required, unknown source", registry.Instance{Implicit: true, Auth: registry.AuthBearer, CredentialSource: "saml"}, false},
 		{"authored instance", registry.Instance{Implicit: false, Auth: registry.AuthBearer, CredentialSource: "env:OPENAI_API_KEY"}, false},
 	} {
 		if got := environmentBacked(tc.inst); got != tc.want {

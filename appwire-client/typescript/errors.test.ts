@@ -1,9 +1,11 @@
 // @vitest-environment node
 
-import { expect, test } from "vitest";
+import { describe, expect, test } from "vitest";
+import appwireErrorsGo from "../../appwire/errors.go?raw";
 import {
   ClientNotReadyError,
   ConnectionClosedError,
+  ErrorInstanceRenamePersisted,
   errorKind,
   errorText,
   friendlyErrorMessage,
@@ -13,6 +15,28 @@ import {
   sessionActionHeadline,
   WireError,
 } from "./errors";
+
+// goErrorInfo reads one ErrorInfo constant's value out of appwire/errors.go, the
+// file the hub stamps every evenerErrorInfo from. Reading the source (the way
+// mobile/src/services/conversation.test.ts binds its decoder literals to
+// appwire/types.go) is what makes the binding real: renaming the constant or
+// changing its value in Go fails here, rather than leaving every client matching
+// a discriminator the hub no longer sends.
+function goErrorInfo(name: string): string {
+  const match = appwireErrorsGo.match(new RegExp(`${name}\\s+ErrorInfo\\s*=\\s*"([^"]+)"`));
+  if (!match) throw new Error(`appwire/errors.go has no ${name} ErrorInfo constant`);
+  return match[1]!;
+}
+
+// The persisted rename discriminator (a rename that stood in the config but
+// could not finish) is the one place a client decides whether to report a
+// standing write or a failed one. A hub-side rename of it must break this test,
+// not silently disable recognition in the web pane, the sheet, and native.
+describe("the persisted rename discriminator is bound to appwire/errors.go", () => {
+  test("the exported value is the hub's own constant", () => {
+    expect(ErrorInstanceRenamePersisted).toBe(goErrorInfo("ErrorInstanceRenamePersisted"));
+  });
+});
 
 test("errorText prefers an Error's message and stringifies anything else", () => {
   expect(errorText(new Error("switch boom"))).toBe("switch boom");

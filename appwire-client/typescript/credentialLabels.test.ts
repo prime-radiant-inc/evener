@@ -324,6 +324,28 @@ describe("fromEnvironment", () => {
     ).toBe(true);
   });
 
+  test("false for an implicit instance with no source the environment supplies - none, empty, or unknown", () => {
+    // The source test is an allow-list, not a deny-list: only env:<VAR> and adc
+    // name a credential the host supplies. An implicit credential-required
+    // instance resolving no source (none/empty), and any future source this
+    // vocabulary does not know, are the user's own - the deny-list form badged
+    // them "from environment" and refused Remove with nothing to say.
+    for (const source of ["none", "", "saml"]) {
+      expect(
+        fromEnvironment(
+          instance({
+            name: "groq",
+            providerId: "groq",
+            implicit: true,
+            activeSource: source,
+            credentialRequired: true,
+          }),
+        ),
+        `activeSource ${JSON.stringify(source)}`,
+      ).toBe(false);
+    }
+  });
+
   test("true for a keyless implicit instance - a local default is not the user's own credential", () => {
     expect(
       fromEnvironment(

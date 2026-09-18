@@ -1205,8 +1205,17 @@ func keylessScheme(auth string) bool {
 // credential - is already the keylessScheme branch: the wire's
 // CredentialRequired is exactly `Auth != AuthNone && Auth != AuthOptionalBearer`
 // (List, app_instances.go), so `!credentialRequired` is keylessScheme, and
-// keylessScheme returns true below. Verified against
-// appwire-client/typescript/credentialLabels.ts and this file's List entry.
+// keylessScheme returns true below.
+//
+// The source check is an ALLOW-list, not a deny-list: only env:<VAR> and adc
+// name a credential the host supplies. Any other source - none, empty, or a
+// future one this vocabulary does not know - is not the environment's, so an
+// implicit credential-required instance resolving none (a bearer row with no
+// key) stays the user's to remove rather than being badged "from environment"
+// and refused with nothing to say. Mirrors the client's
+// `activeSource.startsWith("env:") || activeSource === "adc"` in
+// appwire-client/typescript/credentialLabels.ts, verified against this file's
+// List entry.
 func environmentBacked(inst registry.Instance) bool {
 	if !inst.Implicit {
 		return false
@@ -1217,7 +1226,7 @@ func environmentBacked(inst registry.Instance) bool {
 	if keylessScheme(inst.Auth) {
 		return true
 	}
-	return inst.CredentialSource != "store" && inst.CredentialSource != "oauth"
+	return strings.HasPrefix(inst.CredentialSource, "env:") || inst.CredentialSource == "adc"
 }
 
 // Remove deletes an instance, its stored key and its OAuth record. An instance

@@ -110,7 +110,12 @@ export function keylessByDesign(instance: InstanceEntry): boolean {
 // environment-owned is a credential the host supplies (an API key variable,
 // the gcloud ADC file) and a keyless local default such as Ollama: there the
 // instance comes back with the host, and nothing the user does to the row
-// takes it away.
+// takes it away. The source test is an ALLOW-list, not a deny-list: only
+// `env:<VAR>` and `adc` name a credential the host supplies, so `none`, empty
+// and any future source this vocabulary does not know are the user's own - an
+// implicit credential-required instance resolving none (a bearer row with no
+// key) must not be badged "from environment" and refused Remove. Mirrors
+// environmentBacked in cmd/evener-hub/app_instances.go.
 export function fromEnvironment(instance: InstanceEntry): boolean {
   if (!instance.implicit) return false;
   // The Codex transport reads only its OAuth record, and the instance exists
@@ -126,7 +131,7 @@ export function fromEnvironment(instance: InstanceEntry): boolean {
   // way, so a removal would delete the key and leave the row. Clear is the
   // action for that key (registry spec §5.1, §10).
   if (!instance.credentialRequired) return true;
-  return instance.activeSource !== "store" && instance.activeSource !== "oauth";
+  return instance.activeSource.startsWith("env:") || instance.activeSource === "adc";
 }
 
 // unconfiguredLabel: the single-line message shown INSTEAD of the layered

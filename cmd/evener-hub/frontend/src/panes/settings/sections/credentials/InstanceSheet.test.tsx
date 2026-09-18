@@ -334,11 +334,23 @@ describe("actions are conditionally rendered", () => {
   });
 
   // The danger zone is Clear + Remove under a divider; an implicit instance
-  // with nothing stored offers neither, so the divider must go too rather
-  // than trailing an empty section.
+  // the environment supplies with nothing stored offers neither, so the divider
+  // must go too rather than trailing an empty section.
   test("no danger-zone divider when the instance offers neither Clear nor Remove", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }));
     expect(document.querySelectorAll("hr").length).toBe(0);
+  });
+
+  // The other side of the allow-list: an implicit instance the environment does
+  // NOT supply - a bearer row resolving no credential at all (none/empty/
+  // unknown) - is the user's own, so Remove and its divider stay. The old
+  // deny-list classified `none` as environment-backed and refused Remove with
+  // nothing to say.
+  test("an implicit instance with no environment-supplied source keeps Remove and its divider", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "none" }));
+    expect(screen.queryByText("from environment")).toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).toBeTruthy();
+    expect(document.querySelectorAll("hr").length).toBe(1);
   });
 
   test("the danger-zone divider stays for a stored-key instance, which offers Clear and Remove", () => {
@@ -588,8 +600,10 @@ describe("writesRefused disables instance-CRUD actions only", () => {
     expect((screen.getByRole("button", { name: "Clear stored key" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
-  test("an implicit instance under writesRefused still has no Remove button at all", () => {
-    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true }), { writesRefused: true });
+  test("an environment-backed implicit instance under writesRefused still has no Remove button at all", () => {
+    renderSheet(instance({ name: "groq", providerId: "groq", implicit: true, activeSource: "env:GROQ_API_KEY" }), {
+      writesRefused: true,
+    });
     expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 });
