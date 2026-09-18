@@ -29,16 +29,26 @@ process_descendants() {
 # a one-shot snapshot, and killing the parent first would reparent the rest to
 # init where no rescan can find them.
 stop_process_tree() {
-	local pid="$1" descendant grace alive
+	local pid="$1" descendant grace alive seen
+	seen=""
 	grace=$((SECONDS + 5))
 	while [ "$SECONDS" -lt "$grace" ]; do
 		alive=0
 		for descendant in $(process_descendants "$pid"); do
+			seen="$seen $descendant"
 			kill -TERM "$descendant" 2>/dev/null && alive=1
 		done
 		kill -TERM "$pid" 2>/dev/null && alive=1
 		[ "$alive" -eq 0 ] && break
 		sleep 0.1
+	done
+	# KILL every pid ever discovered, not just the ones a final rescan can still
+	# see: when the parent dies on TERM, a child that ignored it is reparented
+	# and vanishes from later scans, and a one-shot list would have missed it
+	# too. The parent goes last so its children stay discoverable as long as it
+	# lives.
+	for descendant in $seen; do
+		kill -KILL "$descendant" 2>/dev/null || :
 	done
 	for descendant in $(process_descendants "$pid"); do
 		kill -KILL "$descendant" 2>/dev/null || :

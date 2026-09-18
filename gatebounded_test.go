@@ -122,17 +122,57 @@ stop_process_tree "$pid"
 for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
 late=""
 [ -s "$dir/late" ] && late=$(cat "$dir/late")
-escaped=unknown
+state=unknown
 if [ -n "$late" ]; then
-	if kill -0 "$late" 2>/dev/null; then escaped=yes; else escaped=no; fi
+	# SIGKILL is asynchronous, and kill -0 also succeeds for a zombie, so poll
+	# for the pid to disappear rather than checking once.
+	for _ in $(seq 1 100); do
+		if ! kill -0 "$late" 2>/dev/null; then state=gone; break; fi
+		sleep 0.05
+	done
 fi
-printf 'late=%s escaped=%s\n' "$late" "$escaped"
+printf 'late=%s state=%s\n' "$late" "$state"
 kill -KILL "$pid" "$late" 2>/dev/null || :
 wait "$pid" 2>/dev/null || :
 rm -rf "$dir"
 `)
-	if !strings.Contains(got, "escaped=no") {
+	if !strings.Contains(got, "state=gone") {
 		t.Fatalf("stop_process_tree = %q, want the child forked during cleanup reaped, not escaped", got)
+	}
+}
+
+// TestStopProcessTreeReapsAChildWhenTheParentExits pins the accumulated list: a
+// parent that dies on TERM leaves behind a child that ignores TERM, which is
+// reparented and invisible to every later rescan. Only a list kept from when
+// the child was still discoverable reaches it.
+func TestStopProcessTreeReapsAChildWhenTheParentExits(t *testing.T) {
+	got := runBoundedCase(t, `
+set -uo pipefail
+. `+gateBoundedLib+`
+dir=$(mktemp -d)
+LATE="$dir/late" bash -c "
+bash -c \"trap \\\"\\\" TERM; exec sleep 60\" &
+echo \$! > \$LATE
+wait
+" &
+pid=$!
+for _ in $(seq 1 100); do [ -s "$dir/late" ] && break; sleep 0.05; done
+late=$(cat "$dir/late" 2>/dev/null)
+stop_process_tree "$pid"
+state=unknown
+if [ -n "$late" ]; then
+	for _ in $(seq 1 100); do
+		if ! kill -0 "$late" 2>/dev/null; then state=gone; break; fi
+		sleep 0.05
+	done
+fi
+printf 'late=%s state=%s\n' "$late" "$state"
+kill -KILL "$pid" "$late" 2>/dev/null || :
+wait "$pid" 2>/dev/null || :
+rm -rf "$dir"
+`)
+	if !strings.Contains(got, "state=gone") {
+		t.Fatalf("stop_process_tree = %q, want the orphaned TERM-ignoring child KILLed", got)
 	}
 }
 
