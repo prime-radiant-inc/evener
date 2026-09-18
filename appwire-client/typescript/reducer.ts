@@ -1236,11 +1236,20 @@ export function hasWarningText(value: unknown): value is string {
 const RAW_WARNING_FRAME_MAX_CHARS = 2000;
 
 function rawWarningFrame(params: WarningParams): string {
+  const json = JSON.stringify(params);
+  // Bound the allocation before expanding to code points: params is unknown
+  // on the wire and the transport allows frames up to 128 MiB, so
+  // Array.from()-ing the whole JSON string is an O(frame-size) temporary
+  // just to keep the first 2000 code points. A UTF-16 prefix twice the
+  // code-point limit always contains at least that many code points (every
+  // code point is at most two UTF-16 units), so slicing the string first —
+  // a cheap view, no per-character array — never drops real content.
+  const bounded = json.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
   // Array.from splits a string into code points, not UTF-16 units, so a
   // surrogate pair (an emoji, or anything outside the BMP) straddling the
   // bound is kept or dropped whole - a plain String#slice(0, N) can instead
   // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
-  const codePoints = Array.from(JSON.stringify(params));
+  const codePoints = Array.from(bounded);
   return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
 }
 

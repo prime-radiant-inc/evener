@@ -4791,6 +4791,47 @@ test("an oversized warning frame's fallback text never splits a surrogate pair a
   expect(lastUnit >= 0xd800 && lastUnit <= 0xdbff).toBe(false);
 });
 
+// #1731 piece 3 round 2 Low finding: rawWarningFrame must bound its input
+// BEFORE expanding to code points, not after — Array.from(JSON.stringify
+// (params)) on the whole frame is an O(frame-size) temporary allocation, and
+// the transport allows frames up to 128 MiB. Spies on Array.from to prove
+// every string it actually expands is already bounded well under the huge
+// frame, never the full JSON blob.
+test("an oversized warning frame's fallback bounds its input before Array.from, not after", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
+  const HUGE = 500_000;
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: "x".repeat(HUGE) };
+  const originalArrayFrom = Array.from;
+  const stringArgLengths: number[] = [];
+  const spy = vi.spyOn(Array, "from").mockImplementation((...args: unknown[]) => {
+    const [input] = args;
+    if (typeof input === "string") stringArgLengths.push(input.length);
+    // biome-ignore lint/suspicious/noExplicitAny: passes through to the real Array.from, whatever its overload.
+    return (originalArrayFrom as (...a: any[]) => unknown[])(...args);
+  });
+
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(Array.from(item.text).length).toBeLessThanOrEqual(MAX_CHARS);
+  expect(stringArgLengths.length).toBeGreaterThan(0);
+  for (const len of stringArgLengths) {
+    // Nowhere near the ~500,000-char frame: bounded well before expansion.
+    expect(len).toBeLessThan(MAX_CHARS * 4);
+  }
+});
+
 // A message-less frame that DOES carry a title or hint is something to show:
 // the fold leaves ItemModel.text blank rather than duplicating title/hint
 // with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
