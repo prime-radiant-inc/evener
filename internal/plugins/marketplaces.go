@@ -640,12 +640,26 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 		if src.Kind == SourceDirectory {
 			if ref.Source.Kind != SourceDirectory {
 				clone := m.marketplaceDir(target)
-				afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
+				// The old clone is redundant only where it is the marketplace's
+				// own. Every other sweep in the store checks whether a
+				// registered directory source names the path first, and this
+				// one must too: a legacy or hand-seeded record can point here,
+				// and the cleanup would delete its live source.
+				present, protect := m.sweepDestroysSource(mk, clone)
+				if present && !protect {
+					afterSave = append(afterSave, func() { _ = marketplaceRemoveAll(clone) })
+				}
 			}
 			_ = marketplaceRemoveAll(staging)
 			ref.InstallLocation = src.Path
 		} else {
 			dest := m.marketplaceDir(target)
+			// A swap replaces dest, deleting what was there when the aside copy
+			// goes. If a registered directory source names dest, that source
+			// would go with it, so refuse the re-source rather than overwrite it.
+			if _, protect := m.sweepDestroysSource(mk, dest); protect {
+				return fail(fmt.Errorf("marketplace %q: the new install location %s holds a directory source another marketplace records", name, dest))
+			}
 			aside, err := m.swapInClone(staging, dest)
 			if err != nil {
 				return fail(err)

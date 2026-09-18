@@ -1338,6 +1338,79 @@ func TestEditMarketplace_DirectoryRenameClearsAnUnreadableCloneSymlink(t *testin
 	}
 }
 
+// The git->directory re-source without a rename removes the old clone after
+// saving, which is a sweep like any other: it must not delete a path another
+// marketplace records as a directory source.
+func TestEditMarketplace_ResourceToDirectorySparesAnotherMarketplacesSource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	sentinel := seedSweepStore(t, m, "acme", Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	})
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("EditMarketplace to directory: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the re-source deleted another marketplace's source at the clone path: %v", err)
+	}
+}
+
+// The directory->git re-source replaces the destination through swapInClone,
+// then deletes the old contents: a destination another marketplace records as a
+// directory source must be refused, not overwritten.
+func TestEditMarketplace_ResourceToGitRefusesAnotherMarketplacesSource(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(clone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := filepath.Join(clone, "sentinel.txt")
+	if err := os.WriteFile(sentinel, []byte("beta source"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := makeDirectoryMarketplace(t, "acme", "widget")
+	if err := m.saveMarketplaces(Marketplaces{
+		"acme": {Source: Source{Kind: SourceDirectory, Path: dir}, InstallLocation: dir},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repo := makeMarketplaceRepo(t, "acme")
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "", &Source{Kind: SourceURL, URL: repo}); err == nil {
+		t.Fatal("expected the re-source to refuse a destination another marketplace sources")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the re-source overwrote another marketplace's source: %v", err)
+	}
+}
+
+// The rename branch moves the clone with the name before the same cleanup runs;
+// its displaced-source refusal must hold there too, so a rename cannot take
+// another marketplace's source with it.
+func TestEditMarketplace_RenameAndResourceToDirectorySparesAnotherMarketplacesSource(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	sentinel := seedSweepStore(t, m, "acme", Marketplaces{
+		"acme": {Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"}, InstallLocation: clone},
+		"beta": {Source: Source{Kind: SourceDirectory, Path: clone}, InstallLocation: clone},
+	})
+	dir := makeDirectoryMarketplace(t, "local", "widget")
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "gamma", &Source{Kind: SourceDirectory, Path: dir}); err == nil {
+		t.Fatal("expected the rename to refuse moving a clone another marketplace sources")
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("the rename displaced another marketplace's source: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
