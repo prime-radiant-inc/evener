@@ -36,12 +36,13 @@ export class UnreadableDraftError extends Error {}
 
 /** discardStoredDraft's own outcome: "removed" when the record was actually
  * deleted, "absent" when there was nothing stored to discard, and "refused"
- * when the current record now decodes as valid. A caller with no live
- * repository has no memory of the identity it showed the user earlier - only
- * what `load()` returns right now - so between then and now a concurrent
- * writer may have replaced the unreadable record with something this build
- * can actually read; "refused" is what keeps that newer, legitimate draft
- * from being deleted as if it were the stale unreadable one. */
+ * when the record present now is not the one just read - either because it
+ * now decodes as valid, or because a concurrent writer replaced it with a
+ * DIFFERENT record (readable or not) before the removal landed. A caller
+ * with no live repository has no memory of the identity it showed the user
+ * earlier - only what `load()` returns right now - so "refused" is what
+ * keeps a newer record, readable or not, from being deleted, or reported
+ * gone, as if it were the stale one the user was shown. */
 export type DiscardStoredDraftResult = "removed" | "absent" | "refused";
 
 /** Removes whatever a draft port holds, readable or not, WITHOUT a store: the
@@ -60,7 +61,13 @@ export function discardStoredDraft<Checkpoint>(
   const value = storage.load();
   if (value === null || value === undefined) return "absent";
   if (isReadable(value)) return "refused";
-  return storage.removeIf(value) ? "removed" : "absent";
+  if (storage.removeIf(value)) return "removed";
+  // The compare-and-swap failed: a concurrent writer replaced the record
+  // between the load() above and this call. Re-read to tell "gone" from
+  // "still there, but not the bytes just named" - the latter must not be
+  // reported the same as nothing to discard.
+  const current = storage.load();
+  return current === null || current === undefined ? "absent" : "refused";
 }
 
 export interface DraftRepository<Checkpoint> {

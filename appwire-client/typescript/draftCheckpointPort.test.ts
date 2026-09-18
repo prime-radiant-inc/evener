@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createDraftRepository, discardStoredDraft } from "./draftCheckpointPort";
+import { createDraftRepository, discardStoredDraft, type DraftPort } from "./draftCheckpointPort";
 import { memoryDraftStorage } from "./testing/draftStorage";
 
 interface Checkpoint {
@@ -211,5 +211,41 @@ describe("discardStoredDraft", () => {
     expect(discardStoredDraft(drafts.storage, isReadable)).toBe("removed");
 
     expect(drafts.stored()).toBeNull();
+  });
+
+  // removeIf's compare-and-swap can fail for a reason isReadable never sees:
+  // a concurrent writer replaced the unreadable record with a DIFFERENT
+  // unreadable one between load() and removeIf(). That record is still
+  // present - "absent" would tell a caller (the offline discard button)
+  // there was nothing there to clear, when there is.
+  it("reports 'refused', not 'absent', when removeIf fails but a replacement record is still present", () => {
+    let loadCount = 0;
+    const first = { corrupt: true, marker: 1 };
+    const second = { corrupt: true, marker: 2 };
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => (loadCount++ === 0 ? first : second),
+      save: () => {},
+      // Simulates the race: the identity this call names no longer matches
+      // what is stored (a concurrent writer already replaced it).
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("refused");
+  });
+
+  it("reports 'absent' when removeIf fails and a re-read finds the record genuinely gone", () => {
+    let loadCount = 0;
+    const first = { corrupt: true, marker: 1 };
+    const storage: DraftPort<Checkpoint> = {
+      createId: () => "id",
+      load: () => (loadCount++ === 0 ? first : null),
+      save: () => {},
+      removeIf: () => false,
+      replaceIf: () => false,
+    };
+
+    expect(discardStoredDraft(storage)).toBe("absent");
   });
 });
