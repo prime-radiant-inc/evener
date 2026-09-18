@@ -511,6 +511,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg), cfg.APILogDefault)
 	registerLaunchHandlers(server, launchController)
 	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
+	wirePluginStoreBroadcast(pluginsController.mgr, server)
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
@@ -524,7 +525,9 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
 	registerHostAttachHandler(server, cfg, sources)
-	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
+	autoUpgradeMgr := plugins.NewManager(cfg.PluginRoot)
+	wirePluginStoreBroadcast(autoUpgradeMgr, server)
+	registerPluginAutoUpgradeHandlers(server, autoUpgradeMgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
@@ -1358,15 +1361,36 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 }
 
 // notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
-// to all connected clients.
-func notifyMarketplaceUpdated(server *appserver.Server) {
+// to all connected clients. A var, not a plain func, so a test can observe
+// wirePluginStoreBroadcast's wiring without a real connected client.
+var notifyMarketplaceUpdated = func(server *appserver.Server) {
 	server.BroadcastAll(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{})
 }
 
 // notifyPluginUpdated broadcasts a evener/plugin/updated notification to all
-// connected clients.
-func notifyPluginUpdated(server *appserver.Server) {
+// connected clients. See notifyMarketplaceUpdated for why it is a var.
+var notifyPluginUpdated = func(server *appserver.Server) {
 	server.BroadcastAll(appwire.NotifyEvenerPluginUpdated, map[string]string{})
+}
+
+// wirePluginStoreBroadcast installs an OnStoreChanged callback (issue #1634)
+// on mgr that broadcasts evener/marketplace/updated and/or
+// evener/plugin/updated for whatever a lockStore session actually wrote.
+// This is in addition to, not instead of, the notifyMarketplaceUpdated/
+// notifyPluginUpdated calls each RPC handler above still makes by hand: it
+// closes the gaps those per-handler calls miss — a migration a list request
+// triggers, the auto-upgrade daemon's own marketplace refresh, a marker
+// recovery — by construction, without any caller needing to know it happened.
+// A handler covered by both simply broadcasts twice, which is harmless.
+func wirePluginStoreBroadcast(mgr *plugins.Manager, server *appserver.Server) {
+	mgr.OnStoreChanged(func(changed plugins.StoreChanged) {
+		if changed.Marketplaces {
+			notifyMarketplaceUpdated(server)
+		}
+		if changed.Plugins {
+			notifyPluginUpdated(server)
+		}
+	})
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option

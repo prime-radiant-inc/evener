@@ -23,7 +23,9 @@ var (
 	}
 	hubPluginGC     = func(ctx context.Context) ([]string, error) { return plugins.NewManager("").Gc(ctx) }
 	hubStartUpgrade = func(ctx context.Context, cfg Config, web *WebServer) {
-		startPluginAutoUpgradeDaemon(ctx, plugins.NewManager(""), cfg.PluginAutoUpgradeInterval, web.appRPC)
+		mgr := plugins.NewManager("")
+		wirePluginStoreBroadcast(mgr, web.appRPC)
+		startPluginAutoUpgradeDaemon(ctx, mgr, cfg.PluginAutoUpgradeInterval, web.appRPC)
 	}
 )
 

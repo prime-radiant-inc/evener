@@ -19,6 +19,17 @@ type Manager struct {
 	Root   string           // store root
 	Now    func() time.Time // injectable clock; defaults to time.Now
 	Stderr io.Writer        // warnings sink; defaults to os.Stderr
+
+	// pendingStoreChanged accumulates the current lockStore session's writes
+	// (see store_changed.go). Only ever touched while that session's own
+	// flock is held, which is what makes an unsynchronized field safe: flock
+	// serializes every acquisition of the one lock file this accumulates
+	// against, by goroutine as much as by process.
+	pendingStoreChanged StoreChanged
+	// onStoreChanged is installed once, by whoever constructs the Manager
+	// (OnStoreChanged), and never reassigned afterward — so reading it while
+	// a lock session is in flight races nothing.
+	onStoreChanged func(StoreChanged)
 }
 
 // NewManager returns a Manager rooted at root, or DefaultRoot() when root == "".
