@@ -28,7 +28,7 @@
 // host uses is the host's product decision; the hub state they confirm is one.
 
 import type { AppwireClient } from "./client";
-import { createDraftRepository, discardStoredDraft, UnreadableDraftError } from "./draftCheckpointPort";
+import { createDraftRepository, discardStoredDraft, type DraftPort, UnreadableDraftError } from "./draftCheckpointPort";
 import { errorText, WireError } from "./errors";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "./frameworkFreeStore";
 import { serializeChord } from "./keybindingChord";
@@ -62,22 +62,10 @@ export interface KeybindingDraftCheckpoint {
 }
 
 /** The storage port the checkpointed draft editor writes through. Every
- * method may throw; the store maps a throw to `storageUnavailable`. */
-export interface KeybindingDraftStorage {
-  createId(): string;
-  load(): unknown;
-  save(checkpoint: KeybindingDraftCheckpoint): void;
-  /** Removes the stored checkpoint only if it is still named by `identity`;
-   * reports whether it did. `identity` is usually a checkpoint this port
-   * itself produced, but the unreadable-record recovery also hands it the
-   * RAW value load() returned - typed `unknown`, not the checkpoint shape,
-   * so a conforming port never assumes it can decode what it is given. */
-  removeIf(identity: unknown): boolean;
-  /** Replaces the stored checkpoint with `next` only if `expected` (the same
-   * raw-or-decoded identity removeIf takes) is still the one stored; reports
-   * whether it did. */
-  replaceIf(expected: unknown, next: KeybindingDraftCheckpoint): boolean;
-}
+ * method may throw; the store maps a throw to `storageUnavailable`. Field
+ * for field the shared checkpointed-draft port, over this store's own
+ * checkpoint shape. */
+export type KeybindingDraftStorage = DraftPort<KeybindingDraftCheckpoint>;
 
 /** The draft port a store without one runs on: the proposal lives in the
  * store's state only and does not survive the instance. There is no real
