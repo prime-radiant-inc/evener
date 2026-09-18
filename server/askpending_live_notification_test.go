@@ -112,6 +112,7 @@ func TestAskUserLiveStatusFrameCarriesAskPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	t.Cleanup(func() { sess.Close() })
 
 	srv := NewServer(ServerConfig{AppReplaySize: 100})
 	srv.SetAppIdentity("local", sess.ID())
