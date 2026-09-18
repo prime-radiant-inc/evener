@@ -347,34 +347,24 @@ func TestLoadSessionJobActivityTree_StopsRecursingOnceWorkBudgetExhausted(t *tes
 	}
 }
 
-// TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBudget
-// asserts a continuation's revision computation shares the SAME
-// historicalActivityCache -- and so the same work-unit budget -- as the
-// continuation's own load, rather than rebuilding an entire second
-// full-tree snapshot with an independently-fresh cache: two independent
-// 2000-unit budgets for what is, from the client's perspective, ONE
-// request would let the revision computation visit (and charge for) a
-// DIFFERENT session set than the continuation load did, silently
-// doubling the effective per-request traversal-breadth allowance.
+// TestLoadSessionJobActivityTree_ContinuationReportsTokenRevisionWithoutFullWalk
+// pins that a continuation page reports the revision its token was minted
+// against and does NOT re-walk the tree to recompute one. A historical
+// revision is a max over a bounded, work-budget-shaped snapshot, so
+// recomputing it on resume can differ for the same valid continuation
+// (resolving the path's hops spends budget before the walk; a descendant
+// appended between requests moves the max). A consumer that fences a page by
+// revision would then discard a valid page and refetch the root forever, so
+// the revision is echoed from the token instead -- and the walk that used to
+// recompute it is gone.
 //
 // Fixture: root has exactly activityMaxWorkUnits (2000) direct stable
-// delegates -- one continuation target ("aaaspecial", named to sort
-// first) plus activityMaxWorkUnits-1 (1999) plain "wide" leaves (named to
-// sort after it). The continuation resolves to aaaspecial via exactly one
-// hop, charging exactly 1 work unit for that hop
-// (buildActivityContinuationAt's per-hop charge) before the revision
-// computation's own full-tree walk ever begins.
-//
-//   - Two INDEPENDENT budgets: the revision walk would start fresh at
-//     2000, visit aaaspecial again (1) then all 1999 wide children
-//     (1999) -- 2000 total, exactly fits, every wide child's journal
-//     gets scanned.
-//   - ONE SHARED budget (the correct behavior): the revision walk starts
-//     already at 1 (the continuation's own hop charge), visits
-//     aaaspecial again (2) then wide children until the shared
-//     2000-unit ceiling is hit at 1998 of them -- the last
-//     (highest-sorting) wide child's journal is NEVER scanned.
-func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBudget(t *testing.T) {
+// delegates -- one continuation target ("aaaspecial", named to sort first)
+// plus activityMaxWorkUnits-1 (1999) plain "wide" leaves (named to sort after
+// it). The continuation resolves to aaaspecial via exactly one hop. The walk
+// the revision used to require scanned every sibling; now none of the wide
+// siblings is opened, and the page carries the token's revision verbatim.
+func TestLoadSessionJobActivityTree_ContinuationReportsTokenRevisionWithoutFullWalk(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "revisionsharebudgetroot"
 	started := time.Unix(600, 0).UTC()
@@ -386,7 +376,7 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 	specialID := "aaaspecial"
 	var descriptors []delegatestore.Descriptor
 	descriptors = append(descriptors, pastStableDescriptor(rootID, specialID, "continuation target"))
-	s1cov_writeJobLog(t, stateDir, specialID,
+	specialJobsPath := s1cov_writeJobLog(t, stateDir, specialID,
 		jobstore.Event{Kind: jobstore.EventJobStarted, TS: started, JobID: "job_" + specialID, Type: jobstore.JobShell, OwnerSessionID: specialID, VisibleToSession: specialID, StartedAt: &started},
 	)
 	savePastActivityMetaWithTreeRevision(t, stateDir, specialID, "Special", rootID, 0)
@@ -403,8 +393,10 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 	}
 	writePastStableDelegates(t, stateDir, rootID, descriptors...)
 
+	const tokenRevision = 7
 	cont := activityContinuation{
-		Version: activityContinuationVersion, RootID: rootID, SessionID: specialID, Path: []string{"dlg_" + specialID},
+		Version: activityContinuationVersion, RootID: rootID, SessionID: specialID,
+		Path: []string{"dlg_" + specialID}, Revision: tokenRevision,
 	}
 	token := encodeActivityContinuation(cont)
 
@@ -416,14 +408,20 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 	}
 	defer func() { scanJobJournal = original }()
 
-	_, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token})
+	tree, err := LoadSessionJobActivityTree(context.Background(), stateDir, rootID, appwire.JobsListParams{Continuation: token})
 	if err != nil {
 		t.Fatalf("LoadSessionJobActivityTree: %v", err)
+	}
+	if tree.Revision != tokenRevision {
+		t.Fatalf("Revision = %d, want %d (a continuation must report the revision its token was minted against, not a recomputed one)", tree.Revision, tokenRevision)
 	}
 
 	scanned := make(map[string]bool, len(scannedPaths))
 	for _, p := range scannedPaths {
 		scanned[p] = true
+	}
+	if !scanned[specialJobsPath] {
+		t.Fatalf("the continuation target's journal %q was never scanned; the page was not loaded at all: %v", specialJobsPath, scannedPaths)
 	}
 	neverScanned := 0
 	for _, p := range wideJobsPaths {
@@ -431,11 +429,8 @@ func TestLoadSessionJobActivityTree_ContinuationRevisionComputationSharesLoadBud
 			neverScanned++
 		}
 	}
-	if neverScanned == 0 {
-		t.Fatalf("all %d wide children's journals were scanned across the whole request -- the continuation load's own 1-unit hop charge and the revision computation's full-tree walk are still spending two independent 2000-unit budgets instead of one shared one", wideCount)
-	}
-	if neverScanned != 1 {
-		t.Fatalf("neverScanned = %d, want exactly 1 (one shared 2000-unit budget across a 1-unit continuation hop charge + 2000 direct children -- 2001 units of demand, exactly 1 short): scannedPaths=%v", neverScanned, scannedPaths)
+	if neverScanned != wideCount {
+		t.Fatalf("neverScanned = %d, want all %d wide siblings unopened -- a continuation must not re-walk the tree to recompute its revision: %v", neverScanned, wideCount, scannedPaths)
 	}
 }
 
@@ -902,6 +897,7 @@ func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *tes
 
 	var delivered []string
 	seenContinuations := map[string]bool{}
+	var walkRevision uint64
 	continuation := ""
 	pages := 0
 	for {
@@ -915,6 +911,11 @@ func TestLoadSessionJobActivityTree_WorkContinuationWalksRetainedJobsOnce(t *tes
 		}
 		if len(tree.Root.Entries) > activityMaxWorkUnits {
 			t.Fatalf("page %d returned %d entries, want at most activityMaxWorkUnits=%d", pages, len(tree.Root.Entries), activityMaxWorkUnits)
+		}
+		if pages == 1 {
+			walkRevision = tree.Revision
+		} else if tree.Revision != walkRevision {
+			t.Fatalf("page %d reports revision %d, want %d -- a continuation page must report the revision its walk began at, or a revision-fencing client discards valid pages and refetches the root forever", pages, tree.Revision, walkRevision)
 		}
 		for _, entry := range tree.Root.Entries {
 			if entry.Job == nil {

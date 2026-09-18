@@ -204,21 +204,20 @@ type activityContinuation struct {
 	// over a readable journal resumes into a page whose delegate list is
 	// empty — its position counting entries that are not there.
 	DelegatesUnreadable bool `json:"dlg_unreadable,omitempty"`
-	// Revision is the root's jobActivityClock revision (see
-	// activityCurrentRootRevision) at mint time — appwire.JobActivityTree's
-	// own Revision field, carried into the continuation too. Only checked
-	// on resume when the root is LIVE (loadActivitySnapshotForParamsWithCache):
-	// a live session's JobsEpoch/DelegatesEpoch above are always 0 (it
-	// reads neither fold cache), so they provide no staleness protection
-	// at all for a live continuation — 0 == 0 always passes, even across a
-	// real mutation. Revision closes that gap the same way epoch closes it
-	// for historical sessions. For a historical continuation this is still
-	// populated (mint time's
-	// activitySnapshotPersistedRevision) but not validated — the epoch
-	// fields already cover that case, and this field's value there is not
-	// guaranteed stable in the same way (a sibling's unrelated change can
-	// legitimately move it), so re-checking it would risk false staleness
-	// rejections rather than closing a real gap.
+	// Revision is the revision appwire.JobActivityTree reported for the page
+	// this token was minted with — the live jobActivityClock revision for a
+	// live root, or activitySnapshotPersistedRevision for a historical one —
+	// carried into the continuation too, and echoed back as the resumed page's
+	// own Revision (LoadSessionJobActivityTree). It is checked on resume only
+	// when the root is LIVE (loadActivitySnapshotForParamsWithCache): a live
+	// session's JobsEpoch/DelegatesEpoch above are always 0 (it reads neither
+	// fold cache), so they provide no staleness protection at all for a live
+	// continuation — 0 == 0 always passes, even across a real mutation.
+	// Revision closes that gap the same way epoch closes it for historical
+	// sessions. A historical continuation is not validated on this field: the
+	// epoch fields already say whether a resume position is safe, and echoing
+	// the token's number back keeps a pagination walk's revision stable even
+	// though the persisted max it was first computed from can move under it.
 	Revision uint64 `json:"rev,omitempty"`
 }
 

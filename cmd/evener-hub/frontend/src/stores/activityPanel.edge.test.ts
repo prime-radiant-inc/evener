@@ -288,6 +288,28 @@ describe("activityPanelStore continuation paths", () => {
     expect(entry?.pending).toBeUndefined();
   });
 
+  test("a mismatched continuation page is discarded, not recorded as a merge", () => {
+    resetActivityPanelStoreForTests();
+    const { settled } = linkFakeActivitySummary();
+    const tree = makeTreeWithDelegate();
+    const req = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", req, { kind: "ready", tree });
+
+    const contReq = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "delegate:dlg_1" });
+    const page = makeTreeWithDelegate();
+    page.revision = tree.revision + 1;
+    activityPanelStore.getState().publishFetch("ref_a", contReq, { kind: "ready", tree: page });
+
+    const entry = activityPanelStore.getState().entries.get("ref_a");
+    // The retained tree is untouched and the page leaves no failure or counts
+    // claim behind: the caller refetches the root instead.
+    expect(entry?.load).toEqual({ kind: "ready", tree });
+    expect(entry?.continuationFailures).toEqual({});
+    expect(entry?.continuationLoadingID).toBeUndefined();
+    expect(entry?.pending).toBeUndefined();
+    expect(settled).toHaveBeenCalledWith("ref_a", { summaryRequestID: undefined, debt: undefined });
+  });
+
   test("setExpanded and setSelected update disclosure", () => {
     resetActivityPanelStoreForTests();
     linkFakeActivitySummary();

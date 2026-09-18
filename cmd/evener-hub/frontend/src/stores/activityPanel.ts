@@ -253,7 +253,22 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set, get
           };
         } else if (result.kind === "ready") {
           const previousTree = retainedTree(current.load);
-          if (previousTree) {
+          if (previousTree && result.tree.revision !== previousTree.revision) {
+            // A page from another revision is not graftable. graftContinuationTree
+            // would leave the retained tree unchanged, so recording this as a
+            // merge would claim the unchanged tree's counts as the page's result
+            // and clear any prior failure. Discard it exactly like an explicit
+            // continuation-discarded result instead; the caller owns the root
+            // refetch (ActivityPanel starts one before publishing this).
+            const continuationFailures = { ...current.continuationFailures };
+            delete continuationFailures[pending.nodeID];
+            next = {
+              ...current,
+              continuationLoadingID: undefined,
+              continuationFailures,
+              pending: undefined,
+            };
+          } else if (previousTree) {
             const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
             debt = { kind: "counts", counts: tree.root.counts };
             const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);

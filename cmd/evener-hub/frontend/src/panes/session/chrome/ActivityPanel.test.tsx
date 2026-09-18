@@ -1227,8 +1227,13 @@ describe("ActivityPanel", () => {
     await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
     await user.click(screen.getByRole("button", { name: /load more/i }));
 
-    // The mismatched page is discarded and a fresh root is fetched instead.
+    // The mismatched page is discarded and exactly one fresh root is fetched:
+    // the discard-triggered refresh coalesces with the pending-root drain.
     await waitFor(() => expect(rootCalls).toBe(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(rootCalls).toBe(2);
     expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
     expect(fake.calls.filter((call) => call.method === "evener/jobs/list").at(-1)?.params).toEqual({
       ref: "ref_root",
