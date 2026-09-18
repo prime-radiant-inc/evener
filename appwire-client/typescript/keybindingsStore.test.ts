@@ -277,6 +277,31 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: false });
   });
 
+  test("a refresh's stale reply does not reclassify the checkpoint the settle would have adopted", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(5, rules);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+    const uncertainCheckpoint = drafts.stored();
+    expect(uncertainCheckpoint).toMatchObject({ baseRevision: 5, rules: [], writeUncertain: true });
+
+    // A later GET reports a revision LOWER than the one already confirmed (a
+    // hub restart serving a legitimately lower number, or a race):
+    // applyHubOverrides' stale guard ignores the payload entirely, so the
+    // settle thunk it would have run must not fire either - the checkpoint
+    // stays exactly as the write left it, and writeUncertain stays true.
+    client.on(getMethod, () => payload(2, []));
+    await store.getState().refreshOverrides();
+
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toEqual(uncertainCheckpoint);
+  });
+
   // RoboRev round 21 Medium 2: saveDraft treated every rejection as an
   // unknown outcome, unlike the direct write (patchOverrides), which uses
   // rejectionPayload to tell a structured conflict/post-rename failure from
@@ -374,7 +399,11 @@ describe("the checkpointed draft editor", () => {
     const store = await readyStore(client, { registry, drafts: drafts.storage });
     wedgePaletteDefault(registry);
 
-    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    // The reconciler's own throw (a wedged registry) is what the caller
+    // sees, the same shape the post-rename branch follows: a settle that
+    // fails locally rejects with THAT failure, not the rejection that
+    // triggered the settle attempt.
+    await expect(store.getState().saveDraft([])).rejects.toThrow(/keybinding conflict/);
 
     expect(store.getState().saving).toBe(false);
     expect(store.getState().hubError).not.toBeNull();

@@ -641,20 +641,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return getState().hubSupport === "supported";
   }
 
-  /** WHY a reply is not ours, because the two answers call for opposite things.
-   * SUPERSEDED: a later write, or a payload retirement, has taken over - it
-   * owns `saving` now and this reply must touch nothing. LOST-HUB: this write's
-   * own claim is intact and only support went away (the unknown window keeps
-   * the state and the in-flight work), so nothing else will ever settle this
-   * write and the editor must not be left mid-write. */
-  function whyFenced(generation: number, token: number): "superseded" | "lost-hub" {
-    return lostHub(fence, generation, token === fence.writeToken) ? "lost-hub" : "superseded";
-  }
-
-  /** Publishes the end of a write whose reply can never be settled by anything
-   * else. A superseded reply publishes nothing: its successor owns the flags. */
-  function settleUnsettleableWrite(why: "superseded" | "lost-hub"): void {
-    if (why === "lost-hub" && getState().saving) setState({ saving: false, writeUncertain: true });
+  /** Publishes the end of a write whose reply can never be settled by
+   * anything else: lostHub (this write's own claim is intact and only
+   * support went away - the unknown window keeps the state and the
+   * in-flight work) means nothing else will ever clear `saving` for it.
+   * A superseded reply (a later write, or a payload retirement, took over)
+   * does nothing here - its successor owns the flags. */
+  function settleLostHubWrite(generation: number, token: number): void {
+    if (lostHub(fence, generation, token === fence.writeToken) && getState().saving) {
+      setState({ saving: false, writeUncertain: true });
+    }
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
@@ -694,8 +690,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   ): boolean {
     const state = getState();
     if (payload.revision < state.revision && payload.loadError === undefined) {
-      const resolved = typeof extra === "function" ? extra() : extra;
-      if (Object.keys(resolved).length > 0) setState(resolved);
+      // A thunk's own side effect (settledWrite's checkpoint reclassification)
+      // must never run for a payload this guard is about to ignore: never
+      // resolve it here. A plain object carries no side effect and applies
+      // as always.
+      if (typeof extra !== "function" && Object.keys(extra).length > 0) setState(extra);
       return false;
     }
     const rules = cloneRules(payload.rules);
@@ -1164,6 +1163,44 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     setState({ draft, draftConflict: staleDraft(draft, current.revision), draftError: null });
   }
 
+  /** Settles a confirmed write against `checkpoint`: applies `payload`
+   * (never letting a reconciler throw skip the settle - see
+   * applyHubOverridesSettling), then clears the checkpoint it settled -
+   * `newerExternal` re-marks it settled in place (persistDraft) instead of
+   * removing it, because the proposal stays for review against a revision
+   * that landed while this write was out. `settled` is the caller's own
+   * publish alongside the apply: the post-rename caller deliberately omits
+   * draftConflict so applyHubOverrides' own staleDraft check decides it,
+   * while the confirmed-reply caller forces it (true for newerExternal,
+   * false otherwise) - the draft it is judging against has not been
+   * cleared yet at that point, so staleDraft alone would misread the very
+   * revision this write just confirmed as a conflict. Returns the
+   * reconciler's own throw, if any, for the caller to re-throw once this
+   * has run. */
+  function settleWrite(
+    payload: KeybindingsOverrides,
+    checkpoint: KeybindingDraftCheckpoint,
+    newerExternal: boolean,
+    settled: Partial<KeybindingsStoreFields>,
+  ): unknown {
+    let applyFailure: unknown = null;
+    if (newerExternal) setState(settled);
+    else applyFailure = applyHubOverridesSettling(payload, settled);
+    let storageError: string | null = null;
+    try {
+      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
+      else drafts.removeIf(checkpoint);
+    } catch {
+      storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
+    }
+    setState({
+      draft: newerExternal || storageError !== null ? getState().draft : null,
+      storageUnavailable: storageError !== null,
+      draftError: storageError,
+    });
+    return applyFailure;
+  }
+
   async function saveDraft(rules?: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
     const current = assertEditable();
     const existing = getState().draft;
@@ -1188,7 +1225,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       });
     } catch (error) {
       if (!stillMine()) {
-        settleUnsettleableWrite(whyFenced(generation, token));
+        settleLostHubWrite(generation, token);
         throw error;
       }
       // Post-rename durable failure: the patch APPLIED on the hub (the error
@@ -1198,19 +1235,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // would leave editing disabled over bindings that are already live.
       const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
       if (applied !== undefined) {
-        const settled = { saving: false, writeUncertain: false };
-        const applyFailure = applyHubOverridesSettling(applied, settled);
-        let storageError: string | null = null;
-        try {
-          drafts.removeIf(checkpoint);
-        } catch {
-          storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
-        }
-        setState({
-          draft: storageError !== null ? getState().draft : null,
-          storageUnavailable: storageError !== null,
-          draftError: storageError,
-        });
+        const applyFailure = settleWrite(applied, checkpoint, false, { saving: false, writeUncertain: false });
         if (applyFailure !== null) throw applyFailure;
         return applied;
       }
@@ -1220,13 +1245,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // one, the same rule the direct write follows.
       const conflictState = rejectionPayload(error, "conflict", "current");
       if (conflictState !== undefined) {
-        applyHubOverridesSettling(conflictState, { saving: false, writeUncertain: false, draftConflict: true });
+        const applyFailure = applyHubOverridesSettling(conflictState, {
+          saving: false,
+          writeUncertain: false,
+          draftConflict: true,
+        });
         try {
           persistDraft({ baseRevision: checkpoint.baseRevision, rules: checkpoint.rules, writeUncertain: false });
         } catch {
           setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
         }
-        throw error;
+        throw applyFailure ?? error;
       }
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
@@ -1260,7 +1289,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     //     with the port marked unavailable, and never turns a confirmed write
     //     back into an unknown outcome.
     if (!stillMine()) {
-      settleUnsettleableWrite(whyFenced(generation, token));
+      settleLostHubWrite(generation, token);
       const state = getState();
       return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
     }
@@ -1270,25 +1299,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       throw new Error(MALFORMED_MESSAGE);
     }
     const newerExternal = getState().revision > value.revision;
-    const settled: Partial<KeybindingsStoreFields> = {
+    const applyFailure = settleWrite(value, checkpoint, newerExternal, {
       saving: false,
       writeUncertain: false,
       draftConflict: newerExternal,
-    };
-    let applyFailure: unknown = null;
-    if (newerExternal) setState(settled);
-    else applyFailure = applyHubOverridesSettling(value, settled);
-    let storageError: string | null = null;
-    try {
-      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
-      else drafts.removeIf(checkpoint);
-    } catch {
-      storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
-    }
-    setState({
-      draft: newerExternal || storageError !== null ? getState().draft : null,
-      storageUnavailable: storageError !== null,
-      draftError: storageError,
     });
     if (applyFailure !== null) throw applyFailure;
     return value;
