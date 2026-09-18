@@ -1274,15 +1274,30 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
   }
   if (typeof value === "object" && value !== null) {
     const pruned: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value).slice(0, RAW_WARNING_FRAME_MAX_OBJECT_KEYS)) {
-      if (budget.remaining <= 0) break;
+    // Object.entries(value) (or Object.keys) would allocate one entry per
+    // own key BEFORE any cap applies — for a malformed frame with millions
+    // of keys, that is the exact O(frame-size) allocation this function
+    // exists to avoid, just moved one line earlier. A for...in loop that
+    // counts and breaks visits (and copies) at most
+    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS keys, never materializing the rest.
+    // Object.entries(value) (or Object.keys) would allocate one entry per
+    // own key BEFORE any cap applies — for a malformed frame with millions
+    // of keys, that is the exact O(frame-size) allocation this function
+    // exists to avoid, just moved one line earlier. A for...in loop that
+    // counts and breaks visits (and copies) at most
+    // RAW_WARNING_FRAME_MAX_OBJECT_KEYS keys, never materializing the rest.
+    let taken = 0;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (taken >= RAW_WARNING_FRAME_MAX_OBJECT_KEYS || budget.remaining <= 0) break;
+      taken++;
       // The key-count cap above bounds how many properties survive, but
       // says nothing about how long any one property NAME is — an
       // oversized key would otherwise ride through verbatim, the same
       // vector the value-length bound above closes for string values.
       const boundedKey =
         key.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS ? `${key.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…` : key;
-      pruned[boundedKey] = prunedForStringify(val, depth + 1, budget);
+      pruned[boundedKey] = prunedForStringify((value as Record<string, unknown>)[key], depth + 1, budget);
     }
     return pruned;
   }

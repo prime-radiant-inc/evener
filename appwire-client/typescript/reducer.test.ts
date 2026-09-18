@@ -4944,6 +4944,44 @@ test("an oversized warning frame's fallback bounds a many-key object, not just d
   }
 });
 
+// Object.entries(value) (or Object.keys) allocates one [key, value] pair
+// PER OWN KEY before any cap applies, regardless of the array's own later
+// .slice(0, 50) — for a malformed frame with millions of keys, that
+// allocation (and the value access it implies) is the exact O(frame-size)
+// cost this function exists to avoid. A Proxy observes every property
+// GET the prune actually performs, independent of how it enumerates keys.
+test("an oversized warning frame's fallback never accesses more than the key cap's worth of property values", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const MAX_OBJECT_KEYS = 50; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_OBJECT_KEYS
+  const target: Record<string, string> = {};
+  for (let i = 0; i < 100_000; i++) target[`key${i}`] = "v";
+  let getCount = 0;
+  const observed = new Proxy(target, {
+    get(t, prop, receiver) {
+      if (typeof prop === "string" && prop.startsWith("key")) getCount++;
+      return Reflect.get(t, prop, receiver);
+    },
+  });
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: observed };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  // A small margin above the cap for any incidental re-reads, but nowhere
+  // near the 100,000 keys an Object.entries/.keys allocation would touch.
+  expect(getCount).toBeLessThanOrEqual(MAX_OBJECT_KEYS + 1);
+});
+
 // The object-key COUNT cap (RAW_WARNING_FRAME_MAX_OBJECT_KEYS) bounds how
 // many properties survive the prune, but says nothing about how long each
 // property NAME is — a single key whose own name is multi-megabyte still
