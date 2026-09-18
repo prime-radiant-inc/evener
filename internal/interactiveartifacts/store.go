@@ -1,0 +1,251 @@
+package interactiveartifacts
+
+import (
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"sync"
+	"time"
+
+	_ "modernc.org/sqlite" // SQLite is the durable artifact domain store.
+)
+
+// StoreOptions bounds persistent content and reader connections. Clock must be
+// safe for concurrent calls. A zero quota uses 256 MiB of logical row content.
+type StoreOptions struct {
+	Clock             func() time.Time
+	QuotaBytes        int64
+	ReaderConnections int
+}
+
+// Scope is trusted control-plane authority, never decoded from tool arguments.
+// An empty ArtifactID permits the namespace; a nonempty ID narrows it to one object.
+// Generation identifies the issuing host's lease; it is not receipt identity.
+type Scope struct {
+	RealmID, PrincipalID, NamespaceID, ArtifactID string
+	Methods                                       []string
+	ExpiresAt                                     time.Time
+	Generation                                    uint64
+}
+
+// Store serializes grant changes, deletion and writes through mu. Readers hold
+// its read lock so authorization and the selected snapshot share that ordering.
+// Only hashed grant identifiers enter this object, and no grants enter SQLite.
+type Store struct {
+	mu       sync.RWMutex
+	db       *sql.DB
+	clock    func() time.Time
+	quota    int64
+	identity string
+	grants   map[[32]byte]Scope
+	closed   bool
+}
+
+func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
+	if options.Clock == nil {
+		options.Clock = time.Now
+	}
+	if options.QuotaBytes == 0 {
+		options.QuotaBytes = 256 << 20
+	}
+	if options.ReaderConnections == 0 {
+		options.ReaderConnections = 4
+	}
+	if options.QuotaBytes < 0 || options.ReaderConnections < 1 || options.ReaderConnections > 32 {
+		return nil, errors.New("invalid artifact store options")
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(absolute), 0700); err != nil {
+		return nil, err
+	}
+	if err := requirePrivatePath(filepath.Dir(absolute), true); err != nil {
+		return nil, err
+	}
+	file, err := os.OpenFile(absolute, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	if err == nil {
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
+	} else if !errors.Is(err, os.ErrExist) {
+		return nil, err
+	}
+	if err := requirePrivatePath(absolute, false); err != nil {
+		return nil, err
+	}
+	uri := url.URL{Scheme: "file", Path: absolute}
+	query := url.Values{}
+	for _, pragma := range []string{"journal_mode(WAL)", "foreign_keys(ON)", "synchronous(FULL)", "busy_timeout(5000)"} {
+		query.Add("_pragma", pragma)
+	}
+	uri.RawQuery = query.Encode()
+	db, err := sql.Open("sqlite", uri.String())
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, db.Close())
+		}
+	}()
+	db.SetMaxOpenConns(options.ReaderConnections + 1)
+	db.SetMaxIdleConns(options.ReaderConnections + 1)
+	s := &Store{db: db, clock: options.Clock, quota: options.QuotaBytes, grants: make(map[[32]byte]Scope)}
+	if err := s.initialize(context.Background()); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func requirePrivatePath(path string, directory bool) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.IsDir() != directory || (!directory && !info.Mode().IsRegular()) || info.Mode().Perm()&0077 != 0 {
+		return errors.New("artifact store path must be private and nonsymlink")
+	}
+	return nil
+}
+
+func randomID() string {
+	var bytes [16]byte
+	_, _ = rand.Read(bytes[:])
+	return hex.EncodeToString(bytes[:])
+}
+
+func (s *Store) initialize(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int
+	if err := tx.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	if version != 0 && version != 1 {
+		return fmt.Errorf("unsupported artifact schema version %d", version)
+	}
+	if version == 0 {
+		var tables int
+		if err := tx.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").Scan(&tables); err != nil {
+			return err
+		}
+		if tables != 0 {
+			return errors.New("unversioned artifact database has existing tables")
+		}
+		if _, err := tx.ExecContext(ctx, storeSchema); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, "INSERT INTO store_identity(service_id) VALUES(?)", randomID()); err != nil {
+			return err
+		}
+	}
+	if err := tx.QueryRowContext(ctx, "SELECT service_id FROM store_identity").Scan(&s.identity); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+const storeSchema = `
+ CREATE TABLE store_identity(service_id TEXT NOT NULL);
+ CREATE TABLE artifact_namespaces(namespace_id TEXT PRIMARY KEY, realm_id TEXT NOT NULL, owner_thread_id TEXT NOT NULL, created_at TEXT NOT NULL, tombstoned INTEGER NOT NULL DEFAULT 0 CHECK(tombstoned IN(0,1)));
+ PRAGMA user_version=1;
+`
+
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
+	s.closed = true
+	clear(s.grants)
+	return s.db.Close()
+}
+func (s *Store) ServiceID() string { return s.identity }
+
+func (s *Store) EnsureNamespace(ctx context.Context, id, realm, owner string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.namespace(ctx, id, realm, owner, false)
+}
+func (s *Store) TombstoneNamespace(ctx context.Context, id, realm, owner string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.namespace(ctx, id, realm, owner, true)
+}
+func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombstone bool) error {
+	if id == "" || realm == "" || owner == "" {
+		return errors.New("namespace identity is required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var storedRealm, storedOwner string
+	var deleted bool
+	err = tx.QueryRowContext(ctx, "SELECT realm_id,owner_thread_id,tombstoned FROM artifact_namespaces WHERE namespace_id=?", id).Scan(&storedRealm, &storedOwner, &deleted)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = tx.ExecContext(ctx, "INSERT INTO artifact_namespaces(namespace_id,realm_id,owner_thread_id,created_at,tombstoned) VALUES(?,?,?,?,?)", id, realm, owner, s.clock().UTC().Format(time.RFC3339Nano), tombstone)
+	case err != nil:
+		return err
+	case storedRealm != realm || storedOwner != owner:
+		return &DomainError{Code: NotFoundOrForbidden}
+	case deleted && !tombstone:
+		return &DomainError{Code: Deleted}
+	case tombstone:
+		_, err = tx.ExecContext(ctx, "UPDATE artifact_namespaces SET tombstoned=1 WHERE namespace_id=?", id)
+	}
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if tombstone {
+		for hash, scope := range s.grants {
+			if scope.NamespaceID == id {
+				delete(s.grants, hash)
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Store) InstallGrant(ctx context.Context, hash [32]byte, scope Scope) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if hash == ([32]byte{}) || scope.PrincipalID == "" || scope.Generation == 0 || !s.clock().Before(scope.ExpiresAt) || len(scope.Methods) == 0 {
+		return &DomainError{Code: NotFoundOrForbidden}
+	}
+	if err := s.checkNamespace(ctx, scope); err != nil {
+		return err
+	}
+	if _, exists := s.grants[hash]; exists {
+		return errors.New("artifact grant hash already installed")
+	}
+	scope.Methods = slices.Clone(scope.Methods)
+	s.grants[hash] = scope
+	return nil
+}
+func (s *Store) checkNamespace(ctx context.Context, scope Scope) error {
+	var exists int
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifact_namespaces WHERE namespace_id=? AND realm_id=? AND tombstoned=0", scope.NamespaceID, scope.RealmID).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return &DomainError{Code: NotFoundOrForbidden}
+	}
+	return err
+}
