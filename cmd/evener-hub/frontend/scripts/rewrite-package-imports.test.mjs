@@ -17,7 +17,8 @@ import { fileURLToPath } from "node:url";
 const script = path.resolve(fileURLToPath(import.meta.url), "../../../../../scripts/sdk/rewrite-package-imports.mjs");
 
 // A minimal repo-shaped tree: the package with one root export, one
-// docContent export and one state subpath, plus whatever consumer files the
+// docContent export and two state subpaths (one in the object form, one as a
+// string shorthand naming its runtime target), plus whatever consumer files the
 // case needs. The exports map is what the rewriter reads its subpaths from, so
 // the fixture carries one exactly as the real package does.
 function fixture(files) {
@@ -29,6 +30,7 @@ function fixture(files) {
         ".": { types: "./dist/index.d.ts" },
         "./docContent": { types: "./dist/docContent.d.ts" },
         "./state/navigation": { types: "./dist/state/navigation/index.d.ts" },
+        "./state/mutation": "./dist/state/mutation/index.js",
       },
     }),
     "appwire-client/typescript/index.ts":
@@ -41,6 +43,7 @@ function fixture(files) {
       "export class Thing {}\nexport function alpha() {}\nexport function beta() {}\n",
     "appwire-client/typescript/docContent.ts": "export function docImageURL() {\n  return '';\n}\n",
     "appwire-client/typescript/state/navigation/index.ts": "export function parseRoute() {\n  return '';\n}\n",
+    "appwire-client/typescript/state/mutation/index.ts": "export function enqueue() {\n  return '';\n}\n",
     "appwire-client/typescript/testing/fakeClient.ts": "export class FakeClient {}\n",
     ...files,
   };
@@ -188,7 +191,7 @@ test("a namespace import of a module the package does not publish is refused", (
   }
 });
 
-test("a namespace import of the one published subpath is rewritten", () => {
+test("a namespace import of a published subpath is rewritten", () => {
   const root = fixture({
     "mobile/src/state.ts": 'import * as doc from "../../appwire-client/typescript/docContent";\nvoid doc;\n',
   });
@@ -232,6 +235,27 @@ test("a whole-module import of a published state subpath is rewritten to that su
     assert.match(
       readFileSync(path.join(root, "mobile/src/route.ts"), "utf8"),
       /from "@evener\/appwire-client\/state\/navigation"/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a subpath the exports map gives as a string shorthand is rewritten too", () => {
+  // The shorthand names the runtime target (`./dist/state/mutation/index.js`),
+  // not a `.d.ts`, so normalizing it as a declaration path left the module id
+  // as "state/mutation/index.js", the subpath read as unpublished, and the run
+  // refused. Both forms have to yield the same module id.
+  const root = fixture({
+    "mobile/src/outbox.ts":
+      'import { enqueue } from "../../appwire-client/typescript/state/mutation";\nenqueue();\n',
+  });
+  try {
+    const run = rewrite(root);
+    assert.equal(run.status, 0, run.output);
+    assert.match(
+      readFileSync(path.join(root, "mobile/src/outbox.ts"), "utf8"),
+      /from "@evener\/appwire-client\/state\/mutation"/,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

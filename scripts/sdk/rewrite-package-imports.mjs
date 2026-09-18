@@ -56,18 +56,29 @@ function layoutOf(root) {
   };
 }
 
+// The source module an exports entry names, or null when its target cannot be
+// normalized. The target is `types` where the entry has one, else the runtime
+// `import`/`require`: the object form spells the declaration, the string
+// shorthand the runtime file, and both are `./dist/<module>` plus an extension
+// over the same source, so the prefix and the extension both come off.
+function moduleIDOf(entry) {
+  const target = [entry?.types, entry?.import, entry?.require, typeof entry === "string" ? entry : null].find(
+    (candidate) => typeof candidate === "string",
+  );
+  const match = target?.match(/^\.\/dist\/(.+?)\.(?:d\.ts|d\.mts|d\.cts|ts|mts|cts|js|mjs|cjs)$/);
+  return match ? match[1] : null;
+}
+
 // The specifiers the package publishes, keyed by the source module they name.
 // Read from the package's own `exports` map rather than a list kept here, so a
-// subpath added there is picked up with no edit to this tool. Each entry's
-// `types` field names `./dist/<module>.d.ts`, so stripping that prefix and
-// suffix yields the source module path this tool resolves imports to.
+// subpath added there is picked up with no edit to this tool; an entry whose
+// target cannot be normalized is skipped.
 function publishedSpecifiers(packageDir) {
   const manifest = JSON.parse(readFileSync(path.join(packageDir, "package.json"), "utf8"));
   const byModule = new Map();
   for (const [subpath, entry] of Object.entries(manifest.exports ?? {})) {
-    const types = typeof entry === "string" ? entry : entry?.types;
-    if (typeof types !== "string") continue;
-    const moduleID = types.replace(/^\.\/dist\//, "").replace(/\.d\.ts$/, "");
+    const moduleID = moduleIDOf(entry);
+    if (moduleID === null) continue;
     const specifier = subpath === "." ? PACKAGE_NAME : `${PACKAGE_NAME}${subpath.slice(1)}`;
     byModule.set(moduleID, specifier);
   }
