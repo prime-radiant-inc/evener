@@ -62,16 +62,20 @@ export interface SettingsHubWriteFields {
  * reply (a later write, or a payload retirement, took over) does nothing
  * here - its successor owns the flags. `stillClaimed` is the caller's own
  * check (a store-wide write token, or one per row) - the fence knows only
- * whether the generation itself is still current. */
+ * whether the generation itself is still current. `extra` is the caller's
+ * own payload-shaped addition (keybindingsStore.ts's own draftConflict, a
+ * field this generic Fields type does not carry) in the SAME publish, the
+ * same pattern retireSettingsHubPayload above takes. */
 export function settleUnsettleableWrite<Fields extends SettingsHubWriteFields>(
   fence: ReadyGenerationFence,
   generation: number,
   stillClaimed: boolean,
   getState: () => Fields,
   setState: (partial: Partial<Fields>) => void,
+  extra: Partial<Fields> = {},
 ): void {
   if (fence.lostHub(generation, stillClaimed) && getState().saving) {
-    setState({ saving: false, writeUncertain: true } as Partial<Fields>);
+    setState({ saving: false, writeUncertain: true, ...extra } as Partial<Fields>);
   }
 }
 

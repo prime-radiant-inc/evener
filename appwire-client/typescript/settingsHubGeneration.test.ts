@@ -116,6 +116,34 @@ describe("settleUnsettleableWrite", () => {
 
     expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
+
+  test("extra lands in the same publish, alongside the generic settle - keybindingsStore's own draftConflict", () => {
+    const { fence, drop } = fenceOver();
+    const generation = fence.begin();
+    const token = fence.claimWrite();
+    const store = fieldsStore({ loaded: true, saving: true, hubLoading: false, writeUncertain: false, revision: 3 });
+
+    drop();
+    settleUnsettleableWrite(fence, generation, token === fence.writeToken, store.getState, store.setState, {
+      revision: 9,
+    });
+
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, revision: 9 });
+  });
+
+  test("extra is not published when the write was superseded", () => {
+    const { fence } = fenceOver();
+    const generation = fence.begin();
+    const token = fence.claimWrite();
+    fence.claimWrite();
+    const store = fieldsStore({ loaded: true, saving: true, hubLoading: false, writeUncertain: false, revision: 3 });
+
+    settleUnsettleableWrite(fence, generation, token === fence.writeToken, store.getState, store.setState, {
+      revision: 9,
+    });
+
+    expect(store.getState().revision).toBe(3);
+  });
 });
 
 describe("createSettingsHubGeneration", () => {
