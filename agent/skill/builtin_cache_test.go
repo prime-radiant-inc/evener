@@ -849,11 +849,15 @@ func skipIfProcessCopyRefused(t *testing.T) {
 	}
 }
 
-// The degraded-copy guard must track the platform's process-root decision, not a
-// hard-coded GOOS, so the tests that need the copy skip exactly where the
-// platform refuses the root.
+// The degraded-copy guard must track the platform's process-root predicate, not
+// a hard-coded GOOS, so the tests that need the copy skip exactly where the
+// platform refuses the root. The expected answer comes from processCopyRootTrusted
+// itself, so each expectation is compared against the predicate rather than
+// against the wrapper's own decision.
 func TestProcessCopyRootRefused_TracksThePlatformDecision(t *testing.T) {
-	// A root the platform's process-root predicate rejects is refused.
+	// A world-writable, non-sticky root is the root Unix rejects and Windows
+	// refuses unconditionally; the platforms whose predicate accepts every root
+	// (js, wasip1, plan9) accept it too.
 	untrusted := filepath.Join(t.TempDir(), "untrusted")
 	if err := os.Mkdir(untrusted, 0o700); err != nil {
 		t.Fatalf("create untrusted root: %v", err)
@@ -861,18 +865,30 @@ func TestProcessCopyRootRefused_TracksThePlatformDecision(t *testing.T) {
 	if err := os.Chmod(untrusted, 0o777); err != nil {
 		t.Fatalf("open untrusted root: %v", err)
 	}
-	if !processCopyRootRefused(untrusted) {
-		t.Fatal("a root the process-root predicate rejects was accepted")
-	}
+	assertRefusedMatchesPredicate(t, "untrusted", untrusted)
 
-	// A root the platform vouches for is accepted. Platforms that vouch for no
-	// temp root at all (Windows) refuse every root, so only assert this direction
-	// where the gate accepts one.
-	trusted := t.TempDir()
-	if _, err := resolveTrustedRoot(trusted, ensureTrustedProcessRoot); err == nil {
-		if processCopyRootRefused(trusted) {
-			t.Fatal("a root the process-root gate accepts was refused")
-		}
+	// A root the platform vouches for is accepted where its predicate does.
+	assertRefusedMatchesPredicate(t, "trusted", t.TempDir())
+}
+
+// assertRefusedMatchesPredicate checks that processCopyRootRefused reports
+// exactly what processCopyRootTrusted decides for root's resolved directory, so
+// the guard is pinned to the platform predicate instead of a GOOS check. The
+// expected value is derived from the predicate, never from the guard.
+func assertRefusedMatchesPredicate(t *testing.T, label, root string) {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("%s: resolve root: %v", label, err)
+	}
+	info, err := os.Lstat(resolved)
+	if err != nil {
+		t.Fatalf("%s: stat root: %v", label, err)
+	}
+	wantRefused := !processCopyRootTrusted(info)
+	if got := processCopyRootRefused(root); got != wantRefused {
+		t.Fatalf("%s: processCopyRootRefused = %v, want %v (processCopyRootTrusted = %v)",
+			label, got, wantRefused, processCopyRootTrusted(info))
 	}
 }
 
