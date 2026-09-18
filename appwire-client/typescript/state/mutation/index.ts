@@ -12,7 +12,7 @@
 // it lives.
 
 export type { MutationDispatcherOptions } from "./dispatcher";
-export { MutationDispatcher } from "./dispatcher";
+export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
 export type {
   MutationDiscoveryReason,
   MutationLifecycleTarget,

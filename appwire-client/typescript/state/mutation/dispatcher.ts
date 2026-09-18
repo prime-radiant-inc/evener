@@ -154,25 +154,24 @@ export class MutationDispatcher<A extends MutationAttachmentRef = MutationAttach
           return "stop";
         applyHumanNoteResponse?.({ note: result.note, receipt });
       }
-      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
-      // An applied drain consumed the whole server queue, but neither push
-      // that follows names the consumed queue intents' ids (queueChanged
-      // carries only the remaining entries; steering/injected only the drain's
-      // own id). Same-client queue intents accepted before the drain would sit
-      // in the optimistic store unreflected forever and resurface as queue-
-      // strip rows. Retire exactly those: dispatch is per-target FIFO, so an
-      // earlier optimistic queue intent was necessarily accepted before the
-      // drain was sent, and accepted-before-drain means consumed-by-drain. A
-      // later queue intent lands on the emptied queue as fresh work and must
-      // survive; recovery records were never accepted, so only the optimistic
-      // store is touched.
+      // A drain's own receipt names the queue intents it consumed (durable
+      // across a replay, unlike a live push): settle them the same way any
+      // other authoritative feed does, through reconcileIdentities -- BEFORE
+      // the drain's own record settles. A failure here (a transient
+      // IndexedDB error, say) then throws out of this whole attempt with the
+      // drain record still "submitting": the next dispatch resends it, the
+      // server replays it, and the replay's own receipt carries the same
+      // consumed ids again. Settling the drain first would durably remove
+      // the one record whose receipt names them, with no path left to retry.
+      // Scoped to method === "turn/drainAsSteer": the field means "consumed
+      // by THIS drain," never "consumed by whatever this receipt happens to
+      // be for" -- a well-formed array riding a different mutation's receipt
+      // must settle nothing.
       if (method === "turn/drainAsSteer") {
-        const optimistic = await this.#storage.listOptimistic(record.targetRef);
-        const consumed = optimistic.filter(
-          (queued) => queued.method === "turn/queue" && queued.intentSequence < record.intentSequence,
-        );
-        await Promise.all(consumed.map((queued) => this.#storage.settleApplied(queued.clientMutationId)));
+        const consumed = validConsumedClientMutationIds(receipt.consumedClientMutationIds);
+        if (consumed.length > 0) await this.reconcileIdentities(consumed);
       }
+      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {
@@ -272,6 +271,16 @@ function rejectionReason(error: unknown, data: ReturnType<typeof mutationErrorDa
 function mutationMethod(method: string): MethodName {
   if (!RETRY_SAFE_MUTATION_METHODS.has(method)) throw new Error(`Unknown mutation method: ${method}`);
   return method as MethodName;
+}
+
+// validConsumedClientMutationIds treats anything that is not an array of
+// non-empty strings as though the field were absent, never guessing. A
+// string is itself iterable character-by-character, so an unguarded spread
+// of a malformed value would silently settle records named by coincidence
+// rather than by the daemon.
+export function validConsumedClientMutationIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.every((id): id is string => typeof id === "string" && id.trim() !== "") ? value : [];
 }
 
 function mutationReceipt(result: unknown): MutationReceipt | undefined {

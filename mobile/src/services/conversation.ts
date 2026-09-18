@@ -366,6 +366,13 @@ function decodeMutationResult(
     typeof result.receipt === "object" &&
     "queueEntryIds" in result.receipt;
   if (hasDrainedEntries) requiredReceiptKeys.push("queueEntryIds");
+  const hasConsumedClientMutationIds =
+    kind === "drain" &&
+    result.receipt !== null &&
+    typeof result.receipt === "object" &&
+    "consumedClientMutationIds" in result.receipt;
+  if (hasConsumedClientMutationIds)
+    requiredReceiptKeys.push("consumedClientMutationIds");
   if (
     result.receipt !== null &&
     typeof result.receipt === "object" &&
@@ -429,6 +436,18 @@ function decodeMutationResult(
       );
     }
     decoded.queueEntryIds = [...ids];
+  }
+  if (hasConsumedClientMutationIds) {
+    const consumed = receipt.consumedClientMutationIds;
+    if (
+      !Array.isArray(consumed) ||
+      consumed.some((id) => typeof id !== "string" || id.trim() === "")
+    ) {
+      throw new Error(
+        `ConversationService: ${kind} receipt consumed client mutation ids are invalid`,
+      );
+    }
+    decoded.consumedClientMutationIds = [...consumed];
   }
   return decoded;
 }

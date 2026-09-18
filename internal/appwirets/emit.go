@@ -84,7 +84,11 @@ func rawFieldsOf(t reflect.Type) []rawField {
 			json:      name,
 			elemType:  ft,
 			isPointer: isPointer,
-			optional:  strings.Contains(opts, "omitempty"),
+			// omitzero omits only the zero value, so a tagged field can still
+			// be absent from a frame and is optional to a client just as an
+			// omitempty one is. The two differ in what they send for an empty
+			// slice, not in whether the key can be missing.
+			optional: strings.Contains(opts, "omitempty") || strings.Contains(opts, "omitzero"),
 		})
 	}
 	return out

@@ -4265,6 +4265,93 @@ describe("useThreadsStore.drainAsSteer", () => {
       input: [],
     });
   });
+
+  // A drain's own thread/queueChanged push names the client mutation ids it
+  // consumed (issue #1704), so the client settles those optimistic turn/queue
+  // records by positive evidence -- never by inferring consumption from
+  // sequence order.
+  test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    });
+
+    let settled = false;
+    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
+    }
+    expect(settled).toBe(true);
+    inspector.close();
+  });
+
+  // A malformed consumedClientMutationIds (anything that is not an array of
+  // non-empty strings) must be ignored outright: a string is itself iterable
+  // character-by-character, so an unguarded spread would settle a record
+  // named by coincidence rather than by the daemon. The fixed id below ("a")
+  // is deliberately a substring of the malformed value, so an unguarded
+  // spread of "abc" would wrongly retire it.
+  test("a malformed consumedClientMutationIds on a queueChanged push is ignored, not iterated", async () => {
+    const storage = new MutationOutboxIndexedDB({ createMutationId: () => "a" });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    let record: Awaited<ReturnType<typeof storage.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await storage.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+    expect(record.clientMutationId).toBe("a");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: "abc",
+      },
+    } as unknown as AnyNotification);
+    await settleCallerContinuations();
+
+    expect(await storage.getOptimistic("a")).toBeDefined();
+    storage.close();
+  });
 });
 
 describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {

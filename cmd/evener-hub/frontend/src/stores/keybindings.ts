@@ -18,8 +18,14 @@ import { useStore } from "zustand";
 import { keybindingsRegistry } from "../keybindings/appRegistry";
 import { connectionStore } from "./connection";
 import { prefsStore } from "./prefs";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 
 export type { KeybindingsStoreState };
+
+// This store's own guard: transcriptDisplay.ts wires the same connectionStore
+// client through its own instance, so the two never contend over one shared
+// registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 
 function requireClient(): AppwireClientLike {
   const client = connectionStore.getState().client;
@@ -62,7 +68,7 @@ function rewireClient(client: AppwireClientLike): void {
   // The loaded state belongs to the PREVIOUS hub: un-apply its overrides and
   // reset its payload before this client's first refresh can land.
   keybindingsStore.detachHub();
-  unwireReady = client.onReady(beginReadyGeneration);
+  unwireReady = client.onReady(readyGenerationCallback(client, () => wiredClient, beginReadyGeneration));
   if (client.state === "ready") beginReadyGeneration();
 }
 
