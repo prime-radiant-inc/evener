@@ -734,11 +734,16 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   //   marker - the oldest outstanding one for its subject, since echoes arrive
   //   in issue order - and only a notification beyond the outstanding count is
   //   foreign and still refetches.
-  // - Cleared when the response proves no broadcast will follow: a failed RPC,
-  //   or a device poll that came back pending/expired rather than authorized.
-  //   Each mutation retires exactly the marker it armed (never a later
-  //   mutation's), so an older reply that lands after a newer mutation was
-  //   issued cannot spend the newer mutation's echo.
+  // - Retired when the response proves no echo will be attributed to it: a
+  //   failed RPC, or a device poll that came back pending/expired rather than
+  //   authorized. Each mutation retires exactly the marker it armed (never a
+  //   later mutation's), so an older reply that lands after a newer mutation was
+  //   issued cannot spend the newer mutation's echo. That covers the write that
+  //   applied before its later step failed (cmd/evener-hub/app_write_applied.go):
+  //   its broadcast now echoes the caller's originClientId, but the failing
+  //   mutation has already retired its own marker, so the echo reads as foreign
+  //   and re-reads - the store cannot tell "applied, no echo attributable" from
+  //   "never applied" without the wire saying which, which it does not yet.
   // - Bounded by a short age window from the marker's latest stamp, so a marker
   //   that is never consumed (the echo was lost, or the notification arrived
   //   pre-response and the client disconnected) cannot outlive its meaning.
