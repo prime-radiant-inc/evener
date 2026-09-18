@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -266,5 +267,84 @@ func TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged(t *testing.T) {
 		if !c.Marketplaces {
 			t.Errorf("report %+v missing Marketplaces", c)
 		}
+	}
+}
+
+// seedUnfetchedPointer writes known_marketplaces.json with a registered but
+// unfetched pointer to mktRepo (empty InstallLocation), the shape
+// SeedDefaultMarketplaces leaves behind, and clears the pending StoreChanged
+// the direct save itself accumulated so the next lock session starts clean.
+func seedUnfetchedPointer(t *testing.T, m *Manager, name, mktRepo string) {
+	t.Helper()
+	if err := m.saveMarketplaces(Marketplaces{name: {Source: Source{Kind: SourceURL, URL: mktRepo}}}); err != nil {
+		t.Fatal(err)
+	}
+	m.pendingStoreChanged = StoreChanged{}
+}
+
+// TestBrowse_LazyFetchPersistsAndReportsMarketplacesChanged pins the behavior
+// issue #1672 reported missing: Browse on a seeded, unfetched marketplace
+// clones it lazily — persisting known_marketplaces.json's InstallLocation — and
+// that write must reach every client through the post-commit hook, exactly
+// once, as a Marketplaces change.
+func TestBrowse_LazyFetchPersistsAndReportsMarketplacesChanged(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	seedUnfetchedPointer(t, m, name, mktRepo)
+
+	reports := recordStoreChanges(m)
+	if _, err := m.Browse(context.Background(), name); err != nil {
+		t.Fatalf("Browse on seeded-but-unfetched marketplace: %v", err)
+	}
+	if len(*reports) != 1 {
+		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
+	}
+	if got := (*reports)[0]; !got.Marketplaces || got.Plugins {
+		t.Errorf("reported %+v, want {Plugins:false Marketplaces:true}", got)
+	}
+	mk, err := m.ListMarketplaces(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mk[name].InstallLocation == "" {
+		t.Fatal("InstallLocation not backfilled by Browse's lazy fetch")
+	}
+}
+
+// TestBrowse_LazyFetchPersistsThenLaterStepFailsStillReports is the exact
+// shape issue #1672 named: the lazy fetch persists marketplace metadata and a
+// later step (here ParseCatalog) fails, so Browse returns an error — yet the
+// applied write must still be reported, or other clients keep showing the
+// marketplace as unfetched.
+func TestBrowse_LazyFetchPersistsThenLaterStepFailsStillReports(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	dir := filepath.Join(t.TempDir(), "mkt-broken")
+	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "marketplace.json"), []byte("{ not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeGitRepo(t, dir, "README.md", "broken catalog")
+
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	seedUnfetchedPointer(t, m, "acme", dir)
+
+	reports := recordStoreChanges(m)
+	if _, err := m.Browse(context.Background(), "acme"); err == nil {
+		t.Fatal("expected Browse to fail on the broken catalog")
+	}
+	if len(*reports) != 1 {
+		t.Fatalf("OnStoreChanged fired %d times, want 1: %+v", len(*reports), *reports)
+	}
+	if got := (*reports)[0]; !got.Marketplaces || got.Plugins {
+		t.Errorf("reported %+v, want {Plugins:false Marketplaces:true}", got)
 	}
 }
