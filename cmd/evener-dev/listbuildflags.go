@@ -11,15 +11,14 @@ package dev
 // plain `go list`. The gate enumerates first and hands `go test` the list, so
 // anything the enumeration cannot see is not tested, and nothing says so.
 //
-// A value is consumed with its flag before anything is classified. `-run -race`
-// is a regex whose text is `-race`, and reading it as a build flag would hand
-// the enumeration a sanitiser the caller never asked for.
-//
-// The value-flag table below overlaps cmd/evener-dev/shardplan.go's, which the
-// shard runner reads with a different contract: that parser is exhaustive and
-// refuses a flag it does not know, while this one is a permissive filter over
-// whatever the gate was handed. Folding the two is left to its own change
-// rather than resolved here.
+// A flag whose value is the next argument is consumed with it before anything
+// is classified, so that value is never read as a flag: `-run -race` is a regex
+// whose text is `-race`, and reading it as a build flag would hand the
+// enumeration a sanitiser the caller never asked for. The value-taking flags
+// are shardplan.go's tables, which already hold every `go test` flag of that
+// shape: this walker is a permissive filter over whatever the gate was handed,
+// while the shard runner's parser is exhaustive and refuses a flag it does not
+// know, but the two agree on which flags have a value to consume.
 
 import (
 	"flag"
@@ -37,24 +36,15 @@ var packageSelectionValueFlags = map[string]bool{"-tags": true}
 // by setting a build tag of its own name.
 var packageSelectionBareFlags = map[string]bool{"-race": true, "-msan": true, "-asan": true}
 
-// goTestValueFlags are the `go test` flags whose value is the next argument.
-// They are here to be skipped over with their values, not to be forwarded: the
-// only reason this list exists is that a value must not be read as a flag.
-var goTestValueFlags = map[string]bool{
-	"-bench": true, "-benchtime": true, "-blockprofile": true,
-	"-blockprofilerate": true, "-count": true, "-coverprofile": true,
-	"-covermode": true, "-coverpkg": true, "-cpu": true, "-cpuprofile": true,
-	"-exec": true, "-fuzz": true, "-fuzzminimizetime": true, "-fuzztime": true,
-	"-gocoverdir": true, "-list": true, "-memprofile": true,
-	"-memprofilerate": true, "-mutexprofile": true,
-	"-mutexprofilefraction": true, "-o": true, "-outputdir": true,
-	"-p": true, "-parallel": true, "-run": true, "-shuffle": true,
-	"-skip": true, "-timeout": true, "-trace": true, "-vet": true,
-	// The build flags that take a value, so that theirs is skipped too.
-	"-asmflags": true, "-buildmode": true, "-compiler": true,
-	"-gccgoflags": true, "-gcflags": true, "-installsuffix": true,
-	"-ldflags": true, "-mod": true, "-modfile": true, "-overlay": true,
-	"-pgo": true, "-pkgdir": true, "-toolexec": true,
+// consumesValue reports whether name's value is the next argument, and so must
+// be skipped over rather than read as a flag. -tags is a selection flag this
+// walker forwards, not a skip, and -args terminates the flags; both are handled
+// by the walker itself.
+func consumesValue(name string) bool {
+	if name == "-tags" || name == "-args" {
+		return false
+	}
+	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
 }
 
 // normalisedFlag is a caller's flag in the one spelling everything here
@@ -93,7 +83,7 @@ func packageSelectionFlags(args []string) []string {
 			}
 		case packageSelectionBareFlags[name]:
 			out = append(out, whole)
-		case goTestValueFlags[name] && !inline:
+		case consumesValue(name) && !inline:
 			// Its value is a value, whatever it looks like.
 			i++
 		}
