@@ -9125,8 +9125,15 @@ test.each(["active", "idle"].flatMap((status) => [true, false].map((accepted) =>
   "periodic discovery resumes authority checks for saved $status delegates, accepted=$accepted",
   async ({ status, accepted }) => {
     vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    // Per-case database. This test awaits only the FIRST settle call, so its
+    // reconciliation tail can still be running when the case ends; a shared
+    // database let that tail write into the next case's store.
+    const databaseName = `evener-mutation-outbox-periodic-${status}-${accepted}`;
     try {
-      const storage = new MutationOutboxIndexedDB({ createMutationId: () => "delegate-periodic" });
+      const storage = new MutationOutboxIndexedDB({
+        databaseName,
+        createMutationId: () => "delegate-periodic",
+      });
       const record = await storage.enqueueIntent({
         targetRef: "ref_a",
         method: "turn/queue",
