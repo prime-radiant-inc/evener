@@ -431,9 +431,8 @@ function signalProfileProcess(processIdentity, signal) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
-    // Same as signalProcessGroup: a refused signal must not fail the teardown.
-    // The ps-based isProfileRunning probe decides when the helper is really gone
-    // (see killProfileProcess / waitForProfileProcessExit).
+    // Same as signalProcessGroup: a refused signal is "still here", not a
+    // teardown failure. The ps-based running check decides when it is gone.
     if (error?.code === "EPERM") return true;
     throw error;
   }
