@@ -6,10 +6,10 @@
 // the hook still reports the same {client, state} shape ConnectionProvider's
 // consumers have always read.
 import { act } from "react-test-renderer";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, type Mock, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
 import { connectionFailure } from "./connectionRecovery";
-import { type HubConnection, useHubConnection } from "./hubConnection";
+import { type HubConnection, type HubTokenSource, useHubConnection } from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
@@ -57,16 +57,53 @@ class FakeHubClient {
 	}
 }
 
+interface HubConnectionInputs {
+	repository: HubTokenSource;
+	activeId: string | undefined;
+	activeOrigin: string | undefined;
+	foreground: boolean;
+	attempt: number;
+	setError: Mock<(message: string | null) => void>;
+}
+
+/** Mounts useHubConnection over a mutable input record: a test changes one
+ * field on `input` and calls `hook.rerender()` to open a fresh connection,
+ * rather than rebuilding the six-argument call each time. `renders`
+ * accumulates every render's result, in order - not just the settled
+ * `hook.result.current` - for the two tests below where the race is in an
+ * intermediate render. */
+function mount(overrides: Partial<HubConnectionInputs> = {}) {
+	const input: HubConnectionInputs = {
+		repository: { token: async (id: string) => `tok-${id}` },
+		activeId: "hub-a",
+		activeOrigin: "https://a.test",
+		foreground: true,
+		attempt: 0,
+		setError: vi.fn<(message: string | null) => void>(),
+		...overrides,
+	};
+	const renders: HubConnection[] = [];
+	const hook = renderHook(() => {
+		const result = useHubConnection(
+			input.repository,
+			input.activeId,
+			input.activeOrigin,
+			input.foreground,
+			input.attempt,
+			input.setError,
+		);
+		renders.push(result);
+		return result;
+	});
+	return { hook, input, renders, setError: input.setError };
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 it("stays idle with no client until a profile, origin and foreground are all present", () => {
-	const setError = vi.fn();
-	const repository = { token: async () => "" };
-	const hook = renderHook(() =>
-		useHubConnection(repository, undefined, undefined, true, 0, setError),
-	);
+	const { hook, setError } = mount({ activeId: undefined, activeOrigin: undefined });
 	expect(hook.result.current).toEqual({ client: null, state: "idle" });
 	expect(setError).toHaveBeenCalledWith(null);
 });
@@ -74,18 +111,7 @@ it("stays idle with no client until a profile, origin and foreground are all pre
 it("connects and follows the client's transitions the same way native has always read them", async () => {
 	const fake = new FakeHubClient();
 	harness.client = fake;
-	const setError = vi.fn();
-	const repository = { token: async (id: string) => `tok-${id}` };
-	const hook = renderHook(() =>
-		useHubConnection(
-			repository,
-			"hub-a",
-			"https://hub.test",
-			true,
-			0,
-			setError,
-		),
-	);
+	const { hook, setError } = mount();
 	// Before the token fetch resolves there is still no client, but the hub
 	// is known, so the same "connecting" default PluginsScreen etc. have
 	// always read applies.
@@ -107,83 +133,30 @@ it("connects and follows the client's transitions the same way native has always
 	expect(setError).toHaveBeenLastCalledWith(connectionFailure("protocol").message);
 });
 
-it("never returns the previous hub's client once activeId already names a newer one", async () => {
+it.each([
+	{
+		label: "a switched hub",
+		change: { activeId: "hub-b", activeOrigin: "https://b.test" },
+	},
+	{ label: "a bumped retry", change: { attempt: 1 } },
+])("never returns the previous client once $label has moved past it", async ({ change }) => {
 	const first = new FakeHubClient();
 	harness.client = first;
-	const setError = vi.fn();
-	const repository = { token: async (id: string) => `tok-${id}` };
-	let activeId = "hub-a";
-	let activeOrigin = "https://a.test";
-	// Every render this test performs, in order, paired with which hub it was
-	// FOR at that render - not just the final settled value renderHook's
-	// result.current exposes, since the race is about an intermediate render.
-	const renders: { forHub: string; result: HubConnection }[] = [];
-	const hook = renderHook(() => {
-		const result = useHubConnection(
-			repository,
-			activeId,
-			activeOrigin,
-			true,
-			0,
-			setError,
-		);
-		renders.push({ forHub: activeId, result });
-		return result;
-	});
+	const { hook, input, renders } = mount();
 	await act(async () => {});
 	act(() => first.succeed());
 	expect(hook.result.current).toEqual({ client: first, state: "ready" });
 
 	const second = new FakeHubClient();
 	harness.client = second;
-	activeId = "hub-b";
-	activeOrigin = "https://b.test";
+	Object.assign(input, change);
 	renders.length = 0;
-	// The teardown effect for hub-a has not run yet at the moment this
-	// rerender's first pass happens (passive effects fire after commit), so
-	// this is exactly the window the store could still hold hub-a's client
-	// while every input already says hub-b.
+	// The teardown effect for the previous generation has not run yet at the
+	// moment this rerender's first pass happens (passive effects fire after
+	// commit), so this is exactly the window the store could still hold the
+	// previous client while every input already names the new generation.
 	hook.rerender();
-	for (const { forHub, result } of renders)
-		if (forHub === "hub-b") expect(result.client).not.toBe(first);
-	await act(async () => {});
-	act(() => second.succeed());
-	expect(hook.result.current).toEqual({ client: second, state: "ready" });
-});
-
-it("never returns the previous client once a retry has already bumped attempt", async () => {
-	const first = new FakeHubClient();
-	harness.client = first;
-	const setError = vi.fn();
-	const repository = { token: async (id: string) => `tok-${id}` };
-	let attempt = 0;
-	// Same hub throughout - only the retry counter changes - so a guard keyed
-	// on activeId alone (round 2's fix) still matches and would still hand
-	// back hub-a's own PREVIOUS, now-stale connection for this attempt.
-	const renders: { forAttempt: number; result: HubConnection }[] = [];
-	const hook = renderHook(() => {
-		const result = useHubConnection(
-			repository,
-			"hub-a",
-			"https://a.test",
-			true,
-			attempt,
-			setError,
-		);
-		renders.push({ forAttempt: attempt, result });
-		return result;
-	});
-	await act(async () => {});
-	act(() => first.succeed());
-	expect(hook.result.current).toEqual({ client: first, state: "ready" });
-
-	const second = new FakeHubClient();
-	harness.client = second;
-	attempt = 1;
-	renders.length = 0;
-	hook.rerender();
-	for (const { forAttempt, result } of renders)
-		if (forAttempt === 1) expect(result.client).not.toBe(first);
+	for (const result of renders) expect(result.client).not.toBe(first);
 	await act(async () => {});
 	act(() => second.succeed());
 	expect(hook.result.current).toEqual({ client: second, state: "ready" });
@@ -192,25 +165,13 @@ it("never returns the previous client once a retry has already bumped attempt", 
 it("a bumped attempt reopens the hub through a fresh client, tearing down the old one first", async () => {
 	const first = new FakeHubClient();
 	harness.client = first;
-	const setError = vi.fn();
-	const repository = { token: async (id: string) => `tok-${id}` };
-	let attempt = 0;
-	const hook = renderHook(() =>
-		useHubConnection(
-			repository,
-			"hub-a",
-			"https://hub.test",
-			true,
-			attempt,
-			setError,
-		),
-	);
+	const { hook, input } = mount();
 	await act(async () => {});
 	act(() => first.succeed());
 	expect(hook.result.current).toEqual({ client: first, state: "ready" });
 	const second = new FakeHubClient();
 	harness.client = second;
-	attempt = 1;
+	input.attempt = 1;
 	hook.rerender();
 	// Teardown runs before the new attempt's effect body: the retired
 	// client's listener is gone and its socket is closed.
@@ -225,18 +186,7 @@ it("a bumped attempt reopens the hub through a fresh client, tearing down the ol
 it("releases the client's listener on unmount", async () => {
 	const fake = new FakeHubClient();
 	harness.client = fake;
-	const setError = vi.fn();
-	const repository = { token: async (id: string) => `tok-${id}` };
-	const hook = renderHook(() =>
-		useHubConnection(
-			repository,
-			"hub-a",
-			"https://hub.test",
-			true,
-			0,
-			setError,
-		),
-	);
+	const { hook } = mount();
 	await act(async () => {});
 	expect(fake.listenerCount).toBeGreaterThan(0);
 	hook.unmount();
