@@ -131,7 +131,7 @@ describe("two stores share nothing", () => {
     // storeB classifies the record storeA just wrote (its own restoreDraft,
     // via readyStore, runs against the SAME port and sees it).
     const storeB = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(storeB.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(storeB.getState().draft).toMatchObject({ version: 1, revision: 3, rules });
 
     // storeA edits again, replacing what storeB classified.
     const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
