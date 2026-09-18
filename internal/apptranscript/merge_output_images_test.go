@@ -6,7 +6,7 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 func TestMergeCallsTheSharedOutputImageRule(t *testing.T) {
 	existing := appwire.ThreadItem{
 		ID:           "item_1",
@@ -23,7 +23,7 @@ func TestMergeCallsTheSharedOutputImageRule(t *testing.T) {
 		t.Fatalf("merged OutputImages=%+v, want the earlier item's own kept", unsaid.OutputImages)
 	}
 
-	// Input images keep the length rule (omitempty, nothing removes them).
+	// Input images: see appwire.MergeInputImages (omitempty, nothing removes them).
 	withInput := appwire.ThreadItem{ID: "item_1", Images: []appwire.InputItem{{Type: "image", Name: "in.png"}}}
 	merged := mergeAppThreadItems(withInput, appwire.ThreadItem{ID: "item_1", Images: []appwire.InputItem{}})
 	if len(merged.Images) != 1 {

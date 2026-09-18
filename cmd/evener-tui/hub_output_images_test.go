@@ -27,7 +27,7 @@ func TestMergeHubItemCallsTheSharedOutputImageRule(t *testing.T) {
 	}
 }
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 func TestMergeHubItemKeepsOlderInputImagesForAnEmptyList(t *testing.T) {
 	older := appwire.ThreadItem{
 		ID:     "item_1",
