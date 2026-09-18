@@ -55,6 +55,13 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "and inline whitespace too", args: []string{"-overlay=a b.json"}, wantErr: true},
 		{name: "an empty value is refused", args: []string{"-tags", ""}, wantErr: true},
 		{name: "and an inline empty value too", args: []string{"-tags="}, wantErr: true},
+		// A glob metacharacter would pathname-expand for go test but not for
+		// the quoted go list, so the two would see different values.
+		{name: "a glob metacharacter is refused", args: []string{"-overlay", "a*b"}, wantErr: true},
+		{name: "a character class is refused", args: []string{"-overlay=a[bc].json"}, wantErr: true},
+		// A value flag with nothing after it must not be dropped silently:
+		// go test would choke on the mangled list instead.
+		{name: "a dangling value flag is refused", args: []string{"-short", "-tags"}, wantErr: true},
 		// The bug this table exists for: a regex whose text is -race is a
 		// regex, and forwarding it would enumerate under a sanitiser nobody
 		// asked for.
@@ -118,6 +125,16 @@ func TestListBuildFlagsRefusesC(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "-C is not supported") {
 		t.Fatalf("stderr = %q, want a -C refusal", stderr.String())
+	}
+}
+
+func TestListBuildFlagsRefusesADanglingValue(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := listBuildFlags([]string{"--", "-tags"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("listBuildFlags with a dangling -tags = 0, want nonzero; stdout = %q", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "nothing after it") {
+		t.Fatalf("stderr = %q, want a dangling-value refusal", stderr.String())
 	}
 }
 

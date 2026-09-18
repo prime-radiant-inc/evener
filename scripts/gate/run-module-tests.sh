@@ -352,7 +352,7 @@ run_list_build_flags() {
 # not hang the gate before its own timeout diagnostic can speak.
 derive_list_flags() {
 	local module="$1" out_file list_flag
-	out_file="$logdir/$module.list-build-flags"
+	out_file="$logdir/$(printf '%s' "$module" | tr '/.' '__').list-build-flags"
 	if ! run_bounded "$LIST_BUILD_FLAGS_TIMEOUT" 'evener-dev list-build-flags' "$module" "$out_file" run_list_build_flags; then
 		printf 'run-module-tests.sh: could not derive the package-selection flags for go list\n' >&2
 		return 1

@@ -25,10 +25,11 @@ package dev
 // command runs, and the gate has already anchored the enumeration to each
 // module's own directory, so applying it to only one of `go list` and `go test`
 // would recreate the tree mismatch this exists to prevent. A selection-flag
-// value that is empty or contains whitespace cannot be forwarded intact either:
-// the gate word-splits its `go test` invocation, so the two commands would see
-// different values (and an empty value would vanish from the line-per-flag
-// handover to the shell).
+// value that is empty, contains whitespace, or contains a shell glob
+// metacharacter cannot be forwarded intact either: the gate word-splits and
+// pathname-expands its `go test` invocation, so the two commands would see
+// different values (an empty value would vanish entirely from the line-per-flag
+// handover to the shell, and a glob would expand to whatever filenames match).
 
 import (
 	"errors"
@@ -79,7 +80,7 @@ func packageSelectionFlags(args []string) ([]string, error) {
 		case packageSelectionValueFlags[name]:
 			if !inline {
 				if i+1 >= len(args) {
-					continue
+					return nil, fmt.Errorf("%s was given with nothing after it, and its value decides which packages exist", name)
 				}
 				i++
 				value = args[i]
@@ -102,13 +103,17 @@ func packageSelectionFlags(args []string) ([]string, error) {
 // invocation cannot carry whole: `go list` would be given it intact and
 // `go test` would not, so the two would enumerate and build different trees. An
 // empty value is covered too, since an empty argv word is lost entirely to that
-// split.
+// split, and a glob metacharacter is covered because `go test`'s unquoted
+// expansion pathname-expands it into whatever filenames match.
 func checkSelectionValue(name, value string) error {
 	if value == "" {
 		return fmt.Errorf("the %s value is empty, which the gate's word-split go test invocation drops; pass a non-empty value or omit the flag", name)
 	}
 	if strings.ContainsAny(value, " \t\n") {
 		return fmt.Errorf("the %s value %q contains whitespace, which the gate's word-split go test invocation cannot forward intact; pass it without whitespace", name, value)
+	}
+	if strings.ContainsAny(value, `*?[`) {
+		return fmt.Errorf("the %s value %q contains a shell glob metacharacter, which the gate's unquoted go test invocation would pathname-expand; pass a literal value without * ? or [", name, value)
 	}
 	return nil
 }
