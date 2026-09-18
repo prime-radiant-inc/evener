@@ -14,20 +14,21 @@ Every later section uses these terms with exactly these meanings.
 
 - **MutationId.** The client-supplied idempotency key on `add`/`update`/`remove`: opaque, non-empty, at most 128 bytes, no required structure. A replay is a call repeating a previously used key.
 - **OperationId (client operation ID).** The client-supplied operation ID on `deploy`/`restart`: opaque, non-empty, at most 128 bytes, no required structure. `deploy`/`restart` responses carry `id` (the controller-assigned record id) and `clientOperationId` (echoing the caller's value).
-- **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every generation the name ever carried. A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
+- **Generation.** The per-name monotonic counter minted by `add`/re-add and advanced by `update`, persisted in the sidecar. Re-add mints strictly above every retained high-water mark for the name; a name with no surviving mark and no live history re-adds clean at generation 1 with a fresh incarnation id plus an advanced presence epoch, so it cannot adopt the old history (registry spec §15). A token, receipt, or record pins the generation it ran under; validation requires equality with the registry's current generation for the name.
 - **Incarnation id.** The opaque server-generated string minted beside the generation on every `add`/re-add, never derived from it and never reused: at most 128 bytes, and the generator pins its output to 36 bytes (canonical UUID text), so the 8 KiB cursor-cap bound in §8 holds by construction. The pair (generation, incarnation id) is the guarded-mutation and dedup identity everywhere.
 - **Receipt.** The durable finalized outcome of a host mutation, keyed by (mutationId, host name, mutation kind, post-commit generation, incarnation id).
 - **Remnant.** The durable in-progress teardown record of a committed-with-teardown-failure mutation, addressed by its opaque server-generated `remnantId`. An open remnant fences every lifecycle and attach path on its name until `teardown-retry` resolves it or escalated `teardown-recover` clears it.
 - **Tombstone.** The durable removed-host record carrying retained rows, persisted in the sidecar. Tombstone-only names render in `list` as `removed: true` rows and accept only re-`add`.
 - **Per-host gate.** The try-acquire (never wait) mutex serializing deploy/restart/`plan`/teardown work for one host name. A held gate fails new work fast with the typed busy error.
-- **Mutation lock.** The process-wide lock serializing sidecar read-modify-write only, never across a teardown. Outermost in the lock order; the store mutex is innermost.
+- **Mutation lock.** The process-wide lock serializing sidecar read-modify-write only, never across a teardown. Outermost among the durable-write locks (mutation lock → store mutex); the per-host gate precedes all of them (§5).
 - **Store mutex.** The lock serializing operation-store read-modify-write. No path holding the store mutex ever acquires the mutation lock.
 - **Origin guard.** The shared pre-admission hook refusing honestly-marked remote-originated, peer-forwarded requests before admission. An honest-peer recursion terminator, not a security boundary.
 - **Confirmation token.** The controller-minted, single-use, expiring opaque bearer `plan` returns beside its plan, bound to the host entry, generation, incarnation id, `hub.toml` fingerprint, facts, and running state it was minted from.
 - **Operation record.** The durable controller-side record of one `deploy`/`restart`, keyed by controller-assigned id, deduplicated on (host, kind, client operation ID, pinned generation, pinned incarnation id).
 - **Boundary.** A persisted ownership description a verifier checks before signaling a possibly-live process: `local-linux`, `local-darwin`, `local-markerless`, or `remote-fencing` (defined in the crash-fencing spec §9).
 - **Fencing epoch.** A worker's durable (controller boot id, per-host monotonic op sequence) presented on every SSH command it runs.
-- **Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge.
+- **Presence epoch.** The per-host monotonic removal/presence counter the sidecar advances on every add, remove, re-add, and expiry purge. It persists in the sidecar per live entry and per tombstone; every sidecar write that adds, removes, re-adds, or expiry-prunes the name advances it in that same atomic write. The store mirrors it into the per-host boundary record on the same writes that mirror the generation (§4); cursor validation reads the mirrored value (§8).
+- **Facts revision (`factsRevision`).** The canonical digest of every preflight field planning or deploy decides on: OS/arch, home directory, resolved roots, UID, installed version, protocol version, and launch flags. `plan` computes it over the refreshed facts at mint (§3); `HostPlan.factsRevision` carries it; deploy revalidates it at execution (§6 step 3).
 
 Pipeline-specific terms:
 
@@ -96,7 +97,7 @@ minted after the change.
 
 The token binds the host name, the registry generation at mint, a hash of the resolved
 host entry, the `hub.toml` content-hash fingerprint as on disk at plan time, the
-preflight revision the plan was built from, `factsCapturedAt`, the resolved target path,
+`factsRevision` digest (§1) of the refreshed preflight facts the plan was built from, `factsCapturedAt`, the resolved target path,
 the controller revision, the probed running revision, the probed running-health flag, the
 probed `processStartTime` when the probe carried it, the effective freshness bound in
 force at mint, and a nonce. Deploy step (3) compares the token-bound facts age against
@@ -199,17 +200,17 @@ schema is `{quarantineEpoch: number, quarantinedFile: string,
 custodiedAt: string (RFC3339), recordIds: {recordId: string, host: string}[],
 allocatorHighWaterMark: number,
 fences: {host: string, quarantine: bool,
-boundary: BoundaryEntry[]}[], ownership: {host: string, highWaterMark: number,
+boundary: BoundaryEntry[]}[], ownership: {quarantineRecordId: string, host: string, kind: "deploy" | "restart", clientOperationId: string, generation: number, highWaterMark: number,
 incarnationId: string}[]}` — `recordIds` carries every imported record's original
 controller-assigned id verbatim so the replacement store imports by id, and
 `allocatorHighWaterMark` carries the pre-quarantine maximum so the replacement
 allocator starts above it; one fence entry per fenced host carrying the
 quarantined record's persisted boundary verbatim (element type in the
 crash-fencing spec §9), one ownership entry per name the corrupt file
-yielded. Every custody entry is resolvable: boot imports each fence entry as
+yielded. Each ownership entry carries a stable `quarantineRecordId` (server-generated, unique in the custody file) plus the full record identity a replacement `OperationRecord` requires: host, kind (`restart`; custody never invents a `deploy` plan the corrupt file did not hold), client operation ID (server-minted `quarantine-<name>` when the corrupt file yields none), and the pinned (generation, incarnation id) pair with the generation high-water mark. Every custody entry is resolvable: boot imports each fence entry as
 an `orphan-unverified` record carrying the custodial boundary under its original
 record id, and each
-ownership-only entry as an `orphan-unverified` record carrying the single
+ownership-only entry as an `orphan-unverified` record of the carried kind under its stable `quarantineRecordId`, carrying the single
 `boundary-unavailable` entry (boundary lost to the corruption, never verified
 empty — the operator attests the name idle out-of-band before resolving, per the
 crash-fencing spec §5 attestation rule), in the replacement
@@ -282,7 +283,7 @@ mutation lock (for example `remove`'s token-row purge) may acquire the store mut
 path holding the store mutex ever acquires the mutation lock. Gate holders'
 post-acquisition re-reads are lock-free registry reads.
 
-Crash recovery of records: at startup, before the store serves any request, every record
+Probe epochs are ephemeral non-listed rows: they carry no token, no worker, and no `deploy`/`restart` kind, never appear in `operations` reads, and boot reaps them silently (deleted, never transitioned to `interrupted`). Crash recovery of records: at startup, before the store serves any request, every record
 still in `pending`/`running` transitions to `interrupted` (a terminal unknown outcome)
 with a note naming the crash. `orphan-unverified` is the one exception: a durable
 per-record state resolved only through the fencing paths. A retry with the same
@@ -315,9 +316,7 @@ triple to roll back to. When the sidecar is missing or held no entry for the nam
 store mirror is preserved, never rolled back, and the max-of-both restoration reads the
 surviving mirror as the high-water mark. The discarded generation is preserved as the
 name's high-water mark in the same atomic sidecar write that performs the rollback, so
-no later mutation reuses it. Boot asserts the discarded generation owns no
-`OperationRecord` and backs no dedup key; any record or dedup entry naming it is a hard
-startup error, never a silent drop. This section owns the mirrored-generation
+no later mutation reuses it. Boot recovers any record or dedup entry naming the discarded generation instead of refusing startup: records naming it transition to `interrupted` with a note naming the torn write (their generation was discarded, so their outcome is unknown), dedup tombstones naming it drop in the same write with same-key replays refusing `stale-entry` (pruned-generation value — §11), and the boot serves once the high-water mark lands. No torn-write split refuses startup. This section owns the mirrored-generation
 boot rule; the registry spec cites it and states no independent maximum. Cursors are opaque client-held wire values, so boot
 asserts nothing about cursor-pinned boundaries; a stale cursor is caught when presented
 (§8). Records reach the store only through the atomic consume-and-create write, so no
@@ -341,7 +340,7 @@ typed transient form (`host busy (plan in progress)`) carrying no operation refe
 The UI shows retry-with-backoff with no open/wait affordance for the transient form.
 
 Gate and mutation-lock ordering: one order everywhere — the host gate first,
-the mutation lock second, never the reverse. A mutation reserves its host's
+the mutation lock second, never the reverse. (The mutation lock is outermost only among the durable-write locks — mutation lock → store mutex per §4 — while the gate precedes all of them.) A mutation reserves its host's
 gate (try-acquire, fail fast with the typed busy error if held) BEFORE taking
 the process-wide mutation lock, and holds that reservation through the staged
 commit; `update`/`remove` therefore never check the gate under the lock —
@@ -385,7 +384,7 @@ minted from fresh facts.
 
 Second, `plan` try-acquires the host gate once (gate first per §5 — `plan` holds no mutation
 lock, so no order inversion is possible), failing fast with the typed busy error
-if held. Holding the gate but no durable epoch yet, `plan` persists a durable probe epoch first: a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the operation-store file in its own atomic store write, bound to the host's current (generation, incarnation id) pair and superseded by the eventual token mint. The probe epoch exists before the first `running` call, so the remote write half is recoverable under crash-fencing's persisted-before-launch rule. A probe-epoch write failure refuses `probe-failed` with nothing launched; a crash after the epoch persists but before the mint leaves an epoch-only record that boot reaps as `interrupted` with no token and no worker (probe epochs never launch workers and never outlive their `plan` call — the mint supersedes them or the call's failure path deletes them). `plan` holds the gate through the running-state probe, validation, the durable
+if held. Holding the gate but no durable epoch yet, `plan` persists a durable probe epoch first: a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the operation-store file in its own atomic store write, bound to the host's current (generation, incarnation id) pair and superseded by the eventual token mint. The probe epoch exists before the first `running` call, so the remote write half is recoverable under crash-fencing's persisted-before-launch rule. The probe's remote write half then runs the complete fencing protocol for the fresh epoch — takeover, bounded kill/wait of the superseded epoch, guard advance — per the crash-fencing spec §4 before the write lands. A probe-epoch write failure refuses `probe-failed` with nothing launched; a crash after the epoch persists but before the mint leaves an epoch-only record that boot reaps as `interrupted` with no token and no worker (probe epochs never launch workers and never outlive their `plan` call — the mint supersedes them or the call's failure path deletes them). `plan` holds the gate through the running-state probe, validation, the durable
 mint, publication, and return. Then the running-state probe: `evener/host/running` through
 `sshManager.ChannelIfAttached(name)` over the live channel (never a dial, never
 preflight), deadline-bounded with an explicit owner-adjustable probe timeout, presenting the persisted probe epoch (never a default, never absent — §10). The
@@ -452,7 +451,7 @@ here. A fenced name never reaches the gate: an open teardown remnant refuses wit
 `remnant-open` (naming the `remnantId`) before any probe or acquisition, past the
 step-(1) dedup check. Remnant semantics are defined in the registry spec §6.
 
-(3) Persist the probe epoch, then probe under the gate, then revalidate under the same gate. On a fresh (non-dedup-hit) operation the worker persists a durable probe epoch first — a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the same atomic store write posture as step (4), bound to the host's current (generation, incarnation id) pair and superseded by the step-(4) consume — before the first `running` probe, so no remote write probe precedes its durable controller-side epoch. A crash between the probe-epoch write and the consume leaves an epoch-only record that boot transitions to `interrupted` (§7), never an unrecoverable probe. Probe the running build and health
+(3) Persist the probe epoch, then probe under the gate, then revalidate under the same gate. On a fresh (non-dedup-hit) operation the worker persists a durable probe epoch first — a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the same atomic store write posture as step (4), bound to the host's current (generation, incarnation id) pair and superseded by the step-(4) consume — before the first `running` probe, so no remote write probe precedes its durable controller-side epoch. The first probe's remote write half runs the complete fencing protocol — takeover, bounded kill/wait, guard advance per the crash-fencing spec §4 — before the write, so a crashed epoch's orphan is fenced before the probe mutates. A crash between the probe-epoch write and the consume leaves an epoch-only record that boot transitions to `interrupted` (§7), never an unrecoverable probe. Probe the running build and health
 over the attached channel holding the try-acquired host gate for the probe window (same explicit probe timeout as `plan`'s
 probe, presenting the persisted probe epoch — never a default, never absent; a held gate fails fast with the typed busy error before any probe write). Still holding
 that gate, the worker
@@ -468,8 +467,8 @@ timed out, or was unauthenticated) — token unconsumed, no record. The worker r
 the probe differs from the token-bound running revision or running-health flag, and
 rejects if the re-probed `processStartTime` differs from the token-bound one when the
 token bound one. Both values come from the same remote clock across the two probes,
-never from controller wall-clock. The worker re-checks token-bound preflight-facts
-freshness (`factsRevision` / `factsCapturedAt` against the token-bound bound): facts
+never from controller wall-clock. The worker recomputes the `factsRevision` digest (§1) over the deploy-time preflight facts and compares it against the token-bound digest: any decision-relevant fact changed since mint (OS/arch, home, roots, UID, installed version, protocol, launch flags) is a `stale-entry` re-plan refusal. The worker re-checks token-bound preflight-facts
+freshness (`factsCapturedAt` against the token-bound bound): facts
 older than the bound at deploy time are a `stale-entry` re-plan refusal. This re-read is
 the gate protocol's post-acquisition check (§5).
 
@@ -514,7 +513,7 @@ operation-owned detach/restart/reattach sequence under the same gate.
 `restart` is a mutation with the same operation model: (host, kind)-scoped operation-ID
 dedup first (generation-scoped like `deploy`), then the remnant fence (`remnant-open`
 naming the `remnantId`, past dedup and before any probe or acquisition), then busy-fail
-gate acquisition, then atomic record creation. No token: restart has no install step, no
+gate acquisition, then atomic record creation. The request carries the intended (generation, incarnation id) pair (§10); a lost-response retry repeats the old pair and replays, while a reuse of the same operation ID for a new incarnation names the new pair and opens fresh. No token: restart has no install step, no
 target, and no plan to re-verify. Instead restart binds the current `hub.toml`
 content-hash fingerprint at resolution and re-checks it under the gate alongside the
 post-acquisition entry re-read. A manual file edit between resolution and acquisition is
@@ -606,7 +605,7 @@ block startup. Remote fencing lands lazily at the next operation's guard advance
 the store already serves `interrupted` records.
 
 Interrupted transition: every record still in `pending`/`running` transitions to
-`interrupted` with a note naming the crash. `orphan-unverified` is the one exception. An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) transitions to `interrupted` with a note naming the probe, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
+`interrupted` with a note naming the crash. `orphan-unverified` is the one exception. An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) is an ephemeral non-listed row: boot deletes it silently, never transitions it to `interrupted`, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
 A retry with the same operation ID gets the `interrupted` record back. A new operation
 ID starts fresh, but only after local reaping completes and under a fresh fencing epoch
 with the guard advanced past kill/wait of the superseded epoch.
@@ -621,8 +620,7 @@ binding-intact tokens for live hosts remain valid past the restart.
 Generation-mirror reconciliation runs before serving any request, per §4: roll back a
 store mirror newer than the sidecar mark with no matching commit marker; push forward a
 sidecar mark newer than the store mirror; preserve the mirror when the sidecar carries
-no entry for the name; record the discarded number as the high-water mark; hard-error
-on any record or dedup entry naming the discarded generation.
+no entry for the name; record the discarded number as the high-water mark; recover records or dedup entries naming the discarded generation per §4 (interrupted transition, never a startup refusal).
 
 ## 8. Operations pagination and cursors
 
@@ -784,7 +782,7 @@ named string types as plain `string`, with no discriminated-union or literal-uni
 emission. The literal string unions below are wire value sets carried in the generated
 client as `string`, with the exact value set pinned by the protocol-shapes test. The
 response unions below are carried as per-arm interfaces selected at runtime by their
-discriminator (`outcome`, `reason`), never as a generated TS union: the pipeline catalog
+discriminator (`outcome`, `reason`): the pipeline catalog
 defines one named Go struct per arm so each generates its own interface. The pipeline PR extends the
 generator with explicit union support: the catalog declares one named Go struct per arm
 plus a named union registration referencing every arm, and the generator emits each arm
@@ -845,7 +843,7 @@ element type.
   that threshold does it run the state-root write probe — a real atomic temp-plus-rename
   probe inside the state dir with a uniquely named temp per probe, rename to a distinct
   probe target in the same dir, fsync the dir, then remove. The probe is a fully
-  fenced mutating step, never a read and never a gateless bypass: the calling
+  fenced mutating step running the complete fencing protocol (takeover, bounded kill/wait, guard advance per the crash-fencing spec §4) before its write half, never a read and never a gateless bypass: the calling
   side issues it only while holding the host gate through the gate-aware probe
   primitive in §6 (which inherits the already-held gate instead of re-acquiring
   it), presenting the worker's persisted fencing epoch; the serving hub persists
@@ -874,7 +872,7 @@ element type.
   clientOperationId: string, state: OperationState}` (`id` is the controller-assigned
   record id). The freshly created record reports `"pending"`. A dedup hit returns the
   existing record's actual state.
-- `evener/host/restart`: params `{name: string, operationId: string}`; response `{id:
+- `evener/host/restart`: params `{name: string, operationId: string, generation: number, incarnationId: string}` (the intended pair: a retry repeats the old pair and replays the retained record; a reuse for a new incarnation names the new pair and opens fresh — a pair older than current refuses `stale-entry`, per §4); response `{id:
   string, clientOperationId: string, state: OperationState}` (fresh create:
   `"pending"`; dedup hit: the existing record's state, as for `deploy`).
 - `evener/host/operations`: params `{name?: string, operationId?: string, state?:
@@ -936,9 +934,8 @@ This spec's paths emit:
   re-probed health flag differs the same way), `facts-age` (the token-bound preflight
   facts aged past the token-bound freshness bound at deploy time — the re-plan
   refusal), `concurrent-terminal-op` (the post-acquisition scan found an operation on
-  this host with a terminal transition sequence above the pre-probe position). Data
-  names which value fired. The `pruned-generation` value belongs to the mutation
-  receipt path (defined in the registry spec §5) and is never emitted here.
+  this host with a terminal transition sequence above the pre-probe position), `pruned-generation` (the request's intended pair names a pruned generation: emitted only on the §4 operation-store dedup path when a same-key replay finds only superseded-generation records and the intended pair is older than current — the operation-store counterpart of the registry receipt path's `pruned-generation` value, defined in the registry spec §5). Data
+  names which value fired.
 - `host-busy-operation` (busy class; data names the operation id) when a
   deploy/restart record — including an Ensure-triggered deploy — holds the gate.
 - `host-busy-transient` (busy class; no operation reference) only for `plan`'s
@@ -1028,7 +1025,11 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   `cursor-invalidated` with the compacting `compactSeq`. The client restarts from
   page one. An over-cap first page refuses the distinct `cursor-too-large`
   discriminator with `{capBytes: 8192}`. Both shapes pinned.
-- Durable probe epoch: no `running` probe precedes its durable controller-side epoch — `plan` persists its probe epoch before the first probe call and binds it to the eventual token's (generation, incarnation id) pair; `deploy` persists its probe epoch before probing and promotes it at the step-(4) consume. Probe-epoch write failure is `probe-failed` with nothing launched; a crash between epoch and mint/consume boots to `interrupted` with no token and no worker; the mint supersedes a `plan` probe epoch and step (4) promotes a `deploy` one.
+- Durable probe epoch: no `running` probe precedes its durable controller-side epoch — `plan` persists its probe epoch before the first probe call and binds it to the eventual token's (generation, incarnation id) pair; `deploy` persists its probe epoch before probing and promotes it at the step-(4) consume. Probe-epoch write failure is `probe-failed` with nothing launched; a crash between epoch and mint/consume boots to silent deletion of the epoch-only row with no token and no worker (probe epochs are ephemeral non-listed rows, never `operations`-visible); the mint supersedes a `plan` probe epoch and step (4) promotes a `deploy` one.
+- Fenced probe ordering: the first mutating probe after a crashed epoch runs takeover, bounded kill/wait, and guard advance before its write half (crash-fencing spec §4); the ordering test observes the write landing only after the guard advanced past the superseded epoch.
+- `factsRevision` invalidation: changing any decision-relevant preflight fact (OS/arch, home, roots, UID, installed version, protocol, launch flags) between mint and deploy invalidates the token with `stale-entry`.
+- `restart` incarnation pair: a lost-response retry repeating the old pair replays the retained record; the same operation ID naming the new pair after remove/re-add opens fresh; a pair older than current refuses `stale-entry`.
+- Torn-write recovery: a store-newer/sidecar-older split with no commit marker transitions affected records to `interrupted` and serves; startup is never refused for this split.
 - The running probe (`evener/host/running` handler): local revision plus health plus
   optional `processStartTime`; mutation classification with the required
   `{fencingEpoch: {bootId, opSeq}}` params (the generated client carries the
