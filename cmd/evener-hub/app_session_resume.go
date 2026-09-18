@@ -76,18 +76,7 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 		}
 		discoveryUncertain = decision.discoveryUncertain
 	}
-	ownership := withSessionActionOwnership[struct{}]
-	if discoveryUncertain {
-		// Strict discovery failed for a session already confirmed exited, so
-		// the confirmed-stopped check could not prove the absence of a claim.
-		// The resume-required refusal must not gate this fall-through:
-		// shutdown never resurrects the session, and its goal — a stopped
-		// daemon — is what durable authority already asserts. The tolerant
-		// source attempt resolves the uncertainty from the other side under
-		// deletion-fence ownership.
-		ownership = withShutdownDiscoveryUncertainOwnership[struct{}]
-	}
-	_, err := ownership(ctx, cfg, params.Ref, "", func() (struct{}, error) {
+	action := func() (struct{}, error) {
 		// A Resume can retain failed child cleanup while shutdown waits for
 		// alias ownership, after the pre-check above already passed. Recheck
 		// under ownership before the shutdown action.
@@ -102,7 +91,20 @@ func shutdownThreadTolerateExited(ctx context.Context, cfg hubcore.WebConfig, so
 			return struct{}{}, err
 		}
 		return struct{}{}, source.ShutdownThread(ctx, params)
-	})
+	}
+	var err error
+	if discoveryUncertain {
+		// Strict discovery failed for a session already confirmed exited, so
+		// the confirmed-stopped check could not prove the absence of a claim.
+		// The resume-required refusal must not gate this fall-through:
+		// shutdown never resurrects the session, and its goal — a stopped
+		// daemon — is what durable authority already asserts. The tolerant
+		// source attempt resolves the uncertainty from the other side under
+		// deletion-fence ownership.
+		_, err = withShutdownDiscoveryUncertainOwnership(ctx, cfg, params.Ref, "", action)
+	} else {
+		_, err = withSessionActionOwnership(ctx, cfg, params.Ref, "", action)
+	}
 	if err != nil && params.Ref != "" && hubKnowsRef(cfg, params.Ref) && isSessionUnavailableError(err) {
 		// The fallback treats an unavailable session as successfully stopped;
 		// a cleanup failure retained since the under-ownership recheck must
