@@ -2658,8 +2658,11 @@ func TestMarketplaceNameMigration_AnIncompleteMoveRollbackKeepsTheMarker(t *test
 		t.Fatal("expected the cache move to fail")
 	}
 	mustExist(t, renameMarkerFile(m))
-	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
-		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	if !strings.Contains(err.Error(), renameMarkerFileName) {
+		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFileName)
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 }
 
@@ -2810,8 +2813,11 @@ func TestMarketplaceNameMigration_AFailedRestoreKeepsTheMarker(t *testing.T) {
 		t.Fatal("expected the save to fail")
 	}
 	mustExist(t, renameMarkerFile(m))
-	if !strings.Contains(err.Error(), renameMarkerFile(m)) {
-		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFile(m))
+	if !strings.Contains(err.Error(), renameMarkerFileName) {
+		t.Fatalf("error = %v, want it to name %s", err, renameMarkerFileName)
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 
 	mk, err := m.ListMarketplaces(context.Background())
@@ -3211,10 +3217,13 @@ func TestMarketplaceNameMigration_RefusesAMarkerWhoseDestinationIsTaken(t *testi
 	if err == nil {
 		t.Fatal("expected the acquisition to fail on the taken name")
 	}
-	for _, want := range []string{`"` + recorded + `"`, `"a-b"`, renameMarkerFile(m)} {
+	for _, want := range []string{`"` + recorded + `"`, `"a-b"`, renameMarkerFileName} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to name %s", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	mustExist(t, renameMarkerFile(m))
 	mustExist(t, filepath.Join(m.marketplaceDir("a-b"), ".claude-plugin", "marketplace.json"))
@@ -3571,6 +3580,72 @@ func TestMarketplaceNameMigration_CompletesAMergeItsMarkerNames(t *testing.T) {
 	}
 }
 
+// The merge above completes when its own save succeeds; when that save fails
+// instead, the marker stays for the next lock holder, and the error names it
+// (markerLeftForRecovery) - reached over ListMarketplaces/List just as
+// directly as any marketplace write failure, so it must not carry this
+// machine's absolute plugin-store path either.
+func TestMarketplaceNameMigration_MergeSaveFailureKeepsTheMarkerNamesNoPath(t *testing.T) {
+	const duplicate = "a/b"
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	plantLegacyMarketplace(t, m, "a/./b", "widget")
+	plantLegacyMarketplace(t, m, duplicate, "gadget")
+	if err := os.Rename(m.marketplaceDir(duplicate), m.marketplaceDir("a-b")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(m.cacheDir(), duplicate), filepath.Join(m.cacheDir(), "a-b")); err != nil {
+		t.Fatal(err)
+	}
+	mk, err := m.loadMarketplaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := mk["a/./b"]
+	ref.InstallLocation = m.marketplaceDir("a-b")
+	delete(mk, "a/./b")
+	mk["a-b"] = ref
+	if err := m.saveMarketplaces(mk); err != nil {
+		t.Fatal(err)
+	}
+	reg, err := m.loadRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, moved := range []struct{ recorded, plugin string }{{"a/./b", "widget"}, {duplicate, "gadget"}} {
+		entry := installedAt(t, reg, registryKey(moved.plugin, moved.recorded))
+		entry.InstallPath = m.pluginCacheDir("a-b", moved.plugin, "sha1")
+		delete(reg.Plugins, registryKey(moved.plugin, moved.recorded))
+		reg.Plugins[registryKey(moved.plugin, "a-b")] = []InstallEntry{entry}
+	}
+	if err := m.saveRegistry(reg); err != nil {
+		t.Fatal(err)
+	}
+	plantMergeMarker(t, m, duplicate, "a-b")
+
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(path string, data []byte, perm os.FileMode) error {
+		if filepath.Base(path) == marketplacesFileName {
+			return errors.New("boom")
+		}
+		return origWrite(path, data, perm)
+	}
+
+	_, err = m.ListMarketplaces(context.Background())
+	if err == nil {
+		t.Fatal("expected the merge's completing save to fail")
+	}
+	markerPath := renameMarkerFile(m)
+	if strings.Contains(err.Error(), markerPath) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), renameMarkerFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, renameMarkerFileName)
+	}
+	mustExist(t, markerPath)
+}
+
 // A merge folds a duplicate into a record that stands until the one save that
 // drops the duplicate, so a marker naming a destination nothing records names
 // no merge this store can finish: the record it would fold into is one it
@@ -3597,10 +3672,13 @@ func TestMarketplaceNameMigration_RefusesAMergeMarkerWithNoDestination(t *testin
 	if err == nil {
 		t.Fatal("expected the acquisition to fail on the destination nothing records")
 	}
-	for _, want := range []string{`"` + duplicate + `"`, `"a-b"`, renameMarkerFile(m)} {
+	for _, want := range []string{`"` + duplicate + `"`, `"a-b"`, renameMarkerFileName} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %v, want it to name %s", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), renameMarkerFile(m)) {
+		t.Fatalf("error = %v, want no absolute path in the client-facing error", err)
 	}
 	mustExist(t, renameMarkerFile(m))
 }
