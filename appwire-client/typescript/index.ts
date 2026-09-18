@@ -318,6 +318,7 @@ export {
 export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
 export type { PluginSelectionState } from "./spawnPluginSelectionState";
 export {
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   reconcilePluginSelection,
   selectAllPlugins,
