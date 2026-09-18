@@ -249,3 +249,38 @@ describe("discardStoredDraft", () => {
     expect(discardStoredDraft(storage)).toBe("absent");
   });
 });
+
+// memoryDraftStorage's own removeIf/replaceIf compare by JSON.stringify -
+// JSON.stringify(null) and JSON.stringify(undefined) both stringify to
+// values that must never accidentally equal each other or an absent
+// record's own comparison, or a caller checking "is anything stored" via a
+// null/undefined identity would see a false compare-and-swap success.
+describe("memoryDraftStorage", () => {
+  it("removeIf(null) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.removeIf(null)).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+
+  it("removeIf(undefined) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.removeIf(undefined)).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+
+  it("replaceIf(null, ...) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.replaceIf(null, { id: "d1", value: "a" })).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+
+  it("replaceIf(undefined, ...) reports false when nothing is stored, never a false match", () => {
+    const drafts = memoryDraftStorage<Checkpoint>();
+
+    expect(drafts.storage.replaceIf(undefined, { id: "d1", value: "a" })).toBe(false);
+    expect(drafts.stored()).toBeNull();
+  });
+});

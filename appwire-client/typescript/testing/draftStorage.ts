@@ -44,13 +44,16 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     },
     removeIf: (identity: unknown) => {
       lastRemoveIf = structuredClone(identity);
-      if (JSON.stringify(identity) !== JSON.stringify(stored)) return false;
+      // Nothing stored is never a match, whatever identity is named -
+      // JSON.stringify(null) and JSON.stringify(undefined) would otherwise
+      // collide with each other and with an absent `stored`.
+      if (stored === null || JSON.stringify(identity) !== JSON.stringify(stored)) return false;
       stored = null;
       return true;
     },
     replaceIf: (expected: unknown, next: Checkpoint) => {
       if (replaceFails) throw new Error("disk unavailable");
-      if (JSON.stringify(expected) !== JSON.stringify(stored)) return false;
+      if (stored === null || JSON.stringify(expected) !== JSON.stringify(stored)) return false;
       stored = structuredClone(next);
       return true;
     },
