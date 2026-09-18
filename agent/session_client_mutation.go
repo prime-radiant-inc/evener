@@ -361,6 +361,9 @@ func (s *Session) claimClientMutationStart() (queuedInput, bool, error) {
 	if err := s.ensureClientMutationStore(); err != nil {
 		return queuedInput{}, false, err
 	}
+	if s.cfg.testOnly.clientMutationStartClaiming != nil {
+		s.cfg.testOnly.clientMutationStartClaiming()
+	}
 	// The writer is sampled under s.mu here, before the serializer takes
 	// clientMutations.mu; the refusal is read inside using only the writer's
 	// own lock, so the serializer never waits on s.mu.
@@ -473,19 +476,23 @@ func (s *Session) ProcessClientMutationStart(ctx context.Context, onRunnable fun
 		return "", false, admissionErr
 	}
 	defer release()
-	turnID, runnable := s.runnableClientMutationStartTurnID()
+	_, runnable := s.runnableClientMutationStartTurnID()
 	if !runnable {
 		return "", false, nil
 	}
 	if err := s.refuseBeforeClaimingOnPoisonedTranscript(); err != nil {
 		return "", false, err
 	}
-	if onRunnable != nil {
-		onRunnable(turnID)
-	}
 	claimed, ok, err := s.claimClientMutationStart()
 	if err != nil || !ok {
 		return "", ok, err
+	}
+	// Announce only once the claim has committed. A poisoning that lands
+	// between the pre-check above and the claim makes the claim refuse, and a
+	// turn announced for it is a phantom: the daemon has published a running
+	// turn and wired cancellation to an id that will never run.
+	if onRunnable != nil {
+		onRunnable(claimed.StableTurnID)
 	}
 	ctx = withQueuedClientMutation(ctx, claimed)
 	// Prepare the claimed input's skill selection at actual consumption: one

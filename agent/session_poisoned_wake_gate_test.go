@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestWakeRefusesTheSteeringCarrierWhenPoisonLandsBeforeTheClaim: the wake's
@@ -133,24 +134,91 @@ func TestClaimSamplesSessionMuOutsideTheStoreSerializer(t *testing.T) {
 		_, _ = sess.popQueueHeadRefusingPoison()
 	}()
 
-	// Let the claim reach the serializer. It cannot finish while Session.mu is
-	// held either way; the question is only what it holds while it waits.
-	time.Sleep(250 * time.Millisecond)
-	select {
-	case <-claimDone:
-		sess.mu.Unlock()
-		t.Fatal("the claim finished while Session.mu was held; the test's setup is wrong")
-	default:
-	}
-	// The store serializer must remain free: if the claim waited on Session.mu
-	// while holding clientMutations.mu, that mutex would be held right now.
-	held := !sess.clientMutations.mu.TryLock()
-	if !held {
+	// The claim cannot finish while Session.mu is held either way; the question
+	// is only what it holds while it waits. A fixed sleep cannot prove the claim
+	// reached the serializer (a descheduled goroutine leaves the mutex free for
+	// an unrelated reason), so watch the mutex for the whole window: any
+	// observation of clientMutations.mu held is the violation.
+	deadline := time.Now().Add(2 * time.Second)
+	violation := false
+	for time.Now().Before(deadline) {
+		if !sess.clientMutations.mu.TryLock() {
+			violation = true
+			break
+		}
 		sess.clientMutations.mu.Unlock()
+		time.Sleep(time.Millisecond)
 	}
 	sess.mu.Unlock()
 	<-claimDone
-	if held {
+	if violation {
 		t.Fatal("the queue claim held the mutation-store mutex while waiting on Session.mu: the serializer must never wait on s.mu")
+	}
+}
+
+// TestStartClaimDoesNotAnnounceATurnItRefused: onRunnable publishes the running
+// turn to the daemon and wires cancellation to it, so it must not run for a
+// claim that refuses. A poisoning that lands after ProcessClientMutationStart's
+// cheap pre-check and before the claim used to announce a phantom turn that the
+// transcript could never record (issue #1165 review).
+func TestStartClaimDoesNotAnnounceATurnItRefused(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	if _, err := sess.AcceptClientMutationStart(appwire.TurnStartParams{
+		ClientMutationID: "start-refused-by-poison",
+		Input:            []appwire.InputItem{{Type: "text", Text: "never runs"}},
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationStart: %v", err)
+	}
+	// The poisoning lands in the claim window, after the pre-check saw a healthy
+	// writer and before the claim commits.
+	sess.cfg.testOnly.clientMutationStartClaiming = func() {
+		sess.cfg.testOnly.clientMutationStartClaiming = nil
+		poisonSessionTranscript(t, sess)
+	}
+
+	var announced []string
+	_, ran, err := sess.ProcessClientMutationStart(t.Context(), func(turnID string) {
+		announced = append(announced, turnID)
+	})
+	if !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("start across the poison window = (ran=%v, err=%v), want a refusal wrapping transcript.ErrWriterPoisoned", ran, err)
+	}
+	if ran || len(announced) != 0 {
+		t.Fatalf("announced %v (ran=%v), want no announcement for a refused claim", announced, ran)
+	}
+}
+
+// TestRefusedTurnGateReturnsADrainClaimedQueuedMessage: the drain loop claims a
+// queued message, then the top-of-loop transcript gate refuses the turn. The
+// claim must go back to the queue rather than sit claimed with ActiveTurnID
+// pinned until restart recovery (issue #1165 review).
+func TestRefusedTurnGateReturnsADrainClaimedQueuedMessage(t *testing.T) {
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	queueOneMutation(t, sess, "claimed-then-refused", "runs after the restart")
+
+	// Claim the message the way the drain loop does.
+	claimed, refusal := sess.popQueueHeadRefusingPoison()
+	if refusal != nil || claimed.ClientMutationID != "claimed-then-refused" {
+		t.Fatalf("setup: claimed = %#v refusal = %v, want the queued message", claimed, refusal)
+	}
+	if got := sess.QueueDepth(); got != 0 {
+		t.Fatalf("setup: queue depth = %d, want the message claimed out of the queue", got)
+	}
+
+	// The transcript stops accepting records before the turn runs, so the
+	// top-of-loop gate refuses the already-claimed turn.
+	poisonSessionTranscript(t, sess)
+
+	ctx := withQueuedClientMutation(t.Context(), claimed)
+	if _, err := sess.ProcessInputKind(ctx, claimed.Text, claimed.Images, EntryUserInput); !errors.Is(err, transcript.ErrWriterPoisoned) {
+		t.Fatalf("turn gate over a claimed queued message = %v, want transcript.ErrWriterPoisoned", err)
+	}
+	if got := sess.QueueDepth(); got != 1 {
+		t.Fatalf("queue depth after the refused gate = %d, want the message returned to the queue", got)
+	}
+	if got := sess.clientMutations.snapshot().ActiveTurnID; got != "" {
+		t.Fatalf("ActiveTurnID = %q after the refused gate, want empty", got)
 	}
 }

@@ -306,6 +306,11 @@ type testConfig struct {
 	// visible before it fires). Tests use it to sample askPendingCount() at
 	// exactly that point. Nil in production.
 	beforeSteeringInjectedPublish func()
+	// clientMutationStartClaiming observes a durable start claim about to be
+	// written, after ProcessClientMutationStart's cheap poison pre-check and
+	// before the claim's own refusal -- the window a poisoning lands in. Nil in
+	// production.
+	clientMutationStartClaiming func()
 	// delegateDeliveryClassified observes whether an incoming waiterless delivery
 	// was deferred to the enclosing ProcessInput drain. Nil in production.
 	delegateDeliveryClassified func(*Session, bool)

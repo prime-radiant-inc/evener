@@ -385,8 +385,8 @@ func steeringCarrierRailOpen(snapshot *clientMutationSnapshot) bool {
 
 // claimableSteeringCarrier names the first eligible pending steer and the
 // reserved turn it already owns, or "" when no steer is ready to carry one. The
-// claim above walks the order once through this; the gate's predicate asks it
-// the same question without taking anything.
+// claim above walks the order once through this; nothing else decides carrier
+// eligibility, so a caller cannot ask a different question of the same order.
 //
 // inFlight is the session's steeringInFlight sample: a steer a turn popped and
 // is appending, or one whose append landed and whose incorporation write the

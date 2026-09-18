@@ -1204,10 +1204,19 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			// A steering carrier claimed at the tail below owns the active-turn
 			// slot until something hands it back; a refusal here is before the
 			// release that follows processOneInput, exactly the stranded claim
-			// ProcessPendingUserInput's deferred release guards against. (A
-			// queued message's slot is not released: its claimed entry is
-			// re-run by restore under that id.)
-			s.releaseSteeringCarrierClaim(queuedClientMutationFromContext(processCtx))
+			// ProcessPendingUserInput's deferred release guards against.
+			identity := queuedClientMutationFromContext(processCtx)
+			s.releaseSteeringCarrierClaim(identity)
+			// A queued message the drain claimed but has not run goes back to
+			// the queue. Its claim's poison check and commit are on different
+			// resources, so a poisoning can land between them and this gate then
+			// refuses; left claimed, the message is out of the queue with
+			// ActiveTurnID pinned until restart recovery.
+			if identity.ClientMutationID != "" && !identity.SteeringCarrier {
+				if restoreErr := s.completeClientMutationTurn(identity.ClientMutationID); restoreErr != nil {
+					err = errors.Join(err, fmt.Errorf("return claimed input: %w", restoreErr))
+				}
+			}
 			return strings.Join(outputs, "\n"), err
 		}
 		// Capture the kind actually being processed this iteration before the
