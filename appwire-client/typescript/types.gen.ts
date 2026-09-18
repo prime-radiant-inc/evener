@@ -1045,8 +1045,14 @@ export interface InstanceEntry {
   apiKeyEnv?: string;
   credentialHeader?: string;
   /**
-   * Implicit is true for an instance that exists from the environment
-   * alone: it has no entry in providers.toml, so it cannot be removed.
+   * Implicit is true for an instance with no authored entry in
+   * providers.toml: a curated provider that exists because the environment
+   * supplies it (an API-key variable, the ADC file) or because the user
+   * filed a credential for it through the UI (a stored key, a signed-in
+   * Codex record). It says nothing by itself about removal: an instance the
+   * environment supplies comes back with it, while one holding the user's
+   * credential is taken away by deleting that credential
+   * (cmd/evener-hub/app_instances.go's environmentBacked).
    */
   implicit: boolean;
   /**
