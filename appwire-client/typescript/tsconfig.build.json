@@ -16,6 +16,7 @@
     "client.ts",
     "clientLike.ts",
     "errors.ts",
+    "plainObject.ts",
     "frameworkFreeStore.ts",
     "transport.ts",
     "types.gen.ts",
