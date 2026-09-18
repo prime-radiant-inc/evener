@@ -826,6 +826,30 @@ describe("the checkpointed draft editor", () => {
     await expect(direct).resolves.toBeDefined();
   });
 
+  test("a save lost to a support flap settles draftConflict the same as the other unknown-outcome paths", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // A transient disconnect: support drops to "unknown" without ending the
+    // generation or retiring the payload (settleLostHubWrite's own comment)
+    // - the write's own claim is still intact, but nothing else will ever
+    // settle it.
+    store.setSupport("unknown");
+
+    reply.reject(new Error("disconnected"));
+    await expect(save).rejects.toThrow("disconnected");
+
+    // Same posture as the no-reply-at-all and malformed-reply unknown-outcome
+    // settles: the proposal needs review.
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftConflict: true });
+  });
+
   test("a direct write retired by a generation reset no longer blocks saveDraft", async () => {
     const client = clientServing(3);
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();

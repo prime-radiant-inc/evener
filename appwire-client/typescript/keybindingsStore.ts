@@ -661,7 +661,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * does nothing here - its successor owns the flags. */
   function settleLostHubWrite(generation: number, token: number): void {
     if (fence.lostHub(generation, token === fence.writeToken) && getState().saving) {
-      setState({ saving: false, writeUncertain: true });
+      // Same posture as every other unknown-outcome settle (no reply at all,
+      // a malformed reply): the proposal needs review, not just a retry.
+      setState({ saving: false, writeUncertain: true, draftConflict: true });
     }
   }
 
