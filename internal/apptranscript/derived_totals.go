@@ -44,9 +44,9 @@ func (c *TurnCache) DerivedTotalsFromFile(path string, maxLineBytes int, fromEnt
 	totals, err := memoizeScan(c, path, fromEntryOrdinal,
 		func(entry *turnCacheEntry) *scanMemo[derivedTotals] { return entry.derivedTotals },
 		func(entry *turnCacheEntry, memo *scanMemo[derivedTotals]) { entry.derivedTotals = memo },
-		func(totals derivedTotals) derivedTotals {
-			totals.usage = cloneEvenerUsage(totals.usage)
-			return totals
+		func(value derivedTotals) derivedTotals {
+			value.usage = cloneEvenerUsage(value.usage)
+			return value
 		},
 		func() (derivedTotals, error) { return scanDerivedTotals(path, maxLineBytes, fromEntryOrdinal) },
 	)
