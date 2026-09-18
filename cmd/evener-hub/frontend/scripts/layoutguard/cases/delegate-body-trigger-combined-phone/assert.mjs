@@ -56,13 +56,24 @@ export default function assert(measurement) {
         `#${f.id} (${f.label}): the content width ${f.content.width.toFixed(1)}px differs from the ${shape} reservation ${f.expectedContentWidth.toFixed(1)}px by ${f.contentWidthSlack.toFixed(1)}px - the reservation does not match the rendered trailing items`,
       );
     }
+    // Production renders the overlay intent trigger only on the shape whose
+    // intent control is NOT suppressed (the decorative-chevron collapsed row).
+    // The summary-less delegate renders none - it is the body trigger alone.
+    const expectedOverlay = f.chevron ? 1 : 0;
+    if (f.overlayTriggerCount !== expectedOverlay) {
+      const shape = f.chevron ? "collapsed" : "summary-less delegate";
+      failures.push(
+        `#${f.id} (${f.label}): the ${shape} fixture renders ${f.overlayTriggerCount} overlay intent trigger(s), expected ${expectedOverlay} - the fixture does not match production's suppressed shape`,
+      );
+    }
   }
   if (failures.length > 0) return { pass: false, reason: failures.join("; ") };
 
   const drops = measurement.fixtures.map((f) => f.bodyDropBelowLine1.toFixed(1)).join(", ");
   const slacks = measurement.fixtures.map((f) => f.contentWidthSlack.toFixed(1)).join(", ");
+  const overlays = measurement.fixtures.map((f) => f.overlayTriggerCount).join(", ");
   return {
     pass: true,
-    reason: `no stray content outside .fixtures; the combined intent line keeps Open and the ${TAP_MIN_PX}px body trigger on line 1 in all ${measurement.fixtures.length} fixtures (bodyDropBelowLine1: ${drops}; <=0 = inline); each content reservation matches its rendered trailing items (slack: ${slacks}px); the body trigger owns its own hit target`,
+    reason: `no stray content outside .fixtures; the combined intent line keeps Open and the ${TAP_MIN_PX}px body trigger on line 1 in all ${measurement.fixtures.length} fixtures (bodyDropBelowLine1: ${drops}; <=0 = inline); each content reservation matches its rendered trailing items (slack: ${slacks}px); each shape renders production's overlay intent trigger count (${overlays}; delegate 0, collapsed 1); the body trigger owns its own hit target`,
   };
 }

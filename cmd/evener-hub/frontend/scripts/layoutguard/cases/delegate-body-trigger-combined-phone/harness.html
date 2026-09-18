@@ -28,7 +28,7 @@
 
        <div class="row" data-intent="true" data-intent-trailing="true"
             data-body-trigger-intent="true" data-intent-suppressed="true">
-         <button class="trigger intentOverlayTrigger"></button>
+         [<button class="trigger intentOverlayTrigger"></button>]  (suppressed on a delegate)
          <span class="intentTriggerContent">
            <span class="rowIcon">…</span>
            <span class="status">…</span>
@@ -58,9 +58,14 @@ const ICON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="t
 const STATUS_DOT = '<span style="display:block;width:8px;height:8px;border-radius:50%;background:var(--ink-mid)"></span>';
 
 function rowHtml(id, intent, withDecorativeChevron) {
+  // The summary-less delegate shape (intentControlSuppressed) renders NO
+  // overlay intent trigger - the body trigger is its one control - so the
+  // fixture must not render one either (roborev): an extra disclosure control
+  // would be measured and hit-tested, unlike production.
+  const suppressed = !withDecorativeChevron;
   return `
-    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true"${withDecorativeChevron ? "" : ' data-intent-suppressed="true"'}>
-      <button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true"${suppressed ? ' data-intent-suppressed="true"' : ""}>
+      ${suppressed ? "" : `<button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>`}
       <span class="intentTriggerContent" id="content-${id}">
         <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
         <span class="status" id="status-${id}">${STATUS_DOT}</span>
@@ -142,6 +147,9 @@ window.measure = () => {
       const bodyElement = document.getElementById(`body-${c.key}`);
       const bodyHit = document.elementFromPoint(body.left + body.width / 2, body.top + body.height / 2);
       const columnGap = parseFloat(getComputedStyle(document.getElementById(`row-${c.key}`)).columnGap);
+      // Production renders the overlay intent trigger only on the non-suppressed
+      // shape; a suppressed fixture must not carry the extra control (roborev).
+      const overlayTriggerCount = document.getElementById(`row-${c.key}`).querySelectorAll(".intentOverlayTrigger").length;
       // Everything the reservation should cover: the trailing items after the
       // content and the column gaps between them. A summary-less delegate
       // renders no decorative chevron, so it must NOT reserve for one.
@@ -157,6 +165,7 @@ window.measure = () => {
         chevron,
         line1,
         columnGap,
+        overlayTriggerCount,
         expectedContentWidth,
         contentWidthSlack: content.width - expectedContentWidth,
         bodySameLine: body.top < line1.bottom - 1,
