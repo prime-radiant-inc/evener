@@ -41,8 +41,13 @@ export type {
   SubmittedDraft,
 } from "./pendingTurns";
 export { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
-export type { MutationPersistencePort, MutationPersistenceSnapshot } from "./projection";
-export { replaceTargetRecords } from "./projection";
+export type {
+  MutationPersistencePort,
+  MutationPersistenceSnapshot,
+  MutationProjectionFence,
+  MutationProjectionRefresh,
+} from "./projection";
+export { createMutationProjectionFence, replaceTargetRecords } from "./projection";
 export type {
   ClientIdentity,
   ClientIdentityStorage,
