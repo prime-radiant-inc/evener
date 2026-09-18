@@ -11,9 +11,10 @@
 // reconciles, and what a host's own store of them tracks, not where any of
 // it lives.
 
-export type { MutationDispatcherOptions } from "./dispatcher";
+export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
 export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
 export type {
+  MutationClientLookup,
   MutationDiscoveryReason,
   MutationLifecycleTarget,
   MutationOutboxChannel,
@@ -21,7 +22,7 @@ export type {
   MutationOutboxStorage,
   MutationVisibilityTarget,
 } from "./outbox";
-export { MutationOutbox } from "./outbox";
+export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
 export { reconcilePendingEntries } from "./pendingEntries";
 export type {
