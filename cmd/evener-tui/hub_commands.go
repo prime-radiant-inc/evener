@@ -445,10 +445,9 @@ func mergeHubItem(older, newer appwire.ThreadItem) appwire.ThreadItem {
 	if merged.Delta == "" {
 		merged.Delta = older.Delta
 	}
-	// Output images: see appwire.MergeOutputImages; input images keep the length rule.
-	if len(merged.Images) == 0 {
-		merged.Images = older.Images
-	}
+	// Output and input images each have one rule: see appwire.MergeOutputImages
+	// and appwire.MergeInputImages.
+	merged.Images = appwire.MergeInputImages(older.Images, merged.Images)
 	if merged.ToolName == "" {
 		merged.ToolName = older.ToolName
 	}
