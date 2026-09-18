@@ -32,6 +32,7 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm/providers/tokenauth"
 	"primeradiant.com/evener/rendezvous"
@@ -159,7 +160,15 @@ func Run(args []string, stdin io.Reader, stdout io.Writer, stderr io.Writer) int
 	return 0
 }
 
+var runArtifactService = interactiveartifacts.RunInheritedService
+
 func runMain(args []string, stderr io.Writer, deps mainDeps) error {
+	if len(args) > 0 && args[0] == "artifact-service" {
+		if len(args) != 1 {
+			return errors.New("artifact-service accepts only inherited private control")
+		}
+		return runArtifactService()
+	}
 	// Handle --version flag before full parsing
 	for _, arg := range args {
 		if arg == "--version" || arg == "-version" {
@@ -212,6 +221,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return err
 	}
 	defer release()
+
+	artifacts := interactiveartifacts.NewSupervisor(filepath.Join(cfg.HubStateRoot, "artifacts"), interactiveartifacts.SupervisorOptions{})
+	defer func() { _ = artifacts.Close() }()
 
 	var appwireTrace *appserver.WebSocketTrace
 	if opts.appwireTrace != "" {
@@ -458,6 +470,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	defer func() { _ = sshManager.Close() }()
 
 	web := newWebServer(hubcore.WebConfig{
+		ArtifactService:           artifacts,
 		HubAddr:                   cfg.Addr,
 		AuthToken:                 authToken,
 		MobileBaseURL:             cfg.MobileBaseURL,

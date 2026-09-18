@@ -3,6 +3,7 @@ package hubcore
 import (
 	"context"
 	"os"
+	"primeradiant.com/evener/internal/interactiveartifacts"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -37,6 +38,10 @@ type RelayLifecycleHooks struct {
 
 // WebConfig is everything the web server needs.
 type WebConfig struct {
+	// ArtifactService is constructed once by Hub runMain; grants remain closed
+	// until the durable namespace policy owner is connected.
+	ArtifactService *interactiveartifacts.Supervisor
+
 	HubAddr                   string
 	AuthToken                 string                   // capability token gating every non-exempt route
 	MobileBaseURL             string                   // optional external origin used for mobile pairing QR codes
