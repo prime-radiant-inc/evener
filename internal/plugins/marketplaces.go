@@ -359,7 +359,7 @@ func (m *Manager) sweepDestroysSource(mk Marketplaces, clone string) (bool, erro
 	// Nothing at the clone path makes the sweep a no-op, so there is nothing to
 	// protect and no reason to let an unreadable record somewhere else fail the
 	// whole removal or rename.
-	haveClone, err := pathPresent(clone)
+	haveClone, err := pathPresentNoFollow(clone)
 	if err != nil {
 		_, _ = fmt.Fprintf(m.stderr(), "warning: checking marketplace clone %s: %v\n", clone, err)
 		return true, nil
@@ -724,11 +724,14 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		return MarketplaceRef{}, Registry{}, nil, err
 	}
 	oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
-	haveClone, err := pathPresent(oldDir)
-	if err != nil {
-		return fail(err)
-	}
 	if ref.Source.Kind != SourceDirectory {
+		// The clone move follows a final symlink: pathPresent stats through it,
+		// so the move refuses rather than blindly renaming an entry it cannot
+		// read (TestEditMarketplace_TreatsOnlyAMissingPathAsAbsent).
+		haveClone, err := pathPresent(oldDir)
+		if err != nil {
+			return fail(err)
+		}
 		// Whatever the entry records: a lazy fetch clears and refills this
 		// directory before it writes an install location, so a fetch killed
 		// mid-clone leaves one behind that only the move takes with the name.
@@ -760,7 +763,7 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 				ref.InstallLocation = newDir
 			}
 		}
-	} else if haveClone {
+	} else {
 		// A directory source never lives under the clone directory, so one
 		// there is residue — the clone a git->directory re-source failed to
 		// remove. Sweep it rather than moving it: moving it would park the
@@ -768,7 +771,9 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, mk M
 		// nothing records it under. Nothing references it, so there is nothing
 		// to put back and no undo step to add — unless some record's directory
 		// source lives at or beneath it, which keeps the sweep from deleting a
-		// live source.
+		// live source. Presence is the entry's own, not a stat through a final
+		// symlink: sweeping is what removes it either way, so an unreadable
+		// link must still be cleared rather than block a directory rename.
 		protect, err := m.sweepDestroysSource(mk, oldDir)
 		if err != nil {
 			return fail(err)
@@ -990,6 +995,22 @@ func pathPresent(path string) (bool, error) {
 			}
 			return false, fmt.Errorf("checking %s: %w", path, err)
 		}
+	}
+	return true, nil
+}
+
+// pathPresentNoFollow reports whether a directory entry exists at path without
+// resolving a final symlink — the entry RemoveAll and rename act on. It is what
+// a sweep needs: a clone link whose target is unreadable (a self-loop, a
+// permission wall) is still an entry the sweep must clear, where pathPresent's
+// stat-through-the-link would error and strand it. Only a missing entry is
+// absent; any other lstat error is the caller's to return.
+func pathPresentNoFollow(path string) (bool, error) {
+	if _, err := marketplaceLstat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) || pathCannotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("checking %s: %w", path, err)
 	}
 	return true, nil
 }

@@ -1284,6 +1284,60 @@ func TestRemoveMarketplace_SweepsACloneSymlinkWithoutProtectingItsTarget(t *test
 	}
 }
 
+// A clone link whose target cannot be read — here a self-loop — is still an
+// entry the sweep must clear. pathPresent stats through the link, so using it
+// here would error, over-protect, and leave the link holding the name.
+func TestRemoveMarketplace_ClearsAnUnreadableCloneSymlink(t *testing.T) {
+	m := NewManager(t.TempDir())
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(clone, clone); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source: Source{Kind: SourceURL, URL: "https://example.invalid/acme.git"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.RemoveMarketplace(context.Background(), "acme"); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Lstat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the unreadable clone symlink survived removal: %v", err)
+	}
+}
+
+// The directory-source rename sweeps a stale clone rather than moving it, so it
+// must use the entry's own presence: an unreadable link it could not stat
+// through must not turn a rename that never touches the clone into a failure.
+func TestEditMarketplace_DirectoryRenameClearsAnUnreadableCloneSymlink(t *testing.T) {
+	m := NewManager(t.TempDir())
+	dir := makeDirectoryMarketplace(t, "acme", "widget")
+	clone := m.marketplaceDir("acme")
+	if err := os.MkdirAll(m.marketplacesDir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(clone, clone); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveMarketplaces(Marketplaces{"acme": {
+		Source:          Source{Kind: SourceDirectory, Path: dir},
+		InstallLocation: dir,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.EditMarketplace(context.Background(), "acme", "beta", nil); err != nil {
+		t.Fatalf("a directory rename failed on an unreadable clone symlink: %v", err)
+	}
+	if _, err := os.Lstat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the stale clone symlink survived the rename: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
