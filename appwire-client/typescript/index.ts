@@ -372,7 +372,7 @@ export {
   panelLoadFailure,
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
-export { insertMarker, markerText, stripMarker } from "./textareaMarkers";
+export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
 export {
   clip,
   clipJobID,
