@@ -277,15 +277,22 @@ const CANONICAL_MUTATION_PROJECTION: Readonly<
   clear: "reflected",
 };
 
-function exactObject(
+function requireObject(
   raw: unknown,
-  keys: readonly string[],
   label: string,
 ): Record<string, unknown> {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`ConversationService: ${label} is not an object`);
   }
-  const object = raw as Record<string, unknown>;
+  return raw as Record<string, unknown>;
+}
+
+function exactObject(
+  raw: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  const object = requireObject(raw, label);
   const actual = Object.keys(object).sort();
   const expected = [...keys].sort();
   if (
@@ -304,7 +311,8 @@ function nonemptyString(raw: unknown, label: string): string {
   return raw;
 }
 
-// The receipt keys this decoder knows across every mutation kind. A key from
+// The receipt keys this decoder knows across every mutation kind: the union of
+// every key `requiredReceiptKeys` can hold, so keep the two in step. A key from
 // this vocabulary that a kind does not expect is a malformed receipt and is
 // still rejected; a key outside it is an additive field no shipped build has
 // seen, and is ignored. Jesse's 2026-09-17 ruling keeps additive AppWire
@@ -328,10 +336,7 @@ function decodedReceipt(
   expectedKeys: readonly string[],
   label: string,
 ): Record<string, unknown> {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`ConversationService: ${label} is not an object`);
-  }
-  const receipt = raw as Record<string, unknown>;
+  const receipt = requireObject(raw, label);
   const expected = new Set(expectedKeys);
   for (const key of Object.keys(receipt)) {
     if (!expected.has(key) && KNOWN_RECEIPT_KEYS.has(key)) {

@@ -2901,12 +2901,8 @@ describe("observed queue guards", () => {
       /ConversationService/,
     );
   });
-  // A receipt may carry an additive key a shipped build does not know. Jesse's
-  // 2026-09-17 ruling keeps additive AppWire changes on the current
-  // ProtocolVersion, so an older peer must read a new optional key as no
-  // information; rejecting an unknown key would turn every additive wire field
-  // into a hard failure for phone builds already in testers' hands (issue
-  // #1759). The decoder validates the keys it knows and ignores the rest.
+  // #1759: a receipt may carry additive keys a shipped build has never seen;
+  // the decoder ignores them rather than rejecting the whole receipt.
   it("ignores an additive receipt key the decoder does not know", async () => {
     const { client, service } = setup();
     client.on(
