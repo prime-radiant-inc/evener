@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"slices"
 
-	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -70,33 +69,13 @@ func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
 
-// clearAskPending empties the pending set. Callers: the interrupt branch
-// (session_lifecycle.go, directly) and clearAskPendingForResolvingSteer
-// below (a drained user-sourced steer, mid-round). processOneInput's entry
-// clears the set inline instead (session_lifecycle.go's "Pending asks
-// resolve with this accepted turn"), under a lock it already holds — this
-// helper would deadlock there.
+// clearAskPending empties the pending set. Nothing in this task calls it in
+// production: a later task wires the actual clear points (a resolving user
+// turn, an interrupted turn).
 func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.askPending = nil
-}
-
-// clearAskPendingForResolvingSteer clears the pending set the moment a
-// drained steer that resolves it (deriveAskQuestions.ts's isResolutionItem:
-// SteeringSourceUser) actually lands in the transcript — not just at the
-// next accepted-turn entry. injectDrainedSteering/injectPostToolSteering run
-// MID-ROUND, well before any such entry, and the wire's ThreadModel.
-// askPending must agree with what the transcript's own steering item already
-// shows a client the moment it is hydrated; leaving the pending set stale
-// here is a live divergence, not merely a restore one (#1731 round 4). An
-// interrupted steer (SteeringKindInterrupted) never reaches here — the
-// interrupt branch calls clearAskPending directly before this turn is ever
-// appended — so this checks source alone.
-func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
-	if t.SteeringSource == events.SteeringSourceUser {
-		s.clearAskPending()
-	}
 }
 
 // minimalExampleQuestionsArray returns a minimal valid example for error messages.
@@ -265,55 +244,6 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 	})
 }
 
-// turnResolvesAskBoundary reports whether turn is one of the three shapes
-// that end a pending-ask round the same way a plain reply does (spec §6),
-// and whether that reading is decisive at all. deriveRestoredState and
-// deriveRestoredAskPending both walk backward over the SAME history and must
-// agree on exactly this boundary — factored here once, after a round (#1731
-// round 4) where the two re-derived it independently and disagreed: a
-// TurnSteering/TurnFailure narrowing added to one was never mirrored in the
-// other, so restore's SessionState and its own askPending set could rest on
-// different turns.
-//
-//   - TurnUserInput: the user spoke — resolves, decisive.
-//   - TurnSteering carrying SteeringKindInterrupted or SteeringSourceUser:
-//     the runtime already cleared askPending on this turn's behalf before it
-//     ever ran (session_lifecycle.go: the interrupt branch calls
-//     clearAskPending directly; a user steer enters processOneInput as
-//     EntryUserInput, which clears askPending unconditionally on entry) —
-//     resolves, decisive. Any other TurnSteering (a daemon-authored nudge,
-//     a reminder) carries neither marker: not decisive, the scan continues
-//     past it — a trailing steering turn must not resolve a pending ask by
-//     looking like the user moved last (spec §6).
-//   - TurnFailure tagged SteeringCarrier (schema.TurnFailureInfo.
-//     SteeringCarrier's own doc comment): the turn's mere acceptance cleared
-//     askPending before its steer failed to append, leaving nothing else
-//     behind — resolves, decisive. Every OTHER TurnFailure (a retry-budget
-//     exhaustion, a failed steering-selection prepare, a provider error) is
-//     not itself a boundary: the round it happened to may have posted real
-//     content — an ask_user call among it — before failing, and that
-//     content's own turn is still ahead in the scan to decide the outcome.
-//
-// Every other turn kind is not decisive here at all; the caller's own switch
-// handles TurnAssistant/TurnToolResults, where the two functions genuinely
-// differ on what "decisive" resolves TO (SessionAwaiting vs a typed
-// ask_user pending set) — that part is not shared.
-func turnResolvesAskBoundary(turn schema.Turn) (resolves, decisive bool) {
-	switch turn.Kind {
-	case schema.TurnUserInput:
-		return true, true
-	case schema.TurnSteering:
-		if turn.SteeringKind == events.SteeringKindInterrupted || turn.SteeringSource == events.SteeringSourceUser {
-			return true, true
-		}
-	case schema.TurnFailure:
-		if turn.Error != nil && turn.Error.SteeringCarrier {
-			return true, true
-		}
-	}
-	return false, false
-}
-
 // deriveRestoredState re-derives a restored session's at-rest state from its
 // history tail. It is the single resume-derivation function, unifying two
 // rules that were designed independently and must both hold everywhere:
@@ -325,9 +255,8 @@ func turnResolvesAskBoundary(turn schema.Turn) (resolves, decisive bool) {
 //
 // Walking backward from the most recent turn, the first decisive turn wins:
 //
-//   - turnResolvesAskBoundary's decisive turns (TurnUserInput, a resolving
-//     TurnSteering, a steering-carrier TurnFailure) resolve to idle — a
-//     reply already resolved whatever was pending, or nothing ever was.
+//   - TurnUserInput: a reply already resolved whatever was pending, or
+//     nothing ever was — idle.
 //   - TurnAssistant with no tool calls: a plain final response with nothing
 //     else after it — the agent moved last — awaiting.
 //   - TurnAssistant WITH tool calls: not decisive, the scan continues past
@@ -351,25 +280,22 @@ func turnResolvesAskBoundary(turn schema.Turn) (resolves, decisive bool) {
 //     last" (spec §6: "an interrupted ack-less ask is never pending"). A
 //     denied or invalid ask_user call is IsError for the same reason and is
 //     excluded the same way.
-//   - Every other kind not covered above (a non-decisive TurnSteering,
-//     TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment, a non-carrier
-//     TurnFailure, and the deprecated TurnTool): bookkeeping, not decisive —
-//     the scan continues past it. A trailing checkpoint/summary is the
-//     resume anchor ResumeHistory already truncated to, not a new decisive
-//     event.
+//   - TurnSteering, TurnCheckpoint, TurnSummary, TurnSystem, TurnEnvironment,
+//     and the deprecated TurnTool: bookkeeping, not decisive — the scan
+//     continues past them. A trailing steering turn (e.g. a task-nudge reminder
+//     injected before the round-boundary check runs) must not resolve a
+//     pending ask by looking like the user moved last (spec §6); a trailing
+//     checkpoint/summary is the resume anchor ResumeHistory already
+//     truncated to, not a new decisive event.
 //
 // No decisive turn anywhere in the (possibly compacted) history defaults to
 // idle, matching a fresh session.
 func deriveRestoredState(history []schema.Turn) SessionState {
 	for _, v := range slices.Backward(history) {
 		turn := v
-		if resolves, decisive := turnResolvesAskBoundary(turn); decisive {
-			if resolves {
-				return SessionIdle
-			}
-			continue
-		}
 		switch turn.Kind {
+		case schema.TurnUserInput:
+			return SessionIdle
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
 				return SessionAwaiting
@@ -399,16 +325,15 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 // guard (session_compaction.go:30) — reads len(s.askPending), which stays
 // empty unless this also runs.
 //
-// This shares turnResolvesAskBoundary's decisive boundary with
-// deriveRestoredState above — the two functions cannot disagree about which
-// turn is decisive because they call the same code to decide it — and does
-// more once it reaches one:
+// This performs the IDENTICAL backward walk deriveRestoredState uses (same
+// turn-kind cases, same "not decisive, keep scanning" fallthroughs — see
+// that function's doc comment for the full rationale) so the two can never
+// disagree about which turn is decisive; it just does more once it reaches
+// one:
 //
-//   - A resolving boundary (turnResolvesAskBoundary's TurnUserInput/
-//     TurnSteering/TurnFailure cases), or a TurnAssistant final with no tool
-//     calls: idle or a GENERIC awaiting rest, not an ask round — returns
-//     (nil, false); the pending set must stay empty (spec §2's first edge
-//     case).
+//   - TurnUserInput, or a TurnAssistant final with no tool calls: idle or a
+//     GENERIC awaiting rest, not an ask round — returns (nil, false); the
+//     pending set must stay empty (spec §2's first edge case).
 //   - TurnToolResults carrying only error-placeholder results: not decisive,
 //     keep scanning (matches deriveRestoredState's orphan-repair carve-out).
 //   - TurnToolResults carrying a completed (non-error) result, but none of
@@ -427,13 +352,9 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isAskRound bool) {
 	for i := range slices.Backward(history) {
 		turn := history[i]
-		if resolves, decisive := turnResolvesAskBoundary(turn); decisive {
-			if resolves {
-				return nil, false
-			}
-			continue
-		}
 		switch turn.Kind {
+		case schema.TurnUserInput:
+			return nil, false
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
 				return nil, false

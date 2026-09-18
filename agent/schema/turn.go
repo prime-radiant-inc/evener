@@ -141,23 +141,6 @@ type TurnFailureInfo struct {
 	// instead of substring-matching Message. Nil means the failure source is
 	// unknown.
 	Cause *TurnFailureCause `json:"cause,omitempty"`
-	// SteeringCarrier marks the one TurnFailure shape that is ALSO a
-	// resolution boundary: a steering carrier turn whose own steer failed to
-	// append, so it recorded nothing else — no TurnSteering, no TurnUserInput,
-	// nothing (agent/session_lifecycle.go's acceptSteeringCarrierInput,
-	// carrierSteerUndelivered). The turn's mere ACCEPTANCE already cleared
-	// askPending unconditionally on entry, before its steer ever tried to
-	// land (processOneInput's "Pending asks resolve with this accepted turn"),
-	// so restore must read this exact case as resolving too.
-	//
-	// Every OTHER TurnFailure (a retry-budget exhaustion, a failed steering-
-	// selection prepare, a provider error mid-round) happens to an
-	// ALREADY-RUNNING round that may have posted real content — an ask_user
-	// call among it — before failing; that content's own turn is still ahead
-	// in the backward scan and decides the outcome, so an unmarked TurnFailure
-	// must not be treated as decisive on its own (agent/session_tools_ask.go's
-	// deriveRestoredAskPending/deriveRestoredState).
-	SteeringCarrier bool `json:"steering_carrier,omitempty"`
 }
 
 // TurnFailureCause is the structured root cause of a failed turn. It mirrors

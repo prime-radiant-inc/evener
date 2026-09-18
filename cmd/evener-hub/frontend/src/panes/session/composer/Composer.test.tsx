@@ -452,7 +452,10 @@ function currentWorkEvener({ task = false, goal = false }: { task?: boolean; goa
 test("while ask_pending is open, the message textbox is hidden and the dock is not the composer's surface", async () => {
   await mountComposer("ref_a", {
     ...pendingAskTurns(),
-    evener: currentWorkEvener({ task: true, goal: true }),
+    // askPending is the wire's own source for a pending ask (deriveAskQuestions.ts);
+    // a thread whose turns carry a completed, unanswered ask_user call must also
+    // carry the flag the hub's own stampAskPendingOnStatusChange would stamp.
+    evener: { ...currentWorkEvener({ task: true, goal: true }), askPending: true },
   });
 
   // The answering surface moved to the transcript's trailing row (Session.tsx
@@ -1355,7 +1358,14 @@ test("the timing caption is absent when busy but the source advertises no queue 
 test("the timing caption is absent while an ask_user question is pending, even though the turn is busy and queueing is available", async () => {
   await mountComposer("ref_a", {
     status: { type: "active" },
-    evener: { ref: "ref_a", capabilities: FULL_CAPABILITIES, queue: { revision: 0 }, activeTurnId: "turn_1" },
+    // askPending: see the comment on the other pendingAskTurns() call site above.
+    evener: {
+      ref: "ref_a",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+      askPending: true,
+    },
     ...pendingAskTurns(),
   });
   expect(screen.queryByText(/queues until the agent stops/i)).toBeNull();

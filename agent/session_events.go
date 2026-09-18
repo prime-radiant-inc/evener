@@ -264,33 +264,19 @@ func (s *Session) emitWithProvenance(kind events.EventKind, data events.EventDat
 // callers on the cancellation path emit the bare event instead.
 func (s *Session) emitTurnFailure(data events.ErrorData) {
 	s.emit(events.EventError, data)
-	s.recordTurnFailure(data, false)
-}
-
-// emitSteeringCarrierTurnFailure is emitTurnFailure's steering-carrier
-// sibling: identical on the live channel, but tags the persisted TurnFailure
-// as the one shape (schema.TurnFailureInfo.SteeringCarrier's own doc comment)
-// deriveRestoredAskPending/deriveRestoredState (session_tools_ask.go) may
-// treat as a resolution boundary on its own. The ONLY caller is
-// acceptSteeringCarrierInput's carrierSteerUndelivered case
-// (session_lifecycle.go) — the turn whose acceptance already cleared
-// askPending and then recorded nothing else.
-func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
-	s.emit(events.EventError, data)
-	s.recordTurnFailure(data, true)
+	s.recordTurnFailure(data)
 }
 
 // recordTurnFailure persists the diagnostic of a failed turn as a TurnFailure
 // entry. It enriches the data exactly as the event pipeline does, so the
 // stored source/title/hint match what the live event carried.
-func (s *Session) recordTurnFailure(data events.ErrorData, steeringCarrier bool) {
+func (s *Session) recordTurnFailure(data events.ErrorData) {
 	enriched := enrichErrorData(data)
 	info := schema.TurnFailureInfo{
-		Message:         strings.TrimSpace(enriched.Error),
-		Source:          enriched.Source,
-		Title:           enriched.Title,
-		Hint:            enriched.Hint,
-		SteeringCarrier: steeringCarrier,
+		Message: strings.TrimSpace(enriched.Error),
+		Source:  enriched.Source,
+		Title:   enriched.Title,
+		Hint:    enriched.Hint,
 	}
 	if enriched.Cause != nil {
 		info.Cause = &schema.TurnFailureCause{

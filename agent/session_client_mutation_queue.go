@@ -531,7 +531,12 @@ func queueResponseFromRecord(threadID string, record clientMutationRecord, dispo
 	return response, nil
 }
 
-func (s *Session) reflectDurableInputQueue() {
+// reflectDurableInputQueue publishes the durable queue's current state as a
+// QUEUE_CHANGED event. consumedClientMutationIDs names entries a caller's own
+// transition just consumed (a drain folding the queue into steering) so the
+// push carries that one-shot fact alongside the durable snapshot; every other
+// caller passes none, and the field is absent on the wire (issue #1704).
+func (s *Session) reflectDurableInputQueue(consumedClientMutationIDs ...string) {
 	s.queueEventsMu.Lock()
 	defer s.queueEventsMu.Unlock()
 	snapshot := s.clientMutations.snapshot()
@@ -547,11 +552,9 @@ func (s *Session) reflectDurableInputQueue() {
 	s.inputQueue = queue
 	data := s.queueChangedDataLocked()
 	data.Revision = snapshot.QueueRevision
-	data.ClientMutationIDs = make([]string, len(snapshot.InputQueue))
-	for i, entry := range snapshot.InputQueue {
-		data.ClientMutationIDs[i] = entry.ClientMutationID
-	}
+	data.ClientMutationIDs = clientMutationQueueClientMutationIDs(snapshot.InputQueue)
 	s.mu.Unlock()
+	data.ConsumedClientMutationIDs = consumedClientMutationIDs
 	s.emit(events.EventQueueChanged, data)
 }
 
@@ -735,6 +738,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 	}
 	request.Preconditions.ExpectedQueueRevision = &params.ExpectedQueueRevision
 	var response appwire.TurnDrainAsSteerResponse
+	var consumedClientMutationIDs []string
 	lookup, err := s.clientMutations.executeAtomic(request, func(snapshot *clientMutationSnapshot, record *clientMutationRecord) error {
 		if snapshot.InterruptFence != nil {
 			rejectClientMutation(record, appwire.Conflict("turn interrupt is pending"))
@@ -773,10 +777,15 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		for _, entry := range entries {
 			removeQueuedMutationSource(snapshot, entry, "transformed")
 		}
+		consumedClientMutationIDs = clientMutationQueueClientMutationIDs(entries)
 		steeringInput := combineClientMutationInputs(entries, params.Input)
 		snapshot.InputQueue = remaining
 		snapshot.QueueRevision++
 		response = appwire.TurnDrainAsSteerResponse{Receipt: mutationReceipt(s.ID(), *record, appwire.MutationDispositionApplied, acceptedClientMutationProjection(record.Method))}
+		// Durable, so a replay reports it too: replayClientMutationResult
+		// unmarshals this same JSON, and the replay branch below never calls
+		// reflectDurableInputQueue to re-announce it any other way.
+		response.Receipt.ConsumedClientMutationIDs = consumedClientMutationIDs
 		result, marshalErr := json.Marshal(response)
 		if marshalErr != nil {
 			return marshalErr
@@ -804,7 +813,7 @@ func (s *Session) clientMutationDrain(params appwire.TurnDrainAsSteerParams) (ap
 		s.wakeForPendingSteering()
 		return replayed, nil
 	}
-	s.reflectDurableInputQueue()
+	s.reflectDurableInputQueue(consumedClientMutationIDs...)
 	s.reflectDurableClientSteering()
 	s.wakeForPendingSteering()
 	return response, nil
@@ -1104,6 +1113,18 @@ func clientMutationQueueIDs(entries []clientMutationQueueEntry) []string {
 	ids := make([]string, len(entries))
 	for i, entry := range entries {
 		ids[i] = entry.ID
+	}
+	return ids
+}
+
+// clientMutationQueueClientMutationIDs is clientMutationQueueIDs' counterpart
+// for the CLIENT's own identity on each entry (ClientMutationID), rather than
+// the daemon-minted stable queue-entry id: it names entries by the identity a
+// client's own optimistic record was enqueued under.
+func clientMutationQueueClientMutationIDs(entries []clientMutationQueueEntry) []string {
+	ids := make([]string, len(entries))
+	for i, entry := range entries {
+		ids[i] = entry.ClientMutationID
 	}
 	return ids
 }

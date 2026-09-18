@@ -769,7 +769,7 @@ describe("projectThread", () => {
             status: "completed",
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       // ask_user is a question item, not clustered with surrounding tools.
       expect(kinds(c)).toEqual(["activity", "question", "activity"]);
@@ -1187,7 +1187,7 @@ describe("projectThread", () => {
             argumentsJson: args,
           }),
         ]),
-      ]);
+      ], { evener: evenerThread({ askPending: true }) });
       const c = projectThread(t);
       expect(kinds(c)).toEqual(["user", "question"]);
       const q = c.items.find((i) => i.kind === "question");

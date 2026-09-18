@@ -1260,13 +1260,11 @@ func (s *Session) consumeSteeringMessage(msg steeringMessage) steeringConsumptio
 		s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 		s.admitPreparedSkillSelection(selectionBatch)
 		s.unparkSteering()
-		s.clearAskPendingForResolvingSteer(t)
 		return steeringDelivered
 	}
 	s.recordTurn(t, t)
 	s.emit(events.EventSteeringInjected, steeringInjectedDataFromMessage(msg))
 	s.admitPreparedSkillSelection(selectionBatch)
-	s.clearAskPendingForResolvingSteer(t)
 	return steeringDelivered
 }
 

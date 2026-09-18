@@ -143,10 +143,23 @@ function userMessageNotification(ref: string, turnId: string, itemId: string, te
   };
 }
 
+// The hub stamps askPending onto the thread/status/changed frame that goes
+// with the turn ending on an ask_user call (server/appwire_runtime.go's
+// stampAskPendingOnStatusChange) - the wire is the only source for the flag
+// (deriveAskQuestions.ts), so a fixture that never sends this frame can
+// never show a pending batch.
+function askPendingStatusChanged(ref: string): AnyNotification {
+  return {
+    method: "thread/status/changed",
+    params: { threadId: `thr_${ref}`, ref, status: { type: "awaiting" }, askPending: true },
+  };
+}
+
 // ackAskUserCall assumes `turnId` has already been started (startTurn).
 function ackAskUserCall(fake: FakeClient, ref: string, turnId: string, itemId: string, callId: string): void {
   fake.emitNotification(askItemNotification(ref, turnId, itemId, callId, "item/started", "inProgress"));
   fake.emitNotification(askItemNotification(ref, turnId, itemId, callId, "item/completed", "completed"));
+  fake.emitNotification(askPendingStatusChanged(ref));
 }
 
 // ackAskUserCallWith is ackAskUserCall with a parameterized question set
@@ -182,6 +195,7 @@ function ackAskUserCallWith(
       },
     });
   }
+  fake.emitNotification(askPendingStatusChanged(ref));
 }
 
 beforeEach(() => {
@@ -212,7 +226,9 @@ describe("reconciliation from the live ThreadModel", () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => ({
       thread: {
-        ...testThread("ref_a"),
+        ...testThread("ref_a", {
+          evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
+        }),
         turns: [
           {
             id: "turn_1",
@@ -648,6 +664,10 @@ describe("recommended default seeding", () => {
 describe("activation epochs", () => {
   function resyncWith(ref: string, items: Array<Record<string, unknown>>): void {
     const thread = testThread(ref, {
+      // A resync's snapshot is the wire's own source for askPending
+      // (deriveAskQuestions.ts); this fixture's item shapes always carry a
+      // live, unresolved ask_user call in the pending case's own set.
+      evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 }, askPending: true },
       turns: [{ id: "turn_1", status: "completed", itemsView: "full", items } as never],
     });
     putThreadModel(ref, hydrateThread({ thread } as ThreadReadResponse, ref, Date.now()));

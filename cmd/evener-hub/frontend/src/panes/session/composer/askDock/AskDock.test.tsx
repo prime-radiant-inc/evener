@@ -136,6 +136,14 @@ function ackAskUserCall(
     method: "item/completed",
     params: { ...base, item: { ...base.item, status: "completed" } },
   });
+  // The hub stamps askPending onto the thread/status/changed frame that goes
+  // with the turn ending on this ask_user call (server/appwire_runtime.go's
+  // stampAskPendingOnStatusChange) - the wire is the only source for the
+  // flag, so a fixture that never sends this frame can never show the dock.
+  fake.emitNotification({
+    method: "thread/status/changed",
+    params: { threadId: `thr_${ref}`, ref, status: { type: "awaiting" }, askPending: true },
+  });
 }
 
 async function hydrateWithOneAsk(fake: FakeClient, ref = "ref_a"): Promise<void> {
@@ -1114,6 +1122,7 @@ test("an atomic pending-set replacement with an identical count re-announces the
   // pending after that message - one reconcile swaps the batch set.
   const thread = {
     ...readResponse("ref_a").thread,
+    evener: { ...readResponse("ref_a").thread.evener, askPending: true },
     turns: [
       {
         id: "turn_1",
