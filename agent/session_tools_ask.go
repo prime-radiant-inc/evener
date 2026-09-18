@@ -83,16 +83,20 @@ func (s *Session) clearAskPending() {
 }
 
 // clearAskPendingForResolvingSteer clears the pending set the moment a
-// drained steer that resolves it (deriveAskQuestions.ts's isResolutionItem:
-// SteeringSourceUser) actually lands in the transcript — not just at the
-// next accepted-turn entry. injectDrainedSteering/injectPostToolSteering run
-// MID-ROUND, well before any such entry, and the wire's ThreadModel.
-// askPending must agree with what the transcript's own steering item already
-// shows a client the moment it is hydrated; leaving the pending set stale
-// here would be a live divergence, not merely a restore one. An interrupted
-// steer (SteeringKindInterrupted) never reaches here — the interrupt branch
-// calls clearAskPending directly before this turn is ever appended — so
-// this checks source alone.
+// drained user-sourced steer that resolves it actually lands in the
+// transcript — not just at the next accepted-turn entry.
+// injectDrainedSteering/injectPostToolSteering run MID-ROUND, well before
+// any such entry, and the server owns the ask boundary: the wire's
+// EvenerThread.AskPending (hydrate) and ThreadStatusChangedParams.AskPending
+// (stamped on every status change, server/appwire_runtime.go's
+// stampAskPendingOnStatusChange) are wire-authoritative, and the client
+// trusts that flag rather than re-deriving the boundary itself
+// (appwire-client/typescript/reducer.test.ts's "askPending is
+// wire-authoritative"); leaving s.askPending stale here would desync the
+// flag this session next reports, not merely a restore-time bug. An
+// interrupted steer (SteeringKindInterrupted) never reaches here — the
+// interrupt branch calls clearAskPending directly before this turn is ever
+// appended — so this checks source alone.
 func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
 	if t.SteeringSource == events.SteeringSourceUser {
 		s.clearAskPending()

@@ -1475,13 +1475,14 @@ func streamAskUserThenFinish(ask llm.ToolCallData) func(*llm.ChanStream) {
 }
 
 // TestAskUser_RestoreResolvesAcrossInterrupt covers the interrupt half of the
-// boundary deriveAskQuestions.ts's isResolutionItem enforces on the client
+// boundary turnResolvesAskBoundary enforces on the server
 // (agent/session_lifecycle.go: the interrupt path calls clearAskPending
 // directly and appends a steering turn carrying SteeringKindInterrupted). The
-// restore-side derivation must reach the identical answer, or a client
-// re-deriving live from the SAME transcript shape disagrees with a server
-// that restored the OLD reading. Driven through two real ProcessInput rounds
-// on a scripted STREAMING adapter (a plain fakeAdapter.Complete never
+// restore-side derivation must reach the identical answer the live path
+// already produced, or a restored session reports a stale askPending on the
+// wire that no client-side logic corrects — the client trusts the wire's
+// flag rather than re-deriving this boundary itself. Driven through two real
+// ProcessInput rounds on a scripted STREAMING adapter (a plain fakeAdapter.Complete never
 // returns an error, so it cannot produce a genuine cancellation): round one
 // posts and acks ask_user; round two's own model call is cancelled
 // mid-stream, the same way TestSettlement_InterruptWithNoSalvagePersistsNothing
@@ -1545,6 +1546,74 @@ func TestAskUser_RestoreResolvesAcrossInterrupt(t *testing.T) {
 	}
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored state = %q, want %q (deriveRestoredState and deriveRestoredAskPending must agree on this boundary)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreResolvesAcrossInterruptSameRound covers the interrupt
+// clause's other half: an interrupt whose transcript tail has no TurnUserInput
+// anywhere near it, because the cancellation lands in the SAME round that
+// posted and acked ask_user (the trigger_cancel idiom
+// TestAskUser_InterruptedTurnEndsIdle uses), not a later round entered by a
+// fresh ProcessInput. Without turnResolvesAskBoundary's SteeringKindInterrupted
+// clause, the backward scan would skip the interrupt marker as non-decisive
+// bookkeeping and land on the turn immediately before it — the TurnToolResults
+// carrying ask1's own completed, non-error ack — and re-derive the session as
+// awaiting with ask1 still pending: the "interrupted ack-less ask" spec §6
+// forbids.
+func TestAskUser_RestoreResolvesAcrossInterruptSameRound(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	parentCtx, parentCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer parentCancel()
+	ctx, cancel := context.WithCancel(parentCtx)
+	defer cancel()
+
+	ask := askUserCall("ask1", askUserArgsValid())
+	triggerCancel := llm.ToolCallData{ID: "cancel1", Name: "trigger_cancel", Arguments: json.RawMessage(`{}`), Type: "function"}
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask, triggerCancel) },
+			func(req llm.Request) llm.Response {
+				t.Fatalf("should not reach a second LLM call: an interrupted turn must not continue")
+				return llm.Response{}
+			},
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	sess.RegisterTool("trigger_cancel", "cancels the test's ProcessInput context mid-round, after ask_user has already posted",
+		map[string]any{"type": "object", "properties": map[string]any{}},
+		func(context.Context, any) (any, error) {
+			cancel()
+			return "canceling", nil
+		})
+
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("ProcessInput err = %v, want context.Canceled (interrupt semantics)", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("live pending count after the interrupt = %d, want 0", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (an interrupt resolves the pending ask even mid-round)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q (the interrupt marker must be decisive before the scan ever reaches ask1's own ack)", got, SessionIdle)
 	}
 }
 
