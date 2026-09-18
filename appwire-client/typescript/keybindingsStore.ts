@@ -94,6 +94,23 @@ function memoryDraftStorage(): KeybindingDraftStorage {
   };
 }
 
+/** The offline editor's proposal: the rules and the confirmed revision they
+ * were composed against. `generation` is the ready generation it was last
+ * confirmed valid under - null for a draft restored before any generation
+ * has begun (nothing to compare yet). Hub revision numbering restarts on a
+ * hub replacement (a reconnect to a different hub, or the same hub after a
+ * restart), so a draft composed against generation N's revision 3 must not
+ * read as current just because generation N+1 also reports revision 3 - the
+ * fence's own generation counter, not the hub's revision, is what actually
+ * changed. Distinct from KeybindingsOverrides (the wire-shaped hub payload
+ * and this store's write-path return type): a draft is never one. */
+export interface KeybindingsDraft {
+  version: 1;
+  revision: number;
+  rules: KeybindingsRule[];
+  generation: number | null;
+}
+
 export interface KeybindingsStoreFields {
   hubSupport: KeybindingsSupport;
   hubLoading: boolean;
@@ -133,7 +150,7 @@ export interface KeybindingsStoreFields {
   conflict: string | null;
   /** The offline editor's proposal: the rules and the confirmed revision they
    * were composed against. Restored from the draft port at creation. */
-  draft: KeybindingsOverrides | null;
+  draft: KeybindingsDraft | null;
   /** A checkpointed write is in flight. */
   saving: boolean;
   /** A checkpointed write left without a confirmed outcome; edits stay
@@ -322,9 +339,15 @@ function cloneRules(rules: readonly KeybindingsRule[]): KeybindingsRule[] {
 }
 
 /** A draft composed against one confirmed revision is stale once the hub has
- * confirmed a different one. */
-function staleDraft(draft: KeybindingsOverrides | null, confirmedRevision: number): boolean {
-  return draft !== null && draft.revision !== confirmedRevision;
+ * confirmed a different one. A generation change is a hub replacement
+ * (reconnect to a different hub, or the same hub restarted): the hub's own
+ * revision numbering may restart too, so a draft carrying a real (non-null)
+ * generation that no longer matches is stale regardless of what the new
+ * generation's revision says. */
+function staleDraft(draft: KeybindingsDraft | null, confirmedRevision: number, currentGeneration: number): boolean {
+  if (draft === null) return false;
+  if (draft.generation !== null && draft.generation !== currentGeneration) return true;
+  return draft.revision !== confirmedRevision;
 }
 
 function invalidDraft(): never {
@@ -706,14 +729,16 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
     try {
       const checkpoint = drafts.load();
-      const draft = checkpoint ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules } : null;
+      const draft: KeybindingsDraft | null = checkpoint
+        ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules, generation: currentGeneration() }
+        : null;
       return {
         draft,
         writeUncertain: checkpoint?.writeUncertain ?? false,
         storageUnavailable: false,
         draftUnreadable: false,
         draftError: null,
-        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision),
+        draftConflict: confirmed.loaded && staleDraft(draft, confirmed.revision, fence.generation),
       };
     } catch (error) {
       // An UnreadableDraftError names the RECORD as the problem, not the
@@ -742,6 +767,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function isSupported(): boolean {
     return getState().hubSupport === "supported";
+  }
+
+  /** The generation to stamp a freshly composed or reconciled draft with -
+   * null before any ready generation has begun (nothing to compare a later
+   * one against yet). */
+  function currentGeneration(): number | null {
+    return fence.generation >= 0 ? fence.generation : null;
   }
 
   /** Publishes the end of a write whose reply can never be settled by
@@ -820,6 +852,21 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // this set so a rule validation skips survives an unrelated edit. Only a
     // successful reconcile advances it - a failed apply leaves the last good
     // raw set beside the last good revision.
+    // A draft restored before any ready generation existed is stamped
+    // generation: null (nothing to compare against yet at restore time): the
+    // first authoritative payload to land is what actually confirms the
+    // draft valid for a real generation, so the stamp happens HERE, before
+    // staleness is judged for this same payload, and folds into this same
+    // publish. A draft already stamped (an edit, or an earlier authoritative
+    // payload) is left alone. Guarded on a LIVE generation: no call site
+    // reaches here before beginReadyGeneration wires the notification
+    // listener and every write/read is fence-gated, but the guard keeps the
+    // same shape as a store that could relay a change before any generation
+    // began, rather than relying on that staying true forever.
+    const draft =
+      state.draft !== null && state.draft.generation === null && fence.generation >= 0
+        ? { ...state.draft, generation: fence.generation }
+        : state.draft;
     setState({
       ...reconciled,
       rawOverrides: rules,
@@ -841,7 +888,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       hubError: payload.loadError ?? null,
       loadError: payload.loadError ?? null,
       conflict: null,
-      draftConflict: staleDraft(state.draft, payload.revision),
+      draft,
+      draftConflict: staleDraft(draft, payload.revision, fence.generation),
       ...extra,
       ...resolved,
     });
@@ -1347,8 +1395,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const checked = keybindingRules(rules);
     const revision = getState().draft?.revision ?? current.revision;
     persistDraft({ baseRevision: revision, rules: checked, writeUncertain: false });
-    const draft = { version: 1, revision, rules: checked };
-    setState({ draft, draftConflict: staleDraft(draft, current.revision), draftError: null });
+    const draft: KeybindingsDraft = { version: 1, revision, rules: checked, generation: currentGeneration() };
+    setState({ draft, draftConflict: staleDraft(draft, current.revision, fence.generation), draftError: null });
   }
 
   /** Settles a confirmed write against `checkpoint`. `payload` applies
@@ -1429,7 +1477,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const token = fence.claimWrite();
     const generation = fence.generation;
     const stillMine = () => fence.writeStillMine(generation, token);
-    setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
+    setState({
+      saving: true,
+      draft: { version: 1, revision, rules: checked, generation: currentGeneration() },
+      draftError: null,
+    });
     let result: unknown;
     try {
       // The saving publish above may have disposed the store or retired the
@@ -1569,7 +1621,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     if (draft === null || hubLoading || current.revision !== reviewedRevision)
       throw new Error(DRAFT_REVIEW_AGAIN_MESSAGE);
     persistDraft({ baseRevision: current.revision, rules: draft.rules, writeUncertain: false });
-    setState({ draft: { ...draft, revision: current.revision }, draftConflict: false, draftError: null });
+    setState({
+      draft: { ...draft, revision: current.revision, generation: currentGeneration() },
+      draftConflict: false,
+      draftError: null,
+    });
   }
 
   return {
