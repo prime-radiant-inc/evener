@@ -3,7 +3,12 @@ import {
   type AskQuestionRef,
   composeAskAnswers,
 } from "@evener/appwire-client";
-import type { MobileConversation } from "../../mobile/src/conversation/project";
+import {
+  liveAsksFor,
+  MAX_ITEM_BYTES,
+  type MobileConversation,
+  truncateText,
+} from "../../mobile/src/conversation/project";
 export type QuestionSelections = Record<
   string,
   Pick<AskAnswerItem, "resolution" | "note">
@@ -11,12 +16,68 @@ export type QuestionSelections = Record<
 export function pendingQuestions(
   conversation: MobileConversation | null,
 ): AskQuestionRef[] {
-  return conversation?.askPending
-    ? conversation.items.flatMap((item) =>
-        item.kind === "question" ? item.questions : [],
-      )
-    : [];
+  // Asked of the MODEL, with the package's own rule — the same call the
+  // projection's question rows come from (project.ts's askQuestionsByCall,
+  // through liveAsksFor's shared scan). The refs are therefore canonical:
+  // composeQuestionAnswers names the header, the chosen labels and the
+  // ifUnanswered text exactly as the agent asked them, while the rows a
+  // reader scrolls carry the display bound's cut copies.
+  if (conversation === null) return [];
+  return [...liveAsksFor(conversation).values()].flat();
 }
+
+// The sheet's own rendered text, bounded the same as a timeline row
+// (mobile/src/conversation/project.ts). Shared by questionsIdentity below and
+// QuestionSheet.tsx's own display copy, so the identity and what a reader
+// actually sees are cut exactly the same way.
+export const boundQuestionText = (text: string) =>
+  truncateText(text, MAX_ITEM_BYTES);
+
+// cyrb53 (bryc's widely-used non-cryptographic string hash): two 32-bit lanes
+// mixed together in one pass, so the collision rate is far below a single
+// 32-bit hash while staying dependency-free and fast over megabyte-scale
+// prose. Not security-sensitive — only used below to tell "the same
+// question" apart from "a different one" at a fixed size, never to answer a
+// choice the agent did not offer.
+function questionHash(text: string): string {
+  let h1 = 0xdeadbeef;
+  let h2 = 0x41c6ce57;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+// A question set's identity for everything that keys, signs or persists it —
+// a React key over a batch, the sheet's draft signature, and the definitions
+// that guard a persisted answer (draftRepository.ts's questionDefinitions).
+// None of those need pendingQuestions()'s canonical, uncut refs: they only
+// ever need to tell "the same questions" apart from "different questions",
+// same as a reader could from the screen — but a TRUNCATED copy of the
+// canonical fields (this used to bound-and-JSON.stringify boundQuestion's
+// display copy) collides on any two questions that share a prefix past the
+// display bound, and re-serializing megabyte-scale prose on every render is
+// the exact cost this identity exists to avoid paying. Hashing the canonical
+// fields keeps the identity fixed-size AND collision-resistant regardless of
+// input size, and the memo below (keyed on the question-array reference
+// reconcileBatches.ts hands back unchanged when nothing changed) means an
+// unaffected render or keystroke never rehashes at all.
+const questionsIdentityMemo = new WeakMap<AskQuestionRef[], string>();
+
+export function questionsIdentity(questions: AskQuestionRef[]): string {
+  const cached = questionsIdentityMemo.get(questions);
+  if (cached !== undefined) return cached;
+  const identity = questions
+    .map((question) => `${question.key}:${questionHash(JSON.stringify(question))}`)
+    .join("|");
+  questionsIdentityMemo.set(questions, identity);
+  return identity;
+}
+
 export function composeQuestionAnswers(
   questions: AskQuestionRef[],
   selections: QuestionSelections,
