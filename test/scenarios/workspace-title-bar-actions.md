@@ -275,8 +275,11 @@ find $HOME/.local/state/evener/projects -name "$SID*" -delete
   a regression guard, not a repro.** `cmd/evener/serve.go` wraps each turn in a
   per-turn `context.WithCancel(ctx)` and registers the cancel via
   `srv.SetCancelFunc` for the duration of the turn (`:957`, `:965`, `:977`),
-  clearing it on completion (`:986`). This means `capabilities.interrupt` is
-  true only mid-turn. The REST `/interrupt` handler returns 503 if no cancel
+  clearing it on completion (`:986`). The armed cancel answers only "is a cancel
+  armed right now": `capabilities.interrupt` advertises harness support (the
+  sticky `interruptWired`, latched from the retry-safe interrupt handler
+  installed at startup or from the first armed cancel, #1375), so a wired idle
+  daemon still reports it. The REST `/interrupt` handler returns 503 if no cancel
   is registered (mirrors the appwire path's `Unavailable` semantics) — so a
   stale interrupt on an idle session surfaces an honest error rather than a
   silent 204.

@@ -75,6 +75,40 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 	}
 }
 
+// The capability has to describe what the handlers can actually do, and both
+// turn/queue and turn/steer dispatch through the retry-safe callbacks. A server
+// wired only through those - no legacy SetQueueFunc/SetSteerFunc - must
+// therefore advertise the actions; reading the legacy pair alone advertised
+// queue:false and steer:false for a harness that would have taken the request,
+// so clients suppressed the action (#1375 review).
+func TestAppCapabilities_AdvertisesTheRetrySafeRegistrations(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
+		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+			return appwire.TurnQueueResponse{}, nil
+		},
+		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			return appwire.TurnSteerResponse{}, nil
+		},
+	})
+	if s.queueFunc != nil || s.steerFunc != nil || s.steerWithImagesFunc != nil {
+		t.Fatal("precondition: no legacy callback is registered")
+	}
+	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
+	if !caps.Queue {
+		t.Fatalf("Queue = false while handleAppTurnQueue can dispatch: %+v", caps)
+	}
+	if !caps.Steer {
+		t.Fatalf("Steer = false while handleAppTurnSteer can dispatch: %+v", caps)
+	}
+	// Closed still withholds both, as the daemon does.
+	closed := s.appCapabilities(appwire.ThreadStatusClosed, false)
+	if closed.Queue || closed.Steer {
+		t.Fatalf("closed thread advertised queue/steer: %+v", closed)
+	}
+}
+
 // Interrupt must be advertised from the durable wiring a daemon has at startup,
 // not from the per-turn cancel it arms later. A fresh idle daemon installs its
 // authoritative turn/interrupt handler during setup, so its first thread/read
