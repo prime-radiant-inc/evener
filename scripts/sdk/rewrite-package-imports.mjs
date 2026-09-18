@@ -19,9 +19,9 @@
 // package does not publish is reported and nothing is written — that is a
 // missing export, not something to paper over with a deep path.
 //
-// The published subpaths are read from the package's own package.json `exports`
-// map, not a list kept here: a subpath added there (state/navigation, the state
-// relocations after it) is picked up with no edit to this tool.
+// The set of published subpaths is the package's own package.json `exports`
+// map: the specifier a module maps to is whatever that map says, and nothing
+// here enumerates subpaths.
 
 import { createRequire } from "node:module";
 import { readFileSync, writeFileSync } from "node:fs";

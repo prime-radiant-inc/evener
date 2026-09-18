@@ -204,9 +204,8 @@ test("a namespace import of the one published subpath is rewritten", () => {
 });
 
 test("a state subpath added to the exports map is rewritten without a code edit", () => {
-  // The rewriter hard-coded docContent as the only subpath, so a symbol only
-  // the state/navigation subpath publishes read as a missing root export and
-  // the whole run refused. The subpaths come from the exports map instead.
+  // A symbol only a nested subpath publishes maps onto that subpath, since the
+  // subpaths are the package's exports map rather than a list in the rewriter.
   const root = fixture({
     "mobile/src/route.ts":
       'import { parseRoute } from "../../appwire-client/typescript/state/navigation";\nparseRoute();\n',
