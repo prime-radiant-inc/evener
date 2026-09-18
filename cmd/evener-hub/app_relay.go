@@ -122,13 +122,20 @@ var hubRelayIdleInterval = 250 * time.Millisecond
 // acknowledges speculatively or allocates a worker per attacker-chosen target.
 const hubRelayPendingDeliveryLimit = 64
 
+// hubTransientOwnershipBudget bounds how long a path without a request
+// context of its own waits for a session alias that a deletion or a
+// long-running Resume may hold: long enough for transient ownership to
+// resolve, bounded so the caller cannot be parked indefinitely. The
+// workspaceData reads in web_workspace.go keep their own inline 3s budgets;
+// those sites predate this constant.
+const hubTransientOwnershipBudget = 3 * time.Second
+
 // relayPublicationGuardTimeout bounds how long the per-frame publication guard
 // waits for the target alias. A deletion or a long-running Resume holds that
 // alias; a bounded wait lets transient ownership resolve so an acknowledged
 // frame is still published, while the fan-out and its publicationDone drain can
-// never be parked indefinitely. Matches the 3s discovery budgets in isLive and
-// workspaceData.
-const relayPublicationGuardTimeout = 3 * time.Second
+// never be parked indefinitely.
+const relayPublicationGuardTimeout = hubTransientOwnershipBudget
 
 const (
 	relayRetryMinDelay = 100 * time.Millisecond

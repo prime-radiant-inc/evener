@@ -806,9 +806,9 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 func (s *WebServer) isLive(sessionID string) bool {
 	if !isLocalRouteID(sessionID) {
 		// A tree projection has no request context of its own; bound the
-		// ownership wait the same way the workspace read does, so a pending
-		// Resume cannot block the render indefinitely.
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		// ownership wait the same way the relay publication guard does, so a
+		// pending Resume cannot block the render indefinitely.
+		ctx, cancel := context.WithTimeout(context.Background(), hubTransientOwnershipBudget)
 		defer cancel()
 		_, err := sourceForThreadWithDeletionFence(ctx, s.cfg, s.sources, appRefFromRouteID(sessionID), "")
 		return err == nil
