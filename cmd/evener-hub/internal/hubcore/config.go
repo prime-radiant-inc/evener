@@ -61,14 +61,18 @@ type WebConfig struct {
 	PluginDirs                []string           // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
 	PluginRoot                string             // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
 	// PluginManager, when set, is the hub's own already-wired *plugins.Manager
-	// for PluginRoot — constructed once per server by newWebServer, so every
-	// consumer (the plugin CRUD handlers, the auto-upgrade daemon, and a
-	// launch's plugin-inventory resolution via hubResolvePlugins) reaches the
-	// same Manager instead of a second, unwired one. Each WebConfig value
-	// carries its own — never a package global — so two servers in one
-	// process never answer for each other. nil falls back to a fresh
-	// plugins.NewManager(PluginRoot); every test that never builds a server
-	// leaves this nil and gets that fallback.
+	// for PluginRoot — constructed once per server by newWebServer, so the
+	// appRPC server and every consumer reached through it (the plugin CRUD
+	// handlers and a launch's plugin-inventory resolution via
+	// hubResolvePlugins) reaches the same Manager instead of a second,
+	// unwired one. Each WebConfig value carries its own — never a package
+	// global — so two servers in one process never answer for each other.
+	// nil falls back to a fresh plugins.NewManager(PluginRoot); every test
+	// that never builds a server leaves this nil and gets that fallback. The
+	// three background maintenance paths in main_background.go
+	// (hubStartUpgrade, seedHubMarketplaces, startHubPluginMaintenance's GC)
+	// build their own wired manager over the default plugin root rather than
+	// reusing this field; #1780 tracks unifying them.
 	PluginManager       *plugins.Manager
 	MCPConfigPath       string            // MCP config file path; when empty, default to ~/.config/evener/mcp.json
 	Registry            *ProviderRegistry // live provider registry; the instance, auth, credential-test and model surfaces all read it
