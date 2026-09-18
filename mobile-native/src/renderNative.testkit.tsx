@@ -1,13 +1,13 @@
-// The render harness mobile-native's vitest run could not mount a component or
-// drive a hook with before this: the package runs in vitest's node environment
-// (vitest.config.mts), where React Native's own entry point and the Expo native
-// modules it reaches cannot load. react-test-renderer renders a React tree
-// without a DOM, so the harness swaps the app's native module surface for inert
-// host elements (nativeModuleMock) and lets each test mount the real screen or
-// hook with only its native edges mocked.
+// Rendering a component or hook under vitest needs a renderer this package's
+// node environment (vitest.config.mts) does not have: React Native's entry
+// point and the Expo native modules it reaches cannot load there.
+// react-test-renderer renders a React tree without a DOM, so the harness
+// substitutes the app's native module surface with inert host elements
+// (nativeModuleMock) and mounts the real screen or hook with only its native
+// edges mocked.
 //
-// Nothing here is imported by production code: the module is a .testkit, so
-// vitest's default include (only *.test.*) never collects it as a suite.
+// Production code never imports this module: it is a .testkit, and vitest's
+// default include collects only *.test.* files as suites.
 import { createElement, type ReactElement, type ReactNode } from "react";
 import {
 	act,

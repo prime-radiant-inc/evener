@@ -1,20 +1,26 @@
-// The hook half of the D9 regression test: useCredentialStore's two effects are
-// the fix, and this drives them in a mounted tree. The ordering property the
-// issue names - a parent's layout effect runs before any child's passive effect
-// - is asserted directly, with a child component whose mount effect reads
-// through the store exactly as Providers' does; binding in a passive effect
-// (the pre-fix wiring) fails that read.
+// useCredentialStore's wiring in a mounted tree. React runs a parent's layout
+// effects before any child's passive effects, which is what lets the store be
+// bound before a child reads through it: the ordering test asserts that
+// directly, with a child whose mount effect reads exactly as Providers' does,
+// and a store bound from a passive effect fails that read.
 import { useEffect } from "react";
 import { act } from "react-test-renderer";
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import type { InstanceListResponse } from "@evener/appwire-client";
-import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
+import type {
+	CredentialInstancesClient,
+	CredentialInstancesStore,
+} from "@evener/appwire-client/state/credentials";
 import { useCredentialStore } from "./credentialStore";
 import { render, renderHook, scriptedClient } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
 vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection }));
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 const rows: InstanceListResponse = { instances: [], availableProviders: [] };
 
@@ -52,14 +58,26 @@ it("closes the store on unmount only, releasing the connection's listener", asyn
 	await expect(hook.result.current.getState().fetch()).rejects.toThrow(/no client connected/);
 });
 
-it("moves to a replacement client after mount without closing the store", async () => {
+it("rebinds to a replacement client without closing the store in between", async () => {
 	const first = scriptedClient(rows);
 	const second = scriptedClient(rows);
 	harness.connection = { client: first.client, state: "ready" };
 	const hook = renderHook(() => useCredentialStore());
 	const store = hook.result.current;
+	// Every connection the swap hands the store is recorded. Binding the
+	// replacement is the only transition allowed: a null (closed) transition of
+	// the old connection is what a single binding effect - one whose cleanup
+	// closes on every dependency change - emits first, and it is what cancels
+	// reads in flight.
+	const bindings: (CredentialInstancesClient | null)[] = [];
+	const bind = store.connectionChanged;
+	vi.spyOn(store, "connectionChanged").mockImplementation((client, state) => {
+		bindings.push(client);
+		bind(client, state);
+	});
 	harness.connection = { client: second.client, state: "ready" };
 	hook.rerender();
+	expect(bindings).toEqual([second.client]);
 	expect(first.unsubscribes()).toBe(1);
 	await act(async () => {
 		expect(await store.getState().fetch()).toBe(true);
