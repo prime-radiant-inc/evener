@@ -6868,3 +6868,35 @@ test("applyNotification returns ThreadModel's type for the fields the fold owns,
   const stillRequired: NonNullable<ThreadModel["modelRetry"]> = folded.modelRetry;
   expect(stillRequired).toBeUndefined();
 });
+
+// ModelExtras must DISTRIBUTE over a union M. A plain Omit collapses
+// Omit<A | B, keyof ThreadModel> to the members' common keys, so the return
+// would degrade to bare ThreadModel and drop each member's own extra field.
+type WrappedA = ThreadModel & { extraA: number };
+type WrappedB = ThreadModel & { extraB: string };
+
+// Widening through a declared union return defeats control-flow narrowing:
+// `const u: WrappedA | WrappedB = <a WrappedA literal>` is narrowed to
+// WrappedA at its use, so the argument would never be the union the review
+// asked about.
+function asUnion(model: WrappedA): WrappedA | WrappedB {
+  return model;
+}
+
+test("applyNotification distributes a union model's extra fields member by member", () => {
+  const folded = applyNotification(
+    asUnion({ ...testHydrate(), extraA: 1 }),
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  // The compile-time half: the return is
+  // (ThreadModel & { extraA }) | (ThreadModel & { extraB }), so it is assignable
+  // to that distributive union. A non-distributive Omit types it as bare
+  // ThreadModel and this assignment does not typecheck.
+  const distributed: (ThreadModel & { extraA: number }) | (ThreadModel & { extraB: string }) = folded;
+  expect(distributed).toBe(folded);
+  expect("extraA" in folded && folded.extraA).toBe(1);
+});
