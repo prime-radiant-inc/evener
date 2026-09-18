@@ -17,9 +17,10 @@ function backend() {
 		delete: (key: string) => {
 			values.delete(key);
 		},
-		deleteIf: (key: string, value: unknown) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
+		deleteIf: (key: string, value: unknown): boolean => {
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
+			values.delete(key);
+			return true;
 		},
 	};
 }

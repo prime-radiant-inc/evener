@@ -67,14 +67,26 @@ export interface KeybindingDraftStorage {
   createId(): string;
   load(): unknown;
   save(checkpoint: KeybindingDraftCheckpoint): void;
-  /** Removes the stored checkpoint only if it is still this one. */
-  removeIf(checkpoint: KeybindingDraftCheckpoint): void;
+  /** Removes the stored checkpoint only if it is still this one; reports
+   * whether it did. */
+  removeIf(checkpoint: KeybindingDraftCheckpoint): boolean;
+  /** Replaces the stored checkpoint with `next` only if `expected` is still
+   * the one stored; reports whether it did. */
+  replaceIf(expected: KeybindingDraftCheckpoint, next: KeybindingDraftCheckpoint): boolean;
 }
 
 /** The draft port a store without one runs on: the proposal lives in the
- * store's state only and does not survive the instance. */
+ * store's state only and does not survive the instance. There is no real
+ * backing store here - only this one repository instance ever touches it -
+ * so there is no concurrent writer a compare-and-swap could actually lose to;
+ * removeIf/replaceIf report success unconditionally rather than the refusal
+ * a byte-aware port reports when a record it named is gone (round 24
+ * Medium 1): reporting false there reads as "someone else replaced it" and
+ * adopts a restoreDraft that reads null right back from this same fallback,
+ * silently dropping the in-memory draft over a race that cannot happen
+ * without real storage behind it. */
 function memoryDraftStorage(): KeybindingDraftStorage {
-  return { createId: () => "memory", load: () => null, save() {}, removeIf() {} };
+  return { createId: () => "memory", load: () => null, save() {}, removeIf: () => true, replaceIf: () => true };
 }
 
 export interface KeybindingsStoreFields {
@@ -930,11 +942,24 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const { draft, writeUncertain, saving } = getState();
     if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving) return {};
     if (draft !== null && writeUncertain) {
+      let replaced: boolean;
       try {
-        persistDraft({ baseRevision: draft.revision, rules: draft.rules, writeUncertain: false });
+        // A fresh id: settledWrite has no checkpoint reference to reuse one
+        // from (only the in-memory draft, which carries no id), the same
+        // reason every settle here mints rather than reuses.
+        replaced = drafts.replaceClassified({
+          id: drafts.createId(),
+          baseRevision: draft.revision,
+          rules: draft.rules,
+          writeUncertain: false,
+        });
       } catch {
         return { draftError: DRAFT_SAVE_FAILED_MESSAGE };
       }
+      // The checkpoint this write was settling is gone, replaced by another
+      // window's edit while the outcome was unknown: adopt whatever is
+      // actually on disk now rather than overwrite it.
+      if (!replaced) return restoreDraft({ loaded: true, revision: payload.revision });
     }
     return { writeUncertain: false };
   }
@@ -1068,7 +1093,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // so a write QUEUED while supported can reach this point, as can one
       // composed while unsupported. Both throw without hubError.
       if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
-      if (state.hubSupport !== "supported" || state.loaded !== true || state.hubLoading) {
+      if (
+        state.hubSupport !== "supported" ||
+        state.loaded !== true ||
+        state.hubLoading ||
+        state.saving ||
+        state.writeUncertain
+      ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
         // is not the store's contract, and a patch composed from a STALE
         // generation's raw set (client replaced, refresh not yet landed) would
@@ -1076,6 +1107,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // `hubLoading` is the same race WITHIN one generation: an in-flight
         // refresh is about to land a payload whose revision may differ from
         // the one a concurrent PATCH would send as expectedRevision.
+        // `saving`/`writeUncertain` are the checkpointed editor's sibling
+        // gate: both paths take the same write token, so starting here would
+        // fence the checkpointed write's own reply out and strand it saving.
         setState({ hubError: UNAVAILABLE_MESSAGE });
         throw new Error(UNAVAILABLE_MESSAGE);
       }
@@ -1174,9 +1208,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   /** Settles a confirmed write against `checkpoint`: applies `payload`
    * (never letting a reconciler throw skip the settle - see
    * applyHubOverridesSettling), then clears the checkpoint it settled -
-   * `newerExternal` re-marks it settled in place (persistDraft) instead of
-   * removing it, because the proposal stays for review against a revision
-   * that landed while this write was out. `settled` is the caller's own
+   * `newerExternal` re-marks it settled in place (replaceClassified, a
+   * fresh id like every other settle here) instead of removing it, because
+   * the proposal stays for review against a revision that landed while
+   * this write was out. Either way, a refusal (another writer replaced the
+   * SAME checkpoint while this write was out) adopts whatever restoreDraft
+   * finds on disk instead of overwriting it. `settled` is the caller's own
    * publish alongside the apply: the post-rename caller deliberately omits
    * draftConflict so applyHubOverrides' own staleDraft check decides it,
    * while the confirmed-reply caller forces it (true for newerExternal,
@@ -1195,17 +1232,29 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     if (newerExternal) setState(settled);
     else applyFailure = applyHubOverridesSettling(payload, settled);
     let storageError: string | null = null;
+    let refused: Partial<KeybindingsStoreFields> | null = null;
     try {
-      if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });
-      else drafts.removeIf(checkpoint);
+      if (newerExternal) {
+        const replaced = drafts.replaceClassified({
+          id: drafts.createId(),
+          baseRevision: checkpoint.baseRevision,
+          rules: checkpoint.rules,
+          writeUncertain: false,
+        });
+        if (!replaced) refused = restoreDraft(getState());
+      } else if (!drafts.removeIf(checkpoint)) {
+        refused = restoreDraft(getState());
+      }
     } catch {
       storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
     }
-    setState({
-      draft: newerExternal || storageError !== null ? getState().draft : null,
-      storageUnavailable: storageError !== null,
-      draftError: storageError,
-    });
+    setState(
+      refused ?? {
+        draft: newerExternal || storageError !== null ? getState().draft : null,
+        storageUnavailable: storageError !== null,
+        draftError: storageError,
+      },
+    );
     return applyFailure;
   }
 
@@ -1248,6 +1297,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // own staleDraft check, which reads state.draft BEFORE settleWrite
         // clears it and would misread this write's own confirmed revision
         // (still the pre-write draft's revision at that point) as a conflict.
+        // A newer external revision landing while this write was out keeps
+        // the proposal for review instead of reporting it applied.
         const newerExternal = getState().revision > applied.revision;
         const applyFailure = settleWrite(applied, checkpoint, newerExternal, {
           saving: false,
@@ -1269,7 +1320,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
           draftConflict: true,
         });
         try {
-          persistDraft({ baseRevision: checkpoint.baseRevision, rules: checkpoint.rules, writeUncertain: false });
+          const replaced = drafts.replaceClassified({
+            id: drafts.createId(),
+            baseRevision: checkpoint.baseRevision,
+            rules: checkpoint.rules,
+            writeUncertain: false,
+          });
+          if (!replaced) setState(restoreDraft(getState()));
         } catch {
           setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
         }
@@ -1328,11 +1385,20 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
 
   function discardDraft(): void {
     assertEditable();
+    let removed: boolean;
     try {
-      drafts.discardClassified();
+      removed = drafts.discardClassified();
     } catch {
       setState({ storageUnavailable: true });
       throw new Error(DRAFT_DISCARD_FAILED_MESSAGE);
+    }
+    if (!removed) {
+      // The record this store classified is gone, replaced by something
+      // else (another writer, another window): re-read what is actually
+      // there now rather than assume success, so a newer checkpoint surfaces
+      // instead of staying reported as discarded.
+      setState(restoreDraft(getState()));
+      return;
     }
     setState({ draft: null, draftConflict: false, draftError: null });
   }

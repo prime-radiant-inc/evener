@@ -1,11 +1,12 @@
 // memoryDraftStorage is an in-memory draft port for any settings store's
 // checkpointed editor: one stored checkpoint, cloned on the way in and out the
-// way a JSON-backed port would, compared by JSON bytes on removeIf the way the
-// native port does, with knobs for the failures it has to survive (a save
-// that throws, a stored value that is not a checkpoint). Ids are non-integer
-// strings like production's UUIDs: an integer-like id is an index-like key V8
-// orders first, which would hide a key-order mismatch between what was saved
-// and what removeIf is later given. In-repo test support, not shipped.
+// way a JSON-backed port would, compared by JSON bytes on removeIf/replaceIf
+// the way the native port does, with knobs for the failures it has to survive
+// (a save that throws, a stored value that is not a checkpoint). Ids are
+// non-integer strings like production's UUIDs: an integer-like id is an
+// index-like key V8 orders first, which would hide a key-order mismatch
+// between what was saved and what removeIf is later given. In-repo test
+// support, not shipped.
 
 import type { DraftPort } from "../draftCheckpointPort";
 
@@ -40,8 +41,14 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     },
     removeIf: (checkpoint: Checkpoint) => {
       lastRemoveIf = structuredClone(checkpoint);
-      if (JSON.stringify(checkpoint) !== JSON.stringify(stored)) return;
+      if (JSON.stringify(checkpoint) !== JSON.stringify(stored)) return false;
       stored = null;
+      return true;
+    },
+    replaceIf: (expected: Checkpoint, next: Checkpoint) => {
+      if (JSON.stringify(expected) !== JSON.stringify(stored)) return false;
+      stored = structuredClone(next);
+      return true;
     },
   };
   return {
