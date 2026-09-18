@@ -102,27 +102,22 @@ export function createDraftRepository<Checkpoint extends object>(
   decode: (value: unknown) => Checkpoint,
 ): DraftRepository<Checkpoint> {
   const rawFrom = new WeakMap<object, unknown>();
-  let lastClassified: unknown;
-  let hasClassified = false;
-  // Distinct from hasClassified: load() classifying an EMPTY store is still a
-  // classification (of absence), not "nothing classified yet". Without this,
-  // discardClassified() read an empty load() the same as never having
-  // classified at all, took the fresh-reload fallback, and removed a record
-  // an external writer saved AFTER this repository classified the store as
-  // empty - a record it never classified.
-  let classifiedAbsent = false;
+  // What load()/save() most recently classified: nothing yet, the store
+  // classified as EMPTY (still a classification - distinct from never having
+  // classified at all, or discardClassified()/replaceClassified() would take
+  // the fresh-reload fallback and act on a record an external writer saved
+  // AFTER this repository classified the store as empty, one it never
+  // classified), or the raw bytes classified from a non-empty store.
+  let classification: null | "absent" | { raw: unknown } = null;
   return {
     createId: () => storage.createId(),
     load(): Checkpoint | null {
       const value = storage.load();
       if (value === null || value === undefined) {
-        hasClassified = true;
-        classifiedAbsent = true;
+        classification = "absent";
         return null;
       }
-      lastClassified = value;
-      hasClassified = true;
-      classifiedAbsent = false;
+      classification = { raw: value };
       const checkpoint = decode(value);
       rawFrom.set(checkpoint as object, value);
       return checkpoint;
@@ -137,9 +132,7 @@ export function createDraftRepository<Checkpoint extends object>(
       // load(), its own rawFrom entry now points at the bytes THIS call
       // wrote - otherwise a removeIf on that same reference would still
       // name the pre-save bytes, which save() already overwrote.
-      lastClassified = decoded;
-      hasClassified = true;
-      classifiedAbsent = false;
+      classification = { raw: decoded };
       rawFrom.set(checkpoint as object, decoded);
     },
     removeIf(checkpoint: Checkpoint): boolean {
@@ -158,8 +151,8 @@ export function createDraftRepository<Checkpoint extends object>(
      * only an unreadable one - nothing any build could have shown - is
      * removed, matching discardStoredDraft's own contract. */
     discardClassified(): boolean {
-      if (classifiedAbsent) return false;
-      if (hasClassified) return storage.removeIf(lastClassified);
+      if (classification === "absent") return false;
+      if (classification !== null) return storage.removeIf(classification.raw);
       const value = storage.load();
       if (value === null || value === undefined) return false;
       try {
@@ -179,7 +172,7 @@ export function createDraftRepository<Checkpoint extends object>(
      * fair game to write over unconditionally. */
     replaceClassified(next: Checkpoint): boolean {
       const decoded = decode(next);
-      if (!hasClassified || classifiedAbsent) {
+      if (classification === null || classification === "absent") {
         const value = storage.load();
         if (value !== null && value !== undefined) {
           try {
@@ -190,17 +183,13 @@ export function createDraftRepository<Checkpoint extends object>(
           }
         }
         storage.save(decoded);
-        lastClassified = decoded;
-        hasClassified = true;
-        classifiedAbsent = false;
+        classification = { raw: decoded };
         rawFrom.set(next as object, decoded);
         return true;
       }
-      const replaced = storage.replaceIf(lastClassified, decoded);
+      const replaced = storage.replaceIf(classification.raw, decoded);
       if (replaced) {
-        lastClassified = decoded;
-        hasClassified = true;
-        classifiedAbsent = false;
+        classification = { raw: decoded };
         rawFrom.set(next as object, decoded);
       }
       return replaced;
