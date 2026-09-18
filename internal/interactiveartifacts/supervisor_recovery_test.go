@@ -125,6 +125,7 @@ func TestSupervisorUnexpectedExitAutomaticallyRestarts(t *testing.T) {
 	s.mu.Lock()
 	owned := s.child
 	s.mu.Unlock()
+	restartStart := time.Now()
 	requireNoError(t, owned.cmd.Process.Kill())
 	<-waits
 	if s.Status().LiveProcesses != 0 || s.Status().ProcessesReaped != 1 {
@@ -135,6 +136,7 @@ func TestSupervisorUnexpectedExitAutomaticallyRestarts(t *testing.T) {
 	if status.Readiness.ServiceID != first.Readiness.ServiceID || status.Readiness.ServiceRunID == first.Readiness.ServiceRunID || status.ProcessesStarted != 2 {
 		t.Fatalf("restart: %+v", status)
 	}
+	t.Logf("observed owned-child kill/reap, injected wait acknowledgment, replacement readiness=%s", time.Since(restartStart))
 	fresh, err := s.Grant(context.Background(), testScope())
 	requireNoError(t, err)
 	c := sdkClient(t, fresh.Readiness.Endpoint, fresh.Token)
@@ -142,5 +144,24 @@ func TestSupervisorUnexpectedExitAutomaticallyRestarts(t *testing.T) {
 	requireNoError(t, err)
 	if result.IsError {
 		t.Fatal("replacement unusable")
+	}
+}
+
+func TestServiceControlEOFExitsOwnedProcess(t *testing.T) {
+	wait := make(chan struct{})
+	s := NewSupervisor(filepath.Join(t.TempDir(), "private"), SupervisorOptions{Policy: testPolicy, command: []string{os.Args[0], "-test.run=^TestArtifactServiceProcess$", "--", "artifact-process"}, Wait: func(ctx context.Context, _ time.Duration) error { close(wait); <-ctx.Done(); return ctx.Err() }})
+	t.Cleanup(func() { requireNoError(t, s.Close()) })
+	_, err := s.Ensure(context.Background())
+	requireNoError(t, err)
+	s.mu.Lock()
+	child := s.child
+	s.mu.Unlock()
+	// Closing the sole parent control stream reproduces parent death without
+	// addressing an arbitrary PID. The child must exit of its own accord.
+	requireNoError(t, child.client.Close())
+	<-child.done
+	<-wait
+	if !child.cmd.ProcessState.Success() || s.Status().ProcessesReaped != 1 {
+		t.Fatalf("control EOF did not drain and exit: %v %+v", child.cmd.ProcessState, s.Status())
 	}
 }

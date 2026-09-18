@@ -53,7 +53,10 @@ func testPolicy(context.Context) ([]NamespacePolicy, error) {
 }
 func TestSupervisorActual100ClientsAndOneOwnedProcess(t *testing.T) {
 	ctx := context.Background()
+	var start time.Time
+	var bootstrapDuration time.Duration
 	s := processSupervisor(t, filepath.Join(t.TempDir(), "private"), func(context.Context) ([]NamespacePolicy, error) {
+		bootstrapDuration = time.Since(start)
 		policies := make([]NamespacePolicy, 100)
 		for i := range policies {
 			policies[i] = NamespacePolicy{NamespaceID: fmt.Sprintf("namespace-%d", i), RealmID: "realm", OwnerThreadID: fmt.Sprintf("owner-%d", i)}
@@ -63,9 +66,10 @@ func TestSupervisorActual100ClientsAndOneOwnedProcess(t *testing.T) {
 	if s.Status().ProcessesStarted != 0 {
 		t.Fatal("eager service launch")
 	}
-	start := time.Now()
+	start = time.Now()
 	var wg sync.WaitGroup
 	durations := make(chan time.Duration, 100)
+	warmDurations := make(chan time.Duration, 100)
 	for i := range 100 {
 		wg.Go(func() {
 			before := time.Now()
@@ -77,15 +81,29 @@ func TestSupervisorActual100ClientsAndOneOwnedProcess(t *testing.T) {
 				t.Error(err)
 				return
 			}
-			c, err := mcp.NewClient(&mcp.Implementation{Name: "direct", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: lease.Readiness.Endpoint, HTTPClient: NewHTTPClient(lease.Token)}, nil)
+			httpClient := NewHTTPClient(lease.Token)
+			defer httpClient.CloseIdleConnections()
+			c, err := mcp.NewClient(&mcp.Implementation{Name: "direct", Version: "1"}, nil).Connect(ctx, &mcp.StreamableClientTransport{Endpoint: lease.Readiness.Endpoint, HTTPClient: httpClient}, nil)
 			if err != nil {
 				t.Error(err)
 				return
 			}
 			defer c.Close()
+			warmStart := time.Now()
 			result, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_publish", Arguments: json.RawMessage(createJSON(fmt.Sprintf("p%d", i)))})
 			if err != nil || result.IsError {
 				t.Errorf("publish: %v %+v", err, result)
+				return
+			}
+			published, _ := json.Marshal(result.StructuredContent)
+			var receipt MutationReceipt
+			if err := json.Unmarshal(published, &receipt); err != nil {
+				t.Error(err)
+				return
+			}
+			checkpoint, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_save_state", Arguments: SaveStateRequest{ArtifactID: receipt.ArtifactID, MutationID: fmt.Sprintf("checkpoint-%d", i), ExpectedSourceRevision: 1, ExpectedStateVersion: 1, State: json.RawMessage(fmt.Sprintf(`{"client":%d}`, i))}})
+			if err != nil || checkpoint.IsError {
+				t.Errorf("checkpoint: %v %+v", err, checkpoint)
 				return
 			}
 			list, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "artifact_list", Arguments: map[string]any{}})
@@ -95,15 +113,17 @@ func TestSupervisorActual100ClientsAndOneOwnedProcess(t *testing.T) {
 			}
 			encoded, _ := json.Marshal(list.StructuredContent)
 			var page ListResult
-			if err := json.Unmarshal(encoded, &page); err != nil || len(page.Artifacts) != 1 {
+			if err := json.Unmarshal(encoded, &page); err != nil || len(page.Artifacts) != 1 || page.Artifacts[0].StateVersion != 2 {
 				t.Errorf("namespace isolation: %v %s", err, encoded)
 				return
 			}
+			warmDurations <- time.Since(warmStart)
 			durations <- time.Since(before)
 		})
 	}
 	wg.Wait()
 	close(durations)
+	close(warmDurations)
 	var total time.Duration
 	var count int
 	var latencies []time.Duration
@@ -116,10 +136,19 @@ func TestSupervisorActual100ClientsAndOneOwnedProcess(t *testing.T) {
 	if count != 100 || status.ProcessesStarted != 1 || status.LiveProcesses != 1 {
 		t.Fatalf("100-client evidence: completed=%d status=%+v", count, status)
 	}
-	t.Logf("actual direct clients=%d backend children=%d artifact shims=0 wall=%s mean acquisition+initialize+publish+list=%s pid=%d", count, status.LiveProcesses, time.Since(start), total/time.Duration(max(count, 1)), status.PID)
+	t.Logf("actual direct clients=%d backend children=%d artifact shims=0 wall=%s mean acquisition+initialize+publish+checkpoint+list=%s pid=%d", count, status.LiveProcesses, time.Since(start), total/time.Duration(max(count, 1)), status.PID)
+	t.Logf("first acquire batch to private readiness before policy replay=%s", bootstrapDuration)
+	var warmLatencies []time.Duration
+	for elapsed := range warmDurations {
+		warmLatencies = append(warmLatencies, elapsed)
+	}
+	slices.Sort(warmLatencies)
+	if len(warmLatencies) == 100 {
+		t.Logf("warm publish+checkpoint+list p50=%s p95=%s p99=%s; committed checkpoints per second across full acquire batch=%.1f", warmLatencies[49], warmLatencies[94], warmLatencies[98], 100/time.Since(start).Seconds())
+	}
 	slices.Sort(latencies)
 	if len(latencies) == 100 {
-		t.Logf("acquire+initialize+publish+list p50=%s p95=%s p99=%s", latencies[49], latencies[94], latencies[98])
+		t.Logf("acquire+initialize+publish+checkpoint+list p50=%s p95=%s p99=%s", latencies[49], latencies[94], latencies[98])
 	}
 	if rss, err := exec.CommandContext(ctx, "ps", "-o", "rss=", "-p", strconv.Itoa(status.PID)).Output(); err == nil {
 		t.Logf("owned backend RSS KiB=%s", strings.TrimSpace(string(rss)))

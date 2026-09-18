@@ -31,3 +31,32 @@ func TestAdmissionCanceledCallerDoesNotReleaseAnotherLease(t *testing.T) {
 		t.Fatalf("admission leaked: %+v", a)
 	}
 }
+
+func TestAdmissionGlobalCapIncludesDistinctPrincipals(t *testing.T) {
+	a := newAdmission()
+	var releases []func()
+	for i := range 32 {
+		release, err := a.acquire(context.Background(), principalKey{"realm", string(rune('a' + i))})
+		requireNoError(t, err)
+		releases = append(releases, release)
+	}
+	queued := make(chan struct{}, 1)
+	a.onChange = func(stats AdmissionStats) {
+		if stats.Queued == 1 {
+			queued <- struct{}{}
+		}
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := a.acquire(canceled, principalKey{"realm", "extra"}); done <- err }()
+	<-queued
+	cancel()
+	requireCode(t, <-done, Busy)
+	for _, release := range releases {
+		release()
+	}
+	stats := a.stats()
+	if stats.PeakActive != 32 || stats.Active != 0 || stats.Queued != 0 {
+		t.Fatalf("global active bound: %+v", stats)
+	}
+}

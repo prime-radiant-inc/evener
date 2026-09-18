@@ -26,9 +26,10 @@ func serviceFixture(t *testing.T) (*service, string) {
 }
 func sdkClient(t *testing.T, endpoint, token string) *mcp.ClientSession {
 	t.Helper()
-	c, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: NewHTTPClient(token)}, nil)
+	httpClient := NewHTTPClient(token)
+	c, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil).Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: endpoint, HTTPClient: httpClient}, nil)
 	requireNoError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
+	t.Cleanup(func() { _ = c.Close(); httpClient.CloseIdleConnections() })
 	return c
 }
 func TestServiceSDKProfileAuthorityAndResource(t *testing.T) {
@@ -58,6 +59,27 @@ func TestServiceSDKProfileAuthorityAndResource(t *testing.T) {
 	requireNoError(t, json.Unmarshal(data, &receipt))
 	if receipt.ArtifactID == "" || receipt.SourceRevision != 1 {
 		t.Fatalf("lost receipt: %s", data)
+	}
+	requireNoError(t, s.store.EnsureNamespace(context.Background(), "other-namespace", "realm", "other-owner"))
+	otherScope := testScope()
+	otherScope.NamespaceID = "other-namespace"
+	otherScope.PrincipalID = "other-principal"
+	requireNoError(t, s.store.InstallGrant(context.Background(), sha256.Sum256([]byte("other-scope")), otherScope))
+	otherClient := sdkClient(t, s.ready.Endpoint, "other-scope")
+	for _, id := range []string{receipt.ArtifactID, "nonexistent"} {
+		result, err := otherClient.CallTool(context.Background(), &mcp.CallToolParams{Name: "artifact_read", Arguments: ReadRequest{ArtifactID: id}})
+		requireNoError(t, err)
+		encoded, _ := json.Marshal(result.StructuredContent)
+		var denied RejectedResult
+		requireNoError(t, json.Unmarshal(encoded, &denied))
+		if !result.IsError || denied.Error.Code != NotFoundOrForbidden || denied.Error.SourceRevision != 0 || denied.Error.StateVersion != 0 {
+			t.Fatalf("cross-namespace disclosure: %s", encoded)
+		}
+	}
+	forged, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: "artifact_publish", Arguments: json.RawMessage(`{"mutationId":"forged","title":"x","summary":"x","html":"x","originatingThreadId":"forged"}`)})
+	requireNoError(t, err)
+	if !forged.IsError {
+		t.Fatal("caller-supplied provenance accepted")
 	}
 	scope := testScope()
 	scope.Methods = []string{"artifact_read"}

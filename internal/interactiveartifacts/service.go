@@ -257,6 +257,8 @@ type bearerTransport struct {
 	transport *http.Transport
 }
 
+func (t *bearerTransport) CloseIdleConnections() { t.transport.CloseIdleConnections() }
+
 func (t *bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	clone := r.Clone(r.Context())
 	clone.Header.Set("Authorization", "Bearer "+t.token)
@@ -265,6 +267,8 @@ func (t *bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // NewHTTPClient keeps managed credentials on direct loopback requests. The
 // endpoint itself comes only from authenticated private service readiness.
+// Lease owners close their MCP session and then call CloseIdleConnections to
+// release their own sockets without stopping the shared service.
 func NewHTTPClient(token string) *http.Client {
 	return &http.Client{Transport: &bearerTransport{token: token, transport: &http.Transport{Proxy: nil, MaxIdleConns: 32, MaxIdleConnsPerHost: 4, IdleConnTimeout: 30 * time.Second}}, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
