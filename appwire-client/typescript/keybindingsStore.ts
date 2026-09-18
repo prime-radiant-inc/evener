@@ -1207,9 +1207,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * confirmation over it would overwrite what is already current - only
    * `settled` publishes. `cleanup` decides the checkpoint's fate once the
    * outcome is settled: "remove" clears it; "remark" re-marks it settled in
-   * place (replaceClassified, a fresh id like every other settle here)
-   * because the proposal stays for review - the usual companion to a null
-   * payload, but not always the same call, since a lost revision race
+   * place (replaceClassified, `checkpoint`'s own id - the stored id stops
+   * rotating on a remark, which nothing reads) because the proposal stays
+   * for review - the usual companion to a null payload, but not always the
+   * same call, since a lost revision race
    * applies the server's current state AND keeps the proposal for review.
    * Either way, a refusal (another writer replaced the SAME checkpoint
    * while this write was out) adopts whatever restoreDraft finds on disk
@@ -1229,12 +1230,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     let refused: Partial<KeybindingsStoreFields> | null = null;
     try {
       if (cleanup === "remark") {
-        const replaced = drafts.replaceClassified({
-          id: drafts.createId(),
-          baseRevision: checkpoint.baseRevision,
-          rules: checkpoint.rules,
-          writeUncertain: false,
-        });
+        const replaced = drafts.replaceClassified({ ...checkpoint, writeUncertain: false });
         if (!replaced) refused = restoreDraft(getState());
       } else if (!drafts.removeIf(checkpoint)) {
         refused = restoreDraft(getState());
