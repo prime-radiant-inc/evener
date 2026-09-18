@@ -1217,7 +1217,6 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) {
-        const folded = foldNonActiveTurnCompleted(model, turnId, params.turn, now);
         // The status is authoritative and the transcript's id can be absent
         // while the session is active (a hydrate cut between turns, or the gap
         // after turn/completed at an inline boundary). A failed completion
@@ -1230,7 +1229,7 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         // keeps below: no live anchor at rest). A failed completion for a turn
         // another turn has since superseded (the id names a different turn) is
         // bookkeeping about the past and leaves the status too.
-        return folded;
+        return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       }
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
