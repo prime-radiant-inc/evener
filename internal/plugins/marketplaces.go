@@ -313,14 +313,16 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	ref, ok := mk[name]
-	if !ok {
+	if _, ok := mk[name]; !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
-	if ref.Source.Kind != SourceDirectory {
-		if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
-			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
-		}
+	// A directory source's install location is its own path, so a directory
+	// under the store's canonical name can only be a stale clone — the one a
+	// git->directory re-source failed to remove, say. Sweep it whatever the
+	// recorded kind, or it outlives the marketplace under a name nothing
+	// records and blocks that name for a later rename.
+	if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
 	}
 	delete(mk, name)
 	return m.saveMarketplaces(mk)
@@ -544,13 +546,14 @@ func runUndo(undo []func() error) error {
 	return errors.Join(errs...)
 }
 
-// moveMarketplace renames a marketplace on disk and in the registry: the
-// clone directory, when the source is not a directory and one is there; the
-// plugin cache directory, when one is there; and every <plugin>@name registry
-// entry, whose install path follows the cache. Neither store file is written.
-// On success it returns the ref and registry as they are to be recorded, and
-// the steps that put the directories back should a later step fail; a failure
-// puts back what it had moved itself and reports what it could not.
+// moveMarketplace renames a marketplace on disk and in the registry: the clone
+// directory, when one is there — moved for a non-directory source, swept for a
+// directory source, which never lives there; the plugin cache directory, when
+// one is there; and every <plugin>@name registry entry, whose install path
+// follows the cache. Neither store file is written. On success it returns the
+// ref and registry as they are to be recorded, and the steps that put the
+// directories back should a later step fail; a failure puts back what it had
+// moved itself and reports what it could not.
 func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg Registry, owners map[string]string) (MarketplaceRef, Registry, []func() error, error) {
 	var undo []func() error
 	fail := func(err error) (MarketplaceRef, Registry, []func() error, error) {
@@ -559,12 +562,12 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 		}
 		return MarketplaceRef{}, Registry{}, nil, err
 	}
+	oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
+	haveClone, err := pathPresent(oldDir)
+	if err != nil {
+		return fail(err)
+	}
 	if ref.Source.Kind != SourceDirectory {
-		oldDir, newDir := m.marketplaceDir(name), m.marketplaceDir(newName)
-		haveClone, err := pathPresent(oldDir)
-		if err != nil {
-			return fail(err)
-		}
 		// Whatever the entry records: a lazy fetch clears and refills this
 		// directory before it writes an install location, so a fetch killed
 		// mid-clone leaves one behind that only the move takes with the name.
@@ -584,6 +587,16 @@ func (m *Manager) moveMarketplace(name, newName string, ref MarketplaceRef, reg 
 			if haveClone {
 				ref.InstallLocation = newDir
 			}
+		}
+	} else if haveClone {
+		// A directory source never lives under the clone directory, so one
+		// there is residue — the clone a git->directory re-source failed to
+		// remove. Sweep it rather than moving it: moving it would park the
+		// same unrecorded directory under the new name, which is still a name
+		// nothing records it under. Nothing references it, so there is nothing
+		// to put back and no undo step to add.
+		if err := marketplaceRemoveAll(oldDir); err != nil {
+			return fail(fmt.Errorf("removing stale marketplace clone %s: %w", oldDir, err))
 		}
 	}
 	oldCache, newCache := filepath.Join(m.cacheDir(), name), filepath.Join(m.cacheDir(), newName)

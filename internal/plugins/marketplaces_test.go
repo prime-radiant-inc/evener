@@ -711,6 +711,95 @@ func TestEditMarketplace_ResourceToDirectoryDropsTheRenamedClone(t *testing.T) {
 	}
 }
 
+// strandCloneAfterDirectoryResource re-sources the named git marketplace to a
+// directory source with the after-save removal of its now-redundant clone made
+// to fail, so the clone is left under <marketplaces>/<name> exactly as a failed
+// best-effort removal strands it. It returns that stranded path.
+func strandCloneAfterDirectoryResource(t *testing.T, m *Manager, name, dir string) string {
+	t.Helper()
+	clone := m.marketplaceDir(name)
+	origRemoveAll := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemoveAll })
+	marketplaceRemoveAll = func(path string) error {
+		if path == clone {
+			return errors.New("injected removal failure")
+		}
+		return origRemoveAll(path)
+	}
+	if _, err := m.EditMarketplace(context.Background(), name, "", &Source{Kind: SourceDirectory, Path: dir}); err != nil {
+		t.Fatalf("EditMarketplace to directory: %v", err)
+	}
+	marketplaceRemoveAll = origRemoveAll
+	if _, err := os.Stat(clone); err != nil {
+		t.Fatalf("the injected removal failure did not strand the clone at %s: %v", clone, err)
+	}
+	return clone
+}
+
+// A directory source's install location is its own path, never the store's
+// clone directory, so a directory under <marketplaces>/<name> can only be a
+// stale clone — here the one a git->directory re-source failed to remove.
+// RemoveMarketplace must sweep it whatever the recorded kind, or it outlives the
+// marketplace and blocks the name for a later rename.
+func TestRemoveMarketplace_SweepsAStrandedCloneUnderADirectorySource(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	dir := makeDirectoryMarketplace(t, "local", "gadget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	clone := strandCloneAfterDirectoryResource(t, m, name, dir)
+
+	if err := m.RemoveMarketplace(context.Background(), name); err != nil {
+		t.Fatalf("RemoveMarketplace: %v", err)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the stranded clone %s outlived the marketplace: %v", clone, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".claude-plugin", "marketplace.json")); err != nil {
+		t.Fatalf("the directory source itself was removed: %v", err)
+	}
+}
+
+// The same stale clone blocks a rename: leaving it under the old name means
+// refuseLeftoversUnder reports it as a removed marketplace's residue, so the
+// freed name cannot be reused until someone deletes it by hand. Renaming a
+// directory-sourced marketplace moves no clone of its own, but it must clear a
+// stale one under the old name — and not park it under the new name instead.
+func TestEditMarketplace_RenameSweepsAStrandedCloneUnderADirectorySource(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	mktRepo, name := makeInstallableMarketplace(t)
+	dir := makeDirectoryMarketplace(t, "local", "gadget")
+	m := NewManager(t.TempDir())
+	if _, err := m.AddMarketplace(context.Background(), "", Source{Kind: SourceURL, URL: mktRepo}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	clone := strandCloneAfterDirectoryResource(t, m, name, dir)
+
+	ref, err := m.EditMarketplace(context.Background(), name, "beta", nil)
+	if err != nil {
+		t.Fatalf("EditMarketplace rename: %v", err)
+	}
+	if ref.Source.Kind != SourceDirectory || ref.InstallLocation != dir {
+		t.Fatalf("rename changed the directory source: %+v", ref)
+	}
+	if _, err := os.Stat(clone); !os.IsNotExist(err) {
+		t.Fatalf("the stranded clone %s outlived the rename: %v", clone, err)
+	}
+	if _, err := os.Stat(m.marketplaceDir("beta")); !os.IsNotExist(err) {
+		t.Fatalf("the stale clone was parked under the new name: %v", err)
+	}
+	// The old name is free again, not refused as a removed marketplace's residue.
+	if _, err := m.EditMarketplace(context.Background(), "beta", name, nil); err != nil {
+		t.Fatalf("renaming back onto the freed name: %v", err)
+	}
+}
+
 func TestEditMarketplace_FetchFailureChangesNothing(t *testing.T) {
 	if !gitAvailable() {
 		t.Skip("git not available")
