@@ -178,7 +178,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				state: "submitting",
 				attempted: false,
 			};
-			this.insert(TABLES.outbox, record);
+			this.insertNew(TABLES.outbox, record);
 			return record;
 		});
 	}
@@ -234,7 +234,25 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 				display !== null &&
 				Array.isArray((display as { input?: unknown }).input);
 			if (retainsOptimisticDisplay) {
-				this.insert(TABLES.optimistic, { ...source, state: "accepted" } satisfies MutationOptimisticRecord<A>);
+				// Built field-by-field, never spread, so a recovery-sourced receipt
+				// (source.recoveryKind/recoveryReason) and attempted evidence do not
+				// leak into the optimistic row - the oracle's settleReceipt builds
+				// its accepted record the same explicit way.
+				const accepted: MutationOptimisticRecord<A> = {
+					version: source.version,
+					clientMutationId: source.clientMutationId,
+					originClientId: source.originClientId,
+					targetRef: source.targetRef,
+					threadId: source.threadId,
+					method: source.method,
+					payload: source.payload,
+					attachments: source.attachments,
+					optimisticDisplay: source.optimisticDisplay,
+					intentSequence: source.intentSequence,
+					createdAt: source.createdAt,
+					state: "accepted",
+				};
+				this.replace(TABLES.optimistic, accepted);
 			} else if (optimisticRecord) {
 				this.delete(TABLES.optimistic, clientMutationId);
 			}
@@ -265,25 +283,58 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			const record = this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
 			if (!record) return undefined;
 			const recovery: MutationRecoveryRecord<A> = { ...record, recoveryKind, recoveryReason };
-			this.insert(TABLES.recovery, recovery);
+			this.replace(TABLES.recovery, recovery);
 			this.delete(TABLES.outbox, clientMutationId);
 			return recovery;
 		});
 	}
 
-	// Below: shared plumbing D25d-1b's read methods reuse rather than
-	// re-deriving their own row (de)serialization. Not private (`#`) because
-	// 1b's methods are added to this same class in a later commit, not a
-	// subclass - visible only within this module either way, since neither is
-	// exported past the class itself.
-	protected insert(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
-		const recovery = record as Partial<MutationRecoveryRecord<A>>;
+	// Below: shared plumbing D25d-1a's write methods above call (D25d-1b's
+	// read methods, stacked on this, reuse insertValues/get/list too).
+	// A fresh clientMutationId has never been seen before, so a primary-key
+	// collision (the id generator repeating, the documented insecure
+	// fallback under adversarial conditions) means something is wrong with
+	// the id, not that this record should overwrite whatever collided with
+	// it - the same rejection the oracle's `add` gives a duplicate key.
+	protected insertNew(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
+		this.db.runSync(
+			`INSERT INTO ${table} (client_mutation_id, version, origin_client_id, target_ref, thread_id, method, payload,
+				attachments, optimistic_display, composer_text, intent_sequence, created_at, state, attempted,
+				recovery_kind, recovery_reason)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			...this.insertValues(record),
+		);
+	}
+
+	// A transition (a receipt settling, a rejection transferring) writes a
+	// record that may already occupy this id in this table - a retry of the
+	// same transition, say - and every column must land as given, the same
+	// full-row replace the oracle's `put` gives on a colliding key. Refreshing
+	// only state/attempted would leave a stale payload/display/recovery
+	// reason behind from whatever the row held before.
+	protected replace(table: string, record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>): void {
 		this.db.runSync(
 			`INSERT INTO ${table} (client_mutation_id, version, origin_client_id, target_ref, thread_id, method, payload,
 				attachments, optimistic_display, composer_text, intent_sequence, created_at, state, attempted,
 				recovery_kind, recovery_reason)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT (client_mutation_id) DO UPDATE SET state = excluded.state, attempted = excluded.attempted`,
+			 ON CONFLICT (client_mutation_id) DO UPDATE SET
+				version = excluded.version, origin_client_id = excluded.origin_client_id,
+				target_ref = excluded.target_ref, thread_id = excluded.thread_id, method = excluded.method,
+				payload = excluded.payload, attachments = excluded.attachments,
+				optimistic_display = excluded.optimistic_display, composer_text = excluded.composer_text,
+				intent_sequence = excluded.intent_sequence, created_at = excluded.created_at,
+				state = excluded.state, attempted = excluded.attempted,
+				recovery_kind = excluded.recovery_kind, recovery_reason = excluded.recovery_reason`,
+			...this.insertValues(record),
+		);
+	}
+
+	protected insertValues(
+		record: MutationOutboxRecord<A> | MutationOptimisticRecord<A> | MutationRecoveryRecord<A>,
+	): (string | number | null)[] {
+		const recovery = record as Partial<MutationRecoveryRecord<A>>;
+		return [
 			record.clientMutationId,
 			record.version,
 			record.originClientId ?? null,
@@ -300,7 +351,7 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			"attempted" in record && record.attempted ? 1 : 0,
 			recovery.recoveryKind ?? null,
 			recovery.recoveryReason ?? null,
-		);
+		];
 	}
 
 	protected get<T extends MutationRecord<A>>(table: string, clientMutationId: string): T | undefined {

@@ -112,6 +112,29 @@ test("enqueueIntent rejects an empty or whitespace targetRef before allocating a
 	expect(database.prepare("SELECT * FROM mutation_outbox").all()).toEqual([]);
 });
 
+// Oracle: enqueueIntent uses IndexedDB's `add`, which throws on a duplicate
+// key rather than silently keeping the old record. A collision here (a
+// repeating id generator, the package's documented insecure fallback) must
+// reject outright and roll back the sequence it just allocated - not
+// advance the sequence while quietly leaving the first payload in place.
+test("enqueueIntent rejects a duplicate clientMutationId and rolls back its sequence allocation", async () => {
+	const collidingIdStorage = new MutationOutboxSQLite(databaseAdapter(), {
+		createMutationId: () => "mutation-collide",
+		now: () => 1234,
+	});
+	const first = await collidingIdStorage.enqueueIntent(intent("first payload"));
+	await expect(collidingIdStorage.enqueueIntent(intent("second payload", "local:b"))).rejects.toThrow();
+
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("local:b")).toBeUndefined();
+	expect(rawRow("mutation_outbox", first.clientMutationId)).toMatchObject({
+		payload: JSON.stringify({
+			ref: TARGET,
+			input: [{ type: "text", text: "first payload" }],
+			clientMutationId: "mutation-collide",
+		}),
+	});
+});
+
 test("enqueueIntent defaults the mutation id through expo-crypto's SecureRandomSource, never a bare Web Crypto global", async () => {
 	const originalCrypto = globalThis.crypto;
 	// Simulate a host with no Web Crypto global at all - the case React Native
@@ -141,6 +164,11 @@ test("markAttempted flips a submitting record's attempted flag and refuses a non
 	await expect(storage.markAttempted(record.clientMutationId)).resolves.toBe(true);
 	expect(rawRow("mutation_outbox", record.clientMutationId)).toMatchObject({ attempted: 1 });
 	await expect(storage.markAttempted("missing")).resolves.toBe(false);
+
+	const blocked = await storage.enqueueIntent(intent("already blocked", "local:blocked"));
+	await storage.markUnknown(blocked.clientMutationId, "blockedUnknown");
+	await expect(storage.markAttempted(blocked.clientMutationId)).resolves.toBe(false);
+	expect(rawRow("mutation_outbox", blocked.clientMutationId)).toMatchObject({ attempted: 0 });
 });
 
 test("markUnknown sets the given state and its onlyAttempted guard refuses an un-attempted record", async () => {
@@ -201,7 +229,52 @@ test("settleReceipt consults recovery when the outbox no longer holds the record
 	await storage.transferToRecovery(record.clientMutationId, "rejected", "turn is not active");
 	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
 	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
-	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted" });
+	// The recovery source carried recoveryKind/recoveryReason/attempted - the
+	// promoted optimistic row must not inherit them (oracle: settleReceipt
+	// builds its accepted record from an explicit field list, never a spread).
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({
+		state: "accepted",
+		recovery_kind: null,
+		recovery_reason: null,
+	});
+});
+
+// insert() used to update only state/attempted on a primary-key conflict, so
+// a transition landing on a row that already occupies that id would keep the
+// old payload/display. Seeds a stale row directly (this table's id space
+// never legitimately repeats through the port's own methods today, since a
+// record's stored content is fixed at enqueueIntent) to prove the write this
+// call makes replaces every column, the way the oracle's `put` does.
+test("settleReceipt's optimistic insert fully replaces a stale row rather than only refreshing state", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("fresh display"),
+		optimisticDisplay: { input: [{ type: "text", text: "fresh display" }] },
+	});
+	database
+		.prepare(
+			`INSERT INTO mutation_optimistic (client_mutation_id, version, origin_client_id, target_ref, thread_id,
+				method, payload, attachments, optimistic_display, composer_text, intent_sequence, created_at, state,
+				attempted, recovery_kind, recovery_reason)
+			 VALUES (?, 1, NULL, ?, ?, ?, ?, '[]', ?, NULL, 0, 0, 'accepted', 0, NULL, NULL)`,
+		)
+		.run(
+			record.clientMutationId,
+			TARGET,
+			"thread-1",
+			"turn/queue",
+			JSON.stringify({ ref: TARGET, input: [{ type: "text", text: "stale" }], clientMutationId: record.clientMutationId }),
+			JSON.stringify({ input: [{ type: "text", text: "stale" }] }),
+		);
+
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({
+		payload: JSON.stringify({
+			ref: TARGET,
+			input: [{ type: "text", text: "fresh display" }],
+			clientMutationId: record.clientMutationId,
+		}),
+		optimistic_display: JSON.stringify({ input: [{ type: "text", text: "fresh display" }] }),
+	});
 });
 
 test("settleReceipt drops an existing optimistic record when a later receipt no longer carries a display to retain", async () => {
