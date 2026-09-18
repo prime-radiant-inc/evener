@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11886,7 +11887,7 @@ func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
 				t.Fatalf("%s: %v", tc.method, err)
 			}
 
-			assertInstanceBroadcastShape(t, tc.method, waitForAuthUpdated(t, client), "tab-a")
+			assertInstanceBroadcastShape(t, tc.method, waitForAuthUpdatedRaw(t, client), "tab-a")
 		})
 	}
 }
@@ -11896,14 +11897,23 @@ func TestHubRPCInstanceBroadcastEchoesOriginClientId(t *testing.T) {
 // the contract, not incidental: the SDK's own-echo correlation keys on the
 // absent provider to tell an instance echo from an auth one, so a stray
 // provider would reroute the notification into its auth fallback.
-func assertInstanceBroadcastShape(t *testing.T, method string, params appwire.EvenerAuthUpdatedParams, wantOrigin string) {
+func assertInstanceBroadcastShape(t *testing.T, method string, raw json.RawMessage, wantOrigin string) {
 	t.Helper()
-	if params.Provider != "" || params.ActiveSource != "" {
-		t.Errorf("%s params=%+v: provider=%q activeSource=%q, want both empty: an instance broadcast names no auth source",
-			method, params, params.Provider, params.ActiveSource)
+	// Key ABSENCE, not an empty value: a payload carrying `"provider":""` decodes
+	// to the same empty string as an omitted key, but the SDK routes an instance
+	// echo by `provider === undefined`, so an explicit empty provider would send
+	// it looking for a "" marker and read the client's own mutation as foreign.
+	// Only the raw bytes can pin that.
+	if bytes.Contains(raw, []byte("provider")) || bytes.Contains(raw, []byte("activeSource")) {
+		t.Errorf("%s params=%s, want neither the provider nor the activeSource key: an instance broadcast names no auth source",
+			method, raw)
+	}
+	var params appwire.EvenerAuthUpdatedParams
+	if err := json.Unmarshal(raw, &params); err != nil {
+		t.Fatalf("%s: decode params %s: %v", method, raw, err)
 	}
 	if params.OriginClientId != wantOrigin {
-		t.Errorf("%s params=%+v: originClientId=%q, want %q", method, params, params.OriginClientId, wantOrigin)
+		t.Errorf("%s params=%s: originClientId=%q, want %q", method, raw, params.OriginClientId, wantOrigin)
 	}
 }
 
@@ -11935,7 +11945,7 @@ func TestHubRPCInstanceRefreshModelsBroadcastEchoesOriginClientId(t *testing.T) 
 		t.Fatalf("evener/instance/refreshModels: %v", err)
 	}
 
-	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdated(t, client), "tab-a")
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "tab-a")
 }
 
 // TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone is the control
@@ -11951,7 +11961,7 @@ func TestHubRPCInstanceCreateBroadcastWithoutOriginClientIdHasNone(t *testing.T)
 		t.Fatalf("evener/instance/create: %v", err)
 	}
 
-	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdated(t, client), "")
+	assertInstanceBroadcastShape(t, appwire.NotifyEvenerAuthUpdated, waitForAuthUpdatedRaw(t, client), "")
 }
 
 // TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
@@ -12038,7 +12048,7 @@ func TestHubRPCInstanceEditRenameBroadcastsWhenTheCredentialMoveFails(t *testing
 	// one - the error reply is not the only signal every other client's list is
 	// stale - but it names no origin: the caller's mutation errored, so its echo
 	// must not be consumable as that client's own success.
-	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdated(t, client), "")
+	assertInstanceBroadcastShape(t, "rename whose credential move failed", waitForAuthUpdatedRaw(t, client), "")
 }
 
 // The sibling case: the credential move succeeded and the reload that follows

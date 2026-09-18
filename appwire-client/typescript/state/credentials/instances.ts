@@ -753,10 +753,12 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   //   later mutation's), so an older reply that lands after a newer mutation was
   //   issued cannot spend the newer mutation's echo. That covers the write that
   //   applied before its later step failed (cmd/evener-hub/app_write_applied.go):
-  //   its broadcast now echoes the caller's originClientId, but the failing
-  //   mutation has already retired its own marker, so the echo reads as foreign
-  //   and re-reads - the store cannot tell "applied, no echo attributable" from
-  //   "never applied" without the wire saying which, which it does not yet.
+  //   its broadcast is the no-data form - no provider, and no origin either,
+  //   because the hub drops the origin for an errored write - so it is
+  //   unattributable and always reads as foreign here, and the failing mutation
+  //   has already retired the marker it armed, so it cannot absorb that echo.
+  //   The store cannot tell "applied, no echo attributable" from "never
+  //   applied" without the wire saying which, which it does not yet.
   // - Bounded by a short age window from the marker's latest stamp, so a marker
   //   that is never consumed (the echo was lost, or the notification arrived
   //   pre-response and the client disconnected) cannot outlive its meaning.
