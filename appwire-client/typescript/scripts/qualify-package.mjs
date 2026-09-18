@@ -233,7 +233,7 @@ const pathRows = client.buildPathRows({
   value: "/home/me/notes.md", recents: ["/home/me/proj"], showRecents: true,
 });
 assert.deepEqual(pathRows.map((row) => row.kind), ["group", "recent", "group", "parent", "dir", "file"]);
-assert.deepEqual(client.pickableRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
+assert.deepEqual(client.pickablePathRows(pathRows).map((row) => row.path), ["/home/me/proj", "/home", "/home/me/src", "/home/me/notes.md"]);
 assert.equal(client.parseTaskListData(null), null);
 assert.deepEqual(client.parseTaskListData([]), []);
 const taskRows = client.parseTaskListData([

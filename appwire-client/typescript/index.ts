@@ -273,7 +273,7 @@ export {
   withGroupHeads,
 } from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
-export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
+export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
