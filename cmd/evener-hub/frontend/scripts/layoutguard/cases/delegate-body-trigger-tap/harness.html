@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>delegate-body-trigger-tap layoutguard harness</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="resolved.css">
+<style>
+  *, *::before, *::after { transition: none !important; }
+  body {
+    margin: 0;
+    background: var(--surface-1);
+    font-family: var(--font-sans);
+    color: var(--ink-hi);
+  }
+  .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 12px; }
+  .fixtureLabel { color: var(--ink-low); font: var(--font-size-caption) var(--font-mono); margin-bottom: 2px; }
+  .railBox { box-sizing: border-box; padding-left: var(--speaker-gutter); }
+</style>
+</head>
+<body data-font-size="m">
+<!-- The summary-less two-level row (ToolRow's intentControlSuppressed arm) at a
+     phone viewport, where tokens.css declares --tap-min: 44px. The body trigger
+     is the row's ONLY control; the @media (max-width: 899px) .bodyTrigger block
+     must grow it to the tap floor, and the .row[data-intent-trailing="true"] >
+     .intent reservation (var(--tap-min, 14px)) must reserve that grown width so
+     the bare intent still shares line 1:
+
+       <div class="row" data-intent="true" data-intent-trailing="true"
+            data-body-trigger-intent="true">
+         <span class="intent">{statedIntent}</span>
+         <button class="bodyTrigger"><span class="chevron">…</span></button>
+       </div> -->
+<div class="fixtures"></div>
+<script>
+const CHEVRON_SVG = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false" style="display:block"><path d="M6 3.5 L10.5 8 L6 12.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg>';
+
+function rowHtml(id, intent) {
+  return `
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true">
+      <span class="intent" id="intent-${id}">${intent}</span>
+      <button type="button" class="bodyTrigger" id="body-${id}" aria-expanded="true">
+        <span class="chevron" id="chevron-${id}" aria-hidden="true" data-open="true">${CHEVRON_SVG}</span>
+      </button>
+    </div>`;
+}
+
+const SHORT_INTENT = "Scout the frontend for the open-widget renderer.";
+const LONG_INTENT = "Locate the delegate row renderer in the transcript pane, trace how its body trigger is composed against the bare intent, and confirm the inline placement holds when the stated intent wraps across more than one line inside the row.";
+
+const CONFIGS = [
+  { key: "phone-short", intent: SHORT_INTENT, label: "390px phone column, short intent" },
+  { key: "phone-long", intent: LONG_INTENT, label: "390px phone column, long intent" },
+];
+
+const root = document.querySelector(".fixtures");
+for (const c of CONFIGS) {
+  const section = document.createElement("div");
+  section.className = "fixture";
+  const label = document.createElement("div");
+  label.className = "fixtureLabel";
+  label.textContent = `${c.label} (#${c.key})`;
+  const box = document.createElement("div");
+  box.className = "railBox";
+  box.innerHTML = rowHtml(c.key, c.intent);
+  section.append(label, box);
+  root.append(section);
+}
+
+function box(el) {
+  const r = el.getBoundingClientRect();
+  return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.width, height: r.height };
+}
+
+function firstLineBox(intentEl) {
+  const range = document.createRange();
+  range.selectNodeContents(intentEl);
+  const rects = range.getClientRects();
+  const first = rects[0];
+  let right = first.right;
+  for (const r of rects) {
+    if (r.top < first.bottom && r.bottom > first.top) right = Math.max(right, r.right);
+  }
+  return { top: first.top, bottom: first.bottom, left: first.left, right };
+}
+
+window.measure = () => {
+  return CONFIGS.map((c) => {
+    const body = box(document.getElementById(`body-${c.key}`));
+    const intentEl = document.getElementById(`intent-${c.key}`);
+    const line1 = firstLineBox(intentEl);
+    const bodyHit = document.elementFromPoint(body.left + body.width / 2, body.top + body.height / 2);
+    return {
+      id: c.key,
+      label: c.label,
+      body,
+      line1,
+      sameLine: body.top < line1.bottom - 1,
+      dropBelowLine1: body.top - line1.bottom,
+      bodyHitIsBody: Boolean(bodyHit && document.getElementById(`body-${c.key}`).contains(bodyHit)),
+    };
+  });
+};
+</script>
+</body>
+</html>

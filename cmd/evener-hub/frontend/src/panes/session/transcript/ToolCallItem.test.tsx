@@ -1775,6 +1775,37 @@ test.each(["activity", "full"] as const)(
   },
 );
 
+// --- #1253 review: the subscriber-delegate row's sole body control carries
+//     the visible intent's accessible name and the status association the
+//     suppressed intent trigger used to provide.
+test("a summary-less delegate row names its sole body control from the intent and describes its status", () => {
+  seedCurrentDelegate("ref_current", "dlg_named", "running");
+  render(
+    <ToolCallItem
+      item={item({
+        id: "delegate_named_control",
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+        output: JSON.stringify({ delegate_id: "dlg_named", status: "running", transcript_ref: "local:sess_child" }),
+      })}
+      turn={turn}
+      sessionRef="ref_current"
+      live={false}
+    />,
+  );
+
+  // One control, named from the visible intent rather than the blanked summary
+  // (which would reduce it to the bare "Tool call" fallback).
+  const control = screen.getByTestId("tool-row-body-trigger");
+  expect(screen.queryByTestId("tool-row-trigger")).toBeNull();
+  expect(screen.getByRole("button", { name: "Delegating the flaky suite" })).toBe(control);
+  // The status the suppressed intent trigger used to describe stays associated
+  // with that one control.
+  const status = screen.getByTestId("tool-row-status");
+  expect(control.getAttribute("aria-describedby")).toBe(status.id);
+});
+
 // --- entity cards on ids in non-content summary fields ---------------------
 //
 // A tool summary is a plain string, but a job_/dlg_/watch_ id inside it names a

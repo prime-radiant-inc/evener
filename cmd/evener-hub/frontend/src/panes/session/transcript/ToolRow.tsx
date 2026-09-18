@@ -867,13 +867,17 @@ export function ToolRow({
     </>
   );
   // The accessible name for a body disclosure trigger: the failure prefix
-  // (if failed), the summary text (if any), or a bare "Tool call" fallback.
-  // Used by both the intent-less overlay trigger and the two-level body
-  // chevron (.bodyTrigger).
+  // (if failed), the summary text (if any), else the stated intent on a
+  // summary-less intent-bearing row, or a bare "Tool call" fallback. Used by
+  // the intent-less overlay trigger and the two-level body chevron
+  // (.bodyTrigger). A summary-less delegate row's .bodyTrigger is its ONE
+  // control (the intent trigger is suppressed), so it must carry the visible
+  // intent's context - blanking the summary must not reduce the name to
+  // "Tool call" (#1253 review).
   const summaryLabel = [
     failed ? "Failed" : undefined,
-    hasSummary ? summary : undefined,
-    !hasSummary && !failed ? "Tool call" : undefined,
+    hasSummary ? summary : hasIntent ? statedIntent : undefined,
+    !hasSummary && !hasIntent && !failed ? "Tool call" : undefined,
   ]
     .filter((part): part is string => part !== undefined)
     .join(" ");
@@ -885,7 +889,10 @@ export function ToolRow({
   // summary text instead (the span rendered inside .summary above), so it hugs
   // the words it opens; only a summary-less line keeps the chevron inside the
   // button. On the intent line (summary hidden, body expanded) it is a normal
-  // flex item beside the intent button.
+  // flex item beside the intent button. Its accessible name comes from
+  // summaryLabel (which falls back to the stated intent on a summary-less
+  // row), and it names the status as its description the way the suppressed
+  // intent trigger used to (#1253 review).
   const bodyTriggerButton = twoLevel ? (
     <button
       type="button"
@@ -894,6 +901,7 @@ export function ToolRow({
       aria-expanded={expanded}
       aria-controls={disclosureBodyId}
       aria-label={summaryLabel}
+      aria-describedby={hasStatus ? statusId : undefined}
       onClick={() => onToggle?.()}
     >
       {bodyChevronInline ? null : bodyChevron}
