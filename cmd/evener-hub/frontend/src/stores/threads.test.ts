@@ -10646,4 +10646,94 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     );
     tabA.close();
   });
+
+  // RoboRev PR #1873 low, the notify half: a zero-discard success still has
+  // to notify persistence. Zero says what THIS tab's write removed - never what
+  // another tab removed from under this tab's cached projection, and the
+  // notify is what refreshes that projection (the queue strip's rows, the
+  // note editor's statuses).
+  test("a deletion fence's zero-discard cleanup still notifies persistence", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    let notified = false;
+    const unsubscribe = subscribeMutationPersistence((refs) => {
+      if (refs.includes("ref_gone")) notified = true;
+    });
+    try {
+      fake.on("thread/read", () => {
+        throw new WireError("target has been deleted: local:ref_gone", -32001, {
+          evenerErrorInfo: "actionUnavailable",
+          mutationOutcome: "targetDeleted",
+          retryDisposition: "none",
+        });
+      });
+      // The ref holds no rows at all: the fence's discard succeeds with zero -
+      // the exact success whose notification was suppressed.
+      void threadsStore.getState().ensureThread("ref_gone");
+      await waitFor(() => {
+        expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+      });
+      await flushUntilArrived("the zero-discard cleanup to notify persistence", () => notified);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  // RoboRev PR #1873 low, the pins half: the discard that removes a ref's
+  // last row must refresh the mutation pin. Without the refresh the stale pin
+  // keeps releaseThread from dropping the model of a thread the hub has
+  // proven deleted.
+  test("the deletion fence's discard refreshes the pin so the last release drops the model", async () => {
+    const storage = new MutationOutboxIndexedDB();
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_gone");
+    // A pinned durable row: enqueued durably, then canceled by a real Stop
+    // whose interrupt settles.
+    const canceled = await storage.enqueueIntent({
+      targetRef: "ref_gone",
+      threadId: "thr_ref_gone",
+      method: "turn/queue",
+      payload: { ref: "ref_gone", input: [{ type: "text", text: "canceled before the deletion" }] },
+      attachments: [],
+      optimisticDisplay: null,
+    });
+    fake.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_gone");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await storage.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+    // Let the interrupt's own dispatch tail run out of the way; the canceled
+    // row is the ref's pin, exactly the pin the fence's discard must refresh.
+    await flushIndexedDBUntil(() => false, 4);
+
+    // The hub's deletion fence lands: the canceled row leaves with the ref.
+    fake.on("thread/read", () => {
+      throw new WireError("target has been deleted: local:ref_gone", -32001, {
+        evenerErrorInfo: "actionUnavailable",
+        mutationOutcome: "targetDeleted",
+        retryDisposition: "none",
+      });
+    });
+    await threadsStore
+      .getState()
+      .refreshThread("ref_gone")
+      .catch(() => undefined);
+    await waitFor(() => {
+      expect(threadsStore.getState().deletedRefs.has("ref_gone")).toBe(true);
+    });
+    await flushUntilArrived(
+      "the fence's discard to remove the canceled row",
+      async () => (await storage.getOutbox(canceled.clientMutationId)) === undefined,
+    );
+    await flushIndexedDBUntil(() => false, 4);
+
+    // The pane goes away: with the pin refreshed, the last release drops the
+    // deleted thread's model instead of holding it for a row that no longer
+    // exists.
+    threadsStore.getState().releaseThread("ref_gone");
+    expect(threadsStore.getState().threads.has("ref_gone")).toBe(false);
+  });
 });

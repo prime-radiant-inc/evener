@@ -1372,8 +1372,16 @@ function discardCanceledMutations(targetRef: string): Promise<void> {
   if (!runtime) return Promise.resolve();
   return runtime.storage
     .discardCanceled(targetRef)
-    .then((discarded) => {
-      if (discarded.length > 0 && isCurrentMutationRuntime(runtime)) notifyMutationPersistence([targetRef]);
+    .then(() => {
+      if (!isCurrentMutationRuntime(runtime)) return;
+      // Every successful discard notifies, a zero count included: zero says
+      // what THIS tab's write removed, never what another tab may have
+      // removed from under this tab's cached projection - and the notify is
+      // what refreshes that projection. The pin refresh follows for the same
+      // reason: the discard may have removed the ref's last durable row, and
+      // a stale pin keeps releaseThread from dropping the model.
+      notifyMutationPersistence([targetRef]);
+      void refreshMutationPins(runtime, [targetRef]);
     })
     .catch(() => {});
 }
