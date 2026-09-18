@@ -273,11 +273,14 @@ func (s *Session) emitTurnFailure(data events.ErrorData) {
 // doc comment) deriveRestoredAskPending/deriveRestoredState
 // (session_tools_ask.go) may treat as a resolution boundary on its own. The
 // ONLY caller of THIS function is acceptSteeringCarrierInput's
-// carrierSteerUndelivered case (session_lifecycle.go) — the turn whose
-// acceptance already cleared askPending and then recorded nothing else; the
-// tag's other shape, a carrier-claim's own steer selection failure, is set
-// directly by recordFailedSteeringSelection (session_queue.go) without going
-// through this function.
+// carrierSteerUndelivered case (session_lifecycle.go), and only when the
+// claimed steer answers the ask (steeringCarrierClaimAnswersAsk) — the turn
+// whose acceptance already cleared askPending and then recorded nothing
+// else; a human-note carrier's own append failure calls emitTurnFailure
+// instead, since its entry clear never ran. The tag's other shape, a
+// carrier-claim's own steer selection failure, is set directly by
+// recordFailedSteeringSelection (session_queue.go) without going through
+// this function, gated by the same answering check.
 func (s *Session) emitSteeringCarrierTurnFailure(data events.ErrorData) {
 	s.emit(events.EventError, data)
 	s.recordTurnFailure(data, true)

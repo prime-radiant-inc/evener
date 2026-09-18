@@ -135,6 +135,29 @@ func steeringSourceAnswersAsk(source, kind string) bool {
 	return source == events.SteeringSourceUser && kind != events.SteeringKindHumanNote
 }
 
+// steeringOriginBoundary clamps divergenceTurn (expressed exactly as
+// escapeHistoryWithSessionProvenance defines it, session_init.go) to a valid
+// inherited-turn count for a history of historyLen turns: turns before the
+// bound came from a parent session whose journal this session does not
+// hold, and a child mutation may reuse a parent's client mutation id, so
+// provenance lookups for them must use nil origins; turns from the bound
+// onward are this session's own and may consult its journal. Shared by
+// escapeHistoryWithSessionProvenance and turnResolvesAskBoundary's callers
+// (deriveRestoredState/deriveRestoredAskPending) so a second copy of the
+// clamp can't drift from it (RoboRev #1806 round-5 Medium: the ask-boundary
+// scan used to apply the whole journal to the whole history, letting a
+// reused id misclassify an inherited turn).
+func steeringOriginBoundary(divergenceTurn, historyLen int) int {
+	inherited := divergenceTurn - 1
+	if inherited <= 0 {
+		return 0
+	}
+	if inherited >= historyLen {
+		return historyLen
+	}
+	return inherited
+}
+
 // minimalExampleQuestionsArray returns a minimal valid example for error messages.
 func minimalExampleQuestionsArray() string {
 	ex := map[string]any{
@@ -407,10 +430,20 @@ func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin
 // No decisive turn anywhere in the (possibly compacted) history defaults to
 // idle, matching a fresh session. origins is turnResolvesAskBoundary's same
 // steering-provenance lookup (nil when there is nothing to look up).
-func deriveRestoredState(history []schema.Turn, origins map[string]steeringOrigin) SessionState {
-	for _, v := range slices.Backward(history) {
-		turn := v
-		if turnResolvesAskBoundary(turn, origins) {
+// divergenceTurn scopes it exactly as escapeHistoryWithSessionProvenance
+// does (steeringOriginBoundary): a forked child's inherited prefix is
+// decided with nil origins regardless of what origins carries, since a
+// reused client mutation id in the child's OWN journal must never reclassify
+// a turn the parent wrote.
+func deriveRestoredState(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) SessionState {
+	inherited := steeringOriginBoundary(divergenceTurn, len(history))
+	for i := range slices.Backward(history) {
+		turn := history[i]
+		turnOrigins := origins
+		if i < inherited {
+			turnOrigins = nil
+		}
+		if turnResolvesAskBoundary(turn, turnOrigins) {
 			return SessionIdle
 		}
 		switch turn.Kind {
@@ -468,11 +501,17 @@ func deriveRestoredState(history []schema.Turn, origins map[string]steeringOrigi
 // arguments parsed" (true) — spec §2's unparseable-arguments edge case: the
 // caller logs a warning only for the latter, and the restore must never fail
 // over either. origins is turnResolvesAskBoundary's same steering-provenance
-// lookup (nil when there is nothing to look up).
-func deriveRestoredAskPending(history []schema.Turn, origins map[string]steeringOrigin) (pending []askQuestion, isAskRound bool) {
+// lookup (nil when there is nothing to look up). divergenceTurn scopes it
+// exactly as deriveRestoredState does above (steeringOriginBoundary).
+func deriveRestoredAskPending(history []schema.Turn, divergenceTurn int, origins map[string]steeringOrigin) (pending []askQuestion, isAskRound bool) {
+	inherited := steeringOriginBoundary(divergenceTurn, len(history))
 	for i := range slices.Backward(history) {
 		turn := history[i]
-		if turnResolvesAskBoundary(turn, origins) {
+		turnOrigins := origins
+		if i < inherited {
+			turnOrigins = nil
+		}
+		if turnResolvesAskBoundary(turn, turnOrigins) {
 			return nil, false
 		}
 		switch turn.Kind {

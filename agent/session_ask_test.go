@@ -1790,11 +1790,11 @@ func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *
 	history := append(append([]schema.Turn{}, sess.history...), legacyNote)
 	origins := map[string]steeringOrigin{"note-legacy": {method: clientMutationMethodNotesHumanSet}}
 
-	pending, isAskRound := deriveRestoredAskPending(history, origins)
+	pending, isAskRound := deriveRestoredAskPending(history, 0, origins)
 	if !isAskRound || len(pending) != 1 {
 		t.Fatalf("deriveRestoredAskPending with journal provenance = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
 	}
-	if state := deriveRestoredState(history, origins); state != SessionAwaiting {
+	if state := deriveRestoredState(history, 0, origins); state != SessionAwaiting {
 		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
 	}
 }
@@ -1991,6 +1991,271 @@ func TestAskUser_RestoreResolvesAcrossFailedSteeringSelectionCarrier(t *testing.
 	}
 	if got := restored.State(); got != SessionIdle {
 		t.Fatalf("restored state = %q, want %q (deriveRestoredState and deriveRestoredAskPending must agree on this boundary)", got, SessionIdle)
+	}
+}
+
+// TestAskUser_RestoreDoesNotResolveAcrossAFailedHumanNoteCarrierAppend covers
+// RoboRev #1806 round 5's Medium (members 0, 1, 2): the mirror of
+// TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier above for a
+// human-note carrier. steeringCarrierClaimAnswersAsk already skips the entry
+// clear for a human note, so askPending stays live-pending; if the note's
+// own steer then fails to append, acceptSteeringCarrierInput must not tag
+// the resulting TurnFailure SteeringCarrier either — doing so would let
+// restore's backward scan stop at this failure and derive the ask as
+// resolved (SessionIdle, empty pending) while the live session never
+// resolved it. Driven through the real acceptSteeringCarrierInput ->
+// carrierSteerUndelivered path with the note's own transcript append forced
+// to fail, exactly like the answering-steer sibling above.
+func TestAskUser_RestoreDoesNotResolveAcrossAFailedHumanNoteCarrierAppend(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued note")
+	}
+	refusal := refuseSteerAppends(sess, "note-1")
+	refusal.refuse.Store(true)
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "note-1", StableTurnID: turnID, SteeringCarrier: true}); err == nil {
+		t.Fatal("acceptSteeringCarrierInput succeeded, want the injected append failure")
+	}
+	if got := refusal.refusals.Load(); got != 1 {
+		t.Fatalf("note append attempts = %d, want 1", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 1 {
+		t.Fatalf("restored askPending = %+v, want 1 question (a failed human-note carrier append must not resolve the pending ask)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionAwaiting {
+		t.Fatalf("restored state = %q, want %q (a human-note carrier's own append failure must not resolve the ask either)", got, SessionAwaiting)
+	}
+}
+
+// TestAskUser_RecordFailedSteeringSelectionDoesNotTagAHumanNoteClaim covers
+// the skill-prepare-failure half of the same class: recordFailedSteeringSelection
+// used to tag SteeringCarrier on any claim-ID match, regardless of whether
+// the claimed steer itself answers the ask. SetHumanNote cannot attach a
+// skill selection today (its addPendingSteering call only ever posts a text
+// InputItem), so a human note carrying SkillNames cannot arise through the
+// live RPC surface; this drives recordFailedSteeringSelection directly with
+// a synthetic human-note-kinded message to exercise the shared predicate
+// (steeringCarrierClaimAnswersAsk) itself, over a REAL journal record
+// (SetHumanNote is still the one path that stamps SteeringKindHumanNote).
+func TestAskUser_RecordFailedSteeringSelectionDoesNotTagAHumanNoteClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("pre-carrier pending count = %d, want 1 (test setup broken)", got)
+	}
+
+	if _, err := sess.SetHumanNote("note-skill-1", "watch the ingest path"); err != nil {
+		t.Fatalf("SetHumanNote: %v", err)
+	}
+	sess.setSteeringCarrierClaimDrain("note-skill-1")
+	msg := steeringMessage{
+		ClientMutationID: "note-skill-1",
+		Kind:             events.SteeringKindHumanNote,
+		Text:             "human updated their whiteboard: watch the ingest path",
+	}
+	if !sess.recordFailedSteeringSelection(msg, errors.New(`skill "no-such-skill" not found`)) {
+		t.Fatal("recordFailedSteeringSelection reported the record itself failed to append")
+	}
+	sess.setSteeringCarrierClaimDrain("")
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("live pending count after the tagged failure = %d, want 1 (unaffected either way; the tag governs restore)", got)
+	}
+
+	meta := sess.Meta()
+	sess.Close()
+
+	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMeta: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 1 {
+		t.Fatalf("restored askPending = %+v, want 1 question (a human-note claim's failed skill selection must not resolve the pending ask)", restored.askPending)
+	}
+}
+
+// buildAnsweredAskHistoryForFork drives a real (throwaway) session through an
+// ask_user round resolved by a real answering steer under clientMutationID,
+// and returns its final history: [TurnUserInput, TurnAssistant(ask1 call),
+// TurnToolResults(ask1 ack), TurnSteering(clientMutationID, kindless,
+// source=user)]. Used as a fork's inherited prefix below — a real production
+// shape, not a hand-built turn.
+func buildAnsweredAskHistoryForFork(t *testing.T, clientMutationID string) []schema.Turn {
+	t.Helper()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: clientMutationID,
+		Input:            clientMutationInput("go ahead and use Postgres", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: clientMutationID, StableTurnID: turnID, SteeringCarrier: true}); err != nil {
+		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	}
+	if got := sess.askPendingCount(); got != 0 {
+		t.Fatalf("pending count after the answering steer = %d, want 0 (fixture setup broken)", got)
+	}
+	return append([]schema.Turn{}, sess.history...)
+}
+
+// TestAskUser_ForkedChildDoesNotApplyItsOwnJournalToAnInheritedAnsweringSteer
+// covers RoboRev #1806 round 5's Medium (member 1, and member 0/2's second
+// finding): deriveRestoredState/deriveRestoredAskPending applied the child
+// session's WHOLE steering journal (s.clientMutations.steeringOrigins()) to
+// its entire history, including the inherited prefix a fork copied from its
+// parent. A reused ClientMutationID -- the inherited turn is an ordinary
+// (kindless) answering steer the PARENT recorded, but the CHILD's own,
+// unrelated journal happens to record a notes/human/set record under the
+// same id -- let the child's record reclassify the parent's turn as a
+// non-resolving note, so restore rederives the already-answered ask1 as
+// still pending. Fixed by scoping the provenance lookup exactly like
+// escapeHistoryWithSessionProvenance already does (steeringOriginBoundary):
+// nil origins for turns before DivergenceTurn, the child's own journal only
+// for turns at or after it. inheritedHistory here is entirely inherited
+// (DivergenceTurn = len+1), mirroring
+// TestRestoredForkEscapesItsInheritedPrefixWithoutTheChildJournal's own
+// fork-collision harness for the notes-escaping class of this same bug.
+func TestAskUser_ForkedChildDoesNotApplyItsOwnJournalToAnInheritedAnsweringSteer(t *testing.T) {
+	t.Parallel()
+	const collidingID = "cm-collides"
+	inheritedHistory := buildAnsweredAskHistoryForFork(t, collidingID)
+
+	const sessionID = "01KASKFORKPROVENANCEBOUND0"
+	stateDir := t.TempDir()
+	store, err := newClientMutationStore(stateDir, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.mutate(func(snapshot *clientMutationSnapshot) error {
+		req := testClientMutationRequest(t, clientMutationMethodNotesHumanSet, collidingID, struct{ Note string }{Note: "the child's own, unrelated note"})
+		snapshot.Journal[collidingID] = clientMutationRecord{
+			ClientMutationID:  req.ClientMutationID,
+			Method:            req.Method,
+			Payload:           req.Payload,
+			PayloadHash:       req.PayloadHash,
+			OperationState:    clientMutationOperationTerminal,
+			ExecutionState:    "incorporated",
+			ProjectionState:   appwire.MutationProjectionReflected,
+			AttemptGeneration: 1,
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai"})
+	meta := schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5.2",
+		Config:    (SessionConfig{NoProjectPrompts: true}).toSnapshot(),
+		// Every turn in inheritedHistory came from the parent; the child has
+		// not added any of its own yet.
+		ParentSessionID: "01KPARENT0000000000000000",
+		DivergenceTurn:  len(inheritedHistory) + 1,
+	}
+	restored, err := RestoreSessionFromMetaWithConfig(
+		c,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir, resumeHistory: inheritedHistory},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+
+	if len(restored.askPending) != 0 {
+		t.Fatalf("restored askPending = %+v, want empty (the parent's real answering steer already resolved this; the child's own colliding journal record must not reclassify it as a note)", restored.askPending)
+	}
+	if got := restored.State(); got != SessionIdle {
+		t.Fatalf("restored state = %q, want %q", got, SessionIdle)
 	}
 }
 

@@ -154,7 +154,11 @@ type TurnFailureInfo struct {
 	// Both read the turn's mere ACCEPTANCE as having already cleared
 	// askPending unconditionally on entry, before its steer ever tried to
 	// land (processOneInput's "Pending asks resolve with this accepted turn"),
-	// so restore must read either case as resolving too.
+	// so restore must read either case as resolving too — but ONLY when the
+	// claimed steer itself answers the ask (steeringCarrierClaimAnswersAsk,
+	// agent/session_tools_ask.go): a human-note carrier's entry clear is
+	// skipped, so its own failure (either shape) leaves this false and
+	// askPending stays live-pending, live and restored alike.
 	//
 	// Every OTHER TurnFailure (a retry-budget exhaustion, a non-carrier
 	// (inline) failed steering-selection prepare, a provider error mid-round)
