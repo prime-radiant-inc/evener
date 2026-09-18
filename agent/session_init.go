@@ -1424,8 +1424,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// last in with nothing else pending, rests awaiting (spec §6, generalized
 	// by attention-status-model v5's resume rule; deriveRestoredState's own
 	// doc comment has the full walk). NewSession never runs this scan — a
-	// fresh session always starts idle.
-	restoredState := deriveRestoredState(s.history)
+	// fresh session always starts idle. steeringOrigins() gives the boundary
+	// its durable steering provenance, so a kindless legacy human-note turn
+	// is still read as a note rather than an answering steer.
+	steeringProvenance := s.clientMutations.steeringOrigins()
+	restoredState := deriveRestoredState(s.history, steeringProvenance)
 	// Rebuild the pending-ask SET alongside the state (ask-attention-tiering
 	// spec §2): deriveRestoredState alone only re-derives that the session
 	// rests awaiting, but every hold keyed on askPending itself — the entry
@@ -1434,7 +1437,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// isAskRound distinguishes "nothing was pending" from "an ask was pending
 	// but none of its arguments parsed"; only the latter warrants a warning,
 	// and neither may ever fail the restore.
-	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history)
+	restoredAskPending, isAskRound := deriveRestoredAskPending(s.history, steeringProvenance)
 	if isAskRound && len(restoredAskPending) == 0 {
 		s.emit(events.EventWarning, events.WarningData{Message: "restore: found a pending ask_user round but could not parse any of its questions; the pending-ask holds will not apply this session"})
 	}

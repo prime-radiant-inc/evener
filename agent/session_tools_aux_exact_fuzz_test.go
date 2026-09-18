@@ -141,7 +141,7 @@ func auxAskExact(t *testing.T) {
 		stmAssistantTurn(nonAsk, badJSON, badSemantic),
 		stmToolResultsTurn(stmToolResult("bad-json", "ask_user", false), stmToolResult("bad-sem", "ask_user", false)),
 	}
-	if got, ask := deriveRestoredAskPending(history); !ask || len(got) != 0 {
+	if got, ask := deriveRestoredAskPending(history, nil); !ask || len(got) != 0 {
 		t.Fatalf("invalid restored asks = %#v, %v", got, ask)
 	}
 	if got := questionsFromAskCalls([]schema.Turn{{Kind: schema.TurnUserInput}}, 1, map[string]bool{"x": true}); got != nil {

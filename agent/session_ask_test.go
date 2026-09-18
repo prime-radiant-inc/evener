@@ -1690,14 +1690,16 @@ func TestAskUser_RestoreResolvesAcrossUserSteer(t *testing.T) {
 }
 
 // TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt covers RoboRev
-// #1806's member-0 Medium: a human-note update is user-sourced
+// #1806 round 4's High/Medium: a human-note update is user-sourced
 // (events.SteeringSourceUser) exactly like an answering steer, but it does
-// not address the pending question, so it must not clear askPending — live
-// (clearAskPendingForResolvingSteer) or on restore (turnResolvesAskBoundary).
-// Driven through the same carrier path as TestAskUser_RestoreResolvesAcrossUserSteer
-// (SetHumanNote queues the note as steering; claimSteeringCarrierTurn +
-// acceptSteeringCarrierInput deliver it as its own turn), with the opposite
-// expectation.
+// not address the pending question, so it must not clear askPending. This
+// drives the REAL production wake path SetHumanNote uses --
+// ProcessPendingUserInput, which claims the note as a steering carrier and
+// enters processOneInput as EntryUserInput -- rather than calling
+// acceptSteeringCarrierInput directly: the earlier version of this test did
+// that, which skips processOneInput's entry-clear entirely and could not
+// catch the entry clear firing unconditionally before
+// clearAskPendingForResolvingSteer ever ran.
 func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -1707,12 +1709,14 @@ func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return finalResponse("noted") },
 		},
 	})
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
+	defer sess.Close()
 
 	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1727,28 +1731,117 @@ func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	turnID, ok := sess.claimSteeringCarrierTurn()
-	if !ok {
-		t.Fatalf("claimSteeringCarrierTurn refused a queued note")
-	}
-	if err := sess.acceptSteeringCarrierInput(ctx, queuedClientMutationIdentity{ClientMutationID: "note-1", StableTurnID: turnID, SteeringCarrier: true}); err != nil {
-		t.Fatalf("acceptSteeringCarrierInput: %v", err)
+	// The carrier turn still runs a model round to read the drained note (the
+	// same "carries no content of its own but still requests a completion"
+	// shape TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer
+	// exercises for an ordinary steer); only the live pending count is
+	// asserted here.
+	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
-		t.Fatalf("live pending count after a human-note steer = %d, want 1 (a note update does not answer the pending ask)", got)
+		t.Fatalf("live pending count after a human-note steer drained through the real ProcessPendingUserInput/processOneInput path = %d, want 1 (a note update does not answer the pending ask)", got)
 	}
+}
 
-	meta := sess.Meta()
-	sess.Close()
-
-	restored, err := RestoreSessionFromMeta(newAskRestoreClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
+// TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn
+// covers RoboRev #1806 round 4's Medium (session_tools_ask.go:323): a
+// steering turn persisted before SteeringKind was stamped carries no kind of
+// its own, so a legacy human-note turn looks like an ordinary (kindless)
+// answering steer and wrongly resolves a pending ask on restore. The
+// client-mutation journal still knows the record was notes/human/set even
+// when the turn's own SteeringKind field does not, and turnResolvesAskBoundary
+// (via steeringOriginForTurn) must read that provenance for a kindless turn
+// instead of defaulting to "answers". Built directly against
+// deriveRestoredAskPending/deriveRestoredState (as the offline restore-
+// contract tests in session_tools_misc_contract_fuzz_test.go do) rather than
+// through a live session, since a fresh session always stamps kinds and so
+// cannot reproduce the legacy (pre-stamping) shape.
+func TestAskUser_RestoreUsesJournalProvenanceForAKindlessLegacyHumanNoteTurn(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+		},
+	})
+	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
-		t.Fatalf("RestoreSessionFromMeta: %v", err)
+		t.Fatalf("NewSession: %v", err)
 	}
-	defer restored.Close()
+	defer sess.Close()
 
-	if len(restored.askPending) != 1 {
-		t.Fatalf("restored askPending = %+v, want 1 question (a human-note steer must not resolve a pending ask on restore either)", restored.askPending)
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	// A legacy human-note steering turn: user-sourced, kindless (as it would
+	// be if written before SteeringKind existed), its ClientMutationID the
+	// only link back to the journal record that still says what wrote it.
+	legacyNote := schema.NewTurn(schema.TurnSteering, llm.User("human updated their whiteboard: watch the ingest path"))
+	legacyNote.SteeringSource = events.SteeringSourceUser
+	legacyNote.ClientMutationID = "note-legacy"
+	history := append(append([]schema.Turn{}, sess.history...), legacyNote)
+	origins := map[string]steeringOrigin{"note-legacy": {method: clientMutationMethodNotesHumanSet}}
+
+	pending, isAskRound := deriveRestoredAskPending(history, origins)
+	if !isAskRound || len(pending) != 1 {
+		t.Fatalf("deriveRestoredAskPending with journal provenance = pending=%#v isAskRound=%v, want ask1 still pending", pending, isAskRound)
+	}
+	if state := deriveRestoredState(history, origins); state != SessionAwaiting {
+		t.Fatalf("deriveRestoredState with journal provenance = %q, want %q", state, SessionAwaiting)
+	}
+}
+
+// TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim covers
+// RoboRev #1806 round 4's Low (session_lifecycle.go:2733-2735):
+// setSteeringCarrierClaimDrain(id) / injectDrainedSteering() /
+// setSteeringCarrierClaimDrain("") cleared without defer, so a panic between
+// the two calls leaked the claim id — a later unrelated
+// recordFailedSteeringSelection could then mistag its own TurnFailure
+// SteeringCarrier and wrongly resolve an ask on restore
+// (steeringSelectionFailureIsCarrierClaim keys purely on the leaked id).
+// Injects a real panic via the sessionLifecycleFaults context seam
+// (the same mechanism session_attention_test.go's panic-unwind test uses) at
+// a new "steering_carrier_drain" fault point placed right before the drain,
+// and asserts the claim reads cleared after recovering from it.
+func TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-1",
+		Input:            clientMutationInput("hello", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	identity := queuedClientMutationIdentity{ClientMutationID: "steer-1", StableTurnID: turnID, SteeringCarrier: true}
+	panicErr := errors.New("injected steering carrier drain panic")
+	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"steering_carrier_drain": panicErr})
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("injected panic did not propagate")
+			}
+		}()
+		_ = sess.acceptSteeringCarrierInput(ctx, identity)
+	}()
+	if sess.steeringSelectionFailureIsCarrierClaim("steer-1") {
+		t.Fatal("the claim id leaked across the panic: a later unrelated recordFailedSteeringSelection would mistag its own TurnFailure SteeringCarrier")
 	}
 }
 

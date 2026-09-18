@@ -1788,6 +1788,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	defer cancel()
 
+	// A steering-carrier entry (a queued human-note or answering steer with
+	// no turn of its own) only resolves the pending ask when the steer it is
+	// about to carry actually answers it: computed before the lock below
+	// since it reads the client-mutation journal, not session state.
+	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedClientMutationFromContext(ctx))
+
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -1801,7 +1807,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
-	s.askPending = nil
+	// Skipped when carrierAnswersAsk is false (a human-note carrier): the
+	// mid-round clear in clearAskPendingForResolvingSteer decides that case
+	// once acceptSteeringCarrierInput's drain actually runs.
+	if carrierAnswersAsk {
+		s.askPending = nil
+	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -2729,10 +2740,16 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// Recorded for the duration of the drain so a skill-selection failure for
 	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
 	// can tag its TurnFailure as a resolution boundary too — this turn's mere
-	// acceptance already cleared askPending before the drain ever ran.
+	// acceptance already cleared askPending before the drain ever ran. Cleared
+	// by defer so a panic mid-drain cannot leak the claim id: a leaked id
+	// would let an unrelated later recordFailedSteeringSelection mistag its
+	// own TurnFailure SteeringCarrier and wrongly resolve an ask on restore.
 	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
+	defer s.setSteeringCarrierClaimDrain("")
+	if fault := sessionLifecycleFault(ctx, "steering_carrier_drain"); fault != nil {
+		panic(fault)
+	}
 	delivered := s.injectDrainedSteering()
-	s.setSteeringCarrierClaimDrain("")
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its

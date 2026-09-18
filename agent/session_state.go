@@ -359,7 +359,7 @@ func settleTerminalState(hadOutput, goalKicked, notifsPending, queuePending, chi
 func (s *Session) recomputeRestoredState() {
 	s.mu.Lock()
 	idle := s.state == SessionIdle && !s.closingOrClosedLocked()
-	target := deriveRestoredState(s.history)
+	target := deriveRestoredState(s.history, s.clientMutations.steeringOrigins())
 	s.mu.Unlock()
 	if !idle || target != SessionAwaiting {
 		return

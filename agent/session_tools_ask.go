@@ -103,6 +103,25 @@ func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
 	}
 }
 
+// steeringCarrierClaimAnswersAsk reports whether the steer a steering-carrier
+// identity is about to carry (queuedClientMutationIdentity.SteeringCarrier)
+// answers a pending ask per steeringSourceAnswersAsk. processOneInput's entry
+// clear runs before acceptSteeringCarrierInput ever drains the steer — before
+// its turn even knows the steer's kind — so this reads the kind from the
+// durable client-mutation journal (steeringOriginFromJournal) instead of a
+// live steeringMessage. Every steer a carrier exists for is user-sourced
+// (acceptSteeringCarrierInput's own doc: "already-accepted user steering"),
+// so only the kind can vary. A non-carrier identity, or one with nothing to
+// look up, answers by definition, preserving the entry clear's ordinary
+// unconditional behavior for a genuine user reply.
+func (s *Session) steeringCarrierClaimAnswersAsk(identity queuedClientMutationIdentity) bool {
+	if !identity.SteeringCarrier || identity.ClientMutationID == "" || s.clientMutations == nil {
+		return true
+	}
+	origin := steeringOriginFromJournal(s.clientMutations.snapshot().Journal, identity.ClientMutationID)
+	return steeringSourceAnswersAsk(events.SteeringSourceUser, origin.steeringKind())
+}
+
 // steeringSourceAnswersAsk reports whether steering carrying source and kind
 // answers a pending ask_user question the way a plain user reply would.
 // SteeringSourceUser marks steering as user-sourced in general, but a
@@ -288,19 +307,28 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 // the SAME history and must agree on exactly this boundary — factored here
 // once so the two can never independently narrow it and drift apart.
 //
+// origins is the client-mutation journal's steering provenance by mutation
+// id (clientMutationStore.steeringOrigins(), nil when there is nothing to
+// look up): a steering turn persisted before SteeringKind was stamped keeps
+// none of its own, and only the record of the mutation that wrote it can
+// still say whether it was a notes update or an ordinary steer
+// (steeringOriginForTurn). Without this, a kindless legacy human-note turn
+// reads as an ordinary answering steer and wrongly resolves the boundary.
+//
 //   - TurnUserInput: the user spoke — resolves.
-//   - TurnSteering carrying SteeringKindInterrupted, or a steer that
-//     steeringSourceAnswersAsk reports as answering the user: the runtime
-//     already cleared askPending on this turn's behalf before it ever ran
-//     (session_lifecycle.go: the interrupt branch calls clearAskPending
-//     directly; a resolving user steer clears askPending via
-//     clearAskPendingForResolvingSteer) — resolves. A human-note update
-//     (events.SteeringKindHumanNote) is user-sourced but does not answer the
-//     question, so steeringSourceAnswersAsk excludes it: does not resolve.
-//     Any other TurnSteering (a daemon-authored nudge, a reminder) carries
-//     neither marker: does not resolve, the scan continues past it — a
-//     trailing steering turn must not resolve a pending ask by looking like
-//     the user moved last (spec §6).
+//   - TurnSteering carrying SteeringKindInterrupted, or a steer whose
+//     provenance (steeringOriginForTurn(turn, origins)) steeringSourceAnswersAsk
+//     reports as answering the user: the runtime already cleared askPending
+//     on this turn's behalf before it ever ran (session_lifecycle.go: the
+//     interrupt branch calls clearAskPending directly; a resolving user
+//     steer clears askPending via clearAskPendingForResolvingSteer) —
+//     resolves. A human-note update (events.SteeringKindHumanNote, by its
+//     own kind or by its journal record's provenance) is user-sourced but
+//     does not answer the question, so steeringSourceAnswersAsk excludes it:
+//     does not resolve. Any other TurnSteering (a daemon-authored nudge, a
+//     reminder) carries neither marker: does not resolve, the scan continues
+//     past it — a trailing steering turn must not resolve a pending ask by
+//     looking like the user moved last (spec §6).
 //   - TurnFailure tagged SteeringCarrier (schema.TurnFailureInfo.
 //     SteeringCarrier's own doc comment): the turn's mere acceptance cleared
 //     askPending before it recorded nothing else — either its steer failed
@@ -315,12 +343,16 @@ func registerAskTool(reg *tool.Registry, s *Session, deps *toolDeps) {
 // switch handles TurnAssistant/TurnToolResults, where the two functions
 // genuinely differ on what a resolved boundary settles TO (SessionAwaiting
 // vs a typed ask_user pending set) — that part is not shared.
-func turnResolvesAskBoundary(turn schema.Turn) bool {
+func turnResolvesAskBoundary(turn schema.Turn, origins map[string]steeringOrigin) bool {
 	switch turn.Kind {
 	case schema.TurnUserInput:
 		return true
 	case schema.TurnSteering:
-		return turn.SteeringKind == events.SteeringKindInterrupted || steeringSourceAnswersAsk(turn.SteeringSource, turn.SteeringKind)
+		if turn.SteeringKind == events.SteeringKindInterrupted {
+			return true
+		}
+		origin := steeringOriginForTurn(turn, origins)
+		return steeringSourceAnswersAsk(turn.SteeringSource, origin.steeringKind())
 	case schema.TurnFailure:
 		return turn.Error != nil && turn.Error.SteeringCarrier
 	default:
@@ -373,11 +405,12 @@ func turnResolvesAskBoundary(turn schema.Turn) bool {
 //     event.
 //
 // No decisive turn anywhere in the (possibly compacted) history defaults to
-// idle, matching a fresh session.
-func deriveRestoredState(history []schema.Turn) SessionState {
+// idle, matching a fresh session. origins is turnResolvesAskBoundary's same
+// steering-provenance lookup (nil when there is nothing to look up).
+func deriveRestoredState(history []schema.Turn, origins map[string]steeringOrigin) SessionState {
 	for _, v := range slices.Backward(history) {
 		turn := v
-		if turnResolvesAskBoundary(turn) {
+		if turnResolvesAskBoundary(turn, origins) {
 			return SessionIdle
 		}
 		switch turn.Kind {
@@ -434,11 +467,12 @@ func deriveRestoredState(history []schema.Turn) SessionState {
 // was pending" (false) or "an ask round was found but none of its calls'
 // arguments parsed" (true) — spec §2's unparseable-arguments edge case: the
 // caller logs a warning only for the latter, and the restore must never fail
-// over either.
-func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isAskRound bool) {
+// over either. origins is turnResolvesAskBoundary's same steering-provenance
+// lookup (nil when there is nothing to look up).
+func deriveRestoredAskPending(history []schema.Turn, origins map[string]steeringOrigin) (pending []askQuestion, isAskRound bool) {
 	for i := range slices.Backward(history) {
 		turn := history[i]
-		if turnResolvesAskBoundary(turn) {
+		if turnResolvesAskBoundary(turn, origins) {
 			return nil, false
 		}
 		switch turn.Kind {
