@@ -134,7 +134,7 @@ export type { DocFileContent, DocFileErrorKind } from "./docContent";
 // module itself, so it is published at the "./docContent" subpath instead.
 export { DOC_FILE_MAX_BYTES, DocFileError, docFileRawURL, docImageURL } from "./docContent";
 export type { DiscardStoredDraftResult } from "./draftCheckpointPort";
-export { canonicalJson, discardStoredDraft as discardStoredKeybindingDraft } from "./draftCheckpointPort";
+export { canonicalJson } from "./draftCheckpointPort";
 export type { EntityIdMatch, EntityKind } from "./entityIds";
 export { entityKindOf, findEntityIds, jobOwnerSessionId } from "./entityIds";
 export type { DelegateEntityView, EntityView, JobEntityView, OpenTarget, WatchEntityView } from "./entityView";
@@ -223,6 +223,7 @@ export type {
 } from "./keybindingsStore";
 export {
   createKeybindingsStore,
+  discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,
   keybindingsSupport,

@@ -1,11 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
-import { discardStoredDraft as discardStoredKeybindingDraft, UnreadableDraftError } from "./draftCheckpointPort";
+import { UnreadableDraftError } from "./draftCheckpointPort";
 import { WireError } from "./errors";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
+  discardStoredKeybindingDraft,
   fromWireOverrides,
   isReadableKeybindingDraft,
   type KeybindingDraftCheckpoint,
@@ -908,6 +909,20 @@ describe("the checkpointed draft editor", () => {
     drafts.storage.save({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
 
     expect(discardStoredKeybindingDraft(drafts.storage, isReadableKeybindingDraft)).toBe("refused");
+
+    expect(drafts.stored()).toEqual({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+  });
+
+  test("discardStoredKeybindingDraft refuses a readable record even when the caller passes no isReadable of its own", () => {
+    // The generic draftCheckpointPort.discardStoredDraft defaults to
+    // () => false (never refuses) for a caller with no decoder at all - the
+    // keybinding-named export must not inherit that default, or a caller
+    // that forgets to pass isReadableKeybindingDraft silently deletes a
+    // record this build can actually read instead of refusing.
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.storage.save({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+
+    expect(discardStoredKeybindingDraft(drafts.storage)).toBe("refused");
 
     expect(drafts.stored()).toEqual({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
   });
