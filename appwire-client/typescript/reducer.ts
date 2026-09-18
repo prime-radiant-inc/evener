@@ -771,9 +771,21 @@ export function notificationTargetsThread(n: AnyNotification, model: ThreadModel
 }
 
 // Replaces the turn identified by turnId with `fn(turn)`; turns not matching
-// pass through unchanged (same reference).
+// pass through unchanged (same reference). The whole ARRAY is also unchanged
+// (same reference) when turnId names no turn in `turns` at all — every
+// caller that needs to tell "the frame changed something" from "the frame
+// named a turn outside this window" (a mobile store's gap detection, e.g.)
+// reads that from array identity, and Array.prototype.map allocates a new
+// array unconditionally, even when every mapped element came back identical.
 function mapTurn(turns: TurnModel[], turnId: string, fn: (turn: TurnModel) => TurnModel): TurnModel[] {
-  return turns.map((t) => (t.id === turnId ? fn(t) : t));
+  let changed = false;
+  const mapped = turns.map((t) => {
+    if (t.id !== turnId) return t;
+    const next = fn(t);
+    if (next !== t) changed = true;
+    return next;
+  });
+  return changed ? mapped : turns;
 }
 
 // Replaces the item identified by itemId with `fn(item)`; items not matching
@@ -833,12 +845,15 @@ function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: Tu
       `applyNotification: turn/completed turnId ${turnId} matches ${duplicateCount} turns in model.turns — settling only the first match (turn-id-uniqueness invariant violated)`,
     );
   }
+  // Same array-identity contract as mapTurn above: unchanged (same reference)
+  // when turnId names no turn in `turns` at all.
   let settledFirstMatch = false;
-  return turns.map((t) => {
+  const mapped = turns.map((t) => {
     if (t.id !== turnId || settledFirstMatch) return t;
     settledFirstMatch = true;
     return settled;
   });
+  return settledFirstMatch ? mapped : turns;
 }
 
 // Folds a settle stamp's own items into a turn's item list BY ID: an item
