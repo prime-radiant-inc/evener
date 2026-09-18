@@ -310,7 +310,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 // (inside the mutate below), so a poisoning or a Stop that lands after the
 // caller decided the steer was runnable cannot hand the steer to a turn the
 // transcript cannot record.
-func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, refusal error) {
+func (s *Session) claimSteeringCarrierInput() (queuedInput, error) {
 	release, admissionErr := s.beginRetirementMutation("input")
 	if admissionErr != nil {
 		s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering carrier admission failed: %v", admissionErr)})
@@ -329,26 +329,28 @@ func (s *Session) claimSteeringCarrierInput() (carrier queuedInput, refusal erro
 	if s.cfg.testOnly.steeringCarrierClaiming != nil {
 		s.cfg.testOnly.steeringCarrierClaiming()
 	}
+	var carrier queuedInput
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !steeringCarrierRailOpen(snapshot) {
 			return nil
 		}
 		if id, turnID := claimableSteeringCarrier(snapshot, inFlight); turnID != "" {
 			// The refusal is part of the claim decision, on the generation this
-			// claim commits against.
-			if refusal = s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
-				return nil
+			// claim commits against. Returning it from the mutation is what
+			// keeps the refusal from committing anything -- a nil return would
+			// save the generation the claim then declined to change.
+			if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+				return refusal
 			}
 			snapshot.ActiveTurnID = turnID
 			carrier = queuedInput{ClientMutationID: id, StableTurnID: turnID, SteeringCarrier: true}
 		}
 		return nil
 	})
-	// A refusal is the transcript's, not the store's: it is reported even if
-	// the no-op commit that carried it also failed, because the refusal already
-	// proves this claim claimed nothing.
-	if refusal != nil {
-		return queuedInput{}, refusal
+	// A refusal is the transcript's, not the store's: distinguish it from a
+	// claim write that failed, which parks the steer with a warning instead.
+	if errors.Is(err, transcript.ErrWriterPoisoned) {
+		return queuedInput{}, err
 	}
 	if err != nil {
 		// A refused write parks the steer the way a failed append does: it

@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
@@ -769,15 +770,16 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 		return queuedInput{}, nil
 	}
 	var queued queuedInput
-	var refusal error
 	err := s.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 		if !queueHeadClaimable(snapshot) {
 			return nil
 		}
 		// The transcript's refusal is part of the claim decision, read on the
-		// generation this claim commits against.
-		if refusal = s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
-			return nil
+		// generation this claim commits against. Returning it from the mutation
+		// is what keeps the refusal from committing anything -- a nil return
+		// would save the generation the claim then declined to change.
+		if refusal := s.refuseBeforeClaimingOnPoisonedTranscript(); refusal != nil {
+			return refusal
 		}
 		entry := snapshot.InputQueue[0]
 		record := snapshot.Journal[entry.ClientMutationID]
@@ -806,11 +808,10 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, error) {
 		queued.StableTurnID = record.StableTurnID
 		return nil
 	})
-	// A refusal is the transcript's, not the store's: it is reported even if
-	// the no-op commit that carried it also failed, because the refusal already
-	// proves this claim claimed nothing.
-	if refusal != nil {
-		return queuedInput{}, refusal
+	// A refusal is the transcript's, not the store's: distinguish it from a
+	// claim write that failed, which stands down with a warning instead.
+	if errors.Is(err, transcript.ErrWriterPoisoned) {
+		return queuedInput{}, err
 	}
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
