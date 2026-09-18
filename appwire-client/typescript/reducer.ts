@@ -1217,23 +1217,19 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
       const turnId = params.turn.id;
       if (!notificationTargetsThread(n, model)) return model;
       if (model.activeTurnId !== turnId) {
-        const folded = foldNonActiveTurnCompleted(model, turnId, params.turn, now);
         // The status is authoritative and the transcript's id can be absent
         // while the session is active (a hydrate cut between turns, or the gap
         // after turn/completed at an inline boundary). A failed completion
-        // arriving then is still the session's own failure. Its status frame
-        // follows: the agent's failure exit (agent/session_lifecycle.go
+        // arriving then is still the session's own failure, but its status
+        // frame follows: the agent's failure exit (agent/session_lifecycle.go
         // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
         // "turn_failed", announced as thread/status/changed(idle) with the
-        // capabilities inline, and that frame owns the transition. Settling
-        // idle here is a redundant safety net kept pending #1432. A failed
-        // completion for a turn another turn has since superseded (the id
-        // names a different turn) is bookkeeping about the past and leaves the
-        // status. The work-clock anchor goes with the status (the invariant
-        // thread/status/changed keeps below: no live anchor at rest).
-        const failedWithoutId =
-          params.turn.status === "failed" && model.activeTurnId === undefined && model.status.type === "active";
-        return failedWithoutId ? { ...folded, status: { type: "idle" }, activeTurnStartedAt: undefined } : folded;
+        // capabilities inline, and that frame owns the transition (the
+        // work-clock anchor goes with it — the invariant thread/status/changed
+        // keeps below: no live anchor at rest). A failed completion for a turn
+        // another turn has since superseded (the id names a different turn) is
+        // bookkeeping about the past and leaves the status too.
+        return foldNonActiveTurnCompleted(model, turnId, params.turn, now);
       }
       const oldTurn = model.turns.find((t) => t.id === turnId);
       const stamp = params.turn;
@@ -1282,13 +1278,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
         activeTurnStartedAt: undefined,
         // The status is thread/status/changed's, not this frame's: a completed
         // turn is followed by one (idle at session end, active when the next
-        // turn runs inline), so it is left alone here. A failed turn gets its
-        // frame too: the agent's failure exit (agent/session_lifecycle.go
-        // endInputAtTurnFailure, kata hen0) emits EventSessionEnd with Reason
-        // "turn_failed", announced as thread/status/changed(idle), and that
-        // frame owns the transition. Settling idle here is a redundant safety
-        // net kept pending #1432.
-        status: stamp.status === "failed" && model.status.type === "active" ? { type: "idle" } : model.status,
+        // turn runs inline), and so is a failed one — the agent's failure exit
+        // (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0) emits
+        // EventSessionEnd with Reason "turn_failed", announced as
+        // thread/status/changed(idle), and that frame owns the transition.
+        status: model.status,
         lastFrameAt: now,
       };
     }
