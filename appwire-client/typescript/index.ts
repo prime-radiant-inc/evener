@@ -275,6 +275,8 @@ export {
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickableRows } from "./pathRows";
 export { humanizeState } from "./railSessionState";
+export type { ReadyGenerationFence } from "./readyGenerationFence";
+export { createReadyGenerationFence } from "./readyGenerationFence";
 export { effortLabel, effortOptionLevels, sessionEffortLevels } from "./reasoningEffort";
 export type { AskBatch } from "./reconcileBatches";
 export { reconcileBatches } from "./reconcileBatches";
@@ -384,10 +386,9 @@ export {
   tailSlice,
   trailingBracketFooter,
 } from "./toolCallText";
-// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) and
-// TranscriptDisplayAdvanced (the local advanced block, not yet V1-suffixed)
-// are deliberately absent: the root publishes the wire types of those names
-// from types.gen, which they would shadow.
+// TranscriptDisplayConfig (an unused alias of TranscriptDisplayConfigV1) is
+// deliberately absent: the root publishes the wire type of that name from
+// types.gen, which it would shadow.
 export type {
   ContentLevel,
   ContentSelection,
@@ -398,6 +399,7 @@ export type {
   LegacyPreferenceKey,
   LegacyPreferenceValues,
   LegacyPreferenceWrites,
+  TranscriptDisplayAdvancedV1,
   TranscriptDisplayCategory,
   TranscriptDisplayConfigV1,
   TranscriptHookExitDetail,

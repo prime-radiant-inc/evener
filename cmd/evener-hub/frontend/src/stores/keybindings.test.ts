@@ -631,6 +631,34 @@ describe("keybindings store: client replacement (stale-hub window)", () => {
     // Hub A never saw a patch.
     expect(clientA.calls.filter((c) => c.method === "evener/settings/keybindings/patch")).toHaveLength(0);
   });
+
+  test("a stale client's ready callback cannot begin a generation once it has been replaced", async () => {
+    const stale = new FakeClient("connecting");
+    const current = new FakeClient("ready");
+    current.on("evener/settings/keybindings/get", () => overridesPayload(3, []));
+    const staleReady = vi.spyOn(stale, "onReady");
+    connectionStore.getState().connect(stale);
+    connectionStore.setState({
+      features: { ...(await stale.connect()).features, keybindingsSettings: true },
+    });
+    // The callback the module registered on `stale`, captured before it ever
+    // fires - `stale` is still mid-handshake, so nothing has begun yet.
+    const staleReadyCallback = staleReady.mock.calls[0]?.[0];
+    expect(staleReadyCallback).toBeDefined();
+
+    connectionStore.getState().connect(current);
+    connectionStore.setState({
+      features: { ...(await current.connect()).features, keybindingsSettings: true },
+    });
+    const callsAfterCurrentWired = current.calls.length;
+
+    // The race this fixes: `stale`'s own dispatch can snapshot its ready
+    // handlers before rewireClient's unsubscribe removes this one, so it
+    // still runs - after `current` is already the wired client.
+    staleReadyCallback?.(await stale.connect());
+
+    expect(current.calls.length).toBe(callsAfterCurrentWired);
+  });
 });
 
 describe("keybindings store: reconcile resilience", () => {

@@ -5,7 +5,8 @@ handoff and composer action must reach typed AppWire `thread/clear`, replace
 the live daemon instance, preserve the stable workspace ref, and leave the same
 browser pane usable for a new turn. This is the user-visible counterpart to
 `server/appwire_runtime.go#handleAppThreadClear` and the dispatcher's
-`cmd/evener-hub/frontend/src/stores/mutationDispatcher.ts#MutationDispatcher` response path.
+`appwire-client/typescript/state/mutation/dispatcher.ts#MutationDispatcher` response path
+(the web imports it under its own name from `stores/mutationDispatcher.ts`).
 
 The run also checks the failure mode that motivated the change: a clear that
 looks successful but leaves the browser attached to the retired instance. A
