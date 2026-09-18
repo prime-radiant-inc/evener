@@ -99,7 +99,6 @@ export function createMutationProjectionFence<
     async refresh(port, ref) {
       const epoch = refreshEpoch;
       const generation = ++refreshGeneration;
-      const previous = ref === undefined ? allTargetsRefreshGeneration : refreshGenerations.get(ref);
       if (ref === undefined) allTargetsRefreshGeneration = generation;
       else refreshGenerations.set(ref, generation);
       try {
@@ -140,18 +139,9 @@ export function createMutationProjectionFence<
           },
         };
       } catch {
-        // A read failure cannot discard the last durable projection, and
-        // carries no data of its own - so this generation's reservation
-        // must not outlive it. Roll back to whatever it superseded, unless
-        // something newer (another refresh, or a commit's advance) has
-        // already moved past it: rolling back unconditionally would erase
-        // that newer claim instead of just this failed one's.
-        if (ref === undefined) {
-          if (allTargetsRefreshGeneration === generation) allTargetsRefreshGeneration = previous ?? 0;
-        } else if (refreshGenerations.get(ref) === generation) {
-          if (previous === undefined) refreshGenerations.delete(ref);
-          else refreshGenerations.set(ref, previous);
-        }
+        // A read failure cannot discard the last durable projection.
+        // Lifecycle discovery or the next explicit action retries the same
+        // read.
         return false;
       }
     },
