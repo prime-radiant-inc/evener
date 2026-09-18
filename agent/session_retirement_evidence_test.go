@@ -161,6 +161,14 @@ func TestRetirementSafetyDetachedLifetime(t *testing.T) {
 			if len(before) != 1 || before[0].pid != original.PID || before[0].done != original.Done {
 				t.Fatal("warning owner lost exact launch receipt")
 			}
+			// This is root's first successfully-processed turn, so it also
+			// launched the async session namer (launchInitialPromptNamer,
+			// session_namer.go), which is never joined before ProcessInput
+			// returns. Wait for it here too, for the same reason
+			// assertRetirementEvidenceEligible does (#1879): a raw TryClaim
+			// this close to that turn can otherwise race the namer goroutine
+			// and see a spurious "autonomous" blocker.
+			root.sendersWG.Wait()
 			claim, state, err = c.TryClaim(true)
 			if err != nil || claim == nil {
 				t.Fatalf("independent detached lifetime blocked eligibility: %+v %v", state, err)
@@ -1389,8 +1397,18 @@ func assertRetirementEvidenceEligible(t *testing.T, c *RetirementController) {
 // dozen retirement tests call right after a turn settles; without waiting
 // for the namer first, that call races the namer's own goroutine and
 // intermittently fails with "settled owner not eligible" on a loaded CI
-// runner. This forces the namer to still be in flight at the exact call,
-// which fails every time before the fix and passes every time after it.
+// runner.
+//
+// This holds the namer open on <-release and runs the helper in its own
+// goroutine so the two states are observed in program order rather than
+// raced against a wall-clock guess: while the namer is provably still
+// parked on <-release, sendersWG's count for it cannot have reached zero, so
+// a non-blocking read of helperDone can never see it closed -- not a race,
+// a consequence of sync.WaitGroup's own invariant. Only once release is
+// closed can the helper possibly settle. Reverting the helper's
+// sendersWG.Wait() call makes the first read observe an immediate Fatal
+// instead (eligibility is genuinely refused while the real namer holds its
+// blocker), which this proves by construction rather than by timing.
 func TestRetirementEvidenceEligibleAwaitsInFlightNamer(t *testing.T) {
 	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
 		return finalResponse("turn settled")
@@ -1408,8 +1426,87 @@ func TestRetirementEvidenceEligibleAwaitsInFlightNamer(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-held // the namer goroutine is provably still in flight right here
+
+	helperDone := make(chan struct{})
+	go func() {
+		defer close(helperDone)
+		assertRetirementEvidenceEligible(t, c)
+	}()
+	select {
+	case <-helperDone:
+		t.Fatal("eligibility check completed while the namer was still held in flight")
+	default:
+		// The namer has not been released, so sendersWG's count for it cannot
+		// be zero yet: the helper provably cannot have settled.
+	}
+
 	close(release)
-	assertRetirementEvidenceEligible(t, c)
+	select {
+	case <-helperDone:
+	case <-time.After(5 * time.Second): // TRIPWIRE: real settlement is microseconds once the namer is released; this only bounds a genuine hang.
+		t.Fatal("eligibility check did not complete after the namer was released")
+	}
+}
+
+// TestRetirementDetachedLifetimeEligibilityAwaitsInFlightNamer is the
+// deterministic regression for the second #1879 occurrence at 2e7c2fe0a:
+// TestRetirementSafetyDetachedLifetime checks eligibility with a raw
+// c.TryClaim(true) call right after root's first turn, not through
+// assertRetirementEvidenceEligible, so round 1's fix to that shared helper
+// never covered it. Same construction as
+// TestRetirementEvidenceEligibleAwaitsInFlightNamer: the namer is held on
+// <-release, so sendersWG's count for it cannot be zero, so the raw claim
+// cannot yet report eligible -- proved by the WaitGroup invariant, not by
+// timing.
+func TestRetirementDetachedLifetimeEligibilityAwaitsInFlightNamer(t *testing.T) {
+	root := newSession(t, withConfig(SessionConfig{StateDir: t.TempDir()}), withSteps(func(llm.Request) llm.Response {
+		return finalResponse("turn settled")
+	}))
+	c := retirementEvidenceController(t, root)
+	held, release := make(chan struct{}), make(chan struct{})
+	namer := llm.NewClient()
+	namer.Register(&agenttest.ScriptedAdapter{Provider: root.currentProfile().CheapProvider(), Responder: func(llm.Request) llm.Response {
+		close(held)
+		<-release
+		return llm.Response{Message: llm.Assistant(`{"name":"Named After Release"}`)}
+	}})
+	updateSessionTestConfig(root, func(cfg *testConfig) { cfg.namerClient = namer })
+	if _, err := root.ProcessInput(context.Background(), "first turn", nil); err != nil {
+		t.Fatal(err)
+	}
+	<-held // the namer goroutine is provably still in flight right here
+
+	type claimResult struct {
+		claim *RetirementClaim
+		state RetirementSnapshot
+		err   error
+	}
+	resultCh := make(chan claimResult, 1)
+	go func() {
+		root.sendersWG.Wait()
+		claim, state, err := c.TryClaim(true)
+		resultCh <- claimResult{claim, state, err}
+	}()
+	select {
+	case <-resultCh:
+		t.Fatal("claim settled while the namer was still held in flight")
+	default:
+		// The namer has not been released, so sendersWG's count for it cannot
+		// be zero yet: the wait below it provably cannot have returned.
+	}
+
+	close(release)
+	select {
+	case res := <-resultCh:
+		if res.err != nil || res.claim == nil {
+			t.Fatalf("independent detached lifetime blocked eligibility: %+v %v", res.state, res.err)
+		}
+		if err := c.Abort(res.claim, ""); err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second): // TRIPWIRE: real settlement is microseconds once the namer is released; this only bounds a genuine hang.
+		t.Fatal("claim did not settle after the namer was released")
+	}
 }
 
 func TestRetirementSafetyDirectSetterAdmissionFirst(t *testing.T) {
