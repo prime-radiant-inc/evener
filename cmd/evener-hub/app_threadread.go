@@ -487,19 +487,30 @@ func hubForkRecoveryFencedNow(cfg hubcore.WebConfig, thread appwire.Thread, owne
 	if err != nil || ref.SourceID != "local" {
 		return false
 	}
-	// A daemon's recovery flags reach the hub only through the roster: the local
-	// source builds its listed threads from roster entries that carry no status
-	// flags, and a live thread/read is answered by the daemon itself, whose
-	// response has never carried them either. Asking the roster is what keeps
-	// this projection and fork admission on one answer, since admission decides
-	// the same signal with the same predicate.
-	if owner.statusFenced() {
+	return hubForkIdentityFenced(cfg, ref.ThreadID, owner)
+}
+
+// hubForkIdentityFenced reports whether one identity a fork touches is fenced,
+// on every signal the hub reads directly for that identity: a live delegate, a
+// daemon announcing recovery in the roster, and the hub's own recovery locks.
+// The capability projection and the fork RPC both decide these per identity, so
+// one predicate keeps them from describing the same identity differently.
+//
+// A daemon's recovery flags reach the hub only through the roster: the local
+// source builds its listed threads from roster entries that carry no status
+// flags, and a live thread/read is answered by the daemon itself, whose response
+// has never carried them either. Asking the roster is what keeps this projection
+// and fork admission on one answer. owner is the roster's answer for threadID,
+// resolved by the caller so a pass that needs it more than once asks the roster
+// once; the predicate itself never probes a daemon.
+func hubForkIdentityFenced(cfg hubcore.WebConfig, threadID string, owner forkThreadOwner) bool {
+	if hubForkLiveDelegateFenced(cfg, threadID) || owner.statusFenced() {
 		return true
 	}
 	if cfg.ResumeLocks == nil {
 		return false
 	}
-	state := cfg.ResumeLocks.RecoveryState(ref.ThreadID)
+	state := cfg.ResumeLocks.RecoveryState(threadID)
 	return state.ResumeRequired || state.Stopping > 0
 }
 
@@ -610,14 +621,7 @@ func hubForkResolvedSessionFenced(cfg hubcore.WebConfig, threadID, sessionID str
 	if sessionID == "" || sessionID == threadID {
 		return false
 	}
-	if hubForkLiveDelegateFenced(cfg, sessionID) || hubForkLiveStatusFenced(cfg, sessionID) {
-		return true
-	}
-	if cfg.ResumeLocks == nil {
-		return false
-	}
-	state := cfg.ResumeLocks.RecoveryState(sessionID)
-	return state.ResumeRequired || state.Stopping > 0
+	return hubForkIdentityFenced(cfg, sessionID, forkThreadOwnerFor(cfg, sessionID))
 }
 
 // hubForkDeletionFenced reports whether the thread a client is holding, or the
