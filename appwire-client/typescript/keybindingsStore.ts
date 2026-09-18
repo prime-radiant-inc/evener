@@ -591,10 +591,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * successful refresh with the flag set fires ONE follow-up fetch. Per
    * generation: beginReadyGeneration starts every generation clean. */
   let missedChangeNotification = false;
-  /** The write-serialization chain: every patchOverrides queues behind the
-   * previous write's full settlement (success OR failure). Reset with the
-   * rest of the wiring state so a never-resolving write cannot leak into the
-   * next test. */
+  /** The write-serialization chain: both write paths - patchOverrides and
+   * saveDraft - queue behind the previous write's full settlement (success OR
+   * failure), so the two are never on the wire at once and neither reply can
+   * be fenced by, or fence, the other's. Reset with the rest of the wiring
+   * state so a never-resolving write cannot leak into the next test. */
   let writeQueue: Promise<void> = Promise.resolve();
 
   const store = createFrameworkFreeStore<KeybindingsStoreState>(() => ({
@@ -1115,6 +1116,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   async function saveDraft(rules?: readonly KeybindingsRule[]): Promise<KeybindingsOverrides> {
+    // Call-time gate, durable checkpoint and the `saving` block stay
+    // synchronous: the editor must see the save in flight the moment it is
+    // requested, and a teardown while the request waits in the queue must
+    // still find the checkpoint. The REQUEST is serialized through writeQueue,
+    // exactly as patchOverrides is, so the two write paths are never on the
+    // wire at once and neither reply can supersede the other's.
     const current = assertEditable();
     const existing = getState().draft;
     if (getState().draftConflict) throw new Error("Review the current shortcuts before saving your changes.");
@@ -1122,10 +1129,65 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     const revision = existing?.revision ?? current.revision;
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
+    const callGeneration = fence.generation;
+    setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
+    // Chain behind the previous write's SETTLEMENT, exactly as patchOverrides
+    // does: a failed write must not block the queue, and the next write
+    // composes against whatever state the failure left.
+    const queued = writeQueue.then(
+      () => runQueuedSave(callGeneration, revision, checked, checkpoint),
+      () => runQueuedSave(callGeneration, revision, checked, checkpoint),
+    );
+    writeQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
+  /** The queued half of saveDraft: the request and its post-reply sequence,
+   * run only once no other write holds the wire. Revalidates the intent the
+   * call-time gate checked against the state that write settled - a generation
+   * that ended, support that dropped, an unknown outcome, or a confirmed
+   * revision that moved under the draft makes it stale, and then nothing
+   * leaves the device. */
+  async function runQueuedSave(
+    callGeneration: number,
+    revision: number,
+    checked: KeybindingsRule[],
+    checkpoint: KeybindingDraftCheckpoint,
+  ): Promise<KeybindingsOverrides> {
+    const state = getState();
+    if (!fence.liveHub(callGeneration)) {
+      // A generation end / support drop retired the payload while this save
+      // was queued: retirePayload already published writeUncertain from
+      // `saving`, and the checkpoint is its durable record, so nothing leaves.
+      // Return the current payload, as a fenced reply does.
+      return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
+    }
+    if (
+      state.storageUnavailable ||
+      state.writeUncertain ||
+      state.hubSupport !== "supported" ||
+      !state.loaded ||
+      state.hubLoading ||
+      state.loadError !== null ||
+      revision !== state.revision
+    ) {
+      // The intent is stale. Nothing left the device, so settle the checkpoint
+      // and keep the draft for review rather than sending a PATCH composed
+      // against a revision the hub no longer has.
+      try {
+        persistDraft({ ...checkpoint, writeUncertain: false });
+      } catch {
+        // persistDraft has already published storageUnavailable/draftError.
+      }
+      setState({ saving: false, draftConflict: true, draftError: null });
+      throw new Error("The shortcuts changed before your save could run. Review the current values.");
+    }
     const token = fence.claimWrite();
     const generation = fence.generation;
     const stillMine = () => fence.writeStillMine(generation, token);
-    setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
     let result: unknown;
     try {
       // The saving publish above may have disposed the store or retired the
