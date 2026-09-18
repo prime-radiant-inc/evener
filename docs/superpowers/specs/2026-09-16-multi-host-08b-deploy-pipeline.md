@@ -4,9 +4,9 @@ Status: not started. This spec is the hand-off for the implementing session.
 
 Depends on: the registry spec (registry, sidecar, receipts, remnants, tombstones, generations, the
 `attachUnderGate` primitive, and the operation-store skeleton helpers). The pipeline stacks on
-the registry; fencing stacks on the pipeline. Hand-written Go request/response structs land in the same PR as
-their handlers. Public catalog registration plus the regenerated client for union-shaped
-responses arrive with the pipeline PR.
+the registry; fencing stacks on the pipeline. Hand-written Go request/response structs for pipeline-owned methods land in the same PR as
+their handlers (union-shaped private types authored in the registry PR stay unregistered until this PR registers them — registry spec §2). Public catalog registration plus the regenerated client for union-shaped
+responses arrive with the pipeline PR, as do the union catalog/protocol-shape tests.
 
 ## 1. Terms
 
@@ -130,10 +130,7 @@ row is gone, and gone rows never validate.
 Wall-clock rollback guard: every validate/consume pass and every facts-age check first
 compares `now` against the store's durable high-water wall clock. A `now` more than 30
 seconds behind the mark (owner-adjustable tolerance; within tolerance reads as jitter
-and invalidates nothing) is a detected rollback. Only records whose own timestamps
-postdate `now` invalidate — the mark rejects only timestamps captured after the
-rollback, never shortens a pre-rollback deadline: a token row minted after `now` reads
-`token-expired`; a facts entry captured after `now` reads stale. Token TTL is monotonic
+and invalidates nothing) is a detected rollback. The comparison boundary is the mark, never `now` — one algorithm everywhere: a record invalidates only when its own timestamp postdates the mark (impossible for honest captures, since the mark is the greatest observed wall-clock value — the arm covers corrupt rows only, which read `token-expired` for tokens and stale for facts). A pre-rollback record never shortens its deadline merely because the clock moved backward. Token TTL is monotonic
 elapsed time, evaluated against `max(now, mark)`: every `expiresAt` comparison and every
 `now - factsCapturedAt` age check substitutes the mark for `now` while the rollback is
 active (`now < mark`), and a post-rollback capture anchors at `max(now, mark)`. A
@@ -153,7 +150,7 @@ store is the controller-side durable record of those operations.
 Record schema: controller-assigned id, client operation ID, host, kind
 (`deploy`/`restart`), state (`pending`/`running`/`complete`/`failed`/`interrupted`/
 `orphan-unverified`), progress entries (timestamped, bounded), terminal result,
-timestamps, the pinned host generation plus the pinned incarnation id, and a
+timestamps, the pinned host generation plus the pinned incarnation id, the worker's fencing epoch (persisted before the first `running` probe per §6; its shape is defined in the crash-fencing spec and never restated here), and a
 `host-removed` mark. The `orphan-unverified` variant carries the per-member
 `BoundaryEntry[]` array; its shape and verification are defined in the crash-fencing
 spec §9 and never restated here. The wire shape is pinned field-for-field in §10.
@@ -253,6 +250,7 @@ of terminal-record age (same owner-knob family; defaults ship in the implementin
 PR). A write that would exceed a global bound first compacts oldest-terminal-first
 across hosts until the new record fits; removed-host history compacts first once
 its replay horizon expires (past the `tombstoneRetention` horizon — 7-day default —
+and, where the registry tombstone already expired at 7 days, the historical (generation, incarnation id, presenceEpoch) boundary persists in the store's per-host boundary record until the host's last record compacts, so pagination never meets retained records with no boundary to validate against —
 defined in the registry spec §15, the documented owner-visible horizon of the
 lost-response retry contract — a removed host's
 terminal records and tombstones compact before any live host's). Exceeding the cap compacts oldest-terminal-first in the same atomic
@@ -263,8 +261,8 @@ bounded progress, `createdAt`/`updatedAt`, `hostRemoved`, terminal outcome and r
 `compactedAt`). At most 50 tombstones per host (same owner-knob family), oldest-first
 past the bound. A replay naming a tombstoned ID returns the full retained record with
 `compacted: true` instead of opening a fresh operation, but only while the tombstone's
-pinned pair still equals the registry's current pair for the name. A tombstone pinned to
-a superseded pair never replays; the clean-slate re-add rule wins over the tombstone.
+pinned pair still equals the comparison pair for the name: the registry's current pair for a live host, the tombstone's own removed pair for a removed host (which has no live current pair). A tombstone pinned to
+a superseded pair on a live host never replays; the clean-slate re-add rule wins over the tombstone.
 Compaction never touches `host-removed` marks of retained records. Safe compaction
 of removed-host history: once a removed host's records sit past the `tombstoneRetention`
 horizon (registry spec §15) its terminal records compact (leaving the bounded tombstones
@@ -387,10 +385,10 @@ minted from fresh facts.
 
 Second, `plan` try-acquires the host gate once (gate first per §5 — `plan` holds no mutation
 lock, so no order inversion is possible), failing fast with the typed busy error
-if held, and holds it through the running-state probe, validation, the durable
+if held. Holding the gate but no durable epoch yet, `plan` persists a durable probe epoch first: a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the operation-store file in its own atomic store write, bound to the host's current (generation, incarnation id) pair and superseded by the eventual token mint. The probe epoch exists before the first `running` call, so the remote write half is recoverable under crash-fencing's persisted-before-launch rule. A probe-epoch write failure refuses `probe-failed` with nothing launched; a crash after the epoch persists but before the mint leaves an epoch-only record that boot reaps as `interrupted` with no token and no worker (probe epochs never launch workers and never outlive their `plan` call — the mint supersedes them or the call's failure path deletes them). `plan` holds the gate through the running-state probe, validation, the durable
 mint, publication, and return. Then the running-state probe: `evener/host/running` through
 `sshManager.ChannelIfAttached(name)` over the live channel (never a dial, never
-preflight), deadline-bounded with an explicit owner-adjustable probe timeout. The
+preflight), deadline-bounded with an explicit owner-adjustable probe timeout, presenting the persisted probe epoch (never a default, never absent — §10). The
 probe's remote write half runs classified under the fencing epoch and gate (§10):
 the probe call runs through the gate-aware probe primitive, which inherits the
 already-held gate and presents the worker epoch instead of try-acquiring the
@@ -454,9 +452,9 @@ here. A fenced name never reaches the gate: an open teardown remnant refuses wit
 `remnant-open` (naming the `remnantId`) before any probe or acquisition, past the
 step-(1) dedup check. Remnant semantics are defined in the registry spec §6.
 
-(3) Probe under the gate, then revalidate under the same gate. Probe the running build and health
+(3) Persist the probe epoch, then probe under the gate, then revalidate under the same gate. On a fresh (non-dedup-hit) operation the worker persists a durable probe epoch first — a fencing-epoch-shaped (boot id, per-host op sequence) probe record in the same atomic store write posture as step (4), bound to the host's current (generation, incarnation id) pair and superseded by the step-(4) consume — before the first `running` probe, so no remote write probe precedes its durable controller-side epoch. A crash between the probe-epoch write and the consume leaves an epoch-only record that boot transitions to `interrupted` (§7), never an unrecoverable probe. Probe the running build and health
 over the attached channel holding the try-acquired host gate for the probe window (same explicit probe timeout as `plan`'s
-probe; a held gate fails fast with the typed busy error before any probe write). Still holding
+probe, presenting the persisted probe epoch — never a default, never absent; a held gate fails fast with the typed busy error before any probe write). Still holding
 that gate, the worker
 re-resolves the target, re-reads the host entry, re-hashes the `hub.toml` fingerprint at
 execution time, and re-validates the probe result taken under the same gate. Reject on any drift
@@ -483,8 +481,8 @@ token row and compare-and-consume its nonce against the presented token, and re-
 `expiresAt` against the clock in that same transaction. An `expiresAt` at or before now
 is a `token-expired` refusal with no consumption and no record, even when the nonce
 still matches. A changed nonce is a `token-superseded` refusal with no consumption and
-no record. On a match the same write deletes the token row and creates the pending
-operation record. Consume is delete in that same write, never a mark. Return its id.
+no record. On a match the same write deletes the token row and promotes the probe-epoch record to the pending
+operation record carrying the worker's fencing epoch. Consume is delete in that same write, never a mark. Return its id.
 The operation holds its host's gate from record creation to terminal state. The worker
 re-hashes the on-disk `hub.toml` fingerprint immediately before each irreversible step
 (before the push, and again before the planned restart when the token-bound plan says
@@ -608,7 +606,7 @@ block startup. Remote fencing lands lazily at the next operation's guard advance
 the store already serves `interrupted` records.
 
 Interrupted transition: every record still in `pending`/`running` transitions to
-`interrupted` with a note naming the crash. `orphan-unverified` is the one exception.
+`interrupted` with a note naming the crash. `orphan-unverified` is the one exception. An epoch-only probe record (persisted probe epoch with no token consumed and no worker launched — §6) transitions to `interrupted` with a note naming the probe, and never revives a token or a worker; a lost-response `plan` retry after the crash re-plans fresh under a new probe epoch.
 A retry with the same operation ID gets the `interrupted` record back. A new operation
 ID starts fresh, but only after local reaping completes and under a fresh fencing epoch
 with the guard advanced past kill/wait of the superseded epoch.
@@ -665,7 +663,7 @@ minted for one pair validated against an unfiltered query is a typed `stale-entr
 re-list refusal. The map pins every host in the query at cursor creation, not just the
 hosts on the page: a host with no records on the page still contributes its current
 (generation, incarnation id, `presenceEpoch`) boundary, or its absent
-marker when the host holds no records at all. The absent marker encodes as the literal
+marker when the host holds no records at all — and, where the registry tombstone expired while records remain (§4), the store's persisted historical (generation, incarnation id, presenceEpoch) boundary triple, which validates like a live boundary until the host's last record compacts. The absent marker encodes as the literal
 string `"absent"`. `presenceEpoch` is the per-host removal/presence counter defined in
 the registry spec §1 glossary (advanced on every add, remove, re-add, and
 expiry purge); a removal advances it even when generation and incarnation are
@@ -776,9 +774,9 @@ the tokens its own sidecar restore revalidates.
 
 Every new method gets its AppWire protocol catalog entry (`appwire/protocol.go`,
 `ScopeHub`) plus request/response structs (`appwire/types.go`) plus the regenerated
-TypeScript client. Hand-written structs land in the same PR as the handlers. Public
+TypeScript client. Hand-written structs for pipeline-owned methods land in the same PR as the handlers. Public
 catalog registration plus the regenerated client land in the pipeline PR with the union-registration
-generator work. LowerCamel JSON throughout. Optional facts and error fields stay
+generator work, with the union catalog/protocol-shape tests. LowerCamel JSON throughout. Optional facts and error fields stay
 absent — never null — when unknown (the absent-when-unknown rule).
 
 Generator mapping: the AppWire TypeScript generator emits Go structs as interfaces and
@@ -893,8 +891,7 @@ element type.
   number} | "absent"}, nextCursor?: string}` — `generation`/`incarnationId` are
   present exactly on host-pinned pages (the single host named by the request) and
   absent on unfiltered cross-host pages, where `hostBoundaries` is authoritative
-  instead (one boundary per every host in the query at cursor creation; hosts with no
-  rows on the page encode as the `"absent"` marker, never by omission).
+  instead (one boundary per every host in the query at cursor creation; `"absent"` encodes only hosts with no records in the query — hosts whose records land on later pages carry their current (generation, incarnationId, presenceEpoch) triple, never by omission).
   `OperationRecord` is `{id, clientOperationId, host, generation: number,
   incarnationId: string, kind: "deploy" | "restart", state: "pending" | "running" |
   "complete" | "failed" | "interrupted" | "orphan-unverified", orphanBoundary?:
@@ -991,7 +988,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   4), expiry-across-the-wait (a token valid at the step-(2) provisional pass but past
   its TTL at the step-(4) consume is a `token-expired` refusal with no record),
   clock-rollback (a `now` behind the high-water mark by more than the 30-second
-  tolerance drops only the records whose own timestamps postdate `now`; a pre-rollback
+  tolerance drops only corrupt rows whose own timestamps postdate the mark; a pre-rollback
   token keeps its minted real-time lifetime and expires only on elapsed TTL, never by
   comparison against the later mark — and a token already expired before the rollback
   stays expired past it; post-rollback captures anchor at `max(now,
@@ -1012,7 +1009,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   Ensure-triggered deploy, which holds its own record. A plan-held gate returns the
   transient form with no operation reference. The UI shows retry, not open/wait.
 - Protocol shapes: catalog entries and the regenerated client match §10
-  field-for-field — including the `running` mutation's required
+  field-for-field — including the union-handler catalog entries, the `teardown-unknown-key` entry, the four-arm mutation-result union with the `ambiguous` arm, and the `teardown-retry`/`teardown-recover` request/response shapes (moved from the registry spec — registry spec §2; the registry PR ships no catalog entry for a union-shaped response), plus the `running` mutation's required
   `{fencingEpoch: {bootId, opSeq}}` params, `incarnationId` on `OperationRecord` and the
   `operations` request/response/cursor, `compacted: true` exactly on tombstone
   replays, every `stale-entry` data value against its emitting path, the
@@ -1031,6 +1028,7 @@ spec). `interrupted` is a terminal record state (outcome unknown), not a thrown 
   `cursor-invalidated` with the compacting `compactSeq`. The client restarts from
   page one. An over-cap first page refuses the distinct `cursor-too-large`
   discriminator with `{capBytes: 8192}`. Both shapes pinned.
+- Durable probe epoch: no `running` probe precedes its durable controller-side epoch — `plan` persists its probe epoch before the first probe call and binds it to the eventual token's (generation, incarnation id) pair; `deploy` persists its probe epoch before probing and promotes it at the step-(4) consume. Probe-epoch write failure is `probe-failed` with nothing launched; a crash between epoch and mint/consume boots to `interrupted` with no token and no worker; the mint supersedes a `plan` probe epoch and step (4) promotes a `deploy` one.
 - The running probe (`evener/host/running` handler): local revision plus health plus
   optional `processStartTime`; mutation classification with the required
   `{fencingEpoch: {bootId, opSeq}}` params (the generated client carries the

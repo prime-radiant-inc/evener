@@ -136,7 +136,7 @@ This table is the only place the three-document split is defined.
 | Catalog registration + regenerated TypeScript client for union-shaped methods | — (this doc registers no handler and ships no catalog entry and no regenerated client for a union-shaped response) | ships | — |
 | Non-union registry helpers | register immediately | — | — |
 | Hosts settings section, dialogs, stores, polling, deploy confirmation | — (lands with the pipeline PR's regenerated client) | ships (section + dialogs + stores + polling + UI acceptance) | consumes (resolve affordance) |
-| Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests ship in the pipeline PR where those handlers register) | — | — |
+| Registry tests (§16) | ships (list/status handler-level tests ship here with the registered handlers; union-handler ingress/origin-rejection/wiring tests plus union catalog/protocol-shape tests ship in the pipeline PR where those handlers register) | — | — |
 | Pipeline tests (§12 of the pipeline spec) | — | ships | — |
 | Fencing tests (§10 of the fencing spec) | — | — | ships |
 
@@ -211,14 +211,14 @@ remote-originated, peer-forwarded requests are refused before admission —
 before dedup and before token validation on the phases where those stages
 exist — and before any handler runs. The mutating handlers (`attach`, `plan`,
 `deploy`, `restart`, `add`, `update`, `remove`, `teardown-retry`,
-`teardown-recover`, `orphan-resolve`) are unreachable to honestly-marked peer-forwarded requests; a
+`teardown-recover`, `orphan-resolve`, `running`) are unreachable to honestly-marked peer-forwarded requests; a
 markerless request is local-originated by construction and takes the full
-admission path. The reads (`list`/`status`/`operations`/`running`) are guarded
+admission path. The reads (`list`/`status`/`operations`) are guarded
 equally because they disclose the controller's topology and operation state.
 (`attach`'s guard routing ships and is test-pinned with #1603; this document
 pins the guard orderings for its two registered handlers (`list`/`status`) and
-states the behavior for the four union handlers whose orderings pin in the
-pipeline PR where they register, the pipeline document its five, the fencing document
+states the behavior for the five union handlers (`add`/`update`/`remove`/`teardown-retry`/`teardown-recover`) whose orderings pin in the
+pipeline PR where they register (with `teardown-retry`/`teardown-recover` origin-rejection tests in that PR), the pipeline document its five, the fencing document
 its one (with `orphan-resolve` orderings in the fencing spec where that handler
 registers) — thirteen new methods plus `attach` is fourteen.) The one direction-scoped exception is the
 `evener/host/running` peer probe: a controller-originated request issued only
@@ -439,7 +439,7 @@ finalize — and so does every other sidecar read-modify-write:
 finalization all run under the same lock for their transitions only, never
 across a teardown. The lock is released across slow teardowns so one host's
 teardown never blocks unrelated hosts. Lock order is fixed: the process-wide
-mutation lock is outermost, the store mutex innermost (deploy-pipeline spec §5). Concurrent
+mutation lock is outermost, the store mutex innermost (deploy-pipeline spec §4). Concurrent
 read-modify-write on the sidecar cannot lose updates.
 
 `add` accepts an optional opaque `mutationId`; `update`/`remove` require
@@ -529,7 +529,7 @@ generation/incarnation guards and finalizing under the claimant's attempt
 token. The finder try-acquires the remnant's host gate after claiming and
 before running the teardown — a held gate means a live committer still owns
 the host, so the finder releases the claim back to the staged-receipt marker,
-responds busy, and finalizes nothing; only a dead claim on a gate-free host is
+responds busy, and finalizes nothing — except when the finder already holds that host's gate reservation: a mutation reserves its host's gate before taking the mutation lock, so a same-host foreign marker always meets a self-held gate and the non-reentrant try-acquire would fail against the caller's own reservation. A self-held gate already proves no other live committer owns the host, so the finder reuses the held reservation and adopts the marker without re-acquiring. Only a dead claim on a gate-free host — or a foreign marker on a self-gated host — is
 adopted. The finder then releases the lock, runs the pinned teardown with no
 lock held under the marker's generation/incarnation guards, and re-takes the
 lock to persist the finalized receipt plus real remnant (verifying the attempt
@@ -564,11 +564,10 @@ false` AND `swapStarted: false` re-applies the staged runtime set to the live ha
 already holds the new config, so the live runtime must converge to it before
 the receipt finalizes), then re-runs the pinned teardown to completion and
 finalizes from the observed result — and the receipt records `bootRecovered: true` (the
-optional receipt field in §6); a marker with `teardownStarted: true` recovers
-as a durable teardown remnant — the pinned target plus the pre-minted
-`remnantId` become the remnant record, the receipt records
-`committed-with-teardown-failure` with that `remnantId` plus `bootRecovered:
-true`, and the operator resumes through `evener/host/teardown-retry` — so a
+optional receipt field in §6); a marker with `teardownStarted: true` re-runs the pinned teardown to completion like every other phase and finalizes from the observed result — a clean re-run returns `committed` with no remnant, and only a re-run that actually fails persists the pinned target plus the pre-minted
+`remnantId` as the remnant record with
+`committed-with-teardown-failure` plus `bootRecovered:
+true` for operator resume through `evener/host/teardown-retry` — so a
 lost-response retry after the crash returns the recovered receipt or the retry
 handle instead of re-applying, and a crash after teardown began never loses its
 repair target. Every phase re-runs the pinned teardown to completion before
@@ -639,11 +638,7 @@ mutation, a pre-existing identical row, or another client's remove/re-add, and
 the keyless retry cannot distinguish them — instead of claiming the mutation
 committed. Any intervening change to an effective field breaks
 the equality and forces the `stale-entry` path instead of guard omission. A
-keyless `add` retry that has not yet observed its intended row re-reads `list`
-and retries without `expectedGeneration` only while the mutation is still
-uncommitted — the row still absent — so retries converge without
-double-applying; only a retry carrying `mutationId` may claim a committed
-mutation. `update` and `remove` take no keyless path at all: a
+keyless `add` retry that has not yet observed its intended row never re-applies keyless: an absent row cannot prove the original uncommitted — a committed `add` later removed reads identically absent — so the retry mints a fresh `mutationId` and commits as a new keyed mutation (dedup-safe under the new key), never as a keyless continuation; only a retry carrying the original `mutationId` may replay-or-claim under the stale-entry guarantee. `update` and `remove` take no keyless path at all: a
 lost-response `update`/`remove` retry always carries its original key and
 follows the single superseded-receipt rule, an `update`/`remove` carrying a
 fresh key against a superseded generation or a superseded incarnation refuses
@@ -651,8 +646,8 @@ as `stale-entry`, and no unkeyed `update`/`remove` ever stages against a live
 incarnation.
 
 Processing order is fixed: receipt dedup by (mutationId, name, kind, current
-generation, current incarnation id) runs first for every
-`add`/`update`/`remove` — subject only to `update`'s and `remove`'s
+generation, current incarnation id) runs first for every keyed
+`add`/`update`/`remove` — dedup-first applies only when `mutationId` is present; a keyless `add` carries no key to look up, so it skips the receipt lookup and routes directly to the list-reconciliation path in this section — subject only to `update`'s and `remove`'s
 parameter-presence gates (missing `mutationId`, `expectedGeneration`, or
 `expectedIncarnationId` is a validation refusal before any dedup lookup). A
 dedup match returns the recorded receipt with no `expectedGeneration`/
@@ -1264,7 +1259,7 @@ documents and are cited, never restated):
   explicit value above, so no non-optional field is left unknown.
 - `evener/host/add`: params are one full host entry (all seven `HostConfig`
   fields; `name` required) plus optional `mutationId: string` (opaque,
-  non-empty, at most 128 bytes — the idempotency key; §5); response is the
+  non-empty, at most 128 bytes — the idempotency key; a keyless `add` skips dedup and is non-retryable as a continuation — §5); response is the
   mutation-result union below.
 - `evener/host/update`: params `{name: string, entry: <the six non-name
   `HostConfig` fields>, mutationId: string, expectedGeneration: number,
@@ -1413,10 +1408,10 @@ reads as `teardown-unknown-key`, never a second clearance. The attestation is va
   classification plus the request/response shapes field-for-field.
 - Mutation `concurrent-edit` refusal: conflict class, discriminator
   `concurrent-edit`, data `{stagedFingerprint: string, observedFingerprint:
-  string}`. It fires exactly when the sidecar commit's final check (§6) finds
+  string}`. It fires on two paths: (1) the sidecar commit's final check (§6) finds
   the `hub.toml` fingerprint moved between the validation read and the final
-  check after bounded retries. The protocol-shapes test asserts the
-  code-plus-discriminator pair plus the data shape.
+  check after bounded retries; (2) the live-external reconcile validation (§15) rejects merged-config drift — data on that path is `{firstSource: string, firstCount: number, secondSource: string, secondCount: number}` naming both merged sources and their host counts. The protocol-shapes test asserts the
+  code-plus-discriminator pair plus the data shape per path.
 - Mutation `tombstone-capacity` refusal: conflict class, discriminator
   `tombstone-capacity`, data `{bound: string, blockingNames: string[]}`. It
   fires exactly when a tombstone persist fits only by evicting a remnant-gated
@@ -1887,7 +1882,7 @@ refresh from the removed incarnation or a stale name-keyed cache entry can
 never republish rows for the new host.
 ## 16. Testing
 
-Registry tests (all bullets in this section ship with the registry PR):
+Registry tests (all bullets in this section ship with the registry PR, except the union-handler catalog/protocol-shape pins named below, which ship in the pipeline PR where those handlers register — §2):
 
 - Registry live-update tests (including the add-time cycle rules),
   manager add/remove-vs-supervisor tests (removing an attached host stops its
@@ -1947,7 +1942,7 @@ Registry tests (all bullets in this section ship with the registry PR):
   when no retained receipt survives for the key); `expectedGeneration`
   requires `mutationId` on the UI path and keyless `add` retries follow the
   effective-fields re-read rule (never an `expectedGeneration` without a key;
-  uncommitted `add` retries while the row is still absent, the explicit ambiguous
+  absent-row keyless `add` retries minting a fresh `mutationId` and committing as a new keyed mutation (never a keyless re-apply — §5), the explicit ambiguous
   outcome once a matching row is observed, `stale-entry` once
   an effective field changed; `update` takes no keyless path — missing either
   field is a validation refusal)), remote-origin rejection for
@@ -1996,10 +1991,10 @@ against the live entry; a bounded-run timeout against a fake teardown
 dependency returns the `committed-with-teardown-failure` arm with `seam`
 naming the failed seam and the remnant still open for a later retry;
 protocol-shape tests pin the `changed-entry` refusal arm, the `concurrent-edit`,
-`tombstone-capacity`, and `teardown-unknown-key` catalog entries with their envelope
-code-plus-discriminator pairs, the four-arm mutation-result union (including the
+`tombstone-capacity` catalog entries with their envelope
+code-plus-discriminator pairs here; the `teardown-unknown-key` entry, the four-arm mutation-result union (including the
 `ambiguous` arm), plus the
-`teardown-recover` request/response shapes field-for-field;
+`teardown-retry`/`teardown-recover` request/response shapes pin field-for-field in the pipeline PR where those handlers register (§2);
 an unresolvable-`cleanupHandle` remnant refuses `teardown-unknown-key` on the
 retry path and clears only through `teardown-recover` — attestation
 validation, safety-check refusals naming the blocking check, the audited
@@ -2066,8 +2061,7 @@ lost). Remnant-gate tests:
   run surfaces `committed-with-teardown-failure` with the remnant) — never
   `committed` while old lifecycle handles remain — while a marker with the
   intent written (`swapStarted: true`) but the swap incomplete recovers by
-  re-applying the staged runtime set first and then recovering conservatively
-  with the pinned remnant — never a teardown-first mismatch, never without
+  re-applying the staged runtime set first, then re-running the pinned teardown to completion and finalizing from the observed result while keeping the pinned remnant — never a teardown-first mismatch, never without
   one. A leftover finalizing claim preserves the marker's `teardownStarted`
   value and runtime phase, and boot decides by the persisted phase — never a
   blanket teardown-started claim. File-posture
