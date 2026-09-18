@@ -36,7 +36,7 @@ import { CHARACTER_KEY_TRIGGER_BINDING_ID } from "./keybindingDefaults";
 import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./keybindingOverrides";
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
 import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
-import { createReadyGenerationFence } from "./readyGenerationFence";
+import { createReadyGenerationFence, lostHub } from "./readyGenerationFence";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -641,6 +641,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     return getState().hubSupport === "supported";
   }
 
+  /** WHY a reply is not ours, because the two answers call for opposite things.
+   * SUPERSEDED: a later write, or a payload retirement, has taken over - it
+   * owns `saving` now and this reply must touch nothing. LOST-HUB: this write's
+   * own claim is intact and only support went away (the unknown window keeps
+   * the state and the in-flight work), so nothing else will ever settle this
+   * write and the editor must not be left mid-write. */
+  function whyFenced(generation: number, token: number): "superseded" | "lost-hub" {
+    return lostHub(fence, generation, token === fence.writeToken) ? "lost-hub" : "superseded";
+  }
+
+  /** Publishes the end of a write whose reply can never be settled by anything
+   * else. A superseded reply publishes nothing: its successor owns the flags. */
+  function settleUnsettleableWrite(why: "superseded" | "lost-hub"): void {
+    if (why === "lost-hub" && getState().saving) setState({ saving: false, writeUncertain: true });
+  }
+
   /** The confirmed payload can no longer be acted on (the generation ended,
    * support dropped, the hub was replaced): it stops presenting as current,
    * every reply still in flight is superseded so it lands nothing, and the
@@ -672,10 +688,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * payload stays retryable and a later `changed` with the same revision is
    * not eaten by the stale guard. `extra` lands in the same publish as the
    * confirmed state. Returns false for an ignored payload. */
-  function applyHubOverrides(payload: KeybindingsOverrides, extra: Partial<KeybindingsStoreFields> = {}): boolean {
+  function applyHubOverrides(
+    payload: KeybindingsOverrides,
+    extra: Partial<KeybindingsStoreFields> | (() => Partial<KeybindingsStoreFields>) = {},
+  ): boolean {
     const state = getState();
     if (payload.revision < state.revision && payload.loadError === undefined) {
-      if (Object.keys(extra).length > 0) setState(extra);
+      const resolved = typeof extra === "function" ? extra() : extra;
+      if (Object.keys(resolved).length > 0) setState(resolved);
       return false;
     }
     const rules = cloneRules(payload.rules);
@@ -683,6 +703,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // The reconcile succeeded, so any rolled-back un-apply's wedge is cleared
     // with it: the rollback hubError is now stale and may clear normally.
     unapplyRolledBack = false;
+    // `extra` is resolved only now, after the reconcile has succeeded: a
+    // settling extra (settledWrite) reclassifies the draft repository as
+    // part of computing itself, and a thunk defers that reclassification
+    // past the one point above that can still throw - a throwing reconcile
+    // never reaches this line, so the repository is never reclassified for a
+    // settle that then fails to publish. Both effects land in the same
+    // setState call below, whether `extra` is a thunk or a plain object.
+    const resolved = typeof extra === "function" ? extra() : extra;
     // A successful apply supersedes any earlier apply failure's hubError AND
     // any earlier patch's revision-race conflict - the store is now confirmed
     // at this payload either way. Clearing one without the other was the
@@ -715,9 +743,25 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       loadError: payload.loadError ?? null,
       conflict: null,
       draftConflict: staleDraft(state.draft, payload.revision),
-      ...extra,
+      ...resolved,
     });
     return true;
+  }
+
+  /** Applies a confirmed payload while guaranteeing `settled` publishes even
+   * if the reconciler throws (the registry has already rolled back): every
+   * settle path clears `saving`/`writeUncertain` the same way whether or not
+   * the local apply succeeded, so a wedged registry can never leave the
+   * editor disabled. Returns the thrown error, if any, for the caller to
+   * re-throw once its own draft-port cleanup has run. */
+  function applyHubOverridesSettling(payload: KeybindingsOverrides, settled: Partial<KeybindingsStoreFields>): unknown {
+    try {
+      applyHubOverrides(payload, settled);
+      return null;
+    } catch (error) {
+      setState({ ...settled, hubError: errorText(error) });
+      return error;
+    }
   }
 
   function endReadyGeneration(): void {
@@ -910,7 +954,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (!stillMine()) return;
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
-      applyHubOverrides(payload, { hubLoading: false, ...settledWrite(payload, writeSerialAtStart) });
+      applyHubOverrides(payload, () => ({ hubLoading: false, ...settledWrite(payload, writeSerialAtStart) }));
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
@@ -1143,9 +1187,50 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         config: { version: 1, rules: checked },
       });
     } catch (error) {
+      if (!stillMine()) {
+        settleUnsettleableWrite(whyFenced(generation, token));
+        throw error;
+      }
+      // Post-rename durable failure: the patch APPLIED on the hub (the error
+      // carries the canonical applied state, and the broadcast reconciles
+      // every client) - the same known-outcome rule patchOverrides follows.
+      // Apply locally and report success: surfacing writeUncertain here
+      // would leave editing disabled over bindings that are already live.
+      const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
+      if (applied !== undefined) {
+        const settled = { saving: false, writeUncertain: false };
+        const applyFailure = applyHubOverridesSettling(applied, settled);
+        let storageError: string | null = null;
+        try {
+          drafts.removeIf(checkpoint);
+        } catch {
+          storageError = DRAFT_CLEANUP_FAILED_MESSAGE;
+        }
+        setState({
+          draft: storageError !== null ? getState().draft : null,
+          storageUnavailable: storageError !== null,
+          draftError: storageError,
+        });
+        if (applyFailure !== null) throw applyFailure;
+        return applied;
+      }
+      // A lost revision race: the rejection carries the server's current
+      // state, so this is not a lost reply - the outcome is known - and the
+      // checkpoint is re-marked settled rather than left claiming an unknown
+      // one, the same rule the direct write follows.
+      const conflictState = rejectionPayload(error, "conflict", "current");
+      if (conflictState !== undefined) {
+        applyHubOverridesSettling(conflictState, { saving: false, writeUncertain: false, draftConflict: true });
+        try {
+          persistDraft({ baseRevision: checkpoint.baseRevision, rules: checkpoint.rules, writeUncertain: false });
+        } catch {
+          setState({ storageUnavailable: true, draftError: DRAFT_CLEANUP_FAILED_MESSAGE });
+        }
+        throw error;
+      }
       // No reply: the write's outcome is unknown, and that fact is the state
       // (writeUncertain) rather than a message. The checkpoint already says so.
-      if (stillMine()) setState({ saving: false, draftConflict: true, writeUncertain: true });
+      setState({ saving: false, draftConflict: true, writeUncertain: true });
       throw error;
     }
     // The reply is back. What follows is ONE ordered sequence with no side
@@ -1175,6 +1260,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     //     with the port marked unavailable, and never turns a confirmed write
     //     back into an unknown outcome.
     if (!stillMine()) {
+      settleUnsettleableWrite(whyFenced(generation, token));
       const state = getState();
       return { version: 1, revision: state.revision, rules: [...state.rawOverrides] };
     }
@@ -1190,13 +1276,8 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       draftConflict: newerExternal,
     };
     let applyFailure: unknown = null;
-    try {
-      if (newerExternal) setState(settled);
-      else applyHubOverrides(value, settled);
-    } catch (error) {
-      applyFailure = error;
-      setState({ ...settled, hubError: errorText(error) });
-    }
+    if (newerExternal) setState(settled);
+    else applyFailure = applyHubOverridesSettling(value, settled);
     let storageError: string | null = null;
     try {
       if (newerExternal) persistDraft({ ...checkpoint, writeUncertain: false });

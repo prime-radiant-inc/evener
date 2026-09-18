@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { UnreadableDraftError } from "./draftCheckpointPort";
+import { WireError } from "./errors";
 import { ACTIONS } from "./keybindingActions";
 import { serializeChord } from "./keybindingChord";
 import type { KeybindingsRegistry } from "./keybindingRegistry";
@@ -226,6 +227,159 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
+  // RoboRev round 22 High: settledWrite reclassified the repository (the
+  // checkpoint-persisting write) as a bare expression evaluated BEFORE
+  // applyHubOverrides ran, so a refresh whose reconcile then throws (a wedged
+  // registry) left the checkpoint reclassified on disk while the throw kept
+  // the settle from ever publishing - non-transactional. Deferring the
+  // reclassification until the apply has actually succeeded means a throwing
+  // refresh leaves the checkpoint exactly as it found it.
+  test("a refresh's reconciler throw does not reclassify the checkpoint ahead of publishing the settle", async () => {
+    const registry = registryWithDefaults();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { registry, drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+    const uncertainCheckpoint = drafts.stored();
+    expect(uncertainCheckpoint).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: true });
+
+    // A foreign binding squats palette.open's default chord: restoring the
+    // default - what reconciling the confirmed empty rules below requires,
+    // since the override this generation applied is going away - throws.
+    const paletteDefault = registryWithDefaults()
+      .getState()
+      .bindings.find((b) => b.id === ACTIONS.paletteOpen);
+    if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
+    registry
+      .getState()
+      .registerBinding({ id: "foreign.squatter", actionId: "foreign", chord: serializeChord(paletteDefault.chord) });
+
+    client.on(getMethod, () => payload(5, []));
+    await store.getState().refreshOverrides();
+    expect(store.getState().hubError).not.toBeNull();
+
+    // The throw happened before any settle publishes: writeUncertain is
+    // unchanged, and the checkpoint on disk is untouched - the repository was
+    // never reclassified for a settle that never actually landed.
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toEqual(uncertainCheckpoint);
+
+    // Once the registry is no longer wedged, the very same settle succeeds
+    // against the SAME still-intact checkpoint.
+    registry.getState().unregisterBinding("foreign.squatter");
+    await store.getState().refreshOverrides();
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: false });
+  });
+
+  // RoboRev round 21 Medium 2: saveDraft treated every rejection as an
+  // unknown outcome, unlike the direct write (patchOverrides), which uses
+  // rejectionPayload to tell a structured conflict/post-rename failure from
+  // a transport failure. A known refusal left writeUncertain true, and a
+  // known post-rename success was reported as a failed save.
+  test("a revision conflict during saveDraft is a KNOWN outcome: the canonical lands and the proposal stays for review", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        current: payload(6, [{ action: ACTIONS.railToggle, chord: "Control+R" }]),
+      });
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft(rules)).rejects.toThrow("revision conflict");
+
+    expect(store.getState()).toMatchObject({
+      revision: 6,
+      writeUncertain: false,
+      draftConflict: true,
+      draft: { rules },
+    });
+    expect(drafts.stored()?.writeUncertain).toBe(false);
+  });
+
+  test("a post-rename durable failure during saveDraft applies the carried canonical state instead of leaving the outcome unknown", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new WireError("sync keybindings state directory: boom", -32603, {
+        evenerErrorInfo: "keybindingsPostRename",
+        applied: payload(4, rules),
+      });
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const saved = await store.getState().saveDraft(rules);
+
+    expect(saved).toEqual(payload(4, rules));
+    expect(store.getState()).toMatchObject({
+      revision: 4,
+      writeUncertain: false,
+      saving: false,
+      draft: null,
+    });
+    expect(drafts.stored()).toBeNull();
+  });
+
+  // RoboRev round 22 Medium 2: unlike the main post-reply sequence's
+  // applyHubOverrides call, these two rejection branches called it with no
+  // try/catch, so a reconciler throw (a wedged registry that has already
+  // rolled back) propagated straight out of saveDraft with `saving` never
+  // cleared - the editor stays disabled forever, since nothing else clears it.
+  function wedgePaletteDefault(registry: KeybindingsRegistry): void {
+    const paletteDefault = registryWithDefaults()
+      .getState()
+      .bindings.find((b) => b.id === ACTIONS.paletteOpen);
+    if (paletteDefault === undefined) throw new Error("test setup: no default for palette.open");
+    registry
+      .getState()
+      .registerBinding({ id: "foreign.squatter", actionId: "foreign", chord: serializeChord(paletteDefault.chord) });
+  }
+
+  test("a post-rename durable failure whose local reconcile throws still clears saving", async () => {
+    const registry = registryWithDefaults();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new WireError("sync keybindings state directory: boom", -32603, {
+        evenerErrorInfo: "keybindingsPostRename",
+        applied: payload(4, []),
+      });
+    });
+    const store = await readyStore(client, { registry, drafts: drafts.storage });
+    wedgePaletteDefault(registry);
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().hubError).not.toBeNull();
+  });
+
+  test("a revision conflict whose local reconcile throws still clears saving", async () => {
+    const registry = registryWithDefaults();
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new WireError("revision conflict", -32013, {
+        evenerErrorInfo: "conflict",
+        current: payload(5, []),
+      });
+    });
+    const store = await readyStore(client, { registry, drafts: drafts.storage });
+    wedgePaletteDefault(registry);
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+
+    expect(store.getState().saving).toBe(false);
+    expect(store.getState().hubError).not.toBeNull();
+  });
+
   test("a lost reply leaves the write uncertain and blocks edits until an authoritative read", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
@@ -383,6 +537,62 @@ describe("the checkpointed draft editor", () => {
     drafts.storage.save({ id: "x", baseRevision: 3, rules, writeUncertain: true });
     const store = createKeybindingsStore({ client: new FakeClient("ready"), drafts: drafts.storage });
     expect(store.getState()).toMatchObject({ draft: { revision: 3, rules }, writeUncertain: true });
+  });
+
+  test("an older save's late reply does not clear a newer save's saving flag", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const first = deferred<KeybindingsOverrides>();
+    const second = deferred<KeybindingsOverrides>();
+    let sends = 0;
+    client.on(patchMethod, () => (++sends === 1 ? first.promise : second.promise));
+
+    const one = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(sends).toBe(1));
+
+    // A transient disconnect retires the payload, which frees the editor while
+    // the first request is STILL OUT - that is what lets a second save start.
+    store.endReadyGeneration();
+    expect(store.getState().saving).toBe(false);
+    store.beginReadyGeneration();
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
+    store.getState().rebaseDraft(3);
+
+    const two = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(sends).toBe(2));
+    expect(store.getState().saving).toBe(true);
+
+    // Superseded, not fenced by a support flip: it may not report the write the
+    // editor IS waiting on as finished.
+    first.resolve(payload(4, rules));
+    await one;
+    expect(store.getState().saving).toBe(true);
+
+    second.resolve(payload(4, rules));
+    await two;
+    expect(store.getState().saving).toBe(false);
+  });
+
+  test("a rejection arriving after support went unknown still clears saving", async () => {
+    const client = clientServing(3);
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // The transient-disconnect window keeps the payload and the in-flight work
+    // but makes isSupported() false, so the reply is fenced with no retirement
+    // having published saving false.
+    store.setSupport("unknown");
+    expect(store.getState().saving).toBe(true);
+
+    reply.reject(new Error("connection lost"));
+    await expect(save).rejects.toThrow("connection lost");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true });
   });
 
   test.each<[string, unknown]>([
