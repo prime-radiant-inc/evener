@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"testing"
 
@@ -275,15 +276,19 @@ func TestSortCommandDescriptors_StableForEqualKeys(t *testing.T) {
 		}
 	}
 	sortCommandDescriptors(commands)
-	nextRound := make(map[string]int, len(names))
-	for _, c := range commands {
-		var round int
-		if _, err := fmt.Sscanf(c.Description, c.Name+"-%d", &round); err != nil {
-			t.Fatalf("parse %q: %v", c.Description, err)
+	// Names sort ascending, and a stable sort keeps each name's rows in the
+	// round order they were discovered in, so the whole result is determined.
+	var want []string
+	for _, name := range names {
+		for round := 0; round < perName; round++ {
+			want = append(want, fmt.Sprintf("%s-%02d", name, round))
 		}
-		if round != nextRound[c.Name] {
-			t.Fatalf("%s rows out of discovery order: got round %d, want %d (equal-key rows were reordered)", c.Name, round, nextRound[c.Name])
-		}
-		nextRound[c.Name]++
+	}
+	got := make([]string, len(commands))
+	for i, c := range commands {
+		got[i] = c.Description
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v (equal-key rows must keep discovery order)", got, want)
 	}
 }
