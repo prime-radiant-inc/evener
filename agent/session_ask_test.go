@@ -2124,6 +2124,52 @@ func TestAskUser_RestoreClassifiesAKindlessProvenancelessHumanNoteByItsTextShape
 	}
 }
 
+// TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim covers
+// RoboRev #1806 round 4's Low (session_lifecycle.go:2733-2735):
+// setSteeringCarrierClaimDrain(id) / injectDrainedSteering() /
+// setSteeringCarrierClaimDrain("") cleared without defer, so a panic between
+// the two calls leaked the claim id — a later unrelated
+// recordFailedSteeringSelection could then mistag its own TurnFailure
+// SteeringCarrier and wrongly resolve an ask on restore
+// (steeringSelectionFailureIsCarrierClaim keys purely on the leaked id).
+// Injects a real panic via the sessionLifecycleFaults context seam
+// (the same mechanism session_attention_test.go's panic-unwind test uses) at
+// a new "steering_carrier_drain" fault point placed right before the drain,
+// and asserts the claim reads cleared after recovering from it.
+func TestAcceptSteeringCarrierInput_PanicMidDrainStillClearsTheClaim(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	defer sess.Close()
+	if err := sess.ensureClientMutationStore(); err != nil {
+		t.Fatalf("ensureClientMutationStore: %v", err)
+	}
+	if _, err := sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+		ClientMutationID: "steer-1",
+		Input:            clientMutationInput("hello", nil, nil),
+	}); err != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", err)
+	}
+	turnID, ok := sess.claimSteeringCarrierTurn()
+	if !ok {
+		t.Fatalf("claimSteeringCarrierTurn refused a queued steer")
+	}
+	identity := queuedClientMutationIdentity{ClientMutationID: "steer-1", StableTurnID: turnID, SteeringCarrier: true}
+	panicErr := errors.New("injected steering carrier drain panic")
+	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{"steering_carrier_drain": panicErr})
+	func() {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("injected panic did not propagate")
+			}
+		}()
+		_ = sess.acceptSteeringCarrierInput(ctx, identity)
+	}()
+	if sess.steeringSelectionFailureIsCarrierClaim("steer-1") {
+		t.Fatal("the claim id leaked across the panic: a later unrelated recordFailedSteeringSelection would mistag its own TurnFailure SteeringCarrier")
+	}
+}
+
 // TestAskUser_RestoreResolvesAcrossFailedSteeringCarrier covers the case a
 // user steer's OWN turn fails outright before posting anything: processOneInput
 // clears s.askPending unconditionally on entry (session_lifecycle.go's
