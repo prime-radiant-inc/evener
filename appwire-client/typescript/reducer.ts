@@ -995,12 +995,12 @@ const MODEL_OUTPUT_ITEM_TYPES = new Set(["agentMessage", "reasoning", "commandEx
 // itself a non-blank string, or an object (and not an array) whose own
 // `message` is a non-blank string. Every other shape carries no message.
 function warningMessage(params: WarningParams): string {
-  if (typeof params.message === "string" && params.message.trim() !== "") return params.message;
+  if (typeof params.message === "string" && hasWarningText(params.message)) return params.message;
   const warning = params.warning;
-  if (typeof warning === "string" && warning.trim() !== "") return warning;
+  if (typeof warning === "string" && hasWarningText(warning)) return warning;
   if (typeof warning === "object" && warning !== null && !Array.isArray(warning)) {
     const nested = (warning as { message?: unknown }).message;
-    if (typeof nested === "string" && nested.trim() !== "") return nested;
+    if (typeof nested === "string" && hasWarningText(nested)) return nested;
   }
   return "";
 }
@@ -1010,9 +1010,13 @@ function warningMessage(params: WarningParams): string {
 // title/hint, so the raw-frame fallback below and the structured fields it
 // would otherwise duplicate never disagree about which one has something to
 // show. A type predicate so a caller narrows `unknown` in one step instead of
-// repeating the typeof/trim check to get the same narrowing.
+// repeating the typeof/trim check to get the same narrowing. Checks a bounded
+// prefix rather than the whole string: params is unknown on the wire, and
+// `.trim()` on a transport-sized (up to 128 MiB) string is an O(length)
+// allocation just to answer "is there any content here" - the same class of
+// cost boundedCodePoints below exists to avoid for the value itself.
 export function hasWarningText(value: unknown): value is string {
-  return typeof value === "string" && value.trim() !== "";
+  return typeof value === "string" && boundedCodePoints(value).trim() !== "";
 }
 
 // A frame with no message anywhere is surfaced as the frame itself
@@ -1097,15 +1101,40 @@ function prunedForStringify(value: unknown, depth: number, budget: { remaining: 
   return value;
 }
 
-function rawWarningFrame(params: WarningParams): string {
+// Truncates a string to RAW_WARNING_FRAME_MAX_CHARS code points, safely (a
+// UTF-16 slice can otherwise cut a surrogate pair in half). Applied to
+// every string a warning frame can put into the model — message, title,
+// hint, source, and the raw fallback — so a multi-megabyte value anywhere
+// in the frame can never reach ItemModel unbounded, not just via the
+// message-less fallback path. A fast path for the common (short) case:
+// UTF-16 length is always >= code-point count, so no huge value means no
+// work.
+function boundedCodePoints(s: string): string {
+  if (s.length <= RAW_WARNING_FRAME_MAX_CHARS) return s;
+  // Bound the allocation before expanding to code points: a UTF-16 prefix
+  // twice the code-point limit always contains at least that many code
+  // points (every code point is at most two UTF-16 units), so slicing the
+  // string first — a cheap view, no per-character array — never drops real
+  // content.
+  let bounded = s.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
+  // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
+  // as the last unit of `bounded`. Array.from would treat that lone unit as
+  // its own broken "character" rather than dropping it; strip it before
+  // expanding so the final bounded frame never ends on one.
+  const lastUnit = bounded.charCodeAt(bounded.length - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) bounded = bounded.slice(0, -1);
   // Array.from splits a string into code points, not UTF-16 units, so a
   // surrogate pair (an emoji, or anything outside the BMP) straddling the
   // bound is kept or dropped whole - a plain String#slice(0, N) can instead
   // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
-  const codePoints = Array.from(
-    JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES })),
-  );
-  return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+  return Array.from(bounded).slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+}
+
+function rawWarningFrame(params: WarningParams): string {
+  const json = JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES }));
+  // prunedForStringify above already keeps `json` itself small; this bound
+  // is defense-in-depth for the code-point expansion specifically.
+  return boundedCodePoints(json);
 }
 
 // The one validated shape every warning row — live with a turn, live
@@ -1122,17 +1151,23 @@ export interface WarningFold {
 }
 
 export function foldWarningParams(params: WarningParams): WarningFold {
+  const text =
+    warningMessage(params) ||
+    (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params));
   return {
-    text:
-      warningMessage(params) ||
-      (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
+    // Bounded even though rawWarningFrame's own branch already is: a huge
+    // message (warningMessage's own return) is a separate, previously
+    // unbounded path into the model — one call here covers both.
+    text: boundedCodePoints(text),
     // Blank is absent too, not just "not a string" — hasWarningText's own
     // reading, which every consumer must apply anyway. Normalizing it here
     // means a future reader is never one missed hasWarningText call away
-    // from rendering blank content.
-    title: hasWarningText(params.title) ? params.title : undefined,
-    hint: hasWarningText(params.hint) ? params.hint : undefined,
-    source: hasWarningText(params.source) ? params.source : undefined,
+    // from rendering blank content. Bounded for the same reason as text:
+    // an oversized title/hint/source reaching ItemModel.warning verbatim is
+    // the same class of vector rawWarningFrame closes for the fallback.
+    title: hasWarningText(params.title) ? boundedCodePoints(params.title) : undefined,
+    hint: hasWarningText(params.hint) ? boundedCodePoints(params.hint) : undefined,
+    source: hasWarningText(params.source) ? boundedCodePoints(params.source) : undefined,
   };
 }
 
