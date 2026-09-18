@@ -463,6 +463,14 @@ func newHubHostManager(sources *appsource.Registry, manager *sshconn.Manager, cf
 		return m
 	}
 	for _, e := range entries {
+		// Normalize before any use of the entry. The registry's Add would
+		// normalize before storing, but the hub.toml collision check, the
+		// sidecar row, and the source registration all read the entry as
+		// decoded: a padded sidecar name would register a source and a
+		// sidecar row under the padded spelling while the registry stores
+		// the trimmed one, so the row would list with a hub.toml origin and
+		// removal would refuse it as hub.toml-declared.
+		e = hostreg.Normalize(e)
 		if _, ok := hosts.Get(e.Name); ok {
 			// hub.toml is authoritative for its own names: a colliding sidecar
 			// entry is a policy drop, not a load failure.
@@ -496,20 +504,16 @@ func (m *hubHostManager) observeEvent(ev sshconn.Event) {
 }
 
 // registerHostManageHandlers installs the four slice-1 host-management
-// handlers. The manager, registry, and hub.toml path come from cfg: main.go
-// threads the live sshconn.Manager, the live host registry it shares with the
-// attach handler, and the selected config path through WebConfig, so the
-// surface is wired in production (a nil there — tests, embedders — leaves
-// the fallbacks: a fresh registry from RemoteHosts, no channel teardown, no
-// sidecar persistence). navigation, when non-nil, is invalidated after
-// add/remove commits so the manifest's sources converge without waiting for
-// the next refresh tick. It returns the manager so tests can drive it
-// directly.
-func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, navigation *NavigationService, logf func(format string, args ...any)) *hubHostManager {
-	hosts := cfg.RemoteHostRegistry
-	if hosts == nil {
-		hosts = hostRegistryFromConfig(cfg)
-	}
+// handlers. hosts is the one live registry the server constructor resolved —
+// the same instance the attach handler validates against — and the manager
+// and hub.toml path come from cfg: main.go threads the live sshconn.Manager,
+// the live host registry, and the selected config path through WebConfig, so
+// the surface is wired in production (a nil manager or config path there —
+// tests, embedders — leaves the fallbacks: no channel teardown, no sidecar
+// persistence). navigation, when non-nil, is invalidated after add/remove
+// commits so the manifest's sources converge without waiting for the next
+// refresh tick. It returns the manager so tests can drive it directly.
+func registerHostManageHandlers(server *appserver.Server, sources *appsource.Registry, cfg hubcore.WebConfig, hosts *hostreg.Registry, navigation *NavigationService, logf func(format string, args ...any)) *hubHostManager {
 	m := newHubHostManager(sources, cfg.RemoteHostSSHManager, cfg, cfg.RemoteHostConfigPath, hosts, logf)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAdd, func(ctx context.Context, params appwire.HostAddParams) (appwire.HostRow, error) {
 		row, err := m.Add(ctx, params)
@@ -532,7 +536,11 @@ func registerHostManageHandlers(server *appserver.Server, sources *appsource.Reg
 
 // hostOnline reports whether host currently has a live channel. It reads the
 // attached-only signal without spawning SSH: the dial seam belongs to
-// evener/host/attach alone.
+// evener/host/attach alone. A true here is necessary but not sufficient for a
+// row to render Attached — hostRow also requires the attached-only client
+// lookup to confirm a live channel, so the source registry's fail-open
+// default (Online() true with no signal wired) cannot mark a host attached
+// that nothing dialed.
 func (m *hubHostManager) hostOnline(host string) bool {
 	if m.cfg.online != nil {
 		return m.cfg.online(host)
@@ -570,33 +578,34 @@ func (m *hubHostManager) hostRow(host hostreg.Host, origin string) appwire.HostR
 		KeyPath: host.KeyPath,
 		Origin:  origin,
 	}
-	if m.hostOnline(host.Name) {
-		row.Attached = true
-		if m.cfg.clientIfAttached != nil {
-			client, ok := m.cfg.clientIfAttached(host.Name)
-			if !ok || client == nil {
-				// The online signal fired but the channel is already gone:
-				// render offline rather than an online row with no facts
-				// behind it.
-				row.Attached = false
-			} else {
-				if m.cfg.handshake != nil {
-					if hs, ok := m.cfg.handshake(host.Name, client); ok {
-						row.ServerName = hs.ServerInfo.Name
-						row.ServerVersion = hs.ServerInfo.Version
-					}
+	// Attached is reported only when the attached-only client lookup
+	// confirms a live channel (the round-2 truthful-status fix). The online
+	// signal alone is not sufficient: with no signal wired a hub.toml source
+	// fails open (Online() true), and trusting that would render every
+	// configured host Attached with no facts behind it — an online row the
+	// UI then refuses to Connect because it looks already up. No lookup
+	// wired (tests, embedders) leaves the row honestly offline too: nothing
+	// can confirm a channel, so nothing may claim one.
+	if m.hostOnline(host.Name) && m.cfg.clientIfAttached != nil {
+		client, ok := m.cfg.clientIfAttached(host.Name)
+		if ok && client != nil {
+			row.Attached = true
+			if m.cfg.handshake != nil {
+				if hs, ok := m.cfg.handshake(host.Name, client); ok {
+					row.ServerName = hs.ServerInfo.Name
+					row.ServerVersion = hs.ServerInfo.Version
 				}
-				if m.cfg.facts != nil {
-					if facts, err := m.cfg.facts(context.Background(), host.Name, client); err == nil {
-						row.HubVersion = facts.HubVersion
-						row.OS = facts.OS
-						row.Arch = facts.Arch
-					}
-					// A facts-read failure keeps the row attached: the dial
-					// the attach already completed is authoritative
-					// (app_host_attach.go's dial-authoritative rule), and a
-					// failed facts read is not a detach.
+			}
+			if m.cfg.facts != nil {
+				if facts, err := m.cfg.facts(context.Background(), host.Name, client); err == nil {
+					row.HubVersion = facts.HubVersion
+					row.OS = facts.OS
+					row.Arch = facts.Arch
 				}
+				// A facts-read failure keeps the row attached: the dial
+				// the attach already completed is authoritative
+				// (app_host_attach.go's dial-authoritative rule), and a
+				// failed facts read is not a detach.
 			}
 		}
 	}
@@ -678,7 +687,7 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	if err := m.saveSidecar(next); err != nil {
 		return appwire.HostRow{}, err
 	}
-	if err := m.cfg.hosts.Add(entry); err != nil {
+	if err := m.addHostToRegistry(entry); err != nil {
 		// Cannot happen — the entry was validated and duplicate-checked
 		// under mu — but should it ever, the file's copy reloads on the next
 		// start, so the add completes rather than being lost.
@@ -688,6 +697,19 @@ func (m *hubHostManager) Add(ctx context.Context, params appwire.HostAddParams) 
 	m.cfg.state.remove(entry.Name) // a re-added name starts with no stale record
 	m.registerSource(entry)
 	return m.hostRow(entry, hostOriginSidecar), nil
+}
+
+// addHostToRegistry inserts entry into the live registry. With the SSH
+// manager wired it goes through the manager's AddHost, which registers under
+// the same per-host gate the attach paths and RemoveHost coordinate on, so a
+// remove/re-add of a name can never interleave with an in-flight attach for
+// it; without one (tests, embedders) the registry's own Add is the whole
+// story, since nothing can be mid-attach through this hub.
+func (m *hubHostManager) addHostToRegistry(entry hostreg.Host) error {
+	if m.cfg.manager != nil {
+		return m.cfg.manager.AddHost(entry)
+	}
+	return m.cfg.hosts.Add(entry)
 }
 
 // remoteClientFor returns the refusing client func for a host whose source
@@ -717,11 +739,17 @@ func (m *hubHostManager) saveSidecar(entries []hostreg.Host) error {
 // order (the registry's own; the origin field distinguishes hub.toml entries
 // from sidecar ones). Attached rows report live channel facts and retain them
 // as last-known; rows without a live channel render as offline with the
-// retained attach state and last-known facts. It never dials.
+// retained attach state and last-known facts. It never dials. It holds the
+// mutation mutex Add and Remove commit under, so a concurrent reader never
+// observes the window between a registry insert and the sidecar row and
+// source registration that finish it — a half-committed host would list
+// with a hub.toml origin and no source.
 func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwire.HostListResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostListResponse{}, err
 	}
+	m.cfg.mu.Lock()
+	defer m.cfg.mu.Unlock()
 	rows := make([]appwire.HostRow, 0, len(m.cfg.hosts.All()))
 	for _, host := range m.cfg.hosts.All() {
 		origin := hostOriginHubTOML
@@ -737,11 +765,14 @@ func (m *hubHostManager) List(ctx context.Context, _ appwire.EmptyParams) (appwi
 }
 
 // Status returns one host's row: the same HostRow evener/host/list serves.
-// Unknown names are InvalidParams. Never dials.
+// Unknown names are InvalidParams. Never dials. It holds the same mutation
+// mutex List does, for the same fully-committed-row guarantee.
 func (m *hubHostManager) Status(ctx context.Context, params appwire.HostStatusParams) (appwire.HostStatusResponse, error) {
 	if err := guardControllerLocalHosts(ctx); err != nil {
 		return appwire.HostStatusResponse{}, err
 	}
+	m.cfg.mu.Lock()
+	defer m.cfg.mu.Unlock()
 	name := strings.TrimSpace(params.Name)
 	host, ok := m.cfg.hosts.Get(name)
 	if !ok {

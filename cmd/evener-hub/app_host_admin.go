@@ -11,7 +11,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostreg"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 )
 
@@ -259,8 +258,10 @@ type hostNotificationBroadcaster interface {
 // Local execution never happens for a remote host request.
 type hubHostAdminController struct {
 	broadcaster hostNotificationBroadcaster
-	// hosts is the component-03 registry of validated [[hosts]] entries. Its
-	// Get is the unknown-host authority.
+	// hosts is the controller's live host registry — the one shared instance
+	// the attach and host-management handlers also validate against, so a
+	// host added at runtime is administrable without a restart. Its Get is
+	// the unknown-host authority.
 	hosts *hostreg.Registry
 	// sources is the component-05 registry; a remote host's source is where
 	// attachment state (Online) and the per-host client live.
@@ -270,10 +271,15 @@ type hubHostAdminController struct {
 	// host's fresh client immediately instead of waiting out the delay.
 	attachWakeMu sync.Mutex
 	attachWake   map[string]chan struct{}
+	// fanOutMu guards fanOuts, the live per-host fan-out handles, so a
+	// re-added host's fresh source replaces the removed entry's loop instead
+	// of running beside it and double-delivering every notification.
+	fanOutMu sync.Mutex
+	fanOuts  map[string]context.CancelFunc
 }
 
 func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
-	return &hubHostAdminController{broadcaster: broadcaster, hosts: hosts, sources: sources, attachWake: map[string]chan struct{}{}}
+	return &hubHostAdminController{broadcaster: broadcaster, hosts: hosts, sources: sources, attachWake: map[string]chan struct{}{}, fanOuts: map[string]context.CancelFunc{}}
 }
 
 // registerHostAdminHandlers installs the proxy handler and starts one
@@ -287,15 +293,12 @@ func newHubHostAdminController(broadcaster hostNotificationBroadcaster, hosts *h
 // an EventAttached wakes the navigation snapshot but not a fan-out sleeping in
 // backoff, which may then wait up to hostNotificationRetryMax before
 // subscribing while the new client's notification buffer fills.
-func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) *hubHostAdminController {
-	hosts, err := hostreg.New(cfg.RemoteHosts)
-	if err != nil {
-		// Config loading already validated every entry (main.go builds the
-		// same registry from the same entries), so this cannot fail in
-		// production. Fall back to an empty registry rather than a nil one, so
-		// a hypothetical duplicate refuses every host instead of panicking.
-		hosts, _ = hostreg.New(nil)
-	}
+func registerHostAdminHandlers(ctx context.Context, server *appserver.Server, hosts *hostreg.Registry, sources *appsource.Registry) *hubHostAdminController {
+	// hosts is the one live registry the server constructor resolved — the
+	// same instance the attach and host-management handlers share — so the
+	// proxy's unknown-host authority covers a host added at runtime instead
+	// of refusing it as unknown against a static copy of the configured
+	// entries.
 	controller := newHubHostAdminController(server, hosts, sources)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostRequest, controller.Request)
 	controller.start(ctx)
@@ -361,22 +364,44 @@ func (c *hubHostAdminController) remoteSourceFor(host string) (*appsource.Remote
 	return remote, nil
 }
 
-// start launches one fan-out goroutine per remote host source.
+// start launches one fan-out goroutine per remote host source, and keeps
+// launching for sources registered later: the shared source registry is
+// authoritative for which hosts exist, so a host the management surface adds
+// at runtime gains its notification fan-out the moment its source registers,
+// rather than never (a one-shot enumeration here would miss every host added
+// after construction).
 func (c *hubHostAdminController) start(ctx context.Context) {
 	if c.sources == nil {
 		return
 	}
+	c.sources.SetOnAdd(func(source appsource.Source) { c.launchFanOut(ctx, source) })
 	for _, source := range c.sources.All() {
-		remote, ok := source.(*appsource.RemoteHubSource)
-		if !ok {
-			continue
-		}
-		// Filter at publish time, before the notification reaches the bounded
-		// per-subscription buffer, so a thread-notification burst cannot evict the
-		// rare config update the fan-out exists to deliver.
-		remote.SetHostNotificationFilter(isRemoteHostConfigNotification)
-		go c.fanOut(ctx, remote)
+		c.launchFanOut(ctx, source)
 	}
+}
+
+// launchFanOut starts source's host notification fan-out, replacing any loop
+// already running under the same name: a remove/re-add registers a fresh
+// source, and the previous loop running beside the new one would
+// double-deliver every notification. The cancelled predecessor stands down on
+// its next wakeup, or as soon as its current relay ends.
+func (c *hubHostAdminController) launchFanOut(ctx context.Context, source appsource.Source) {
+	remote, ok := source.(*appsource.RemoteHubSource)
+	if !ok {
+		return
+	}
+	// Filter at publish time, before the notification reaches the bounded
+	// per-subscription buffer, so a thread-notification burst cannot evict the
+	// rare config update the fan-out exists to deliver.
+	remote.SetHostNotificationFilter(isRemoteHostConfigNotification)
+	fanCtx, cancel := context.WithCancel(ctx)
+	c.fanOutMu.Lock()
+	if stop, ok := c.fanOuts[remote.ID()]; ok {
+		stop()
+	}
+	c.fanOuts[remote.ID()] = cancel
+	c.fanOutMu.Unlock()
+	go c.fanOut(fanCtx, remote)
 }
 
 // fanOut re-emits remote, a host's config notifications to the controller's

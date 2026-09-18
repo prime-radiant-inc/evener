@@ -308,15 +308,28 @@ func sourceExplicitlyRequestedForList(sourceID string, params appwire.ThreadList
 	return slices.Contains(params.SourceIDs, sourceID)
 }
 
-// remoteHostNames is the set of configured remote host names, so the fan-out can
-// tell a remote source (which must gate on attachment) from the local one.
+// remoteHostNames is the set of remote host names, so the fan-out can tell a
+// remote source (which must gate on attachment) from the local one. The live
+// registry is the authority for hosts that exist past boot: it carries every
+// host the management surface added at runtime, so a UI-added host is
+// classified remote by the same gates a configured one is — an explicit
+// thread/list attaches it, and the background refresh gates it on attachment
+// instead of treating it as local. The configured entries stay in the set
+// alongside it: a registry only holds validated entries, while cfg.RemoteHosts
+// is the configured truth, so the union — not the registry alone — is the set
+// of names these gates treat as remote.
 func remoteHostNames(cfg hubcore.WebConfig) map[string]struct{} {
-	if len(cfg.RemoteHosts) == 0 {
-		return nil
-	}
 	names := make(map[string]struct{}, len(cfg.RemoteHosts))
 	for _, host := range cfg.RemoteHosts {
 		names[host.Name] = struct{}{}
+	}
+	if cfg.RemoteHostRegistry != nil {
+		for _, host := range cfg.RemoteHostRegistry.All() {
+			names[host.Name] = struct{}{}
+		}
+	}
+	if len(names) == 0 {
+		return nil
 	}
 	return names
 }

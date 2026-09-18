@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
@@ -855,5 +857,251 @@ func TestHostManageSidecarInvalidEntryIsLoudAndKeepsFile(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Fatalf("sidecar rewritten to %d entries, want both preserved", len(entries))
+	}
+}
+
+// TestHostManageSidecarLoadNormalizesEntries pins the round-2 LOW: a padded
+// sidecar entry is normalized before the collision check, storage, and source
+// registration, so the loaded host keys, lists, removes, and reloads under its
+// trimmed name instead of splitting its identity between the registry and the
+// sidecar row (which would list it with a hub.toml origin and refuse its
+// removal as file-declared).
+func TestHostManageSidecarLoadNormalizesEntries(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	padded := `{"hosts":[{"name":"  side  ","ssh":"  s.example  ","key_path":"  /keys/s  "}]}`
+	if err := os.WriteFile(sidecarPathFor(configPath), []byte(padded), 0o600); err != nil {
+		t.Fatalf("write sidecar: %v", err)
+	}
+	// boot simulates a hub start: fresh registry and sources over the same
+	// on-disk sidecar, the shape a restart sees.
+	boot := func() *hubHostManager {
+		hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+		if err != nil {
+			t.Fatalf("hostreg.New: %v", err)
+		}
+		return newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{}, configPath, hosts, nil)
+	}
+	sideRow := func(t *testing.T, m *hubHostManager) appwire.HostRow {
+		t.Helper()
+		list, err := m.List(context.Background(), appwire.EmptyParams{})
+		if err != nil {
+			t.Fatalf("List: %v", err)
+		}
+		for _, row := range list.Hosts {
+			if row.Name == "side" {
+				return row
+			}
+		}
+		t.Fatalf("List = %+v, want the padded sidecar entry loaded under its trimmed name", list.Hosts)
+		return appwire.HostRow{}
+	}
+
+	// Origin: the padded entry lists under the trimmed name with the sidecar
+	// origin and normalized fields.
+	m := boot()
+	row := sideRow(t, m)
+	if row.Origin != hostOriginSidecar || row.Address != "s.example" || row.KeyPath != "/keys/s" {
+		t.Fatalf("padded sidecar row = %+v, want side/s.example with the trimmed key", row)
+	}
+	// Source ID: the source registered under the trimmed name too.
+	if _, ok := m.cfg.sources.Source("side"); !ok {
+		t.Fatal("the padded sidecar entry registered no source under its trimmed name")
+	}
+	// Reload: the same padded file loads identically on the next boot.
+	m2 := boot()
+	if row := sideRow(t, m2); row.Origin != hostOriginSidecar {
+		t.Fatalf("reloaded sidecar row = %+v, want the sidecar origin again", row)
+	}
+	// Removal works: the sidecar row keys off the normalized entry, so the
+	// host removes as UI-added rather than being refused as hub.toml-declared.
+	if _, err := m2.Remove(context.Background(), appwire.HostRemoveParams{Name: "side"}); err != nil {
+		t.Fatalf("Remove(side) = %v, want success for a normalized sidecar entry", err)
+	}
+	// The file lost the entry, so the next boot does not resurrect it.
+	m3 := boot()
+	list, err := m3.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("List after remove: %v", err)
+	}
+	if len(list.Hosts) != 1 || list.Hosts[0].Name != "m4" {
+		t.Fatalf("list after the removal-and-reload = %+v, want only m4", list.Hosts)
+	}
+}
+
+// TestHostManageListStatusSerializeWithCommit pins the round-2 LOW: List and
+// Status hold the same mutation mutex Add commits under, so no concurrent
+// reader can observe the window between a registry insert and the sidecar
+// row and source registration that finish it. Every row a reader sees is
+// fully committed or absent — never a sidecar host listed with a hub.toml
+// origin or without its source.
+func TestHostManageListStatusSerializeWithCommit(t *testing.T) {
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	m := newHubHostManager(sources, nil, hubcore.WebConfig{}, "", hosts, nil)
+
+	var mu sync.Mutex
+	var failures []string
+	fail := func(format string, args ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		failures = append(failures, fmt.Sprintf(format, args...))
+	}
+	stop := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				list, err := m.List(context.Background(), appwire.EmptyParams{})
+				if err != nil {
+					fail("List: %v", err)
+					continue
+				}
+				for _, row := range list.Hosts {
+					if row.Origin != hostOriginSidecar {
+						fail("row %q listed with origin %q mid-commit", row.Name, row.Origin)
+					}
+					if _, ok := sources.Source(row.Name); !ok {
+						fail("row %q listed with no source mid-commit", row.Name)
+					}
+				}
+				if _, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "side-00"}); err == nil {
+					// A readable row must be fully committed too; Status is
+					// the same lock, so this only probes it stays consistent.
+					list, err := m.List(context.Background(), appwire.EmptyParams{})
+					if err != nil {
+						fail("List: %v", err)
+						continue
+					}
+					for _, row := range list.Hosts {
+						if row.Name == "side-00" && row.Origin != hostOriginSidecar {
+							fail("row side-00 listed with origin %q mid-commit", row.Origin)
+						}
+					}
+				}
+			}
+		})
+	}
+	const adds = 24
+	var adders sync.WaitGroup
+	for i := range adds {
+		adders.Go(func() {
+			if _, err := m.Add(context.Background(), appwire.HostAddParams{Name: fmt.Sprintf("side-%02d", i), Address: "s.example"}); err != nil {
+				fail("Add(%d): %v", i, err)
+			}
+		})
+	}
+	adders.Wait()
+	close(stop)
+	readers.Wait()
+	if len(failures) > 0 {
+		t.Fatalf("%d torn reads observed: %v", len(failures), failures[:min(len(failures), 5)])
+	}
+	list, err := m.List(context.Background(), appwire.EmptyParams{})
+	if err != nil {
+		t.Fatalf("final List: %v", err)
+	}
+	if len(list.Hosts) != adds {
+		t.Fatalf("final list = %d rows, want %d", len(list.Hosts), adds)
+	}
+}
+
+// TestHostManageListStatusHoldMutationMutex pins the round-2 LOW the direct
+// way: List and Status hold the mutation mutex Add and Remove commit under, so
+// an Add cannot slip its multi-step commit between a reader's registry read and
+// its sidecar and source reads. A reader parked mid-row (the test blocks the
+// online seam it resolves) keeps the mutex: the concurrent Add stays parked
+// until the reader releases it, where an unlocked reader would let the Add
+// commit mid-read and expose the half-committed host.
+func TestHostManageListStatusHoldMutationMutex(t *testing.T) {
+	// gate blocks the first online-seam call and lets every later one through
+	// immediately — a sync.Once would park later callers (Add's own row
+	// renders) behind the gate too, and the Add below must run freely.
+	newGate := func() (online func(string) bool, wait func(), release func()) {
+		entered := make(chan struct{})
+		releaseCh := make(chan struct{})
+		var first atomic.Bool
+		online = func(string) bool {
+			if !first.Load() && first.CompareAndSwap(false, true) {
+				close(entered)
+				<-releaseCh
+			}
+			return false
+		}
+		return online, func() { <-entered }, func() { close(releaseCh) }
+	}
+	// addStarted launches an Add and fails the test unless it is still parked
+	// 150ms in — the reader holds the mutation mutex, so the Add cannot have
+	// committed.
+	addStarted := func(t *testing.T, m *hubHostManager, name string) <-chan error {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() {
+			_, err := m.Add(context.Background(), appwire.HostAddParams{Name: name, Address: "s.example"})
+			done <- err
+		}()
+		select {
+		case <-done:
+			t.Fatalf("Add(%q) committed while a reader was mid-row: the reader does not hold the mutation mutex", name)
+			return done
+		case <-time.After(150 * time.Millisecond):
+		}
+		return done
+	}
+	for _, read := range []struct {
+		name string
+		call func(m *hubHostManager) error
+	}{
+		{"List", func(m *hubHostManager) error {
+			_, err := m.List(context.Background(), appwire.EmptyParams{})
+			return err
+		}},
+		{"Status", func(m *hubHostManager) error {
+			_, err := m.Status(context.Background(), appwire.HostStatusParams{Name: "m4"})
+			return err
+		}},
+	} {
+		t.Run(read.name, func(t *testing.T) {
+			hosts, err := hostreg.New([]hostreg.Host{{Name: "m4", SSH: "m4.example"}})
+			if err != nil {
+				t.Fatalf("hostreg.New: %v", err)
+			}
+			online, wait, release := newGate()
+			m := newHubHostManager(appsource.NewRegistry(), nil, hubcore.WebConfig{RemoteHostOnline: online}, "", hosts, nil)
+			readDone := make(chan error, 1)
+			go func() { readDone <- read.call(m) }()
+			wait() // the reader is parked mid-row.
+			addDone := addStarted(t, m, "side")
+			release()
+			if err := <-readDone; err != nil {
+				t.Fatalf("reader = %v", err)
+			}
+			select {
+			case err := <-addDone:
+				if err != nil {
+					t.Fatalf("Add after the reader released: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Add never committed after the reader released the mutex")
+			}
+			list, err := m.List(context.Background(), appwire.EmptyParams{})
+			if err != nil {
+				t.Fatalf("final List: %v", err)
+			}
+			if len(list.Hosts) != 2 {
+				t.Fatalf("final list = %+v, want m4 and the committed side entry", list.Hosts)
+			}
+		})
 	}
 }

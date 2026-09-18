@@ -118,6 +118,19 @@ func Normalize(entry Host) Host {
 	return entry
 }
 
+// Equal reports whether h and other are the same entry: every field equal,
+// with Roots compared by content. The registry has no generation counter, so
+// this content identity is what an attach pins itself to: a name removed and
+// re-added between an attach's capture and its recheck still resolves, but to
+// a different entry, and a channel built from the removed entry must not be
+// published under the re-added name.
+func (h Host) Equal(other Host) bool {
+	return h.Name == other.Name && h.SSH == other.SSH && h.User == other.User &&
+		h.EvenerPath == other.EvenerPath && h.ConfigPath == other.ConfigPath &&
+		h.Addr == other.Addr && h.KeyPath == other.KeyPath &&
+		slices.Equal(h.Roots, other.Roots)
+}
+
 // cloneHost deep-copies the one field a caller could otherwise mutate through a
 // returned value: Host is a value type, but Roots is a slice.
 func cloneHost(host Host) Host {

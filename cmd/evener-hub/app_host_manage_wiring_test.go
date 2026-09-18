@@ -6,6 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -210,4 +213,186 @@ func TestHostManageUIAddedHostThroughRealServer(t *testing.T) {
 	if len(fileAfter.Hosts) != 0 {
 		t.Fatalf("sidecar after remove = %s, want empty", data)
 	}
+}
+
+// TestHostManageNilRegistryAddAttachThroughRealServer pins the round-2
+// medium: with RemoteHosts configured but no live registry threaded, the real
+// server construction builds ONE fallback registry and hands the same instance
+// to the attach and host-management handlers — so a host added at runtime is
+// attachable over a real /rpc dispatch, never "unknown host" to an attach that
+// validated against a second, separate registry copy.
+func TestHostManageNilRegistryAddAttachThroughRealServer(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	// The dial stub runs on server goroutines (the attach handler, and the
+	// navigation snapshot's reads of the configured source), so the record
+	// needs its own lock.
+	var dialMu sync.Mutex
+	var dialed []string
+	cfg := hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		// RemoteHosts set, RemoteHostRegistry deliberately nil: the embedder
+		// shape the constructor's once-only fallback exists for.
+		RemoteHosts:          []hostreg.Host{{Name: "m4", SSH: "m4.example"}},
+		RemoteHostConfigPath: configPath,
+		RemoteHostClient: func(_ context.Context, host string) (*appwire.Client, error) {
+			dialMu.Lock()
+			dialed = append(dialed, host)
+			dialMu.Unlock()
+			return &appwire.Client{}, nil
+		},
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var added appwire.HostRow
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+	if added.Origin != hostOriginSidecar {
+		t.Fatalf("add row = %+v, want a sidecar row", added)
+	}
+	// Add → attach through the real server: the attach validates against the
+	// same fallback registry the add committed to, so the request reaches the
+	// dial seam instead of an unknown-host refusal.
+	var attached appwire.HostAttachResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAttach, appwire.HostAttachParams{Host: "web-side"}, &attached); err != nil {
+		t.Fatalf("evener/host/attach for the added host = %v, want success: the handlers must share one registry", err)
+	}
+	if !attached.Attached || attached.Host != "web-side" {
+		t.Fatalf("attach response = %+v, want attached web-side", attached)
+	}
+	// The m4 source may dial too (reads over a source with no attached-only
+	// seam resolve through the dialing client, the documented default); what
+	// matters is that the added host was dialed through the shared registry.
+	dialMu.Lock()
+	defer dialMu.Unlock()
+	if !slices.Contains(dialed, "web-side") {
+		t.Fatalf("dialed %v, want the added host through the shared registry", dialed)
+	}
+	// The constructor's fallback is the one shared instance: it carries both
+	// the configured and the runtime-added host.
+	reg := web.cfg.RemoteHostRegistry
+	if reg == nil {
+		t.Fatal("the real server construction left no shared fallback registry")
+	}
+	for _, name := range []string{"m4", "web-side"} {
+		if _, ok := reg.Get(name); !ok {
+			t.Fatalf("the shared fallback registry lost %q", name)
+		}
+	}
+}
+
+// TestHostManageHubTOMLRowWithoutAttachedLookupStaysOffline pins the round-2
+// truthful-status fix end to end: with RemoteHostClient wired (so hub.toml
+// sources register) but no online signal and no attached-only lookup — the
+// shape where a hub.toml source's Online() fails open — the configured host
+// must render offline, never Attached with no facts behind it (an online row
+// whose Connect action the UI hides because it looks already up).
+func TestHostManageHubTOMLRowWithoutAttachedLookupStaysOffline(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	cfg := hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		// RemoteHostClient wired so newHubSourceRegistry registers the
+		// hub.toml source with its fail-open online signal; RemoteHostOnline
+		// and RemoteHostClientIfAttached deliberately absent.
+		RemoteHosts:          []hostreg.Host{{Name: "m4", SSH: "m4.example"}},
+		RemoteHostConfigPath: configPath,
+		RemoteHostClient: func(context.Context, string) (*appwire.Client, error) {
+			return nil, errors.New("test dial refused")
+		},
+	}
+	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var list appwire.HostListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostList, appwire.EmptyParams{}, &list); err != nil {
+		t.Fatalf("evener/host/list: %v", err)
+	}
+	if len(list.Hosts) != 1 {
+		t.Fatalf("evener/host/list = %+v, want exactly the configured host", list.Hosts)
+	}
+	row := list.Hosts[0]
+	if row.Attached || row.ServerName != "" || row.HubVersion != "" {
+		t.Fatalf("configured row = %+v, want offline with no facts while no live channel can be confirmed", row)
+	}
+}
+
+// TestHostManageRuntimeHostClassifiedRemoteThroughRealServer pins the round-2
+// medium over the production wiring shape: a host added at runtime is
+// classified remote by the same gates a configured one is, because they read
+// the live registry. An explicit thread/list attaches it (the dial reaches the
+// SSH manager), and the host admin proxy accepts it instead of rejecting it as
+// an unknown name against a static copy of the configured entries.
+func TestHostManageRuntimeHostClassifiedRemoteThroughRealServer(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "hub.toml")
+	if err := os.WriteFile(configPath, []byte(""), 0o600); err != nil {
+		t.Fatalf("write hub.toml: %v", err)
+	}
+	runner := &dialRecordingRunner{}
+	cfg, _, _ := hostManageWiringConfig(t, configPath,
+		[]hostreg.Host{{Name: "m4", SSH: "m4.example"}}, runner)
+	hub, _ := newHubRPCTestServerWithWeb(t, cfg)
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var added appwire.HostRow
+	if err := client.Request(context.Background(), appwire.MethodEvenerHostAdd, appwire.HostAddParams{Name: "web-side", Address: "ws.example"}, &added); err != nil {
+		t.Fatalf("evener/host/add: %v", err)
+	}
+
+	// An explicit, host-targeted thread/list attaches the runtime host: the
+	// SSH manager dials ws.example (and fails in the refusing runner), where
+	// the configured-entries-only gate would have skipped the attach and
+	// failed as an unavailable source instead.
+	tlErr := client.Request(context.Background(), appwire.MethodThreadList, appwire.ThreadListParams{SourceIDs: []string{"web-side"}}, nil)
+	if tlErr == nil {
+		t.Fatal("thread/list against the refusing runner succeeded; it must not")
+	}
+	dialForSide := false
+	for _, argv := range runner.argvs() {
+		for _, arg := range argv {
+			if strings.Contains(arg, "ws.example") {
+				dialForSide = true
+			}
+		}
+	}
+	if !dialForSide {
+		t.Fatalf("no recorded dial carried ws.example: the explicit list did not attach the runtime host (argvs=%v)", runner.argvs())
+	}
+
+	// The host admin proxy resolves the runtime host instead of refusing it
+	// as unknown: the request passes the registry gate and reaches the
+	// host's own (detached) source refusal.
+	adminErr := client.Request(context.Background(), appwire.MethodEvenerHostRequest, appwire.HostRequestParams{Host: "web-side", Method: appwire.MethodEvenerInstanceList}, nil)
+	if adminErr == nil {
+		t.Fatal("host/request against a detached source succeeded; it must not")
+	}
+	var wire appwire.WireError
+	if errors.As(adminErr, &wire) && wire.Code == appwire.CodeInvalidParams {
+		t.Fatalf("host/request for the runtime-added host = %v: the proxy validated against a registry that never saw the add", adminErr)
+	}
+	// A genuinely unknown name is still refused.
+	ghostErr := client.Request(context.Background(), appwire.MethodEvenerHostRequest, appwire.HostRequestParams{Host: "ghost", Method: appwire.MethodEvenerInstanceList}, nil)
+	assertWireCode(t, ghostErr, appwire.CodeInvalidParams)
 }

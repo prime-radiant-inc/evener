@@ -33,6 +33,32 @@ func TestNewBuildsAndGets(t *testing.T) {
 	}
 }
 
+// Equal is the identity the attach rechecks compare, so it must be content
+// equality: same fields and same roots, regardless of each slice's backing.
+func TestHostEqualIsContentIdentity(t *testing.T) {
+	base := Host{Name: "m4", SSH: "m4.local", Roots: []string{"/a", "/b"}}
+	same := Host{Name: "m4", SSH: "m4.local", Roots: []string{"/a", "/b"}}
+	if !base.Equal(same) {
+		t.Fatal("Equal refused an identical entry")
+	}
+	if base.Equal(host("m4")) {
+		t.Fatal("Equal accepted an entry with roots the other lacks")
+	}
+	if base.Equal(host("studio")) {
+		t.Fatal("Equal accepted a different name")
+	}
+	changed := base
+	changed.KeyPath = "/keys/other"
+	if base.Equal(changed) {
+		t.Fatal("Equal accepted a different key path")
+	}
+	changed = base
+	changed.Roots = []string{"/b", "/a"}
+	if base.Equal(changed) {
+		t.Fatal("Equal accepted reordered roots")
+	}
+}
+
 func TestAddRejectsNamedErrors(t *testing.T) {
 	tests := []struct {
 		name  string

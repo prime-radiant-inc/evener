@@ -116,6 +116,15 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	if cfg.KeybindingsStore == nil {
 		cfg.KeybindingsStore, keybindingsStoreErr = hubcore.NewKeybindingsStore(cfg.HubStateRoot)
 	}
+	// One live host registry shared by every host-dependent surface. An
+	// embedder or test that threads none gets a fallback built once here —
+	// the same instance the attach, host-management, and admin handlers
+	// validate against, so a host added at runtime is never "unknown" to a
+	// sibling handler that built its own copy from the configured entries.
+	// main.go always threads the live one.
+	if cfg.RemoteHostRegistry == nil {
+		cfg.RemoteHostRegistry = hostRegistryFromConfig(cfg)
+	}
 	sources := newHubSourceRegistry(cfg)
 	// One resume-lock registry backs both the REST send path (lockForSession)
 	// and the RPC auto-resume path (hubThreadResume via cfg), so a resume

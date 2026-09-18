@@ -11,16 +11,33 @@ import (
 type Registry struct {
 	mu      sync.RWMutex
 	sources map[string]Source
+	onAdd   func(Source)
 }
 
 func NewRegistry() *Registry {
 	return &Registry{sources: map[string]Source{}}
 }
 
-func (r *Registry) Add(source Source) {
+// SetOnAdd registers a callback invoked once for each source Add inserts,
+// after the insert is visible to lookups. It is how a long-lived consumer — the
+// host-notification fan-out — learns about sources registered after it
+// started, instead of a one-shot enumeration at construction missing every
+// host added at runtime. Sources added before the hook is set never fire it:
+// the caller installing the hook enumerates the current set itself.
+func (r *Registry) SetOnAdd(fn func(Source)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.onAdd = fn
+}
+
+func (r *Registry) Add(source Source) {
+	r.mu.Lock()
 	r.sources[source.ID()] = source
+	onAdd := r.onAdd
+	r.mu.Unlock()
+	if onAdd != nil {
+		onAdd(source)
+	}
 }
 
 func (r *Registry) Remove(id string) {

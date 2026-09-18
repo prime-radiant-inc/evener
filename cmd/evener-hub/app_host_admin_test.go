@@ -1290,3 +1290,110 @@ func TestHostAdminAllowListCoversSharedForwardedMethods(t *testing.T) {
 		}
 	}
 }
+
+// TestHostAdminFanOutStartsForRuntimeAddedSource pins the dynamic half of the
+// round-2 medium: the notification fan-out follows the shared source registry,
+// so a host whose source registers after start (the host-management surface's
+// runtime add) gains its fan-out immediately — and a source registered under a
+// name that already has a loop replaces that loop instead of running beside
+// it: the predecessor's subscription retires before the replacement's fan-out
+// delivers, so one host has exactly one loop.
+func TestHostAdminFanOutStartsForRuntimeAddedSource(t *testing.T) {
+	newSource := func() (*appsource.RemoteHubSource, func(method string, params any)) {
+		client, _, emit := newScriptedAdminClient(t, func(string, json.RawMessage) hostAdminReply {
+			return okReply()
+		})
+		source := appsource.NewRemoteHubSource("runtime-side", nil, func(context.Context, string) (*appwire.Client, error) {
+			return client, nil
+		})
+		source.SetHostOnline(func() bool { return true })
+		return source, emit
+	}
+	sources := appsource.NewRegistry()
+	hosts, err := hostreg.New(nil)
+	if err != nil {
+		t.Fatalf("hostreg.New: %v", err)
+	}
+	recorder := newRecordingBroadcaster()
+	controller := newHubHostAdminController(recorder, hosts, sources)
+	controller.start(t.Context())
+
+	// The fan-out starts for a source registered after start returned — the
+	// runtime-add shape.
+	first, emitFirst := newSource()
+	sources.Add(first)
+	waitHostSubscribers(t, first, 1)
+	emitFirst(appwire.NotifyEvenerAuthUpdated, map[string]string{"provider": "openai"})
+	expectOneHostNotification(t, recorder, "runtime-side", appwire.NotifyEvenerAuthUpdated)
+
+	// A source registered under the same name replaces the loop: the
+	// predecessor's subscription retires and the replacement's fan-out
+	// delivers exactly one more notification.
+	second, emitSecond := newSource()
+	sources.Add(second)
+	waitHostSubscribers(t, second, 1)
+	waitHostSubscribers(t, first, 0)
+	emitSecond(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{"marketplace": "main"})
+	expectOneHostNotification(t, recorder, "runtime-side", appwire.NotifyEvenerMarketplaceUpdated)
+
+	if got := recorder.broadcasts(); len(got) != 2 {
+		t.Fatalf("broadcasts = %+v, want exactly one per emitted config update", got)
+	}
+}
+
+// waitHostSubscribers waits until source reports want live host-level
+// subscribers: the observable form of "the fan-out is subscribed" and "the
+// replaced loop stood down".
+func waitHostSubscribers(t *testing.T, source *appsource.RemoteHubSource, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if got := source.HostNotificationSubscribers(); got == want {
+			return
+		} else if time.Now().After(deadline) {
+			t.Fatalf("subscribers = %d, want %d", got, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// expectOneHostNotification waits until exactly one host-tagged fan-out
+// broadcast has landed for (host, method), and settles: a duplicate arriving
+// shortly after the first fails the test.
+func expectOneHostNotification(t *testing.T, recorder *recordingBroadcaster, host, method string) {
+	t.Helper()
+	count := func() int {
+		found := 0
+		for _, r := range recorder.broadcasts() {
+			if r.method != appwire.NotifyEvenerHostNotification {
+				continue
+			}
+			envelope, ok := r.params.(appwire.HostNotificationParams)
+			if !ok {
+				continue
+			}
+			if envelope.Host == host && envelope.Method == method {
+				found++
+			}
+		}
+		return found
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		switch got := count(); {
+		case got == 1:
+			// Settle: a second delivery from a duplicated loop would land
+			// immediately after the first.
+			time.Sleep(150 * time.Millisecond)
+			if got := count(); got != 1 {
+				t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
+			}
+			return
+		case got > 1:
+			t.Fatalf("host-tagged %s for %s delivered %d times, want exactly one", method, host, got)
+		case time.Now().After(deadline):
+			t.Fatalf("timed out waiting for the host-tagged %s for %s; broadcasts = %+v", method, host, recorder.broadcasts())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}

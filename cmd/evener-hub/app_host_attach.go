@@ -28,16 +28,14 @@ import (
 // It is a controller-LOCAL method, not a forwarded evener/host/request admin
 // call: there is no host to forward to until the attach succeeds, so it is
 // deliberately absent from remoteHostAdminMethods (see app_host_admin.go).
-func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
-	// Production threads the controller's one live registry through WebConfig
-	// — the same *hostreg.Registry the SSH manager dials through and the
-	// host-management surface mutates — so a host added at runtime validates
-	// here without a restart. A cfg without one (tests, embedders) builds its
-	// own from the configured entries, exactly as before.
-	hosts := cfg.RemoteHostRegistry
-	if hosts == nil {
-		hosts = hostRegistryFromConfig(cfg)
-	}
+func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, hosts *hostreg.Registry) {
+	// hosts is the one live registry the server constructor resolved — in
+	// production the same *hostreg.Registry the SSH manager dials through and
+	// the host-management surface mutates, so a host added at runtime
+	// validates here without a restart. The constructor builds the fallback
+	// from the configured entries once (tests, embedders) and hands the same
+	// instance to every host handler, so add and attach can never validate
+	// against divergent copies.
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHostAttach, func(ctx context.Context, params appwire.HostAttachParams) (appwire.HostAttachResponse, error) {
 		return hubHostAttach(ctx, cfg, sources, hosts, params)
 	})
@@ -45,10 +43,11 @@ func registerHostAttachHandler(server *appserver.Server, cfg hubcore.WebConfig, 
 
 // hostRegistryFromConfig returns the cfg's live host registry when one was
 // threaded through WebConfig, else a fresh one built from the validated
-// entries — the shape every test and embedder that configures RemoteHosts
-// without a shared registry gets. Config loading already validated the
-// entries (main.go builds the same registry from the same entries), so the
-// error path is the impossible-duplicate fallback; an empty registry keeps the
+// entries — the fallback the server constructors (newWebServer and
+// newHubAppServerWithNavigationAndTrace) build ONCE and share with every
+// host-dependent handler. Config loading already validated the entries
+// (main.go builds the same registry from the same entries), so the error
+// path is the impossible-duplicate fallback; an empty registry keeps the
 // surface serving refusals instead of panicking.
 func hostRegistryFromConfig(cfg hubcore.WebConfig) *hostreg.Registry {
 	hosts, err := hostreg.New(cfg.RemoteHosts)
