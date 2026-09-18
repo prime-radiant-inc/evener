@@ -1519,7 +1519,9 @@ func fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB(t *testing.T) {
 	}
 
 	// Replace the index with a same-cardinality foreign snapshot: 2 rows, wrong
-	// ids/content, and a user_version token this index never wrote (0).
+	// ids/content, and a baseline state row from an earlier write of this index
+	// (same owner, older seq) — exactly a restored same-size backup, whose count
+	// and old token would both be accepted by a count-only check.
 	db, err := sql.Open("sqlite", sqliteDSN(dbPath))
 	if err != nil {
 		t.Fatal(err)
@@ -1540,7 +1542,10 @@ func fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB(t *testing.T) {
 		}
 	}
 	_ = stmt.Close()
-	if _, err := db.Exec(`PRAGMA user_version = 0`); err != nil {
+	if _, err := db.Exec(`DELETE FROM past_sessions_fts_state`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO past_sessions_fts_state(owner, seq) VALUES (?, ?)`, idx.ftsOwner, idx.lastSeq-1); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -1566,5 +1571,101 @@ func fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB(t *testing.T) {
 	}
 	if got := rows[alpha]; got.name != "alpha2" {
 		t.Fatalf("renamed row not mirrored after repair: %+v", got)
+	}
+}
+
+// fuzzScenarioPastIndex_RebuildRescanKeepsConcurrentFold pins Rebuild's
+// scan-generation capture (roborev Medium: "Rebuild can overwrite a newer
+// snapshot with stale disk state"). Rebuild scans unlocked; a fold landing
+// during the scan must not be dropped when Rebuild swaps its older view. The
+// pastBeforeRebuildSwap seam parks Rebuild after its scan and before the swap
+// so the fold deterministically lands first.
+func fuzzScenarioPastIndex_RebuildRescanKeepsConcurrentFold(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(root, "index.db")
+	base := time.Unix(1_700_000_000, 0)
+	const seededID = "02wMz5Txv1C3Hut0M8GCeB"
+	const foldedID = "02wMz5Txv2enqVTitaig6F"
+	writeMeta(t, proj, schema.SessionMeta{ID: seededID, Name: "seeded", UpdatedAt: base, OriginalPrompt: "seeded needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), dbPath)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var parked atomic.Bool
+	prev := pastBeforeRebuildSwap
+	pastBeforeRebuildSwap = func() {
+		if parked.CompareAndSwap(false, true) {
+			close(reached)
+			<-release
+		}
+	}
+	defer func() { pastBeforeRebuildSwap = prev }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = idx.Rebuild()
+	}()
+	<-reached
+
+	// The fold lands while the parked Rebuild holds a 1-session scan view.
+	writeMeta(t, proj, schema.SessionMeta{ID: foldedID, Name: "folded", UpdatedAt: base.Add(time.Minute), OriginalPrompt: "folded needle", EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+	if _, ok := idx.Find(foldedID); !ok {
+		t.Fatal("expected Find to fold the newly persisted session")
+	}
+
+	close(release)
+	<-done
+
+	if _, ok := idx.findCached(foldedID); !ok {
+		t.Fatal("stale Rebuild scan dropped the folded session from the index")
+	}
+	if all := idx.All(); len(all) != 2 {
+		t.Fatalf("index holds %d entries after the concurrent Rebuild, want 2 (fold dropped)", len(all))
+	}
+	if rows := ftsMirrorRows(t, dbPath); len(rows) != 2 {
+		t.Fatalf("mirror holds %d rows after the concurrent Rebuild, want 2", len(rows))
+	}
+}
+
+// fuzzScenarioPastIndex_FTSWriteUsesImmediateTransaction pins the fix for the
+// deferred-transaction finding: the FTS writer reads its baseline before its
+// first write, and index.db is shared with the archive/favorite/pin stores, so
+// a deferred begin can hit SQLITE_BUSY_SNAPSHOT on the write upgrade when a
+// sibling store commits in that window. writeFTSTx must open with
+// _txlock=immediate so it takes the write lock before reading.
+func fuzzScenarioPastIndex_FTSWriteUsesImmediateTransaction(t *testing.T) {
+	root := t.TempDir()
+	proj := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeMeta(t, proj, schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "alpha", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}})
+
+	idx := NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	orig := idx.openDB
+	var dsns []string
+	idx.openDB = func(driver, dsn string) (*sql.DB, error) {
+		dsns = append(dsns, dsn)
+		return orig(driver, dsn)
+	}
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	if len(dsns) == 0 {
+		t.Fatal("Rebuild opened no FTS write connection")
+	}
+	for _, dsn := range dsns {
+		if !strings.Contains(dsn, "_txlock=immediate") {
+			t.Fatalf("FTS write opened a deferred transaction (%q); a concurrent sibling-store commit can fail the write upgrade with SQLITE_BUSY_SNAPSHOT", dsn)
+		}
 	}
 }

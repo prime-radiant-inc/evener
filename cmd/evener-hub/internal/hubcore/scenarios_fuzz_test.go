@@ -110,6 +110,8 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_IncrementalPublishRecoversFromLostDB,
 		fuzzScenarioPastIndex_IncrementalPublishRemovesRows,
 		fuzzScenarioPastIndex_DeltaRejectsSameCardinalityForeignDB,
+		fuzzScenarioPastIndex_FTSWriteUsesImmediateTransaction,
+		fuzzScenarioPastIndex_RebuildRescanKeepsConcurrentFold,
 		fuzzScenarioPastIndex_SupersededPublishAbandonsStaleRebuild,
 		fuzzScenarioPastIndex_SearchRepairsStaleFTS,
 		fuzzScenarioPastIndex_Pagination,
