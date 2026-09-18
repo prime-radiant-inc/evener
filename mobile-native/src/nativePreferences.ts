@@ -173,7 +173,13 @@ function keybindingsDomain(
 					...(state.loadError === null ? {} : { loadError: state.loadError }),
 				}
 			: null,
-		draft: state.draft,
+		// state.draft carries its own `generation` staleness stamp (see
+		// readyGenerationFence.ts), which PreferenceState<ConfirmedKeybindings>
+		// has no field for - stripped here rather than forwarded structurally.
+		draft:
+			state.draft === null
+				? null
+				: { version: state.draft.version, revision: state.draft.revision, rules: state.draft.rules },
 		error: keybindingsErrorMessage(
 			state.draftError,
 			state.hubError,
