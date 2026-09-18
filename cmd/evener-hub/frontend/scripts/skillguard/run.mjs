@@ -454,7 +454,11 @@ export class Driver {
       // settleComposer returns the state the editor stopped changing on, so a
       // selection a render is about to reset does not read as held.
       const settled = await this.settleComposer(ref);
-      if (settled.start === 0 && settled.end === state.value.length) return;
+      // Compared against the SETTLED text, not the length read before the
+      // range was placed: a draft that grew mid-flight would otherwise leave
+      // the selection covering only the old prefix and still read as held,
+      // and the next typeText would replace the prefix and strand the tail.
+      if (settled.start === 0 && settled.end === settled.value.length) return;
       if (attempt < SELECT_ALL_ATTEMPTS) {
         console.error(
           `skillguard: ${ref}: a render reset the selection after selectAll; re-selecting (attempt ${attempt}/${SELECT_ALL_ATTEMPTS})`,

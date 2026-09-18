@@ -96,6 +96,24 @@ describe("selectAll holds the whole-text selection", () => {
     ]);
   });
 
+  test("re-applies when the draft grew after the selection was placed", async () => {
+    // The range was placed for the short draft; the editor then rendered a
+    // longer one and mapped the selection to the old prefix. Comparing against
+    // the length read before the range (11) would read that as a whole-text
+    // hold and strand the tail, so the settled text is the yardstick.
+    const { driver: d, ranges } = scriptedDriver([
+      editState(0, 0, "SHORT_DRAFT"),
+      editState(0, 11),
+      editState(0, 37),
+      editState(0, 37),
+    ]);
+    await d.selectAll("ref_a");
+    expect(ranges).toEqual([
+      [0, 11],
+      [0, 37],
+    ]);
+  });
+
   test("reports an editor that will not hold the selection", async () => {
     // Every settle reports the reset caret, so no attempt ever holds: the guard
     // must fail, not type into the collapsed caret.
