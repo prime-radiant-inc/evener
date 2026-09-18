@@ -41,8 +41,22 @@ var (
 	hubForkSession     = agent.ForkSession
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
 	hubAsideSession    = agent.AsideSession
-	hubResolvePlugins  = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-		return plugins.NewManager(pluginRoot).ResolveForLaunch(ctx, dirs, enabled)
+	// hubResolvePlugins resolves a launch's plugin inventory. resolveManager
+	// is the caller's cfg.PluginResolveManager (hubcore.WebConfig): when it is
+	// set and recognizes pluginRoot, resolution reaches the hub's own
+	// already-wired *plugins.Manager for that root — the same one
+	// evener/plugin/* and evener/marketplace/* mutations use — instead of a
+	// second, unwired Manager. nil, or a root it does not recognize, falls
+	// back to a fresh plugins.NewManager(pluginRoot); every caller that never
+	// builds a server (most tests) passes nil and gets that fallback.
+	hubResolvePlugins = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string, resolveManager func(string) *plugins.Manager) (plugins.LaunchPluginResolution, error) {
+		mgr := plugins.NewManager(pluginRoot)
+		if resolveManager != nil {
+			if wired := resolveManager(pluginRoot); wired != nil {
+				mgr = wired
+			}
+		}
+		return mgr.ResolveForLaunch(ctx, dirs, enabled)
 	}
 )
 
@@ -132,7 +146,7 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
 	}
-	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
+	pluginResolution, pluginErr := hubResolvePlugins(ctx, cfg.PluginRoot, spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins, cfg.PluginResolveManager)
 	if pluginErr != nil {
 		// A resolver failure is fatal when a selection has to be honoured, and
 		// always when the failure IS the caller leaving: the next thing this
