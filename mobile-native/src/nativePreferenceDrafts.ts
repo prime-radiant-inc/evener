@@ -129,6 +129,60 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
 	): boolean;
 }
 
+/** The raw string-keyed storage a backend's own get/set/deleteIf/replaceIf
+ * run on - Storage.getItemSync et al. in production, a Map-backed fake in
+ * tests. */
+export interface RawStringStorage {
+	getItemSync(key: string): string | null;
+	setItemSync(key: string, value: string): void;
+	removeItemSync(key: string): void;
+}
+
+/** A NativeKeybindingDraftBackend over any RawStringStorage: the one
+ * implementation production (NativePreferencesProvider.tsx, Storage-backed)
+ * and its tests (a Map-backed fake) now share, so a test proves the actual
+ * function production calls rather than a parallel reimplementation of the
+ * same parse/compare logic. Reads through parseDraftBytes so a stored JSON
+ * null or malformed bytes come back as a present-but-unreadable record
+ * instead of a dead port or a silent absence; deleteIf/replaceIf compare
+ * through matchesStoredBytes so a key-order difference from another build's
+ * JSON.stringify never reads as a spurious CAS refusal (see both functions'
+ * own docs). insertIfAbsent needs neither: presence, not identity, is all it
+ * checks. */
+export function rawStringDraftBackend(storage: RawStringStorage, createId: () => string): NativeKeybindingDraftBackend {
+	function matches(key: string, value: unknown): boolean {
+		return matchesStoredBytes(storage.getItemSync(key), value);
+	}
+	return {
+		createId,
+		get(key: string): unknown {
+			const value = storage.getItemSync(key);
+			return value === null ? null : parseDraftBytes(value);
+		},
+		set(key: string, value: unknown) {
+			storage.setItemSync(key, JSON.stringify(value));
+		},
+		insertIfAbsent(key: string, value: unknown): boolean {
+			if (storage.getItemSync(key) !== null) return false;
+			storage.setItemSync(key, JSON.stringify(value));
+			return true;
+		},
+		delete(key: string) {
+			storage.removeItemSync(key);
+		},
+		deleteIf(key: string, value: unknown): boolean {
+			if (!matches(key, value)) return false;
+			storage.removeItemSync(key);
+			return true;
+		},
+		replaceIf(key: string, expected: unknown, next: unknown): boolean {
+			if (!matches(key, expected)) return false;
+			storage.setItemSync(key, JSON.stringify(next));
+			return true;
+		},
+	};
+}
+
 /** What a draft read named, once decoded: no record, a record this build can
  * read, or a record present but unreadable. Absent and unreadable used to be
  * told apart by a single boolean (readable or not), which cannot distinguish
@@ -144,23 +198,35 @@ export function classifyDraftRead(
 	return isReadable(loaded) ? "readable" : "unreadable";
 }
 
+/** Reads a draft port ONCE and reports both its classification and the raw
+ * value load() returned, so a caller that also needs to decode the record
+ * (a "readable" outcome) never re-reads the port a second time outside this
+ * same guard - a second, unguarded load() can throw exactly where the first
+ * one didn't, escaping uncaught with the caller's storage-unavailable state
+ * never set. Every DraftPort method may throw (a genuine storage failure,
+ * not a record this build cannot decode - see UnreadableDraftError for the
+ * live-store equivalent), and a throw here says nothing about what is
+ * actually stored; `value` is undefined for that case, never read. */
+export function readDraftOutcomeWithValue(
+	storage: Pick<KeybindingDraftStorage, "load">,
+	isReadable: (value: unknown) => boolean,
+): { outcome: DraftReadOutcome | "storageUnavailable"; value: unknown } {
+	try {
+		const value = storage.load();
+		return { outcome: classifyDraftRead(value, isReadable), value };
+	} catch {
+		return { outcome: "storageUnavailable", value: undefined };
+	}
+}
+
 /** Reads a draft port and classifies the outcome the way a cold-offline probe
- * or a store-free discard's re-read must: every DraftPort method may throw (a
- * genuine storage failure, not a record this build cannot decode - see
- * UnreadableDraftError for the live-store equivalent), and a throw here says
- * nothing about what is actually stored. Coming back as its own outcome,
- * rather than escaping the caller's effect or event handler uncaught, is what
- * lets the caller degrade to a storage-unavailable state instead of
- * crashing. */
+ * must, with no decoded value to hand back - see readDraftOutcomeWithValue
+ * for a caller that also needs the value load() returned. */
 export function readDraftOutcome(
 	storage: Pick<KeybindingDraftStorage, "load">,
 	isReadable: (value: unknown) => boolean,
 ): DraftReadOutcome | "storageUnavailable" {
-	try {
-		return classifyDraftRead(storage.load(), isReadable);
-	} catch {
-		return "storageUnavailable";
-	}
+	return readDraftOutcomeWithValue(storage, isReadable).outcome;
 }
 
 /** Whether the store-free discard action should still present the record as
