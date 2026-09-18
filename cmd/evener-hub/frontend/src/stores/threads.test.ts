@@ -10580,4 +10580,70 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     expect(events.indexOf("discard-committed")).toBeGreaterThan(-1);
     expect(events.indexOf("discard-committed")).toBeLessThan(events.indexOf("cleared-published"));
   });
+
+  // RoboRev PR #1873 medium: §6's removal was tied to the LOCAL clear response
+  // (applyClearResponse), so a clear settled by ANOTHER tab - whose response
+  // and best-effort removal never reach this store - left this tab's canceled
+  // rows attached to the cleared thread, still offering Retry. The model
+  // transition every tab observes on its own (the daemon's resync push, this
+  // tab's re-read) is the authoritative signal - the BroadcastChannel wakeup
+  // is a timing hint, never an authority - so the removal rides it, scoped to
+  // the instance the transition provably replaced.
+  test("a clear settled by another tab is still removed when this tab observes the replacement instance", async () => {
+    const indexedDB = new IDBFactory();
+    const databaseName = `cross-tab-clear-${crypto.randomUUID()}`;
+    const tabB = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    setMutationStorageForTests(tabB);
+    const clientB = connectMutationClient();
+    await ensureActiveMutationTarget(clientB, "ref_a");
+
+    // The Stop residue: a canceled row enqueued against the live instance,
+    // canceled through the store's real Stop path (which also mints the
+    // mutation runtime this tab's observation needs).
+    const canceled = await tabB.enqueueIntent(queueIntent("canceled before the clear"));
+    clientB.on("turn/interrupt", (params) => ({ receipt: mutationReceipt(params.clientMutationId) }));
+    await threadsStore.getState().interrupt("ref_a");
+    await flushUntilArrived(
+      "the Stop to cancel the queued row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId))?.state === "canceled",
+    );
+
+    // Another tab: a second storage connection and dispatcher - the package's
+    // own shape, no threads store of ours - dispatches and settles a
+    // thread/clear over the same durable database. Its response never reaches
+    // this tab's store, and this staging wires none of its own §6 cleanup, so
+    // only the OBSERVING tab's transition can remove the row.
+    const tabA = new MutationOutboxIndexedDB({ indexedDB, databaseName });
+    const clientA = new FakeClient("ready");
+    clientA.on("thread/clear", (params) =>
+      clearResponse(params, testThread("ref_a", { turns: [], id: "thr_cleared" })),
+    );
+    const dispatcherA = new MutationDispatcher(tabA, { getClient: () => clientA });
+    await tabA.enqueueIntent({
+      targetRef: "ref_a",
+      threadId: "thr_ref_a",
+      method: "thread/clear",
+      payload: { ref: "ref_a", expectedInstanceId: "thr_ref_a" },
+      attachments: [],
+      optimisticDisplay: { method: "thread/clear" },
+    });
+    await dispatcherA.dispatchTargets(["ref_a"]);
+    expect(clientA.calls.some((call) => call.method === "thread/clear")).toBe(true);
+
+    // This tab observes the clear the way every subscribed tab does: the
+    // daemon's resync push lands, this tab re-reads, and the replacement
+    // instance publishes over the one the canceled row belonged to.
+    clientB.on("thread/read", (params) => readResponse(params.ref ?? "ref_a", { id: "thr_cleared" }));
+    act(() => {
+      clientB.emitNotification({ method: "evener/thread/resync", params: { ref: "ref_a", threadId: "thr_ref_a" } });
+    });
+
+    // The observation drove the removal: the superseded instance's canceled
+    // row left with it, in this tab.
+    await flushUntilArrived(
+      "the observing tab to discard the superseded instance's canceled row",
+      async () => (await tabB.getOutbox(canceled.clientMutationId)) === undefined,
+    );
+    tabA.close();
+  });
 });

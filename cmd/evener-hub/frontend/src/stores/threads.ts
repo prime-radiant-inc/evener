@@ -526,6 +526,35 @@ function putThreadModels(
   }
   if (!threadModel && !watchedModel) return;
   threadsStore.setState(patch);
+  // stop-cancellation-outbox §6, the cross-tab half: a published model whose
+  // thread id differs from the one it replaces is a clear that landed
+  // somewhere else - another tab dispatched it, and its response and
+  // best-effort removal never reach this tab. The publication is the one clear
+  // signal every tab observes on its own (the BroadcastChannel wakeup is a
+  // timing hint, never an authority), so whichever tab sees the transition
+  // completes the removal, scoped to the instance the transition provably
+  // replaced: the current instance's canceled rows keep their explicit-Retry
+  // contract.
+  const supersededInstances = new Set<string>();
+  if (threadModel && previousThread && previousThread.threadId !== threadModel.threadId)
+    supersededInstances.add(previousThread.threadId);
+  if (watchedModel && previousWatched && previousWatched.threadId !== watchedModel.threadId)
+    supersededInstances.add(previousWatched.threadId);
+  for (const instanceThreadId of supersededInstances) discardSupersededInstanceCanceled(ref, instanceThreadId);
+}
+
+// The observing half of §6's cross-tab removal. Observation only: a model
+// publication must never be what first mints the mutation runtime (its startup
+// scan would then run on the next hydration instead of the first send).
+function discardSupersededInstanceCanceled(targetRef: string, supersededThreadId: string): void {
+  const runtime = mutationRuntime;
+  if (!runtime) return;
+  void runtime.storage
+    .discardCanceledOfInstance(targetRef, supersededThreadId)
+    .then((discarded) => {
+      if (discarded.length > 0 && isCurrentMutationRuntime(runtime)) notifyMutationPersistence([targetRef]);
+    })
+    .catch(() => {});
 }
 
 function removeThreadModel(ref: string): void {

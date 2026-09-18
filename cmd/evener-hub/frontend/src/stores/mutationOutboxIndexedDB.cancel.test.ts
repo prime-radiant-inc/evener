@@ -281,6 +281,30 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     expect((failure as DOMException).name).toBe("VersionError");
   });
 
+  test("discardCanceledOfInstance removes only the superseded instance's canceled rows", async () => {
+    const storage = store();
+    const deadRow = await storage.enqueueIntent({ ...intent("superseded instance's row"), threadId: "thr-old" });
+    const liveRow = await storage.enqueueIntent({ ...intent("current instance's row"), threadId: "thr-new" });
+    const otherRefRow = await storage.enqueueIntent({ ...intent("other ref's row", OTHER), threadId: "thr-old" });
+    const uncertainRow = await storage.enqueueIntent({ ...intent("uncertain row"), threadId: "thr-old" });
+    await storage.markAttempted(uncertainRow.clientMutationId);
+    await storage.markUnknown(uncertainRow.clientMutationId, "blockedUnknown");
+    await storage.cancelUnattempted(TARGET);
+    await storage.cancelUnattempted(OTHER);
+
+    const discarded = await storage.discardCanceledOfInstance(TARGET, "thr-old");
+
+    expect(discarded).toEqual([deadRow.clientMutationId]);
+    expect(await storage.getOutbox(deadRow.clientMutationId)).toBeUndefined();
+    // The current instance's canceled row keeps its explicit-Retry contract,
+    // another ref's row is untouched, and a delivery-uncertain row of the dead
+    // instance is never removed this way.
+    expect((await storage.getOutbox(liveRow.clientMutationId))?.state).toBe("canceled");
+    expect((await storage.getOutbox(otherRefRow.clientMutationId))?.state).toBe("canceled");
+    expect((await storage.getOutbox(uncertainRow.clientMutationId))?.state).toBe("blockedUnknown");
+    storage.close();
+  });
+
   test("the version-3 upgrade is additive: an existing version-2 database opens with its rows intact", async () => {
     // Seed the database exactly as the version-2 code left it: the same four
     // stores and indexes, one durable row, no version-3 knowledge anywhere.

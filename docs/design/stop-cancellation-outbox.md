@@ -129,6 +129,12 @@ cancel.
   (existing `clearThread`/deletion paths), and on explicit Retry. No TTL, no GC
   pass. Growth is bounded by the number of sends a user cancels and never retries,
   which is user-visible and small.
+  The removal also reconciles across tabs: a published replacement instance is
+  the one clear signal every tab observes on its own, so a clear settled by
+  another tab - whose response and best-effort removal never reached this one -
+  is completed by whichever tab observes the transition, scoped to the instance
+  the transition provably replaced (the BroadcastChannel wakeup is a timing
+  hint, never the authority).
 - **Note rows are the exception with a third exit.** QueueStrip deliberately
   leaves `notes/human/set` rows to the note editor, whose only retry branch is
   gated on `blockedUnknown` - a canceled note row would otherwise sit pinned

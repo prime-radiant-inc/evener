@@ -230,6 +230,26 @@ export class MutationOutboxIndexedDB {
     });
   }
 
+  // §6's cross-tab removal: clear in one tab, observe in another. A published
+  // replacement instance proves the superseded instance is gone, so its
+  // canceled rows leave in whichever tab observes the transition. Rows of any
+  // other instance - including the current one, whose explicit Retry is still
+  // the user's to make - are never touched.
+  async discardCanceledOfInstance(targetRef: string, instanceThreadId: string): Promise<string[]> {
+    return this.#write(OUTBOX_STORE, "discardCanceled", async (transaction) => {
+      const store = transaction.objectStore(OUTBOX_STORE);
+      const records = await requestResult<MutationOutboxRecord[]>(store.getAll());
+      const discarded: string[] = [];
+      for (const record of records) {
+        if (record.targetRef !== targetRef || record.state !== "canceled") continue;
+        if (record.threadId !== instanceThreadId) continue;
+        await requestResult(store.delete(record.clientMutationId));
+        discarded.push(record.clientMutationId);
+      }
+      return discarded;
+    });
+  }
+
   // The one release of a canceled row: an explicit user Retry. Background
   // reconciliation and reopen paths never reach this — it transitions only
   // canceled -> submitting and refuses every other state.
