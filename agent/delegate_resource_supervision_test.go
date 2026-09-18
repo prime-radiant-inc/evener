@@ -2467,6 +2467,44 @@ func TestDelegateResourceSupervision_QuietWatchdogRetiresInFlightClaimOnSteer(t 
 	}
 }
 
+func TestDelegateResourceSupervision_QuietWatchdogArmsStaleDurableAttention(t *testing.T) {
+	root, controller, lease, clock := quietSteerHarness(t)
+	wake := make(chan struct{}, 4)
+	root.SetNotifyFunc(func() { wake <- struct{}{} })
+
+	clock.Advance(delegateQuietWindow)
+	claim, err := controller.BeginQuietAttention(root, lease, clock.Now())
+	if err != nil {
+		t.Fatalf("BeginQuietAttention: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("quiet claim not admitted at the window boundary")
+	}
+	// The watchdog's durable append succeeds; a steer then retires the claim
+	// before the tick completes it, so completion is stale. The durable
+	// attention must still be armed or nothing ever delivers it.
+	deferred, appendErr := root.appendQuietAttentionAtTurnBoundary(claim.attentionID, claim.content)
+	if deferred || appendErr != nil {
+		t.Fatalf("append quiet attention: deferred=%t err=%v", deferred, appendErr)
+	}
+	clock.Advance(time.Minute)
+	persistQuietSteer(t, controller, lease, "racing steer")
+	if err := root.completeQuietWatchdogClaim(claim, appendErr); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("completeQuietWatchdogClaim = %v, want stale lease", err)
+	}
+	root.attentionMu.Lock()
+	_, armed := root.rootAttentionWakeIDs[claim.attentionID]
+	root.attentionMu.Unlock()
+	if !armed {
+		t.Fatalf("stale durable attention %q was not armed", claim.attentionID)
+	}
+	select {
+	case <-wake:
+	case <-time.After(quietHubTripwire): // TRIPWIRE: arming is synchronous notify, not a poll.
+		t.Fatal("no wake fired for the armed stale attention")
+	}
+}
+
 func TestDelegateResourceSupervision_QuietWatchdogRearmsOnEqualTimestampSteer(t *testing.T) {
 	root, controller, lease, clock := quietSteerHarness(t)
 	clock.Advance(delegateQuietWindow)

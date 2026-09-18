@@ -110,7 +110,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		c.mu.Unlock()
 		return err
 	}
-	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+	rearm := live.quietRearmPendingLocked()
 	activityChanged := at.After(live.activityAt) || at.Equal(live.activityAt) && rearm
 	productiveChanged := phase != jobPhaseModelRetrying && at.After(live.productiveActivityAt)
 	if !activityChanged && !productiveChanged {
@@ -118,9 +118,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		return nil
 	}
 	if activityChanged && rearm {
-		live.quietSequence++
-		live.quietNotified = false
-		live.quietNotifiedAt = time.Time{}
+		live.rearmQuietCadenceLocked()
 	}
 	if activityChanged {
 		live.activityAt = at
@@ -171,9 +169,19 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 	if deferred {
 		return s.delegateController.CompleteQuietAttention(claim, false)
 	}
+	return s.completeQuietWatchdogClaim(claim, appendErr)
+}
+
+// completeQuietWatchdogClaim commits an admitted quiet claim after its durable
+// append attempt and arms the wake. The append is durable even when completion
+// then finds the claim stale, so the wake is armed in that case too: a wake that
+// is never armed leaves the durable attention pending with nothing to deliver
+// it. armDelegateAttention is idempotent and no-ops when the attention is no
+// longer pending, so an identity retired by a covering stop is not resurrected.
+func (s *Session) completeQuietWatchdogClaim(claim *delegateQuietAttentionClaim, appendErr error) error {
 	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
-	if appendErr == nil && completionErr == nil {
-		completionErr = s.armDelegateAttention(claim.attentionID)
+	if appendErr == nil {
+		completionErr = errors.Join(completionErr, s.armDelegateAttention(claim.attentionID))
 	}
 	return errors.Join(appendErr, completionErr)
 }
