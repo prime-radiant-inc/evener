@@ -19,7 +19,10 @@ import (
 
 // StoreOptions bounds persistent content and reader connections. Clock must be
 // safe for concurrent calls. A zero quota uses 256 MiB of logical row content.
+type storeHooks struct{ beforeAdmission, beforeCommit, afterCommit func() }
+
 type StoreOptions struct {
+	hooks             storeHooks
 	Clock             func() time.Time
 	QuotaBytes        int64
 	ReaderConnections int
@@ -39,6 +42,7 @@ type Scope struct {
 // its read lock so authorization and the selected snapshot share that ordering.
 // Only hashed grant identifiers enter this object, and no grants enter SQLite.
 type Store struct {
+	hooks    storeHooks
 	mu       sync.RWMutex
 	db       *sql.DB
 	clock    func() time.Time
@@ -99,7 +103,7 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 	}()
 	db.SetMaxOpenConns(options.ReaderConnections + 1)
 	db.SetMaxIdleConns(options.ReaderConnections + 1)
-	s := &Store{db: db, clock: options.Clock, quota: options.QuotaBytes, grants: make(map[[32]byte]Scope)}
+	s := &Store{db: db, clock: options.Clock, quota: options.QuotaBytes, grants: make(map[[32]byte]Scope), hooks: options.hooks}
 	if err := s.initialize(context.Background()); err != nil {
 		return nil, err
 	}
@@ -263,4 +267,14 @@ func (s *Store) checkNamespace(ctx context.Context, scope Scope) error {
 		return &DomainError{Code: NotFoundOrForbidden}
 	}
 	return err
+}
+
+func (s *Store) RevokeGrant(ctx context.Context, hash [32]byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	delete(s.grants, hash)
+	return nil
 }

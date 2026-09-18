@@ -31,6 +31,9 @@ func (s *Store) authorize(ctx context.Context, hash [32]byte, method, artifact s
 
 func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw []byte) (MutationReceipt, error) {
 	raw = slices.Clone(raw)
+	if s.hooks.beforeAdmission != nil {
+		s.hooks.beforeAdmission()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	scope, err := s.authorize(ctx, hash, operation, "")
@@ -119,8 +122,17 @@ func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw
 	if err != nil {
 		return MutationReceipt{}, err
 	}
+	if s.hooks.beforeCommit != nil {
+		s.hooks.beforeCommit()
+	}
+	if _, err := s.authorize(ctx, hash, operation, artifact); err != nil {
+		return MutationReceipt{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return MutationReceipt{}, err
+	}
+	if s.hooks.afterCommit != nil {
+		s.hooks.afterCommit()
 	}
 	if outcome != nil {
 		return MutationReceipt{}, outcome
