@@ -1,12 +1,19 @@
-// The package's one plain-object guard. Four modules used to carry private
-// copies - client.ts's isRecord, toolCallText.ts's isPlainObject,
-// activityData.ts's stricter prototype-checking isPlainObject, and the guard
-// inlined in launchInherited.ts's asEnvEntries (#1425). The strict variant
-// wins: activityData.ts asks it of every node of the recursive evener/jobs/list
-// tree, where rejecting a class instance or other non-plain object before
-// walking its keys is the point. The other three sites read JSON-derived wire
-// values, whose prototypes are always Object.prototype, so the prototype check
-// is a no-op there rather than a behaviour change.
+// The plain-object guard shared by the client's JSON-RPC initialize boundary
+// (client.ts), the tool-call argument/output readers (toolCallText.ts), the
+// recursive activity-tree parser (activityData.ts), and the launch
+// inherited-items adapters (launchInherited.ts).
+//
+// This is the shared guard for those callers. transcriptDisplayConfig.ts and
+// state/navigation/codec.ts still carry their own local isRecord for the
+// config/wire shapes they decode; folding them into this module is a
+// deliberate follow-up rather than an oversight.
+//
+// It is deliberately strict: a record is a non-null, non-array object whose
+// prototype is Object.prototype or null. The activity-tree parser walks the
+// untrusted evener/jobs/list tree and must reject class instances and other
+// non-plain objects before reading their keys. The other three sites read
+// JSON-derived values, whose prototypes are always Object.prototype, so the
+// same strictness is free there.
 export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
