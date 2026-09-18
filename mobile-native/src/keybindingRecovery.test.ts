@@ -40,8 +40,18 @@ function fixture() {
 		storage,
 		requests,
 		handlers,
-		failSave: () => drafts.failSave(true),
-		allowSave: () => drafts.failSave(false),
+		// A durable-intent write goes through save() for a brand new draft but
+		// replaceIf() once one is already classified (createDraftRepository's
+		// own compare-and-swap) - this fixture's "the port refuses to persist"
+		// must fail either way, the same as a real disk failure would.
+		failSave: () => {
+			drafts.failSave(true);
+			drafts.failReplace(true);
+		},
+		allowSave: () => {
+			drafts.failSave(false);
+			drafts.failReplace(false);
+		},
 		corrupt: drafts.corrupt,
 		create: () =>
 			new NativePreferences(
