@@ -546,10 +546,8 @@ func resumeThreadLockedLaunch(ctx context.Context, cfg hubcore.WebConfig, source
 	if err := deletionFenceError(cfg, params.Ref, requestedID, ""); err != nil {
 		return appwire.ThreadResumeResponse{}, err
 	}
-	for _, id := range []string{requestedID, sessionID} {
-		if err := deletionFenceError(cfg, "", id, ""); err != nil {
-			return appwire.ThreadResumeResponse{}, err
-		}
+	if err := deletionFenceErrorForGroup(cfg, []string{requestedID, sessionID}); err != nil {
+		return appwire.ThreadResumeResponse{}, err
 	}
 
 	var discoveryErr error

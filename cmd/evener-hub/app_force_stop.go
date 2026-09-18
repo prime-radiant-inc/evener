@@ -178,10 +178,8 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, aliases)
 	if reservationsHeld {
 		acquired = len(aliases)
-		for _, alias := range aliases {
-			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-				return err
-			}
+		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			return err
 		}
 	}
 	// A caller-rendered identity is revalidated here — under the admission
@@ -247,10 +245,8 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// reservationsHeld branch and confirmedStoppedWithoutClaim already do, so
 	// a sibling-alias fence cannot slip past the cancel-then-acquire fallback
 	// before the exited/kill branch.
-	for _, alias := range aliases {
-		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-			return err
-		}
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+		return err
 	}
 	if exited {
 		// There is no retained process handle to reverify. An unchanged marker
@@ -408,10 +404,8 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 		// locks, which is only reachable after the in-flight Resume has already
 		// been aborted. That re-check still runs, so a deletion that starts in
 		// this window is still caught.
-		for _, alias := range aliases {
-			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-				return confirmedStoppedDecision{}, err
-			}
+		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			return confirmedStoppedDecision{}, err
 		}
 	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
 		// Ordinary shutdown is not force stop: do not cancel a pending restore,
@@ -433,10 +427,8 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	reservationsHeld := stopResumes && tryLockForceStopReservations(cfg.ResumeLocks, aliases)
 	if reservationsHeld {
 		acquired = len(aliases)
-		for _, alias := range aliases {
-			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-				return confirmedStoppedDecision{}, err
-			}
+		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			return confirmedStoppedDecision{}, err
 		}
 	}
 	if stopResumes {
@@ -486,10 +478,8 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	// name. The shortcut is only a no-op while none of them is deleted, or a
 	// deletion of another alias in the same group is bypassed and reported as
 	// success.
-	for _, alias := range aliases {
-		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-			return confirmedStoppedDecision{}, err
-		}
+	if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+		return confirmedStoppedDecision{}, err
 	}
 	currentAliases := cfg.ResumeLocks.RecoveryAliases(sessionID)
 	slices.Sort(currentAliases)

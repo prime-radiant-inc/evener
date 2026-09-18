@@ -134,6 +134,19 @@ func deletionFenceError(cfg hubcore.WebConfig, ref, threadID, clientMutationID s
 	return deletionFenceErrorNaming(cfg, ref, threadID, ref, clientMutationID)
 }
 
+// deletionFenceErrorForGroup applies the deletion fence to every alias in an
+// ownership group: a deletion record may name any alias in the group, not only
+// the one the request addressed, so checking one alias would let a
+// sibling-alias deletion slip past.
+func deletionFenceErrorForGroup(cfg hubcore.WebConfig, aliases []string) error {
+	for _, alias := range aliases {
+		if err := deletionFenceError(cfg, "", alias, ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // deletionTargetState reads the retained deletion state for one stable target.
 // It is a package-level seam so cancellation-ordering tests can publish a
 // deletion between two checks made by a single request; production reads the
