@@ -85,7 +85,7 @@ func TestSaveRename_MarksBothOnSuccess(t *testing.T) {
 	m.Stderr = io.Discard
 	reg := Registry{Version: 2, Plugins: map[string][]InstallEntry{}}
 	mk := Marketplaces{}
-	if err := m.saveRename(mk, "old", "new", MarketplaceRef{}, reg, reg); err != nil {
+	if _, err := m.saveRename(mk, "old", "new", MarketplaceRef{}, reg, reg); err != nil {
 		t.Fatalf("saveRename: %v", err)
 	}
 	if !m.pendingStoreChanged.Plugins || !m.pendingStoreChanged.Marketplaces {

@@ -304,3 +304,104 @@ func TestEditMarketplaceRollbackFailureNamesNoPath(t *testing.T) {
 		t.Fatalf("err = %v, want the marketplace named", err)
 	}
 }
+
+// The two tests above both re-source under the same name, so neither reaches
+// saveRename (only a rename, renaming=true, calls it). saveRename saves the
+// registry first, so a plain rename's registry-save failure must name
+// installed_plugins.json, not known_marketplaces.json - the file that
+// actually failed.
+func TestEditMarketplaceRenameRegistrySaveFailureNamesRegistryFile(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	regPath := m.registryPath()
+	origSave := installSaveRegistry
+	t.Cleanup(func() { installSaveRegistry = origSave })
+	installSaveRegistry = func(string, Registry) error {
+		return &fs.PathError{Op: "write", Path: regPath, Err: errors.New("permission denied")}
+	}
+
+	_, err := m.EditMarketplace(ctx, "acme", "beta", nil)
+	if err == nil {
+		t.Fatal("expected the registry save to fail")
+	}
+	if strings.Contains(err.Error(), regPath) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), registryFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, registryFileName)
+	}
+	if strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("err = %v, want it to name the file that actually failed (%s), not %s", err, registryFileName, marketplacesFileName)
+	}
+}
+
+// When saveRename's marketplaces save fails and the registry restore that
+// follows also fails, the store is left between the two names -
+// errStoreBetweenNames marks that state. The scrubbed error saveFailed
+// returns for this branch must still carry that identity so a caller can
+// errors.Is against it.
+func TestEditMarketplaceRenameBetweenNamesErrorSurvivesIdentity(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	path := m.marketplacesFile()
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(p string, b []byte, mode os.FileMode) error {
+		if p == path {
+			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+		}
+		return origWrite(p, b, mode)
+	}
+
+	origSave := installSaveRegistry
+	saveCalls := 0
+	t.Cleanup(func() { installSaveRegistry = origSave })
+	installSaveRegistry = func(p string, reg Registry) error {
+		saveCalls++
+		if saveCalls == 1 {
+			// The rekeyed registry saveRename writes before the marketplaces
+			// file - lets that one land so the restore below is a real
+			// second write, not a no-op.
+			return origSave(p, reg)
+		}
+		return &fs.PathError{Op: "write", Path: p, Err: errors.New("permission denied")}
+	}
+
+	_, err := m.EditMarketplace(ctx, "acme", "beta", nil)
+	if err == nil {
+		t.Fatal("expected both the marketplaces save and the registry restore to fail")
+	}
+	if !errors.Is(err, errStoreBetweenNames) {
+		t.Fatalf("err = %v, want errors.Is(err, errStoreBetweenNames)", err)
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), marketplacesFileName) {
+		t.Fatalf("err = %v, want it to name %s", err, marketplacesFileName)
+	}
+}

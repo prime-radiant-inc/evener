@@ -303,7 +303,7 @@ func (m *Manager) recoverMarkedRename() error {
 			return fail(err)
 		}
 	}
-	if err := m.saveRename(mk, marker.From, marker.To, ref, reg, registryAsFound); err != nil {
+	if _, err := m.saveRename(mk, marker.From, marker.To, ref, reg, registryAsFound); err != nil {
 		undoErr := runUndo(undo)
 		if undoErr == nil && !errors.Is(err, errStoreBetweenNames) {
 			// Dropping the marker is safe only where the store is back at the
@@ -927,7 +927,7 @@ func (m *Manager) mergeIntoMigrated(mk Marketplaces, owners map[string]string, r
 	}
 	// The recorded marketplace is written back as it stands, so what this
 	// save records is the duplicate's removal and the keys that moved.
-	if err := m.saveRename(mk, name, recorded, mk[recorded], reg, registryAsFound); err != nil {
+	if _, err := m.saveRename(mk, name, recorded, mk[recorded], reg, registryAsFound); err != nil {
 		// A merge moves nothing, so there is no undo to judge and nothing to
 		// tell a save that reached neither file from one that reached both:
 		// the marker stays, and the next lock holder makes the merge from
@@ -989,7 +989,7 @@ func (m *Manager) migrateMarketplaceName(mk Marketplaces, owners map[string]stri
 			return registryAsFound, m.markerAfterFailedMove(err)
 		}
 	}
-	if err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
+	if _, err := m.saveRename(mk, name, newName, ref, reg, registryAsFound); err != nil {
 		// A marker means the store may be between the two names, so only a
 		// rollback that provably brought it to one may drop it: the registry
 		// back as it was found (errStoreBetweenNames) and every directory back
