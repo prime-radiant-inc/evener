@@ -115,16 +115,16 @@ export function deriveSendQueueAvailability({
   // only for the input this flag is documented to take - see its contract on
   // SendQueueAvailabilityInput, which no code here can enforce.
   //
-// It is a tier of its own, ABOVE the capability veto rather than inside the
-// active branch, and that placement is the whole point. The capabilities in
-// hand during this window are the IDLE ones. Queue there advertises harness
-// support alone (#1375), so an idle snapshot's false bit now means the harness
-// has no queue seam, not that there is no turn to queue behind. Letting the
-// veto see it still turns this rule into BOTH_UNAVAILABLE and DISABLES the
-// composer in exactly the window it exists to serve - worse than the bounce,
-// which at least left a recovery row the user could resend from. A harness
-// with no queue at all answers turn/queue with Unavailable, and the user sees
-// that.
+  // It is a tier of its own, ABOVE the capability veto rather than inside the
+  // active branch, and that placement is the whole point. The capabilities in
+  // hand during this window are the IDLE ones. Queue there advertises harness
+  // support alone (#1375), so an idle snapshot's false bit now means the harness
+  // has no queue seam, not that there is no turn to queue behind. Letting the
+  // veto see it still turns this rule into BOTH_UNAVAILABLE and DISABLES the
+  // composer in exactly the window it exists to serve - worse than the bounce,
+  // which at least left a recovery row the user could resend from. A harness
+  // with no queue at all answers turn/queue with Unavailable, and the user sees
+  // that.
   //
   // The queue lands with no turn id because there is no turn id to send:
   // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/
