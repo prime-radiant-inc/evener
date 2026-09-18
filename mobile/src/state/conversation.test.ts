@@ -4366,7 +4366,7 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("D18 B3 round 7: rehydrate merge authority and turn-history ownership", () => {
+  describe("D18 B3 round 7: rehydrate merge authority and page/turn-history ownership", () => {
     // Failing-first (1): mergeOlderItemPage's own contract makes its first
     // (model) argument win field-level ties over its second (resp) argument
     // (loadOlder above relies on exactly that — the accumulated conversation
@@ -4487,6 +4487,66 @@ describe("ConversationStore", () => {
       expect(conv.turns.map((t) => t.id)).toEqual(["t-fresh"]);
       expect(conv.olderCursor).toBeUndefined();
       expect(sessionTokens(conv)).toEqual({ inputTokens: 20, outputTokens: 8, scope: "session" });
+    });
+
+    // Failing-first (3): the same class of bug on the item side —
+    // preservePageHistory turned true whenever loadOlderToken merely
+    // changed, even from a loadOlder that failed and added nothing to
+    // pageOwnedIds. A failed page load racing a rehydrate's own read then
+    // forced the store's own paging cursor (F8) to stay at its stale
+    // pre-race value instead of following the fresh read's own signal.
+    it("a failed loadOlder racing a rehydrate does not force the store's paging cursor to stay stale", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      const opened = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        items: [{ kind: "user", id: "existing", text: "existing" }],
+        olderCursor: "cursor-1",
+      });
+      service.readProjectionResult = {
+        conversation: opened,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Hold the rehydrate's own read open so a loadOlder can race it.
+      let release!: (value: ConversationReadProjection) => void;
+      service.readProjectionBlock = new Promise((resolve) => {
+        release = resolve;
+      });
+      const rehydratePromise = store.getState().rehydrate(service, sink);
+
+      // While the rehydrate's read is in flight, a loadOlder attempt starts
+      // and fails — it bumps loadOlderToken but adds nothing to
+      // pageOwnedIds.
+      service.olderItems = Promise.reject(new Error("network error")) as never;
+      const loadOlderResult = await store.getState().loadOlder(service);
+      expect(loadOlderResult.status).toBe("failed");
+
+      // Release the rehydrate's own read: a fresh, complete window
+      // reporting no further history of its own.
+      const fresh = makeConversation({
+        threadId: "thread-1",
+        instanceId: "instance-1",
+        items: [{ kind: "user", id: "fresh-item", text: "fresh" }],
+        olderCursor: undefined,
+      });
+      release({
+        conversation: fresh,
+        activity: { tasks: [], work: [], usage: {}, capabilities: ALL_TRUE_CAPS },
+        olderCursor: null,
+      });
+      await rehydratePromise;
+
+      // The failed loadOlder contributed no page history — the store's own
+      // paging cursor must follow the fresh read's own signal, not the
+      // stale pre-race value, and no page item survives.
+      expect(store.getState().olderCursor).toBeNull();
+      expect(store.getState().conversation?.items.map((i) => i.id)).toEqual(["fresh-item"]);
     });
   });
 

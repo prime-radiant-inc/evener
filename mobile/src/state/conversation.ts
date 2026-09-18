@@ -1746,9 +1746,13 @@ export function createConversationStore() {
             conversation.items.flatMap((item) => [...timelineIdentities(item)]),
           );
           const currentConvForMerge = currentSnapshot.conversation;
+          // Ownership is recorded only by a loadOlder call that actually
+          // succeeded (pageOwnedIds); a failed attempt still bumps
+          // loadOlderToken but must not, on its own, force preservation of
+          // page items or the store's paging cursor it never loaded.
           const preservePageHistory =
             currentConvForMerge?.instanceId === conversation.instanceId &&
-            (entryLoadOlderToken !== loadOlderToken || pageOwnedIds.size > 0);
+            pageOwnedIds.size > 0;
           // D18 B3 round 5 (2): the turn-history and wire-cursor merge below
           // gate on turn ownership, not item ownership — a page whose items
           // were entirely deduped or evicted still owns turns that must not
