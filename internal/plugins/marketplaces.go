@@ -429,6 +429,13 @@ func (m *Manager) EditMarketplace(ctx context.Context, name, newName string, src
 			dest := m.marketplaceDir(target)
 			aside, err := m.swapInClone(staging, dest)
 			if err != nil {
+				// A swap that set the old clone aside but could not put it
+				// back returns that aside path with its error; registering
+				// it lets the undo retry the restore and, when that fails
+				// too, name where the clone is stranded.
+				if aside != "" {
+					swappedIn, asideClone = dest, aside
+				}
 				return fail(err)
 			}
 			swappedIn, asideClone = dest, aside
@@ -853,6 +860,11 @@ func (m *Manager) recloneMarketplace(ctx context.Context, ref MarketplaceRef) er
 // nothing. That directory is the caller's: it is the only copy of what dest
 // held, so a caller whose work can still fail keeps it until the work is
 // committed and every other caller removes it at once.
+//
+// A swap whose install fails after it moved the old clone aside returns "" once
+// it has put the clone back, but the aside path alongside the error when it
+// could not: the clone is then still under that path with nothing else recording
+// it, and only the caller's error can say so.
 func (m *Manager) swapInClone(staging, dest string) (string, error) {
 	// The aside name is this swap's own scratch, so a directory already there
 	// is residue a caller's best-effort cleanup failed to remove. It has to go
@@ -875,9 +887,10 @@ func (m *Manager) swapInClone(staging, dest string) (string, error) {
 		if movedAside {
 			// Put the old clone back so dest keeps pointing at a real
 			// directory. If even that fails, .old still holds the only
-			// local copy — deliberately NOT swept — and the error says so.
+			// local copy — deliberately NOT swept — so hand it back with the
+			// error for the caller to retry the restore and name the path.
 			if restoreErr := marketplaceRename(old, dest); restoreErr != nil {
-				return "", fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr)
+				return old, fmt.Errorf("installing fresh clone failed (%w); restoring old clone: %w", err, restoreErr)
 			}
 		}
 		return "", fmt.Errorf("installing fresh clone: %w", err)

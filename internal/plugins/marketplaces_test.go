@@ -951,6 +951,107 @@ func TestEditMarketplace_MarketplacesSaveFailureRestoresTheOldClone(t *testing.T
 	}
 }
 
+// When the swap cannot install the staged clone AND cannot put the old clone
+// back, .old holds the only copy while nothing records it. The edit's undo has
+// to retry the restore, and the error it returns has to name where the clone
+// is stranded — that report is the only thing that can.
+func TestEditMarketplace_DoubleSwapFailureNamesTheStrandedClone(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	repoB := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// Call 1 moves the clone aside; calls 2 and 3 are the swap's own install
+	// and restore; call 4 is the undo's retry of that restore. Every rename
+	// from the install on refuses, so .old is left holding the clone.
+	orig := marketplaceRename
+	calls := 0
+	marketplaceRename = func(from, to string) error {
+		calls++
+		if calls >= 2 {
+			return fmt.Errorf("rename %d refused", calls)
+		}
+		return orig(from, to)
+	}
+	t.Cleanup(func() { marketplaceRename = orig })
+
+	_, err := m.EditMarketplace(ctx, "acme", "", &Source{Kind: SourceURL, URL: repoB})
+	marketplaceRename = orig
+	if err == nil {
+		t.Fatal("expected the swap to fail")
+	}
+	aside := m.marketplaceDir(asideCloneName)
+	if !strings.Contains(err.Error(), aside) || !strings.Contains(err.Error(), m.marketplaceDir("acme")) {
+		t.Fatalf("error = %v, want the stranded clone %s and its destination named", err, aside)
+	}
+	if !strings.Contains(err.Error(), "rename 4 refused") {
+		t.Fatalf("error = %v, want the undo's failed retry reported", err)
+	}
+	// The store is unchanged: the file still records the old source, and the
+	// clone it names is gone from the install location but recoverable under
+	// the aside name the error gives.
+	if _, err := os.Stat(filepath.Join(aside, "plugins", "widget")); err != nil {
+		t.Fatalf("the stranded clone is not under %s: %v", aside, err)
+	}
+	if _, err := os.Stat(m.marketplaceDir("acme")); !os.IsNotExist(err) {
+		t.Fatalf("the install location survived the failed swap: %v", err)
+	}
+}
+
+// The swap's restore failing once is not fatal on its own: the edit's undo runs
+// after the swap, and it retries the restore. When that retry succeeds the old
+// clone is back under the install location the surviving store file records,
+// with nothing left under the aside name.
+func TestEditMarketplace_DoubleSwapFailureRetryRestoresTheClone(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	repoB := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m := NewManager(t.TempDir())
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// Only the swap's install and its immediate restore refuse; the undo's
+	// retry is the first rename let through again.
+	orig := marketplaceRename
+	calls := 0
+	marketplaceRename = func(from, to string) error {
+		calls++
+		if calls == 2 || calls == 3 {
+			return fmt.Errorf("rename %d refused", calls)
+		}
+		return orig(from, to)
+	}
+	t.Cleanup(func() { marketplaceRename = orig })
+
+	if _, err := m.EditMarketplace(ctx, "acme", "", &Source{Kind: SourceURL, URL: repoB}); err == nil {
+		t.Fatal("expected the swap to fail")
+	}
+	marketplaceRename = orig
+
+	if _, err := os.Stat(filepath.Join(m.marketplaceDir("acme"), "plugins", "widget")); err != nil {
+		t.Fatalf("the old clone was not restored by the undo's retry: %v", err)
+	}
+	if _, err := os.Stat(m.marketplaceDir(asideCloneName)); !os.IsNotExist(err) {
+		t.Fatalf("the aside clone outlived the successful retry: %v", err)
+	}
+}
+
 // The marketplaces file is saved last, after the registry has already taken
 // the rename. When it fails, that file still names the marketplace — and the
 // install location inside it — under the OLD name, so everything the edit
