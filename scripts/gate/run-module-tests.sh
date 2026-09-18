@@ -32,6 +32,10 @@ set -uo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
+# The bounded process runner and process-tree stopper live in a sourceable
+# library so their failure modes can be exercised directly rather than
+# inspected as script text; see gatebounded_test.go.
+. "$script_dir/../lib/gate-bounded.sh"
 
 # The load-aware budgets, and the effective -p/-parallel flags they become,
 # live in scripts/lib/gate-budgets.sh so the wiring can be exercised directly
@@ -211,43 +215,6 @@ forget_pid() {
 	fi
 }
 
-process_descendants() {
-	local parent="$1" child
-	for child in $(ps -axo pid=,ppid= 2>/dev/null | awk -v parent="$parent" '$2 == parent {print $1}'); do
-		process_descendants "$child"
-		printf '%s\n' "$child"
-	done
-}
-
-# stop_process_tree <pid> — stop a command and everything it forked. TERM first
-# for a clean exit, then KILL whatever ignored it after a short grace. Bounded:
-# nothing here waits on a process past the grace, so a TERM-ignoring or
-# uninterruptible descendant cannot hold the gate open, and a survivor is left
-# to init rather than waited on.
-stop_process_tree() {
-	local pid="$1" descendant alive grace
-	local -a targets=()
-	for descendant in $(process_descendants "$pid"); do
-		targets+=("$descendant")
-	done
-	targets+=("$pid")
-	for descendant in "${targets[@]}"; do
-		kill -TERM "$descendant" 2>/dev/null || :
-	done
-	grace=$((SECONDS + 5))
-	while [ "$SECONDS" -lt "$grace" ]; do
-		alive=0
-		for descendant in "${targets[@]}"; do
-			kill -0 "$descendant" 2>/dev/null && alive=1
-		done
-		[ "$alive" -eq 0 ] && break
-		sleep 0.1
-	done
-	for descendant in "${targets[@]}"; do
-		kill -KILL "$descendant" 2>/dev/null || :
-	done
-}
-
 stop_children() {
 	local pid descendant
 	local -a descendants=()
@@ -305,11 +272,12 @@ failed_modules=()
 logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
-# package_list_timeout_diagnostic <what> <bound> <module> <log-file> — the
-# cache-stall diagnostic for a bounded step. It names the module the step ran in
-# and a retry command anchored at the repository root, so a timeout in the flag
-# derivation or in any module's enumeration reads the same way.
-package_list_timeout_diagnostic() {
+# run_bounded_timeout_diagnostic <what> <bound> <module> <log-file> — the
+# cache-stall diagnostic run_bounded (scripts/lib/gate-bounded.sh) calls on a
+# timeout. It names the module the step ran in and a retry command anchored at
+# the repository root, so a timeout in the flag derivation or in any module's
+# enumeration reads the same way.
+run_bounded_timeout_diagnostic() {
 	local what="$1" bound="$2" module="$3" log_file="$4" worktree gocache gomodcache retry
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
@@ -325,50 +293,14 @@ package_list_timeout_diagnostic() {
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" "$retry" >&2
 }
 
-# run_bounded <bound> <what> <module> <log-file> <cmd...> — run cmd in the
-# background, capture its stdout in log-file, and bound it: a step that outlives
-# <bound> has its whole process tree stopped and gets the cache diagnostic,
-# rather than hanging the gate. stderr is kept as <log-file>.stderr and replayed
-# on a nonzero exit. A stalled Go cache or filesystem must never hang the gate.
-run_bounded() {
-	local bound="$1" what="$2" module="$3" log_file="$4"; shift 4
-	local pid started_at status
-	rm -f "${log_file}.status"
-	# The child writes its exit status to a file only after the command
-	# finishes, so that file, not kill -0, is what says "done": kill -0 alone
-	# can still see a process that exited just as the bound was reached (until
-	# bash reaps it) and would report a successful command as a timeout.
-	( "$@" >"$log_file" 2>"${log_file}.stderr"; printf '%s\n' "$?" >"${log_file}.status" ) &
-	pid="$!"
-	started_at=$SECONDS
-	while [ ! -f "${log_file}.status" ]; do
-		if [ $((SECONDS - started_at)) -ge "$bound" ]; then
-			stop_process_tree "$pid"
-			# A status file that landed while the tree was being stopped means
-			# the command had already completed; trust it over the clock.
-			[ -f "${log_file}.status" ] && break
-			wait "$pid" 2>/dev/null || :
-			package_list_timeout_diagnostic "$what" "$bound" "$module" "${log_file}.stderr"
-			return 1
-		fi
-		sleep 0.1
-	done
-	wait "$pid" 2>/dev/null || :
-	status="$(cat "${log_file}.status" 2>/dev/null || printf '1')"
-	case "$status" in
-	''|*[!0-9]*) status=1 ;;
-	esac
-	if [ "$status" -eq 0 ]; then
-		return 0
-	fi
-	cat "${log_file}.stderr" >&2
-	return "$status"
-}
-
-# run_list_build_flags runs the helper from the repository root, where the
-# evener-dev package resolves, whatever module's directory the caller sits in.
+# run_list_build_flags runs the helper from whatever directory the caller is in
+# — the module's own directory on both enumeration paths — so any relative path
+# in the ambient GOFLAGS (`-modfile=alt.mod`, `-overlay=overlay.json`) resolves
+# here exactly as it does for the module's own `go test`. The evener-dev package
+# is named by its full import path so it resolves through the workspace from a
+# module that does not require the root module.
 run_list_build_flags() {
-	( cd "$repo_root" && go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} )
+	go run primeradiant.com/evener/cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"}
 }
 
 # derive_list_flags sets list_flags to the caller's flags that the `go list`

@@ -14,10 +14,11 @@ import (
 )
 
 // fixtureEnv is the environment every fixture command runs with: the ambient
-// GOWORK, GOFLAGS and GOENV are replaced, not merely appended, so a developer's
-// own settings cannot change which tree the fixture's `go list` sees. t.Setenv
-// replaces an inherited entry; appending to os.Environ() would not, because Go
-// keeps the first occurrence of a duplicated key.
+// GOWORK, GOFLAGS and GOENV are replaced, so a developer's own settings cannot
+// change which tree the fixture's `go list` sees. t.Setenv replaces the entry
+// in this process's environment; os/exec would also have applied an appended
+// override, since its dedupEnv keeps the LAST entry for a repeated key, but
+// replacing here is the clearer statement of intent.
 func fixtureEnv(t *testing.T) []string {
 	t.Helper()
 	t.Setenv("GOWORK", "off")
@@ -25,35 +26,24 @@ func fixtureEnv(t *testing.T) []string {
 	return os.Environ()
 }
 
-// firstEnvValue returns the value of key as a child process would read it: Go
-// keeps the first occurrence of a duplicated key, so appending an override
-// after os.Environ() does not override anything.
-func firstEnvValue(env []string, key string) string {
-	for _, entry := range env {
-		if k, v, ok := strings.Cut(entry, "="); ok && k == key {
-			return v
-		}
-	}
-	return ""
-}
-
 // TestFixtureEnvReplacesInheritedToolchainSettings is the regression guard for
-// the fixture's own isolation: an inherited GOFLAGS/GOENV/GOWORK must be gone
-// from what the fixture's go list runs under, and appending to os.Environ()
-// left the inherited (first) entry winning.
+// the fixture's own isolation, and it checks it the way the fixture uses it: a
+// real child process must see the replaced values, not whatever the developer
+// exported. (cmd.Env is deduped by os/exec keeping the last entry, so an
+// appended override would also win; this pins the child-visible contract either
+// way.)
 func TestFixtureEnvReplacesInheritedToolchainSettings(t *testing.T) {
 	t.Setenv("GOWORK", "/inherited/gowork")
 	t.Setenv("GOFLAGS", "-short")
 	t.Setenv("GOENV", "/inherited/goenv")
-	env := fixtureEnv(t)
-	for _, tc := range []struct{ key, want string }{
-		{"GOWORK", "off"},
-		{"GOFLAGS", ""},
-		{"GOENV", "off"},
-	} {
-		if got := firstEnvValue(env, tc.key); got != tc.want {
-			t.Errorf("fixture env %s = %q, want %q (inherited setting not replaced)", tc.key, got, tc.want)
-		}
+	cmd := exec.Command("sh", "-c", `printf '%s|%s|%s\n' "$GOWORK" "$GOFLAGS" "$GOENV"`)
+	cmd.Env = fixtureEnv(t)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("reading the fixture env through a child: %v\n%s", err, out)
+	}
+	if got, want := strings.TrimSpace(string(out)), "off||off"; got != want {
+		t.Fatalf("child sees GOWORK|GOFLAGS|GOENV = %q, want %q (inherited settings leaked into the fixture)", got, want)
 	}
 }
 
