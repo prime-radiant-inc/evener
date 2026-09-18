@@ -86,13 +86,12 @@ const (
 // truncates so a reader can tell a capped value from a genuinely short one.
 // Rune-safe: never splits a multi-byte character.
 func truncateActivityText(s string, maxRunes int) string {
-	if maxRunes < 1 {
-		return ""
-	}
-	runes := []rune(s)
-	if len(runes) <= maxRunes {
+	// Runes never outnumber bytes, so a string this short cannot need cutting
+	// and does not have to be converted to check.
+	if len(s) <= maxRunes {
 		return s
 	}
+	runes := []rune(s)
 	return string(runes[:maxRunes-1]) + "…"
 }
 
@@ -1391,8 +1390,8 @@ func appendActivityBranchError(branch *appwire.JobActivityBranchState, message s
 // the common case reads exactly as it always did.
 func unsupportedActivityJobTypesError(records []*jobstore.JobRecord) string {
 	count := 0
-	firstID := ""
-	firstType := jobstore.JobType("")
+	var firstID string
+	var firstType jobstore.JobType
 	for _, rec := range records {
 		if rec == nil || rec.Type == jobstore.JobShell {
 			continue
