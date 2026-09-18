@@ -32,15 +32,14 @@ import type { AuthTestResponse, InstanceEditParams, InstanceEntry } from "@evene
 import {
   CONNECTION_REPLACED_ERROR,
   credentialLayers,
-  ErrorInstanceRenamePersisted,
   errorText,
   friendlyErrorMessage,
   fromEnvironment,
+  isInstanceRenamePersisted,
   keylessByDesign,
   safeCredentialTestMessage,
   safeCredentialTestResult,
   unconfiguredLabel,
-  WireError,
 } from "@evener/appwire-client";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useIsMobile } from "../../../../shell/useIsMobile";
@@ -87,17 +86,6 @@ const STALE_SAVE_WARNING =
 // edits onto its replacement.
 const CHANGED_INSTANCE_ERROR =
   "This instance was replaced under the same name; the form was reset to the instance now on screen.";
-
-// isInstanceRenamePersisted reads the hub's own discriminator for a rename that
-// stood but could not carry the instance's credentials cleanly
-// (appwire.ErrorInstanceRenamePersisted, exported by the AppWire package so every
-// client reads the one value its ErrorData carries, and bound to the Go constant
-// by that package's errors.test.ts). providers.toml names the new instance either
-// way, so the save is not a failure to report; the hub's message names the
-// credential left behind.
-function isInstanceRenamePersisted(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
-}
 
 // The entry fields a rename carries over unchanged, and that the store's own
 // listing can be compared on. The name alone cannot identify a rename - a
@@ -208,12 +196,11 @@ function renamedInstanceLanded(
   const listed = instances.find((instance) => instance.name === newName);
   if (listed === undefined) return undefined;
   // Renaming an instance that had no authored entry authors one under the new
-  // name (hubInstancesController.Edit), so implicit becoming authored is that
-  // rename's own outcome rather than evidence of a later tenant of the freed
-  // name. The other direction, and any change on an authored row, still says
-  // this save's instance is not what holds the new name.
-  const authoredByRename = before.implicit && !listed.implicit;
-  if (listed.implicit !== before.implicit && !authoredByRename) return undefined;
+  // name (hubInstancesController.Edit): a listing that is now implicit while
+  // this save's instance was not is that rename's own outcome, not evidence of
+  // a later tenant of the freed name. Any other change of provenance says this
+  // save's instance is not what holds the new name.
+  if (!before.implicit && listed.implicit) return undefined;
   const changed = changedFields(params);
   const endpointChanged = ENDPOINT_AFFECTING_FIELDS.some((field) => changed.has(field));
   const untouched = RENAME_IDENTITY_FIELDS.filter(
@@ -223,6 +210,17 @@ function renamedInstanceLanded(
     field === "base" ? baseCarriedByRename(before, listed) : fieldValue(before, field) === fieldValue(listed, field),
   );
   return matches ? newName : undefined;
+}
+
+/** The note under Name. A rename always leaves the old name behind in launch
+ * config and past sessions; on an environment-backed instance it also leaves
+ * the instance itself, because the variable that makes it exist is not the
+ * row's to move, so the rename authors a second instance beside it. */
+function renameNote(instance: InstanceEntry): string {
+  const keepsOldName = `Launch config and past sessions that reference "${instance.name}" keep the old name.`;
+  return fromEnvironment(instance)
+    ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. ${keepsOldName}`
+    : keepsOldName;
 }
 
 export interface InstanceSheetProps {
@@ -535,16 +533,7 @@ export function InstanceSheet({
   // on what counts as a rename, and an emptied Name is not one.
   const renaming =
     initial !== null && draft !== null && draft.name.trim() !== "" && draft.name.trim() !== initial.name.trim();
-  // The note under Name. A rename always leaves the old name behind in launch
-  // config and past sessions; on an environment-backed instance it also leaves
-  // the instance itself, because the variable that makes it exist is not the
-  // row's to move, so the rename authors a second instance beside it.
-  const nameHelp =
-    instance !== undefined && renaming
-      ? fromEnvironment(instance)
-        ? `Renaming adds a new instance and leaves this one in place, because the environment supplies it. Launch config and past sessions that reference "${instance.name}" keep the old name.`
-        : `Launch config and past sessions that reference "${instance.name}" keep the old name.`
-      : undefined;
+  const nameHelp = instance !== undefined && renaming ? renameNote(instance) : undefined;
 
   return (
     <Sheet

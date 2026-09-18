@@ -227,7 +227,7 @@ func (c *hubInstancesController) entryFor(r *registry.Registry, inst registry.In
 		EnvVar:              status.EnvVar,
 		ShadowedEnvVar:      status.ShadowedEnvVar,
 		StoredEmail:         status.StoredEmail,
-		CredentialRequired:  inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer,
+		CredentialRequired:  !keylessScheme(inst.Auth),
 		Warnings:            inst.Warnings,
 		Models:              instanceModels(r, inst.Name),
 	}
@@ -1195,17 +1195,17 @@ func keylessScheme(auth string) bool {
 // (client-side parity: fromEnvironment in the AppWire package's
 // credentialLabels).
 //
-// The Codex transport is exempt before the source is consulted, mirroring the
-// client: it reads only its OAuth record, and the instance exists because that
-// record file does - a record the hub cannot parse is still the user's, and the
-// status reports no usable source for it (openAIInstanceStatus) while the
-// registry reports the oauth source. Without the exemption a Codex row whose
-// status resolved no source (empty/none) would be offered Remove in the UI but
-// refused here. The client's other early return - true when the row needs no
-// credential - is already the keylessScheme branch: the wire's
-// CredentialRequired is exactly `Auth != AuthNone && Auth != AuthOptionalBearer`
-// (List, app_instances.go), so `!credentialRequired` is keylessScheme, and
-// keylessScheme returns true below.
+// The Codex transport needs no case of its own here: the source check already
+// places it with the user. The registry resolves a Codex instance from its
+// OAuth record alone, to the "oauth" source when that record is readable and
+// "none" when it is absent or corrupt (credential, llm/registry/instances.go),
+// and neither is on the allow-list below; the hub's own status reports the same
+// two values for it (openAIInstanceStatus), so a Codex row whose status
+// resolved no usable source is still the user's to remove. The client's other
+// early return - true when the row needs no credential - is already the
+// keylessScheme branch: the wire's CredentialRequired is exactly `Auth !=
+// AuthNone && Auth != AuthOptionalBearer` (List, app_instances.go), so
+// `!credentialRequired` is keylessScheme, and keylessScheme returns true below.
 //
 // The source check is an ALLOW-list, not a deny-list: only env:<VAR> and adc
 // name a credential the host supplies. Any other source - none, empty, or a
@@ -1218,9 +1218,6 @@ func keylessScheme(auth string) bool {
 // List entry.
 func environmentBacked(inst registry.Instance) bool {
 	if !inst.Implicit {
-		return false
-	}
-	if inst.Auth == registry.AuthOAuthOpenAICodex {
 		return false
 	}
 	if keylessScheme(inst.Auth) {

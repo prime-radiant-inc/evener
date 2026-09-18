@@ -60,23 +60,48 @@ func testProbeRegistryOptions(
 	}
 }
 
+// instancesControllerHooks shapes a test instances controller's registry
+// without re-implementing its wiring. seed runs once after the credential
+// store is loaded and before the first registry load, so it can hand that load
+// the store state it must read; load runs before every registry load, counted
+// from 1 for the controller's own first load, and returns the error that load
+// should fail with (or nil to load normally).
+type instancesControllerHooks struct {
+	seed func(*credentials.Store)
+	load func(load int) error
+}
+
 // newTestInstancesController builds an instances controller whose registry
 // reads tomlPath as its user layer, with credentials at credsDir and OAuth
 // state at stateDir.
-func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir string, env ...map[string]string) *hubInstancesController {
+func newTestInstancesController(t *testing.T, tomlPath, credsDir, stateDir string, env map[string]string, hooks ...instancesControllerHooks) *hubInstancesController {
 	t.Helper()
 	store, err := credentials.LoadStore(filepath.Join(credsDir, "credentials.toml"))
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	lookup := map[string]string{}
-	if len(env) > 0 {
-		lookup = env[0]
+	var hook instancesControllerHooks
+	if len(hooks) > 0 {
+		hook = hooks[0]
+	}
+	if hook.seed != nil {
+		hook.seed(store)
+	}
+	lookup := env
+	if lookup == nil {
+		lookup = map[string]string{}
 	}
 	auth := newHubAuthControllerWithStore(credsDir, store)
 	auth.stateDir = stateDir
 	auth.providersConfigPath = tomlPath
+	loads := 0
 	auth.reg = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
+		loads++
+		if hook.load != nil {
+			if err := hook.load(loads); err != nil {
+				return nil, nil, err
+			}
+		}
 		opts := append(
 			testProbeRegistryOptions(stateDir, store, func(name string) (string, bool) {
 				v, ok := lookup[name]
@@ -147,40 +172,31 @@ func newFlakyReloadFixture(t *testing.T, storedKeyFor string, fail func(load int
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 	tomlPath := filepath.Join(dir, "providers.toml")
-	store, err := credentials.LoadStore(filepath.Join(dir, "credentials.toml"))
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	if storedKeyFor != "" {
-		if err := store.Set(storedKeyFor, "gk"); err != nil {
-			t.Fatalf("Set(%s): %v", storedKeyFor, err)
-		}
-	}
-	auth := newHubAuthControllerWithStore(dir, store)
-	auth.stateDir = stateDir
-	auth.providersConfigPath = tomlPath
-	loads := 0
-	auth.reg = hubcore.NewProviderRegistry(func(extra ...registry.Option) (*registry.Registry, *credentials.Store, error) {
-		loads++
-		if fail(loads) {
-			return nil, nil, errors.New("providers config could not be read")
-		}
-		opts := append(
-			testProbeRegistryOptions(stateDir, store, func(string) (string, bool) { return "", false }),
-			registry.WithConfigPath(tomlPath),
-		)
-		r, err := registry.Load(append(opts, extra...)...)
-		return r, store, err
+	ctl := newTestInstancesController(t, tomlPath, dir, stateDir, nil, instancesControllerHooks{
+		seed: func(store *credentials.Store) {
+			if storedKeyFor == "" {
+				return
+			}
+			if err := store.Set(storedKeyFor, "gk"); err != nil {
+				t.Fatalf("Set(%s): %v", storedKeyFor, err)
+			}
+		},
+		load: func(load int) error {
+			if fail(load) {
+				return errors.New("providers config could not be read")
+			}
+			return nil
+		},
 	})
-	if err := auth.reg.Reload(); err != nil {
+	if err := ctl.reg.LoadError(); err != nil {
 		t.Fatalf("initial Reload: %v", err)
 	}
 	return &instancesFixture{
-		ctl:       &hubInstancesController{reg: auth.reg, providersConfigPath: tomlPath, auth: auth},
+		ctl:       ctl,
 		tomlPath:  tomlPath,
 		stateDir:  stateDir,
 		credsPath: filepath.Join(dir, "credentials.toml"),
-		store:     store,
+		store:     ctl.auth.creds,
 	}
 }
 
@@ -578,7 +594,7 @@ func TestInstances_EditRejectsAClearThatWouldOrphanAStandaloneInstance(t *testin
 protocol = "openai-chat"
 base_url = "http://127.0.0.1:9/v1"
 `)
-	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir())
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
 	before := entry(t, ctl.List(), "standalone")
 	if before.BaseURL != "http://127.0.0.1:9/v1" {
 		t.Fatalf("fixture did not load as expected: baseURL = %q", before.BaseURL)
@@ -667,12 +683,7 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 
 // listedInstance reports whether a listing still carries a row under name.
 func listedInstance(resp appwire.InstanceListResponse, name string) bool {
-	for _, e := range resp.Instances {
-		if e.Name == name {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(resp.Instances, func(e appwire.InstanceEntry) bool { return e.Name == name })
 }
 
 // seedOAuthRecord gives an instance a signed-in Codex account - the credential
@@ -3775,7 +3786,7 @@ func TestInstances_EditRenameRefusesACuratedProviderIdForAStandaloneInstance(t *
 protocol = "openai-chat"
 base_url = "http://127.0.0.1:9/v1"
 `)
-	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir())
+	ctl := newTestInstancesController(t, tomlPath, dir, t.TempDir(), nil)
 
 	err := ctl.Edit(appwire.InstanceEditParams{Name: "work", NewName: "openai"})
 
@@ -4421,13 +4432,13 @@ func TestInstances_ListWaitsForACredentialWriteHoldingTheLock(t *testing.T) {
 	}
 }
 
-// TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn: the client's
-// fromEnvironment returns false for the Codex transport unconditionally, so the
-// server must agree whatever source the status resolved - the registry reports
-// the oauth source for a readable record while the status reports no usable
-// source for one the hub cannot read. The cases that must stay environment-backed
-// (and the credential-bearing ones that must not) are pinned beside it, so the
-// exemption cannot widen into "every implicit instance is the user's".
+// TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn: the registry resolves
+// a Codex instance only to the oauth source (a readable record) or none (an
+// absent or corrupt one), and the allow-list places both with the user - so the
+// server agrees with the client's fromEnvironment whatever source the status
+// resolved. The cases that must stay environment-backed (and the
+// credential-bearing ones that must not) are pinned beside it, so the allow-list
+// cannot widen into "every implicit instance is the user's".
 func TestEnvironmentBackedTreatsACodexInstanceAsTheUsersOwn(t *testing.T) {
 	for _, tc := range []struct {
 		name string

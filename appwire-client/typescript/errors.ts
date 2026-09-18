@@ -53,6 +53,15 @@ export function isStaleCursorError(error: unknown): boolean {
 // rename read as a plain failure.
 export const ErrorInstanceRenamePersisted = "instanceRenamePersisted";
 
+// isInstanceRenamePersisted reports whether a rejection is the hub reporting a
+// provider-instance rename that APPLIED before its credential move or reload
+// failed (ErrorInstanceRenamePersisted above). The discriminator is that
+// string, never the code - siblings share the code - so this is the one
+// definition every client matches against.
+export function isInstanceRenamePersisted(err: unknown): boolean {
+  return err instanceof WireError && err.evenerErrorInfo === ErrorInstanceRenamePersisted;
+}
+
 // sessionActionHeadline names the step that actually died.
 //
 // Every session call against a cold session resumes it first (cmd/evener-hub/

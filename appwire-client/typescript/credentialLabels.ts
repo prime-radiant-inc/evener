@@ -114,17 +114,15 @@ export function keylessByDesign(instance: InstanceEntry): boolean {
 // `env:<VAR>` and `adc` name a credential the host supplies, so `none`, empty
 // and any future source this vocabulary does not know are the user's own - an
 // implicit credential-required instance resolving none (a bearer row with no
-// key) must not be badged "from environment" and refused Remove. Mirrors
+// key) must not be badged "from environment" and refused Remove. The Codex
+// transport needs no case of its own here either: the registry resolves it from
+// its OAuth record alone, to `oauth` when that record is readable and none
+// otherwise (llm/registry's credential; the hub's own status reports the same
+// two values), and neither is on the allow-list - so a Codex row is already the
+// user's, including a broken sign-in they remove to clear it. Mirrors
 // environmentBacked in cmd/evener-hub/app_instances.go.
 export function fromEnvironment(instance: InstanceEntry): boolean {
   if (!instance.implicit) return false;
-  // The Codex transport reads only its OAuth record, and the instance exists
-  // because that record file does - a record the hub cannot parse is still the
-  // user's, and removing it is how a broken sign-in goes away. The scheme is
-  // what says so, because the status reports no usable source for an
-  // unreadable record (cmd/evener-hub's openAIInstanceStatus) while the
-  // registry reports the oauth source and permits the removal.
-  if (instance.auth === "oauth-openai-codex") return false;
   // An instance that exists without a credential at all - a keyless local
   // endpoint, a gateway on the optional-bearer scheme - is not the user's to
   // remove, however its store layer looks: the registry re-derives it either

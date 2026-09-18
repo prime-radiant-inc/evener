@@ -182,7 +182,7 @@ func (c *hubAuthController) runCredentialTest(ctx context.Context, name, asserte
 		}
 		inst = registry.Instance{Name: name, Auth: res.Transport.Auth, CredentialSource: res.Credential.Source}
 	}
-	required := inst.Auth != registry.AuthNone && inst.Auth != registry.AuthOptionalBearer
+	required := !keylessScheme(inst.Auth)
 	if required && inst.CredentialSource == "none" {
 		return credentialTestResponse(name, appwire.AuthTestStatusMissing, credentialTestMissingMessage), nil
 	}

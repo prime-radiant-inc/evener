@@ -146,6 +146,7 @@ export {
   GENERIC_ERROR_MESSAGE,
   HUB_UNREACHABLE_MESSAGE,
   isHubLaunchError,
+  isInstanceRenamePersisted,
   isStaleCursorError,
   mutationErrorData,
   RequestTimeoutError,

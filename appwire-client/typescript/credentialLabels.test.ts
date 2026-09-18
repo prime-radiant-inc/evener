@@ -383,24 +383,26 @@ describe("fromEnvironment", () => {
     ).toBe(false);
   });
 
-  test("false for a Codex instance whose record the hub cannot read", () => {
-    // The registry derives the instance from the record file's existence and
-    // reports the oauth source for it either way, while the hub's own status
-    // reports no usable source for an unreadable one. The scheme, not the
-    // active source, is what says whose the instance is - and removing it is
-    // how a broken sign-in goes away.
-    expect(
-      fromEnvironment(
-        instance({
-          name: "openai-codex",
-          providerId: "openai-codex",
-          auth: "oauth-openai-codex",
-          implicit: true,
-          activeSource: "none",
-          credentialRequired: true,
-        }),
-      ),
-    ).toBe(false);
+  test("false for a Codex instance whose record the hub cannot read - none and empty alike", () => {
+    // The registry resolves a Codex instance only from its OAuth record, to
+    // `oauth` when it is readable and none when it is absent or corrupt, and a
+    // bare-controller listing can send an empty source. Neither none nor empty
+    // is on the allow-list, so a broken sign-in is the user's to remove.
+    for (const source of ["none", ""]) {
+      expect(
+        fromEnvironment(
+          instance({
+            name: "openai-codex",
+            providerId: "openai-codex",
+            auth: "oauth-openai-codex",
+            implicit: true,
+            activeSource: source,
+            credentialRequired: true,
+          }),
+        ),
+        `activeSource ${JSON.stringify(source)}`,
+      ).toBe(false);
+    }
   });
 
   test("true for a keyless-capable instance a stored key cannot keep alive", () => {
