@@ -14,10 +14,47 @@ import (
 )
 
 // fixtureEnv is the environment every fixture command runs with: the ambient
-// GOFLAGS and GOENV are cleared so a developer's own settings cannot change
-// which tree the fixture's `go list` sees.
-func fixtureEnv() []string {
-	return append(os.Environ(), "GOWORK=off", "GOFLAGS=", "GOENV=off")
+// GOWORK, GOFLAGS and GOENV are replaced, not merely appended, so a developer's
+// own settings cannot change which tree the fixture's `go list` sees. t.Setenv
+// replaces an inherited entry; appending to os.Environ() would not, because Go
+// keeps the first occurrence of a duplicated key.
+func fixtureEnv(t *testing.T) []string {
+	t.Helper()
+	t.Setenv("GOWORK", "off")
+	isolateToolchainEnv(t)
+	return os.Environ()
+}
+
+// firstEnvValue returns the value of key as a child process would read it: Go
+// keeps the first occurrence of a duplicated key, so appending an override
+// after os.Environ() does not override anything.
+func firstEnvValue(env []string, key string) string {
+	for _, entry := range env {
+		if k, v, ok := strings.Cut(entry, "="); ok && k == key {
+			return v
+		}
+	}
+	return ""
+}
+
+// TestFixtureEnvReplacesInheritedToolchainSettings is the regression guard for
+// the fixture's own isolation: an inherited GOFLAGS/GOENV/GOWORK must be gone
+// from what the fixture's go list runs under, and appending to os.Environ()
+// left the inherited (first) entry winning.
+func TestFixtureEnvReplacesInheritedToolchainSettings(t *testing.T) {
+	t.Setenv("GOWORK", "/inherited/gowork")
+	t.Setenv("GOFLAGS", "-short")
+	t.Setenv("GOENV", "/inherited/goenv")
+	env := fixtureEnv(t)
+	for _, tc := range []struct{ key, want string }{
+		{"GOWORK", "off"},
+		{"GOFLAGS", ""},
+		{"GOENV", "off"},
+	} {
+		if got := firstEnvValue(env, tc.key); got != tc.want {
+			t.Errorf("fixture env %s = %q, want %q (inherited setting not replaced)", tc.key, got, tc.want)
+		}
+	}
 }
 
 func TestListBuildFlagsIsARegisteredSubcommand(t *testing.T) {
@@ -221,7 +258,7 @@ func TestPackageSelectionFlagsDecideWhatGoListCanSee(t *testing.T) {
 		args = append(args, "./...")
 		cmd := exec.Command("go", args...)
 		cmd.Dir = module
-		cmd.Env = fixtureEnv()
+		cmd.Env = fixtureEnv(t)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go %q in the fixture: %v\n%s", args, err, out)
@@ -265,7 +302,7 @@ func TestPackageSelectionFlagsEnumerateWhatGoTestBuilds(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("go", args...)
 		cmd.Dir = module
-		cmd.Env = fixtureEnv()
+		cmd.Env = fixtureEnv(t)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("go %q in the fixture: %v\n%s", args, err, out)
