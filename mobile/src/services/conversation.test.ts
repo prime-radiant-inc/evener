@@ -2885,6 +2885,22 @@ describe("observed queue guards", () => {
     const receipt = await service.steer(textInput("steer this"), 4);
     expect(receipt).not.toHaveProperty("consumedClientMutationIds");
   });
+  it("rejects a drain receipt with an empty consumedClientMutationIds array", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            consumedClientMutationIds: [],
+          }),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
 });
 
 describe("bound conversation model catalog", () => {
