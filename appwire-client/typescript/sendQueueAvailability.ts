@@ -116,15 +116,14 @@ export function deriveSendQueueAvailability({
   // SendQueueAvailabilityInput, which no code here can enforce.
   //
   // It is a tier of its own, ABOVE the capability veto rather than inside the
-  // active branch, and that placement is the whole point. The capabilities in
-  // hand during this window are the IDLE ones. Queue there advertises harness
-  // support alone (#1375), so an idle snapshot's false bit now means the harness
-  // has no queue seam, not that there is no turn to queue behind. Letting the
-  // veto see it still turns this rule into BOTH_UNAVAILABLE and DISABLES the
-  // composer in exactly the window it exists to serve - worse than the bounce,
-  // which at least left a recovery row the user could resend from. A harness
-  // with no queue at all answers turn/queue with Unavailable, and the user sees
-  // that.
+  // active branch, so it answers the question the active branch would answer
+  // before the status says the turn is live. Queue there advertises harness
+  // support alone (#1375), so an idle snapshot's false bit is the harness's
+  // own answer, not "no turn to queue behind": a harness WITH a queue keeps
+  // advertising true at idle, and this client's pending send still routes
+  // there. A harness with no seam would answer turn/queue Unavailable, so the
+  // rule reports the same BOTH_UNAVAILABLE the active branch does, instead of
+  // firing a request that can only fail.
   //
   // The queue lands with no turn id because there is no turn id to send:
   // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/
@@ -137,7 +136,9 @@ export function deriveSendQueueAvailability({
   // The terminal branch at the top answers with this same rule, for the same
   // reason - see its own comment for how a session the status calls finished
   // comes to be holding one of this client's sends.
-  if (hasPendingSend) return QUEUE_MODE;
+  if (hasPendingSend) {
+    return capabilities.queue === false ? BOTH_UNAVAILABLE : QUEUE_MODE;
+  }
 
   return PLAIN_SEND_MODE;
 }

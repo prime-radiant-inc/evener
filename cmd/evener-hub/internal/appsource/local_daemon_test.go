@@ -567,7 +567,7 @@ func fuzzScenarioLocalDaemonSourceReadThreadIncludesQueue(t *testing.T) {
 	}
 }
 
-func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) {
+func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing.T) {
 	source := NewLocalDaemonSourceWithEntries("local", func() []LocalDaemonEntry {
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
@@ -586,11 +586,13 @@ func fuzzScenarioLocalDaemonSourceListQueuesOnlyProcessingThreads(t *testing.T) 
 	for _, thread := range resp.Data {
 		capsByID[thread.ID] = thread.Evener.Capabilities
 	}
-	if capsByID["th_idle"].Queue {
-		t.Fatalf("idle thread advertised queue capability: %+v", capsByID["th_idle"])
-	}
-	if !capsByID["th_processing"].Queue {
-		t.Fatalf("processing thread did not advertise queue capability: %+v", capsByID["th_processing"])
+	// Queue is harness support, not "a turn in flight" (#1375): every live
+	// entry advertises it, and the client applies the status. A status-folded
+	// projection here made ListThreads disagree with ThreadRead for one session.
+	for _, id := range []string{"th_idle", "th_processing"} {
+		if !capsByID[id].Queue {
+			t.Fatalf("%s did not advertise the queue capability: %+v", id, capsByID[id])
+		}
 	}
 }
 

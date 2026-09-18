@@ -3197,6 +3197,10 @@ func TestHubModelActionsAndClearUseAppWire(t *testing.T) {
 	defer cleanup()
 
 	m := newSessionHubModel(client)
+	// /interrupt advertises harness support, not "a turn is running" (#1375),
+	// so the command applies the status: this session is mid-turn, as it is
+	// when a user actually reaches for Stop.
+	m.detail.State = appwire.ThreadStatusActive
 	m.detail.Capabilities.Shutdown = true
 	for _, input := range []string{"/interrupt", "/compact", "/model gpt-5.5", "/shutdown"} {
 		m.session.setInputValue(input)

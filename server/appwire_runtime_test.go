@@ -84,32 +84,43 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 func TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name        string
-		state       string
-		processing  bool
-		wired       bool
-		wantSupport bool
+		name          string
+		state         string
+		processing    bool
+		cancelWired   bool
+		queueWired    bool
+		wantInterrupt bool
+		wantQueue     bool
 	}{
-		{"processing, harness wired", "active", true, true, true},
-		{"idle, harness wired", "idle", false, true, true},
-		{"awaiting, harness wired", "awaiting", false, true, true},
-		{"closed, harness wired", "closed", false, true, false},
-		{"processing, harness unwired", "active", true, false, false},
-		{"idle, harness unwired", "idle", false, false, false},
+		// cancelWired and queueWired vary independently: a swap of the two
+		// seams (Interrupt reading queueFunc, Queue reading the cancel) has to
+		// fail here, not pass on a case where both are true together.
+		{"processing, both wired", "active", true, true, true, true, true},
+		{"idle, both wired", "idle", false, true, true, true, true},
+		{"awaiting, both wired", "awaiting", false, true, true, true, true},
+		{"closed, both wired", "closed", false, true, true, false, false},
+		{"processing, only interrupt wired", "active", true, true, false, true, false},
+		{"processing, only queue wired", "active", true, false, true, false, true},
+		{"idle, only interrupt wired", "idle", false, true, false, true, false},
+		{"idle, only queue wired", "idle", false, false, true, false, true},
+		{"processing, unwired", "active", true, false, false, false, false},
+		{"idle, unwired", "idle", false, false, false, false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			if tc.wired {
+			if tc.cancelWired {
 				s.SetCancelFunc(func() {})
+			}
+			if tc.queueWired {
 				s.SetQueueFunc(func(string) error { return nil })
 			}
 			got := s.appCapabilities(tc.state, tc.processing)
-			if got.Interrupt != tc.wantSupport {
-				t.Fatalf("Interrupt = %v, want %v (harness support, closed withholds)", got.Interrupt, tc.wantSupport)
+			if got.Interrupt != tc.wantInterrupt {
+				t.Fatalf("Interrupt = %v, want %v (harness support, closed withholds)", got.Interrupt, tc.wantInterrupt)
 			}
-			if got.Queue != tc.wantSupport {
-				t.Fatalf("Queue = %v, want %v (harness support, closed withholds)", got.Queue, tc.wantSupport)
+			if got.Queue != tc.wantQueue {
+				t.Fatalf("Queue = %v, want %v (harness support, closed withholds)", got.Queue, tc.wantQueue)
 			}
 		})
 	}
@@ -188,21 +199,27 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 			s := NewServer(ServerConfig{})
 			s.SetSteerFunc(func(string) error { ; return nil })
 			s.SetCancelFunc(func() {})
+			s.SetQueueFunc(func(string) error { return nil })
 			s.appReservedTurnID = tc.reserved
 
 			status := appStatus(tc.state, tc.processing, strings.TrimSpace(tc.reserved) != "")
 			caps := s.appCapabilities(tc.state, tc.processing)
 			working := status == appwire.ThreadStatusActive
 
-			// Steer and Interrupt advertise harness support, withheld only by
-			// closed: they do not follow `working`. The harness is wired for
-			// both (see TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport).
+			// Steer, Interrupt and Queue advertise harness support, withheld
+			// only by closed: they do not follow `working`. The harness is
+			// wired for all three (see
+			// TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport), so
+			// the guard reads the same rule the comment claims.
 			wantHarnessSupport := status != appwire.ThreadStatusClosed
 			if caps.Steer != wantHarnessSupport {
 				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantHarnessSupport)
 			}
 			if caps.Interrupt != wantHarnessSupport {
 				t.Fatalf("status=%q but interrupt=%v, want %v (harness support, closed withholds)", status, caps.Interrupt, wantHarnessSupport)
+			}
+			if caps.Queue != wantHarnessSupport {
+				t.Fatalf("status=%q but queue=%v, want %v (harness support, closed withholds)", status, caps.Queue, wantHarnessSupport)
 			}
 			// Send is the complement, and closed removes it outright.
 			wantSend := !working && status != appwire.ThreadStatusClosed
