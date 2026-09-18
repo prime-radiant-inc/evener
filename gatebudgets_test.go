@@ -31,13 +31,20 @@ const (
 // rather than trusted to stay clean.
 func runSourcedGate(t *testing.T, script string) string {
 	t.Helper()
+	return runSourcedGateEnv(t, script)
+}
+
+// runSourcedGateEnv is runSourcedGate with extra environment entries appended
+// to the minimal one, for the cases that need to point PATH at a fixture.
+func runSourcedGateEnv(t *testing.T, script string, extraEnv ...string) string {
+	t.Helper()
 	for _, path := range []string{gateBudgetsHelper, gateBudgetsLib} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("stat %s: %v", path, err)
 		}
 	}
 	cmd := exec.Command("sh", "-c", script)
-	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
+	cmd.Env = append([]string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("sh -c:\n%s\nexit: %v\noutput:\n%s", script, err, out)
@@ -45,15 +52,18 @@ func runSourcedGate(t *testing.T, script string) string {
 	return strings.TrimSpace(string(out))
 }
 
-// stubProbes sources both libraries and replaces the helper's two machine
-// probes — load_aware_cores and load_aware_load1 — with fixed values. The
-// replacement is a data seam, not a model of the sizing: load_aware_workers
-// still runs its real arithmetic against a fixture machine of CORES cores under
-// LOAD load, which keeps the result independent of the load of the machine
-// running this test without restating the clamping rules here.
+// stubProbes sources the helper through gate_source_helper, then replaces the
+// helper's two machine probes — load_aware_cores and load_aware_load1 — with
+// fixed values. Sourcing through gate_source_helper is what marks the helper as
+// present: gate_budget trusts only the function that call sourced, so a probe
+// replacement alone would be ignored. The replacement is a data seam, not a
+// model of the sizing: load_aware_workers still runs its real arithmetic
+// against a fixture machine of CORES cores under LOAD load, which keeps the
+// result independent of the load of the machine running this test without
+// restating the clamping rules here.
 func stubProbes(cores, load string) string {
-	return ". " + gateBudgetsHelper + "\n" +
-		". " + gateBudgetsLib + "\n" +
+	return ". " + gateBudgetsLib + "\n" +
+		"gate_source_helper " + gateBudgetsHelper + "\n" +
 		"load_aware_cores() { printf '%s' '" + cores + "'; }\n" +
 		"load_aware_load1() { printf '%s' '" + load + "'; }\n"
 }
@@ -116,7 +126,7 @@ printf 'root=%s\nagent=%s\n' "$(gate_module_flags .)" "$(gate_module_flags agent
 func TestGateBudgetFallsBackWithoutAReadableAnswer(t *testing.T) {
 	t.Parallel()
 
-	t.Run("helper absent", func(t *testing.T) {
+	t.Run("helper not sourced", func(t *testing.T) {
 		t.Parallel()
 		got := runSourcedGate(t, ". "+gateBudgetsLib+
 			`; printf '%s %s %s\n' "$(gate_budget 4 4)" "$(gate_budget 6 6)" "$(gate_budget 4 99)"`)
@@ -125,6 +135,8 @@ func TestGateBudgetFallsBackWithoutAReadableAnswer(t *testing.T) {
 		}
 	})
 
+	// The helper is sourced here — that is what makes gate_budget consult
+	// load_aware_workers at all — and then the function itself answers badly.
 	for _, tc := range []struct{ name, stub string }{
 		{"helper prints nothing", `printf ''`},
 		{"helper prints a non-number", `printf '%s' nope`},
@@ -134,12 +146,32 @@ func TestGateBudgetFallsBackWithoutAReadableAnswer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := runSourcedGate(t, ". "+gateBudgetsLib+"\n"+
+				"gate_source_helper "+gateBudgetsHelper+"\n"+
 				"load_aware_workers() { "+tc.stub+`; }
 printf '%s' "$(gate_budget 4 4)"`)
 			if got != "4" {
 				t.Errorf("gate_budget over a %s helper = %q, want %q", tc.name, got, "4")
 			}
 		})
+	}
+}
+
+// TestGateBudgetIgnoresAnAmbientWorkerCommand pins that gate_budget trusts only
+// the helper gate_source_helper sourced. `command -v load_aware_workers` alone
+// would run an unrelated executable of that name from PATH — a real hazard when
+// the helper is missing, since the budget would then come from whatever the
+// environment happened to offer instead of the documented fixed default.
+func TestGateBudgetIgnoresAnAmbientWorkerCommand(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	decoy := filepath.Join(dir, "load_aware_workers")
+	if err := os.WriteFile(decoy, []byte("#!/bin/sh\nprintf '%s' 99\n"), 0o755); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+	got := runSourcedGateEnv(t, ". "+gateBudgetsLib+
+		`; printf '%s' "$(gate_budget 4 4)"`, "PATH="+dir+":"+os.Getenv("PATH"))
+	if want := "4"; got != want {
+		t.Errorf("gate_budget with a decoy load_aware_workers on PATH = %q, want the fixed default %q", got, want)
 	}
 }
 

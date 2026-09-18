@@ -18,6 +18,13 @@
 # Asserting rendered script text instead passes on a comment and pins
 # formatting rather than behavior.
 
+# Whether gate_source_helper has successfully sourced the helper. gate_budget
+# consults this instead of `command -v` alone: an ambient executable (or an
+# unrelated function) named load_aware_workers must never stand in for the
+# helper this library was asked to source, and with no helper sourced the budget
+# must fall back to the fixed default rather than run whatever PATH offers.
+_gate_budgets_helper_sourced=0
+
 # gate_source_helper PATH — source the load-aware helper when it is readable, so
 # the budgets size themselves from spare capacity. An unreadable helper is not
 # fatal: gate_budget then answers with its fixed default, which is how the gate
@@ -25,19 +32,20 @@
 # helper's problem, not this call's.
 gate_source_helper() {
 	if [ -r "$1" ]; then
-		. "$1"
+		. "$1" && _gate_budgets_helper_sourced=1
 	fi
 }
 
 # gate_budget CAP DEFAULT — the load-aware worker count for CAP, or DEFAULT
 # when the helper is absent or its answer is not a positive integer. A zero from
 # the helper is treated as unusable too: `-p 0` and `--maxWorkers=0` are invalid
-# and a zero would silently drop the parallelism the caller asked for.
+# and a zero would silently drop the parallelism the caller asked for. Only the
+# function gate_source_helper sourced is consulted; see _gate_budgets_helper_sourced.
 gate_budget() {
 	_gb_cap=$1
 	_gb_default=$2
 	_gb_value=
-	if command -v load_aware_workers >/dev/null 2>&1; then
+	if [ "${_gate_budgets_helper_sourced:-0}" -eq 1 ] && command -v load_aware_workers >/dev/null 2>&1; then
 		_gb_value="$(load_aware_workers "$_gb_cap" 2>/dev/null)" || _gb_value=
 	fi
 	case "$_gb_value" in
