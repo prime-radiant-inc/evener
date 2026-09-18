@@ -14,24 +14,37 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { MutationIntent } from "@evener/appwire-client/state/mutation";
 import { MutationOutboxSQLite, type MutationOutboxDatabase, type Row } from "./mutationOutboxStorage";
+
+// The default id source (finding 4, round 2): expo-crypto's synchronous
+// randomUUID/getRandomValues, mocked the way nativeOrganization.test.ts mocks
+// the same module, so a test can prove the adapter never dereferences a bare
+// Web Crypto global React Native does not guarantee.
+let expoCryptoCalls = 0;
+vi.mock("expo-crypto", () => ({
+	randomUUID: () => `expo-crypto-${++expoCryptoCalls}`,
+	getRandomValues: (array: Uint8Array) => array,
+}));
 
 let directory: string;
 let database: DatabaseSync;
 let storage: MutationOutboxSQLite;
 
-function openStorage() {
-	const adapter: MutationOutboxDatabase = {
+function databaseAdapter(): MutationOutboxDatabase {
+	return {
 		execSync: (sql) => database.exec(sql),
 		runSync: (sql, ...params) => database.prepare(sql).run(...params),
 		getFirstSync: <T>(sql: string, ...params: (string | number)[]) =>
 			(database.prepare(sql).get(...params) as T | undefined) ?? null,
 		getAllSync: <T>(sql: string, ...params: (string | number)[]) => database.prepare(sql).all(...params) as T[],
 	};
+}
+
+function openStorage() {
 	let next = 0;
-	storage = new MutationOutboxSQLite(adapter, {
+	storage = new MutationOutboxSQLite(databaseAdapter(), {
 		createMutationId: () => `mutation-${++next}`,
 		now: () => 1234,
 	});
@@ -79,7 +92,11 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 		intentSequence: 1,
 		createdAt: 1234,
 		method: "turn/queue",
-		payload: { ref: TARGET, input: [{ type: "text", text: "survive reload" }] },
+		// The dispatcher sends this payload verbatim as the RPC params, and every
+		// retry-safe method requires clientMutationId on it for the daemon's own
+		// correlation. Oracle: "reload restores the complete persisted intent"
+		// asserts the same payload.clientMutationId (mutationOutbox.test.ts:105).
+		payload: { ref: TARGET, input: [{ type: "text", text: "survive reload" }], clientMutationId: "mutation-1" },
 		attachments: [],
 		optimisticDisplay: { text: "survive reload" },
 		state: "submitting",
@@ -87,6 +104,27 @@ test("enqueueIntent persists a submitting record with the full intent", async ()
 	});
 	const row = rawRow("mutation_outbox", "mutation-1");
 	expect(row).toMatchObject({ state: "submitting", attempted: 0, intent_sequence: 1 });
+});
+
+test("enqueueIntent rejects an empty or whitespace targetRef before allocating a sequence", async () => {
+	await expect(storage.enqueueIntent(intent("no target", "   "))).rejects.toThrow("targetRef is required");
+	expect(database.prepare("SELECT * FROM mutation_sequence WHERE target_ref = ?").get("   ")).toBeUndefined();
+	expect(database.prepare("SELECT * FROM mutation_outbox").all()).toEqual([]);
+});
+
+test("enqueueIntent defaults the mutation id through expo-crypto's SecureRandomSource, never a bare Web Crypto global", async () => {
+	const originalCrypto = globalThis.crypto;
+	// Simulate a host with no Web Crypto global at all - the case React Native
+	// does not guarantee - to falsify a default that dereferences it directly.
+	// @ts-expect-error - deliberately removing the global for this assertion.
+	delete globalThis.crypto;
+	try {
+		const defaultIdStorage = new MutationOutboxSQLite(databaseAdapter(), { now: () => 1234 });
+		const persisted = await defaultIdStorage.enqueueIntent(intent("no bare crypto global", "local:no-crypto"));
+		expect(persisted.clientMutationId).toMatch(/^expo-crypto-/);
+	} finally {
+		globalThis.crypto = originalCrypto;
+	}
 });
 
 // Oracle: "concurrent tabs allocate one gap-free per-target sequence" (mutationOutbox.test.ts:176).
@@ -147,8 +185,54 @@ test("settleReceipt drops a receipt-only control with no optimistic input to car
 	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
 });
 
-test("settleReceipt reports false for a record that is not in the outbox", async () => {
+test("settleReceipt reports false for a record that is in none of the three tables", async () => {
 	await expect(storage.settleReceipt("missing", "pending")).resolves.toBe(false);
+});
+
+// Oracle: settleReceipt resolves "outbox ?? recovery ?? optimistic" as its
+// source (mutationOutboxIndexedDB.ts settleReceipt) so a receipt that arrives
+// after the record already moved to recovery still retires it there, instead
+// of returning false and leaving a stale recovery row behind.
+test("settleReceipt consults recovery when the outbox no longer holds the record", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("recovered then receipted"),
+		optimisticDisplay: { input: [{ type: "text", text: "recovered then receipted" }] },
+	});
+	await storage.transferToRecovery(record.clientMutationId, "rejected", "turn is not active");
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).resolves.toBe(true);
+	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted" });
+});
+
+test("settleReceipt drops an existing optimistic record when a later receipt no longer carries a display to retain", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("carried once"),
+		optimisticDisplay: { input: [{ type: "text", text: "carried once" }] },
+	});
+	await storage.settleReceipt(record.clientMutationId, "pending");
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toMatchObject({ state: "accepted" });
+	await expect(storage.settleReceipt(record.clientMutationId, "applied")).resolves.toBe(true);
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
+});
+
+// Falsifies the settleReceipt handoff's atomicity. The handoff writes the
+// optimistic row BEFORE deleting the outbox row, so a fault has to land on
+// the outbox delete (not the optimistic insert) to prove the insert itself
+// gets rolled back rather than surviving as an orphaned duplicate - the same
+// shape as the oracle's "an aborted pending receipt handoff retains the
+// transport owner without an optimistic duplicate"
+// (mutationOutbox.test.ts, beforeCommit("settleReceipt")).
+test("a failed pending receipt handoff leaves the outbox record with no optimistic duplicate", async () => {
+	const record = await storage.enqueueIntent({
+		...intent("do not leave a display gap"),
+		optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "do not leave a display gap" }] },
+	});
+	database.exec(
+		"CREATE TRIGGER reject_outbox_delete BEFORE DELETE ON mutation_outbox BEGIN SELECT RAISE(ABORT, 'handoff failed'); END",
+	);
+	await expect(storage.settleReceipt(record.clientMutationId, "pending")).rejects.toThrow("handoff failed");
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeDefined();
+	expect(rawRow("mutation_optimistic", record.clientMutationId)).toBeUndefined();
 });
 
 // Oracle: "applied settlement dominates unknown in either response order..." (mutationOutbox.test.ts:193).
@@ -187,4 +271,21 @@ test("transferToRecovery moves a record out of the outbox and carries the daemon
 
 test("transferToRecovery reports undefined for a record that is not in the outbox", async () => {
 	await expect(storage.transferToRecovery("missing", "orphaned")).resolves.toBeUndefined();
+});
+
+// Falsifies transferToRecovery's atomicity. The transfer writes the recovery
+// row BEFORE deleting the outbox row, so a fault has to land on the outbox
+// delete (not the recovery insert) to prove the insert itself gets rolled
+// back rather than surviving as an orphaned duplicate - the same shape as
+// the oracle's "an aborted rejection transfer leaves the outbox record
+// durable and creates no recovery gap"
+// (mutationOutbox.test.ts, beforeCommit("transferToRecovery")).
+test("a failed recovery transfer leaves the outbox record durable with no recovery row", async () => {
+	const record = await storage.enqueueIntent(intent("do not lose me"));
+	database.exec(
+		"CREATE TRIGGER reject_outbox_delete BEFORE DELETE ON mutation_outbox BEGIN SELECT RAISE(ABORT, 'transfer failed'); END",
+	);
+	await expect(storage.transferToRecovery(record.clientMutationId, "rejected")).rejects.toThrow("transfer failed");
+	expect(rawRow("mutation_outbox", record.clientMutationId)).toBeDefined();
+	expect(rawRow("mutation_recovery", record.clientMutationId)).toBeUndefined();
 });
