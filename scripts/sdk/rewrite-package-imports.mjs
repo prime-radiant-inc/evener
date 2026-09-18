@@ -11,13 +11,13 @@
 // script needs TypeScript; this script is the one-time rewrite, not a gate.
 //
 // Why a script instead of sed: the target specifier depends on the SYMBOLS an
-// import names, not on its path prefix. `readDocFile` is published only at
-// `@evener/appwire-client/docContent`; `FakeClient` only at the in-repo
-// `@evener/appwire-client/testing/fakeClient`; everything else comes from the
-// root. So each statement is parsed, its module resolved on disk, and its
-// bindings checked against what the package actually publishes. A symbol the
-// package does not publish is reported and nothing is written — that is a
-// missing export, not something to paper over with a deep path.
+// import names, not on its path prefix. Where a symbol is published decides the
+// specifier: the root, a subpath from the package's `exports` map, or the
+// in-repo `testing/` subpath for test support. So each statement is parsed, its
+// module resolved on disk, and its bindings checked against what the package
+// actually publishes. A symbol the package does not publish is reported and
+// nothing is written — that is a missing export, not something to paper over
+// with a deep path.
 //
 // The set of published subpaths is the package's own package.json `exports`
 // map: the specifier a module maps to is whatever that map says, and nothing
@@ -126,8 +126,8 @@ function parse(file) {
 
 // Names a module exports, by parsing it. Handles the two forms index.ts uses:
 // explicit named exports, and `export type * from "./types.gen"`. Memoised per
-// module: the root and docContent are read once each, and a testing module a
-// dozen imports name is parsed once for all of them.
+// module, so a module a dozen imports name -- the root, a published subpath, a
+// testing module -- is parsed once for all of them.
 const exportsCache = new Map();
 function exportedNames(file) {
   let names = exportsCache.get(file);
@@ -371,9 +371,9 @@ function main() {
           dest = { wholeModule: subpath, named: [[exportedNames(resolved), subpath]] };
         } else {
           const subpath = published.get(moduleID) ?? null;
-          const named = [[rootExports, PACKAGE_NAME]];
-          if (subpath && subpath !== PACKAGE_NAME) named.push([exportedNames(resolved), subpath]);
-          dest = { wholeModule: subpath, named };
+          const candidates = [[rootExports, PACKAGE_NAME]];
+          if (subpath && subpath !== PACKAGE_NAME) candidates.push([exportedNames(resolved), subpath]);
+          dest = { wholeModule: subpath, named: candidates };
         }
         const [primaryNames, primarySpecifier] = dest.named[0];
         let target = null;
