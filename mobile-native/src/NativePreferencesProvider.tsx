@@ -19,6 +19,7 @@ import type {
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
 import {
+	draftUnreadableAfterDiscard,
 	nativeKeybindingDrafts,
 	nativeTranscriptDrafts,
 	parseDraftBytes,
@@ -131,20 +132,21 @@ export function NativePreferencesProvider({
 	const selected = bound?.hubId === hubId ? bound : null;
 	const discardUnreadableKeybindingsDraft = (): DiscardStoredDraftResult | null => {
 		if (!hubId) return null;
-		const outcome = discardStoredKeybindingDraft(
-			nativeKeybindingDrafts(hubId, backend),
-			isReadableKeybindingDraft,
-		);
+		const storage = nativeKeybindingDrafts(hubId, backend);
+		const outcome = discardStoredKeybindingDraft(storage, isReadableKeybindingDraft);
 		// No live model to publish through (offline, or the connection
 		// dropped after the record was shown) - the stale snapshot
 		// NativePreferencesProvider otherwise keeps showing is updated here
 		// directly, the same fields restoreDraft would publish on a live
-		// store. Every outcome refreshes it, not only "removed": "absent"
-		// means the record the button named is already gone, and "refused"
-		// means a concurrent writer replaced it with something this build can
-		// read - both make the stale unreadable notice (and its restore-
-		// failure error) exactly as wrong to keep showing as an actual removal
-		// does.
+		// store. Every outcome refreshes storageUnavailable/error, not only
+		// "removed": talking to the port at all (any outcome) proves it is
+		// reachable, and "absent" means the record the button named is
+		// already gone. draftUnreadable is different: a "refused" outcome can
+		// mean a concurrent writer replaced the record with something this
+		// build CAN read, or with something STILL unreadable
+		// (draftUnreadableAfterDiscard re-checks storage.load() to tell them
+		// apart) - only the first makes the notice wrong to keep showing.
+		const draftUnreadable = draftUnreadableAfterDiscard(outcome, isReadableKeybindingDraft(storage.load()));
 		setBound((previous) =>
 			previous?.hubId === hubId
 				? {
@@ -153,7 +155,7 @@ export function NativePreferencesProvider({
 							...previous.snapshot,
 							keybindings: {
 								...previous.snapshot.keybindings,
-								draftUnreadable: false,
+								draftUnreadable,
 								storageUnavailable: false,
 								error: null,
 							},

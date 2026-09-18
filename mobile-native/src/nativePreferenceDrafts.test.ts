@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { fakeDraftBackend } from "./draftBackend.testkit";
-import { nativeKeybindingDrafts, nativeTranscriptDrafts, parseDraftBytes } from "./nativePreferenceDrafts";
+import {
+	draftUnreadableAfterDiscard,
+	nativeKeybindingDrafts,
+	nativeTranscriptDrafts,
+	parseDraftBytes,
+} from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
 // a discard or a rebase adopting a checkpoint replaced under them) branch on
@@ -144,6 +149,24 @@ describe("nativeTranscriptDrafts", () => {
 		const storage = nativeTranscriptDrafts("hub", b);
 
 		expect(storage.load()).toEqual(transcriptCheckpoint);
+	});
+});
+
+describe("draftUnreadableAfterDiscard", () => {
+	it("clears the notice on a plain removal", () => {
+		expect(draftUnreadableAfterDiscard("removed", false)).toBe(false);
+	});
+
+	it("clears the notice when nothing was stored", () => {
+		expect(draftUnreadableAfterDiscard("absent", false)).toBe(false);
+	});
+
+	it("clears the notice when a refusal's replacement now decodes as valid", () => {
+		expect(draftUnreadableAfterDiscard("refused", true)).toBe(false);
+	});
+
+	it("keeps the notice when a refusal's replacement is still unreadable", () => {
+		expect(draftUnreadableAfterDiscard("refused", false)).toBe(true);
 	});
 });
 

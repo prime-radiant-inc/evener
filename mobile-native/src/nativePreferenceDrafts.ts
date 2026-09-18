@@ -1,4 +1,5 @@
 import type {
+	DiscardStoredDraftResult,
 	KeybindingDraftCheckpoint,
 	KeybindingDraftStorage,
 } from "@evener/appwire-client";
@@ -53,6 +54,21 @@ export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBacke
 		expected: unknown,
 		next: KeybindingDraftCheckpoint,
 	): boolean;
+}
+
+/** Whether the store-free discard action should still present the record as
+ * unreadable once discardStoredKeybindingDraft's outcome is known.
+ * "refused" carries two different situations behind one outcome: the record
+ * now present decodes as valid (the reason "refused" exists at all - see
+ * DiscardStoredDraftResult), or a concurrent writer replaced the unreadable
+ * record with a DIFFERENT one that is still unreadable (draftCheckpointPort's
+ * own re-read after a failed removeIf). Only the second keeps the recovery
+ * notice up; the first, like "removed" and "absent", clears it. */
+export function draftUnreadableAfterDiscard(
+	outcome: DiscardStoredDraftResult,
+	currentIsReadable: boolean,
+): boolean {
+	return outcome === "refused" && !currentIsReadable;
 }
 
 export function nativeKeybindingDrafts(
