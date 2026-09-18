@@ -1240,16 +1240,27 @@ const RAW_WARNING_FRAME_MAX_CHARS = 2000;
 // than a tiny fraction of it.
 const RAW_WARNING_FRAME_MAX_FIELD_CHARS = RAW_WARNING_FRAME_MAX_CHARS;
 const RAW_WARNING_FRAME_MAX_ARRAY_ITEMS = 50;
+const RAW_WARNING_FRAME_MAX_OBJECT_KEYS = 50;
 const RAW_WARNING_FRAME_MAX_DEPTH = 6;
+// Total object/array entries the prune will walk across the WHOLE frame,
+// regardless of how the size is spread across depth and breadth. The
+// per-level array/key caps alone leave a gap: many small objects, each
+// individually within the array/key/depth bounds, can still sum to a huge
+// tree for JSON.stringify to walk.
+const RAW_WARNING_FRAME_MAX_NODES = 500;
 
 // Prunes a value to a small bound before it ever reaches JSON.stringify:
 // every string truncated to RAW_WARNING_FRAME_MAX_FIELD_CHARS UTF-16 units,
-// every array to its first 50 items, nesting cut off at 6 levels. Without
-// this, JSON.stringify(params) itself walks the WHOLE frame — up to the
-// transport's 128 MiB limit — before rawWarningFrame gets a chance to slice
-// anything; bounding the input, not just the output, is what keeps that
-// walk small regardless of how large the wire frame actually is.
-function prunedForStringify(value: unknown, depth: number): unknown {
+// every array/object to its first 50 items/keys, nesting cut off at 6
+// levels, and the whole walk cut off after RAW_WARNING_FRAME_MAX_NODES
+// entries regardless of shape. Without this, JSON.stringify(params) itself
+// walks the WHOLE frame — up to the transport's 128 MiB limit — before
+// rawWarningFrame gets a chance to slice anything; bounding the input, not
+// just the output, is what keeps that walk small regardless of how large
+// or how shaped the wire frame actually is.
+function prunedForStringify(value: unknown, depth: number, budget: { remaining: number }): unknown {
+  if (budget.remaining <= 0) return typeof value === "string" ? "" : "…";
+  budget.remaining -= 1;
   if (typeof value === "string") {
     return value.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS
       ? `${value.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…`
@@ -1259,27 +1270,35 @@ function prunedForStringify(value: unknown, depth: number): unknown {
     return Array.isArray(value) || (typeof value === "object" && value !== null) ? "…" : value;
   }
   if (Array.isArray(value)) {
-    return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1));
+    return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1, budget));
   }
   if (typeof value === "object" && value !== null) {
     const pruned: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      pruned[key] = prunedForStringify(val, depth + 1);
+    for (const [key, val] of Object.entries(value).slice(0, RAW_WARNING_FRAME_MAX_OBJECT_KEYS)) {
+      if (budget.remaining <= 0) break;
+      pruned[key] = prunedForStringify(val, depth + 1, budget);
     }
     return pruned;
   }
   return value;
 }
 
-function rawWarningFrame(params: WarningParams): string {
-  const json = JSON.stringify(prunedForStringify(params, 0));
+// Truncates a string to RAW_WARNING_FRAME_MAX_CHARS code points, safely (a
+// UTF-16 slice can otherwise cut a surrogate pair in half). Applied to
+// every string a warning frame can put into the model — message, title,
+// hint, source, and the raw fallback — so a multi-megabyte value anywhere
+// in the frame can never reach ItemModel unbounded, not just via the
+// message-less fallback path. A fast path for the common (short) case:
+// UTF-16 length is always >= code-point count, so no huge value means no
+// work.
+function boundedCodePoints(s: string): string {
+  if (s.length <= RAW_WARNING_FRAME_MAX_CHARS) return s;
   // Bound the allocation before expanding to code points: a UTF-16 prefix
   // twice the code-point limit always contains at least that many code
   // points (every code point is at most two UTF-16 units), so slicing the
   // string first — a cheap view, no per-character array — never drops real
-  // content. (prunedForStringify above already keeps `json` itself small;
-  // this bound is what protects the code-point expansion specifically.)
-  let bounded = json.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
+  // content.
+  let bounded = s.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
   // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
   // as the last unit of `bounded`. Array.from would treat that lone unit as
   // its own broken "character" rather than dropping it; strip it before
@@ -1290,8 +1309,14 @@ function rawWarningFrame(params: WarningParams): string {
   // surrogate pair (an emoji, or anything outside the BMP) straddling the
   // bound is kept or dropped whole - a plain String#slice(0, N) can instead
   // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
-  const codePoints = Array.from(bounded);
-  return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+  return Array.from(bounded).slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+}
+
+function rawWarningFrame(params: WarningParams): string {
+  const json = JSON.stringify(prunedForStringify(params, 0, { remaining: RAW_WARNING_FRAME_MAX_NODES }));
+  // prunedForStringify above already keeps `json` itself small; this bound
+  // is defense-in-depth for the code-point expansion specifically.
+  return boundedCodePoints(json);
 }
 
 // The one validated shape every warning row — live with a turn, live
@@ -1308,17 +1333,23 @@ export interface WarningFold {
 }
 
 export function foldWarningParams(params: WarningParams): WarningFold {
+  const text =
+    warningMessage(params) ||
+    (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params));
   return {
-    text:
-      warningMessage(params) ||
-      (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
+    // Bounded even though rawWarningFrame's own branch already is: a huge
+    // message (warningMessage's own return) is a separate, previously
+    // unbounded path into the model — one call here covers both.
+    text: boundedCodePoints(text),
     // Blank is absent too, not just "not a string" — hasWarningText's own
     // reading, which every consumer must apply anyway. Normalizing it here
     // means a future reader is never one missed hasWarningText call away
-    // from rendering blank content.
-    title: hasWarningText(params.title) ? params.title : undefined,
-    hint: hasWarningText(params.hint) ? params.hint : undefined,
-    source: hasWarningText(params.source) ? params.source : undefined,
+    // from rendering blank content. Bounded for the same reason as text:
+    // an oversized title/hint/source reaching ItemModel.warning verbatim is
+    // the same class of vector rawWarningFrame closes for the fallback.
+    title: hasWarningText(params.title) ? boundedCodePoints(params.title) : undefined,
+    hint: hasWarningText(params.hint) ? boundedCodePoints(params.hint) : undefined,
+    source: hasWarningText(params.source) ? boundedCodePoints(params.source) : undefined,
   };
 }
 

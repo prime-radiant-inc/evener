@@ -4904,6 +4904,82 @@ test("an oversized warning frame's fallback prunes deep nesting before JSON.stri
   expect(item.text).not.toContain("leaf");
 });
 
+// The per-array/per-string/per-depth caps alone leave a gap: many small
+// object keys (each individually tiny, each within the array/string/depth
+// bounds) can still sum to a huge object for JSON.stringify to walk. The
+// prune needs a total node budget too, not just per-level caps.
+test("an oversized warning frame's fallback bounds a many-key object, not just deep nesting or long strings", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const manyKeys: Record<string, string> = {};
+  for (let i = 0; i < 100_000; i++) manyKeys[`key${i}`] = "v";
+
+  const originalStringify = JSON.stringify;
+  const outputLengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") outputLengths.push(result.length);
+    return result;
+  });
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: manyKeys };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
+    // 100,000 keys would stringify to well over a megabyte unbounded;
+    // the total node budget keeps JSON.stringify's own walk small.
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
+// Only the message-less raw-frame fallback was bounded; a huge message,
+// title, hint, or source string reaches item.text / ItemModel.warning
+// verbatim otherwise, leaving the same oversized-frame vector open through
+// a different field. Every string the fold puts into the model must be
+// bounded, not just the fallback.
+test("an oversized message, title, hint, and source are each bounded at the fold", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const HUGE = 5_000_000;
+  const params = {
+    threadId: "thr_t",
+    ref: "ref_t",
+    message: "m".repeat(HUGE),
+    title: "t".repeat(HUGE),
+    hint: "h".repeat(HUGE),
+    source: "s".repeat(HUGE),
+  };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  const MAX_CHARS = 2000; // mirrors reducer.ts's RAW_WARNING_FRAME_MAX_CHARS
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(item.text.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.warning?.title?.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.warning?.hint?.length).toBeLessThan(MAX_CHARS * 2);
+  expect(item.warning?.source?.length).toBeLessThan(MAX_CHARS * 2);
+});
+
 // A message-less frame that DOES carry a title or hint is something to show:
 // the fold leaves ItemModel.text blank rather than duplicating title/hint
 // with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
