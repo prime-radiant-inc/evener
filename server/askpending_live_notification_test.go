@@ -17,6 +17,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,6 +35,8 @@ import (
 // for reasons unrelated to the ask_user round itself (e.g. session naming).
 type oneShotAskUserAdapter struct {
 	name string
+
+	mu   sync.Mutex
 	used bool
 }
 
@@ -47,6 +50,8 @@ func (a *oneShotAskUserAdapter) Complete(ctx context.Context, req llm.Request) (
 			break
 		}
 	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.used || !offersAskUser {
 		return llm.Response{Provider: a.name, Model: req.Model, Message: llm.Assistant("done")}, nil
 	}
@@ -113,7 +118,7 @@ func TestAskUserLiveStatusFrameCarriesAskPending(t *testing.T) {
 	srv.SetThreadEnvelopeSource(&sessionAskPendingEnvelopeSource{sess: sess})
 
 	drained := make(chan struct{})
-	go sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
 		BridgeEvent(srv, ev, nil)
 	}, func() { close(drained) })
 
