@@ -1788,6 +1788,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	}()
 	defer cancel()
 
+	// A steering-carrier entry (a queued human-note or answering steer with
+	// no turn of its own) only resolves the pending ask when the steer it is
+	// about to carry actually answers it: computed before the lock below
+	// since it reads the client-mutation journal, not session state.
+	carrierAnswersAsk := s.steeringCarrierClaimAnswersAsk(queuedClientMutationFromContext(ctx))
+
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
 	if s.closingOrClosedLocked() {
@@ -1801,7 +1807,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 	// Pending asks resolve with this accepted turn (spec §5.2): clear here,
 	// beside comm's reset, under the lock already held (not via the
 	// clearAskPending helper, which takes s.mu itself and would deadlock).
-	s.askPending = nil
+	// Skipped when carrierAnswersAsk is false (a human-note carrier): the
+	// mid-round clear in clearAskPendingForResolvingSteer decides that case
+	// once acceptSteeringCarrierInput's drain actually runs.
+	if carrierAnswersAsk {
+		s.askPending = nil
+	}
 	s.mu.Unlock()
 	s.delegateDeliveryMu.Unlock()
 
@@ -2726,7 +2737,13 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 	// steer it carries is already in the store, and this projection puts the
 	// full current notes beside it.
 	s.maybeAppendNotesContext()
+	// Recorded for the duration of the drain so a skill-selection failure for
+	// THIS client mutation id (recordFailedSteeringSelection, session_queue.go)
+	// can tag its TurnFailure as a resolution boundary too — this turn's mere
+	// acceptance already cleared askPending before the drain ever ran.
+	s.setSteeringCarrierClaimDrain(identity.ClientMutationID)
 	delivered := s.injectDrainedSteering()
+	s.setSteeringCarrierClaimDrain("")
 	switch s.carrierSteerOutcome(identity) {
 	case carrierSteerUndelivered:
 		// The steer this turn exists to carry is back in the queue: its
@@ -2736,7 +2753,16 @@ func (s *Session) acceptSteeringCarrierInput(ctx context.Context, identity queue
 		// end the input. (A steer whose append landed and whose store mark
 		// did not is delivered, and the turn proceeds.)
 		err := fmt.Errorf("steering carrier %s: its steering was not recorded and stays queued", turnID)
-		s.emitTurnFailure(errorDataFromError(err))
+		// Tagged only when the claimed steer itself answers the ask
+		// (steeringCarrierClaimAnswersAsk, the same journal-kind check the
+		// entry clear uses): a human-note carrier's entry clear already left
+		// askPending set, so its failure must not be a resolution boundary
+		// either, or restore would diverge from live.
+		if s.steeringCarrierClaimAnswersAsk(identity) {
+			s.emitSteeringCarrierTurnFailure(errorDataFromError(err))
+		} else {
+			s.emitTurnFailure(errorDataFromError(err))
+		}
 		return err
 	case carrierSteerFailed:
 		// The drain recorded the selection failure of the steer this turn was

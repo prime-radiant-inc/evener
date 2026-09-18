@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -69,13 +70,69 @@ func (s *Session) HasPendingAsk() bool {
 	return s.askPendingCount() > 0
 }
 
-// clearAskPending empties the pending set. Nothing in this task calls it in
-// production: a later task wires the actual clear points (a resolving user
-// turn, an interrupted turn).
+// clearAskPending empties the pending set. Callers: the interrupt branch
+// (session_lifecycle.go, directly) and clearAskPendingForResolvingSteer
+// below (a drained user-sourced steer, mid-round). processOneInput's entry
+// clears the set inline instead (session_lifecycle.go's "Pending asks
+// resolve with this accepted turn"), under a lock it already holds — this
+// helper would deadlock there.
 func (s *Session) clearAskPending() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.askPending = nil
+}
+
+// clearAskPendingForResolvingSteer clears the pending set the moment a
+// drained user-sourced steer that resolves it actually lands in the
+// transcript — not just at the next accepted-turn entry.
+// injectDrainedSteering/injectPostToolSteering run MID-ROUND, well before
+// any such entry, and the server owns the ask boundary: the wire's
+// EvenerThread.AskPending (hydrate) and ThreadStatusChangedParams.AskPending
+// (stamped on every status change, server/appwire_runtime.go's
+// stampAskPendingOnStatusChange) are wire-authoritative, and the client
+// trusts that flag rather than re-deriving the boundary itself
+// (appwire-client/typescript/reducer.test.ts's "askPending is
+// wire-authoritative"); leaving s.askPending stale here would desync the
+// flag this session next reports, not merely a restore-time bug. An
+// interrupted steer (SteeringKindInterrupted) never reaches here — the
+// interrupt branch calls clearAskPending directly before this turn is ever
+// appended — so this checks steeringSourceAnswersAsk alone.
+func (s *Session) clearAskPendingForResolvingSteer(t schema.Turn) {
+	if steeringSourceAnswersAsk(t.SteeringSource, t.SteeringKind) {
+		s.clearAskPending()
+	}
+}
+
+// steeringCarrierClaimAnswersAsk reports whether the steer a steering-carrier
+// identity is about to carry (queuedClientMutationIdentity.SteeringCarrier)
+// answers a pending ask per steeringSourceAnswersAsk. processOneInput's entry
+// clear runs before acceptSteeringCarrierInput ever drains the steer — before
+// its turn even knows the steer's kind — so this reads the kind from the
+// durable client-mutation journal (steeringOriginFromJournal) instead of a
+// live steeringMessage. Every steer a carrier exists for is user-sourced
+// (acceptSteeringCarrierInput's own doc: "already-accepted user steering"),
+// so only the kind can vary. A non-carrier identity, or one with nothing to
+// look up, answers by definition, preserving the entry clear's ordinary
+// unconditional behavior for a genuine user reply.
+func (s *Session) steeringCarrierClaimAnswersAsk(identity queuedClientMutationIdentity) bool {
+	if !identity.SteeringCarrier || identity.ClientMutationID == "" || s.clientMutations == nil {
+		return true
+	}
+	origin := steeringOriginFromJournal(s.clientMutations.snapshot().Journal, identity.ClientMutationID)
+	return steeringSourceAnswersAsk(events.SteeringSourceUser, origin.steeringKind())
+}
+
+// steeringSourceAnswersAsk reports whether steering carrying source and kind
+// answers a pending ask_user question the way a plain user reply would.
+// SteeringSourceUser marks steering as user-sourced in general, but a
+// human-note update (events.SteeringKindHumanNote) is also user-sourced
+// without addressing the question — saving a note while a question is
+// pending must not clear it (RoboRev #1806 member-0 Medium). Shared by
+// clearAskPendingForResolvingSteer (the live mid-round clear) and
+// turnResolvesAskBoundary (restore's backward scan) so the two boundaries
+// cannot independently drift on which kinds count as an answer.
+func steeringSourceAnswersAsk(source, kind string) bool {
+	return source == events.SteeringSourceUser && kind != events.SteeringKindHumanNote
 }
 
 // minimalExampleQuestionsArray returns a minimal valid example for error messages.

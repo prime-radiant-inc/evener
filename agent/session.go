@@ -565,6 +565,18 @@ type Session struct {
 	// part of persisted SessionMeta.
 	askPending []askQuestion
 
+	// steeringCarrierClaimClientMutationID is the client mutation id of the
+	// steer a claimed steering-carrier turn (acceptSteeringCarrierInput) is
+	// currently draining, set for the duration of that one call. It tells
+	// recordFailedSteeringSelection (session_queue.go) that a selection
+	// failure for THIS client mutation id is the carrier's own claimed steer
+	// — whose mere acceptance already cleared askPending, so the TurnFailure
+	// it records must be a resolution boundary too
+	// (turnResolvesAskBoundary, session_tools_ask.go) — as opposed to an
+	// ordinary mid-round drain no accepted turn has cleared anything for.
+	// Guarded by mu, like askPending above.
+	steeringCarrierClaimClientMutationID string
+
 	// pendingEscalations holds one waiter per in-flight sandbox-exemption escalation
 	// (M7), keyed by its opaque id — the channel its tool-exec goroutine parks on
 	// plus the redacted card payload. The tool-exec goroutine registers a waiter,
