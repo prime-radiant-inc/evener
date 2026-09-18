@@ -662,6 +662,33 @@ describe("MutationDispatcher", () => {
     outbox.close();
   });
 
+  // A queue intent submitted WHILE the drain is in flight lands on the
+  // emptied queue as fresh work: the drain's own receipt names only the id it
+  // actually consumed, never this late arrival, so it must survive settlement
+  // and still dispatch on its own.
+  test("a queue intent enqueued while the drain is in flight survives and dispatches after settlement", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-keeps-later-queue", ["drain-a", "late-queue-a"]);
+    await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    client.on("turn/drainAsSteer", async (params) => {
+      // A fresh queue lands while the drain is in flight: it is dispatched
+      // after the drain (FIFO) and must survive the drain's receipt.
+      await outbox.enqueueIntent(queueIntent("ref-a", "queued after the drain"));
+      return { receipt: receipt(params.clientMutationId, "applied", "pending") };
+    });
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.listOutbox("ref-a")).toEqual([]);
+    const optimistic = await outbox.listOptimistic("ref-a");
+    expect(optimistic.map((record) => record.clientMutationId).sort()).toEqual(["drain-a", "late-queue-a"]);
+    expect(queueCalls(client).map((params) => params.clientMutationId)).toContain("late-queue-a");
+    outbox.close();
+  });
+
   // The receipt's settle-by-id path and a live push's (threads.ts's own
   // reconcileIdentities call) can both name the same consumed id; the second
   // arrival must not throw or double-retire.
@@ -685,6 +712,52 @@ describe("MutationDispatcher", () => {
 
     await expect(dispatcher.reconcileIdentities([queued.clientMutationId])).resolves.not.toThrow();
     expect(await outbox.getOptimistic(queued.clientMutationId)).toBeUndefined();
+    outbox.close();
+  });
+
+  // Reconciling the consumed ids happens BEFORE the drain's own receipt is
+  // settled: a failure reconciling them (a transient IndexedDB error, say)
+  // must leave the drain's own record dispatchable, or a retry has nothing
+  // left to resend and the consumed ids are never retried.
+  test("a reconcile failure leaves the drain dispatchable, and a retry settles the consumed ids", async () => {
+    const indexedDB = new IDBFactory();
+    const outbox = storage(indexedDB, "drain-reconcile-retry", ["queue-a", "drain-a"]);
+    const queued = await outbox.enqueueIntent(queueIntent("ref-a", "queued"));
+    const drain = await outbox.enqueueIntent(drainIntent("ref-a"));
+    const client = new FakeClient();
+    client.on("turn/queue", (params) => ({ receipt: receipt(params.clientMutationId, "applied", "pending") }));
+    client.on("turn/drainAsSteer", (params) => ({
+      receipt: {
+        ...receipt(params.clientMutationId, "applied", "pending"),
+        consumedClientMutationIds: [queued.clientMutationId],
+      },
+    }));
+    const dispatcher = new MutationDispatcher(outbox, { getClient: () => client });
+
+    // The only call reconcileIdentities makes to settleApplied in this test
+    // is the drain's own reconciliation of "queue-a"; fail exactly that one
+    // call, standing in for a transient IndexedDB error.
+    const settleApplied = outbox.settleApplied.bind(outbox);
+    let failNext = true;
+    vi.spyOn(outbox, "settleApplied").mockImplementation(async (clientMutationId) => {
+      if (failNext) {
+        failNext = false;
+        throw new Error("reconcile commit failed");
+      }
+      return settleApplied(clientMutationId);
+    });
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+    // The failed reconcile stops this attempt without settling the drain's
+    // own receipt: it stays dispatchable, and the consumed id is untouched.
+    expect((await outbox.getOutbox(drain.clientMutationId))?.state).toBe("submitting");
+    expect(await outbox.getOptimistic(queued.clientMutationId)).toBeDefined();
+
+    await dispatcher.dispatchTargets(["ref-a"]);
+
+    expect(await outbox.getOutbox(drain.clientMutationId)).toBeUndefined();
+    expect(await outbox.getOptimistic(queued.clientMutationId)).toBeUndefined();
+    expect(client.calls.filter((call) => call.method === "turn/drainAsSteer")).toHaveLength(2);
     outbox.close();
   });
 });

@@ -143,13 +143,19 @@ export class MutationDispatcher {
           return "stop";
         applyHumanNoteResponse?.({ note: result.note, receipt });
       }
-      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       // A drain's own receipt names the queue intents it consumed (durable
       // across a replay, unlike a live push): settle them the same way any
-      // other authoritative feed does, through reconcileIdentities.
+      // other authoritative feed does, through reconcileIdentities -- BEFORE
+      // the drain's own record settles. A failure here (a transient
+      // IndexedDB error, say) then throws out of this whole attempt with the
+      // drain record still "submitting": the next dispatch resends it, the
+      // server replays it, and the replay's own receipt carries the same
+      // consumed ids again. Settling the drain first would durably remove
+      // the one record whose receipt names them, with no path left to retry.
       if (receipt.consumedClientMutationIds?.length) {
         await this.reconcileIdentities(receipt.consumedClientMutationIds);
       }
+      await this.#storage.settleReceipt(record.clientMutationId, receipt.projectionState);
       this.#onStorageChange([record.targetRef]);
       return "advance";
     } catch (error) {
