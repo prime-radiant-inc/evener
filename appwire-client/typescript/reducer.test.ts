@@ -6836,3 +6836,35 @@ test("applyNotification keeps a wrapper model's extra fields and type through ev
   expect(cleared.modelRetry).toBeUndefined();
   expect("modelRetry" in cleared).toBe(false);
 });
+
+// The generic preserves the caller's OWN extra fields, not a narrowing of
+// ThreadModel's. The reducer owns and rewrites lastFrameAt/modelRetry/status,
+// so its return types those as ThreadModel's — a caller that intersects one to
+// a narrower type must not read the narrowed type back off the result.
+type NarrowedRetryModel = ThreadModel & { modelRetry: NonNullable<ThreadModel["modelRetry"]> };
+
+test("applyNotification returns ThreadModel's type for the fields the fold owns, not the caller's narrowing", () => {
+  const narrowed: NarrowedRetryModel = {
+    ...testHydrate(),
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 1000,
+      groupElapsedMs: 0,
+      attemptCap: 3,
+      receivedAt: 1000,
+    },
+  };
+  // turn/started is a turn boundary: the fold clears modelRetry.
+  const folded = applyNotification(
+    narrowed,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  // @ts-expect-error the fold owns modelRetry: the return types it as ThreadModel["modelRetry"] (possibly undefined), not the caller's required narrowing.
+  const stillRequired: NonNullable<ThreadModel["modelRetry"]> = folded.modelRetry;
+  expect(stillRequired).toBeUndefined();
+});

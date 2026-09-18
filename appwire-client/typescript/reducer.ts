@@ -893,7 +893,17 @@ export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResp
 // close — retires the card. So a client merely watching the session drops its
 // now-stale copy live off the broadcast instead of waiting for its next
 // snapshot.
-export function resolvePendingEscalation<M extends ThreadModel>(model: M, escalationId: string): M {
+// The fields a caller adds on top of ThreadModel, and ONLY those. ThreadModel's
+// own fields are deliberately taken from ThreadModel, not from M: the reducer
+// owns and rewrites them (clearing modelRetry, restamping lastFrameAt,
+// replacing status), so a caller that intersects one to a narrower type gets
+// ThreadModel's type back rather than a contract the fold is about to break.
+type ModelExtras<M extends ThreadModel> = Omit<M, keyof ThreadModel>;
+
+export function resolvePendingEscalation<M extends ThreadModel>(
+  model: M,
+  escalationId: string,
+): ThreadModel & ModelExtras<M> {
   if (!model.pendingEscalations.some((e) => e.escalationId === escalationId)) return model;
   return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
 }
@@ -1074,7 +1084,12 @@ function placeNewTurn(turns: TurnModel[], turn: TurnModel): TurnModel[] {
 // and lose the item-routing anchor for a turn that is still in flight. The
 // snapshot reduction clears its own active turn only on an id match, for the
 // same reason.
-function foldNonActiveTurnCompleted<M extends ThreadModel>(model: M, turnId: string, stamp: Turn, now: number): M {
+function foldNonActiveTurnCompleted<M extends ThreadModel>(
+  model: M,
+  turnId: string,
+  stamp: Turn,
+  now: number,
+): ThreadModel & ModelExtras<M> {
   const existing = model.turns.find((t) => t.id === turnId);
   const settled = mergeTurnCompletionStamp(
     existing,
@@ -1163,10 +1178,16 @@ function warningMessage(params: WarningParams): string {
 // foldNonActiveTurnCompleted instead.
 //
 // Generic over the model: every case builds its result by spreading `model`
-// and overriding only the fields it owns, so a caller's extra fields (a
-// wrapper type narrower than ThreadModel, say) survive the fold at runtime
-// AND in the return type — the caller needs no cast and no re-spread.
-export function applyNotification<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
+// and overriding only the fields it owns, so a caller's extra fields (native's
+// MobileConversation = ThreadModel & { items }, say) survive the fold at
+// runtime AND in the return type — the caller needs no cast and no re-spread.
+// The return is ThreadModel & ModelExtras<M>, so this holds for fields the fold
+// does NOT touch while the fields it rewrites keep ThreadModel's types.
+export function applyNotification<M extends ThreadModel>(
+  model: M,
+  n: AnyNotification,
+  now: number,
+): ThreadModel & ModelExtras<M> {
   const next = applyNotificationToThread(model, n, now);
   if (!next.modelRetry || !notificationTargetsThread(n, model)) return next;
   // A pending retry is sticky (design doc Component 1): it survives deltas
@@ -1181,7 +1202,11 @@ export function applyNotification<M extends ThreadModel>(model: M, n: AnyNotific
   return cleared;
 }
 
-function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotification, now: number): M {
+function applyNotificationToThread<M extends ThreadModel>(
+  model: M,
+  n: AnyNotification,
+  now: number,
+): ThreadModel & ModelExtras<M> {
   switch (n.method) {
     case "turn/started": {
       if (!notificationTargetsThread(n, model)) return model;
