@@ -257,6 +257,94 @@ describe("MutationOutboxIndexedDB cancellation", () => {
     storage.close();
   });
 
+  test("an old tab's version-2 open against the version-3 database fails closed", async () => {
+    const storage = store();
+    await storage.enqueueIntent(intent("a row the old code cannot classify"));
+    storage.close();
+
+    // The deployed pre-cancellation code opens the database at version 2. The
+    // version-3 database this build writes must refuse that open with a
+    // VersionError instead of sharing rows the old nextDispatchable cannot
+    // read honestly: it returns undefined unless the FIRST record is
+    // "submitting", so a canceled row at the head of the FIFO would stall the
+    // ref's whole queue in the old tab, silently
+    // (docs/design/stop-cancellation-outbox.md §8). Failing the open is the
+    // safe direction: every outbox read and write in the old tab then reports
+    // a storage error, and projections degrade to "storage unavailable".
+    const openRequest = indexedDB.open(databaseName, 2);
+    const failure = await new Promise<unknown>((resolve, reject) => {
+      openRequest.addEventListener("success", () => reject(new Error("the version-2 open unexpectedly succeeded")), {
+        once: true,
+      });
+      openRequest.addEventListener("error", () => resolve(openRequest.error), { once: true });
+    });
+    expect((failure as DOMException).name).toBe("VersionError");
+  });
+
+  test("the version-3 upgrade is additive: an existing version-2 database opens with its rows intact", async () => {
+    // Seed the database exactly as the version-2 code left it: the same four
+    // stores and indexes, one durable row, no version-3 knowledge anywhere.
+    const seeded = await new Promise<IDBDatabase>((resolve, reject) => {
+      const request = indexedDB.open(databaseName, 2);
+      request.addEventListener("upgradeneeded", () => {
+        const database = request.result;
+        const outbox = database.createObjectStore("outbox", { keyPath: "clientMutationId" });
+        outbox.createIndex("byTargetSequence", ["targetRef", "intentSequence"], { unique: true });
+        const optimistic = database.createObjectStore("optimistic", { keyPath: "clientMutationId" });
+        optimistic.createIndex("byTargetSequence", ["targetRef", "intentSequence"], { unique: true });
+        const recovery = database.createObjectStore("recovery", { keyPath: "clientMutationId" });
+        recovery.createIndex("byTargetSequence", ["targetRef", "intentSequence"]);
+        database.createObjectStore("sequences", { keyPath: "targetRef" });
+      });
+      request.addEventListener("success", () => resolve(request.result), { once: true });
+      request.addEventListener("error", () => reject(request.error), { once: true });
+    });
+    try {
+      const legacyRow: MutationOutboxRecord = {
+        ...intent("written by the version-2 code"),
+        version: 1,
+        clientMutationId: "legacy-row",
+        originClientId: "old-tab",
+        intentSequence: 1,
+        createdAt: 1,
+        state: "submitting",
+      };
+      const write = seeded.transaction("outbox", "readwrite").objectStore("outbox").put(legacyRow);
+      await new Promise<void>((resolve, reject) => {
+        write.addEventListener("success", () => resolve(), { once: true });
+        write.addEventListener("error", () => reject(write.error), { once: true });
+      });
+      // The version-2 adapter kept the sequence counter in step with its rows;
+      // the seed must too, or the upgraded unique index sees two rows claim
+      // sequence 1.
+      const sequence = seeded
+        .transaction("sequences", "readwrite")
+        .objectStore("sequences")
+        .put({ targetRef: TARGET, lastSequence: 1 });
+      await new Promise<void>((resolve, reject) => {
+        sequence.addEventListener("success", () => resolve(), { once: true });
+        sequence.addEventListener("error", () => reject(sequence.error), { once: true });
+      });
+    } finally {
+      seeded.close();
+    }
+
+    const storage = store();
+    // The upgraded database keeps the version-2 rows and stays writable: no
+    // schema migration, no data loss, sequence allocation continues.
+    expect(await storage.getOutbox("legacy-row")).toMatchObject({
+      clientMutationId: "legacy-row",
+      state: "submitting",
+    });
+    const after = await storage.enqueueIntent(intent("written after the upgrade"));
+    expect(after.intentSequence).toBe(2);
+    expect((await storage.listOutbox(TARGET)).map((record) => record.clientMutationId)).toEqual([
+      "legacy-row",
+      after.clientMutationId,
+    ]);
+    storage.close();
+  });
+
   test("a canceled row cannot be marked attempted or reclassified back to blockedUnknown", async () => {
     const storage = store();
     const queued = await storage.enqueueIntent(intent("queued"));

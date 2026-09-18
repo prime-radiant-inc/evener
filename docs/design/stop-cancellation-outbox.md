@@ -25,9 +25,11 @@ where the record it governs already lives.
 
 - **The state union admits a new state for free.** `MutationOutboxState` is
   `"submitting" | "blockedUnknown"` (`$F/stores/mutationOutbox.ts:3`). Records are
-  whole-object `put`s; `DATABASE_VERSION = 2` and the `upgradeneeded` handler is
-  purely additive (`mutationOutboxIndexedDB.ts:445-471`). Adding `"canceled"` to the
-  union is a one-line type change with zero schema migration.
+  whole-object `put`s; the `upgradeneeded` handler is purely additive
+  (`mutationOutboxIndexedDB.ts:445-471`). Adding `"canceled"` to the union is a
+  one-line type change with zero schema migration — but not zero version cost:
+  a mixed-version tab cannot share this database, so `DATABASE_VERSION` is
+  bumped to 3 (see §8, corrected).
 - **The cancellation plumbing already exists; only its storage is missing.**
   `restoreProvenAbsent` (`mutationOutboxIndexedDB.ts:295-314`) is the *only* site
   that reopens a record to `submitting`. It reopens only `blockedUnknown` rows
@@ -158,10 +160,19 @@ and the BroadcastChannel (payload unchanged; correctness never depends on it).
 ## 8. Compatibility
 
 - No data migration. Existing `blockedUnknown` rows stay `blockedUnknown`; the new
-  state is only written going forward.
-- Mixed-version tabs: old code's reopen checks `state === "blockedUnknown"`, so an
-  old tab cannot resurrect a `canceled` row (it simply never surfaces it). Old tabs
-  degrade to "canceled rows invisible", which is the safe direction.
+  state is only written going forward. The version bump's upgrade handler is
+  unchanged and purely additive: opening a version-2 database at version 3 runs
+  no store mutations, and the existing rows survive intact.
+- Mixed-version tabs fail closed and reload. This design's earlier draft claimed
+  an old tab merely never surfaces canceled rows ("invisible … the safe
+  direction"), which was wrong about dispatch: the old `nextDispatchable`
+  returns nothing unless the ref's FIRST record is `submitting`, so a
+  `canceled` row at the head of the FIFO silently stalls that ref's whole queue
+  in an old tab. `DATABASE_VERSION` is therefore bumped to 3: an old tab's
+  version-2 open against this database refuses with `VersionError`, every
+  outbox read and write in that tab fails loudly, and projections degrade to
+  "storage unavailable" — the safe mixed-version state is a reload, never a
+  silent share.
 
 ## 9. Test plan
 
