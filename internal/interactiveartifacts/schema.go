@@ -311,7 +311,7 @@ func validateSchema(schema *jsonschema.Schema, value any) error {
 // ValidateResult checks the public structured result contract without returning
 // private source/state in an error string.
 func ValidateResult(tool string, data []byte) error {
-	value, err := ParseJSON(data, MaxRequestBytes)
+	value, err := ParseJSON(data, MaxResponseBytes)
 	if err != nil {
 		return err
 	}

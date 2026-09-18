@@ -34,15 +34,21 @@ func (s *Store) List(ctx context.Context, hash [32]byte, raw []byte) (ListResult
 	}
 	defer func() { _ = rows.Close() }()
 	result := ListResult{Artifacts: make([]ArtifactMetadata, 0)}
+	encodedBytes := 0
 	for rows.Next() {
 		var item ArtifactMetadata
 		if err := rows.Scan(&item.ArtifactID, &item.Title, &item.Summary, &item.Format, &item.FormatVersion, &item.SourceRevision, &item.StateVersion, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return ListResult{}, err
 		}
-		if len(result.Artifacts) == int(request.Limit) {
+		encoded, err := json.Marshal(item)
+		if err != nil {
+			return ListResult{}, err
+		}
+		if len(result.Artifacts) == int(request.Limit) || (len(result.Artifacts) > 0 && encodedBytes+len(encoded)+1 > maxListBytes) {
 			result.NextCursor = s.encodeCursor(scope.NamespaceID, result.Artifacts[len(result.Artifacts)-1].ArtifactID)
 			break
 		}
+		encodedBytes += len(encoded) + 1
 		result.Artifacts = append(result.Artifacts, item)
 	}
 	if err := rows.Err(); err != nil {

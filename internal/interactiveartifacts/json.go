@@ -18,8 +18,12 @@ const (
 	MaxSourceBytes  = 1 << 20
 	MaxStateBytes   = 256 << 10
 	MaxRequestBytes = 2 << 20
-	MaxJSONDepth    = 64
-	MaxSafeInteger  = int64(9007199254740991)
+	// MaxResponseBytes bounds the complete encoded MCP response. Lists reserve
+	// room for the SDK envelope, bounded text fallback and opaque cursor.
+	MaxResponseBytes = 16 << 20
+	maxListBytes     = MaxResponseBytes - 4096
+	MaxJSONDepth     = 64
+	MaxSafeInteger   = int64(9007199254740991)
 )
 
 // ParseJSON preserves numeric tokens and refuses duplicate decoded object keys.
