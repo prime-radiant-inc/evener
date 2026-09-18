@@ -3078,6 +3078,20 @@ func (jm *jobManager) liveWatchSummariesForReceiver(receiverSessionID, receiverD
 	}))
 }
 
+// liveWatchSummariesForSessionReceiver is the session-keyed receiver sibling of
+// liveWatchSummariesForReceiver: it matches the receiver class whose
+// receiverDelegateID is empty (configureDescendantReceiverWatch, #727), which
+// liveWatchSummariesForReceiver's both-halves-required guard cannot reach.
+func (jm *jobManager) liveWatchSummariesForSessionReceiver(receiverSessionID string) []watchListEntry {
+	receiverSessionID = strings.TrimSpace(receiverSessionID)
+	if receiverSessionID == "" {
+		return nil
+	}
+	return formatWatchSummaries(jm.watchConfigSnapshotsWhere(func(cfg *watchConfig) bool {
+		return watchConfigMatchesReceiver(cfg, receiverSessionID, "")
+	}))
+}
+
 func watchConfigMatchesReceiver(cfg *watchConfig, receiverSessionID, receiverDelegateID string) bool {
 	if cfg == nil {
 		return false

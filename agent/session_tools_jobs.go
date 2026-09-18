@@ -220,7 +220,7 @@ func jobWatchToolWithContext(ctx context.Context, s *Session, args map[string]an
 		// its ancestor's watch on it, and a sibling must not clear another
 		// sibling's.
 		if receiverSession, receiverDelegate, ok := s.receiverWatchAnywhereByID(a.WatchID); ok {
-			if s.delegateController == nil || !s.delegateController.watchClearAuthority(s.ID(), s.owningDelegateID, receiverDelegate) {
+			if s.delegateController == nil || !s.delegateController.watchClearAuthority(s.ID(), s.owningDelegateID, receiverSession, receiverDelegate) {
 				receiver := receiverDelegate
 				if receiver == "" {
 					receiver = "session " + receiverSession
@@ -430,8 +430,12 @@ func (s *Session) liveWatchesDeliveringToDelegate(delegateID string) []watchList
 			continue
 		}
 		seenManagers[holder.jobManager] = struct{}{}
-		for childDelegateID, childSessionID := range receiverKeys {
-			entries = append(entries, holder.jobManager.liveWatchSummariesForReceiver(childSessionID, childDelegateID)...)
+		for _, key := range receiverKeys {
+			if key.delegateID == "" {
+				entries = append(entries, holder.jobManager.liveWatchSummariesForSessionReceiver(key.sessionID)...)
+				continue
+			}
+			entries = append(entries, holder.jobManager.liveWatchSummariesForReceiver(key.sessionID, key.delegateID)...)
 		}
 	}
 	sort.SliceStable(entries, watchListEntryLess(entries))

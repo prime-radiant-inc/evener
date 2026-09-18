@@ -334,3 +334,133 @@ func TestJobWatchClearParentSideReceiverWatch(t *testing.T) {
 		t.Fatalf("watch survived parent-side clear: %d rows", len(rows))
 	}
 }
+
+// installSessionKeyedReceiverWatch installs the session-keyed receiver class
+// (#727): the descendant-receiver shape configureDescendantReceiverWatch stamps
+// into a descendant's manager, where the receiver is the creating session and
+// receiverDelegateID stays empty.
+func installSessionKeyedReceiverWatch(t *testing.T, jm *jobManager, receiverSessionID string) string {
+	t.Helper()
+	result, err := jm.configureWatch(watchArgs{
+		Target:            runtimeMessageAliasCaller,
+		Events:            []string{"communicate"},
+		ReceiverSessionID: receiverSessionID,
+		ReceiverNotify:    func(jobNotification) {},
+	})
+	if err != nil {
+		t.Fatalf("install session-keyed receiver watch: %v", err)
+	}
+	return result.WatchID
+}
+
+// TestJobStopReportsSessionKeyedReceiverWatch pins #727 symptom 1: the live-watch
+// inventory must include the session-keyed receiver class, so a watch keyed to
+// the stopped delegate's own session (receiverDelegateID empty) is reported
+// rather than omitted by a receiver key set that only carries delegate pairs.
+func TestJobStopReportsSessionKeyedReceiverWatch(t *testing.T) {
+	f := newStableWatchRuntimeBase(t, nil)
+	seedObserverDelegate(t, f)
+	// The stopped delegate's session is the receiver; the watch is held in a
+	// manager the inventory scan covers (the stopper's own).
+	watchID := installSessionKeyedReceiverWatch(t, f.rootJM, "child-dlg_observer")
+
+	state := stableJobStopState(t, stopObserverDelegate(t, f.root, map[string]any{
+		"target": "dlg_observer",
+	}))
+	if len(state.LiveWatches) != 1 || state.LiveWatches[0].ID != watchID {
+		t.Fatalf("live watches = %#v, want the session-keyed watch %s", state.LiveWatches, watchID)
+	}
+	settleObserverStop(t, f)
+}
+
+// receiverWatchArmed reports whether a manager still holds a watch by ID,
+// independent of any receiver summarizer, so the clear-authority tests assert on
+// the watch's presence rather than on an unimplemented symbol.
+func receiverWatchArmed(jm *jobManager, watchID string) bool {
+	_, _, found := jm.watchReceiverIdentity(watchID)
+	return found
+}
+
+// TestJobWatchClearSessionKeyedReceiverWatch pins #727 symptom 2: a
+// session-keyed receiver watch (receiverDelegateID empty) is clearable by the
+// receiver session itself and by the receiver's delegate ancestor (root), and
+// still refused for a sibling. Before the fix the authority check refused every
+// actor because it required a non-empty receiverDelegateID.
+func TestJobWatchClearSessionKeyedReceiverWatch(t *testing.T) {
+	t.Run("receiver session", func(t *testing.T) {
+		f := newStableWatchRuntimeBase(t, nil)
+		observer := seedObserverDelegate(t, f)
+		watchID := installSessionKeyedReceiverWatch(t, f.rootJM, "child-dlg_observer")
+
+		if _, err := jobWatchToolWithContext(context.Background(), observer, map[string]any{
+			"operation": "clear",
+			"watch_id":  watchID,
+		}, 4096); err != nil {
+			t.Fatalf("receiver-session clear of its own session-keyed watch: %v", err)
+		}
+		if receiverWatchArmed(f.rootJM, watchID) {
+			t.Fatal("session-keyed watch survived the receiver's own clear")
+		}
+	})
+
+	t.Run("root ancestor", func(t *testing.T) {
+		f := newStableWatchRuntimeBase(t, nil)
+		seedObserverDelegate(t, f)
+		watchID := installSessionKeyedReceiverWatch(t, f.rootJM, "child-dlg_observer")
+
+		if _, err := jobWatchToolWithContext(context.Background(), f.root, map[string]any{
+			"operation": "clear",
+			"watch_id":  watchID,
+		}, 4096); err != nil {
+			t.Fatalf("root clear of session-keyed watch: %v", err)
+		}
+		if receiverWatchArmed(f.rootJM, watchID) {
+			t.Fatal("session-keyed watch survived the root clear")
+		}
+	})
+
+	t.Run("delegate ancestor", func(t *testing.T) {
+		f := newStableWatchRuntimeBase(t, nil)
+		observer := seedObserverDelegate(t, f)
+		seedDelegateControllerRunning(t, f.controller, "dlg_grand", "dlg_observer")
+		// The receiver is the observer's own child delegate's session, so the
+		// observer (the receiver delegate's parent) is the clearing ancestor.
+		watchID := installSessionKeyedReceiverWatch(t, f.rootJM, "child-dlg_grand")
+
+		if _, err := jobWatchToolWithContext(context.Background(), observer, map[string]any{
+			"operation": "clear",
+			"watch_id":  watchID,
+		}, 4096); err != nil {
+			t.Fatalf("receiver's delegate ancestor clear: %v", err)
+		}
+		if receiverWatchArmed(f.rootJM, watchID) {
+			t.Fatal("session-keyed watch survived the ancestor clear")
+		}
+	})
+
+	t.Run("sibling refused", func(t *testing.T) {
+		f := newStableWatchRuntimeBase(t, nil)
+		seedObserverDelegate(t, f)
+		watchID := installSessionKeyedReceiverWatch(t, f.rootJM, "child-dlg_observer")
+
+		sibling := &Session{
+			id:                    "child-dlg_source",
+			stateDir:              f.controller.stateDir,
+			delegateController:    f.controller,
+			delegateRootSessionID: f.root.ID(),
+			owningDelegateID:      "dlg_source",
+			jobManager:            f.sourceJM,
+			state:                 SessionIdle,
+		}
+		_, err := jobWatchToolWithContext(context.Background(), sibling, map[string]any{
+			"operation": "clear",
+			"watch_id":  watchID,
+		}, 4096)
+		if err == nil || !strings.Contains(err.Error(), "may not clear") {
+			t.Fatalf("sibling clear err = %v, want explicit refusal", err)
+		}
+		if !receiverWatchArmed(f.rootJM, watchID) {
+			t.Fatal("session-keyed watch was cleared by a sibling")
+		}
+	})
+}
