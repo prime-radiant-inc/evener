@@ -5,7 +5,7 @@
 // so tests can supply a fixture; it defaults to the real
 // stores/settingsOverview adapter.
 import { friendlyErrorMessage } from "@evener/appwire-client";
-import { useSettingsOverviewStore } from "../../../stores/settingsOverview";
+import { type SettingsOverviewStoreState, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { EmptyState, OpenButton, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./agents.module.css";
@@ -25,7 +25,7 @@ export interface AgentsSectionProps {
   /** Unused - kept so this component's signature matches every other
    * dispatched settings section (see Settings.tsx's SECTION_COMPONENTS map). */
   sectionId: string;
-  useOverview?: typeof useSettingsOverviewStore;
+  useOverview?: () => SettingsOverviewStoreState;
 }
 
 export function AgentsSection({ useOverview = useSettingsOverviewStore }: AgentsSectionProps) {
