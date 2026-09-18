@@ -535,13 +535,34 @@ describe("the direct write", () => {
     expect(store.getState().drafts.mobile).toEqual(proposed);
   });
 
-  test("a malformed success changes no hub state and reports it", async () => {
+  test("a malformed success changes no hub state, reports it, and clears the stranded preview", async () => {
     const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
     const store = await readyStore(client);
     client.on(patchMethod, () => ({ layout: "mobile", revision: 9, config: toWireConfig(proposed) }));
     await expect(store.getState().patchHubDefault("mobile", proposed)).rejects.toThrow(/malformed/);
     expect(store.getState().hub.mobile).toEqual(hubDefault(2, mobileConfig));
     expect(store.getState().hubErrors.mobile).toMatch(/malformed/);
+    // A malformed reply is exactly as unknown an outcome as a transport
+    // failure (the request's own PATCH may or may not have applied on the
+    // hub) - the optimistic preview must not be treated differently.
+    expect(store.getState().drafts.mobile).toBeUndefined();
+  });
+
+  test("a PATCH reply with extra keys still decodes (forward compatibility)", async () => {
+    const client = serving(hubDefault(3, desktopConfig), hubDefault(2, mobileConfig));
+    const store = await readyStore(client);
+    client.on(patchMethod, () => ({
+      layout: "mobile",
+      revision: 3,
+      config: toWireConfig(proposed),
+      // A hub-added field a future build might send: fromWireChange and
+      // fromWireDefaults already tolerate this; the PATCH reply decoder
+      // must not be the odd one out.
+      futureField: "ignored",
+    }));
+    const result = await store.getState().patchHubDefault("mobile", proposed);
+    expect(result).toEqual(hubDefault(3, proposed));
+    expect(store.getState().hub.mobile).toEqual(hubDefault(3, proposed));
   });
 
   test("refuses without a confirmed, supported hub", async () => {
