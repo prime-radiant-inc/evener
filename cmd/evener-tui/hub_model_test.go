@@ -4473,7 +4473,7 @@ func requireQuitCommand(t *testing.T, cmd tea.Cmd) {
 		var titles []string
 		quit := false
 		for i := 0; i < seq.Len(); i++ {
-			child, ok := seq.Index(i).Interface().(tea.Cmd)
+			child, ok := reflect.TypeAssert[tea.Cmd](seq.Index(i))
 			if !ok {
 				t.Fatalf("quit sequence element %d is not a tea.Cmd", i)
 			}

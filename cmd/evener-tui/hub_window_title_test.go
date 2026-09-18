@@ -314,7 +314,7 @@ func TestQuitClearsWindowTitleBeforeQuitting(t *testing.T) {
 	var titles []string
 	sawQuit := false
 	for i := 0; i < seq.Len(); i++ {
-		child, ok := seq.Index(i).Interface().(tea.Cmd)
+		child, ok := reflect.TypeAssert[tea.Cmd](seq.Index(i))
 		if !ok {
 			t.Fatalf("sequence element %d is not a tea.Cmd", i)
 		}
