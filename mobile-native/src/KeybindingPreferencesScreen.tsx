@@ -242,6 +242,22 @@ export function KeybindingPreferencesScreen({
 						</>
 					) : (
 						<>
+							{domain?.draftUnreadable && (
+								<View style={{ gap: 12 }}>
+									<Copy>
+										The shortcut draft saved on this phone could not be read.
+										Discard it to edit shortcuts again.
+									</Copy>
+									<Action
+										disabled={!model}
+										onPress={() => {
+											if (model) run(() => model.discardKeybindingsDraft());
+										}}
+									>
+										Discard unreadable draft
+									</Action>
+								</View>
+							)}
 							{domain?.draft && (
 								<View style={{ gap: 12 }}>
 									<Copy>Changes saved on this phone</Copy>

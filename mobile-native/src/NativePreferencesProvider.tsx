@@ -31,7 +31,19 @@ const backend = {
 	createId: () => Crypto.randomUUID(),
 	get(key: string): unknown {
 		const value = Storage.getItemSync(key);
-		return value === null ? null : JSON.parse(value);
+		if (value === null) return null;
+		// Unparsable bytes are the RECORD's problem, not the port's: returning
+		// the raw string (an identity-bearing value, never what a real
+		// checkpoint decodes to) lets the shared repository's own decoder
+		// classify it as an unreadable draft. Throwing here instead would
+		// surface as a generic port failure one layer up, collapsing
+		// draftUnreadable into storageUnavailable and losing the one recovery
+		// (discard) an unreadable record is supposed to allow.
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value;
+		}
 	},
 	set(key: string, value: unknown) {
 		Storage.setItemSync(key, JSON.stringify(value));

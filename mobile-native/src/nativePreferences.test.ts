@@ -7,6 +7,7 @@ import type {
 import { toWireConfig } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { NativePreferences } from "./nativePreferences";
+import { nativeKeybindingDrafts } from "./nativePreferenceDrafts";
 
 const features = { keybindingsSettings: true, transcriptDisplaySettings: true };
 const keybindings: KeybindingsOverrides = {
@@ -149,6 +150,73 @@ describe("NativePreferences", () => {
 				(request) => request.method === "evener/settings/keybindings/patch",
 			),
 		).toHaveLength(1);
+	});
+
+	// RoboRev round 24 High: native collapsed draftUnreadable into
+	// storageUnavailable (the field was not even projected) and the real
+	// storage adapter threw on unparsable JSON before the shared decoder ever
+	// ran, so the screen showed no escape hatch for a corrupt local
+	// keybindings draft. This fake backend mirrors the FIXED
+	// NativePreferencesProvider adapter: unparsable bytes come back as an
+	// identity-bearing raw value (never thrown), which the package's own
+	// decoder then classifies as unreadable.
+	function keybindingBackend() {
+		const store = new Map<string, unknown>();
+		return {
+			createId: () => "draft-1",
+			get: (key: string) => store.get(key) ?? null,
+			set: (key: string, value: unknown) => store.set(key, value),
+			delete: (key: string) => {
+				store.delete(key);
+			},
+			deleteIf: (key: string, checkpoint: unknown) => {
+				if (JSON.stringify(store.get(key)) !== JSON.stringify(checkpoint))
+					return false;
+				store.delete(key);
+				return true;
+			},
+			replaceIf: (key: string, expected: unknown, next: unknown) => {
+				if (JSON.stringify(store.get(key)) !== JSON.stringify(expected))
+					return false;
+				store.set(key, next);
+				return true;
+			},
+			// Sets the raw stored value directly, bypassing set()'s normal
+			// checkpoint shape - what an unparsable-JSON read returns once
+			// NativePreferencesProvider's adapter no longer throws on it.
+			corrupt: (key: string) => store.set(key, "not a checkpoint"),
+		};
+	}
+
+	it("projects an unreadable local keybindings draft and lets discard clear it, without losing the hub read", async () => {
+		const backend = keybindingBackend();
+		const storage = nativeKeybindingDrafts("hub", backend);
+		backend.corrupt("evener.native.keybinding-draft.hub");
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		const model = new NativePreferences(
+			client,
+			{ keybindingsSettings: true, transcriptDisplaySettings: false },
+			undefined,
+			storage,
+		);
+		await model.refresh();
+
+		// The hub still loads: an unreadable LOCAL draft says nothing about
+		// the hub's own confirmed state.
+		expect(model.getSnapshot().keybindings.confirmed).toEqual(keybindings);
+		expect(model.getSnapshot().keybindings).toMatchObject({
+			storageUnavailable: true,
+			draftUnreadable: true,
+			draft: null,
+		});
+
+		await model.discardKeybindingsDraft();
+		expect(model.getSnapshot().keybindings).toMatchObject({
+			storageUnavailable: false,
+			draftUnreadable: false,
+			draft: null,
+		});
 	});
 
 	it("ignores stale reads and notifications after disposal", async () => {
