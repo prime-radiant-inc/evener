@@ -135,7 +135,7 @@ export function refreshPendingTurnsProjection(ref?: string): Promise<boolean> {
 async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   const accepted = await projectionFence.refresh(persistencePort, ref);
   if (!accepted) return false;
-  const { targets, snapshot } = accepted;
+  const { snapshot } = accepted;
   // Provenance is monotonic knowledge about ids rather than a view of the
   // records currently in storage, so it is published from every read the
   // fence accepted and in its own setState: a read a newer generation has
@@ -144,6 +144,10 @@ async function readProjectionIntoStore(ref?: string): Promise<boolean> {
   // been settled out of. Skipping it there would leave the id known to
   // nobody.
   pendingTurnsStore.recordSubmittedHere(snapshot);
+  // apply() re-decides the accepted targets right here, not at refresh()'s
+  // resolution: a live commit's advance() for one of them can land in
+  // between, and it must still out-rank this snapshot for that target.
+  const targets = accepted.apply();
   pendingTurnsStore.setState((state) => ({
     outbox: replaceTargetRecords(state.outbox, targets, snapshot.outbox),
     optimistic: replaceTargetRecords(state.optimistic, targets, snapshot.optimistic),
