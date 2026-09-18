@@ -239,6 +239,13 @@ func resumeAfterConfirmedRetirement(ctx context.Context, cfg hubcore.WebConfig, 
 	// sessionID would drive discovery and spawn for a stale alias whenever
 	// resumeOwnership resolved a different current owner (thread/clear), the
 	// same convention resumeThread follows by assigning sessionID = target.
+	//
+	// resumeThreadLocked records its lifecycle stages from the trace in the
+	// context (#1390). An explicit resume stamps that trace on the way in; this
+	// retirement caller enters without one, so stamping it here keeps a
+	// retirement-triggered resume correlated like every other resume instead of
+	// emitting nothing.
+	ctx, _ = withThreadLifecycleLog(ctx, "resume", target, nil)
 	_, resumeErr = resumeThreadLocked(ctx, cfg, sources, appwire.ThreadResumeParams{Ref: params.Ref, Session: target})
 	return resumeErr
 }
