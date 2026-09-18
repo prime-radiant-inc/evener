@@ -18,6 +18,8 @@ export interface MemoryDraftStorage<Checkpoint> {
   stored(): unknown;
   /** Make save() throw (or stop making it throw). */
   failSave(fail?: boolean): void;
+  /** Make replaceIf() throw (or stop making it throw). */
+  failReplace(fail?: boolean): void;
   /** Replace the stored value with something that is not a checkpoint. */
   corrupt(): void;
   /** The value the last removeIf() was given, exactly as the port received
@@ -31,6 +33,7 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
   let stored: unknown = initial;
   let id = 0;
   let saveFails = false;
+  let replaceFails = false;
   let lastRemoveIf: unknown = null;
   const storage: DraftPort<Checkpoint> = {
     createId: () => `draft-${++id}`,
@@ -46,6 +49,7 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
       return true;
     },
     replaceIf: (expected: Checkpoint, next: Checkpoint) => {
+      if (replaceFails) throw new Error("disk unavailable");
       if (JSON.stringify(expected) !== JSON.stringify(stored)) return false;
       stored = structuredClone(next);
       return true;
@@ -56,6 +60,9 @@ export function memoryDraftStorage<Checkpoint>(initial: unknown = null): MemoryD
     stored: () => structuredClone(stored),
     failSave(fail = true) {
       saveFails = fail;
+    },
+    failReplace(fail = true) {
+      replaceFails = fail;
     },
     corrupt() {
       stored = { invalid: true };
