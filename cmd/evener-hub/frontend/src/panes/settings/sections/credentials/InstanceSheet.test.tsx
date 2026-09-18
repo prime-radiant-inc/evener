@@ -581,10 +581,20 @@ describe("the form", () => {
    * carried. The params are asserted against this OUTSIDE the fake's handler:
    * a throw inside the handler is only a rejected request, which the sheet
    * catches into a "Save failed" toast, so an assertion in there can never
-   * fail the test. */
+   * fail the test.
+   *
+   * `originClientId` is omitted: the sheet's edit request carries only the diff
+   * it declared, and the page's mutation identity is stamped on auth mutations,
+   * never on this one (stores/credentials.ts). A full-suite worker can leave a
+   * sibling settings suite's identity on a recorded call, which would otherwise
+   * pin a field the sheet does not control. */
   async function sentEditParams(fake: FakeClient): Promise<unknown> {
     await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/instance/edit")).toBe(true));
-    return fake.calls.find((c) => c.method === "evener/instance/edit")?.params;
+    const params = fake.calls.find((c) => c.method === "evener/instance/edit")?.params;
+    if (params === null || typeof params !== "object") return params;
+    const declared = { ...(params as Record<string, unknown>) };
+    delete declared.originClientId;
+    return declared;
   }
   /** A save the test finishes by hand, so the sheet can be dismissed or
    * re-pointed while the request is still in flight. */
@@ -1813,11 +1823,12 @@ describe("the form", () => {
   });
 
   // The listing's Base URL is the endpoint the hub sanitized: userinfo, query
-  // and fragment are stripped before it crosses the appwire boundary. A save
-  // whose declared URL carries a query therefore only matches the listing once
-  // the declared URL is reduced the same way, or the re-anchor is skipped and
-  // the next Save falsely reports a replacement.
-  test("a superseded save whose declared URL carries a query still re-anchors", async () => {
+  // and fragment are stripped before it crosses the appwire boundary, so a
+  // declared URL carrying any of them cannot be confirmed against it (a
+  // concurrent write that differs only there reads the same). The re-anchor
+  // fails closed on such a lossy declaration rather than pin the draft to a
+  // foreign endpoint.
+  test("a superseded save whose declared URL carries a stripped part does not re-anchor", async () => {
     const before = instance({
       name: "work",
       providerId: "openai",
@@ -1835,9 +1846,47 @@ describe("the form", () => {
       baseUrl: "https://gw.example.test/v1/x?token=abc",
     });
 
-    // The listing carries the sanitized endpoint (query stripped), not the raw
-    // declared URL.
     const landed = { ...before, baseUrl: "https://gw.example.test/v1/x", endpointFingerprint: "fp-after" };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    // The query is not in the listing, so this endpoint cannot be confirmed:
+    // the next Save is refused rather than re-anchored onto a look-alike.
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The two URL libraries disagree on host case and explicit default ports, so
+  // a representable Base URL has to be reduced through one parser on both
+  // sides. Comparing raw strings (or only the declared side) would refuse the
+  // retry on a URL the listing plainly carries.
+  test("a superseded save whose URL differs only in host case or default port still re-anchors", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.clear(field("Base URL"));
+    await user.type(field("Base URL"), "https://GW.example.test:443/v1");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://GW.example.test:443/v1",
+    });
+
+    // The hub serves Go's net/url form, which preserves the host case and the
+    // default port this URL was authored with.
+    const landed = {
+      ...before,
+      baseUrl: "https://GW.example.test:443/v1",
+      endpointFingerprint: "fp-after",
+    };
     await refreshList(fake, [landed]);
     await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
 
@@ -1846,11 +1895,12 @@ describe("the form", () => {
     expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(2);
   });
 
-  // Clearing an override drops the authored value, and the listing then serves
-  // the RESOLVED value (the base provider's), which the client cannot know. A
-  // superseded clear must still re-anchor; requiring an empty listing value
-  // would refuse the retry and reseed the draft.
-  test("a superseded clear of the Base URL still re-anchors on the inherited value", async () => {
+  // Clearing an endpoint override drops the authored value, and the listing
+  // then serves the RESOLVED value (the base provider's), which the client
+  // cannot know. Without an authoritative confirmation of that resolved
+  // identity the re-anchor fails closed: any same-name instance with matching
+  // untouched fields would otherwise be accepted as the clear's landing.
+  test("a superseded clear of the Base URL does not re-anchor without the resolved value", async () => {
     const before = instance({
       name: "work",
       providerId: "openai",
@@ -1865,12 +1915,52 @@ describe("the form", () => {
     await user.click(saveButton());
     expect(await sentEditParams(fake)).toEqual({ name: "work", clearBaseUrl: true });
 
-    // The listing does not show an empty Base URL: it shows the inherited
-    // resolved endpoint the clear fell back to.
     const landed = {
       ...before,
       baseUrl: "https://inherited.example.test/v1",
       endpointFingerprint: "fp-after",
+    };
+    await refreshList(fake, [landed]);
+    await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));
+
+    await user.click(saveButton());
+    expect(screen.getByText(/replaced under the same name/)).toBeTruthy();
+    expect(fake.calls.filter((c) => c.method === "evener/instance/edit")).toHaveLength(1);
+  });
+
+  // The hub normalizes a credential header to `name=value` (trimming around
+  // the `=`) before the listing serves it, so a declared header with spacing
+  // only matches after the same reduction. The save also edits the endpoint,
+  // so the re-anchor is what the next Save depends on (the fingerprint moved).
+  test("a superseded credential-header save re-anchors through the hub's normalization", async () => {
+    const before = instance({
+      name: "work",
+      providerId: "openai",
+      protocol: "openai-responses",
+      baseUrl: "https://gw.example.test/v1",
+      endpointFingerprint: "fp-before",
+      credentialHeader: "Authorization=Bearer $OLDKEY",
+    });
+    const { fake, finish } = deferredEdit();
+    renderSheet(before, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Base URL"), "/x");
+    await user.clear(field("Credential header"));
+    await user.type(field("Credential header"), "Authorization = Bearer $NEWKEY");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({
+      name: "work",
+      baseUrl: "https://gw.example.test/v1/x",
+      credentialHeader: "Authorization = Bearer $NEWKEY",
+    });
+
+    // The listing serves the header the hub normalized and the endpoint the
+    // save produced.
+    const landed = {
+      ...before,
+      baseUrl: "https://gw.example.test/v1/x",
+      endpointFingerprint: "fp-after",
+      credentialHeader: "Authorization=Bearer $NEWKEY",
     };
     await refreshList(fake, [landed]);
     await act(async () => finish({ instances: [landed], availableProviders: [OPENAI] }));

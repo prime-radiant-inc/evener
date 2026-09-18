@@ -219,13 +219,14 @@ function untouchedIdentityMatches(
   return matches && varsCarriedOver(before, listed, params);
 }
 
-/** An authored URL reduced to the endpoint identity the listing serves: the hub
+/** An authored URL reduced to the endpoint identity the listing serves. The hub
  * strips userinfo, query and fragment before a Base URL crosses the appwire
- * boundary (cmd/evener-hub/app_instances.go's sanitizeEndpointURL), so a
- * declared Base URL has to be reduced the same way before it can be matched
- * against the listing. A URL that does not parse or carries no host sanitizes
- * to empty, as the hub's does; a trailing slash is normalized away on both
- * sides because the two URL libraries disagree on it for a bare authority. */
+ * boundary (cmd/evener-hub/app_instances.go's sanitizeEndpointURL) and serves
+ * Go's net/url form; both sides are reduced through this one parser so host
+ * case and explicit default ports (where the two libraries disagree) cannot
+ * make a representable URL refuse. A URL that does not parse or carries no
+ * host reduces to empty, as the hub's does; a trailing slash is normalized
+ * away because the libraries disagree on it for a bare authority. */
 function listedEndpoint(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed === "") return "";
@@ -244,13 +245,35 @@ function listedEndpoint(raw: string): string {
   return out.endsWith("/") ? out.slice(0, -1) : out;
 }
 
-/** Whether the listed value is the endpoint this save declared: the declared
- * URL sanitized and the listed URL (already sanitized by the hub) reduced to
- * the same identity. */
+/** Whether the listed endpoint is the one this save declared. The listed URL
+ * cannot carry userinfo, query or fragment (the hub strips them), so a
+ * declaration that has any of them is indistinguishable from a concurrent
+ * write that differs only there: the match fails closed on a lossy declaration
+ * rather than re-anchor the draft onto a foreign endpoint. A declaration the
+ * hub stores verbatim but cannot sanitize (unparseable) reduces to empty on
+ * both sides and matches, as the hub's own listing does. */
 function endpointMatches(declared: string, listed: string | undefined): boolean {
-  const want = listedEndpoint(declared);
-  const got = (listed ?? "").endsWith("/") ? (listed ?? "").slice(0, -1) : (listed ?? "");
-  return want !== "" && want === got;
+  const trimmed = declared.trim();
+  if (trimmed === "") return false;
+  if (listedEndpoint(trimmed) !== listedEndpoint(listed ?? "")) return false;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return true;
+  }
+  return parsed.search === "" && parsed.hash === "" && parsed.username === "" && parsed.password === "";
+}
+
+/** The credential header reduced the way the hub stores it: the hub splits on
+ * the first `=` and trims the name and value before joining them with no
+ * surrounding spaces (app_instances.go's credentialHeaderFrom), so a declared
+ * `Authorization = Bearer $X` has to be reduced the same way to match the
+ * listing's normalized form. */
+function normalizedCredentialHeader(raw: string): string {
+  const eq = raw.indexOf("=");
+  if (eq < 0) return raw.trim();
+  return `${raw.slice(0, eq).trim()}=${raw.slice(eq + 1).trim()}`;
 }
 
 /** Whether the listed entry carries the values this save declared for the
@@ -259,24 +282,29 @@ function endpointMatches(declared: string, listed: string | undefined): boolean 
  * the draft to a foreign instance and lets the next save write onto it.
  *
  * The representation differs per field. A declared Base URL is compared as the
- * sanitized endpoint the listing serves. A `clear` of an endpoint override
- * (baseUrl/protocol/surface) drops the authored value and the listing then
- * serves the RESOLVED value - the base provider's URL, protocol or surface -
- * which the client cannot know, so there is no value to compare and the clear
- * is accepted on the save's word; the untouched identity fields still bound
- * the risk. apiKeyEnv and credentialHeader are authored-only, so their clears
- * do show as empty in the listing and are compared. A declared var has to be
- * present and equal, key by key. */
+ * sanitized endpoint the listing serves (and fails closed when it carries
+ * parts the listing strips - see endpointMatches). A `clear` of an endpoint
+ * override (baseUrl/protocol/surface) drops the authored value and the listing
+ * then serves the RESOLVED value - the base provider's URL, protocol or
+ * surface - which the client cannot know, so the match fails closed on those
+ * clears rather than accept any same-name instance as the clear's landing.
+ * apiKeyEnv and credentialHeader are authored-only, so their clears do show as
+ * empty in the listing and are compared; a declared header is compared after
+ * the hub's own normalization. A declared var has to be present and equal, key
+ * by key. */
 function declaredValuesLanded(listed: InstanceEntry, params: InstanceEditParams): boolean {
+  if (params.clearBaseUrl || params.clearProtocol || params.clearSurface) return false;
   if (params.baseUrl !== undefined && !endpointMatches(params.baseUrl, listed.baseUrl)) return false;
-  // A clear of baseUrl/protocol/surface is deliberately not compared: the
-  // listing carries the inherited resolved value, not the dropped override.
   if (params.protocol !== undefined && listed.protocol !== params.protocol) return false;
   if (params.surface !== undefined && (listed.surface ?? "") !== params.surface) return false;
   if (params.apiKeyEnv !== undefined && (listed.apiKeyEnv ?? "") !== params.apiKeyEnv) return false;
   if (params.clearApiKeyEnv && (listed.apiKeyEnv ?? "") !== "") return false;
-  if (params.credentialHeader !== undefined && (listed.credentialHeader ?? "") !== params.credentialHeader)
+  if (
+    params.credentialHeader !== undefined &&
+    normalizedCredentialHeader(listed.credentialHeader ?? "") !== normalizedCredentialHeader(params.credentialHeader)
+  ) {
     return false;
+  }
   if (params.clearCredentialHeader && (listed.credentialHeader ?? "") !== "") return false;
   for (const [key, value] of Object.entries(params.vars ?? {})) {
     if ((listed.vars?.[key] ?? "") !== value) return false;
