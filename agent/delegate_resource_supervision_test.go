@@ -2271,7 +2271,7 @@ func TestDelegateResourceSupervision_QuietWatchdogUsesTenMinuteThresholdAndThirt
 	}
 }
 
-func TestDelegateResourceSupervision_QuietWatchdogFiresOncePerQuietStretch(t *testing.T) {
+func TestDelegateResourceSupervision_QuietWatchdogSuppressesRepeatWithinWindowAndRearmsOnActivity(t *testing.T) {
 	root, controller, lease, clock := newStableQuietSupervisionHarness(t)
 	clock.Advance(10 * time.Minute)
 	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
@@ -2282,7 +2282,7 @@ func TestDelegateResourceSupervision_QuietWatchdogFiresOncePerQuietStretch(t *te
 		t.Fatal(err)
 	}
 	if got := pendingQuietAttention(t, root); len(got) != 1 {
-		t.Fatalf("same-stretch quiet attention = %#v", got)
+		t.Fatalf("within-window quiet attention = %#v", got)
 	}
 	if err := controller.ReportActivity(lease, clock.Now()); err != nil {
 		t.Fatalf("ReportActivity: %v", err)
@@ -2292,7 +2292,54 @@ func TestDelegateResourceSupervision_QuietWatchdogFiresOncePerQuietStretch(t *te
 		t.Fatal(err)
 	}
 	if got := pendingQuietAttention(t, root); len(got) != 2 {
-		t.Fatalf("second-stretch quiet attention = %#v", got)
+		t.Fatalf("rearmed quiet attention = %#v", got)
+	}
+}
+
+func TestDelegateResourceSupervision_QuietWatchdogRepeatsEachWindowWhileSilent(t *testing.T) {
+	root, controller, lease, clock := newStableQuietSupervisionHarness(t)
+	// A permanently silent running delegate wakes once per further quiet
+	// window, each under a fresh attention id so the durable fold keeps every
+	// repeat instead of replaying the first.
+	for i := uint64(1); i <= 3; i++ {
+		clock.Advance(delegateQuietWindow)
+		if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+			t.Fatalf("window %d tick: %v", i, err)
+		}
+		// A tick inside the same window must not add a second wake.
+		if err := root.runDelegateQuietWatchdogTick(lease, clock.Now().Add(delegateQuietWindow/2)); err != nil {
+			t.Fatalf("window %d mid-window tick: %v", i, err)
+		}
+		got := pendingQuietAttention(t, root)
+		if len(got) != int(i) {
+			t.Fatalf("after %d quiet window(s) attention = %#v, want %d", i, got, i)
+		}
+		if want := delegateQuietAttentionIDForStretch(lease, i); got[len(got)-1] != want {
+			t.Fatalf("window %d attention id = %q, want %q", i, got[len(got)-1], want)
+		}
+	}
+
+	// Activity rearms: the next wake is due a full window after the activity,
+	// not after the previous wake, and lands under a fresh id again.
+	if err := controller.ReportActivity(lease, clock.Now()); err != nil {
+		t.Fatalf("ReportActivity: %v", err)
+	}
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now().Add(delegateQuietWindow-time.Second)); err != nil {
+		t.Fatalf("post-activity pre-window tick: %v", err)
+	}
+	if got := pendingQuietAttention(t, root); len(got) != 3 {
+		t.Fatalf("post-activity pre-window attention = %#v, want 3", got)
+	}
+	clock.Advance(delegateQuietWindow)
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatalf("post-activity window tick: %v", err)
+	}
+	got := pendingQuietAttention(t, root)
+	if len(got) != 4 {
+		t.Fatalf("post-activity window attention = %#v, want 4", got)
+	}
+	if want := delegateQuietAttentionIDForStretch(lease, 5); got[len(got)-1] != want {
+		t.Fatalf("post-activity attention id = %q, want %q", got[len(got)-1], want)
 	}
 }
 

@@ -105,8 +105,10 @@ const (
 )
 
 // delegateQuietWindow is how long a running delegate may emit no
-// parent-observable activity before the quiet-job watchdog fires one owner
-// notification. delegateQuietCheckInterval is how often the watchdog goroutine
+// parent-observable activity before the quiet-job watchdog fires an owner
+// notification, and the cadence on which that notification repeats while the
+// delegate stays silent-and-running (one wake per further window, never a
+// burst). delegateQuietCheckInterval is how often the watchdog goroutine
 // re-evaluates quiet duration. Both are package vars ONLY so tests can scale
 // watchdog timing down; they are not config knobs. The production window is the
 // 10 minutes the model-facing message names.

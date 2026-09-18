@@ -13,7 +13,8 @@ import (
 // Oracles (beyond never-panic):
 //   - identical controller states make the same admission decision;
 //   - quiet attention is admitted only at or beyond the inclusive window;
-//   - an already-notified stretch never admits another attention;
+//   - a notified stretch re-arms: it admits another attention once one more
+//     full window of continued silence has elapsed, and never before;
 //   - an outstanding claim suppresses duplicates; and
 //   - aborting persistence re-arms the same durable attention identity.
 func FuzzWvQuietWatchdogTick(f *testing.F) {
@@ -29,7 +30,14 @@ func FuzzWvQuietWatchdogTick(f *testing.F) {
 		begin := func() (*delegateQuietAttentionClaim, *delegateTreeController, *Session, delegateLease) {
 			root, controller, lease, clock := newStableQuietSupervisionHarness(t)
 			controller.mu.Lock()
-			controller.live[lease.delegateID].quietNotified = alreadyNotified
+			live := controller.live[lease.delegateID]
+			live.quietNotified = alreadyNotified
+			if alreadyNotified {
+				// A notified stretch always carries a repeat baseline. Measuring
+				// the next wake's window from it (here, the activity instant)
+				// keeps the harness state self-consistent.
+				live.quietNotifiedAt = live.activityAt
+			}
 			controller.mu.Unlock()
 			clock.Advance(elapsed)
 			claim, err := controller.BeginQuietAttention(root, lease, clock.Now())
@@ -52,7 +60,10 @@ func FuzzWvQuietWatchdogTick(f *testing.F) {
 			t.Fatalf("non-deterministic quiet admission: first=%q second=%q", firstID, secondID)
 		}
 
-		wantClaim := elapsed >= delegateQuietWindow && !alreadyNotified
+		// Notification state no longer suppresses forever: a notified delegate
+		// re-fires after one further full window, so admission depends only on
+		// the elapsed quiet time from the active baseline.
+		wantClaim := elapsed >= delegateQuietWindow
 		if (first != nil) != wantClaim {
 			t.Fatalf("quiet admission at %v with notified=%v: claim=%#v want=%v", elapsed, alreadyNotified, first, wantClaim)
 		}

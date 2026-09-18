@@ -160,7 +160,14 @@ type delegateLiveState struct {
 	productiveActivityAt  time.Time
 	quietSequence         uint64
 	quietNotified         bool
-	quietClaim            *delegateQuietAttentionClaim
+	// quietNotifiedAt is when the current stretch's most recent quiet wake was
+	// admitted. It re-baselines the repeat cadence: while quietNotified holds,
+	// the next wake is due one more delegateQuietWindow after this instant, so a
+	// permanently silent delegate keeps surfacing once per window instead of
+	// going dark after a single notification. Activity clears quietNotified via
+	// ReportActivityPhase, which resets the baseline to activityAt.
+	quietNotifiedAt time.Time
+	quietClaim      *delegateQuietAttentionClaim
 }
 
 type delegateSnapshot struct {

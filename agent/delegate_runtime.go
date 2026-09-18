@@ -75,10 +75,14 @@ type delegateIsolation struct {
 }
 
 type delegateQuietAttentionClaim struct {
-	token       uint64
-	lease       delegateLease
-	sequence    uint64
-	activityAt  time.Time
+	token      uint64
+	lease      delegateLease
+	sequence   uint64
+	activityAt time.Time
+	// notifiedAt is the tick instant that admitted this claim; a commit
+	// re-baselines the repeat cadence on it so the next wake is one further
+	// window out.
+	notifiedAt  time.Time
 	attentionID string
 	content     string
 	receiver    *Session
@@ -116,6 +120,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	if activityChanged && rearm {
 		live.quietSequence++
 		live.quietNotified = false
+		live.quietNotifiedAt = time.Time{}
 	}
 	if activityChanged {
 		live.activityAt = at
@@ -460,7 +465,21 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if now.IsZero() {
 		now = c.now()
 	}
-	if activityAt.IsZero() || now.Before(activityAt.Add(delegateQuietWindow)) || live.quietNotified || live.quietClaim != nil {
+	if activityAt.IsZero() || live.quietClaim != nil {
+		return nil, nil
+	}
+	// The quiet clock restarts at the last wake, not only at the last activity:
+	// a delegate that never reports activity again re-fires once per further
+	// delegateQuietWindow instead of going dark after one notification. Activity
+	// still rearms through ReportActivityPhase, which clears quietNotified so
+	// this baseline falls back to activityAt. The result is one bounded wake per
+	// window — never a burst — and the watch runaway machinery bounds any loop
+	// the wakes themselves induce.
+	quietSince := activityAt
+	if live.quietNotified {
+		quietSince = live.quietNotifiedAt
+	}
+	if now.Before(quietSince.Add(delegateQuietWindow)) {
 		return nil, nil
 	}
 	if live.quietSequence == 0 {
@@ -472,6 +491,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 		lease:       lease,
 		sequence:    live.quietSequence,
 		activityAt:  activityAt,
+		notifiedAt:  now,
 		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
 		content:     delegateQuietAttentionContent(lease, activityAt),
 		receiver:    receiver,
@@ -511,6 +531,11 @@ func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAtte
 			result = errDelegateStaleLease
 		} else {
 			live.quietNotified = true
+			live.quietNotifiedAt = claim.notifiedAt
+			// Advance the stretch identity so the next repeat carries a fresh
+			// attention id: a reused id would replay as a no-op and the repeat
+			// wake would be silently swallowed.
+			live.quietSequence++
 		}
 	}
 	c.evidenceVersion++
