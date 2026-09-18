@@ -204,6 +204,19 @@ type BusyAction = "submit" | "steer" | "interrupt" | "drain" | null;
 // disagreeing about the same word.
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["ended", "closed", "notLoaded"]);
 
+// The composer module owns the local recovery fence. A LOCAL session carrying
+// a restart-blocking obligation (a Stop, or a snapshot the daemon reports as
+// restartRequired/resumeRequired) cannot be sent to at all: turn/start no
+// longer carries an implicit resume on this branch, so the explicit Resume
+// action is the only thing that resumes it. Every fence check in this module -
+// the follow-up card's Send gate, availabilityFor's availability fence -
+// derives from this one predicate; each call site adds the status check its
+// surface needs (the card gates the stopped/notLoaded shape, availability
+// every non-active status).
+function isLocalRecoveryFenced(ref: string, restartObligated: boolean): boolean {
+  return ref.startsWith("local:") && restartObligated;
+}
+
 export function Composer({ ref, focused }: ComposerProps) {
   const model = useThreadsStore((s) => s.threads.get(ref));
   const recoveryRequired = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
@@ -816,7 +829,7 @@ export function Composer({ ref, focused }: ComposerProps) {
   // reachable, but Send and Queue are NOT offered: turn/start no longer carries
   // an implicit resume on this branch, and the wire already advertises
   // send=false for this snapshot. The explicit Resume action is what resumes it.
-  const recoveryFencedLocal = localNotLoaded && recoveryRequired;
+  const recoveryFencedLocal = isLocalRecoveryFenced(ref, recoveryRequired) && model.status.type === "notLoaded";
   const queueDepth = model.queue?.depth ?? 0;
   // What this session may be asked to do now: one derivation for every control
   // surface (stores/liveControls.ts), with the rationale (status alone, never
@@ -864,14 +877,16 @@ export function Composer({ ref, focused }: ComposerProps) {
   // pending send that landed (or cleared) between the two routes the submit
   // rather than the render.
   //
-  // The recovery fence arrives as a parameter: the render passes the subscribed
-  // value (so the availability updates with the store instead of reading it
-  // behind the subscription's back), the submit passes a live store read like
-  // the rest of its re-derivation.
+  // The restart-blocking obligation arrives as a parameter: the render passes
+  // the subscribed value (so the availability updates with the store instead of
+  // reading it behind the subscription's back), the submit passes a live store
+  // read like the rest of its re-derivation. It is the raw obligation, not the
+  // render's recoveryFencedLocal: the fence here covers every non-active
+  // status, not only the stopped one.
   function availabilityFor(
     target: ThreadModel,
     pendingSend: boolean,
-    recoveryFenced: boolean,
+    restartObligated: boolean,
   ): { canSend: boolean; canQueue: boolean } {
     // A recovery-fenced local session has no send/queue until the user resumes
     // it, in WHATEVER non-active status the snapshot carries. A stopped
@@ -885,7 +900,7 @@ export function Composer({ ref, focused }: ComposerProps) {
     // live turn is already running, so its queue mode carries no implicit
     // resume, and its presses still reach their own refusal gates (the
     // skillInput capability gate among them).
-    if (target.ref.startsWith("local:") && recoveryFenced && target.status.type !== "active") {
+    if (isLocalRecoveryFenced(target.ref, restartObligated) && target.status.type !== "active") {
       return { canSend: false, canQueue: false };
     }
     const tableAvailability = deriveSendQueueAvailability({
