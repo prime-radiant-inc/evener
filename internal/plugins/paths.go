@@ -28,8 +28,8 @@ type Manager struct {
 	// lockAcquirer test seams (installAcquireLock, marketplaceAcquireLock,
 	// gcAcquireLock) are stubbed to a no-op release in other tests, so these
 	// two fields need their own synchronization regardless of the file lock.
-	// Held only for the instant of a reset, mark, capture, install or read —
-	// never across the file-lock wait itself.
+	// Held only for the instant of a mark, take, install, or read (markStoreChanged,
+	// takeStoreChanged, OnStoreChanged) — never across the file-lock wait itself.
 	storeChangedMu      sync.Mutex
 	pendingStoreChanged StoreChanged
 	onStoreChanged      func(StoreChanged)

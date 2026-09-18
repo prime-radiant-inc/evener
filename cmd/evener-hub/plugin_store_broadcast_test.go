@@ -2,10 +2,11 @@ package hub
 
 // Tests for wirePluginStoreBroadcast (issue #1634's hook): the plugin store's
 // Manager.OnStoreChanged callback, wired here to the existing
-// notifyMarketplaceUpdated/notifyPluginUpdated broadcasts. Driven with a
-// recordingBroadcaster (app_host_admin_test.go) rather than a real connected
-// client, the same seam hostNotificationBroadcaster gives the host-admin
-// fan-out tests.
+// notifyMarketplaceUpdated/notifyPluginUpdated broadcasts. Most of these
+// drive it with a recordingBroadcaster (app_host_admin_test.go) rather than a
+// real connected client, the same seam hostNotificationBroadcaster gives the
+// host-admin fan-out tests; TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer
+// drives the production NewWebServer path end to end instead.
 
 import (
 	"context"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -57,10 +59,7 @@ func TestRegisterPluginAutoUpgradeHandlers_CheckNowBroadcastsARefreshWithNoUpgra
 	if len(result.Updated) != 0 {
 		t.Fatalf("checkNow Updated = %v, want none (no plugin installed)", result.Updated)
 	}
-	got := broadcaster.broadcasts()
-	if len(got) != 1 || got[0].method != appwire.NotifyEvenerMarketplaceUpdated {
-		t.Fatalf("broadcasts = %+v, want exactly one %s", got, appwire.NotifyEvenerMarketplaceUpdated)
-	}
+	assertOneBroadcast(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated)
 }
 
 // TestRunPluginAutoUpgradeTick_BroadcastsAfterAMarketplaceRefreshThatWrote is
@@ -81,10 +80,7 @@ func TestRunPluginAutoUpgradeTick_BroadcastsAfterAMarketplaceRefreshThatWrote(t 
 	if _, errs := runPluginAutoUpgradeTick(context.Background(), ctl.mgr, io.Discard); len(errs) != 0 {
 		t.Fatalf("tick errors: %v", errs)
 	}
-	got := broadcaster.broadcasts()
-	if len(got) != 1 || got[0].method != appwire.NotifyEvenerMarketplaceUpdated {
-		t.Fatalf("broadcasts = %+v, want exactly one %s", got, appwire.NotifyEvenerMarketplaceUpdated)
-	}
+	assertOneBroadcast(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated)
 }
 
 // TestHubSeedDefaults_ASeedThatWritesBroadcasts covers seedHubMarketplaces'
@@ -103,10 +99,7 @@ func TestHubSeedDefaults_ASeedThatWritesBroadcasts(t *testing.T) {
 	if err := hubSeedDefaults(context.Background(), mgr); err != nil {
 		t.Fatalf("hubSeedDefaults: %v", err)
 	}
-	got := broadcaster.broadcasts()
-	if len(got) != 1 || got[0].method != appwire.NotifyEvenerMarketplaceUpdated {
-		t.Fatalf("broadcasts = %+v, want exactly one %s", got, appwire.NotifyEvenerMarketplaceUpdated)
-	}
+	assertOneBroadcast(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated)
 }
 
 // plantRefusedMarketplace writes known_marketplaces.json directly (the way an
@@ -148,59 +141,42 @@ func TestHubPluginGC_MigratesALegacyNameAndBroadcasts(t *testing.T) {
 	if _, err := hubPluginGC(context.Background(), mgr); err != nil {
 		t.Fatalf("hubPluginGC: %v", err)
 	}
-	got := broadcaster.broadcasts()
-	foundMarketplace, foundPlugin := false, false
-	for _, b := range got {
-		switch b.method {
-		case appwire.NotifyEvenerMarketplaceUpdated:
-			foundMarketplace = true
-		case appwire.NotifyEvenerPluginUpdated:
-			foundPlugin = true
-		}
-	}
-	if !foundMarketplace || !foundPlugin {
-		t.Fatalf("broadcasts = %+v, want both %s and %s (the migration's saveRename writes both files)",
-			got, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
-	}
+	assertBroadcastMethods(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
 }
 
-// TestNewWebServer_TwoServersEachResolveTheirOwnPluginManager is Medium 1's
-// regression test on the design itself: cfg.PluginResolveManager
-// (hubcore.WebConfig) is a value on each server's own cfg, not a package
-// global, so a second server built later in the same process cannot answer
-// for the first — the bug class a shared global (however carefully
-// mutex-guarded) could not avoid.
+// TestNewWebServer_TwoServersEachResolveTheirOwnPluginManager proves
+// cfg.PluginManager (hubcore.WebConfig) is a value on each server's own cfg,
+// not a package global, so a second server built later in the same process
+// cannot answer for the first.
 func TestNewWebServer_TwoServersEachResolveTheirOwnPluginManager(t *testing.T) {
 	root1, root2 := t.TempDir(), t.TempDir()
 	web1 := NewWebServer(hubcore.WebConfig{PluginRoot: root1})
-	mgr1 := web1.cfg.PluginResolveManager(root1)
+	mgr1 := web1.cfg.PluginManager
 	if mgr1 == nil || mgr1.Root != root1 {
-		t.Fatalf("web1.cfg.PluginResolveManager(%q) = %+v, want a Manager rooted there", root1, mgr1)
+		t.Fatalf("web1.cfg.PluginManager = %+v, want a Manager rooted at %q", mgr1, root1)
 	}
 
 	web2 := NewWebServer(hubcore.WebConfig{PluginRoot: root2})
-	mgr2 := web2.cfg.PluginResolveManager(root2)
+	mgr2 := web2.cfg.PluginManager
 	if mgr2 == nil || mgr2.Root != root2 {
-		t.Fatalf("web2.cfg.PluginResolveManager(%q) = %+v, want a Manager rooted there", root2, mgr2)
+		t.Fatalf("web2.cfg.PluginManager = %+v, want a Manager rooted at %q", mgr2, root2)
 	}
 	if mgr1 == mgr2 {
-		t.Fatal("web1 and web2 resolved the same *plugins.Manager")
+		t.Fatal("web1 and web2 share the same *plugins.Manager")
 	}
 
 	// The last-constructed server (web2) must not be able to answer for the
-	// first: re-resolving through web1's own cfg after web2 exists must
-	// still return web1's own Manager.
-	if again := web1.cfg.PluginResolveManager(root1); again != mgr1 {
-		t.Fatalf("web1.cfg.PluginResolveManager(%q) changed after web2 was constructed: %p -> %p", root1, mgr1, again)
+	// first: web1's own cfg still holds its own Manager after web2 exists.
+	if web1.cfg.PluginManager != mgr1 {
+		t.Fatalf("web1.cfg.PluginManager changed after web2 was constructed: %p -> %p", mgr1, web1.cfg.PluginManager)
 	}
 }
 
-// TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce is Medium
-// 2's regression test: registerPluginHandlers makes no notify call of its
-// own any more (deleted; the hook is the sole path), so a re-source-only
-// edit — which writes known_marketplaces.json alone (EditMarketplace's
-// non-renaming branch never calls saveRegistry) — must broadcast exactly
-// once, not twice.
+// TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce proves a
+// re-source-only edit — which writes known_marketplaces.json alone
+// (EditMarketplace's non-renaming branch never calls saveRegistry) —
+// broadcasts exactly once: registerPluginHandlers makes no notify call of
+// its own, so wirePluginStoreBroadcast is the sole path.
 func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.T) {
 	ctl := newTestPluginsController(t)
 	dir := t.TempDir()
@@ -230,9 +206,43 @@ func TestRegisterPluginHandlers_MarketplaceEditBroadcastsExactlyOnce(t *testing.
 		t.Fatalf("dispatch edit returned %T, want MarketplaceListResponse", resp)
 	}
 
-	got := broadcaster.broadcasts()
-	if len(got) != 1 || got[0].method != appwire.NotifyEvenerMarketplaceUpdated {
-		t.Fatalf("broadcasts = %+v, want exactly one %s (not doubled by a manual notify call)",
-			got, appwire.NotifyEvenerMarketplaceUpdated)
+	assertOneBroadcast(t, broadcaster, appwire.NotifyEvenerMarketplaceUpdated)
+}
+
+// TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer proves web.go's
+// production wiring (newWebServer's wirePluginStoreBroadcast call, made after
+// the server exists) actually reaches a connected client. Every other test
+// in this file injects its own Manager or recordingBroadcaster, so none of
+// them would notice if that one line were deleted; this drives the real
+// NewWebServer path — no injected manager, no injected broadcaster — over an
+// actual client connection instead.
+func TestNewWebServer_WiresPluginStoreBroadcastToItsOwnServer(t *testing.T) {
+	dir := t.TempDir()
+	writeTestMarketplace(t, dir)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:       hubcore.NewPastIndex(""),
+		PluginRoot: t.TempDir(),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.MarketplaceAdd(context.Background(), appwire.MarketplaceAddParams{
+		Source: appwire.MarketplaceSourceInput{Kind: "directory", Path: dir},
+	}); err != nil {
+		t.Fatalf("MarketplaceAdd: %v", err)
+	}
+
+	select {
+	case notif := <-client.Notifications():
+		if notif.Method != appwire.NotifyEvenerMarketplaceUpdated {
+			t.Fatalf("notification method = %q, want %q", notif.Method, appwire.NotifyEvenerMarketplaceUpdated)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for evener/marketplace/updated: the store write never reached this client")
 	}
 }
