@@ -124,3 +124,25 @@ func TestFingerprintSemanticIdentity(t *testing.T) {
 		t.Fatal("fingerprinted duplicate keys")
 	}
 }
+
+func TestNumericValidationBoundsExponentWork(t *testing.T) {
+	for _, token := range []string{"0e-1000000000", "0e1000000000", "-0e-1000000000", "0e100000000000000000000"} {
+		state, err := ValidateState([]byte(`{"n":` + token + `}`))
+		if err != nil {
+			t.Fatalf("zero token %s rejected: %v", token, err)
+		}
+		if !strings.Contains(string(state), token) {
+			t.Fatal("zero token spelling lost")
+		}
+	}
+	for _, token := range []string{"0e-1000000000", "1e-1000000000", "1.0000000000000000000001", "9007199254740993"} {
+		var version Version
+		if err := json.Unmarshal([]byte(token), &version); err == nil {
+			t.Fatalf("invalid version %s accepted", token)
+		}
+	}
+	parsed, err := ParseRequest("artifact_get_view", []byte(`{"artifactId":"A","knownStateVersion":0e-1000000000}`), false)
+	if err == nil {
+		t.Fatalf("zero known version accepted: %v", parsed)
+	}
+}

@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"math/big"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
@@ -131,14 +131,11 @@ func validateNumbers(value any) error {
 		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 			return errors.New("number is outside finite binary64 domain")
 		}
-		exact, ok := new(big.Rat).SetString(string(value))
-		if !ok {
-			return errors.New("invalid JSON number")
-		}
-		if f == 0 && exact.Sign() != 0 {
+		integer, isInteger, safe := exactSafeInteger(string(value))
+		if f == 0 && !(isInteger && safe && integer == 0) {
 			return errors.New("nonzero number underflows binary64")
 		}
-		if exact.IsInt() && new(big.Int).Abs(exact.Num()).Cmp(big.NewInt(MaxSafeInteger)) > 0 {
+		if isInteger && !safe {
 			return errors.New("integer is outside safe binary64 range")
 		}
 		if math.Trunc(f) == f && math.Abs(f) > float64(MaxSafeInteger) {
@@ -179,4 +176,52 @@ func Fingerprint(namespace string, data []byte) (string, error) {
 	}
 	sum := sha256.Sum256(canonical)
 	return fmt.Sprintf("v1:%s", hex.EncodeToString(sum[:])), nil
+}
+
+// exactSafeInteger checks decimal spelling using work bounded by token length.
+// It never constructs a power of ten from an attacker-controlled exponent.
+// Input must already be a JSON number token.
+func exactSafeInteger(token string) (value int64, integer, safe bool) {
+	negative := strings.HasPrefix(token, "-")
+	mantissa := strings.TrimPrefix(token, "-")
+	exponent := 0
+	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
+		expToken := mantissa[i+1:]
+		mantissa = mantissa[:i]
+		parsed, err := strconv.ParseInt(expToken, 10, 64)
+		bound := int64(len(token) + 32)
+		if err != nil || parsed > bound || parsed < -bound {
+			parsed = bound
+			if strings.HasPrefix(expToken, "-") {
+				parsed = -bound
+			}
+		}
+		exponent = int(parsed)
+	}
+	fractionDigits := 0
+	if i := strings.IndexByte(mantissa, '.'); i >= 0 {
+		fractionDigits = len(mantissa) - i - 1
+		mantissa = mantissa[:i] + mantissa[i+1:]
+	}
+	digits := strings.TrimLeft(mantissa, "0")
+	if digits == "" {
+		return 0, true, true
+	}
+	trimmed := strings.TrimRight(digits, "0")
+	power := exponent - fractionDigits + len(digits) - len(trimmed)
+	if power < 0 {
+		return 0, false, false
+	}
+	if len(trimmed)+power > 16 {
+		return 0, true, false
+	}
+	digits = trimmed + strings.Repeat("0", power)
+	if len(digits) == 16 && digits > "9007199254740991" {
+		return 0, true, false
+	}
+	value, _ = strconv.ParseInt(digits, 10, 64)
+	if negative {
+		value = -value
+	}
+	return value, true, true
 }

@@ -207,3 +207,48 @@ func TestResultSchemasValidateCompactReceipts(t *testing.T) {
 		}
 	}
 }
+
+func TestOpaqueIdentifiersMustBeNonempty(t *testing.T) {
+	for _, raw := range []string{
+		`{"artifactId":""}`,
+		`{"mutationId":"","title":"T","summary":"S","html":"H"}`,
+		`{"mutationId":"M","title":"T","summary":"S","html":"H","artifactId":"","expectedSourceRevision":1,"expectedStateVersion":1}`,
+	} {
+		tool := "artifact_publish"
+		if raw == `{"artifactId":""}` {
+			tool = "artifact_open"
+		}
+		if _, err := ParseRequest(tool, []byte(raw), false); err == nil {
+			t.Fatalf("accepted empty identifier in %s", raw)
+		}
+	}
+}
+
+func TestConflictRetryabilityIsTerminal(t *testing.T) {
+	for _, raw := range []string{
+		`{"status":"rejected","error":{"code":"SOURCE_CONFLICT","retryable":true,"sourceRevision":3,"stateVersion":4}}`,
+		`{"status":"rejected","error":{"code":"STATE_CONFLICT","retryable":true,"sourceRevision":3,"stateVersion":4}}`,
+		`{"status":"rejected","error":{"code":"BUSY","retryable":false}}`,
+	} {
+		if err := ValidateResult("artifact_publish", []byte(raw)); err == nil {
+			t.Fatalf("accepted incorrect retryability for %s", raw)
+		}
+	}
+}
+
+func TestVersionUsesExactSubmittedInteger(t *testing.T) {
+	for _, token := range []string{"1.0", "1e0", "9007199254740991"} {
+		request, err := ParseRequest("artifact_get_view", []byte(`{"artifactId":"A","knownStateVersion":`+token+`}`), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if request.(*GetViewRequest).KnownStateVersion <= 0 {
+			t.Fatal("version not decoded")
+		}
+	}
+	for _, token := range []string{"0", "-1", "1.0000000000000000000001", "9007199254740991.1", "9007199254740993"} {
+		if _, err := ParseRequest("artifact_get_view", []byte(`{"artifactId":"A","knownStateVersion":`+token+`}`), false); err == nil {
+			t.Fatalf("accepted version %s", token)
+		}
+	}
+}

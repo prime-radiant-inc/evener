@@ -94,6 +94,13 @@ func inputSchema(name string) (*jsonschema.Schema, error) {
 	default:
 		return nil, errors.New("unknown artifact tool")
 	}
+	if err == nil {
+		for _, name := range []string{"artifactId", "mutationId"} {
+			if property, ok := schema.Properties[name]; ok {
+				property.MinLength = pointer(1)
+			}
+		}
+	}
 	return schema, err
 }
 
@@ -108,7 +115,7 @@ func outputSchema[T any]() (*jsonschema.Schema, error) {
 	}
 	domain := rejected.Properties["error"]
 	domain.If = &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"code": {Enum: []any{"SOURCE_CONFLICT", "STATE_CONFLICT"}}}}
-	domain.Then = &jsonschema.Schema{Required: []string{"sourceRevision", "stateVersion"}}
+	domain.Then = &jsonschema.Schema{Required: []string{"sourceRevision", "stateVersion"}, Properties: map[string]*jsonschema.Schema{"retryable": {Const: pointer(any(false))}}}
 	domain.Else = forbids("sourceRevision", "stateVersion")
 	domain.AllOf = []*jsonschema.Schema{{If: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"code": {Const: pointer(any("BUSY"))}}}, Then: &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{"retryable": {Const: pointer(any(true))}}}}}
 	return &jsonschema.Schema{Type: "object", OneOf: []*jsonschema.Schema{success, rejected}}, nil
@@ -262,7 +269,7 @@ func validateSchema(schema *jsonschema.Schema, value any) error {
 	if err != nil {
 		return err
 	}
-	return compiled.Validate(value)
+	return compiled.Validate(schemaInstance(value))
 }
 
 // ValidateResult checks the public structured result contract without returning
@@ -270,6 +277,9 @@ func validateSchema(schema *jsonschema.Schema, value any) error {
 func ValidateResult(tool string, data []byte) error {
 	value, err := ParseJSON(data, MaxRequestBytes)
 	if err != nil {
+		return err
+	}
+	if err := validateNumbers(value); err != nil {
 		return err
 	}
 	tools, err := Tools()
@@ -285,4 +295,32 @@ func ValidateResult(tool string, data []byte) error {
 		}
 	}
 	return errors.New("unknown artifact tool")
+}
+
+// Zero exponents can exceed the validator's integer exponent parser despite a
+// representable value. Project only those zeros for schema validation, retaining
+// original tokens in state, typed arguments and fingerprint identity.
+func schemaInstance(value any) any {
+	switch v := value.(type) {
+	case json.Number:
+		n, integer, safe := exactSafeInteger(string(v))
+		if integer && safe && n == 0 {
+			return json.Number("0")
+		}
+		return v
+	case map[string]any:
+		result := make(map[string]any, len(v))
+		for key, child := range v {
+			result[key] = schemaInstance(child)
+		}
+		return result
+	case []any:
+		result := make([]any, len(v))
+		for i, child := range v {
+			result[i] = schemaInstance(child)
+		}
+		return result
+	default:
+		return value
+	}
 }

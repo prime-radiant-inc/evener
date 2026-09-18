@@ -3,18 +3,25 @@ package interactiveartifacts
 import (
 	"encoding/json"
 	"errors"
-	"math/big"
 )
 
 // Version is a positive integer in the browser-safe range.
 type Version int64
 
 func (v *Version) UnmarshalJSON(data []byte) error {
-	n, ok := new(big.Rat).SetString(string(data))
-	if !ok || !n.IsInt() || !n.Num().IsInt64() || n.Sign() <= 0 || n.Num().Int64() > MaxSafeInteger {
+	parsed, err := ParseJSON(data, MaxRequestBytes)
+	if err != nil {
+		return err
+	}
+	token, ok := parsed.(json.Number)
+	if !ok {
 		return errors.New("invalid artifact version")
 	}
-	*v = Version(n.Num().Int64())
+	n, integer, safe := exactSafeInteger(string(token))
+	if !integer || !safe || n <= 0 {
+		return errors.New("invalid artifact version")
+	}
+	*v = Version(n)
 	return nil
 }
 
@@ -128,6 +135,9 @@ type DomainError struct {
 	SourceRevision Version   `json:"sourceRevision,omitempty"`
 	StateVersion   Version   `json:"stateVersion,omitempty"`
 }
+
+func (e *DomainError) Error() string { return string(e.Code) }
+
 type RejectedResult struct {
 	Status RejectedStatus `json:"status"`
 	Error  DomainError    `json:"error"`
