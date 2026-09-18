@@ -356,26 +356,35 @@ function askQuestionsByCall(model: ThreadModel): Map<string, AskQuestionRef[]> {
 
 // liveAskQuestions has no memory of its own (its own doc comment) — it rescans
 // every turn's items and re-parses every pending ask_user's argumentsJson on
-// every call. Keyed on model.turns, this reuses ONE scan for every caller that
-// shares that exact array: projectTimeline's own default argument below, and
+// every call, gated on model.askPending (#1731 piece A round 4). Keyed on
+// model.turns AND model.askPending, this reuses ONE scan for every caller
+// that shares both: projectTimeline's own default argument below, and
 // pendingQuestions (mobile-native/src/questionAnswers.ts), which both run
 // against the same conversation within one publish. It does not make the scan
 // itself incremental — the reducer (reducer.ts's mapTurn/settleFirstMatchingTurn)
 // returns a new turns array on every fold, even when only the newest turn
 // changed, so a delta still pays for one scan; this removes paying for it twice
 // or more within that one delta.
+//
+// askPending has to be part of the key, not just turns: a status-only frame
+// (conversation.ts's changesRows) can flip askPending while handing back the
+// SAME turns reference, and a memo keyed on turns alone would serve the
+// answer it cached under the OLD flag — an already-projected tool row
+// staying stuck instead of becoming its question row, or the reverse.
 const asksByTurns = new WeakMap<
   readonly TurnModel[],
-  ReadonlyMap<string, AskQuestionRef[]>
+  { askPending: boolean; asks: ReadonlyMap<string, AskQuestionRef[]> }
 >();
 
 export function liveAsksFor(
   model: ThreadModel,
 ): ReadonlyMap<string, AskQuestionRef[]> {
   const cached = asksByTurns.get(model.turns);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined && cached.askPending === model.askPending) {
+    return cached.asks;
+  }
   const asks = askQuestionsByCall(model);
-  asksByTurns.set(model.turns, asks);
+  asksByTurns.set(model.turns, { askPending: model.askPending, asks });
   return asks;
 }
 
