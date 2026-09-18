@@ -1873,11 +1873,17 @@ export function createConversationStore() {
           }
           // The snapshot's thread-level fields are authoritative (see the
           // response-cut note by applyThreadNotification); the rows are the
-          // live/page merge above.
+          // live/page merge above. olderCursor is the one exception: it takes
+          // mergedCursor, not the fresh reread's own field, for the same
+          // reason mergedCursor itself does above (the reread's cursor
+          // reflects only its own bounded window, not page history merged in
+          // on top of it) - sessionTokens must not read this as the whole
+          // session when older turns are still preserved beyond it.
           const committedConversation: MobileConversation = {
             ...conversation,
             items: committedItems,
             turns: mergedTurns,
+            olderCursor: mergedCursor ?? undefined,
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
           // authoritative reread projection that are NOT superseded (revision

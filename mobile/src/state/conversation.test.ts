@@ -4067,11 +4067,12 @@ describe("ConversationStore", () => {
       // "old" prepended; the same gate must keep t1 too.
       expect(conv.items.map((i) => i.id)).toEqual(["old", "new"]);
       expect(conv.turns.map((t) => t.id)).toEqual(["t1", "t2"]);
-      // Both turns still count (not just the fresh reread's own window). The
-      // scope label is asserted separately: conversation.olderCursor here is
-      // the fresh reread's own cursor, which does not account for the merged
-      // -in page history's own remaining cursor.
-      expect(sessionTokens(conv)).toMatchObject({ inputTokens: 560, outputTokens: 60 });
+      // Both turns still count (not just the fresh reread's own window), and
+      // the scope stays "loaded": conversation.olderCursor takes the same
+      // accumulated cursor mergedCursor already prefers for the items merge,
+      // not the fresh reread's own (which would understate how much history
+      // is preserved beyond it).
+      expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
     });
   });
 
