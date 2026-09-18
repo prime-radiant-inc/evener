@@ -522,7 +522,7 @@ func mcpProgramConstructionCases(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new in-memory request: %v", err)
 	}
-	if _, err := (&mcphttp.HeaderRoundTripper{Base: base, Host: "invalid.example", Headers: map[string]string{"X-Program": "value"}}).RoundTrip(request); err != nil || base.got == nil || base.got.Header.Get("X-Program") != "value" {
+	if _, err := (&mcphttp.HeaderRoundTripper{Base: base, Origin: "https://invalid.example:443", Headers: map[string]string{"X-Program": "value"}}).RoundTrip(request); err != nil || base.got == nil || base.got.Header.Get("X-Program") != "value" {
 		t.Fatalf("header round trip = req=%#v err=%v", base.got, err)
 	}
 	if client := mcphttp.ClientWithHeaders(nil, "https://invalid.example/mcp", map[string]string{"X-Program": "value"}); client == nil || client.Transport == nil {

@@ -87,7 +87,7 @@ func TestClientWithHeaders_BaseCopiedNotMutated(t *testing.T) {
 // receive a distinct clone carrying the injected headers.
 func TestHeaderRoundTripper_DoesNotMutateRequest(t *testing.T) {
 	rec := &recordingRoundTripper{}
-	rt := &mcphttp.HeaderRoundTripper{Base: rec, Host: "example.invalid", Headers: map[string]string{"X-Injected": "yes"}}
+	rt := &mcphttp.HeaderRoundTripper{Base: rec, Origin: "https://example.invalid:443", Headers: map[string]string{"X-Injected": "yes"}}
 
 	req, err := http.NewRequest(http.MethodGet, "https://example.invalid/", nil)
 	if err != nil {
@@ -134,17 +134,17 @@ func TestClientWithHeaders_ForwardsCloseIdleConnections(t *testing.T) {
 }
 
 // ClientWithHeaders must scope injection to the configured endpoint's
-// hostname. Otherwise a cross-host redirect, which http.Client deliberately
-// sends without sensitive headers, would have its credentials re-added by the
+// normalized origin. Otherwise a cross-origin redirect, which http.Client sends
+// without sensitive headers, would have its credentials re-added by the
 // transport and leaked to the redirect target.
-func TestClientWithHeaders_HostScopedInjection(t *testing.T) {
+func TestClientWithHeaders_OriginScopedInjection(t *testing.T) {
 	client := mcphttp.ClientWithHeaders(nil, "https://mcp.example/mcp", map[string]string{"Authorization": "Bearer secret"})
 	rt, ok := client.Transport.(*mcphttp.HeaderRoundTripper)
 	if !ok {
 		t.Fatalf("transport = %T, want *mcphttp.HeaderRoundTripper", client.Transport)
 	}
-	if rt.Host != "mcp.example" {
-		t.Fatalf("scoped host = %q, want %q", rt.Host, "mcp.example")
+	if rt.Origin != "https://mcp.example:443" {
+		t.Fatalf("scoped origin = %q, want %q", rt.Origin, "https://mcp.example:443")
 	}
 
 	rec := &recordingRoundTripper{}
@@ -185,6 +185,62 @@ func TestClientWithHeaders_HostScopedInjection(t *testing.T) {
 	}
 	if got := rec.got.Header.Get("Authorization"); got != "Bearer secret" {
 		t.Errorf("mixed-case same-host Authorization = %q, want injected value", got)
+	}
+}
+
+// End-to-end: a redirect to the same host on a different port is a different
+// origin, so the transport must not inject Authorization there. The clone in
+// RoundTrip is what makes this hold end-to-end: http.Client copies headers from
+// the original (un-injected) request on a same-host redirect, and the transport
+// declines to re-add them for the foreign origin.
+func TestClientWithHeaders_SameHostDifferentPortRedirectDropsHeaders(t *testing.T) {
+	var destAuth string
+	dest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		destAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer dest.Close()
+
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, dest.URL+"/next", http.StatusFound)
+	}))
+	defer src.Close()
+
+	client := mcphttp.ClientWithHeaders(nil, src.URL, map[string]string{"Authorization": "Bearer secret"})
+	resp, err := client.Get(src.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if destAuth != "" {
+		t.Errorf("same-host different-port redirect received Authorization = %q, want none", destAuth)
+	}
+}
+
+// End-to-end: a redirect within the same origin keeps the configured headers,
+// so scoping does not drop credentials on ordinary in-origin path redirects.
+func TestClientWithHeaders_SameOriginRedirectKeepsHeaders(t *testing.T) {
+	var finalAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/final", http.StatusFound)
+			return
+		}
+		finalAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := mcphttp.ClientWithHeaders(nil, srv.URL, map[string]string{"Authorization": "Bearer secret"})
+	resp, err := client.Get(srv.URL + "/redirect")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if finalAuth != "Bearer secret" {
+		t.Errorf("same-origin redirect Authorization = %q, want injected value", finalAuth)
 	}
 }
 

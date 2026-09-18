@@ -13,13 +13,14 @@ import (
 
 // HeaderRoundTripper wraps an http.RoundTripper to inject Headers into a
 // request before delegating to Base. Headers are injected only into requests
-// whose URL hostname matches Host (case-insensitively), so a redirect to
-// another host cannot re-add credentials the http.Client would otherwise
-// strip. The zero Host injects nothing: an unscoped wrapper would leak to every
-// host, so callers must supply a concrete host.
+// whose normalized origin (scheme, case-insensitive host, effective port)
+// matches Origin, so a redirect to a different origin cannot re-add credentials
+// the http.Client would otherwise withhold. The zero Origin injects nothing: an
+// unscoped wrapper would leak to every origin, so callers must supply a
+// concrete one.
 type HeaderRoundTripper struct {
 	Base    http.RoundTripper
-	Host    string // endpoint hostname that scopes injection; empty injects nothing
+	Origin  string // normalized scheme://host:port that scopes injection; empty injects nothing
 	Headers map[string]string
 }
 
@@ -28,7 +29,7 @@ type HeaderRoundTripper struct {
 // contract requires.
 func (h *HeaderRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	clone := req.Clone(req.Context())
-	if req.URL != nil && h.Host != "" && strings.EqualFold(req.URL.Hostname(), h.Host) {
+	if h.Origin != "" && originOf(req.URL) == h.Origin {
 		for k, v := range h.Headers {
 			clone.Header.Set(k, v)
 		}
@@ -45,18 +46,45 @@ func (h *HeaderRoundTripper) CloseIdleConnections() {
 	}
 }
 
+// originOf returns u's normalized origin — lowercased scheme and hostname plus
+// the effective port (the scheme default when u omits one). It returns "" when
+// u has no scheme or hostname, which callers treat as "injects nothing".
+func originOf(u *url.URL) string {
+	if u == nil {
+		return ""
+	}
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	if scheme == "" || host == "" {
+		return ""
+	}
+	port := u.Port()
+	if port == "" {
+		switch scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return ""
+		}
+	}
+	return scheme + "://" + host + ":" + port
+}
+
 // ClientWithHeaders returns a copy of base (a fresh client when base is nil)
 // whose transport injects headers into requests for the server identified by
 // endpointURL. base is left untouched; when base's transport is nil the wrapper
 // falls back to http.DefaultTransport.
 //
-// Injection is scoped to endpointURL's hostname (compared case-insensitively)
-// so that a redirect to another host does not carry the configured headers:
-// http.Client strips sensitive headers (Authorization, Cookie, ...) on a
-// cross-host redirect, and an unscoped transport would immediately re-add
-// them, leaking credentials to the redirect target. An unparseable or hostless
-// endpointURL yields a client that injects nothing, so a bad URL fails closed
-// rather than leaking to every host.
+// Injection is scoped to endpointURL's normalized origin (scheme,
+// case-insensitive host, effective port) so a redirect to a different origin
+// does not carry the configured headers: http.Client withholds sensitive
+// headers (Authorization, Cookie, ...) on a cross-host redirect, and an
+// unscoped transport would immediately re-add them, leaking credentials to the
+// redirect target. An unparseable or hostless endpointURL yields an origin of
+// "", which injects nothing, so a bad URL fails closed rather than leaking to
+// every origin.
 func ClientWithHeaders(base *http.Client, endpointURL string, headers map[string]string) *http.Client {
 	client := http.Client{}
 	if base != nil {
@@ -67,13 +95,12 @@ func ClientWithHeaders(base *http.Client, endpointURL string, headers map[string
 		transport = http.DefaultTransport
 	}
 	u, err := url.Parse(endpointURL)
-	if err != nil || u.Hostname() == "" {
-		client.Transport = transport
-		return &client
+	if err != nil {
+		u = nil
 	}
 	client.Transport = &HeaderRoundTripper{
 		Base:    transport,
-		Host:    strings.ToLower(u.Hostname()),
+		Origin:  originOf(u),
 		Headers: headers,
 	}
 	return &client
