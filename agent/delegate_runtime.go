@@ -75,10 +75,14 @@ type delegateIsolation struct {
 }
 
 type delegateQuietAttentionClaim struct {
-	token       uint64
-	lease       delegateLease
-	sequence    uint64
-	activityAt  time.Time
+	token      uint64
+	lease      delegateLease
+	sequence   uint64
+	activityAt time.Time
+	// notifiedAt is the tick instant that admitted this claim; a commit
+	// re-baselines the repeat cadence on it so the next wake is one further
+	// window out.
+	notifiedAt  time.Time
 	attentionID string
 	content     string
 	receiver    *Session
@@ -106,7 +110,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		c.mu.Unlock()
 		return err
 	}
-	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+	rearm := live.quietRearmPendingLocked()
 	activityChanged := at.After(live.activityAt) || at.Equal(live.activityAt) && rearm
 	productiveChanged := phase != jobPhaseModelRetrying && at.After(live.productiveActivityAt)
 	if !activityChanged && !productiveChanged {
@@ -114,8 +118,7 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 		return nil
 	}
 	if activityChanged && rearm {
-		live.quietSequence++
-		live.quietNotified = false
+		live.rearmQuietCadenceLocked()
 	}
 	if activityChanged {
 		live.activityAt = at
@@ -130,6 +133,30 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	return nil
 }
 
+// quietRearmPendingLocked reports whether new activity must re-baseline the
+// quiet cadence: a wake was committed, or a first wake's claim is still in
+// flight for the current sequence. It is ReportActivityPhase's rearm predicate,
+// shared so the controller paths that advance activityAt directly (steer
+// persistence) rearm exactly the same way.
+func (live *delegateLiveState) quietRearmPendingLocked() bool {
+	return live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+}
+
+// rearmQuietCadenceLocked clears a pending quiet wake and advances the stretch
+// identity so the next watchdog window is measured from fresh activity and gets
+// a fresh attention id. Advancing the sequence is what retires an in-flight
+// claim: CompleteQuietAttention rejects it as stale, and without the advance the
+// next wake would reuse the consumed id with a newer activity timestamp, which
+// folds as a permanent "conflicting content" failure.
+func (live *delegateLiveState) rearmQuietCadenceLocked() {
+	if !live.quietRearmPendingLocked() {
+		return
+	}
+	live.quietNotified = false
+	live.quietNotifiedAt = time.Time{}
+	live.quietSequence++
+}
+
 func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Time) error {
 	if s == nil || s.delegateController == nil {
 		return errDelegateDeliveryReceiverUnavailable
@@ -142,9 +169,19 @@ func (s *Session) runDelegateQuietWatchdogTick(lease delegateLease, now time.Tim
 	if deferred {
 		return s.delegateController.CompleteQuietAttention(claim, false)
 	}
+	return s.completeQuietWatchdogClaim(claim, appendErr)
+}
+
+// completeQuietWatchdogClaim commits an admitted quiet claim after its durable
+// append attempt and arms the wake. The append is durable even when completion
+// then finds the claim stale, so the wake is armed in that case too: a wake that
+// is never armed leaves the durable attention pending with nothing to deliver
+// it. armDelegateAttention is idempotent and no-ops when the attention is no
+// longer pending, so an identity retired by a covering stop is not resurrected.
+func (s *Session) completeQuietWatchdogClaim(claim *delegateQuietAttentionClaim, appendErr error) error {
 	completionErr := s.delegateController.CompleteQuietAttention(claim, appendErr == nil)
-	if appendErr == nil && completionErr == nil {
-		completionErr = s.armDelegateAttention(claim.attentionID)
+	if appendErr == nil {
+		completionErr = errors.Join(completionErr, s.armDelegateAttention(claim.attentionID))
 	}
 	return errors.Join(appendErr, completionErr)
 }
@@ -460,7 +497,21 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 	if now.IsZero() {
 		now = c.now()
 	}
-	if activityAt.IsZero() || now.Before(activityAt.Add(delegateQuietWindow)) || live.quietNotified || live.quietClaim != nil {
+	if activityAt.IsZero() || live.quietClaim != nil {
+		return nil, nil
+	}
+	// The quiet clock restarts at the last wake, not only at the last activity:
+	// a delegate that never reports activity again re-fires once per further
+	// delegateQuietWindow instead of going dark after one notification. Activity
+	// still rearms through ReportActivityPhase, which clears quietNotified so
+	// this baseline falls back to activityAt. The result is one bounded wake per
+	// window — never a burst — because each admission requires a further full
+	// delegateQuietWindow of silence.
+	quietSince := activityAt
+	if live.quietNotified {
+		quietSince = live.quietNotifiedAt
+	}
+	if now.Before(quietSince.Add(delegateQuietWindow)) {
 		return nil, nil
 	}
 	if live.quietSequence == 0 {
@@ -472,6 +523,7 @@ func (c *delegateTreeController) BeginQuietAttention(receiver *Session, lease de
 		lease:       lease,
 		sequence:    live.quietSequence,
 		activityAt:  activityAt,
+		notifiedAt:  now,
 		attentionID: delegateQuietAttentionIDForStretch(lease, live.quietSequence),
 		content:     delegateQuietAttentionContent(lease, activityAt),
 		receiver:    receiver,
@@ -511,6 +563,11 @@ func (c *delegateTreeController) CompleteQuietAttention(claim *delegateQuietAtte
 			result = errDelegateStaleLease
 		} else {
 			live.quietNotified = true
+			live.quietNotifiedAt = claim.notifiedAt
+			// Advance the stretch identity so the next repeat carries a fresh
+			// attention id: a reused id would replay as a no-op and the repeat
+			// wake would be silently swallowed.
+			live.quietSequence++
 		}
 	}
 	c.evidenceVersion++
