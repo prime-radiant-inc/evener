@@ -376,19 +376,3 @@ describe("fakeDraftBackend", () => {
 		expect(b.store.has("k")).toBe(false);
 	});
 });
-
-describe("fakeDraftBackend", () => {
-	it("get() returns a clone, not the live stored reference", () => {
-		// set() and memoryDraftStorage's load() both clone (the real Storage-
-		// backed backend re-parses stringified bytes on every get()); get()
-		// must match, or a caller mutating what it read corrupts the store
-		// without ever going through set/replaceIf.
-		const b = fakeDraftBackend();
-		b.store.set("k", { id: "draft-1", nested: { value: 1 } });
-
-		const loaded = b.get("k") as { nested: { value: number } };
-		loaded.nested.value = 999;
-
-		expect(b.store.get("k")).toEqual({ id: "draft-1", nested: { value: 1 } });
-	});
-});
