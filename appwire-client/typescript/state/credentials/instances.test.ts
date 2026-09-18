@@ -535,6 +535,234 @@ describe("credential mutations", () => {
     expect(store.getState().instances).toEqual([WORK]);
   });
 
+  test("a read issued after a credential write keeps the answer's row, not the pre-write held row", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, activeSource: "none" }],
+      availableProviders: [],
+    }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    expect(store.getState().instances[0]?.activeSource).toBe("none");
+
+    // The credential write is issued and held open, then a read starts - so the
+    // read is issued AFTER the write but answers after the write has landed.
+    // Its row is the post-write one, while the store holds the pre-write row it
+    // read; a credential write installs no row of its own, so keeping the held
+    // row here would show the pre-write row until the self-refresh lands.
+    const write = deferred<AuthStatusResponse>();
+    fake.on("evener/auth/apiKey/set", () => write.promise);
+    const save = store.getState().setApiKey("work", API_KEY);
+    const readAnswer = deferred<InstanceListResponse>();
+    fake.on("evener/instance/list", () => readAnswer.promise);
+    const read = store.getState().fetch();
+
+    write.resolve({ ...SIGNED_IN, activeSource: "store" });
+    await save;
+    readAnswer.resolve({ instances: [{ ...WORK, activeSource: "store" }], availableProviders: [] });
+    expect(await read).toBe(true);
+    expect(store.getState().instances[0]?.activeSource).toBe("store");
+  });
+
+  test("a landed credential write retires the instance's in-flight refreshModels", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, models: [{ id: "live-old" }] }],
+      availableProviders: [],
+    }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-old"]);
+
+    // A model refresh is out when the credential write lands.
+    const refreshAnswer = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => refreshAnswer.promise);
+    const refresh = store.getState().refreshModels("work");
+    const write = deferred<AuthStatusResponse>();
+    fake.on("evener/auth/apiKey/set", () => write.promise);
+    const save = store.getState().setApiKey("work", API_KEY);
+    write.resolve({ ...SIGNED_IN, activeSource: "store" });
+    await save;
+
+    // The post-write listing is what the store holds.
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, activeSource: "store", models: [{ id: "live-post" }] }],
+      availableProviders: [],
+    }));
+    await store.getState().fetch();
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-post"]);
+
+    // The refresh's snapshot predates the write: its stale inventory must be
+    // discarded, not merged over the post-write listing.
+    refreshAnswer.resolve({ instances: [{ ...WORK, models: [{ id: "stale-live" }] }], availableProviders: [] });
+    await refresh;
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-post"]);
+  });
+
+  test("a credential write that errors after applying still retires the in-flight refreshModels", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, models: [{ id: "live-old" }] }],
+      availableProviders: [],
+    }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // A model refresh is out when the credential write applies but a later step
+    // fails (its status readback): the RPC rejects with no signal that the write
+    // stood (the hub's writeApplied marks it only server-side).
+    const refreshAnswer = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => refreshAnswer.promise);
+    const refresh = store.getState().refreshModels("work");
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("status read failed");
+    });
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, models: [{ id: "live-post" }] }],
+      availableProviders: [],
+    }));
+    await expect(store.getState().setApiKey("work", API_KEY)).rejects.toThrow("status read failed");
+
+    // The errored write retired the in-flight refresh and re-read the listing,
+    // so the discarded refresh's inventory is replaced rather than left stale.
+    expect(listReads(fake)).toBe(1);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-post"]);
+
+    // The refresh's snapshot predates the applied write: retired, it must not
+    // land over the post-write inventory.
+    refreshAnswer.resolve({ instances: [{ ...WORK, models: [{ id: "stale-live" }] }], availableProviders: [] });
+    await refresh;
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-post"]);
+  });
+
+  test("a credential write that errors without a refresh in flight reads nothing of its own", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("status read failed");
+    });
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    await expect(store.getState().setApiKey("work", API_KEY)).rejects.toThrow("status read failed");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(1);
+  });
+
+  test("an errored credential write after a retired refresh settles reads nothing when none is in flight", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // A refresh is out, a landed write retires it, and it then settles - which
+    // leaves its monotonic version token behind with no refresh in flight.
+    const refreshAnswer = deferred<InstanceListResponse>();
+    fake.on("evener/instance/refreshModels", () => refreshAnswer.promise);
+    const refresh = store.getState().refreshModels("work");
+    fake.on("evener/auth/apiKey/set", () => SIGNED_IN);
+    await store.getState().setApiKey("work", API_KEY);
+    await vi.advanceTimersByTimeAsync(300); // the landed write's own refetch
+    expect(listReads(fake)).toBe(2);
+    refreshAnswer.resolve(LISTING);
+    await refresh;
+
+    // The later errored write has no refresh in flight, so it must not read
+    // anything of its own - the lingering token is not a live refresh.
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("status read failed");
+    });
+    await expect(store.getState().setApiKey("work", API_KEY)).rejects.toThrow("status read failed");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(2);
+  });
+
+  test("an overlapping refresh cannot reuse a settled refresh's version and land a stale answer", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, models: [{ id: "live-old" }] }],
+      availableProviders: [],
+    }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // A and B are out; B (the newer) settles first, then C starts.
+    const answerA = deferred<InstanceListResponse>();
+    const answerB = deferred<InstanceListResponse>();
+    const answerC = deferred<InstanceListResponse>();
+    let nth = 0;
+    fake.on("evener/instance/refreshModels", () => [answerA.promise, answerB.promise, answerC.promise][nth++]!);
+    const refreshA = store.getState().refreshModels("work");
+    const refreshB = store.getState().refreshModels("work");
+    answerB.resolve({ instances: [{ ...WORK, models: [{ id: "live-b" }] }], availableProviders: [] });
+    await refreshB;
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-b"]);
+
+    const refreshC = store.getState().refreshModels("work");
+
+    // A's answer was computed before B and C: it must not land now, even though
+    // B's settlement would once have let C reuse A's version.
+    answerA.resolve({ instances: [{ ...WORK, models: [{ id: "live-a" }] }], availableProviders: [] });
+    await refreshA;
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-b"]);
+
+    answerC.resolve({ instances: [{ ...WORK, models: [{ id: "live-c" }] }], availableProviders: [] });
+    await refreshC;
+    expect(store.getState().instances[0]?.models?.map((model) => model.id)).toEqual(["live-c"]);
+  });
+
+  test("a refresh settling after its client was swapped out and back keeps a newer refresh counted", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = new FakeClient("ready");
+    fake.on("evener/instance/list", () => ({
+      instances: [{ ...WORK, models: [{ id: "live-old" }] }],
+      availableProviders: [],
+    }));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    // An old refresh is out on this client object, the connection swaps to
+    // another client and back to the same object, and a newer refresh starts.
+    const oldAnswer = deferred<InstanceListResponse>();
+    const newAnswer = deferred<InstanceListResponse>();
+    let nth = 0;
+    fake.on("evener/instance/refreshModels", () => (nth++ === 0 ? oldAnswer.promise : newAnswer.promise));
+    const oldRefresh = store.getState().refreshModels("work");
+    store.connectionChanged(new FakeClient("ready"), "ready");
+    store.connectionChanged(fake, "ready");
+    await vi.advanceTimersByTimeAsync(300); // the restore read
+    const newRefresh = store.getState().refreshModels("work");
+
+    // The old refresh settles: it must not decrement the newer refresh's count.
+    oldAnswer.resolve({ instances: [{ ...WORK, models: [{ id: "live-old" }] }], availableProviders: [] });
+    await oldRefresh;
+
+    // An errored write still sees the newer refresh in flight, so it reads.
+    const before = listReads(fake);
+    fake.on("evener/auth/apiKey/set", () => {
+      throw new Error("status read failed");
+    });
+    await expect(store.getState().setApiKey("work", API_KEY)).rejects.toThrow("status read failed");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(listReads(fake)).toBe(before + 1);
+
+    newAnswer.resolve({ instances: [{ ...WORK, models: [{ id: "live-new" }] }], availableProviders: [] });
+    await newRefresh;
+  });
+
   test("a landed write refreshes the listing once, self-marked; a foreign echo refreshes unmarked", async () => {
     vi.useFakeTimers();
     const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });

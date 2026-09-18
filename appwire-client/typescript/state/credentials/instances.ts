@@ -336,18 +336,38 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   };
   let requestVersion = 0;
   let requestedList = false;
-  // landedMutations counts authoritative writes that LANDED, PER INSTANCE (a
-  // write the server applied, whether or not its answer is the one the store
-  // applied). refreshModels captures its instance's count at start, and only a
-  // write on THAT instance landing while the refresh is out - never a routine
-  // read, never a write on another instance - supersedes it: counting globally
-  // dropped a refresh for one instance whenever anything was written to another,
-  // and the sheet silently lost the live rows it asked for.
+  // landedMutations counts listing writes that LANDED, PER INSTANCE, whose own
+  // answer installed that instance's held row (create/edit/remove/setDefault/
+  // setModelDisabled). refreshModels captures its instance's count at start, and
+  // only such a write on THAT instance landing while the refresh is out - never
+  // a routine read, never a write on another instance - supersedes it: counting
+  // globally dropped a refresh for one instance whenever anything was written to
+  // another, and the sheet silently lost the live rows it asked for. The count
+  // is also what lets a read keep the store's newer row (keepWrittenRows), an
+  // invariant only a write that installed its own row satisfies - a credential
+  // write installs none, so it is deliberately absent here and retires an
+  // in-flight refresh directly instead (retireInFlightRefresh, authMutation).
   const landedMutations = new Map<string, number>();
-  // refreshVersions tracks one in-flight version per refreshed instance: two
-  // sheets may refresh different instances concurrently, and starting B's
-  // refresh must not cancel A's.
+  // refreshVersions tracks one version per refreshed instance: two sheets may
+  // refresh different instances concurrently, and starting B's refresh must not
+  // cancel A's. The token is monotonic within a bookkeeping generation and is
+  // never deleted - deleting it when the newest of several overlapping refreshes
+  // settled let a later refresh reuse a version an older, still-out refresh was
+  // holding, so that stale answer could land. A retired token is likewise left
+  // in place. That is why refreshVersions' own presence cannot answer "is a
+  // refresh in flight".
   const refreshVersions = new Map<string, number>();
+  // inFlightRefreshes counts, per instance, refreshModels calls that have not
+  // settled yet: the one thing that answers "is a refresh out for this
+  // instance" (retireInFlightRefresh). Distinct from refreshVersions because the
+  // token outlives its refresh.
+  const inFlightRefreshes = new Map<string, number>();
+  // bookkeepingGeneration increments whenever clearClientBookkeeping drops the
+  // bookkeeping written under one client. A refresh captures it at start and is
+  // stale whole once it moves: clearing lets a client swap back to an earlier
+  // object, so neither connection identity nor a version token alone can tell a
+  // late reply from a current one.
+  let bookkeepingGeneration = 0;
   // refreshedInstances counts, per instance, the refreshes that landed since the
   // last full-list apply: a read that started before one merges around those rows
   // instead of replacing them, and a COUNT rather than a name is what tells a
@@ -392,6 +412,23 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
   function bump(counts: Map<string, number>, name: string): void {
     counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
+  // retireInFlightRefresh invalidates one instance's in-flight refreshModels by
+  // advancing its version token, so an answer computed before the caller's write
+  // cannot land over the post-write listing. This is the credential-write
+  // counterpart to a landed mutation: a credential write installs no row, so it
+  // must NOT be counted in landedMutations (that count also makes a read keep
+  // the pre-write held row - keepWrittenRows - an invariant only a write with
+  // its own row satisfies), yet it still supersedes a refresh by name. Reports
+  // whether a refresh was actually out and retired - inFlightRefreshes, never
+  // the token's presence, since the token outlives its refresh - so the
+  // ambiguous-write path can tell that it discarded a live read. Bumps nothing
+  // when no refresh is out.
+  function retireInFlightRefresh(name: string): boolean {
+    if ((inFlightRefreshes.get(name) ?? 0) === 0) return false;
+    refreshVersions.set(name, (refreshVersions.get(name) ?? 0) + 1);
+    return true;
   }
 
   // landedListing is the one transition that installs a listing: every applied
@@ -611,8 +648,10 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // not decide the next client's listing, and a refresh landing before that
   // client's first read is a fresh row to stage, not a removal to preserve.
   function clearClientBookkeeping(): void {
+    bookkeepingGeneration += 1;
     refreshedInstances.clear();
     refreshVersions.clear();
+    inFlightRefreshes.clear();
     landedMutations.clear();
   }
 
@@ -627,12 +666,16 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     const client = requireClient();
     // Per-instance version, not the global counter: a refresh for B must not
     // cancel an in-flight refresh for A. Only a newer refresh for THIS
-    // instance, or a write on THIS instance landing while this read is out,
-    // supersedes it - routine reads and writes on other instances never do.
+    // instance, a row-installing write on THIS instance landing while this read
+    // is out (landedMutations), or a credential write for it (which advances
+    // refreshVersions directly - retireInFlightRefresh) supersedes it - routine
+    // reads and writes on other instances never do.
     const basis = landedMutations.get(name) ?? 0;
+    const generation = bookkeepingGeneration;
     const version = (refreshVersions.get(name) ?? 0) + 1;
     refreshVersions.set(name, version);
     const marker = noteLocalMutation(undefined);
+    bump(inFlightRefreshes, name);
     try {
       const response = await client.request("evener/instance/refreshModels", {
         name,
@@ -644,6 +687,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       // already cleared the marker, making this a no-op.
       restampLocalMutation(marker);
       if (
+        generation !== bookkeepingGeneration ||
         refreshVersions.get(name) !== version ||
         (landedMutations.get(name) ?? 0) !== basis ||
         !connectionStillCurrent(client)
@@ -689,12 +733,16 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       retireLocalMutation(marker);
       throw err;
     } finally {
-      // Only this client's entry: a reconnect clears the map, and the next
-      // client's refresh for the same instance restarts at version 1 - the
-      // old request's cleanup must not delete that newer token and discard
-      // its answer.
-      if (connection.client === client && refreshVersions.get(name) === version) {
-        refreshVersions.delete(name);
+      // Drop this request's own in-flight count only while its bookkeeping
+      // generation still stands: a cleared generation has already forgotten it,
+      // and its count must not be decremented against whatever the next
+      // generation (a client swapped back to the same object included) put
+      // there. The version token is deliberately left in place - it is the
+      // monotonic guard that keeps a later refresh from reusing this version.
+      if (generation === bookkeepingGeneration) {
+        const remaining = (inFlightRefreshes.get(name) ?? 1) - 1;
+        if (remaining > 0) inFlightRefreshes.set(name, remaining);
+        else inFlightRefreshes.delete(name);
       }
     }
   }
@@ -901,7 +949,11 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // authMutation runs one credential write that the hub may echo: it takes the
   // write gate, arms the provider's marker, and on a landed outcome re-stamps
   // it and schedules the store's own refresh; a refused or unconfirmed outcome
-  // retires the marker instead. `landed` lets a device poll report that only
+  // retires the marker instead. A landed outcome and an errored one (the write
+  // may have applied before a later step failed - see the catch) also retire
+  // that instance's in-flight refreshModels, whose inventory predates the
+  // write; an unconfirmed outcome that wrote nothing (a pending device poll)
+  // retires only the marker. `landed` lets a device poll report that only
   // an authorized tick is a write the hub broadcasts. Issuing the write bumps
   // the request ordering, so a listing read still in flight cannot publish
   // rows that predate it; the store's own refresh lands the post-write rows,
@@ -935,15 +987,33 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
       if (landed(result)) {
         restampLocalMutation(marker);
         scheduleRefetch(true);
-        // A write landed: count it against the instance it named so only that
-        // instance's in-flight refreshModels is retired (see landedMutations).
-        bump(landedMutations, provider);
+        // A landed credential write installs no row of its own, so it is not a
+        // landed mutation (keepWrittenRows must not keep the pre-write row over
+        // a read's newer answer); it still retires that instance's in-flight
+        // refreshModels, whose inventory predates the write.
+        retireInFlightRefresh(provider);
       } else retireLocalMutation(marker);
       return result;
     } catch (err) {
       // Refused: the marker retires, so an echo that follows after all - the
       // write landed and only its reply was lost - reads as foreign and re-reads.
-      if (connection === issued) retireLocalMutation(marker);
+      // The same uncertainty governs the in-flight refreshModels: a credential
+      // write can persist before a later step fails (the hub reports that with
+      // writeApplied and still broadcasts it - notifyAuthWrite's writeDidApply
+      // branch - so the client sees only an ordinary error, with no wire signal
+      // to tell the two apart). Treating an errored write as possibly-applied,
+      // exactly as the marker retirement above already does, retires that
+      // instance's in-flight refresh: its inventory may predate the write and
+      // would otherwise merge over the post-write listing.
+      if (connection === issued) {
+        retireLocalMutation(marker);
+        // A discarded refresh could have been the sheet's only live inventory,
+        // and a failure that never applied would leave nothing to replace it.
+        // Re-read the listing so the model inventory is current either way; a
+        // write that retired no refresh reads nothing of its own, the hub's echo
+        // covering one that did land.
+        if (retireInFlightRefresh(provider)) scheduleRefetch();
+      }
       throw err;
     } finally {
       settleLoading(version);
