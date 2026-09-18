@@ -45,11 +45,9 @@ func covstmtRun(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	profiles := fs.Args()
-	if len(profiles) != 1 && *gaps {
-		fs.Usage()
-		return 2
-	}
-	if len(profiles) == 0 {
+	// The count mode takes one or more profiles; --gaps is a single profile's
+	// ranking, so more than one is a usage error.
+	if len(profiles) == 0 || (*gaps && len(profiles) != 1) {
 		fs.Usage()
 		return 2
 	}
@@ -143,12 +141,8 @@ func gapsIn(blocks []covstmt.Block, pattern string, top int, w io.Writer) {
 		_, _ = fmt.Fprintf(w, "%8d  %s:%d-%d\n", r.ns, r.file, r.startLine, r.endLine)
 	}
 	_, _ = fmt.Fprintln(w)
-	shown := len(rows)
-	if top < shown {
-		shown = top
-	}
 	_, _ = fmt.Fprintf(w, "showing %d of %d uncovered blocks (%d statements) in files matching %s\n",
-		shown, len(rows), total, pyRepr(pattern))
+		min(top, len(rows)), len(rows), total, pyRepr(pattern))
 }
 
 // gapsAggregate ranks packages (or files) by their UNCOVERED statement count,
@@ -219,12 +213,8 @@ func gapsAggregate(blocks []covstmt.Block, by string, top int, zeroOnly bool, w 
 		_, _ = fmt.Fprintf(w, "%8d %8d %7.1f%%  %s\n", r.missing, r.total, pctOf(r.covered, r.total), r.name)
 	}
 	_, _ = fmt.Fprintln(w)
-	shown := len(rows)
-	if top < shown {
-		shown = top
-	}
 	_, _ = fmt.Fprintf(w, "showing %d of %d %ss with gaps; %d uncovered of %d statements overall (%.1f%%)\n",
-		shown, len(rows), by, grandMissing, grandTotal, pctOf(grandTotal-grandMissing, grandTotal))
+		min(top, len(rows)), len(rows), by, grandMissing, grandTotal, pctOf(grandTotal-grandMissing, grandTotal))
 }
 
 // packageOf mirrors Python's `f.rsplit("/", 1)[0]`: the directory containing a
