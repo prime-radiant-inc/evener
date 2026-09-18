@@ -72,17 +72,14 @@ export function createLaunchLayerStore(client: LaunchLayerClient): LaunchLayerSt
     debounceMs: LAUNCH_LAYER_REFETCH_DEBOUNCE_MS,
     store: () => store,
     refetch: (state) => state.fetchLaunchLayer(),
-    onFence: (set) => {
-      listRevision.fence();
-      // Nothing is coming to lower it.
-      set({ launchLayerLoading: false });
-    },
-    // A setLaunchLayer issued before any fetchLaunchLayer call touches none
-    // of these three fields, so listRevision.hasLive() is what carries its
-    // intent - a write issues the same live revision a read does (see
-    // listRevision.ts and marketplaces.ts/plugins.ts's own wantsList).
-    wantsList: (s) =>
-      s.launchLayer !== null || s.launchLayerError !== null || s.launchLayerLoading || listRevision.hasLive(),
+    revision: listRevision,
+    // The lifecycle fences listRevision; nothing is coming to lower the flag a
+    // fenced read raised.
+    onFence: (set) => set({ launchLayerLoading: false }),
+    // A setLaunchLayer issued before any fetchLaunchLayer call touches none of
+    // these three fields; the lifecycle ORs listRevision.hasLive() in for that
+    // case (see storeLifecycle.ts's revision option).
+    wantsList: (s) => s.launchLayer !== null || s.launchLayerError !== null || s.launchLayerLoading,
   });
 
   const store = createFrameworkFreeStore<LaunchLayerState>((publish) => {
