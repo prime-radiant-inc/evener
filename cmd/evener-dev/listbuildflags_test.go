@@ -27,9 +27,10 @@ func TestListBuildFlagsIsARegisteredSubcommand(t *testing.T) {
 
 func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		args []string
-		want []string
+		name    string
+		args    []string
+		want    []string
+		wantErr bool
 	}{
 		{name: "nothing to forward", args: []string{"-short", "-count=1"}},
 		{name: "the race tag selects files", args: []string{"-race", "-short"}, want: []string{"-race"}},
@@ -43,9 +44,13 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "and so do the module flags", args: []string{"-mod", "mod", "-modfile", "alt.mod"}, want: []string{"-mod", "mod", "-modfile", "alt.mod"}},
 		{name: "and the compiler", args: []string{"--compiler=gccgo"}, want: []string{"-compiler=gccgo"}},
 		// -C cannot be applied to an enumeration the gate anchors to the
-		// module's own directory, so it is dropped -- but its value is still
-		// consumed, not read as a flag.
-		{name: "-C is not forwarded", args: []string{"-C", "somewhere"}},
+		// module's own directory, so it is refused rather than half-applied.
+		{name: "-C is refused", args: []string{"-C", "somewhere"}, wantErr: true},
+		{name: "-C is refused inline too", args: []string{"-C=somewhere"}, wantErr: true},
+		// The gate word-splits its go test invocation, so a value with
+		// whitespace cannot reach go test the way it reaches go list.
+		{name: "a whitespace value is refused", args: []string{"-tags", "a b"}, wantErr: true},
+		{name: "and inline whitespace too", args: []string{"-overlay=a b.json"}, wantErr: true},
 		// The bug this table exists for: a regex whose text is -race is a
 		// regex, and forwarding it would enumerate under a sanitiser nobody
 		// asked for.
@@ -61,7 +66,17 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 		{name: "and what came before it still counts", args: []string{"-race", "-args", "-tags", "x"}, want: []string{"-race"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := packageSelectionFlags(tc.args); !reflect.DeepEqual(got, tc.want) {
+			got, err := packageSelectionFlags(tc.args)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("packageSelectionFlags(%q) = %q, want an error", tc.args, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("packageSelectionFlags(%q) error = %v", tc.args, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("packageSelectionFlags(%q) = %q, want %q", tc.args, got, tc.want)
 			}
 		})
@@ -70,12 +85,27 @@ func TestPackageSelectionFlagsForwardsWhatChangesTheTree(t *testing.T) {
 
 func TestListBuildFlagsPrintsOnePerLine(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := listBuildFlags([]string{"--", "-tags", "a b", "-race", "-short"}, &stdout, &stderr); code != 0 {
+	if code := listBuildFlags([]string{"--", "-tags", "a b", "-race", "-short"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("listBuildFlags with a whitespace value = 0, want nonzero; stdout = %q", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := listBuildFlags([]string{"--", "-tags", "integration", "-race", "-short"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("listBuildFlags = %d, stderr = %q", code, stderr.String())
 	}
 	// One per line is what lets a shell read a value with a space in it.
-	if got := stdout.String(); got != "-tags\na b\n-race\n" {
+	if got := stdout.String(); got != "-tags\nintegration\n-race\n" {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestListBuildFlagsRefusesC(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := listBuildFlags([]string{"--", "-C", "somewhere", "-race"}, &stdout, &stderr); code == 0 {
+		t.Fatalf("listBuildFlags with -C = 0, want nonzero")
+	}
+	if !strings.Contains(stderr.String(), "-C is not supported") {
+		t.Fatalf("stderr = %q, want a -C refusal", stderr.String())
 	}
 }
 
@@ -96,10 +126,14 @@ func TestListBuildFlagsFailsOnAShortWrite(t *testing.T) {
 	}
 }
 
-// writeFixture lays out a module in a temp dir and returns the dir.
+// writeFixture lays out a module in a temp dir and returns the dir with any
+// symlinks resolved, so paths built from it match what the toolchain records.
 func writeFixture(t *testing.T, files map[string]string) string {
 	t.Helper()
-	module := t.TempDir()
+	module, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, body := range files {
 		path := filepath.Join(module, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -140,7 +174,10 @@ func TestPackageSelectionFlagsDecideWhatGoListCanSee(t *testing.T) {
 	if got := list(); strings.Contains(got, "listfixture/tagged") {
 		t.Fatalf("go list without the tag = %q, want the tagged package missing", got)
 	}
-	forwarded := packageSelectionFlags([]string{"-tags", "listfixture", "-short", "-count=1"})
+	forwarded, err := packageSelectionFlags([]string{"-tags", "listfixture", "-short", "-count=1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got := list(forwarded...); !strings.Contains(got, "listfixture/tagged") {
 		t.Fatalf("go list %q = %q, want the tagged package listed", forwarded, got)
 	}
@@ -182,7 +219,10 @@ func TestPackageSelectionFlagsEnumerateWhatGoTestBuilds(t *testing.T) {
 	if got := run("list", "./..."); strings.Contains(got, "ovfixture/maybe") {
 		t.Fatalf("plain go list = %q, want the overlay-only package missing", got)
 	}
-	forwarded := packageSelectionFlags([]string{"-overlay", overlay, "-short", "-count=1"})
+	forwarded, err := packageSelectionFlags([]string{"-overlay", overlay, "-short", "-count=1"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	listed := run(append([]string{"list"}, append(forwarded, "./...")...)...)
 	if !strings.Contains(listed, "ovfixture/maybe") {
 		t.Fatalf("go list %q = %q, want the overlay-only package listed", forwarded, listed)

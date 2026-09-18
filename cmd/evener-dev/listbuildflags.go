@@ -18,8 +18,17 @@ package dev
 // enumeration a sanitiser the caller never asked for. Normalisation and the
 // value-taking tables are shardplan.go's, so both readers consume values from
 // the same spellings, including `-test.run` for `-run`.
+//
+// Two cases are refused rather than forwarded. -C changes directory before the
+// command runs, and the gate has already anchored the enumeration to each
+// module's own directory, so applying it to only one of `go list` and `go test`
+// would recreate the tree mismatch this exists to prevent. A selection-flag
+// value containing whitespace cannot be forwarded intact either: the gate
+// word-splits its `go test` invocation, so the two commands would see different
+// values.
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -29,10 +38,6 @@ import (
 
 // packageSelectionValueFlags take their value as the next argument and change
 // which packages or files exist, so they are forwarded to the enumeration.
-// -C is deliberately absent: it changes directory before the command runs, and
-// the gate has already stood in the module's own directory, so a caller's -C
-// cannot be applied to this enumeration. Its value is still consumed, so it is
-// not misread as a flag.
 var packageSelectionValueFlags = map[string]bool{
 	"-tags": true, "-overlay": true, "-mod": true, "-modfile": true, "-compiler": true,
 }
@@ -52,27 +57,37 @@ func consumesValue(name string) bool {
 	return buildValueFlags[name] || testForwardValueFlags[name] || testRefusedValueFlags[name]
 }
 
-// packageSelectionFlags is the answer, in the spelling `go list` will be given.
-func packageSelectionFlags(args []string) []string {
+// packageSelectionFlags is the answer, in the spelling `go list` will be given,
+// or an error for a flag that cannot be applied to both commands.
+func packageSelectionFlags(args []string) ([]string, error) {
 	var out []string
 	for i := 0; i < len(args); i++ {
 		whole := goFlag(args[i])
-		name, _, inline := strings.Cut(whole, "=")
+		name, value, inline := strings.Cut(whole, "=")
+		if name == "-C" {
+			return nil, errors.New("-C is not supported here: the gate enumerates each module from its own directory, so a -C would make go list describe a different tree than go test builds")
+		}
 		if name == "-args" {
 			// Everything after -args belongs to the test binary, not to `go
 			// test`: a word spelled -race there is an argument whose text is
 			// -race, and enumerating under it would build a tree nobody asked
 			// for.
-			return out
+			return out, nil
 		}
 		switch {
 		case packageSelectionValueFlags[name]:
 			if inline {
+				if err := checkSelectionValue(name, value); err != nil {
+					return nil, err
+				}
 				out = append(out, whole)
 				continue
 			}
 			if i+1 < len(args) {
 				i++
+				if err := checkSelectionValue(name, args[i]); err != nil {
+					return nil, err
+				}
 				out = append(out, name, args[i])
 			}
 		case packageSelectionBareFlags[name]:
@@ -82,7 +97,17 @@ func packageSelectionFlags(args []string) []string {
 			i++
 		}
 	}
-	return out
+	return out, nil
+}
+
+// checkSelectionValue refuses a value the gate's word-split `go test`
+// invocation cannot carry whole: `go list` would be given it intact and
+// `go test` would not, so the two would enumerate and build different trees.
+func checkSelectionValue(name, value string) error {
+	if strings.ContainsAny(value, " \t\n") {
+		return fmt.Errorf("the %s value %q contains whitespace, which the gate's word-split go test invocation cannot forward intact; pass it without whitespace", name, value)
+	}
+	return nil
 }
 
 func listBuildFlagsMain(args []string) int {
@@ -102,7 +127,12 @@ func listBuildFlags(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	for _, f := range packageSelectionFlags(fs.Args()) {
+	flags, err := packageSelectionFlags(fs.Args())
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener-dev list-build-flags: %v\n", err)
+		return 2
+	}
+	for _, f := range flags {
 		// A short write would hand the gate a truncated flag list, and it would
 		// enumerate under flags the caller never set. Fail loudly instead, so
 		// the gate's own guard stops the run.

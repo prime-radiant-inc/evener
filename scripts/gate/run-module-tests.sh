@@ -162,24 +162,11 @@ fuzz_test_skip="$GATE_FUZZ_TEST_SKIP"
 root_skip="$fuzz_test_skip"
 
 flags="$*"
-
-# `go list` and `go test` do not see the same tree: -tags selects files, and
-# -race, -msan and -asan each set a build tag of their own, so a package whose
-# files all sit behind one of those exists for the test run and not for a plain
-# enumeration. The gate hands `go test` the list the enumeration produced, so
-# anything the enumeration cannot see is not tested and nothing says so.
-# evener-dev decides which of the caller's flags the enumeration also needs; it
-# prints one per line so a value with a space in it survives into the array.
-list_flags=()
+# The caller's argv, preserved for the two things that need values intact:
+# evener-dev decides which flags the enumeration also needs, and a value with a
+# space in it must reach it whole.
+gate_args=("$@")
 repo_root="$(CDPATH='' cd -- "$script_dir/../.." && pwd)"
-if list_flags_output="$(cd "$repo_root" && go run ./cmd/evener-dev/bin dev list-build-flags -- "$@")"; then
-	while IFS= read -r list_flag; do
-		[ -n "$list_flag" ] && list_flags+=("$list_flag")
-	done <<<"$list_flags_output"
-else
-	printf 'run-module-tests.sh: could not derive the package-selection flags for go list\n' >&2
-	exit 2
-fi
 
 module_test_flags() {
 	local m="$1" flag selected=""
@@ -294,11 +281,11 @@ logpath() { printf '%s/%s.log' "$logdir" "$(printf '%s' "$1" | tr '/.' '__')"; }
 tmppath() { printf '%s/%s/%s' "$logdir" tmp "$(printf '%s' "$1" | tr '/.' '__')"; }
 
 root_package_list_timeout_diagnostic() {
-	local package_list_log="$1" worktree gocache gomodcache
+	local what="$1" package_list_log="$2" worktree gocache gomodcache
 	worktree="$(pwd -P)"
 	gocache="$(go env GOCACHE 2>/dev/null || printf '<unavailable>')"
 	gomodcache="$(go env GOMODCACHE 2>/dev/null || printf '<unavailable>')"
-	printf 'run-module-tests.sh: go list ./... timed out after %ss.\n' "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
+	printf 'run-module-tests.sh: %s timed out after %ss.\n' "$what" "$ROOT_PACKAGE_LIST_TIMEOUT" >&2
 	printf 'run-module-tests.sh: worktree/module: %s (.)\n' "$worktree" >&2
 	printf 'run-module-tests.sh: effective GOCACHE: %s\n' "$gocache" >&2
 	printf 'run-module-tests.sh: effective GOMODCACHE: %s\n' "$gomodcache" >&2
@@ -306,6 +293,41 @@ root_package_list_timeout_diagnostic() {
 	printf 'run-module-tests.sh: repair the configured caches and retry:\n' >&2
 	printf '  GOCACHE=%q GOMODCACHE=%q go clean -cache -modcache && GOCACHE=%q GOMODCACHE=%q scripts/gate/run-module-tests.sh -short -count=1\n' \
 		"$gocache" "$gomodcache" "$gocache" "$gomodcache" >&2
+}
+
+# derive_list_flags sets list_flags to the caller's flags that the `go list`
+# enumeration also needs, one per line from evener-dev so a value with a space
+# in it survives into the array. It runs only on the enumeration paths (root and
+# sharded agent), and under the same bound as the `go list` it feeds: this
+# `go run` compiles evener-dev first, and a stalled GOCACHE/GOMODCACHE must not
+# hang the gate before its own timeout diagnostic can speak.
+derive_list_flags() {
+	local module="$1" out_file err_file list_pid started_at list_status list_flag
+	out_file="$logdir/$module.list-build-flags"
+	err_file="${out_file}.stderr"
+	( cd "$repo_root" && go run ./cmd/evener-dev/bin dev list-build-flags -- ${gate_args[@]+"${gate_args[@]}"} ) >"$out_file" 2>"$err_file" &
+	list_pid="$!"
+	started_at=$SECONDS
+	while kill -0 "$list_pid" 2>/dev/null; do
+		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
+			stop_process_tree "$list_pid"
+			root_package_list_timeout_diagnostic 'evener-dev list-build-flags' "$err_file"
+			return 1
+		fi
+		sleep 0.1
+	done
+	if wait "$list_pid"; then
+		list_flags=()
+		while IFS= read -r list_flag; do
+			[ -n "$list_flag" ] && list_flags+=("$list_flag")
+		done <"$out_file"
+		return 0
+	else
+		list_status=$?
+		printf 'run-module-tests.sh: could not derive the package-selection flags for go list\n' >&2
+		cat "$err_file" >&2
+		return "$list_status"
+	fi
 }
 
 run_root_package_list() {
@@ -317,7 +339,7 @@ run_root_package_list() {
 	while kill -0 "$list_pid" 2>/dev/null; do
 		if [ $((SECONDS - started_at)) -ge "$ROOT_PACKAGE_LIST_TIMEOUT" ]; then
 			stop_process_tree "$list_pid"
-			root_package_list_timeout_diagnostic "$package_list_stderr"
+			root_package_list_timeout_diagnostic 'go list ./...' "$package_list_stderr"
 			return 1
 		fi
 		sleep 0.1
@@ -340,6 +362,7 @@ run_module() {
 		local -a packages=()
 		local pkg package_list
 		package_list="$logdir/root.packages"
+		derive_list_flags "$m" || return $?
 		run_root_package_list "$package_list" || return $?
 		while IFS= read -r pkg; do
 			case "$pkg" in
@@ -376,11 +399,21 @@ run_module() {
 		# signal exits survive in the binary but not through this call. Only
 		# zero-vs-nonzero is read below, so nothing here depends on them.
 		(cd .. && go run ./cmd/evener-dev/bin dev agent-shards $test_flags) || shardStatus=$?
+		derive_list_flags "$m" || return $?
 		local subpkgs=()
-		local pkg
+		local pkg list_output list_status=0
+		# A failed enumeration must not pass as "no subpackages": the shard run
+		# above is already green, so a silently empty list would report a pass
+		# for packages that were never tested.
+		list_output="$(go list ${list_flags[@]+"${list_flags[@]}"} ./...)" || list_status=$?
+		if [ "$list_status" -ne 0 ]; then
+			printf 'run-module-tests.sh: go list ./... in the agent module exited %s; refusing to report a pass over an incomplete package list\n' "$list_status" >&2
+			return "$list_status"
+		fi
 		while IFS= read -r pkg; do
+			[ -n "$pkg" ] || continue
 			[ "$pkg" = "primeradiant.com/evener/agent" ] || subpkgs+=("$pkg")
-		done < <(go list ${list_flags[@]+"${list_flags[@]}"} ./...)
+		done <<<"$list_output"
 		if [ "${#subpkgs[@]}" -gt 0 ]; then
 			/usr/bin/time -p go test $test_flags $extra -run "$GATE_TEST_RUN" -skip "$fuzz_test_skip" "${subpkgs[@]}" || shardStatus=$?
 		fi
