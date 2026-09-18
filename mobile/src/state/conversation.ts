@@ -21,10 +21,10 @@ import { create } from "zustand";
 import {
   applyNotification,
   foldWarningParams,
-  hasWarningText,
   isActiveItem,
   isStaleCursorError,
   itemIdentityMatches,
+  joinWarningParts,
   notificationTargetsThread,
   sessionControls,
   WireError,
@@ -2852,8 +2852,10 @@ export function createConversationStore() {
             const title = folded.title ?? "Warning";
             // Compose every non-blank part rather than picking one with ||:
             // a warning carrying both a message and a hint shows both, the
-            // same as the web and TUI renderers.
-            const detail = [folded.text, folded.hint].filter(hasWarningText).join(" — ");
+            // same as the web and TUI renderers. title stays its own field
+            // here (unlike the canonical projector's row, which has no
+            // separate title slot and joins it into this same string).
+            const detail = joinWarningParts([folded.text, folded.hint]);
             // The serial alone is already unique; embedding the title (as
             // an earlier round did) bloats this id and the ownership keys
             // it feeds — foldWarningParams only bounds it to 2000 code

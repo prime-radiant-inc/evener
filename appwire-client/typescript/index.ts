@@ -302,6 +302,7 @@ export {
   imageSessionRouteForSession,
   itemIdentityMatches,
   joinedReasoningParagraphs,
+  joinWarningParts,
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,

@@ -31,10 +31,10 @@ import type {
 
 import {
   hasItemFailure,
-  hasWarningText,
   isActiveItem,
   isInProgressStatus,
   joinedReasoningParagraphs,
+  joinWarningParts,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -536,18 +536,19 @@ function projectItem(
   };
 }
 
-// Composes a warning item's displayable text: message and hint together
-// when there's a message, the same as the web (WarningItem.tsx) and the
-// live warning row (conversation.ts's case "warning") - neither picks one
-// over the other with ||, which would otherwise drop the hint whenever
-// there's a message. A message-less frame (a title or hint alone) folds to
-// text: "" on the wire side (reducer.ts's warning fold), so it falls back
-// to title+hint instead, the same content the web renders via item.warning
-// directly.
+// Composes a warning item's displayable text: title, message, and hint
+// together, the same parts the web (WarningItem.tsx) renders (title as a
+// chip, message as the body, hint below) and the live warning row
+// (conversation.ts's case "warning") carries (title as its own field,
+// message+hint as detail) - this canonical row has no separate title slot,
+// so title has to join the rest of the string instead of being dropped
+// whenever there's also a message. A message-less frame folds to text: ""
+// on the wire side (reducer.ts's warning fold; joinWarningParts filters it
+// out), leaving just title+hint, the same content the web renders via
+// item.warning directly.
 function warningFallbackText(item: ItemModel): string | undefined {
   if (item.type !== "warning" || !item.warning) return undefined;
-  const parts = hasWarningText(item.text) ? [item.text, item.warning.hint] : [item.warning.title, item.warning.hint];
-  const joined = parts.filter(hasWarningText).join(" — ");
+  const joined = joinWarningParts([item.warning.title, item.text, item.warning.hint]);
   return joined === "" ? undefined : joined;
 }
 
