@@ -1074,13 +1074,22 @@ test("a Resume the hub never answers is bounded by a large finite cap and can be
     // The bounded cap still settles the promise instead of hanging forever.
     await vi.advanceTimersByTimeAsync(RESUME_REQUEST_TIMEOUT_MS);
     await rejected;
-    // resumePending was cleared, so the user can retry without a reload.
+    // The cap retired the abandoned request's transport, so the hub observed
+    // the abandonment and could unwind the resume's ownership.
+    expect(replacement.closeRequests.length).toBeGreaterThan(0);
+    // The client rebuilds its transport, so the user can retry without a
+    // reload; resumePending was already cleared by the settle.
+    await vi.advanceTimersByTimeAsync(RECONNECT_BASE_MS);
+    const rebuilt = sockets[2];
+    if (!rebuilt) throw new Error("missing rebuilt transport");
+    rebuilt.open();
+    await vi.advanceTimersByTimeAsync(1);
     const retried = client.resumeThread("local:owner");
     const retriedSettled = retried.then(
       () => undefined,
       () => undefined,
     );
-    expect(sockets).toHaveLength(3);
+    expect(sockets).toHaveLength(4);
     // Retire the retry's replacement transport and let its promise settle.
     client.close();
     await retriedSettled;

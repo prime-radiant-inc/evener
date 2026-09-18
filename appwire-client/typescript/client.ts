@@ -431,6 +431,18 @@ export class AppwireClient {
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
+        if (COMPLETION_OWNED_METHODS.has(method)) {
+          // The cap must free the hub's operation, not only this promise:
+          // the hub learns an abandoned resume when its transport drops, so
+          // retire it the same way resumeThread's refresh does. The normal
+          // reconnect machinery rebuilds the connection for the retry.
+          this.handleSocketLoss(socket, 1000);
+          try {
+            socket.close();
+          } catch {
+            /* The retired transport is already closing. */
+          }
+        }
         reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
