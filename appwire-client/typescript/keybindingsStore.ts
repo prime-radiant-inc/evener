@@ -37,7 +37,11 @@ import { rebindAction, removeActionBindings, restoreDefaultBinding } from "./key
 import type { Binding, KeybindingsRegistry } from "./keybindingRegistry";
 import { type ValidationWarning, validateOverrideRules } from "./keybindingValidation";
 import { createReadyGenerationFence } from "./readyGenerationFence";
-import { createSettingsHubGeneration, retireSettingsHubPayload } from "./settingsHubGeneration";
+import {
+  createSettingsHubGeneration,
+  retireSettingsHubPayload,
+  settleUnsettleableWrite,
+} from "./settingsHubGeneration";
 import type { AnyNotification, FeatureSet, KeybindingsOverrides, KeybindingsRule } from "./types.gen";
 
 /** The two members of the client this store calls; AppwireClientLike satisfies it. */
@@ -737,17 +741,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   /** Publishes the end of a write whose reply can never be settled by
-   * anything else - the same condition settleUnsettleableWrite gates on, but
-   * this store also has a draftConflict field the shared helper's generic
-   * Fields type does not (settingsHubGeneration.ts's own note: fields that
-   * do not generalize across stores stay store-owned) - inlined rather than
-   * calling it, so both fields publish in the SAME setState. */
+   * anything else. This store's own draftConflict (a field the shared
+   * helper's generic Fields type does not carry) rides through
+   * settleUnsettleableWrite's `extra` - the same posture every other
+   * unknown-outcome settle takes (no reply at all, a malformed reply): the
+   * proposal needs review, not just a retry. */
   function settleLostHubWrite(generation: number, token: number): void {
-    if (fence.lostHub(generation, token === fence.writeToken) && getState().saving) {
-      // Same posture as every other unknown-outcome settle (no reply at all,
-      // a malformed reply): the proposal needs review, not just a retry.
-      setState({ saving: false, writeUncertain: true, draftConflict: true });
-    }
+    settleUnsettleableWrite(fence, generation, token === fence.writeToken, getState, setState, {
+      draftConflict: true,
+    });
   }
 
   /** The confirmed payload can no longer be acted on (the generation ended,
