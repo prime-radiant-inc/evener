@@ -3308,6 +3308,64 @@ describe("ConversationStore", () => {
       expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
+    // capAndTruncate bounds every published row's text for display
+    // (truncateItem's "question" case, project.ts's boundQuestion) — the
+    // existing "bounds a question row's prose" test above pins that for the
+    // hydrate/openProjected path. The answer path is unaffected because it
+    // reads liveAskQuestions' canonical, uncut model — not the bounded row —
+    // and this must hold for the LIVE incremental path too, not just hydrate:
+    // a bounded option label could otherwise collide with another bounded
+    // label, or read as a choice the agent never actually offered under its
+    // real name (boundQuestion's own contract).
+    it("bounds a live question row's option label but leaves liveAskQuestions' canonical copy whole", async () => {
+      const { store } = await openRunningTurn();
+      const oversizedLabel = "x".repeat(MAX_ITEM_BYTES + 100);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "ask-oversized",
+            toolName: "ask_user",
+            status: "completed",
+            argumentsJson: JSON.stringify({
+              questions: [
+                {
+                  header: "Choose",
+                  question: "Pick one",
+                  options: [
+                    { label: oversizedLabel, detail: "da" },
+                    { label: "B", detail: "db" },
+                  ],
+                  multi_select: false,
+                },
+              ],
+            }),
+          },
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: { threadId: "thread-1", ref: "ref-1", status: { type: "active" }, askPending: true },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const row = rowById(store, "ask-oversized");
+      if (row?.kind !== "question") throw new Error("expected a projected question row");
+      const boundLabel = row.questions[0]?.options[0]?.label ?? "";
+      expect(new TextEncoder().encode(boundLabel).length).toBeLessThanOrEqual(MAX_ITEM_BYTES);
+      expect(boundLabel.endsWith(TRUNCATION_MARKER)).toBe(true);
+
+      const conversation = store.getState().conversation;
+      if (conversation === null) throw new Error("conversation gone");
+      const canonical = liveAskQuestions(conversation)[0];
+      expect(canonical?.options[0]?.label).toBe(oversizedLabel);
+    });
+
     it.each([
       ["a reasoning delta naming an assistant item", {
         method: "item/reasoning/summaryTextDelta",
