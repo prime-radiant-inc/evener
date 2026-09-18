@@ -172,6 +172,9 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	if reservationsHeld {
 		acquired = len(aliases)
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			// The refusal canceled nothing, so it must not leave the epochs
+			// this fence advanced either.
+			cfg.ResumeLocks.RejectForceStop(aliases)
 			return err
 		}
 	}
@@ -188,6 +191,11 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// subject to the authoritative post-ownership reread below.
 	if params.ExpectedDaemon != nil {
 		if err := expectedDaemonRevalidationError(cfg, ref.ThreadID, recoveryTarget, params.ExpectedDaemon); err != nil {
+			// Refused before any cancellation: give back the admission epochs
+			// this fence advanced, so the in-flight Resume the refusal
+			// preserves still completes its recovery clear against the epoch
+			// it was admitted under.
+			cfg.ResumeLocks.RejectForceStop(aliases)
 			return err
 		}
 	}
@@ -403,6 +411,9 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 		// been aborted. That re-check still runs, so a deletion that starts in
 		// this window is still caught.
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			// The refusal canceled nothing, so it must not leave the epochs
+			// this fence advanced either.
+			cfg.ResumeLocks.RejectForceStop(aliases)
 			return confirmedStoppedDecision{}, err
 		}
 	} else if cfg.ResumeLocks.HasActiveResume(aliases) {
@@ -426,6 +437,9 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 	if reservationsHeld {
 		acquired = len(aliases)
 		if err := deletionFenceErrorForGroup(cfg, aliases); err != nil {
+			// The refusal canceled nothing, so it must not leave the epochs
+			// this fence advanced either.
+			cfg.ResumeLocks.RejectForceStop(aliases)
 			return confirmedStoppedDecision{}, err
 		}
 	}
@@ -438,6 +452,11 @@ func checkConfirmedStoppedWithoutClaim(ctx context.Context, cfg hubcore.WebConfi
 			// discovery recheck under alias ownership below stays
 			// authoritative.
 			if err := expectedDaemonRevalidationError(cfg, sessionID, state.ResumeSessionID, expectedDaemon); err != nil {
+				// Refused before any cancellation: give back the admission
+				// epochs this fence advanced, so the in-flight Resume the
+				// refusal preserves still completes its recovery clear against
+				// the epoch it was admitted under.
+				cfg.ResumeLocks.RejectForceStop(aliases)
 				return confirmedStoppedDecision{}, err
 			}
 		}

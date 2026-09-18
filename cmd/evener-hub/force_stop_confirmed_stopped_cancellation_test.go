@@ -315,3 +315,120 @@ func TestForceStopConfirmedStoppedValidatesDeletionUnderReservationBeforeCanceli
 		}
 	})
 }
+
+// TestForceStopConfirmedStoppedRefusalKeepsResumeCompletionValid is the Medium
+// regression RoboRev reported against the refusal window
+// TestForceStopConfirmedStoppedRechecksIdentityBeforeCancelingResume pins: the
+// shortcut's BeginForceStop advances the recovery admission epochs before the
+// under-fence identity recheck, and a request refused there by a replacement
+// claim used to leave them advanced. The in-flight Resume the refusal
+// deliberately preserved was admitted under the pre-fence epoch, so its
+// ExplicitResumeCompleted silently no-opped and the durable resume
+// requirement stayed set even though the Resume succeeded against the
+// replacement daemon. A refusal that canceled nothing must be epoch-neutral.
+func TestForceStopConfirmedStoppedRefusalKeepsResumeCompletionValid(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stateRoot := t.TempDir()
+		locks, err := hubcore.NewPersistentResumeLocks(stateRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		sessionID := hubtest.SessionID(t)
+		finish := locks.BeginForceStop([]string{sessionID})
+		if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := locks.ConfirmForceStop(sessionID); err != nil {
+			t.Fatal(err)
+		}
+		finish(true)
+		resumeEpoch := locks.RecoveryState(sessionID).Epoch
+		active, err := locks.RegisterResume(t.Context(), sessionID, []string{sessionID}, map[string]uint64{sessionID: resumeEpoch})
+		if err != nil {
+			t.Fatal(err)
+		}
+		runDir := t.TempDir()
+		resident := rendezvous.Entry{
+			PID: 4301, SessionID: sessionID, ThreadID: sessionID, WorkspaceRef: "local:" + sessionID,
+			Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1:1/rpc", StartedAt: time.Now(),
+		}
+		writeRendezvous(t, runDir, resident)
+		expected := daemonIdentity(resident)
+		store, err := hubcore.NewDeletionStore(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The caller's identity validation sees the resident it was rendered
+		// from; the replacement claim appears on the shortcut's first deletion
+		// check, after the admission fence already advanced the epochs.
+		original := deletionTargetState
+		calls := 0
+		deletionTargetState = func(s *hubcore.DeletionStore, ref, threadID string) (hubcore.DeletionState, bool) {
+			calls++
+			if calls == 2 {
+				if err := rendezvous.Remove(runDir, resident.PID); err != nil {
+					t.Errorf("remove resident claim: %v", err)
+				}
+				replacement := resident
+				replacement.PID = 4302
+				replacement.StartedAt = resident.StartedAt.Add(time.Second)
+				if _, err := rendezvous.Write(runDir, replacement); err != nil {
+					t.Errorf("write replacement claim: %v", err)
+				}
+			}
+			return original(s, ref, threadID)
+		}
+		defer func() { deletionTargetState = original }()
+		cfg := hubcore.WebConfig{
+			RunDir:        runDir,
+			ResumeLocks:   locks,
+			DeletionStore: store,
+			DaemonProcesses: forceStopControllerFunc(func(daemonprocess.Target) (daemonprocess.Process, error) {
+				t.Error("refused force stop reached process control")
+				return nil, errors.New("unexpected process control")
+			}),
+		}
+		stopped := make(chan error, 1)
+		go func() {
+			stopped <- forceStopThread(t.Context(), cfg, appwire.ThreadForceStopParams{Ref: "local:" + sessionID, ExpectedDaemon: &expected}, nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-stopped:
+			var wire appwire.WireError
+			if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+				t.Fatalf("stale force stop error = %v, want conflict", err)
+			}
+		default:
+			active.Complete(nil)
+			<-stopped
+			t.Fatal("force stop canceled the in-flight Resume before rechecking the current daemon identity")
+		}
+		if active.Context().Err() != nil {
+			t.Fatal("force stop canceled the in-flight Resume it refused to address")
+		}
+		if got := locks.RecoveryState(sessionID).Epoch; got != resumeEpoch {
+			t.Fatalf("refused force stop advanced the recovery admission epoch: got %d, want %d", got, resumeEpoch)
+		}
+		// The in-flight Resume finishes against the replacement daemon exactly
+		// as resumeThread's defer does after a successful launch.
+		active.Complete(nil)
+		if err := locks.ExplicitResumeCompleted(sessionID, resumeEpoch); err != nil {
+			t.Fatal(err)
+		}
+		state := locks.RecoveryState(sessionID)
+		if state.ResumeRequired {
+			t.Fatal("completed in-flight Resume left the resume requirement set: the refusal was not epoch-neutral")
+		}
+		if state.ResumeSessionID != "" {
+			t.Fatalf("completed in-flight Resume left recovery authority %q set", state.ResumeSessionID)
+		}
+		reloaded, err := hubcore.NewPersistentResumeLocks(stateRoot)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if reloaded.RecoveryState(sessionID).ResumeRequired {
+			t.Fatal("completed in-flight Resume left the durable resume requirement set: the refusal was not epoch-neutral")
+		}
+	})
+}

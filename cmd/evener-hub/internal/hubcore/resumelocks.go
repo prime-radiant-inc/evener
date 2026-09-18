@@ -639,6 +639,24 @@ func (r *ResumeLocks) beginForceStopLocked(aliases []string) func(bool) {
 	}
 }
 
+// RejectForceStop makes a refused force-stop fence epoch-neutral: it gives
+// back the admission epochs the fence advanced. The in-flight Resume a refusal
+// deliberately preserved was admitted under the pre-fence epoch and completes
+// through ExplicitResumeCompleted, which ignores a stale epoch — the durable
+// resume requirement would stay set even though the Resume succeeded. Call it
+// only on refusals that have canceled nothing, while the fence is still held:
+// with Stopping above zero no admission can bind the advanced epoch before the
+// finish(false) release restores eligibility.
+func (r *ResumeLocks) RejectForceStop(aliases []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, id := range aliases {
+		state := r.recovery[id]
+		state.Epoch--
+		r.recovery[id] = state
+	}
+}
+
 // InvalidateResumeAdmission advances every alias's admission epoch without
 // installing a stop fence: Stopping, ResumeRequired, and the connection-level
 // recovery sequence are untouched. A confirmed-stopped no-op calls it while it
