@@ -729,8 +729,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   function restoreDraft(confirmed: { loaded: boolean; revision: number }): Partial<KeybindingsStoreFields> {
     try {
       const checkpoint = drafts.load();
+      // Always null, never currentGeneration(): a checkpoint's generation is
+      // never persisted (there is nothing on disk to name a hub session by,
+      // and a fresh app instance's own generation counter restarts at 1
+      // regardless of what the previous instance last confirmed), so a
+      // RESTORE has no generation it can honestly claim - only an
+      // authoritative payload the store has actually just reconciled does.
+      // Stamping the live generation here (as if this call itself confirmed
+      // the draft valid for it) would let a LATER storage recovery
+      // (refreshOverrides's one-more-restore-attempt, or discardDraft's
+      // re-classify after a refused removal) silently re-assert an
+      // already-known-stale draft as current the moment it re-reads the
+      // same bytes under a newer generation. applyHubOverrides' own
+      // stamp-on-first-payload is the only place a generation is ever
+      // actually earned, exactly once, by an authoritative read.
       const draft: KeybindingsDraft | null = checkpoint
-        ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules, generation: currentGeneration() }
+        ? { version: 1, revision: checkpoint.baseRevision, rules: checkpoint.rules, generation: null }
         : null;
       return {
         draft,
