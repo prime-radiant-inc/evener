@@ -447,7 +447,12 @@ describe("the checkpointed draft editor", () => {
     // Another writer replaces the SAME on-disk record with a draft composed
     // against revision 3 while the outcome is still unknown.
     const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
-    const replacement: KeybindingDraftCheckpoint = { id: "other", baseRevision: 3, rules: otherRules, writeUncertain: false };
+    const replacement: KeybindingDraftCheckpoint = {
+      id: "other",
+      baseRevision: 3,
+      rules: otherRules,
+      writeUncertain: false,
+    };
     drafts.storage.save(replacement);
 
     // The hub has since moved to a NEWER revision by the time the settling
