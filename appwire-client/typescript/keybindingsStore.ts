@@ -1205,9 +1205,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
   }
 
   function persistDraft(input: Omit<KeybindingDraftCheckpoint, "id">): KeybindingDraftCheckpoint {
-    const checkpoint = { ...input, id: drafts.createId() };
+    let checkpoint: KeybindingDraftCheckpoint;
     let saved: boolean;
     try {
+      // createId() is this build's own local-write step, not the hub's - a
+      // failure minting one (a crypto/random-source failure, say) is exactly
+      // as much a local-write failure as save() throwing, and must not
+      // escape uncaught with the store never told a write was attempted.
+      checkpoint = { ...input, id: drafts.createId() };
       saved = drafts.save(checkpoint);
     } catch {
       setState({ storageUnavailable: true, draftError: DRAFT_SAVE_FAILED_MESSAGE });

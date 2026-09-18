@@ -510,6 +510,28 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
+  test("editDraft's own id-generation failure sets storageUnavailable and draftError, the same as a save failure", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const throwingCreateId: typeof drafts.storage = {
+      ...drafts.storage,
+      createId: () => {
+        throw new Error("crypto unavailable");
+      },
+    };
+    const store = await readyStore(clientServing(3), { drafts: throwingCreateId });
+
+    // createId() mints the checkpoint's id before save() is ever called - a
+    // failure there is exactly as much this build's local-write failure as
+    // save() throwing, and must not escape uncaught with the store never
+    // told a write was attempted.
+    expect(() => store.getState().editDraft(rules)).toThrow("Could not save the shortcut draft locally.");
+
+    expect(store.getState()).toMatchObject({
+      storageUnavailable: true,
+      draftError: "Could not save the shortcut draft locally.",
+    });
+  });
+
   test("editDraft's persistDraft refusal adopts the replacement instead of reporting storageUnavailable", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const mine: KeybindingDraftCheckpoint = { id: "mine", baseRevision: 3, rules, writeUncertain: false };

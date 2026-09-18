@@ -62,8 +62,10 @@ export interface DraftRepository<Checkpoint> {
    * overwrite. Reports whether it did; a refusal means another writer
    * replaced the classified record since, and the caller must not treat its
    * own checkpoint as durably saved. Nothing classified yet, or classified
-   * as absent, has no existing record to race against and always
-   * succeeds. */
+   * as absent, has no EXISTING record to CAS against, but still races: an
+   * insertIfAbsent refusal (another writer's first-ever save landed between
+   * this repository's absent classification and this call) reports false
+   * the same as a replaceIf refusal does. */
   save(checkpoint: Checkpoint): boolean;
   removeIf(checkpoint: Checkpoint): boolean;
   discardClassified(): boolean;
