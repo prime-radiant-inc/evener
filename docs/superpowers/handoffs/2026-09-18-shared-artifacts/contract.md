@@ -133,7 +133,7 @@ never come from tool arguments.
 | Tool | Arguments | Structured success / visibility |
 | --- | --- | --- |
 | `artifact_publish` create | Required `mutationId`, `title`, `summary`, `html`; optional `initialState` object (default `{}`), `format` (default `html`), `formatVersion` (default `1`) | Compact committed receipt; model only |
-| `artifact_publish` update | Create presentation/source fields plus required `artifactId`, `expectedSourceRevision`, `expectedStateVersion`; `initialState` forbidden | Compact committed receipt; model only |
+| `artifact_publish` update | Required `mutationId`, `title`, `summary`, `html`, `artifactId`, `expectedSourceRevision`, `expectedStateVersion`; optional `format` (default `html`), `formatVersion` (default `1`); `initialState` forbidden | Compact committed receipt; model only |
 | `artifact_read` | Required `artifactId`; optional `include` array of `source`, `state`, `diagnostics`, default none; optional `sourceStartLine`/`sourceEndLine` only with source | Metadata and requested bounded bodies, both versions; model only |
 | `artifact_list` | Optional `cursor`, `limit` (default 20, max 100) | `artifacts` metadata array and optional opaque `nextCursor`; model only |
 | `artifact_open` | Required `artifactId` | Metadata and bounded launch data; model only; sole tool declaring viewer resource |
@@ -152,7 +152,8 @@ The sole resource is `ui://evener-artifacts/viewer-v1.html`, MIME
 Only `artifact_open` declares `_meta.ui.resourceUri`; every tool declares the
 appropriate `_meta.ui.visibility` array. No arbitrary resource or URL fetching.
 
-Successful mutation `structuredContent`:
+Example `structuredContent` for a successful checkpoint (initial publication
+creates source revision 1 and state version 1):
 
 ```json
 {"status":"committed","mutationId":"mut_example","artifactId":"art_example","sourceRevision":1,"stateVersion":2}
