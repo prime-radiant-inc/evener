@@ -216,6 +216,10 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 				})
 				if entry.timestamp.After(live.activityAt) {
 					live.activityAt = entry.timestamp
+				}
+				// Mirror ReportActivityPhase: a steer at or after the current
+				// activity instant re-baselines the quiet cadence.
+				if !entry.timestamp.Before(live.activityAt) {
 					live.rearmQuietCadenceLocked()
 				}
 				if entry.timestamp.After(live.productiveActivityAt) {
@@ -238,6 +242,10 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	})
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
+	}
+	// Mirror ReportActivityPhase: a steer at or after the current activity
+	// instant re-baselines the quiet cadence.
+	if !entry.timestamp.Before(live.activityAt) {
 		live.rearmQuietCadenceLocked()
 	}
 	if entry.timestamp.After(live.productiveActivityAt) {

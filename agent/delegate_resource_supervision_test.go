@@ -2343,10 +2343,12 @@ func TestDelegateResourceSupervision_QuietWatchdogRepeatsEachWindowWhileSilent(t
 	}
 }
 
-func TestDelegateResourceSupervision_QuietWatchdogRearmsOnSteerActivity(t *testing.T) {
+// quietSteerHarness is the quiet supervision harness with a steer-capable
+// target runtime on the shared fake clock, so a persisted steer's timestamp is
+// the exact virtual instant the test chooses.
+func quietSteerHarness(t *testing.T) (*Session, *delegateTreeController, delegateLease, *agenttest.FakeClock) {
+	t.Helper()
 	root, controller, lease, clock := newStableQuietSupervisionHarness(t)
-	// Give the target a steer-capable runtime on the shared fake clock so the
-	// persisted steer's timestamp is the exact virtual instant we choose.
 	childWriter, err := transcript.NewWriter(transcriptPath(root.stateDir, "child-"+lease.delegateID), transcript.Header{SessionID: "child-" + lease.delegateID})
 	if err != nil {
 		t.Fatalf("steer runtime transcript: %v", err)
@@ -2358,6 +2360,28 @@ func TestDelegateResourceSupervision_QuietWatchdogRearmsOnSteerActivity(t *testi
 	controller.live[lease.delegateID].runtime = child
 	controller.live[lease.delegateID].binding.runtime = child
 	controller.mu.Unlock()
+	return root, controller, lease, clock
+}
+
+// persistQuietSteer persists one steer through the controller's real begin,
+// append, and complete path at the current fake-clock instant.
+func persistQuietSteer(t *testing.T, controller *delegateTreeController, lease delegateLease, message string) {
+	t.Helper()
+	claim, err := controller.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
+	if err != nil {
+		t.Fatalf("BeginSteerPersistence: %v", err)
+	}
+	entry, err := claim.runtime.appendDelegateSteeringDurably(message, claim.entryID)
+	if err != nil {
+		t.Fatalf("append steering: %v", err)
+	}
+	if _, err := controller.CompleteSteerPersistence(claim, entry); err != nil {
+		t.Fatalf("CompleteSteerPersistence: %v", err)
+	}
+}
+
+func TestDelegateResourceSupervision_QuietWatchdogRearmsOnSteerActivity(t *testing.T) {
+	root, controller, lease, clock := quietSteerHarness(t)
 
 	// First wake at the window boundary.
 	clock.Advance(delegateQuietWindow)
@@ -2372,17 +2396,7 @@ func TestDelegateResourceSupervision_QuietWatchdogRearmsOnSteerActivity(t *testi
 	// activity and must reset the cadence (the steer path advances activityAt
 	// directly rather than through ReportActivityPhase).
 	clock.Advance(delegateQuietWindow - time.Minute)
-	steerClaim, err := controller.BeginSteerPersistence(rootDelegateActor("root-session"), lease.delegateID)
-	if err != nil {
-		t.Fatalf("BeginSteerPersistence: %v", err)
-	}
-	steerEntry, err := steerClaim.runtime.appendDelegateSteeringDurably("late steer", steerClaim.entryID)
-	if err != nil {
-		t.Fatalf("append steering: %v", err)
-	}
-	if _, err := controller.CompleteSteerPersistence(steerClaim, steerEntry); err != nil {
-		t.Fatalf("CompleteSteerPersistence: %v", err)
-	}
+	persistQuietSteer(t, controller, lease, "late steer")
 	controller.mu.Lock()
 	activityAt := controller.live[lease.delegateID].activityAt
 	notified := controller.live[lease.delegateID].quietNotified
@@ -2409,6 +2423,106 @@ func TestDelegateResourceSupervision_QuietWatchdogRearmsOnSteerActivity(t *testi
 	}
 	if got := pendingQuietAttention(t, root); len(got) != 2 {
 		t.Fatalf("post-steer window attention = %#v, want 2", got)
+	}
+}
+
+func TestDelegateResourceSupervision_QuietWatchdogRetiresInFlightClaimOnSteer(t *testing.T) {
+	root, controller, lease, clock := quietSteerHarness(t)
+	clock.Advance(delegateQuietWindow)
+	// The watchdog admits and durably appends its claim, but has not completed
+	// it yet — the append-then-complete window a racing steer can land in.
+	claim, err := controller.BeginQuietAttention(root, lease, clock.Now())
+	if err != nil {
+		t.Fatalf("BeginQuietAttention: %v", err)
+	}
+	if claim == nil {
+		t.Fatal("quiet claim not admitted at the window boundary")
+	}
+	if _, err := root.appendQuietAttentionAtTurnBoundary(claim.attentionID, claim.content); err != nil {
+		t.Fatalf("append quiet attention: %v", err)
+	}
+
+	// A steer lands while that claim is in flight.
+	clock.Advance(time.Minute)
+	persistQuietSteer(t, controller, lease, "in-flight steer")
+	controller.mu.Lock()
+	sequence := controller.live[lease.delegateID].quietSequence
+	controller.mu.Unlock()
+	if sequence != 2 {
+		t.Fatalf("in-flight steer left quietSequence = %d, want 2 (the consumed id must be retired)", sequence)
+	}
+	if err := controller.CompleteQuietAttention(claim, true); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("CompleteQuietAttention on steered claim = %v, want stale lease", err)
+	}
+
+	// The next wake must append under a fresh id. Reusing the consumed id with
+	// the newer activity timestamp folds as permanent conflicting content.
+	clock.Advance(delegateQuietWindow)
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatalf("post-steer wake: %v", err)
+	}
+	got := pendingQuietAttention(t, root)
+	if len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("post-steer wake ids = %#v, want two distinct ids", got)
+	}
+}
+
+func TestDelegateResourceSupervision_QuietWatchdogRearmsOnEqualTimestampSteer(t *testing.T) {
+	root, controller, lease, clock := quietSteerHarness(t)
+	clock.Advance(delegateQuietWindow)
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatalf("first quiet tick: %v", err)
+	}
+	// Seed the equal-instant case: activity already sits at the instant the
+	// steer will carry, so its timestamp is not strictly after activityAt.
+	controller.mu.Lock()
+	controller.live[lease.delegateID].activityAt = clock.Now()
+	controller.mu.Unlock()
+	persistQuietSteer(t, controller, lease, "equal-instant steer")
+	controller.mu.Lock()
+	notified := controller.live[lease.delegateID].quietNotified
+	controller.mu.Unlock()
+	if notified {
+		t.Fatal("equal-timestamp steer left the quiet-notified state set")
+	}
+
+	// The next window must deliver a distinct repeat rather than a replay.
+	clock.Advance(delegateQuietWindow)
+	if err := root.runDelegateQuietWatchdogTick(lease, clock.Now()); err != nil {
+		t.Fatalf("post-steer window tick: %v", err)
+	}
+	got := pendingQuietAttention(t, root)
+	if len(got) != 2 || got[0] == got[1] {
+		t.Fatalf("equal-timestamp repeat ids = %#v, want two distinct ids", got)
+	}
+}
+
+func TestDelegateLiveState_RearmQuietCadencePredicate(t *testing.T) {
+	cases := []struct {
+		name         string
+		live         delegateLiveState
+		wantSequence uint64
+		wantNotified bool
+	}{
+		{name: "no quiet state", live: delegateLiveState{quietSequence: 3}, wantSequence: 3},
+		{name: "committed wake", live: delegateLiveState{quietSequence: 3, quietNotified: true, quietNotifiedAt: time.Unix(5, 0)}, wantSequence: 4},
+		{name: "in-flight current claim", live: delegateLiveState{quietSequence: 3, quietClaim: &delegateQuietAttentionClaim{sequence: 3}}, wantSequence: 4},
+		{name: "in-flight stale claim", live: delegateLiveState{quietSequence: 3, quietClaim: &delegateQuietAttentionClaim{sequence: 2}}, wantSequence: 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			live := tc.live
+			live.rearmQuietCadenceLocked()
+			if live.quietSequence != tc.wantSequence {
+				t.Fatalf("quietSequence = %d, want %d", live.quietSequence, tc.wantSequence)
+			}
+			if live.quietNotified != tc.wantNotified {
+				t.Fatalf("quietNotified = %t, want %t", live.quietNotified, tc.wantNotified)
+			}
+			if !live.quietNotifiedAt.IsZero() {
+				t.Fatalf("quietNotifiedAt = %v, want zero", live.quietNotifiedAt)
+			}
+		})
 	}
 }
 

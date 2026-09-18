@@ -135,15 +135,23 @@ func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at tim
 	return nil
 }
 
-// rearmQuietCadenceLocked clears a pending quiet wake so the next watchdog
-// window is measured from fresh activity rather than from the last wake. It
-// mirrors the rearm ReportActivityPhase performs on a new activity timestamp,
-// for the controller paths that advance activityAt directly (steer persistence)
-// instead of going through it. An outstanding claim needs no handling here:
-// CompleteQuietAttention already rejects a claim whose activityAt no longer
-// matches live.activityAt.
+// quietRearmPendingLocked reports whether new activity must re-baseline the
+// quiet cadence: a wake was committed, or a first wake's claim is still in
+// flight for the current sequence. It is ReportActivityPhase's rearm predicate,
+// shared so the controller paths that advance activityAt directly (steer
+// persistence) rearm exactly the same way.
+func (live *delegateLiveState) quietRearmPendingLocked() bool {
+	return live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
+}
+
+// rearmQuietCadenceLocked clears a pending quiet wake and advances the stretch
+// identity so the next watchdog window is measured from fresh activity and gets
+// a fresh attention id. Advancing the sequence is what retires an in-flight
+// claim: CompleteQuietAttention rejects it as stale, and without the advance the
+// next wake would reuse the consumed id with a newer activity timestamp, which
+// folds as a permanent "conflicting content" failure.
 func (live *delegateLiveState) rearmQuietCadenceLocked() {
-	if !live.quietNotified {
+	if !live.quietRearmPendingLocked() {
 		return
 	}
 	live.quietNotified = false
