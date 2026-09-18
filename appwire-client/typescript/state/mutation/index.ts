@@ -24,7 +24,14 @@ export type {
 } from "./outbox";
 export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
-export { reconcilePendingEntries } from "./pendingEntries";
+export {
+  imagePlaceholder,
+  normalizeText,
+  queueEntryPreviewText,
+  reconcilePendingEntries,
+  skillMarkers,
+  truncateForDisplay,
+} from "./pendingEntries";
 export type {
   PendingTurnsDraftPort,
   PendingTurnsState,
