@@ -145,10 +145,12 @@ function isMessage(item: ItemModel): boolean {
  * carried its item status yet. Exported because both projections ask it — the
  * web's transcript entries and the phone's rows (mobile/src/conversation) —
  * and a second copy of "is this still running" is how two transcripts start
- * disagreeing about a streaming row.
+ * disagreeing about a streaming row. Takes the bare status, not a turn object,
+ * so the phone's copy (a plain string there too) can adopt this one without a
+ * conversion wrapper at every call site.
  */
-export function isActiveItem(item: ItemModel, turn: Pick<TurnModel, "status">): boolean {
-  return isInProgressStatus(item.status) || (isInProgressStatus(turn.status) && item.status === undefined);
+export function isActiveItem(item: ItemModel, turnStatus: string | undefined): boolean {
+  return isInProgressStatus(item.status) || (isInProgressStatus(turnStatus) && item.status === undefined);
 }
 
 function isTerminalTurn(turn: TurnModel): boolean {
@@ -163,7 +165,9 @@ function isTerminalTurn(turn: TurnModel): boolean {
 // carry a stale `inProgress` reasoning item in a snapshot or a race, and the
 // loader must not pulse for an agent that is no longer thinking.
 function isLiveCurrentReasoning(item: ItemModel, turn: TurnModel): boolean {
-  return isInProgressStatus(turn.status) && isActiveItem(item, turn) && turn.items[turn.items.length - 1] === item;
+  return (
+    isInProgressStatus(turn.status) && isActiveItem(item, turn.status) && turn.items[turn.items.length - 1] === item
+  );
 }
 
 function itemSummary(item: ItemModel): string {
@@ -268,7 +272,7 @@ function decisionFor(
     const interaction = INTERACTION_TOOL_NAMES.has(item.toolName ?? "");
     const missingIntent = !item.description?.trim();
     const failure = hasItemFailure(item);
-    const active = isActiveItem(item, turn);
+    const active = isActiveItem(item, turn.status);
 
     // Questions and approvals are interaction rows at every regular level.
     if (interaction) return "critical";

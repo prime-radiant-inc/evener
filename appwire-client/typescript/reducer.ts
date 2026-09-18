@@ -324,7 +324,6 @@ function epochSecondsToISO(seconds: number | undefined): string | undefined {
 // whenever the session is absent from the hub's Past index
 // (handleSessionImage, image_serve.go) — so the route only ever fires for
 // sha-only replay descriptors that carry no bytes at all.
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
 function imagesToItemImagesForSession(
   images: InputItem[] | undefined,
   imageSessionRoute: string | undefined,
@@ -1011,10 +1010,8 @@ function resolveInsertTurnId(
 function settleFirstMatchingTurn(turns: TurnModel[], turnId: string, settled: TurnModel): TurnModel[] {
   const duplicateCount = turns.reduce((count, t) => (t.id === turnId ? count + 1 : count), 0);
   // Nothing here to settle: the id names a turn outside the window this client
-  // loaded (activeTurnId comes off the wire snapshot). Hand the same array back,
-  // as mapTurn does — a fresh one would tell every consumer the transcript
-  // moved when it did not, and a host that detects an unplaceable frame by that
-  // reference would never ask for the read that fills the gap.
+  // loaded (activeTurnId comes off the wire snapshot). Hand the same array
+  // back, for the reason mapTurn's own comment gives.
   if (duplicateCount === 0) return turns;
   if (duplicateCount > 1) {
     console.error(
