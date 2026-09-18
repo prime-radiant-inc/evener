@@ -1930,6 +1930,6 @@ test("reports a process group that stays unsignallable (EPERM) after SIGKILL (#1
   ]);
 
   escalations[1]();
-  await assert.rejects(cleanup, /browser process group 6464 did not exit after SIGKILL/);
+  await assert.rejects(cleanup, /process group 6464 did not exit after SIGKILL; private profile retained at/);
   assert.equal(existsSync(profileDir), true, "the profile is retained when the group can never be killed");
 });

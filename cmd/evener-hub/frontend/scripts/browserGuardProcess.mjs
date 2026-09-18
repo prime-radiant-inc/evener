@@ -545,6 +545,7 @@ function waitForProcessTargetExit({
   targetRunning,
   signalTarget,
   targetName,
+  profileDir,
   subscribeToExit = null,
   unsubscribeFromExit = null,
   pollTarget,
@@ -624,7 +625,7 @@ function waitForProcessTargetExit({
               finish();
               return;
             }
-            fail(new Error(`${targetName} did not exit after SIGKILL`));
+            fail(new Error(`${targetName} did not exit after SIGKILL; private profile retained at ${profileDir}`));
           } catch (error) {
             fail(error);
           }
@@ -673,12 +674,16 @@ function waitForChildExit(
   signalGroup,
   scheduleGroupCheck,
   cancelGroupCheck,
+  profileDir,
 ) {
   if (!child) return Promise.resolve();
   return waitForProcessTargetExit({
     targetRunning: () => (processGroupId === null ? !childHasExited(child) : isProcessGroupRunning(processGroupId)),
     signalTarget: (signal) => (processGroupId === null ? child.kill(signal) : signalGroup(processGroupId, signal)),
-    targetName: processGroupId === null ? `browser process ${child.pid}` : `browser process group ${processGroupId}`,
+    // Neutral: this waits for the Vite dev server as well as Chrome, so a
+    // "browser" prefix would point an operator at the wrong child.
+    targetName: processGroupId === null ? `process ${child.pid}` : `process group ${processGroupId}`,
+    profileDir,
     subscribeToExit: processGroupId === null ? (listener) => child.once("exit", listener) : null,
     unsubscribeFromExit: processGroupId === null ? (listener) => child.removeListener("exit", listener) : null,
     pollTarget: processGroupId !== null,
@@ -867,6 +872,7 @@ export function createBrowserProcessCleanup({
               signalGroup,
               scheduleGroupCheck,
               cancelGroupCheck,
+              profileDir,
             ),
           ),
         );
