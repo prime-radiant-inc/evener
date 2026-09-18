@@ -1022,8 +1022,10 @@ func hubThreadFork(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 	// with this one predicate (hubForkRecoveryFencedNow for the alias,
 	// hubForkResolvedSessionFenced for the session it resolves to), so the RPC
 	// states the rule the same way rather than a second time in a second shape.
-	// Both identities land on one roster entry whenever a daemon is live, so
-	// this costs a Find for the resolved id and changes no answer.
+	// Both identities land on one roster entry whenever a daemon is live, so the
+	// status conjunct costs a Find for the resolved id and adds no refusal there.
+	// The recovery locks are keyed by id, so that conjunct stays per-identity and
+	// is deliberately stricter over both.
 	for _, id := range targets {
 		if hubForkIdentityFenced(cfg, id, forkThreadOwnerFor(cfg, id)) {
 			return appwire.ThreadForkResponse{}, sessionResumeRequiredError()
