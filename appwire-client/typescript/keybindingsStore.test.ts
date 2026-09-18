@@ -373,6 +373,39 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: false });
   });
 
+  test("a refresh already reading while a draft write is in flight never settles that write's uncertainty", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const patchReplies = gateSettlements(client, patchMethod);
+    const getReplies = gateSettlements(client, getMethod);
+
+    // The draft write starts and claims the write token first.
+    const save = store.getState().saveDraft([]);
+    await vi.waitFor(() => expect(patchReplies).toHaveLength(1));
+
+    // A refresh's own read starts WHILE the write is still in flight - its
+    // snapshot began before the write's outcome was known.
+    const refresh = store.getState().refreshOverrides();
+    await vi.waitFor(() => expect(getReplies).toHaveLength(1));
+
+    // The write's own request comes back with no usable reply: the outcome
+    // is unknown (writeUncertain), and `saving` clears - but the fence's
+    // write token never moves (nothing superseded it).
+    replyAt(patchReplies, 0).reject(new Error("disconnected"));
+    await expect(save).rejects.toThrow("disconnected");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true });
+
+    // The STALE refresh, which started before that failure landed, now
+    // replies. Its snapshot says nothing about the write it raced - it must
+    // not settle the uncertainty the write just left, even though `saving`
+    // is false and the write token is unchanged by the time it checks.
+    replyAt(getReplies, 0).resolve(payload(3, rules));
+    await refresh;
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: true });
+  });
+
   test("a refresh's stale reply does not reclassify the checkpoint the settle would have adopted", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(5, rules);

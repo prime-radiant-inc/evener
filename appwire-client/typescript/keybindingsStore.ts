@@ -972,10 +972,21 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * draft editor: an uncertain write's outcome is now whatever the hub
    * confirmed, so the checkpoint is re-marked and edits unblock. A read that
    * started before the write left, or landed while one is in flight, says
-   * nothing about that write and settles nothing. */
-  function settledWrite(payload: KeybindingsOverrides, writeSerialAtStart: number): Partial<KeybindingsStoreFields> {
+   * nothing about that write and settles nothing. `savingAtReadStart` covers
+   * the case the CURRENT `saving`/write-token check misses: a write already
+   * in flight when this read began can fail (clearing `saving`, leaving
+   * writeUncertain) before this read's reply lands, with no NEWER write ever
+   * claiming a token - `fence.writeToken` never moves, so by reply time
+   * `saving` already reads false and the token still matches. A read whose
+   * own snapshot predates that write's outcome must not settle it. */
+  function settledWrite(
+    payload: KeybindingsOverrides,
+    writeSerialAtStart: number,
+    savingAtReadStart: boolean,
+  ): Partial<KeybindingsStoreFields> {
     const { draft, writeUncertain, saving } = getState();
-    if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving) return {};
+    if (payload.loadError !== undefined || writeSerialAtStart !== fence.writeToken || saving || savingAtReadStart)
+      return {};
     if (draft !== null && writeUncertain) {
       let replaced: boolean;
       try {
@@ -1003,6 +1014,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     if (!fence.liveHub(generation)) return;
     const serial = fence.claimRead();
     const writeSerialAtStart = fence.writeToken;
+    const savingAtReadStart = getState().saving;
     // Finding 23: a refresh rejecting after support was lost would otherwise
     // overwrite the support-drop cleanup with a stale "could not load"
     // hubError while the section claims the built-in defaults are in effect.
@@ -1016,7 +1028,9 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // hubLoading clears in the same publish whether the payload applies or
       // is ignored (`extra`); settledWrite's checkpoint reclassification
       // (`settle`) runs only once the reconcile has actually succeeded.
-      applyHubOverrides(payload, { hubLoading: false }, () => settledWrite(payload, writeSerialAtStart));
+      applyHubOverrides(payload, { hubLoading: false }, () =>
+        settledWrite(payload, writeSerialAtStart, savingAtReadStart),
+      );
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
