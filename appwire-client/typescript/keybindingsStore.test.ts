@@ -434,6 +434,38 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toMatchObject({ writeUncertain: false });
   });
 
+  test("settling an uncertain write after its checkpoint was replaced evaluates conflict against the authoritative refresh revision, not the write's start revision", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+    await expect(store.getState().saveDraft(rules)).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // Another writer replaces the SAME on-disk record with a draft composed
+    // against revision 3 while the outcome is still unknown.
+    const otherRules = [{ action: ACTIONS.paletteOpen, chord: "Control+P" }];
+    const replacement: KeybindingDraftCheckpoint = { id: "other", baseRevision: 3, rules: otherRules, writeUncertain: false };
+    drafts.storage.save(replacement);
+
+    // The hub has since moved to a NEWER revision by the time the settling
+    // refresh lands - the replacement (composed against 3) is stale
+    // relative to THAT authoritative revision, not the write's pre-apply
+    // one, and the adopted conflict must reflect it.
+    client.on(getMethod, () => payload(6, []));
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({
+      revision: 6,
+      writeUncertain: false,
+      draftConflict: true,
+      draft: { revision: 3, rules: otherRules },
+    });
+    expect(drafts.stored()).toEqual(replacement);
+  });
+
   test("settling an uncertain write whose replaceClassified throws marks storage unavailable, not just draftError", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
