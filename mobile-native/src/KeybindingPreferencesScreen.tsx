@@ -208,6 +208,10 @@ export function KeybindingPreferencesScreen({
 									// instead of a dead button.
 									try {
 										preferences.discardUnreadableKeybindingsDraft();
+										// A stale error from an earlier failed action must not
+										// outlive a successful discard: ErrorMessage prioritizes
+										// this component-local error over domain?.error.
+										setError(null);
 									} catch {
 										setError(
 											"The change could not be completed. Check current shortcuts and review your changes.",
