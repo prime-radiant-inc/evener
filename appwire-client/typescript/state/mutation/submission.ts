@@ -1,16 +1,14 @@
-import type { PendingTurnsStore } from "./pendingTurns";
+import type { PendingTurnsStore, SubmittedDraft } from "./pendingTurns";
 import type { MutationProjectionFence } from "./projection";
 import type { MutationAttachmentRef } from "./records";
 
 // What one submission needs tracked and settled: which ref it targets, the
-// draft snapshot to compare against once it commits, and the caller's own
-// failure handler. `draftRevisionAtStart` is read by the host through its
-// own draft port before calling in, so no draft port is duplicated here.
-export interface MutationSubmissionOptions {
+// caller's own failure handler, and - via `SubmittedDraft` - the draft
+// snapshot `store.settleSubmittedDraft` compares the current draft against.
+// `draftRevisionAtStart` is read by the host through its own draft port
+// before calling in, so no draft port is duplicated here.
+export interface MutationSubmissionOptions extends SubmittedDraft {
   ref: string;
-  draftRevisionAtStart: number;
-  text: string;
-  skillNames: readonly string[];
   onFailure: (error: unknown) => void;
 }
 
@@ -64,11 +62,7 @@ export function submitWithPendingTracking<A extends MutationAttachmentRef = Muta
           throw error;
         }
         if (epoch === fence.epoch()) {
-          const settled = store.settleSubmittedDraft(opts.ref, {
-            draftRevisionAtStart: opts.draftRevisionAtStart,
-            text: opts.text,
-            skillNames: opts.skillNames,
-          });
+          const settled = store.settleSubmittedDraft(opts.ref, opts);
           onCommitted?.({ clearedDraft: settled.cleared, draftUnchanged: settled.draftUnchanged });
         }
       } finally {

@@ -94,6 +94,30 @@ describe("submitWithPendingTracking", () => {
     expect(onCommitted).toHaveBeenCalledWith({ clearedDraft: true, draftUnchanged: true });
   });
 
+  test("reports the draft as unchanged and uncleared when the stored draft has moved on since the submission started", async () => {
+    const store = testPendingTurnsStore({
+      draft: {
+        readDraftRevision: () => 7,
+        readComposerDraft: () => ({ text: "edited", skillNames: [] }),
+        clearDraft: () => undefined,
+      },
+    });
+    const fence = createMutationProjectionFence();
+    const onCommitted = vi.fn();
+
+    await submitWithPendingTracking(
+      store,
+      fence,
+      (work) => work,
+      { ref: "ref-a", draftRevisionAtStart: 0, text: "", skillNames: [], onFailure: vi.fn() },
+      () => Promise.resolve(),
+      () => undefined,
+      onCommitted,
+    );
+
+    expect(onCommitted).toHaveBeenCalledWith({ clearedDraft: false, draftUnchanged: false });
+  });
+
   test("a fence reset mid-flight skips settling the draft and releasing the submission guard, but still refreshes", async () => {
     const store = testPendingTurnsStore();
     const fence = createMutationProjectionFence();
