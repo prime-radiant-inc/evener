@@ -112,6 +112,13 @@ describe("plugin selection state", () => {
     });
   });
 
+  test("pluginSelectionFromOverrides does not alias the overrides array", () => {
+    const overrides: LaunchConfigLayer = { enabledPlugins: ["a"] };
+    const selection = pluginSelectionFromOverrides(overrides);
+    if (selection.mode === "explicit") selection.names.push("b");
+    expect(overrides.enabledPlugins).toEqual(["a"]);
+  });
+
   test("a selection round-trips through withPluginSelection and back", () => {
     const overrides: LaunchConfigLayer = { sandbox: "off", maxRounds: 2 };
     for (const selection of [

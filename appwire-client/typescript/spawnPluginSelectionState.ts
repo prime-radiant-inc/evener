@@ -42,7 +42,7 @@ export function withPluginSelection(overrides: LaunchConfigLayer, selection: Plu
 export function pluginSelectionFromOverrides(overrides: LaunchConfigLayer): PluginSelectionState {
   return overrides.enabledPlugins === undefined
     ? { mode: "default" }
-    : { mode: "explicit", names: overrides.enabledPlugins };
+    : { mode: "explicit", names: [...overrides.enabledPlugins] };
 }
 
 export function pluginSelectionIssues(
