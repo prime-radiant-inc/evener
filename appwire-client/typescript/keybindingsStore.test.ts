@@ -715,6 +715,62 @@ describe("the two write paths serialize through one queue", () => {
     settlements[1]!.resolve(payload(5, [applied]));
     await expect(next).resolves.toMatchObject({ revision: 5 });
   });
+
+  test("a direct PATCH queued before a save still dispatches in order", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const a = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const p = store.getState().patchOverrides([applied]);
+    // The save publishes `saving` synchronously but owns the LAST queue slot:
+    // the direct write queued before it must still dispatch, not be rejected
+    // by the save's saving flag.
+    const save = store.getState().saveDraft(proposed);
+    expect(store.getState().saving).toBe(true);
+
+    settlements[0]!.resolve(payload(4, [applied]));
+    await expect(a).resolves.toMatchObject({ revision: 4 });
+    await vi.waitFor(() => expect(settlements).toHaveLength(2));
+    settlements[1]!.resolve(payload(5, [applied]));
+    await expect(p).resolves.toMatchObject({ revision: 5 });
+
+    // The save now runs against a revision it was not composed for: a
+    // draftConflict, so it never dispatches a doomed PATCH.
+    await expect(save).rejects.toThrow();
+    expect(callsTo(client, patchMethod)).toBe(2);
+    expect(store.getState()).toMatchObject({
+      revision: 5,
+      rawOverrides: [applied],
+      saving: false,
+      writeUncertain: false,
+      draftConflict: true,
+    });
+  });
+
+  test("reset drains a write queued behind the abandoned in-flight write", async () => {
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    const a = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const b = store.getState().patchOverrides([applied]);
+
+    store.reset();
+    settlements[0]!.resolve(payload(4, [applied]));
+    await a.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    // The abandoned write's settlement must still release its tail so the
+    // write queued behind it drains through its dead-generation fence rather
+    // than hanging forever.
+    await expect(b).rejects.toThrow();
+  });
 });
 
 describe("payload rules shared by both apps", () => {

@@ -626,10 +626,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     });
     const queued = idle ? run() : previous.then(run, run);
     const settle = () => {
-      // A reset() since this write began already zeroed the counter; its
-      // settlement must not drive a fresh epoch's counter negative.
-      if (epoch !== writeEpoch) return;
-      pendingWrites -= 1;
+      // A reset() since this write began already zeroed the counter, so this
+      // settlement must not drive a fresh epoch's counter negative. Its tail
+      // is ALWAYS released: a write queued behind it was chained on this
+      // entry and must still wake (it fails its own dead-generation fence) so
+      // it drains instead of hanging forever.
+      if (epoch === writeEpoch) pendingWrites -= 1;
       releaseTail();
     };
     queued.then(settle, settle);
@@ -1060,11 +1062,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         state.hubSupport !== "supported" ||
         state.loaded !== true ||
         state.hubLoading ||
-        // A checkpointed save owns the write token (in flight, or queued
-        // behind this write) or left its outcome unknown: a direct write must
-        // not start against a state whose write it would race, nor bypass the
-        // authoritative read that an uncertain outcome requires (issue #1801).
-        state.saving ||
+        // A checkpointed save LEFT ITS OUTCOME UNKNOWN: a direct write must
+        // not bypass the authoritative read that uncertainty requires (issue
+        // #1801). `state.saving` is deliberately NOT checked here: the shared
+        // queue already prevents a concurrent wire write, and a direct write
+        // queued BEFORE a save legitimately owns the earlier slot - reading
+        // the save's call-time `saving` publish would reject it and invert
+        // queue order.
         state.writeUncertain
       ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
