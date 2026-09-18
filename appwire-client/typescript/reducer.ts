@@ -275,7 +275,9 @@ export function pendingTextJoined(chunks: string[]): string {
 // screen. Every per-summary join goes through pendingTextJoined, so a live
 // chunk view answers from its brand-cached text in O(1) rather than an
 // element-by-element Proxy walk on every render. THE reading of that field
-// for both hosts: the web's think block and native's reasoning row.
+// for the web's think block (cmd/evener-hub/frontend/src/panes/session/
+// transcript/messages/ThinkBlock.tsx) — check each host's own reasoning
+// row before assuming it reads this too; not every consumer does.
 export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
   if (!summaries) return [];
   return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
