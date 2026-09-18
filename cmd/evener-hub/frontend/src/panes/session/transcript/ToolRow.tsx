@@ -157,6 +157,15 @@ export interface ToolRowProps {
    * controlling `summaryOpen`, and a separate .bodyTrigger chevron controls
    * `expanded`. Intent-less rows are unchanged regardless. */
   onToggleSummary?: () => void;
+  /** Whether the row has any summary TEXT at all, independent of whether its
+   * summary line is currently open. A collapsed two-level row passes an empty
+   * `summary` string while the text still exists, so `summary`'s own presence
+   * cannot answer this. Defaults to the passed `summary`'s presence for direct
+   * callers. A summary-less intent-bearing row (a delegate, whose presentation
+   * subagentModule owns) has nothing for the intent button to disclose: it
+   * stays single-level, with the body trigger on the intent line, so no empty
+   * summary region is ever mounted (#1253). */
+  hasSummaryText?: boolean;
 }
 
 /** The atomic tail unit both glyph-bearing lines render through: the line's
@@ -507,6 +516,7 @@ export function ToolRow({
   bodyId,
   summaryOpen = false,
   onToggleSummary,
+  hasSummaryText,
 }: ToolRowProps) {
   const generatedBodyId = useId();
   const disclosureBodyId = bodyId ?? generatedBodyId;
@@ -514,10 +524,23 @@ export function ToolRow({
   const statedIntent = statedIntentOf({ description: intent });
   const hasIntent = statedIntent !== undefined;
   const hasSummary = summary.trim() !== "";
+  // The summary TEXT exists even when the line is collapsed and `summary` is
+  // blanked by the caller; callers that blank it pass hasSummaryText so the
+  // layout can tell "collapsed" from "nothing to show" (#1253).
+  const summaryTextPresent = hasSummaryText ?? hasSummary;
   // Two-level disclosure is opt-in via onToggleSummary, and only applies to
   // intent-bearing rows. Intent-less rows keep the legacy overlay pattern
   // (one trigger controls the body) regardless of which props are passed.
   const twoLevel = hasIntent && onToggleSummary !== undefined;
+  // There is only a summary line to disclose when there is summary TEXT. A
+  // summary-less intent-bearing row (a delegate, subagentModule owns its
+  // presentation) has nothing for the intent button to open: it stays
+  // single-level - the intent button controls the body directly and the body
+  // trigger rides the intent line - so no empty summary region is ever
+  // mounted, however the caller's summaryOpen prop defaults (#1253). The
+  // delegate card depends on the body trigger, not the summary region, so
+  // this keeps the card reachable without the stray line.
+  const summaryToggle = twoLevel && summaryTextPresent;
   // `status` is typed ReactNode, so it admits values that render nothing and
   // carry no accessible name - null, undefined, false (the common
   // `condition && <Node/>` idiom) - alongside a real status node. Only a
@@ -573,7 +596,7 @@ export function ToolRow({
     <span
       className={CLASS.chevron}
       aria-hidden="true"
-      data-open={(twoLevel ? summaryOpen : expanded) ? "true" : "false"}
+      data-open={(summaryToggle ? summaryOpen : expanded) ? "true" : "false"}
       data-testid="tool-row-chevron"
     >
       <Chevron />
@@ -745,8 +768,12 @@ export function ToolRow({
   // sibling of the words it opens, never sprung to the line's far edge -
   // while the .bodyTrigger button stays behind it as an empty full-line
   // overlay so the whole line still toggles the body.
-  const bodyTriggerOnIntentLine = twoLevel && !summaryOpen && expanded;
-  const bodyTriggerOnSummaryLine = twoLevel && summaryOpen;
+  //
+  // A summary-less row has no summary line at all, so its body trigger always
+  // rides the intent line - folded or open - or the reader could not reach
+  // the body (#1253).
+  const bodyTriggerOnSummaryLine = twoLevel && summaryOpen && summaryTextPresent;
+  const bodyTriggerOnIntentLine = twoLevel && !bodyTriggerOnSummaryLine && (summaryTextPresent ? expanded : true);
   // The inline slot exists only when there is summary text to carry the
   // chevron; a summary-less line keeps the chevron inside the button.
   const bodyChevronInline = bodyTriggerOnSummaryLine && hasSummary;
@@ -870,11 +897,13 @@ export function ToolRow({
   ) : null;
 
   // Intent button attributes differ between two-level and legacy modes.
-  // In two-level mode the intent button controls the summary disclosure;
-  // in legacy mode it controls the body disclosure directly.
-  const triggerExpanded = twoLevel ? summaryOpen : expanded;
-  const triggerControls = twoLevel ? (summaryOpen ? summaryRegionId : undefined) : disclosureBodyId;
-  const triggerOnClick = twoLevel ? () => onToggleSummary?.() : () => onToggle?.();
+  // In two-level mode with a summary line the intent button controls the
+  // summary disclosure; otherwise (legacy, or a summary-less intent-bearing
+  // row that stays single-level, #1253) it controls the body disclosure
+  // directly.
+  const triggerExpanded = summaryToggle ? summaryOpen : expanded;
+  const triggerControls = summaryToggle ? (summaryOpen ? summaryRegionId : undefined) : disclosureBodyId;
+  const triggerOnClick = summaryToggle ? () => onToggleSummary?.() : () => onToggle?.();
 
   return (
     <div

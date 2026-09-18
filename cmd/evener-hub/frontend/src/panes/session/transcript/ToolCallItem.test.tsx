@@ -1694,6 +1694,52 @@ test.each(["chat", "intent"] as const)(
   },
 );
 
+// --- #1253: the same summary-less delegate row stays single-level at every
+//     level whose content vector defaults the summary line open (tools and up),
+//     whether its intent is stated or derived from the prompt/task fallback.
+test.each(["tools", "activity", "full"] as const)(
+  "a delegate row at the %s level renders no empty summary line (body trigger on the intent line)",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_summaryless_${level}`,
+        toolName: "delegate",
+        description: "Delegating the flaky suite",
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    // A delegate row renders no summary text, so no summary-open region (empty
+    // or otherwise) may be mounted at any verbosity level.
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    // The body trigger rides the intent line instead.
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
+test.each(["tools", "activity", "full"] as const)(
+  "a prompt-fallback delegate row at the %s level renders no empty summary line",
+  (level) => {
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level });
+    const { container } = renderWithConfig(
+      config,
+      item({
+        id: `delegate_promptonly_${level}`,
+        toolName: "delegate",
+        // No description: the intent is derived from the prompt fallback, so
+        // the raw statedIntent is absent while the row still has an intent.
+        argumentsJSON: JSON.stringify({ prompt: "Run the flaky suite" }),
+      }),
+    );
+    expect(screen.getByTestId("tool-row-intent").textContent).toBe("Run the flaky suite");
+    expect(screen.queryByTestId("tool-row-summary")).toBeNull();
+    expect(container.querySelector('[data-body-trigger="true"]')).toBeNull();
+    expect(screen.getByTestId("tool-row").getAttribute("data-body-trigger-intent")).toBe("true");
+  },
+);
+
 // --- entity cards on ids in non-content summary fields ---------------------
 //
 // A tool summary is a plain string, but a job_/dlg_/watch_ id inside it names a
