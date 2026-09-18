@@ -2954,6 +2954,22 @@ describe("observed queue guards", () => {
       /ConversationService/,
     );
   });
+  it("still rejects a known receipt key on a mutation kind that does not expect it", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/queue",
+      () =>
+        ({
+          receipt: makeReceipt("queue", {
+            turnId: "misplaced",
+          } as Partial<MutationReceipt>),
+        }) as TurnQueueResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.queue(textInput("queued"))).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
 });
 
 describe("bound conversation model catalog", () => {
