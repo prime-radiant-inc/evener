@@ -22,13 +22,15 @@ import (
 func (m *hubModel) windowTitleCmd(prev hubModel) tea.Cmd {
 	title := ""
 	if m.mode == hubModeSession {
-		title = m.sessionWindowTitle()
+		title = m.sessionDisplayName()
 	}
 	if title == prev.windowTitle {
 		return nil
 	}
-	nameChanged := m.mode == hubModeSession && prev.mode == hubModeSession && prev.detail.Title != m.detail.Title
-	viewChanged := m.mode != prev.mode || prev.detail.Ref != m.detail.Ref
+	// The title only needs to move when the view entered or left a session, or
+	// the viewed session's name changed; any other update leaves it where it is.
+	nameChanged := m.mode == hubModeSession && prev.mode == hubModeSession && prev.sessionDisplayName() != m.sessionDisplayName()
+	viewChanged := m.mode != prev.mode
 	if !nameChanged && !viewChanged {
 		return nil
 	}
@@ -36,12 +38,11 @@ func (m *hubModel) windowTitleCmd(prev hubModel) tea.Cmd {
 	return tea.SetWindowTitle(title)
 }
 
-// sessionWindowTitle is the active session's display name for the terminal
-// title: the same chain the session header shows (Title → SessionID → Ref),
-// which already carries the session name and its fallbacks (original prompt,
-// then id). It omits the header's "untitled session" placeholder so an unnamed
-// session leaves the title empty rather than putting a placeholder in the
-// window.
-func (m hubModel) sessionWindowTitle() string {
+// sessionDisplayName is the active session's display name: the name the hub
+// reports, or its fallbacks (the original prompt the preview carries, then the
+// session id and ref). The session header renders it verbatim and adds its
+// "untitled session" placeholder; the terminal title uses it as-is so an
+// unnamed session leaves the window title empty rather than a placeholder.
+func (m hubModel) sessionDisplayName() string {
 	return envvars.FirstNonEmpty(m.detail.Title, m.detail.SessionID, m.detail.Ref)
 }
