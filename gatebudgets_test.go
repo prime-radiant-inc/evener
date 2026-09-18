@@ -20,6 +20,15 @@ const (
 // runSourcedGate evaluates script in one POSIX shell after asserting both
 // libraries exist. The script sources them itself, so each case chooses whether
 // the helper is present and which functions of it to replace.
+//
+// The child gets a minimal environment — PATH and a fixed locale, nothing else.
+// gate_init_budgets lets an ambient ROOT_P / AGENT_P / AGENT_PARALLEL /
+// AGENT_SHARD_* win over the budget it would otherwise compute, and the gate
+// that runs this test exports exactly those: `make test` and `make test-race`
+// reach here through run-module-tests.sh, which exports the shard budgets (and
+// test-race pins AGENT_PARALLEL=6). Inheriting them would make these assertions
+// depend on whichever gate run started them, so the environment is dropped
+// rather than trusted to stay clean.
 func runSourcedGate(t *testing.T, script string) string {
 	t.Helper()
 	for _, path := range []string{gateBudgetsHelper, gateBudgetsLib} {
@@ -27,7 +36,9 @@ func runSourcedGate(t *testing.T, script string) string {
 			t.Fatalf("stat %s: %v", path, err)
 		}
 	}
-	out, err := exec.Command("sh", "-c", script).CombinedOutput()
+	cmd := exec.Command("sh", "-c", script)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "LC_ALL=C"}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("sh -c:\n%s\nexit: %v\noutput:\n%s", script, err, out)
 	}
@@ -117,6 +128,7 @@ func TestGateBudgetFallsBackWithoutAReadableAnswer(t *testing.T) {
 	for _, tc := range []struct{ name, stub string }{
 		{"helper prints nothing", `printf ''`},
 		{"helper prints a non-number", `printf '%s' nope`},
+		{"helper prints zero", `printf '%s' 0`},
 		{"helper exits non-zero", `return 3`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -163,6 +175,39 @@ func TestVitestRunArgsFollowTheLoadAwareBudget(t *testing.T) {
 	})
 }
 
+// TestGateSourceHelperMakesTheBudgetsLoadAware pins the one call that makes the
+// budgets load-aware at all. Sourcing the helper is the wiring the smoke test's
+// text match cannot vouch for: without it gate_budget silently answers with
+// fixed defaults. Here the real helper is sourced and then its probes are
+// replaced, so a loaded fixture machine must shrink the budget, while an
+// unreadable helper path must leave the fixed default in place rather than
+// abort.
+func TestGateSourceHelperMakesTheBudgetsLoadAware(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a readable helper sizes the budget to spare capacity", func(t *testing.T) {
+		t.Parallel()
+		got := runSourcedGate(t, ". "+gateBudgetsLib+"\n"+
+			"gate_source_helper "+gateBudgetsHelper+"\n"+
+			"load_aware_cores() { printf '%s' 16; }\n"+
+			"load_aware_load1() { printf '%s' 13.5; }\n"+
+			`printf '%s' "$(gate_budget 4 4)"`)
+		if want := "2"; got != want {
+			t.Errorf("gate_budget after gate_source_helper = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("an unreadable helper keeps the fixed default", func(t *testing.T) {
+		t.Parallel()
+		got := runSourcedGate(t, ". "+gateBudgetsLib+"\n"+
+			"gate_source_helper "+gateBudgetsHelper+".missing\n"+
+			`printf '%s' "$(gate_budget 4 4)"`)
+		if want := "4"; got != want {
+			t.Errorf("gate_budget after gate_source_helper on a missing path = %q, want %q", got, want)
+		}
+	})
+}
+
 // TestRunModuleTestsWiresThroughGateBudgets is the minimal smoke assertion the
 // issue asks to keep: the gate script routes its budgets through the shared
 // library instead of carrying its own copy. The library's behavior is pinned
@@ -186,6 +231,8 @@ func TestRunModuleTestsWiresThroughGateBudgets(t *testing.T) {
 	}
 	for _, want := range []string{
 		"gate-budgets.sh",
+		"load-aware-workers.sh",
+		"gate_source_helper",
 		"gate_init_budgets",
 		"gate_module_flags",
 	} {

@@ -7,10 +7,10 @@
 # (cmd/evener-hub/frontend/package.json) source it. Sourcing only defines
 # functions and runs nothing.
 #
-# Source scripts/lib/load-aware-workers.sh first. gate_budget sizes itself
-# through load_aware_workers when that function is defined, and falls back to
-# the historical fixed default when it is not, so a checkout without the helper
-# behaves as it did before the helper existed.
+# Source this first, then call gate_source_helper with the helper's path. Every
+# budget falls back to its historical fixed default when the helper is absent or
+# answers with something unusable, so a checkout without the helper behaves as
+# it did before the helper existed.
 #
 # This wiring lives here rather than inline in run-module-tests.sh so it can be
 # exercised directly: source the library, replace the helper's machine probes
@@ -18,8 +18,21 @@
 # Asserting rendered script text instead passes on a comment and pins
 # formatting rather than behavior.
 
+# gate_source_helper PATH — source the load-aware helper when it is readable, so
+# the budgets size themselves from spare capacity. An unreadable helper is not
+# fatal: gate_budget then answers with its fixed default, which is how the gate
+# behaved before the helper existed. Failures inside the helper itself are the
+# helper's problem, not this call's.
+gate_source_helper() {
+	if [ -r "$1" ]; then
+		. "$1"
+	fi
+}
+
 # gate_budget CAP DEFAULT — the load-aware worker count for CAP, or DEFAULT
-# when the helper is absent or its answer is not a positive integer.
+# when the helper is absent or its answer is not a positive integer. A zero from
+# the helper is treated as unusable too: `-p 0` and `--maxWorkers=0` are invalid
+# and a zero would silently drop the parallelism the caller asked for.
 gate_budget() {
 	_gb_cap=$1
 	_gb_default=$2
@@ -30,6 +43,9 @@ gate_budget() {
 	case "$_gb_value" in
 	''|*[!0-9]*) _gb_value=$_gb_default ;;
 	esac
+	if [ "$_gb_value" -eq 0 ]; then
+		_gb_value=$_gb_default
+	fi
 	printf '%s' "$_gb_value"
 }
 

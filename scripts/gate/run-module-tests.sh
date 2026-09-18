@@ -35,15 +35,19 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 
 # The load-aware budgets, and the effective -p/-parallel flags they become,
 # live in scripts/lib/gate-budgets.sh so the wiring can be exercised directly
-# instead of matched as script text. Sourcing the helper is guarded: an
-# unreadable helper must degrade the budgets to their historical fixed values,
-# not abort this script, and an unguarded call would leave a budget empty, which
-# the -p guards read as "pass no flag" and widen to go's GOMAXPROCS.
-load_aware_helper="$script_dir/../lib/load-aware-workers.sh"
-if [ -r "$load_aware_helper" ]; then
-	. "$load_aware_helper"
+# instead of matched as script text. That library is part of this script's own
+# commit, so an unreadable copy is a broken checkout and refusing is better than
+# running the whole gate unbudgeted. The helper it sizes through is guarded
+# inside gate_source_helper: an unreadable helper degrades the budgets to their
+# historical fixed values, and a budget left empty would be read by the -p
+# guards as "pass no flag" and widened to go's GOMAXPROCS.
+gate_budgets_lib="$script_dir/../lib/gate-budgets.sh"
+if [ ! -r "$gate_budgets_lib" ]; then
+	printf 'run-module-tests.sh: cannot read %s; refusing to run unbudgeted\n' "$gate_budgets_lib" >&2
+	exit 2
 fi
-. "$script_dir/../lib/gate-budgets.sh"
+. "$gate_budgets_lib"
+gate_source_helper "$script_dir/../lib/load-aware-workers.sh"
 
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}

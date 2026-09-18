@@ -52,8 +52,8 @@ test.each(["test", "test:coverage"])("the %s script sizes vitest through the sha
   expect(script, `package.json has no "${name}" script`).toBeDefined();
   expect(
     script,
-    `"${name}" must source scripts/lib/load-aware-workers.sh, or the budget always falls back to a fixed count`,
-  ).toContain("../../../scripts/lib/load-aware-workers.sh");
+    `"${name}" must source load-aware-workers.sh through gate_source_helper, or the budget always falls back to a fixed count`,
+  ).toContain("gate_source_helper ../../../scripts/lib/load-aware-workers.sh");
   expect(
     script,
     `"${name}" must source scripts/lib/gate-budgets.sh, which builds the worker-budget arguments`,
