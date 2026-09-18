@@ -50,6 +50,22 @@ const first: AskQuestionRef = {
 };
 const second: AskQuestionRef = { ...first, key: "second:0", callId: "second" };
 
+// --- action shape ------------------------------------------------------------
+
+describe("store-bound actions", () => {
+  test("state carries only the data; every action lives on the store object", () => {
+    const store = createAskDockStore({ send: fakeSender() });
+    expect(Object.keys(store.getState()).sort()).toEqual(["byRef", "mintedBatches"]);
+    for (const action of ["setAnswer", "setNote", "setActive", "markPendingGreeted", "sendBatch"] as const) {
+      expect(typeof store[action]).toBe("function");
+    }
+    // The already store-bound actions keep their home beside the five.
+    for (const action of ["reconcile", "beginSend", "finishSend", "followThreads"] as const) {
+      expect(typeof store[action]).toBe("function");
+    }
+  });
+});
+
 // --- two instances share nothing ---------------------------------------------
 
 describe("two stores share nothing", () => {
@@ -69,10 +85,10 @@ describe("two stores share nothing", () => {
     expect(batch?.questions.map((q) => q.key)).toEqual(["call_1:0"]);
     expect(b.getState().byRef.size).toBe(0);
 
-    a.getState().setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["Yes"] });
+    a.setAnswer("ref_a", "call_1:0", { kind: "option", labels: ["Yes"] });
     expect(b.getState().byRef.get("ref_a")).toBeUndefined();
 
-    await expect(a.getState().sendBatch("ref_a", batch?.id ?? "")).resolves.toEqual({ outcome: "sent" });
+    await expect(a.sendBatch("ref_a", batch?.id ?? "")).resolves.toEqual({ outcome: "sent" });
     expect(sendA).toHaveBeenCalledTimes(1);
     expect(sendA).toHaveBeenCalledWith("ref_a", '[answers]\n1. [Deploy?] → "Yes"');
     expect(sendB).not.toHaveBeenCalled();
@@ -110,7 +126,7 @@ describe("ports", () => {
     const store = createAskDockStore();
     store.reconcile("ref_a", [first]);
     const batch = store.getState().byRef.get("ref_a")?.batches[0];
-    await expect(store.getState().sendBatch("ref_a", batch?.id ?? "")).rejects.toThrow(/\{ send \}/);
+    await expect(store.sendBatch("ref_a", batch?.id ?? "")).rejects.toThrow(/\{ send \}/);
     expect(store.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(false);
   });
 
@@ -123,12 +139,12 @@ describe("ports", () => {
     store.followThreads(threads);
     threads.publish("ref_a", threadModel([askItem("i1", "call_1", DEPLOY)]));
     const batch = store.getState().byRef.get("ref_a")?.batches[0];
-    const outcome = await store.getState().sendBatch("ref_a", batch?.id ?? "");
+    const outcome = await store.sendBatch("ref_a", batch?.id ?? "");
     expect(outcome).toEqual({ outcome: "error", message: "Couldn't send answers: socket closed" });
     const after = store.getState().byRef.get("ref_a")?.batches[0];
     expect(after?.id).toBe(batch?.id);
     expect(after?.sending).toBe(false);
-    await expect(store.getState().sendBatch("ref_a", batch?.id ?? "")).resolves.toEqual({
+    await expect(store.sendBatch("ref_a", batch?.id ?? "")).resolves.toEqual({
       outcome: "error",
       message: "Couldn't send answers: socket closed",
     });
@@ -143,12 +159,12 @@ describe("ports", () => {
     // A note the types forbid is the one way to make composeAskAnswers throw
     // (note.trim()); nothing on the wire can produce it, so a throw here is a
     // programming error that must not strand the batch mid-send.
-    store.getState().setNote("ref_a", first.key, null as unknown as string);
-    await expect(store.getState().sendBatch("ref_a", batch.id)).rejects.toThrow(TypeError);
+    store.setNote("ref_a", first.key, null as unknown as string);
+    await expect(store.sendBatch("ref_a", batch.id)).rejects.toThrow(TypeError);
     expect(send).not.toHaveBeenCalled();
     expect(store.getState().byRef.get("ref_a")?.batches[0]?.sending).toBe(false);
-    store.getState().setNote("ref_a", first.key, "");
-    await expect(store.getState().sendBatch("ref_a", batch.id)).resolves.toEqual({ outcome: "sent" });
+    store.setNote("ref_a", first.key, "");
+    await expect(store.sendBatch("ref_a", batch.id)).resolves.toEqual({ outcome: "sent" });
     expect(send).toHaveBeenCalledTimes(1);
   });
 });

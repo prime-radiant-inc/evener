@@ -17,6 +17,20 @@ export function markerText(n: number): string {
   return `[image ${n}]`;
 }
 
+// markerPattern is the ONE matcher for the literal markerText renders: every
+// site that scans or rewrites "[image N]" - attachmentMarkers' send-time
+// translation, recoveryDraft's renumbering, TurnFailureEndCap's retry
+// round-trip - goes through this instead of spelling the format again, so
+// changing the placeholder syntax is a one-place edit. The coupling is pinned
+// by textareaMarkers.test.ts, which asserts the pattern matches markerText
+// output and captures N.
+//
+// A fresh RegExp per call (not a shared module-level one) avoids the
+// lastIndex state a global regex carries between callers.
+export function markerPattern(): RegExp {
+  return /\[image (\d+)\]/g;
+}
+
 export interface TextEdit {
   value: string;
   cursor: number;

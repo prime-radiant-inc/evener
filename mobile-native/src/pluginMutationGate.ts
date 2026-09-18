@@ -65,3 +65,23 @@ export function createPluginMutationGate(): PluginMutationGate {
     },
   };
 }
+
+/** What a gated mutation did, in the three shapes a caller's copy needs: it
+ * ran, the gate refused it while another write held it, or it failed. */
+export type GatedMutationOutcome = "ran" | "refused" | "failed";
+
+/** Runs `action` under `gate` and reduces it to the three outcomes a screen
+ * tells apart: a refusal stays distinct from a failure, and a failure's error
+ * is swallowed because the caller owns the copy it shows. Every screen that
+ * writes through the gate goes through here, so all of them agree on which
+ * outcome reads as busy and which as "this one may not have landed". */
+export async function runGatedMutation(
+  gate: PluginMutationGate,
+  action: () => Promise<void>,
+): Promise<GatedMutationOutcome> {
+  try {
+    return (await gate.run(action)) ? "ran" : "refused";
+  } catch {
+    return "failed";
+  }
+}

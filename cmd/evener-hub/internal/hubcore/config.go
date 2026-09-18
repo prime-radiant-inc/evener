@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -59,12 +60,23 @@ type WebConfig struct {
 	CredsStore                *credentials.Store // credentials store; passed to auth controller
 	PluginDirs                []string           // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
 	PluginRoot                string             // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
-	MCPConfigPath             string             // MCP config file path; when empty, default to ~/.config/evener/mcp.json
-	Registry                  *ProviderRegistry  // live provider registry; the instance, auth, credential-test and model surfaces all read it
-	ProvidersConfigPath       string             // path to providers.toml; the instances pane is its only writer
-	CredentialsPath           string             // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
-	NoUserLayer               bool               // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
-	APILogDefault             bool               // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
+	// PluginResolveManager, when set, is the hub's own already-wired
+	// *plugins.Manager for PluginRoot — set once per server by
+	// newHubAppServerWithNavigationAndTrace, so a launch's plugin-inventory
+	// resolution (thread/start, evener/spawn/slashCatalog) reaches the same
+	// Manager evener/plugin/* and evener/marketplace/* mutations use, instead
+	// of a second, unwired one. Each WebConfig value carries its own — never a
+	// package global — so two servers in one process never answer for each
+	// other. nil, or a root it does not recognize, falls back to a fresh
+	// plugins.NewManager(pluginRoot); every test that never builds a server
+	// leaves this nil and gets that fallback.
+	PluginResolveManager func(pluginRoot string) *plugins.Manager
+	MCPConfigPath        string            // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	Registry             *ProviderRegistry // live provider registry; the instance, auth, credential-test and model surfaces all read it
+	ProvidersConfigPath  string            // path to providers.toml; the instances pane is its only writer
+	CredentialsPath      string            // path to credentials.toml; handed to every spawned child as EVENER_CREDENTIALS_CONFIG
+	NoUserLayer          bool              // EVENER_PROVIDERS_CONFIG is present and empty: no user layer at all (spec §10). A file that fails to load adds to this per call; it is not folded in here.
+	APILogDefault        bool              // hub.toml api_log floor for hub-spawned daemons; applied when no launch layer sets api_log
 
 	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite    *FavoriteStore   // favorite decision store; nil when not configured
