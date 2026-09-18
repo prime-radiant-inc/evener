@@ -431,11 +431,13 @@ export class AppwireClient {
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        if (COMPLETION_OWNED_METHODS.has(method)) {
-          // The cap must free the hub's operation, not only this promise:
-          // the hub learns an abandoned resume when its transport drops, so
-          // retire it the same way resumeThread's refresh does. The normal
-          // reconnect machinery rebuilds the connection for the retry.
+        // The default completion-owned cap must free the hub's operation, not
+        // only this promise: the hub learns an abandoned resume when its
+        // transport drops, so retire it the same way resumeThread's refresh
+        // does, and let the reconnect machinery rebuild for the retry. An
+        // explicit caller deadline is the caller owning abandonment
+        // semantics themselves; it rejects only, transport untouched.
+        if (opts?.timeoutMs === undefined && COMPLETION_OWNED_METHODS.has(method)) {
           this.handleSocketLoss(socket, 1000);
           try {
             socket.close();
