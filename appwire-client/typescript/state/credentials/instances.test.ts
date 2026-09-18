@@ -563,6 +563,36 @@ describe("credential mutations", () => {
     expect(store.getState().selfRefresh).toBe(afterOwn);
   });
 
+  test("a stale marker does not shadow a live one for the same provider", async () => {
+    vi.useFakeTimers();
+    const store = createCredentialInstancesStore({ ownClientId: () => "tab-1" });
+    const fake = readyClient();
+    const aged = deferred<AuthStatusResponse>();
+    const fresh = deferred<AuthStatusResponse>();
+    let sets = 0;
+    fake.on("evener/auth/apiKey/set", () => (++sets === 1 ? aged.promise : fresh.promise));
+    store.connectionChanged(fake, "ready");
+    await store.getState().fetch();
+
+    const first = store.getState().setApiKey("work", API_KEY);
+    // The first marker ages out with no echo (past the 2000ms echo window); the
+    // second mutation arms a live marker behind it.
+    await vi.advanceTimersByTimeAsync(2500);
+    const second = store.getState().setApiKey("work", API_KEY);
+    const marked = store.getState().selfRefresh;
+
+    // An id-less auth echo must look past the stale marker to the live one and
+    // refresh self-marked, not read as another client's change.
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "work", activeSource: "api_key" } });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(store.getState().selfRefresh).toBeGreaterThan(marked);
+
+    aged.resolve(SIGNED_IN);
+    fresh.resolve(SIGNED_IN);
+    await first;
+    await second;
+  });
+
   test("a notification on one store's client never refetches another store", async () => {
     vi.useFakeTimers();
     const first = createCredentialInstancesStore({ ownClientId: () => "tab-1" });

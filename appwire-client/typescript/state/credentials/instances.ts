@@ -763,6 +763,20 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
     return undefined;
   }
 
+  // firstLiveMarker is firstMarker with the stale markers in front of it dropped
+  // as it looks: a marker whose echo was lost must not shadow a newer live
+  // marker for the same subject and turn that newer mutation's id-less echo
+  // foreign.
+  function firstLiveMarker(provider: string | undefined): LocalMutationMarker | undefined {
+    const now = Date.now();
+    for (;;) {
+      const marker = firstMarker(provider);
+      if (marker === undefined) return undefined;
+      if (now - marker.issuedAt <= SELF_ECHO_WINDOW_MS) return marker;
+      retireLocalMutation(marker); // stale: no echo of ours left for it
+    }
+  }
+
   // noteLocalMutation arms one marker for a mutation the store is about to
   // issue and returns it, so that mutation can re-stamp or retire exactly its
   // own marker. Acting on "the latest marker for the subject" instead would let
@@ -793,8 +807,7 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
 
   // True exactly when this notification is this client's own echo of a
   // just-issued mutation; consumes one outstanding marker, so a stale marker
-  // cannot suppress a later notification. A stale marker (its latest stamp
-  // older than the window) counts as no marker at all and is dropped.
+  // cannot suppress a later notification.
   //
   // The broadcast carries the id the originating mutation sent, so an echo is
   // attributed by identity first: a notification whose originClientId is this
@@ -808,17 +821,19 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   // provider to correlate on, so it could be any client's instance write or the
   // server's own live-prefetch pass, and it stays foreign.
   function consumeOwnEcho(provider: string | undefined, originClientId: string | undefined): boolean {
-    const marker = firstMarker(provider);
-    if (marker === undefined) return false;
     if (originClientId) {
       if (originClientId !== deps.ownClientId()) return false;
-    } else {
-      if (provider === undefined) return false;
-      if (Date.now() - marker.issuedAt > SELF_ECHO_WINDOW_MS) {
-        retireLocalMutation(marker); // stale: no marker, no echo of ours left
-        return false;
-      }
+      const marker = firstMarker(provider);
+      if (marker === undefined) return false;
+      retireLocalMutation(marker);
+      return true;
     }
+    // Id-less: only a provider-bearing auth notification can be correlated this
+    // way, and only against a marker still inside its window. A stale marker in
+    // front of a live one is dropped rather than ending the search.
+    if (provider === undefined) return false;
+    const marker = firstLiveMarker(provider);
+    if (marker === undefined) return false;
     retireLocalMutation(marker);
     return true;
   }
