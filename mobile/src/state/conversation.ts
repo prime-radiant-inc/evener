@@ -47,8 +47,12 @@ import {
   capItems as sharedCapItems,
   clusterActivities,
   itemAttachments,
+  MAX_ITEM_BYTES,
   projectItemAttachments,
+  RETAINED_ITEM_CAP,
+  TRUNCATION_MARKER,
   truncateItem as sharedTruncateItem,
+  truncateText,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
@@ -485,65 +489,21 @@ function createDrainScheduler(): DrainScheduler {
 // LiveActivityState (Coordinate B) implements LiveActivitySink directly.
 // Do not fabricate "applied" — use the real applyLiveNotification outcome.
 
-// --- limits and truncation helpers (centralized) ----------------------------
-
-export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
-export const TRUNCATION_MARKER = "… truncated";
-export const RETAINED_ITEM_CAP = 500;
-
-// Truncate a string to maxBytes in UTF-8, ending with "… truncated" exactly
-// once whenever the limit is large enough to hold the marker. Iterates
-// Unicode scalar values (not UTF-16 code units) so no surrogate pairs are
-// split and no U+FFFD replacement chars are produced. The result never
-// exceeds maxBytes.
+// --- limits and truncation helpers -------------------------------------------
+// MAX_ITEM_BYTES/RETAINED_ITEM_CAP/truncateText are the single copy in
+// project.ts (imported above), re-exported here so this module's own test
+// file and any other reader can name them from this store too. Only
+// exceedsByteLimit (the truncation-freeze check) is this store's own —
+// project.ts has no equivalent, since it tracks no per-item ownership state
+// to freeze.
 const textEncoder = new TextEncoder();
-const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
-
-export function truncateText(text: string, maxBytes: number): string {
-  const encoded = textEncoder.encode(text);
-  if (encoded.length <= maxBytes) return text;
-  // The byte limit is the hard contract: every caller judges an item by
-  // exceedsByteLimit against the same limit, and the truncation freeze
-  // assumes an already-truncated item sits within it. No caller requires the
-  // marker — truncation is tracked by item identity, never by the suffix — so
-  // a limit too small to hold the marker yields the longest prefix that fits,
-  // with no marker, rather than a marker that busts the limit.
-  const fitsMarker = maxBytes >= markerBytes.length;
-  const marker = fitsMarker ? TRUNCATION_MARKER : "";
-  const markerLength = fitsMarker ? markerBytes.length : 0;
-  const targetBytes = Math.max(0, maxBytes - markerLength);
-  // Iterate code points (for...of iterates Unicode scalar values) to find
-  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
-  // avoids splitting surrogate pairs and never produces U+FFFD.
-  let byteLen = 0;
-  let cutIdx = 0;
-  for (const cp of text) {
-    const cpBytes = textEncoder.encode(cp).length;
-    if (byteLen + cpBytes > targetBytes) break;
-    byteLen += cpBytes;
-    cutIdx += cp.length;
-  }
-  // Trim code points until the result + marker fits within maxBytes.
-  // (May need to trim if a multibyte code point straddles the boundary.)
-  let truncated = text.slice(0, cutIdx);
-  let truncatedBytes = textEncoder.encode(truncated);
-  while (
-    truncatedBytes.length + markerLength > maxBytes &&
-    truncated.length > 0
-  ) {
-    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
-    const codePoints = [...truncated];
-    codePoints.pop();
-    truncated = codePoints.join("");
-    truncatedBytes = textEncoder.encode(truncated);
-  }
-  return truncated + marker;
-}
 
 // Check if text exceeds the byte limit (for setting truncated flag in projections).
 export function exceedsByteLimit(text: string, maxBytes: number): boolean {
   return textEncoder.encode(text).length > maxBytes;
 }
+
+export { MAX_ITEM_BYTES, RETAINED_ITEM_CAP, TRUNCATION_MARKER, truncateText };
 
 // Check if an activity detail's arguments/output/error exceed the byte limit
 // — the same rule applies to a top-level activity detail and to each of a
