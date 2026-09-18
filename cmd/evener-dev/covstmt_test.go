@@ -331,6 +331,12 @@ func TestPyReprMatchesPython(t *testing.T) {
 		{"esc\x1b[31m", `'esc\x1b[31m'`},
 		{"nul\x00end", `'nul\x00end'`},
 		{"café", "'café'"}, // printable non-ASCII stays literal
+		// Non-UTF-8 bytes: Python decodes argv with surrogateescape and reprs
+		// the resulting U+DC80..U+DCFF as \udcXX, so these must too (a plain
+		// rune range would emit U+FFFD here).
+		{"\x80", `'\udc80'`},
+		{"\xff\xfe", `'\udcff\udcfe'`},
+		{"caf\xe9", `'caf\udce9'`},
 	}
 	for _, tc := range tests {
 		if got := pyRepr(tc.in); got != tc.want {

@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // blockLine matches a single Go coverage profile block line:
@@ -84,7 +85,10 @@ func parseProfile(r io.Reader) (map[blockPos]blockEntry, error) {
 
 	seen := make(map[blockPos]blockEntry)
 	for scanner.Scan() {
-		m := blockLine.FindStringSubmatch(scanner.Text())
+		// The deleted Python matched `line.strip()`, so a block line padded with
+		// whitespace (or carrying a trailing CR from a CRLF profile) still
+		// parsed. Match the trimmed line so those are not silently skipped.
+		m := blockLine.FindStringSubmatch(strings.TrimSpace(scanner.Text()))
 		if m == nil {
 			continue
 		}

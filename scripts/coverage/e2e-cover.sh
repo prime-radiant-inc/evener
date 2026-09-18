@@ -173,7 +173,12 @@ if $merge_unit; then
 	# counted as if it were whole and print a wrong, successful-looking number.
 	for prof in "$unit_prof" "$e2e_prof"; do
 		[ -f "$prof" ] || continue
-		if ! cat "$prof" >>"$combined"; then
+		# Terminate each profile with a newline before the next begins. A
+		# profile whose final block line lacks one would otherwise fuse with the
+		# next profile's "mode:" header, and the parser would skip BOTH lines —
+		# silently dropping that block. The deleted Python opened each file
+		# separately, so this restores the separation textual concatenation lost.
+		if ! { cat "$prof"; printf '\n'; } >>"$combined"; then
 			echo "e2e-cover: cannot append $prof to $combined" >&2
 			exit 1
 		fi
@@ -190,7 +195,19 @@ if $merge_unit; then
 		echo "e2e-cover: covstmt did not print a 'covered total' line for $combined: $cov_line" >&2
 		exit 1
 	fi
-	echo "COMBINED unit+e2e union: covered=$cov total=$tot pct=$(awk -v c="$cov" -v t="$tot" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}')%"
+	# Compute the percentage in a checked step: if awk is missing or fails, an
+	# inline command substitution would print "pct=%" and still exit 0, which
+	# reads as a successful report. Validate the shape too, so a malformed
+	# number fails this report loudly instead of shipping.
+	if ! pct="$(awk -v c="$cov" -v t="$tot" 'BEGIN{printf "%.1f", (t > 0 ? 100 * c / t : 0)}')"; then
+		echo "e2e-cover: awk failed computing the combined percentage" >&2
+		exit 1
+	fi
+	if ! [[ "$pct" =~ ^[0-9]+\.[0-9]$ ]]; then
+		echo "e2e-cover: combined percentage is not a number: $pct" >&2
+		exit 1
+	fi
+	echo "COMBINED unit+e2e union: covered=$cov total=$tot pct=${pct}%"
 fi
 
 if [ -n "$html_out" ]; then

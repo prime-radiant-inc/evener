@@ -128,6 +128,16 @@ func TestIgnoresNonMatchingLines(t *testing.T) {
 	assertCounts(t, writeProfile(t, profile), 200, 500)
 }
 
+// TestWhitespacePaddedLinesParse pins the deleted Python's `line.strip()`: a
+// block line with surrounding whitespace, or a trailing CR from a CRLF profile,
+// must still be counted rather than silently skipped.
+func TestWhitespacePaddedLinesParse(t *testing.T) {
+	const profile = "mode: set\n" +
+		"\tpkg/file.go:10.1,20.2 200 1  \n" +
+		"pkg/file.go:30.1,40.2 300 0\r\n"
+	assertCounts(t, writeProfile(t, profile), 200, 500)
+}
+
 // TestEmptyProfile has only the mode header: zero covered, zero total, no
 // error.
 func TestEmptyProfile(t *testing.T) {

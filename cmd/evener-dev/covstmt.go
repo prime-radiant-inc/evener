@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/internal/devtool/covstmt"
 )
@@ -268,14 +269,33 @@ func pctOf(covered, total int) float64 {
 // coverage file path carries one: an --in pattern is caller-supplied, and a raw
 // ESC or NUL would otherwise reach the terminal and diverge from the Python
 // this report replaced.
+//
+// Python decodes argv with surrogateescape, so a byte that is not valid UTF-8
+// arrives as U+DC80..U+DCFF and repr() renders it as \udcXX. os.Args in Go holds
+// the raw bytes, and ranging over the string would replace them with U+FFFD;
+// decode the same way Python does so a non-UTF-8 pattern reprs identically.
 func pyRepr(s string) string {
+	// surrogateescape: each byte that is not part of a valid UTF-8 sequence
+	// becomes U+DC00+byte, matching Python's os.fsdecode.
+	runes := make([]rune, 0, len(s))
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			runes = append(runes, 0xDC00+rune(s[i]))
+			i++
+			continue
+		}
+		runes = append(runes, r)
+		i += size
+	}
+	decoded := string(runes)
 	quote := '\''
-	if strings.Contains(s, "'") && !strings.Contains(s, `"`) {
+	if strings.Contains(decoded, "'") && !strings.Contains(decoded, `"`) {
 		quote = '"'
 	}
 	var b strings.Builder
 	b.WriteRune(quote)
-	for _, r := range s {
+	for _, r := range runes {
 		switch {
 		case r == '\\' || r == quote:
 			b.WriteByte('\\')
