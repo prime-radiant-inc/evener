@@ -449,20 +449,18 @@ func (m *Manager) writeRenameMarker(marker renameMarker) error {
 		return fmt.Errorf("marshalling the marker recording marketplace %q as %q: %w", marker.From, marker.To, err)
 	}
 	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
-		return m.migrationFileSaveFailed(renameMarkerFileName, err)
+		return m.storeFileSaveFailed(renameMarkerFileName, err)
 	}
 	return nil
 }
 
-// migrationFileSaveFailed scrubs a housekeeping write's own failure - the
-// rename marker or the migration record, whose own atomicWriteFile error
-// names this machine's absolute plugin-store path directly - before it
-// reaches an RPC caller through migrateMarketplaceNames/recoverMarkedRename,
-// just as directly as a marketplace write failure does. Neither file names a
-// single marketplace the way known_marketplaces.json's callers do (the
-// marker names two, and the record can hold several), so the scrubbed
-// message names only the file, like saveRegistry's boundary scrub.
-func (m *Manager) migrationFileSaveFailed(fileName string, saveErr error) error {
+// storeFileSaveFailed is the store-file write boundary: every store file's
+// save (known_marketplaces.json via saveMarketplaces, installed_plugins.json
+// via saveRegistry, the rename marker and the migration record here) reaches
+// this before its atomicWriteFile error - which names this machine's
+// absolute plugin-store path directly - can reach an RPC caller. Logs the
+// raw error server-side and returns a message naming only fileName.
+func (m *Manager) storeFileSaveFailed(fileName string, saveErr error) error {
 	_, _ = fmt.Fprintf(m.stderr(), "warning: saving %s failed: %v\n", fileName, saveErr)
 	return fmt.Errorf("saving %s failed; see the hub's log for detail", fileName)
 }
@@ -569,7 +567,7 @@ func (m *Manager) saveMigrationRecord(rec migrationRecord) error {
 		return fmt.Errorf("marshalling %s: %w", migrationRecordFileName, err)
 	}
 	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
-		return m.migrationFileSaveFailed(migrationRecordFileName, err)
+		return m.storeFileSaveFailed(migrationRecordFileName, err)
 	}
 	return nil
 }
