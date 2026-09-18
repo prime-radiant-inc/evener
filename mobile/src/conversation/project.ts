@@ -31,6 +31,7 @@ import type {
 
 import {
   hasItemFailure,
+  hasWarningText,
   isActiveItem,
   isInProgressStatus,
   joinedReasoningParagraphs,
@@ -534,9 +535,7 @@ function projectItem(
 // dedicated warning display path.
 function warningFallbackText(item: ItemModel): string | undefined {
   if (item.type !== "warning" || !item.warning) return undefined;
-  const parts = [item.warning.title, item.warning.hint].filter(
-    (part): part is string => typeof part === "string" && part.trim() !== "",
-  );
+  const parts = [item.warning.title, item.warning.hint].filter(hasWarningText);
   return parts.length > 0 ? parts.join(" — ") : undefined;
 }
 

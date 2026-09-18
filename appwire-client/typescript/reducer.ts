@@ -1213,8 +1213,9 @@ function warningMessage(params: WarningParams): string {
 // reading warningMessage above and WarningItem.tsx's renderer both take for
 // title/hint, so the raw-frame fallback below and the structured fields it
 // would otherwise duplicate never disagree about which one has something to
-// show.
-export function hasWarningText(value: unknown): boolean {
+// show. A type predicate so a caller narrows `unknown` in one step instead of
+// repeating the typeof/trim check to get the same narrowing.
+export function hasWarningText(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
@@ -1234,6 +1235,30 @@ function rawWarningFrame(params: WarningParams): string {
   // cut the pair in half, leaving a lone, unpaired surrogate at the tail.
   const codePoints = Array.from(JSON.stringify(params));
   return codePoints.slice(0, RAW_WARNING_FRAME_MAX_CHARS).join("");
+}
+
+// The one validated shape every warning row — live with a turn, live
+// without one, and (via the item this produces) a canonical reread — reads
+// title/hint/source from. params is unknown on the wire (WarningParams'
+// `warning` field, and title/hint despite their declared string type), so
+// this is the single place that turns it into string-or-absent fields; every
+// consumer reads the result, never params directly.
+export interface WarningFold {
+  text: string;
+  title?: string;
+  hint?: string;
+  source?: string;
+}
+
+export function foldWarningParams(params: WarningParams): WarningFold {
+  return {
+    text:
+      warningMessage(params) ||
+      (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
+    title: typeof params.title === "string" ? params.title : undefined,
+    hint: typeof params.hint === "string" ? params.hint : undefined,
+    source: typeof params.source === "string" ? params.source : undefined,
+  };
 }
 
 // Folds one live wire notification into model. Most notifications carry
@@ -1707,6 +1732,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // it client-side; only the liveness signal survives.
       if (!activeTurnId) return { ...model, lastFrameAt: now };
       const params = n.params;
+      const folded = foldWarningParams(params);
       return {
         ...model,
         turns: mapTurn(model.turns, activeTurnId, (turn) => {
@@ -1718,28 +1744,9 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            // A real message wins. When there is truly nothing anywhere —
-            // no message, no title, no hint — the frame falls back to itself
-            // (rawWarningFrame's own comment) rather than a blank row; a
-            // title or hint alone is something to show, so the fallback
-            // never fires just because message is blank (it would otherwise
-            // duplicate title/hint and expose the routing envelope beside
-            // them, WarningItem.tsx's own contract).
-            text:
-              warningMessage(params) ||
-              (hasWarningText(params.title) || hasWarningText(params.hint) ? "" : rawWarningFrame(params)),
+            text: folded.text,
             status: "completed",
-            // params is unknown on the wire (WarningParams.title/hint are
-            // declared string but never runtime-checked), so a malformed
-            // frame can carry any JSON value here. Every consumer of
-            // ItemModel.warning.title/hint reads it as a string (WarningItem.
-            // tsx renders it as a React child), so a non-string value folds
-            // to undefined rather than riding through verbatim.
-            warning: {
-              source: params.source,
-              title: typeof params.title === "string" ? params.title : undefined,
-              hint: typeof params.hint === "string" ? params.hint : undefined,
-            },
+            warning: { source: folded.source, title: folded.title, hint: folded.hint },
           };
           return { ...turn, items: [...turn.items, item] };
         }),

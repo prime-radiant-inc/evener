@@ -1,5 +1,6 @@
 import { hasFailureStatus, hasItemFailure, isActiveItem, isInProgressStatus, isNonZeroExit } from "./itemFailure";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { hasWarningText } from "./reducer";
 import {
   type ContentVector,
   type HookExitDetail,
@@ -161,10 +162,10 @@ function itemSummary(item: ItemModel): string {
   if (description) return description;
   // item.warning rides an untyped wire param map through the reducer's
   // `warning` fold, so title can be any JSON value at runtime despite
-  // ItemModel's own type declaring it as string — the same guard
-  // hasWarningText/WarningItem.tsx take before calling .trim().
+  // ItemModel's own type declaring it as string — hasWarningText is the
+  // same guard WarningItem.tsx takes before calling .trim().
   const rawTitle = item.warning?.title;
-  const warningTitle = typeof rawTitle === "string" ? rawTitle.trim() : "";
+  const warningTitle = hasWarningText(rawTitle) ? rawTitle.trim() : "";
   if (warningTitle) return warningTitle;
   const text = item.text.trim();
   if (text) return text;

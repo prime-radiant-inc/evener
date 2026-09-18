@@ -33,10 +33,9 @@ export const WarningItem = memo(function WarningItem({ item }: ItemRenderProps) 
   // hasWarningText is the package's own "is this actually content" reading
   // (a non-blank string) — the same one the reducer's raw-frame fallback
   // decides against, so a blank-but-present title/hint never shows an empty
-  // chip here while item.text falls back to the raw frame (kata Low finding,
-  // #1731 piece 2 round 2). It also rejects a non-string runtime value
-  // outright, so a malformed wire frame's title/hint can never reach React
-  // as a child (#1731 piece 2 round 2 Medium finding).
+  // chip here while item.text falls back to the raw frame. It also rejects
+  // a non-string runtime value outright, so a malformed wire frame's
+  // title/hint can never reach React as a child.
   const title = hasWarningText(item.warning?.title) ? item.warning?.title : undefined;
   const hint = hasWarningText(item.warning?.hint) ? item.warning?.hint : undefined;
   const message = item.text;

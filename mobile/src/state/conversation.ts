@@ -20,6 +20,8 @@
 import { create } from "zustand";
 import {
   applyNotification,
+  foldWarningParams,
+  hasWarningText,
   isActiveItem,
   isStaleCursorError,
   notificationTargetsThread,
@@ -32,6 +34,7 @@ import type {
   ItemModel,
   MutationReceipt,
   ThreadItem,
+  WarningFold,
 } from "@evener/appwire-client";
 import type {
   ActivityDetail,
@@ -2836,29 +2839,38 @@ export function createConversationStore() {
           }
 
           case "warning": {
-            const params = n.params as { message?: string; title?: string };
             // The reducer's own "warning" fold (applyThreadNotification,
-            // above) already appended the wire-true item to the active
-            // turn, applying its message/title/hint precedence (a message
-            // wins; else title or hint alone is real content and leaves
-            // text blank rather than duplicating the raw frame). It always
-            // appends to the end of that turn's items, and nothing else
-            // touches the turn during this single-notification dispatch, so
-            // the last item there — when its type is "warning" — is the one
-            // this fold just produced. Route the row through it instead of
-            // params.message alone, which drops title/hint-only content.
+            // above) already appended the wire-true item to the active turn
+            // using foldWarningParams — the one validated shape (title/hint/
+            // source as string-or-absent, text with the message/raw-frame
+            // precedence) every warning row reads. It always appends to the
+            // end of that turn's items, and nothing else touches the turn
+            // during this single-notification dispatch, so the last item
+            // there — when its type is "warning" — is the one this fold
+            // just produced.
             const foldedTurn = conv.activeTurnId
               ? conv.turns.find((t) => t.id === conv.activeTurnId)
               : undefined;
             const foldedItem = foldedTurn?.items.at(-1);
             const usesFold = foldedItem?.type === "warning";
-            const title =
-              (usesFold ? foldedItem.warning?.title : params.title) ??
-              "Warning";
-            const detail = usesFold
-              ? foldedItem.text || (foldedItem.warning?.hint ?? "")
-              : (params.message ?? "");
-            const id = `warning:${params.title ?? params.message ?? "warning"}:${++liveNoticeSerial}`;
+            // No active turn: the reducer drops the frame (nowhere wire-true
+            // to put it), so this row is the only place it folds through —
+            // run the SAME validated shape directly on params instead of
+            // copying them into these fields raw.
+            const folded: WarningFold = usesFold
+              ? {
+                  text: foldedItem.text,
+                  title: foldedItem.warning?.title,
+                  hint: foldedItem.warning?.hint,
+                  source: foldedItem.warning?.source,
+                }
+              : foldWarningParams(n.params);
+            const title = hasWarningText(folded.title) ? folded.title : "Warning";
+            // Compose every non-blank part rather than picking one with ||:
+            // a warning carrying both a message and a hint shows both, the
+            // same as the web and TUI renderers.
+            const detail = [folded.text, folded.hint].filter(hasWarningText).join(" — ");
+            const id = `warning:${folded.title ?? folded.text ?? "warning"}:${++liveNoticeSerial}`;
             const failureItem: MobileTimelineItem = {
               kind: "failure",
               id,

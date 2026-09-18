@@ -174,10 +174,11 @@ describe("transcript projector", () => {
   });
 
   test("a warning item's non-string title does not crash the projector", () => {
-    // warning.title/hint ride an untyped wire param map (WarningParams' warning
-    // field is `unknown`), so a malformed frame can hand this a number despite
-    // ItemModel's own type declaring title as string — reducer.ts folds
-    // params.title straight through with no runtime coercion.
+    // reducer.ts's own "warning" fold now coerces params.title/hint to
+    // string-or-undefined (foldWarningParams), so a reducer-produced
+    // ItemModel can never carry a non-string title. This guard is defense-
+    // in-depth for an ItemModel built directly (a hand-built fixture, a
+    // migrated legacy record) rather than through that fold.
     const model = threadWith(item("warning", "warning", { text: "", warning: { title: 42 as unknown as string } }));
 
     const entries = entriesFor(model, preset("full"));
