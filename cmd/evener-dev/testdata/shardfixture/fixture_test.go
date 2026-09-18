@@ -34,32 +34,90 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// liveShardTimeout bounds how long a shard binary waits for the peers the run
+// should be running beside. It only has to cover process startup, so it is
+// generous; a capped run spends it by design, because the peers it is waiting
+// for are held back.
+const liveShardTimeout = 5 * time.Second
+
 // announceLiveShard, when SHARD_FIXTURE_LIVE_DIR is set, records this test
 // binary as a live process for as long as it runs. A run executes one binary
-// per shard, so no single binary can see how many of its peers are alive; each
-// process drops a live.<pid> marker, holds long enough that concurrently
-// started peers really do overlap, and writes its own observed population to
-// seen.<pid>. The agent-shards e2e test takes the maximum of those to prove how
-// many shards run at once. Inert unless the test asks for it.
+// per shard, so no single binary can see how many of its peers are alive.
+//
+// Each process drops a live.<pid> marker and then waits for
+// SHARD_FIXTURE_LIVE_EXPECT peers to appear, up to liveShardTimeout, recording
+// the largest population it actually saw. Waiting on the peers' own markers,
+// rather than sleeping a fixed time, is what makes the observation
+// deterministic: a run that starts every shard at once reaches the expected
+// count, and a capped run's observation is bounded by the cap rather than by
+// when the scheduler happened to run each process. Processes that reach the
+// expected count rendezvous on ready.<pid> before any of them exits, so a peer
+// cannot remove its live marker before a slower peer has sampled it. A process
+// that never sees its peers writes a timeout.<pid> marker, so the caller can
+// tell a real low-concurrency observation from a probe that could not measure.
+//
+// The observed population goes to seen.<pid> and the marker is removed on exit,
+// so a finished process does not count as live. Inert unless the test asks for
+// it.
 func announceLiveShard() func() {
 	dir := os.Getenv("SHARD_FIXTURE_LIVE_DIR")
 	if dir == "" {
 		return nil
 	}
-	live := filepath.Join(dir, fmt.Sprintf("live.%d", os.Getpid()))
+	// Only a shard invocation carries the run file. The runner also runs this
+	// binary to list tests and (unless skipped) to survey; those are not shards
+	// and must not join the population the caller is measuring.
+	if os.Getenv("EVENER_SHARD_RUN_FILE") == "" {
+		return nil
+	}
+	expect, err := strconv.Atoi(os.Getenv("SHARD_FIXTURE_LIVE_EXPECT"))
+	if err != nil || expect < 1 {
+		return nil
+	}
+	pid := os.Getpid()
+	live := filepath.Join(dir, fmt.Sprintf("live.%d", pid))
 	if err := os.WriteFile(live, []byte("live\n"), 0o644); err != nil {
 		return nil
 	}
-	// Hold before running any test so a run that starts every shard at once has
-	// all of their markers on disk together, while a capped run keeps them
-	// strictly apart.
-	time.Sleep(250 * time.Millisecond)
-	seen, err := filepath.Glob(filepath.Join(dir, "live.*"))
-	if err == nil {
-		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("seen.%d", os.Getpid())),
-			[]byte(strconv.Itoa(len(seen))+"\n"), 0o644)
+	observed := 1 // this process is live
+	deadline := time.Now().Add(liveShardTimeout)
+	reached := false
+	for time.Now().Before(deadline) {
+		if n := countMarkers(dir, "live.*"); n > observed {
+			observed = n
+		}
+		if observed >= expect {
+			reached = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
+	if reached {
+		// Rendezvous before anyone leaves: a peer that reached the barrier and
+		// exited immediately would remove its live marker before a slower peer
+		// sampled it. Holding every process until all have arrived is what makes
+		// the observation deterministic rather than a race against exit.
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("ready.%d", pid)), []byte("ready\n"), 0o644)
+		for time.Now().Before(deadline) && countMarkers(dir, "ready.*") < expect {
+			time.Sleep(20 * time.Millisecond)
+		}
+		reached = countMarkers(dir, "ready.*") >= expect
+	}
+	if !reached {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("timeout.%d", pid)), []byte("timeout\n"), 0o644)
+	}
+	_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("seen.%d", pid)),
+		[]byte(strconv.Itoa(observed)+"\n"), 0o644)
 	return func() { _ = os.Remove(live) }
+}
+
+// countMarkers is how many files matching pattern exist in dir.
+func countMarkers(dir, pattern string) int {
+	markers, err := filepath.Glob(filepath.Join(dir, pattern))
+	if err != nil {
+		return 0
+	}
+	return len(markers)
 }
 
 func configureShardRunFile() error {
