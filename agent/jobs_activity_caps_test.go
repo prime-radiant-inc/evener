@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/appwire"
 )
 
 // TestProjectBoundedActivityTree_CapsTheSessionLabel pins the fix for an
@@ -106,6 +107,30 @@ func TestProjectActivitySession_CollapsesUnsupportedTypeErrors(t *testing.T) {
 	}
 	if want := strconv.Itoa(n); !strings.Contains(got.Branch.Error, want) {
 		t.Fatalf("branch error = %q, want the count %s of collapsed records", got.Branch.Error, want)
+	}
+}
+
+// TestMarkActivityEnvelopeTooLarge_WithdrawsTheContinuation pins the shape of
+// the report for a page whose own fixed parts exceed the limit: the
+// continuation is withdrawn (a token would re-produce this same page forever)
+// and the error names the response's own size rather than blaming an entry.
+func TestMarkActivityEnvelopeTooLarge_WithdrawsTheContinuation(t *testing.T) {
+	t.Parallel()
+	session := appwire.JobActivitySession{SessionID: "root"}
+	session.Branch.Truncated = true
+	session.Branch.Continuation = "stale-token"
+	markActivityEnvelopeTooLarge(&session, activityMaxEncodedBytes+1)
+	if session.Branch.Continuation != "" {
+		t.Fatalf("continuation %q survived a page that can render nothing", session.Branch.Continuation)
+	}
+	if !strings.Contains(session.Branch.Error, "no entries rendered") {
+		t.Fatalf("branch error = %q, want it to report the response's own size", session.Branch.Error)
+	}
+	if want := strconv.Itoa(activityMaxEncodedBytes + 1); !strings.Contains(session.Branch.Error, want) {
+		t.Fatalf("branch error = %q, want the measured size %s in it", session.Branch.Error, want)
+	}
+	if strings.Contains(session.Branch.Error, "job") {
+		t.Fatalf("branch error = %q mentions an entry, want it to blame the envelope", session.Branch.Error)
 	}
 }
 
