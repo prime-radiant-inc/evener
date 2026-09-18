@@ -91,7 +91,7 @@ describe("submitWithPendingTracking", () => {
       onCommitted,
     );
 
-    expect(onCommitted).toHaveBeenCalledWith({ clearedDraft: true, draftUnchanged: true });
+    expect(onCommitted).toHaveBeenCalledWith({ cleared: true, draftUnchanged: true });
   });
 
   test("reports the draft as unchanged and uncleared when the stored draft has moved on since the submission started", async () => {
@@ -115,7 +115,7 @@ describe("submitWithPendingTracking", () => {
       onCommitted,
     );
 
-    expect(onCommitted).toHaveBeenCalledWith({ clearedDraft: false, draftUnchanged: false });
+    expect(onCommitted).toHaveBeenCalledWith({ cleared: false, draftUnchanged: false });
   });
 
   test("a fence reset mid-flight skips settling the draft and releasing the submission guard, but still refreshes", async () => {
