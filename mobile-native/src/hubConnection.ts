@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type {
 	AppwireClient,
 	ConnectionState,
@@ -37,12 +37,23 @@ export function useHubConnection(
 ): HubConnection {
 	const [store] = useState(() => createConnectionStore());
 	const coreState = useSyncExternalStore(store.subscribe, store.getState);
+	// The activeId the store's current client was actually opened for,
+	// written in the same synchronous step as store.setState({ client })
+	// below - never on a later render. Passive effects run after commit, so
+	// a render that already has a NEW activeId (its own effect has not run
+	// yet) would otherwise read this render's activeId against the PREVIOUS
+	// hub's still-live client: comparing against the id recorded alongside
+	// that exact client, instead of trusting whatever the store holds, is
+	// what ConnectionProvider did before this hook existed (`session
+	// ?.profileId === selected`) and still has to do here.
+	const connectedFor = useRef<string | undefined>(undefined);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: The retry counter deliberately reopens the same hub connection.
 	useEffect(() => {
 		let cancelled = false;
 		let connection: AppwireClient | null = null;
 		let unsubscribe: (() => void) | undefined;
 		store.setState({ client: null });
+		connectedFor.current = undefined;
 		setError(null);
 		if (!activeId || !activeOrigin || !foreground) return;
 		store.setState({ state: "connecting" });
@@ -60,6 +71,7 @@ export function useHubConnection(
 					return new NativeWebSocket(url, null, options);
 				});
 				store.setState({ client: connection });
+				connectedFor.current = activeId;
 				const currentConnection = connection;
 				unsubscribe = currentConnection.onStateChange((next) => {
 					if (cancelled) return;
@@ -92,7 +104,13 @@ export function useHubConnection(
 		};
 	}, [activeId, activeOrigin, foreground, attempt, store, repository]);
 	// The store only ever holds the AppwireClient instances created above.
-	const client = foreground ? (coreState.client as AppwireClient | null) : null;
+	// connectedFor.current === activeId is what rejects a stale render: it
+	// fails during exactly the window described above, before it can ever
+	// hand a consumer the previous hub's client under the new hub's identity.
+	const client =
+		foreground && connectedFor.current === activeId
+			? (coreState.client as AppwireClient | null)
+			: null;
 	return {
 		client,
 		state: client

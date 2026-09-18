@@ -8,7 +8,8 @@
 import { act } from "react-test-renderer";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ConnectionState, TerminalReason } from "@evener/appwire-client";
-import { useHubConnection } from "./hubConnection";
+import { connectionFailure } from "./connectionRecovery";
+import { type HubConnection, useHubConnection } from "./hubConnection";
 import { renderHook } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ client: null as unknown }));
@@ -100,9 +101,54 @@ it("connects and follows the client's transitions the same way native has always
 	// The client stays put on close - only the reconnect wall's `state` check
 	// leaves "ready"; the failed connection is still what a retry recycles.
 	expect(hook.result.current).toEqual({ client: fake, state: "closed" });
-	expect(setError).toHaveBeenLastCalledWith(
-		"This app and hub need compatible versions. Update them together, then reconnect.",
-	);
+	// Structural: the branch connectionFailure("protocol") selects, not its
+	// prose (docs/developing-evener/testing.md, "Prompt Prose Is Not a Test
+	// Oracle" - this message is UI copy, not a wire contract).
+	expect(setError).toHaveBeenLastCalledWith(connectionFailure("protocol").message);
+});
+
+it("never returns the previous hub's client once activeId already names a newer one", async () => {
+	const first = new FakeHubClient();
+	harness.client = first;
+	const setError = vi.fn();
+	const repository = { token: async (id: string) => `tok-${id}` };
+	let activeId = "hub-a";
+	let activeOrigin = "https://a.test";
+	// Every render this test performs, in order, paired with which hub it was
+	// FOR at that render - not just the final settled value renderHook's
+	// result.current exposes, since the race is about an intermediate render.
+	const renders: { forHub: string; result: HubConnection }[] = [];
+	const hook = renderHook(() => {
+		const result = useHubConnection(
+			repository,
+			activeId,
+			activeOrigin,
+			true,
+			0,
+			setError,
+		);
+		renders.push({ forHub: activeId, result });
+		return result;
+	});
+	await act(async () => {});
+	act(() => first.succeed());
+	expect(hook.result.current).toEqual({ client: first, state: "ready" });
+
+	const second = new FakeHubClient();
+	harness.client = second;
+	activeId = "hub-b";
+	activeOrigin = "https://b.test";
+	renders.length = 0;
+	// The teardown effect for hub-a has not run yet at the moment this
+	// rerender's first pass happens (passive effects fire after commit), so
+	// this is exactly the window the store could still hold hub-a's client
+	// while every input already says hub-b.
+	hook.rerender();
+	for (const { forHub, result } of renders)
+		if (forHub === "hub-b") expect(result.client).not.toBe(first);
+	await act(async () => {});
+	act(() => second.succeed());
+	expect(hook.result.current).toEqual({ client: second, state: "ready" });
 });
 
 it("a bumped attempt reopens the hub through a fresh client, tearing down the old one first", async () => {
