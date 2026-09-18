@@ -227,13 +227,11 @@ describe("the checkpointed draft editor", () => {
     });
   });
 
-  // RoboRev round 22 High: settledWrite reclassified the repository (the
-  // checkpoint-persisting write) as a bare expression evaluated BEFORE
-  // applyHubOverrides ran, so a refresh whose reconcile then throws (a wedged
-  // registry) left the checkpoint reclassified on disk while the throw kept
-  // the settle from ever publishing - non-transactional. Deferring the
-  // reclassification until the apply has actually succeeded means a throwing
-  // refresh leaves the checkpoint exactly as it found it.
+  // settledWrite's checkpoint reclassification is deferred inside the thunk
+  // applyHubOverrides resolves only after a successful reconcile: a refresh
+  // whose reconcile throws (a wedged registry) never reaches that point, so
+  // the checkpoint on disk stays exactly as the write left it instead of
+  // being reclassified for a settle that then fails to publish.
   test("a refresh's reconciler throw does not reclassify the checkpoint ahead of publishing the settle", async () => {
     const registry = registryWithDefaults();
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
@@ -295,18 +293,21 @@ describe("the checkpointed draft editor", () => {
     // applyHubOverrides' stale guard ignores the payload entirely, so the
     // settle thunk it would have run must not fire either - the checkpoint
     // stays exactly as the write left it, and writeUncertain stays true.
+    // hubLoading clears anyway: refreshFor's own unconditional reset, not the
+    // thunk applyHubOverrides never ran, is what ends the refresh.
     client.on(getMethod, () => payload(2, []));
     await store.getState().refreshOverrides();
 
     expect(store.getState().writeUncertain).toBe(true);
+    expect(store.getState().hubLoading).toBe(false);
     expect(drafts.stored()).toEqual(uncertainCheckpoint);
   });
 
-  // RoboRev round 21 Medium 2: saveDraft treated every rejection as an
-  // unknown outcome, unlike the direct write (patchOverrides), which uses
-  // rejectionPayload to tell a structured conflict/post-rename failure from
-  // a transport failure. A known refusal left writeUncertain true, and a
-  // known post-rename success was reported as a failed save.
+  // saveDraft uses rejectionPayload, the same as the direct write
+  // (patchOverrides), to tell a structured conflict/post-rename failure
+  // (a KNOWN outcome) from a transport failure (an unknown one): a known
+  // refusal settles writeUncertain rather than leaving it true, and a known
+  // post-rename success is reported as a successful save.
   test("a revision conflict during saveDraft is a KNOWN outcome: the canonical lands and the proposal stays for review", async () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     const client = clientServing(3);
@@ -326,7 +327,7 @@ describe("the checkpointed draft editor", () => {
       draftConflict: true,
       draft: { rules },
     });
-    expect(drafts.stored()?.writeUncertain).toBe(false);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: false });
   });
 
   test("a post-rename durable failure during saveDraft applies the carried canonical state instead of leaving the outcome unknown", async () => {
@@ -348,15 +349,21 @@ describe("the checkpointed draft editor", () => {
       writeUncertain: false,
       saving: false,
       draft: null,
+      // draftConflict must clear with the draft it was describing: forcing
+      // it from newerExternal (false here) rather than leaving it to
+      // applyHubOverrides' own staleDraft check, which reads the PRE-write
+      // draft against the just-confirmed revision and would misread this
+      // write's own success as a conflict.
+      draftConflict: false,
     });
     expect(drafts.stored()).toBeNull();
   });
 
-  // RoboRev round 22 Medium 2: unlike the main post-reply sequence's
-  // applyHubOverrides call, these two rejection branches called it with no
-  // try/catch, so a reconciler throw (a wedged registry that has already
-  // rolled back) propagated straight out of saveDraft with `saving` never
-  // cleared - the editor stays disabled forever, since nothing else clears it.
+  // Both rejection branches below apply their payload through
+  // applyHubOverridesSettling, the same as the main post-reply sequence: a
+  // reconciler throw (a wedged registry that has already rolled back) still
+  // publishes `saving: false` alongside the hubError, so the editor is never
+  // left disabled with nothing left to clear it.
   function wedgePaletteDefault(registry: KeybindingsRegistry): void {
     const paletteDefault = registryWithDefaults()
       .getState()
