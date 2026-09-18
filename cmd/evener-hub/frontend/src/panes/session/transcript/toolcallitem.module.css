@@ -175,6 +175,16 @@
   max-width: calc(100% - var(--tap-min, 28px) - 14px - var(--tap-min, 14px) - var(--space-2) - var(--space-2) - var(--space-2));
 }
 
+/* A summary-less row (data-intent-suppressed) renders NO decorative chevron -
+ * the body trigger is its only one - so the combined reservation above
+ * over-reserves a 14px chevron plus a gap it never renders, narrowing the
+ * intent on a phone (roborev). Reserve only the Open control, the body trigger,
+ * and the two gaps between them: the decorative-chevron 14px term is gone and
+ * every remaining term is a rendered item. */
+.row[data-intent-trailing="true"][data-body-trigger-intent="true"][data-intent-suppressed="true"] .intentTriggerContent {
+  max-width: calc(100% - var(--tap-min, 28px) - var(--tap-min, 14px) - var(--space-2) - var(--space-2));
+}
+
 .summaryLine {
   display: flex;
   flex: 1 1 0;

@@ -932,6 +932,7 @@ export function ToolRow({
       data-intent={hasIntent ? "true" : undefined}
       data-intent-trailing={showIntentTrailing || bodyTriggerOnIntentLine ? "true" : undefined}
       data-body-trigger-intent={bodyTriggerOnIntentLine ? "true" : undefined}
+      data-intent-suppressed={intentControlSuppressed ? "true" : undefined}
       title={title}
     >
       {hasIntent && showIntentTrailing ? (

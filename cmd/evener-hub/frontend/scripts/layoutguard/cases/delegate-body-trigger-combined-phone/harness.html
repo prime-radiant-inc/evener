@@ -27,7 +27,7 @@
      a PHONE viewport where tokens.css declares --tap-min: 44px:
 
        <div class="row" data-intent="true" data-intent-trailing="true"
-            data-body-trigger-intent="true">
+            data-body-trigger-intent="true" data-intent-suppressed="true">
          <button class="trigger intentOverlayTrigger"></button>
          <span class="intentTriggerContent">
            <span class="rowIcon">…</span>
@@ -35,7 +35,7 @@
            <span class="intent">{statedIntent}</span>
          </span>
          <span class="intentTrailing">{Open control}</span>
-         [<span class="chevron">…</span>]            <!-- suppressed on a delegate -->
+         [<span class="chevron">…</span>]            (suppressed on a delegate)
          <button class="bodyTrigger"><span class="chevron">…</span></button>
        </div>
 
@@ -59,7 +59,7 @@ const STATUS_DOT = '<span style="display:block;width:8px;height:8px;border-radiu
 
 function rowHtml(id, intent, withDecorativeChevron) {
   return `
-    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true">
+    <div class="row" id="row-${id}" data-intent="true" data-intent-trailing="true" data-body-trigger-intent="true"${withDecorativeChevron ? "" : ' data-intent-suppressed="true"'}>
       <button type="button" class="trigger intentOverlayTrigger" id="trigger-${id}" aria-expanded="false" aria-label="${intent}"></button>
       <span class="intentTriggerContent" id="content-${id}">
         <span class="rowIcon" id="icon-${id}" aria-hidden="true">${ICON_SVG}</span>
@@ -120,25 +120,52 @@ function firstLineBox(intentEl) {
 }
 
 window.measure = () => {
-  return CONFIGS.map((c) => {
-    const body = box(document.getElementById(`body-${c.key}`));
-    const open = box(document.getElementById(`open-${c.key}`));
-    const intentEl = document.getElementById(`intent-${c.key}`);
-    const line1 = firstLineBox(intentEl);
-    const bodyElement = document.getElementById(`body-${c.key}`);
-    const bodyHit = document.elementFromPoint(body.left + body.width / 2, body.top + body.height / 2);
-    return {
-      id: c.key,
-      label: c.label,
-      body,
-      open,
-      line1,
-      bodySameLine: body.top < line1.bottom - 1,
-      openSameLine: open.top < line1.bottom - 1,
-      bodyDropBelowLine1: body.top - line1.bottom,
-      bodyHitIsBody: Boolean(bodyHit && bodyElement.contains(bodyHit)),
-    };
-  });
+  const fixtures = document.querySelector(".fixtures");
+  return {
+    // The documentation comment above must be ONE comment: a nested `<!--`
+    // would close it early and render the example markup (a stray .bodyTrigger,
+    // .row, etc.) as live content above .fixtures. That both adds unrelated
+    // elements and makes elementFromPoint hit-testing depend on prose edits.
+    fixturesIsFirstBodyChild: document.body.firstElementChild === fixtures,
+    strayOutsideFixtures: document.querySelectorAll(
+      "body > .row, body > .bodyTrigger, body > .intentTriggerContent, body > .intentTrailing, body > .chevron",
+    ).length,
+    fixtures: CONFIGS.map((c) => {
+      const row = box(document.getElementById(`row-${c.key}`));
+      const content = box(document.getElementById(`content-${c.key}`));
+      const body = box(document.getElementById(`body-${c.key}`));
+      const open = box(document.getElementById(`open-${c.key}`));
+      const chevronEl = document.getElementById(`chevron-${c.key}`);
+      const chevron = chevronEl ? box(chevronEl) : null;
+      const intentEl = document.getElementById(`intent-${c.key}`);
+      const line1 = firstLineBox(intentEl);
+      const bodyElement = document.getElementById(`body-${c.key}`);
+      const bodyHit = document.elementFromPoint(body.left + body.width / 2, body.top + body.height / 2);
+      const columnGap = parseFloat(getComputedStyle(document.getElementById(`row-${c.key}`)).columnGap);
+      // Everything the reservation should cover: the trailing items after the
+      // content and the column gaps between them. A summary-less delegate
+      // renders no decorative chevron, so it must NOT reserve for one.
+      const trailingItemCount = chevron ? 3 : 2;
+      const expectedContentWidth = row.width - open.width - body.width - (chevron ? chevron.width : 0) - trailingItemCount * columnGap;
+      return {
+        id: c.key,
+        label: c.label,
+        row,
+        content,
+        body,
+        open,
+        chevron,
+        line1,
+        columnGap,
+        expectedContentWidth,
+        contentWidthSlack: content.width - expectedContentWidth,
+        bodySameLine: body.top < line1.bottom - 1,
+        openSameLine: open.top < line1.bottom - 1,
+        bodyDropBelowLine1: body.top - line1.bottom,
+        bodyHitIsBody: Boolean(bodyHit && bodyElement.contains(bodyHit)),
+      };
+    }),
+  };
 };
 </script>
 </body>
