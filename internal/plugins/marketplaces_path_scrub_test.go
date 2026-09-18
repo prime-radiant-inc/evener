@@ -122,6 +122,84 @@ func TestAddMarketplaceRollbackFailureNamesNoPath(t *testing.T) {
 	}
 }
 
+// RemoveMarketplace's metadata save is attempted before the clone's own
+// removal, so a save failure is a plain refusal - but its own error still
+// names the store's path.
+func TestRemoveMarketplaceSaveFailureNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	path := m.marketplacesFile()
+	origWrite := marketplaceAtomicWriteFile
+	t.Cleanup(func() { marketplaceAtomicWriteFile = origWrite })
+	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error {
+		return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+	}
+
+	err := m.RemoveMarketplace(ctx, "market-a")
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed save reported")
+	}
+	if strings.Contains(err.Error(), path) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if _, statErr := os.Stat(m.marketplaceDir("market-a")); statErr != nil {
+		t.Fatalf("the clone was removed after a failed save: %v", statErr)
+	}
+}
+
+// Once RemoveMarketplace's save has landed, a failure removing the now
+// orphaned clone is litter the caller cannot undo, reported as an error that
+// must not carry os.RemoveAll's own path.
+func TestRemoveMarketplaceCloneRemovalFailureNamesNoPath(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	src := makeMarketplaceRepo(t, "market-a")
+	if _, err := m.AddMarketplace(ctx, "market-a", Source{Kind: SourceURL, URL: src}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+
+	clonePath := m.marketplaceDir("market-a")
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() { marketplaceRemoveAll = origRemove })
+	marketplaceRemoveAll = func(p string) error {
+		if p == clonePath {
+			return &fs.PathError{Op: "remove", Path: clonePath, Err: errors.New("permission denied")}
+		}
+		return origRemove(p)
+	}
+
+	err := m.RemoveMarketplace(ctx, "market-a")
+	if err == nil {
+		t.Fatal("RemoveMarketplace = nil, want the failed clone removal reported")
+	}
+	if strings.Contains(err.Error(), clonePath) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+	if !strings.Contains(err.Error(), "no longer registered") {
+		t.Fatalf("err = %v, want it to say the marketplace is no longer registered despite the clone litter", err)
+	}
+	list, listErr := m.ListMarketplaces(ctx)
+	if listErr != nil {
+		t.Fatalf("ListMarketplaces: %v", listErr)
+	}
+	if _, ok := list["market-a"]; ok {
+		t.Fatalf("marketplace still listed after its save-then-remove: %v", list)
+	}
+}
+
 // RefreshMarketplace's save failure, after a directory-source refresh (which
 // touches no disk beyond LastUpdated), is a plain metadata-save failure.
 func TestRefreshMarketplaceSaveFailureNamesNoPath(t *testing.T) {

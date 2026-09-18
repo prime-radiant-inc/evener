@@ -303,6 +303,24 @@ func (m *Manager) ListMarketplaces(ctx context.Context) (Marketplaces, error) {
 	return m.loadMigratedMarketplaces(ctx, marketplaceAcquireLock)
 }
 
+// cloneRemovalFailed reports that removing marketplace name's clone from disk
+// failed as a cleanup step whose own metadata change already applied - not a
+// write failure itself, and RemoveMarketplace's only caller has already
+// saved the unregistration by the time this runs, so the message says so
+// rather than leaving the caller to guess whether the marketplace is still
+// registered. removeErr's own text can carry this machine's absolute
+// plugin-store path (os.RemoveAll returns a *fs.PathError that names it), so
+// it goes to the hub's log instead of the RPC caller.
+func (m *Manager) cloneRemovalFailed(name string, removeErr error) error {
+	_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace %q's clone failed: %v\n", name, removeErr)
+	return fmt.Errorf("marketplace %q is no longer registered, but its clone could not be removed; see the hub's log for detail", name)
+}
+
+// RemoveMarketplace unregisters name: the metadata save lands first, so a
+// save failure is a plain refusal that leaves the marketplace registered and
+// its clone untouched. Only once that save has landed does the clone's own
+// removal run - a failure there is litter the hub's caller cannot undo, but
+// the marketplace itself is already gone from the listing.
 func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	release, err := m.lockStore(ctx, marketplaceAcquireLock, 30*time.Second)
 	if err != nil {
@@ -317,13 +335,16 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("marketplace %q: %w", name, ErrMarketplaceNotFound)
 	}
+	delete(mk, name)
+	if err := m.saveMarketplaces(mk); err != nil {
+		return m.saveFailed(name, marketplacesFileName, err)
+	}
 	if ref.Source.Kind != SourceDirectory {
 		if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
-			_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+			return m.cloneRemovalFailed(name, err)
 		}
 	}
-	delete(mk, name)
-	return m.saveMarketplaces(mk)
+	return nil
 }
 
 // EditMarketplace renames a registered marketplace and/or replaces its
