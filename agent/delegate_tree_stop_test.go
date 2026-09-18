@@ -898,6 +898,124 @@ func TestDelegateControllerRootCloseJoinsPendingStopWithoutSecondIdentity(t *tes
 	}
 }
 
+// TestDelegateControllerCloseWakesParkedStopReconcileDriver pins #1538: the
+// process-only stop reconcile driver that StopSubtreeAndDrive launches must be
+// woken when the controller closes, even when the bounded close join cannot
+// wait for a stop that never completes. Before the fix the driver drained on
+// context.Background() and nothing signalled it when closing was set, so a stop
+// parked on delegate progress stayed parked for the life of the process once the
+// store was closed.
+func TestDelegateControllerCloseWakesParkedStopReconcileDriver(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	c.rootRuntime = &Session{delegateController: c}
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	// An attached, active generation keeps stop.active non-empty, so Reconcile
+	// can never complete the stop and the driver parks on stop progress.
+	commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	// Await the driver's own park signal rather than a wall-clock guess: a
+	// driver that never parked would let the assertion below pass vacuously.
+	savedWait := observeDelegateStopWait.Load()
+	parked := make(chan struct{})
+	var parkedOnce sync.Once
+	hook := func() { parkedOnce.Do(func() { close(parked) }) }
+	observeDelegateStopWait.Store(&hook)
+	t.Cleanup(func() { observeDelegateStopWait.Store(savedWait) })
+	_, cancelPlan, _, err := c.StopSubtreeAndDrive(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("StopSubtreeAndDrive: %v", err)
+	}
+	executeDelegateCancelPlan(cancelPlan)
+
+	c.mu.Lock()
+	driver := c.stopDriver
+	c.mu.Unlock()
+	if driver == nil {
+		t.Fatal("StopSubtreeAndDrive started no reconcile driver")
+	}
+	select {
+	case <-parked:
+	case <-time.After(5 * time.Second): // TRIPWIRE: in-process park signal; only fires on a hang
+		t.Fatal("stop reconcile driver never parked on stop progress")
+	}
+
+	// An already-expired close budget is the production shape where the bounded
+	// join cannot wait for the pending stop: close gives up on the join and, once
+	// the store is closed, no further progress can ever arrive for the driver.
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	if err := c.closeRuntimeTree(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("closeRuntimeTree error = %v, want the bounded join's context.DeadlineExceeded", err)
+	}
+
+	select {
+	case <-driver.done:
+	case <-time.After(5 * time.Second): // TRIPWIRE: in-process wake; only fires if the driver is orphaned
+		t.Fatal("stop reconcile driver was orphaned by close: driver.done never closed")
+	}
+}
+
+// TestDelegateStopDrainObservesCancellationAtBusyBoundaries pins the abandon
+// coverage of the driver drain's non-waiting branches: when a stop can never
+// reconcile -- the requirements have gone stale, or Reconcile rejects the
+// evidence as busy every pass -- an abandoned driver (driver.ctx cancelled by a
+// close join timeout) must still exit rather than spin forever.
+func TestDelegateStopDrainObservesCancellationAtBusyBoundaries(t *testing.T) {
+	t.Run("reconcile-busy", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		stop := &delegateStopState{
+			requestSeq: 42,
+			targetID:   "dlg_target",
+			// An empty member the durable state cannot cover makes
+			// delegateStopReconcileEvidenceMatchesState reject every pass as
+			// busy, so the loop can only leave by observing cancellation.
+			members:  map[string]struct{}{"dlg_target": {}, "dlg_ghost": {}},
+			done:     make(chan struct{}),
+			progress: make(chan struct{}, 1),
+		}
+		c.mu.Lock()
+		c.stop = stop
+		c.mu.Unlock()
+		t.Cleanup(func() {
+			c.mu.Lock()
+			if c.stop == stop {
+				c.stop = nil
+			}
+			c.mu.Unlock()
+		})
+		requireDrainStopsUnderCancellation(t, c, stop)
+	})
+
+	t.Run("stale-requirements", func(t *testing.T) {
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		// c.stop is nil, so this stop is never the current one and every pass
+		// takes the stale-requirements branch.
+		foreign := &delegateStopState{done: make(chan struct{}), progress: make(chan struct{}, 1)}
+		requireDrainStopsUnderCancellation(t, c, foreign)
+	})
+}
+
+// requireDrainStopsUnderCancellation runs the driver's drain on an
+// already-cancelled context and fails unless it returns the cancellation error
+// instead of spinning on a busy branch. The driver's drain passes its own
+// context's Done channel as the abandon signal, exactly as runStopReconcileDriver
+// does.
+func requireDrainStopsUnderCancellation(t *testing.T, c *delegateTreeController, stop *delegateStopState) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- c.drainStopAbandonable(ctx, stop, nil, ctx.Done()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("drainStop error = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second): // TRIPWIRE: the drain is in-process and immediate; only a spin reaches this
+		t.Fatal("drainStop spun on a busy boundary after its context was cancelled")
+	}
+}
+
 func TestDelegateControllerRootCloseFencesAdmissionWhileReceiptDrains(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, c, "dlg_target", "")

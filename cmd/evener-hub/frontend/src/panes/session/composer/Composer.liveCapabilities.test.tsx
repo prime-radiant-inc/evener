@@ -541,11 +541,11 @@ test("a Steer clicked between turn/completed and turn/started sends turn/steer, 
   expect(screen.queryByText(/no active turn/i)).toBeNull();
 });
 
-// A genuine turn failure ends with turn/completed{status: "failed"} and no
-// status frame behind it (the projector's EventError branch; the agent returns
-// the failure before the EventSessionEnd that only a clean completion or an
-// interrupt reaches, kata s8x8). The reducer settles the session idle on that
-// frame, so Stop and Steer leave and Send returns.
+// A genuine turn failure ends with turn/completed{status: "failed"} followed
+// by its own thread/status/changed(idle) frame, capabilities inline (the
+// agent's failure exit, agent/session_lifecycle.go endInputAtTurnFailure, kata
+// hen0). The status frame turns Stop and Steer off and gives Send back; the
+// failed stamp alone leaves the controls alone.
 test("a failed turn takes Stop and Steer off and gives Send back", async () => {
   const fake = await mountComposer("idle", daemonCapabilities(false));
   emitTurnStart(fake, "turn_5", daemonCapabilities(true));
@@ -561,6 +561,16 @@ test("a failed turn takes Stop and Steer off and gives Send back", async () => {
         ref: REF,
         turn: { id: "turn_5", status: "failed", itemsView: "", error: { message: "rate limited" } },
       },
+    });
+  });
+
+  // The turn ended; its status frame has not arrived.
+  expect(threadsStore.getState().threads.get(REF)?.status.type).toBe("active");
+
+  act(() => {
+    fake.emitNotification({
+      method: "thread/status/changed",
+      params: { threadId: `thr_${REF}`, ref: REF, status: { type: "idle" }, capabilities: daemonCapabilities(false) },
     });
   });
 

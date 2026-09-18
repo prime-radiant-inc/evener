@@ -7,6 +7,7 @@
 // backs off exponentially up to a cap.
 
 import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
+import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
 
@@ -129,10 +130,6 @@ const FEATURE_KEYS = [
 const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings", "keybindingsSettings"] as const;
 const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function hasRequiredAndOptionalKeys(
   value: Record<string, unknown>,
   required: readonly string[],
@@ -146,7 +143,7 @@ function hasRequiredAndOptionalKeys(
 /** Runtime boundary for the untyped JSON-RPC initialize result. */
 export function decodeInitializeResponse(value: unknown): InitializeResponse {
   if (
-    !isRecord(value) ||
+    !isPlainObject(value) ||
     !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
   ) {
     throw new InitializeValidationError("response");
@@ -155,7 +152,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   const features = value.features;
   const navigation = value.navigation;
   if (
-    !isRecord(serverInfo) ||
+    !isPlainObject(serverInfo) ||
     !hasRequiredAndOptionalKeys(serverInfo, ["name", "version"]) ||
     typeof serverInfo.name !== "string" ||
     serverInfo.name.trim() === "" ||
@@ -171,7 +168,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     throw new InitializeValidationError("sourceId");
   }
   if (
-    !isRecord(features) ||
+    !isPlainObject(features) ||
     !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
     FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
     FEATURE_OPTIONAL_KEYS.some((key) => Object.hasOwn(features, key) && typeof features[key] !== "boolean")
@@ -180,7 +177,7 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
   }
   if (Object.hasOwn(value, "navigation")) {
     if (
-      !isRecord(navigation) ||
+      !isPlainObject(navigation) ||
       !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS, ["readVersions"])
     ) {
       throw new InitializeValidationError("navigation");

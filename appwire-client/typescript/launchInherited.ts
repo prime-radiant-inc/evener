@@ -4,6 +4,7 @@
 // The effective layer already contains the local overrides (resolve includes
 // them), so subtracting the local keys yields exactly the inherited entries
 // under each kind's merge semantics.
+import { isPlainObject } from "./plainObject";
 import type { MCPServerSpec } from "./types.gen";
 
 /** Effective value minus local entries, keyed by the caller's key extractor.
@@ -26,9 +27,7 @@ export function asStringList(value: unknown): string[] {
 }
 
 export function asEnvEntries(value: unknown): [string, string][] {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? Object.entries(value as Record<string, string>)
-    : [];
+  return isPlainObject(value) ? Object.entries(value as Record<string, string>) : [];
 }
 
 /** Same as asEnvEntries but as {name, value} objects — the shape

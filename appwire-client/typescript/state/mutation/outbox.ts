@@ -27,6 +27,7 @@
 // carries no clientMutationId, no targetRef, no payload, no sequence and no
 // persisted state, so nothing here aliases it; D25d is where native gains
 // records and this class is what notices them.
+import type { AppwireClientLike } from "../../clientLike";
 import type {
   MutationAttachmentRef,
   MutationIntent,
@@ -37,6 +38,18 @@ import type {
   MutationRecoveryRecord,
 } from "./records";
 import { tryOrUndefined } from "./secureUUID";
+
+// The one readiness notion this subpath owns, shared by the outbox's discovery
+// gate and the dispatcher's per-ref loop. A host answers for a target ref, or
+// ref-less for "the runtime's current client" — the same call it wires into
+// both halves, so the two can no longer be derived from facts that drift.
+export type MutationClientLookup = (targetRef?: string) => AppwireClientLike | null | undefined;
+
+// What "ready" means for both: a live client whose state is "ready". A
+// missing client (no connection, a retired runtime) is never ready.
+export function isClientReady(client: AppwireClientLike | null | undefined): client is AppwireClientLike {
+  return client?.state === "ready";
+}
 
 // Why discovery ran, carried through to the consumer so a scan can be
 // explained (and, in tests, asserted) rather than guessed at.
@@ -115,9 +128,10 @@ export interface MutationVisibilityTarget extends MutationLifecycleTarget {
 }
 
 export interface MutationOutboxOptions {
-  // Whether dispatching is possible at all right now (a live connection, this
-  // runtime still current). Discovery announces nothing while it is false.
-  isReady: () => boolean;
+  // The same client lookup the dispatcher takes. Asked ref-less, it answers
+  // with the runtime's current client, and discovery announces nothing unless
+  // that client is ready (a live connection, this runtime still current).
+  getClient: MutationClientLookup;
   onDiscover: (targetRefs: string[], reason: MutationDiscoveryReason) => void | Promise<void>;
   createBroadcastChannel?: (name: string) => MutationOutboxChannel;
   lifecycleWindow?: MutationLifecycleTarget;
@@ -148,7 +162,7 @@ function isMutationOutboxWakeup(value: unknown): value is MutationOutboxWakeup {
 // outcomes are the only callers allowed to settle or reclassify them.
 export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachmentRef> {
   readonly #storage: MutationOutboxStorage<A>;
-  readonly #isReady: () => boolean;
+  readonly #getClient: MutationClientLookup;
   readonly #onDiscover: MutationOutboxOptions["onDiscover"];
   readonly #createChannel: ((name: string) => MutationOutboxChannel) | undefined;
   readonly #lifecycleTarget: MutationLifecycleTarget | undefined;
@@ -181,7 +195,7 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
 
   constructor(storage: MutationOutboxStorage<A>, options: MutationOutboxOptions) {
     this.#storage = storage;
-    this.#isReady = options.isReady;
+    this.#getClient = options.getClient;
     this.#onDiscover = options.onDiscover;
     this.#createChannel = options.createBroadcastChannel;
     this.#lifecycleTarget = options.lifecycleWindow;
@@ -261,6 +275,13 @@ export class MutationOutbox<A extends MutationAttachmentRef = MutationAttachment
   #mayDiscover(reason: MutationDiscoveryReason): boolean {
     if (reason === "enqueue") return true;
     return this.#started && (reason === "startup" || this.#isReady());
+  }
+
+  // Whether dispatching is possible at all right now, read off the one client
+  // lookup rather than a flag a host could wire independently of the
+  // dispatcher's per-ref readiness.
+  #isReady(): boolean {
+    return isClientReady(this.#getClient());
   }
 
   #scheduleReadyScan(reason: MutationDiscoveryReason): void {

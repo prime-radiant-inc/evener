@@ -1,6 +1,7 @@
 // Strict client-side parser and disclosure-state helpers for recursive
 // evener/jobs/list activity trees. Wire truth: appwire-client/typescript/types.gen.ts's
 // JobActivity* interfaces and docs/appwire-protocol.md's json field catalog.
+import { isPlainObject } from "./plainObject";
 
 export interface ActivityCounts {
   active: number;
@@ -208,12 +209,6 @@ type TreeIndex = {
   ids: Set<string>;
   parents: Map<string, string>;
 };
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
 
 function readString(object: Record<string, unknown>, key: string): string | null {
   const value = object[key];

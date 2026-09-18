@@ -156,7 +156,14 @@ export { createFrameworkFreeStore } from "./frameworkFreeStore";
 export type { HubOverviewClient, HubOverviewListener, HubOverviewState, HubOverviewStore } from "./hubOverview";
 export { createHubOverviewStore } from "./hubOverview";
 export type { ItemFailureSignals } from "./itemFailure";
-export { hasErrorText, hasFailureStatus, hasItemFailure, isInProgressStatus, isNonZeroExit } from "./itemFailure";
+export {
+  hasErrorText,
+  hasFailureStatus,
+  hasItemFailure,
+  isActiveItem,
+  isInProgressStatus,
+  isNonZeroExit,
+} from "./itemFailure";
 export type { JobLogTail } from "./jobOutput";
 export { parseJobLogTail } from "./jobOutput";
 export type { ActionId } from "./keybindingActions";
@@ -239,6 +246,7 @@ export {
   groupOptions,
   inactivePromptDependent,
   isCollectionKind,
+  isExactSafeInteger,
   isPromptCompositeWireField,
   listSupportsExplicitEmpty,
   matchesEnvCredentialError,
@@ -274,6 +282,7 @@ export {
 } from "./modelCatalogView";
 export type { PathPickableRow, PathRow } from "./pathRows";
 export { basename, buildPathRows, childrenPrefix, isDirEntry, parentOf, pickablePathRows } from "./pathRows";
+export { isPlainObject } from "./plainObject";
 export { humanizeState } from "./railSessionState";
 export type { ReadyGenerationFence } from "./readyGenerationFence";
 export { createReadyGenerationFence } from "./readyGenerationFence";
@@ -290,6 +299,7 @@ export {
   collectAuthoritativeMutationIds,
   hydrateThread,
   imageSessionRouteForSession,
+  joinedReasoningParagraphs,
   mergeOlderItemPage,
   notificationRoutingKey,
   notificationTargetsThread,
@@ -318,6 +328,7 @@ export {
 export { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./spawnHarnessModels";
 export type { PluginSelectionState } from "./spawnPluginSelectionState";
 export {
+  pluginSelectionFromOverrides,
   pluginSelectionIssues,
   reconcilePluginSelection,
   selectAllPlugins,
@@ -373,6 +384,8 @@ export {
 } from "./taskPanelState";
 export type { TextEdit, TextEditWithUnknownCursor } from "./textareaMarkers";
 export { insertMarker, markerPattern, markerText, stripMarker } from "./textareaMarkers";
+export type { SessionTokens, TokenPair, UsageSummary } from "./threadUsage";
+export { sessionTokens, threadUsageSummary, turnUsageTokens } from "./threadUsage";
 export {
   clip,
   clipJobID,
@@ -402,8 +415,6 @@ export type {
   TranscriptDisplayAdvancedV1,
   TranscriptDisplayCategory,
   TranscriptDisplayConfigV1,
-  TranscriptHookExitDetail,
-  TranscriptLevel,
   TranscriptViewportClass,
   ViewportClass,
   VisibleCategoryInventory,
@@ -412,41 +423,24 @@ export {
   accessibleConfigSummary,
   advancedEnabledCount,
   CONTENT_LEVELS,
-  categoryInventory,
   configFingerprint,
-  configFromLegacyPrefs,
   configSummary,
-  configToWire,
   contentSummary,
-  decodeConfig,
-  decodeLocal,
   decodeLocalConfig,
-  defaultsToWire,
-  defaultToWire,
   dualWriteLegacyPreferences,
-  encodeConfig,
-  encodeLocal,
   encodeLocalConfig,
-  fingerprintConfig,
   fromWireConfig,
   fromWireDefault,
   fromWireDefaults,
-  fromWireTranscriptDisplayConfig,
   HOOK_EXIT_DETAILS,
   LEGACY_PREF_KEYS,
   legacyConfigFromValues,
-  legacyPrefsFromConfig,
   legacyWritesFromConfig,
   makeTranscriptDisplayConfig,
-  migrateLegacyConfig,
   normalizeConfig,
   normalizeContent,
-  parseLocalConfig,
   presetContent,
   resolveEffectiveConfig,
-  SHIPPED_DEFAULTS,
-  SHIPPED_DESKTOP_CONFIG,
-  SHIPPED_MOBILE_CONFIG,
   shippedConfig,
   shippedDefault,
   shippedDefaults,
@@ -455,11 +449,7 @@ export {
   toWireConfig,
   toWireDefault,
   toWireDefaults,
-  toWireTranscriptDisplayConfig,
   visibleCategoryInventory,
-  wireToConfig,
-  wireToDefault,
-  wireToDefaults,
 } from "./transcriptDisplayConfig";
 export type {
   ProjectedAnchor,

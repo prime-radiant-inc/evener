@@ -688,10 +688,17 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   //   entry holds the count of outstanding mutations plus the latest stamp;
   //   each matching notification consumes exactly one, and only a notification
   //   beyond the outstanding count is foreign and still refetches.
-  // - Cleared when the response proves no broadcast will follow: a failed RPC,
-  //   or a device poll that comes back pending/expired rather than authorized.
+  // - Cleared on a device poll that comes back pending/expired (no write, so
+  //   no echo) and, unconditionally, on a failed RPC - even though a write
+  //   that applied before its later step failed (cmd/evener-hub/app_write_
+  //   applied.go) still broadcasts. That broadcast is never this mutation's
+  //   own echo to consume: the no-data form it uses (notifyInstanceUpdated)
+  //   carries neither a provider nor an originClientId, so consumeOwnAuthEcho
+  //   would read it as foreign regardless of whether a marker were still
+  //   outstanding. Distinguishing "applied, no echo attributable" from "never
+  //   applied" here would need the wire to say which, which it does not yet.
   //   One outstanding marker is retired per such outcome (a floor, not an
-  //   unconditional clear): which mutation failed does not matter, only how
+  //   unconditional clear): which mutation ended does not matter, only how
   //   many echoed mutations remain outstanding.
   // - Bounded by a short age window from the marker's latest stamp, so a marker
   //   that is never consumed (the echo was lost, or the notification arrived
@@ -709,11 +716,14 @@ export function createCredentialInstancesStore(deps: CredentialInstancesDeps): C
   }
 
   // retireLocalAuthMutation consumes one outstanding marker: an echo that
-  // arrived, or an outcome that proves no echo will (a failed RPC, a device poll
-  // that came back pending/expired). Which mutation ended does not matter, only
-  // how many echoed mutations remain outstanding, so this decrements whether or
-  // not it was the mutation that failed; once the count reaches zero the next
-  // same-provider notification is foreign again.
+  // arrived, a device poll that came back pending/expired (no write, so no
+  // echo), or a failed RPC - which can still broadcast when the write applied
+  // before its later step failed, but never as an echo this marker could
+  // consume (see the header comment above localAuthMutations). Which mutation
+  // ended does not matter, only how many echoed mutations remain outstanding,
+  // so this decrements whether or not it was the mutation that failed; once
+  // the count reaches zero the next same-provider notification is foreign
+  // again.
   function retireLocalAuthMutation(provider: string): void {
     const existing = localAuthMutations.get(provider);
     if (existing === undefined) return;

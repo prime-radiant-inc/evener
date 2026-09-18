@@ -35,11 +35,18 @@ import (
 // marker to read.
 
 // loadMigratedMarketplaces reads the marketplaces file without the store lock
-// and hands back what a lock holder would see. A name the store refuses means
-// no lock holder has migrated this store yet (lockStore), so this takes the
-// lock — which migrates — and reads back what that left; a second reader that
-// arrives meanwhile finds nothing left to do once it holds the lock. On a
-// migrated store nothing is locked, so a listing never queues behind a fetch.
+// and hands back what a lock holder would see. A name the store refuses, or a
+// marker a run left in flight, means the file on disk is not what a lock
+// holder would see, so this takes the lock — which migrates and recovers —
+// and reads back what that left; a second reader that arrives meanwhile finds
+// nothing left to do once it holds the lock. On a migrated store with no
+// marker nothing is locked, so a listing never queues behind a fetch.
+//
+// A refused name means no lock holder has migrated this store yet (lockStore).
+// A marker alone (renameMarkerPending) means one did and stopped between a
+// rename's last write and dropping the marker, so every recorded name is one
+// the store accepts while the rename is still in flight. Both are what the
+// lock's recovery finishes, so both send this through it.
 //
 // The barrier is what a listing runs behind rather than a value it needs: the
 // marketplace listing returns it, and the plugin listing takes the lock only
@@ -51,11 +58,14 @@ import (
 // inline on the connection's serial worker, so a disconnected client's wait
 // on the lock has to stop with the client. The same branch creates the
 // store's .lock file in a store that had none, and a listing that finds
-// nothing to migrate never reaches it.
+// neither a refused name nor a marker never reaches it.
 func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcquirer) (Marketplaces, error) {
 	mk, err := m.loadMarketplaces()
-	if err != nil || len(refusedMarketplaceNames(mk)) == 0 {
+	if err != nil {
 		return mk, err
+	}
+	if len(refusedMarketplaceNames(mk)) == 0 && !m.renameMarkerPending() {
+		return mk, nil
 	}
 	release, err := m.lockStore(ctx, acquire, 30*time.Second)
 	if err != nil {
@@ -63,6 +73,17 @@ func (m *Manager) loadMigratedMarketplaces(ctx context.Context, acquire lockAcqu
 	}
 	defer release()
 	return m.loadMarketplaces()
+}
+
+// renameMarkerPending reports whether the store holds a marker, the file that
+// names the rename or merge a run left in flight (renameMarker). A marker that
+// cannot be read counts as pending: it sits where one a run left would, and
+// only the lock's recovery (recoverMarkedRename) can say what it names or fail
+// the reading over it. A store that finished every operation has no marker and
+// this costs one read of a name that is not there.
+func (m *Manager) renameMarkerPending() bool {
+	marker, err := m.loadRenameMarker()
+	return err != nil || marker != nil
 }
 
 // migrateMarketplaceNames finishes the rename an interrupted run left in
