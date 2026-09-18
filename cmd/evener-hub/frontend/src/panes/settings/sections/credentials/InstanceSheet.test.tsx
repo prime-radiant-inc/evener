@@ -1,4 +1,5 @@
 import type { InstanceEntry, InstanceListResponse, ProviderDescriptor } from "@evener/appwire-client";
+import { ErrorInstanceRenamePersisted, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -1521,6 +1522,45 @@ describe("the form", () => {
     expect(handlers.onRenamed).toHaveBeenCalledWith("work2");
     expect(getToasts().some((t) => t.kind === "success" && t.text === "Saved work2")).toBe(true);
     expect(getToasts().some((t) => t.kind === "warning" && t.text === STALE_SAVE_WARNING)).toBe(false);
+  });
+
+  // A rename the hub persisted but could not finish (the OAuth record would
+  // not move, or its reload failed) answers as an error carrying the hub's
+  // ErrorInstanceRenamePersisted discriminator. That discriminator is the
+  // authoritative fact - providers.toml already names the new instance - so the
+  // sheet must follow it even when the refreshed listing cannot show the new
+  // row (the hub's fallback registry, a reload that failed). Gating the steer
+  // on the listing strands the sheet on a name the config no longer carries;
+  // replacing the steer with a form error does the same while also blaming the
+  // wrong thing. The listing is still refreshed (the store should catch up),
+  // and the hub's own warning - it names the credential left behind - still
+  // reaches the user.
+  test("a persisted rename whose listing omits the new row still steers to the new name and warns", async () => {
+    const HUB_MESSAGE =
+      "renamed work to work2, but: OAuth record not read: open /state/auth/work.json: permission denied";
+    const fake = new FakeClient("ready");
+    // The refreshed listing never gains the new row: the hub's registry is on
+    // its fallback listing, so reconciliation can never confirm the landing.
+    fake.on("evener/instance/list", () => ({ instances: [WORK], availableProviders: [OPENAI] }));
+    fake.on("evener/instance/edit", () => {
+      throw new WireError(HUB_MESSAGE, -32603, { evenerErrorInfo: ErrorInstanceRenamePersisted });
+    });
+    connectionStore.getState().connect(fake);
+    const { handlers } = renderSheet(WORK, {}, [OPENAI]);
+    const user = userEvent.setup();
+    await user.type(field("Name"), "2");
+    await user.click(saveButton());
+    expect(await sentEditParams(fake)).toEqual({ name: "work", newName: "work2" });
+
+    // The persisted name is followed regardless of the listing...
+    await waitFor(() => expect(handlers.onRenamed).toHaveBeenCalledWith("work2"));
+    // ...the listing was still reconciled...
+    expect(fake.calls.some((c) => c.method === "evener/instance/list")).toBe(true);
+    // ...the hub's message still warns...
+    expect(getToasts().some((t) => t.kind === "warning" && t.text === HUB_MESSAGE)).toBe(true);
+    // ...and no form error blames the instance the config already renamed.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(getToasts().some((t) => t.text.startsWith("Save failed"))).toBe(false);
   });
 
   // A rename that also edits an endpoint-affecting field necessarily changes

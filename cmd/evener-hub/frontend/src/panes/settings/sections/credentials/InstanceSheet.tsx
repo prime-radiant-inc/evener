@@ -117,13 +117,30 @@ const RENAME_IDENTITY_FIELDS = [
  * digest cannot be compared as an untouched identity field across such a save. */
 const ENDPOINT_AFFECTING_FIELDS = ["baseUrl", "vars", "protocol", "surface"] as const;
 
+/** Every `clear*` flag InstanceEditParams carries, and the entry field each one
+ * empties. An explicit map, not a derived "lowercase the first letter"
+ * conversion: the params type carries more than one capitalised field name
+ * (clearApiKeyEnv among them), so a derivation is one mis-cased flag away from
+ * producing a field name the listing never carries and silently disabling the
+ * identity comparison that decides whether a rename landed. Typed as a total
+ * Record over the flags the type carries, so adding a clear flag to
+ * InstanceEditParams fails to compile here until it is mapped. */
+type ClearFlagKey = Extract<keyof InstanceEditParams, `clear${string}`>;
+export const CLEAR_FIELD_NAMES: Record<ClearFlagKey, string> = {
+  clearBaseUrl: "baseUrl",
+  clearProtocol: "protocol",
+  clearSurface: "surface",
+  clearApiKeyEnv: "apiKeyEnv",
+  clearCredentialHeader: "credentialHeader",
+};
+
 /** The entry fields this save's params changed, whether a field carries a value
  * or a `clear` flag: those are the fields a rename may legitimately differ in. */
-function changedFields(params: InstanceEditParams): Set<string> {
+export function changedFields(params: InstanceEditParams): Set<string> {
   const changed = new Set<string>();
   for (const key of Object.keys(params)) {
     if (key === "name" || key === "newName") continue;
-    changed.add(key.startsWith("clear") ? key.charAt(5).toLowerCase() + key.slice(6) : key);
+    changed.add(key in CLEAR_FIELD_NAMES ? CLEAR_FIELD_NAMES[key as ClearFlagKey] : key);
   }
   return changed;
 }
@@ -474,15 +491,22 @@ export function InstanceSheet({
       // A rename that stood but could not carry the instance's OAuth record
       // comes back carrying the hub's own discriminator for it
       // (isInstanceRenamePersisted). providers.toml already names the new
-      // instance, so the save is not a failure: reconcile the listing and follow
-      // the instance to its new name, surfacing the hub's message - it names the
-      // credential left behind - as a warning rather than a plain failure.
+      // instance, so the save is not a failure: follow the instance to its new
+      // name, surfacing the hub's message - it names the credential left behind
+      // - as a warning rather than a plain failure. The discriminator is the
+      // authoritative fact here, so the steer does not depend on the refreshed
+      // listing: the hub's registry can still be a fallback listing that omits
+      // the new row (its own reload or rollback failed), and the config naming
+      // the new instance is enough to follow it. The listing is still refreshed
+      // - the store should catch up, and the bounded retry gives the registry a
+      // chance to - but its verdict is not a gate, and its failure must not
+      // replace the steer with a form error on an instance the config no longer
+      // carries.
       if (params.newName !== undefined && isInstanceRenamePersisted(err)) {
-        const landed = await confirmListingState((rows) => renamedInstanceLanded(rows, instance, params) !== undefined);
+        await confirmListingState((rows) => renamedInstanceLanded(rows, instance, params) !== undefined);
         if (shownName.current === instance.name) {
           setRenamingFrom(undefined);
-          if (landed) onRenamed(params.newName);
-          else setFormError(friendlyErrorMessage(err));
+          onRenamed(params.newName);
         }
         toast.push("warning", friendlyErrorMessage(err));
         return;
