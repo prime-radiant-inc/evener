@@ -60,6 +60,14 @@ var embeddedSkillsCache struct {
 	// identities rejects a replacement at the same path without re-digesting the
 	// tree on every resolution.
 	dirIdentity fs.FileInfo
+	// failedErr and failedAt remember a shared resolution that failed, so a run
+	// of calls in a degraded environment goes straight to the process copy
+	// instead of repeating the publish path. The entry lapses once
+	// embeddedSkillsRetryInterval has passed, so a cache root that later becomes
+	// usable is retried; base selection is fixed for the process lifetime, so a
+	// remembered failure never hides a different base.
+	failedErr error
+	failedAt  time.Time
 }
 
 // embeddedSkillsBaseDir resolves the private directory the content-addressed
@@ -70,6 +78,14 @@ var embeddedSkillsBaseDir = defaultEmbeddedSkillsBaseDir
 // skillsBaseRoot names the per-user root the default base directory lives under.
 // It is a seam so tests can exercise a platform that cannot name that root.
 var skillsBaseRoot = defaultSkillsBaseRoot
+
+// embeddedSkillsRetryInterval bounds how long a failed shared resolution is
+// remembered before the publish path is attempted again. It keeps a degraded
+// environment — an unusable or persistently contended cache root — from paying
+// for the digest, reap, staging, and publish attempts on every call, while the
+// retry that follows the interval still recovers once the root becomes usable.
+// It is a seam so tests can exercise the retry without waiting it out.
+var embeddedSkillsRetryInterval = 30 * time.Second
 
 // The shared content-addressed cache is best-effort: when no copy can be
 // resolved, the process keeps one private extraction of the bundled skills for
@@ -122,7 +138,9 @@ func embeddedProcessSkillsDirLocked() (string, error) {
 	}
 	// The whole tree is validated, not just its directory: a cleaner that removed
 	// files but left the directory would otherwise be served as an incomplete set
-	// of skills whose cached metadata points at paths that no longer exist.
+	// of skills whose cached metadata points at paths that no longer exist. The
+	// copy is content-validated, not trusted by identity alone: a truncated or
+	// overwritten file must re-extract, and the digest is what catches it.
 	if processSkillsDir != "" && cacheDirUsable(processSkillsDir, digest) {
 		return processSkillsDir, nil
 	}
@@ -261,16 +279,27 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 			forgetEmbeddedSkillsLocked()
 		}
 	}
+	// A shared resolution that just failed is remembered for
+	// embeddedSkillsRetryInterval, so a degraded environment does not re-run the
+	// digest, reap, staging, and publish attempts on every call. The retry that
+	// follows the interval still recovers once the cache root becomes usable.
+	if embeddedSkillsCache.failedErr != nil &&
+		time.Since(embeddedSkillsCache.failedAt) < embeddedSkillsRetryInterval {
+		return "", embeddedSkillsCache.failedErr
+	}
 	base, err := embeddedSkillsBaseDir()
 	if err != nil {
-		return "", err
+		// A root that cannot even be named is remembered like any other failed
+		// resolution, so repeated calls skip the base resolver too until the
+		// interval lapses.
+		return "", rememberEmbeddedSkillsFailureLocked(err)
 	}
 	const publishAttempts = 4
 	var lastErr error
 	for range publishAttempts {
 		dir, digest, err := materializeEmbeddedSkills(bundled.Skills(), base, embeddedSkillsCache.dir)
 		if err != nil {
-			return "", err
+			return "", rememberEmbeddedSkillsFailureLocked(err)
 		}
 		if err := claimEmbeddedSkillsLocked(dir); err != nil {
 			// Contended means the copy is being reaped, and any other error means
@@ -290,11 +319,29 @@ func ensureEmbeddedSkillsLocked() (string, error) {
 		embeddedSkillsCache.skills = skills
 		embeddedSkillsCache.verified = true
 		rememberCacheDirLocked(dir)
+		clearEmbeddedSkillsFailureLocked()
 		return dir, nil
 	}
 	// The shared cache stayed unusable through every attempt. No private copy is
 	// published: EmbeddedSkillsDir falls back to the process-lifetime extraction.
-	return "", fmt.Errorf("bundled skills cache unavailable (last: %w)", lastErr)
+	return "", rememberEmbeddedSkillsFailureLocked(fmt.Errorf("bundled skills cache unavailable (last: %w)", lastErr))
+}
+
+// rememberEmbeddedSkillsFailureLocked records err as the shared resolution's
+// failure for the retry interval and returns it. The caller holds the cache
+// mutex.
+func rememberEmbeddedSkillsFailureLocked(err error) error {
+	embeddedSkillsCache.failedErr = err
+	embeddedSkillsCache.failedAt = time.Now()
+	return err
+}
+
+// clearEmbeddedSkillsFailureLocked drops a remembered failure, so a resolution
+// that succeeds is never afterward short-circuited by an earlier failure. The
+// caller holds the cache mutex.
+func clearEmbeddedSkillsFailureLocked() {
+	embeddedSkillsCache.failedErr = nil
+	embeddedSkillsCache.failedAt = time.Time{}
 }
 
 // errSkillsLeaseContended reports that another process holds the exclusive lease
@@ -593,12 +640,19 @@ func dirInfo(info fs.FileInfo) bool {
 // rememberCacheDirLocked records the directory the cache resolved, with the
 // identity later resolutions compare against. The caller holds the cache mutex.
 func rememberCacheDirLocked(dir string) {
+	embeddedSkillsCache.dirIdentity = dirIdentity(dir)
+}
+
+// dirIdentity returns dir's directory identity for a later os.SameFile
+// comparison, or nil when dir is not a real directory this process can compare:
+// a symlink or Windows reparse point is refused for the same reason dirInfo
+// refuses it.
+func dirIdentity(dir string) fs.FileInfo {
 	info, err := os.Lstat(dir)
 	if err != nil || !dirInfo(info) {
-		embeddedSkillsCache.dirIdentity = nil
-		return
+		return nil
 	}
-	embeddedSkillsCache.dirIdentity = info
+	return info
 }
 
 // cacheDirUnchanged reports whether dir is still the directory this process
