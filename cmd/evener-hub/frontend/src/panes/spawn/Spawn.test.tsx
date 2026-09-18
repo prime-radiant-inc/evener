@@ -5837,6 +5837,45 @@ test("a /model value bootstraps past the required-model guard after a failed cat
   expect(start?.params).toMatchObject({ modelProvider: "openai", model: "gpt-5" });
 });
 
+test("a proven-stale catalog withholds the required-model bootstrap", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  let hangCatalog = false;
+  const hungCatalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({ effective: { model: "" }, layers: {}, provenance: {} }));
+    f.on("model/list", () =>
+      hangCatalog
+        ? hungCatalog.promise
+        : { data: [{ provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" }] },
+    );
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(modelValue().textContent).toBe("Choose a model"));
+
+  // The catalog-backed bootstrap enabling Start proves the catalog committed.
+  await user.type(promptField(), "/model openai/gpt-5");
+  const button = screen.getByTestId("spawn-submit") as HTMLButtonElement;
+  await waitFor(() => expect(button.disabled).toBe(false));
+
+  // A credential change flips the loader identity (the catalog and defaults
+  // loaders both key on it). The refresh hangs, so the committed snapshot is
+  // now PROVEN stale - a different loader - while the previous "no default"
+  // resolve still holds modelRequired true. The bootstrap must withhold Start
+  // rather than forward the value the stale scope offered.
+  hangCatalog = true;
+  await act(async () => {
+    fake.emitNotification({ method: "evener/auth/updated", params: { provider: "openai" } });
+  });
+
+  await waitFor(() => expect(button.disabled).toBe(true));
+  await user.click(button);
+  expect(fake.calls.some((c) => c.method === "thread/start")).toBe(false);
+});
+
 test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
