@@ -83,9 +83,10 @@ describe("assertDraftDiscardable", () => {
 describe("persistCheckpointedDraft", () => {
   it("mints an id and saves the checkpoint, returning it", () => {
     const drafts = memoryDraftStorage<Checkpoint>();
+    const repo = createDraftRepository(drafts.storage, decode);
     const store = fieldsStore(initialFields());
 
-    const checkpoint = persistCheckpointedDraft(drafts.storage, { value: "a" }, store.setState, "save failed");
+    const checkpoint = persistCheckpointedDraft(repo, { value: "a" }, store.setState, "save failed");
 
     expect(checkpoint).toEqual({ id: expect.any(String), value: "a" });
     expect(drafts.stored()).toEqual(checkpoint);
@@ -93,14 +94,33 @@ describe("persistCheckpointedDraft", () => {
 
   it("marks storageUnavailable AND draftError, then throws, when the port throws", () => {
     const drafts = memoryDraftStorage<Checkpoint>();
+    const repo = createDraftRepository(drafts.storage, decode);
     drafts.failSave();
     const store = fieldsStore(initialFields());
 
-    expect(() => persistCheckpointedDraft(drafts.storage, { value: "a" }, store.setState, "save failed")).toThrow(
+    expect(() => persistCheckpointedDraft(repo, { value: "a" }, store.setState, "save failed")).toThrow(
       "save failed",
     );
 
     expect(store.getState()).toMatchObject({ storageUnavailable: true, draftError: "save failed" });
+  });
+
+  it("refuses (storageUnavailable AND draftError) when another writer replaced the classified record", () => {
+    const drafts = memoryDraftStorage<Checkpoint>({ id: "d1", value: "a" });
+    const repo = createDraftRepository(drafts.storage, decode);
+    repo.load();
+    // A second writer replaces the record directly on the port, bypassing
+    // this repository's own classification - persistCheckpointedDraft's
+    // save() must refuse rather than overwrite it.
+    drafts.storage.save({ id: "d2", value: "b" });
+    const store = fieldsStore(initialFields());
+
+    expect(() => persistCheckpointedDraft(repo, { value: "edited" }, store.setState, "save failed")).toThrow(
+      "save failed",
+    );
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftError: "save failed" });
+    expect(drafts.stored()).toEqual({ id: "d2", value: "b" });
   });
 });
 
