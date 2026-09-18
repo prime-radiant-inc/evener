@@ -88,6 +88,14 @@ export const RECONNECT_MAX_MS = 5_000;
 // send even while connecting/reconnecting.
 const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize", "ping"]);
 
+// Methods whose response is owned by the operation the request starts, not by
+// an ordinary transport deadline: a pending call carries its own (longer)
+// budget, and its presence must not suppress silent-drop detection for that
+// lifetime. The request timeout and the heartbeat's ordinary-request scan both
+// consult this one set so a method cannot gain one exemption without the
+// other.
+const COMPLETION_OWNED_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["thread/resume"]);
+
 function defaultSocketFactory(url: string): WebSocketLike {
   // The DOM WebSocket type is structurally richer than WebSocketLike (its
   // event objects carry many more fields), so TS can't verify the assignment
@@ -417,7 +425,7 @@ export class AppwireClient {
     // (and resumePending) forever. An explicit caller budget still wins, and
     // every other method retains its ordinary request deadline.
     const timeoutMs =
-      opts?.timeoutMs ?? (method === "thread/resume" ? RESUME_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
+      opts?.timeoutMs ?? (COMPLETION_OWNED_METHODS.has(method) ? RESUME_REQUEST_TIMEOUT_MS : DEFAULT_REQUEST_TIMEOUT_MS);
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -691,7 +699,7 @@ export class AppwireClient {
     for (const slot of this.pending.values()) {
       // The hub answers ping outside its serial queue. A pending Resume must
       // not suppress silent-drop detection for its completion-owned lifetime.
-      if (slot.method !== "ping" && slot.method !== "thread/resume") return true;
+      if (slot.method !== "ping" && !COMPLETION_OWNED_METHODS.has(slot.method)) return true;
     }
     return false;
   }
