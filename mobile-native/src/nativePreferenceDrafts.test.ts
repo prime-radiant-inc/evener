@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { fakeDraftBackend } from "./draftBackend.testkit";
 import { nativeKeybindingDrafts } from "./nativePreferenceDrafts";
 
 // The keybindings store's discardClassified and its settle paths (a save,
@@ -8,36 +9,11 @@ import { nativeKeybindingDrafts } from "./nativePreferenceDrafts";
 // assume its own write succeeded. nativeKeybindingDrafts must propagate the
 // backend's own deleteIf/replaceIf verdict faithfully, never silently
 // reporting a refusal as if it had written the record (or vice versa).
-function backend() {
-	const store = new Map<string, unknown>();
-	return {
-		store,
-		createId: () => "draft-1",
-		get: (key: string) => store.get(key) ?? null,
-		set: (key: string, value: unknown) => {
-			store.set(key, value);
-		},
-		delete: (key: string) => {
-			store.delete(key);
-		},
-		deleteIf: (key: string, value: unknown): boolean => {
-			if (JSON.stringify(store.get(key)) !== JSON.stringify(value)) return false;
-			store.delete(key);
-			return true;
-		},
-		replaceIf: (key: string, expected: unknown, next: unknown): boolean => {
-			if (JSON.stringify(store.get(key)) !== JSON.stringify(expected)) return false;
-			store.set(key, next);
-			return true;
-		},
-	};
-}
-
 const checkpoint = { id: "draft-1", baseRevision: 3, rules: [], writeUncertain: false };
 
 describe("nativeKeybindingDrafts", () => {
 	it("propagates a refused deleteIf as false through removeIf, leaving the stored record intact", () => {
-		const b = backend();
+		const b = fakeDraftBackend();
 		b.store.set("evener.native.keybinding-draft.hub", { ...checkpoint, id: "someone-else" });
 		const storage = nativeKeybindingDrafts("hub", b);
 
@@ -46,7 +22,7 @@ describe("nativeKeybindingDrafts", () => {
 	});
 
 	it("propagates a successful deleteIf as true through removeIf, clearing the stored record", () => {
-		const b = backend();
+		const b = fakeDraftBackend();
 		b.store.set("evener.native.keybinding-draft.hub", checkpoint);
 		const storage = nativeKeybindingDrafts("hub", b);
 
@@ -55,7 +31,7 @@ describe("nativeKeybindingDrafts", () => {
 	});
 
 	it("propagates a refused replaceIf as false through replaceIf, leaving the stored record intact", () => {
-		const b = backend();
+		const b = fakeDraftBackend();
 		const someoneElse = { ...checkpoint, id: "someone-else" };
 		b.store.set("evener.native.keybinding-draft.hub", someoneElse);
 		const storage = nativeKeybindingDrafts("hub", b);
@@ -65,7 +41,7 @@ describe("nativeKeybindingDrafts", () => {
 	});
 
 	it("propagates a successful replaceIf as true through replaceIf, writing the new record", () => {
-		const b = backend();
+		const b = fakeDraftBackend();
 		b.store.set("evener.native.keybinding-draft.hub", checkpoint);
 		const storage = nativeKeybindingDrafts("hub", b);
 		const next = { ...checkpoint, writeUncertain: false };

@@ -1,32 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
+import { fakeDraftBackend } from "./draftBackend.testkit";
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
 import { TranscriptDraftRepository } from "./preferenceDraftRepository";
 
 const config = makeTranscriptDisplayConfig();
 const checkpoint = { id: "old", baseRevision: 4, config, writeUncertain: true };
-function backend() {
-	const values = new Map<string, unknown>();
-	let id = 0;
-	return {
-		createId: () => String(++id),
-		get: (key: string) => values.get(key),
-		set: (key: string, value: unknown) => {
-			values.set(key, structuredClone(value));
-		},
-		delete: (key: string) => {
-			values.delete(key);
-		},
-		deleteIf: (key: string, value: unknown): boolean => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
-			values.delete(key);
-			return true;
-		},
-	};
-}
 describe("transcript draft persistence", () => {
 	it("restores normalized checkpoints and keeps hubs separate", () => {
-		const disk = backend();
+		const disk = fakeDraftBackend();
 		const a = new TranscriptDraftRepository(nativeTranscriptDrafts("a", disk));
 		const b = new TranscriptDraftRepository(nativeTranscriptDrafts("b", disk));
 		a.save(checkpoint);
@@ -37,7 +19,7 @@ describe("transcript draft persistence", () => {
 		expect(b.load()?.baseRevision).toBe(9);
 	});
 	it("rejects invalid checkpoints rather than treating corrupt data as an empty draft", () => {
-		const storage = nativeTranscriptDrafts("hub", backend());
+		const storage = nativeTranscriptDrafts("hub", fakeDraftBackend());
 		const repository = new TranscriptDraftRepository(storage);
 		storage.save({ ...checkpoint, id: "" });
 		expect(() => repository.load()).toThrow(
@@ -55,7 +37,7 @@ describe("transcript draft persistence", () => {
 	});
 	it("conditionally removes only the acknowledged operation even for identical proposals", () => {
 		const repository = new TranscriptDraftRepository(
-			nativeTranscriptDrafts("hub", backend()),
+			nativeTranscriptDrafts("hub", fakeDraftBackend()),
 		);
 		repository.save(checkpoint);
 		repository.save({ ...checkpoint, id: "new" });

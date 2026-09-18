@@ -335,27 +335,11 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	);
 });
 
+import { fakeDraftBackend } from "./draftBackend.testkit";
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
-import type { TranscriptDraftCheckpoint } from "./preferenceDraftRepository";
 
 function draftStorage() {
-	const values = new Map<string, unknown>();
-	let id = 0;
-	const backend = {
-		get: (key: string) => values.get(key),
-		set: (key: string, value: unknown) => {
-			values.set(key, structuredClone(value));
-		},
-		delete: (key: string) => {
-			values.delete(key);
-		},
-		createId: () => String(++id),
-		deleteIf: (key: string, value: TranscriptDraftCheckpoint): boolean => {
-			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
-			values.delete(key);
-			return true;
-		},
-	};
+	const backend = fakeDraftBackend();
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
 }
 function persistedPreferences(storage = draftStorage().storage) {
