@@ -953,7 +953,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (!stillMine()) return;
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
-      applyHubOverrides(payload, () => ({ hubLoading: false, ...settledWrite(payload, writeSerialAtStart) }));
+      // hubLoading is cleared unconditionally, not only through the thunk:
+      // applyHubOverrides never resolves `extra` for a stale payload (its
+      // side effect must not run for a payload it is about to ignore), so a
+      // stale GET would otherwise leave hubLoading true forever.
+      const applied = applyHubOverrides(payload, () => ({
+        hubLoading: false,
+        ...settledWrite(payload, writeSerialAtStart),
+      }));
+      if (!applied) setState({ hubLoading: false });
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
@@ -1235,7 +1243,17 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // would leave editing disabled over bindings that are already live.
       const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
       if (applied !== undefined) {
-        const applyFailure = settleWrite(applied, checkpoint, false, { saving: false, writeUncertain: false });
+        // Same posture as the confirmed-reply path below: draftConflict is
+        // forced from newerExternal rather than left to applyHubOverrides'
+        // own staleDraft check, which reads state.draft BEFORE settleWrite
+        // clears it and would misread this write's own confirmed revision
+        // (still the pre-write draft's revision at that point) as a conflict.
+        const newerExternal = getState().revision > applied.revision;
+        const applyFailure = settleWrite(applied, checkpoint, newerExternal, {
+          saving: false,
+          writeUncertain: false,
+          draftConflict: newerExternal,
+        });
         if (applyFailure !== null) throw applyFailure;
         return applied;
       }
