@@ -1120,11 +1120,12 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 				Shutdown:     true,
 				ChangeModel:  true,
 				// Queue advertises harness support, not a turn in flight (#1375):
-				// the daemon it mirrors answers queueFunc != nil && !closed, so a
-				// live idle entry advertises it exactly as Steer and Interrupt do.
-				// Folding the status in here made ListThreads disagree with
-				// ThreadRead and the status frames for the same session.
-				Queue:       !item.ReadOnlyAlias,
+				// the daemon it mirrors answers queueFunc != nil && !closed, so an
+				// open idle entry advertises it exactly as Steer and Interrupt do.
+				// Folding `active` in here made ListThreads disagree with
+				// ThreadRead and the status frames for the same session; a closed
+				// entry is still withheld, as the daemon withholds it.
+				Queue:       !item.ReadOnlyAlias && status != appwire.ThreadStatusClosed,
 				Goal:        true,
 				SharedNotes: !item.ReadOnlyAlias,
 				Rename:      true,

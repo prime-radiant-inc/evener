@@ -572,6 +572,7 @@ func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing
 		return []LocalDaemonEntry{
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/idle", ThreadID: "th_idle", SessionID: "sess_idle"}, Status: "idle"},
 			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/processing", ThreadID: "th_processing", SessionID: "sess_processing"}, Status: appwire.ThreadStatusActive},
+			{Entry: rendezvous.Entry{Protocol: appwire.ProtocolVersion, Endpoint: "ws://127.0.0.1/closed", ThreadID: "th_closed", SessionID: "sess_closed"}, Status: appwire.ThreadStatusClosed},
 		}
 	}, nil)
 
@@ -579,20 +580,26 @@ func fuzzScenarioLocalDaemonSourceListAdvertisesQueueAsHarnessSupport(t *testing
 	if err != nil {
 		t.Fatalf("ListThreads: %v", err)
 	}
-	if len(resp.Data) != 2 {
-		t.Fatalf("threads len=%d, want 2: %+v", len(resp.Data), resp.Data)
+	if len(resp.Data) != 3 {
+		t.Fatalf("threads len=%d, want 3: %+v", len(resp.Data), resp.Data)
 	}
 	capsByID := map[string]appwire.ThreadCapabilities{}
 	for _, thread := range resp.Data {
 		capsByID[thread.ID] = thread.Evener.Capabilities
 	}
-	// Queue is harness support, not "a turn in flight" (#1375): every live
+	// Queue is harness support, not "a turn in flight" (#1375): every open
 	// entry advertises it, and the client applies the status. A status-folded
 	// projection here made ListThreads disagree with ThreadRead for one session.
 	for _, id := range []string{"th_idle", "th_processing"} {
 		if !capsByID[id].Queue {
 			t.Fatalf("%s did not advertise the queue capability: %+v", id, capsByID[id])
 		}
+	}
+	// A closed entry is the exception: the daemon withholds queue support once
+	// closed (queueFunc != nil && !closed), so the roster must too, or the same
+	// session reads differently from ListThreads and from ThreadRead.
+	if capsByID["th_closed"].Queue {
+		t.Fatalf("closed entry advertised the queue capability: %+v", capsByID["th_closed"])
 	}
 }
 

@@ -180,6 +180,37 @@ describe("deriveSendQueueAvailability", () => {
     ).toEqual({ canSend: false, canQueue: false });
   });
 
+  // The veto is about a LIVE daemon's answer, not about the "idle" spelling:
+  // warning and systemError are live statuses too (appStatus), so a false queue
+  // bit there is the same "no seam" answer and must not fall through to the
+  // queue. A live status table that named only idle/awaiting left these two
+  // firing a turn/queue the daemon can only answer Unavailable.
+  test.each(["awaiting", "warning", "systemError"])(
+    "tier 6: a live %s snapshot with queue:false and a pending send is both-false",
+    (statusType) => {
+      expect(
+        deriveSendQueueAvailability({
+          statusType,
+          capabilities: daemonIdleCapabilities({ queue: false }),
+          hasPendingSend: true,
+        }),
+      ).toEqual({ canSend: false, canQueue: false });
+    },
+  );
+
+  test.each(["awaiting", "warning", "systemError"])(
+    "tier 6: the same live %s snapshot on a queue-capable harness still queues",
+    (statusType) => {
+      expect(
+        deriveSendQueueAvailability({
+          statusType,
+          capabilities: daemonIdleCapabilities(),
+          hasPendingSend: true,
+        }),
+      ).toEqual({ canSend: false, canQueue: true });
+    },
+  );
+
   test("tier 6 leaves tier 5 alone: the same idle capabilities with no pending send are still plain-send", () => {
     expect(
       deriveSendQueueAvailability({

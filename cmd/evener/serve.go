@@ -1570,9 +1570,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
-	// /interrupt actually cancels the in-flight turn. The cancel is
-	// cleared after the turn finishes so capabilities.interrupt only
-	// reports true while a turn is in flight.
+	// /interrupt actually cancels the in-flight turn. Clearing it after the
+	// turn finishes answers "is a cancel armed right now" and nothing more:
+	// capabilities.interrupt reports the harness's support (the sticky
+	// interruptWired, #1375), so a cleared cancel does not withdraw Stop.
 	inputLoopDone := make(chan struct{})
 	go func() {
 		defer close(inputLoopDone)

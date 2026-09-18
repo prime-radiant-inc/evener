@@ -1523,8 +1523,9 @@ test("a second message composed before the first turn's status frame arrives que
   await waitFor(() => expect(fake.calls.some((c) => c.method === "turn/start")).toBe(true));
 
   await user.type(textarea(), "second message");
-  // Still composable: an idle queue:false means "no turn to queue behind", and
-  // must never be read as "this session takes no input".
+  // Still composable: an idle snapshot on a queue-capable harness carries
+  // queue:true (#1375), so the second message routes to turn/queue rather than
+  // bouncing as a second turn/start.
   await waitFor(() => expect(submitButton().disabled).toBe(false));
   await user.click(submitButton());
 

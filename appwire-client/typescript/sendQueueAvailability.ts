@@ -7,7 +7,9 @@
 //   2. [DROPPED - see below]
 //   3. active && capabilities.queue === false explicitly -> both false
 //   4. active                    -> send=false, queue=true (queue-mode default)
-//   6. hasPendingSend            -> send=false, queue=true (see tier 6 below)
+//   6. hasPendingSend            -> send=false, queue=true (see tier 6 below);
+//                                  both false when the live snapshot's queue
+//                                  bit is false (the harness has no seam)
 //   5. else (idle/awaiting/...)  -> send=true,  queue=false (plain-send default)
 //
 // Tier 6 is this codebase's own addition and sits BETWEEN 4 and 5 rather than
@@ -75,6 +77,15 @@ const BOTH_UNAVAILABLE: SendQueueAvailability = { canSend: false, canQueue: fals
 const QUEUE_MODE: SendQueueAvailability = { canSend: false, canQueue: true };
 const PLAIN_SEND_MODE: SendQueueAvailability = { canSend: true, canQueue: false };
 
+// The statuses a LIVE daemon can be answering under, and therefore the ones
+// whose capability set is that daemon's own answer rather than a hub stub's.
+// They are exactly what appStatus can report for an open session below the
+// active/terminal cases handled above and below: idle, awaiting, and the two
+// degraded-but-live states warning and systemError. Everything else reaching
+// the pending-send tier - a "notLoaded" cold stub, a future unknown status - is
+// not a daemon's answer, so its false queue bit cannot be read as "no seam".
+const LIVE_SNAPSHOT_STATUSES = new Set(["idle", "awaiting", "warning", "systemError"]);
+
 export function deriveSendQueueAvailability({
   statusType,
   capabilities,
@@ -118,17 +129,19 @@ export function deriveSendQueueAvailability({
   // It is a tier of its own, ABOVE the capability veto rather than inside the
   // active branch, so it answers the question the active branch would answer
   // before the status says the turn is live. Queue advertises harness support
-  // alone (#1375), so for a LIVE idle/awaiting snapshot its bit is the
-  // harness's own answer: true still routes to the queue, and false means this
-  // harness has no queue seam, where turn/queue could only answer Unavailable.
-  // There this tier reports the both-false the active branch would report.
+  // alone (#1375), so for a LIVE snapshot - any status in
+  // LIVE_SNAPSHOT_STATUSES, not just idle - its bit is the harness's own
+  // answer: true still routes to the queue, and false means this harness has no
+  // queue seam, where turn/queue could only answer Unavailable. There this tier
+  // reports the both-false the active branch would report.
   //
-  // Every other status reaching here is a cold thread the hub will RESUME on
-  // the first turn/start (app_threadread.go's pastThreadCapabilities): the set
-  // in hand is the hub's stub, not a daemon's answer, and the statuses this
-  // table does not know cannot be claimed as live either. For both the false
-  // bit says nothing about the daemon the turn is about to wake, so the queue
-  // this tier exists for is still the route.
+  // Every other status reaching here - the "notLoaded" cold stub, a status this
+  // table does not know - is not a daemon's answer: the cold case is a thread
+  // the hub will RESUME on the first turn/start (app_threadread.go's
+  // pastThreadCapabilities), whose set in hand is the hub's stub, and a future
+  // status cannot be claimed as live. For both the false bit says nothing about
+  // the daemon the turn is about to wake, so the queue this tier exists for is
+  // still the route.
   //
   // The queue lands with no turn id because there is no turn id to send:
   // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/
@@ -142,7 +155,7 @@ export function deriveSendQueueAvailability({
   // reason - see its own comment for how a session the status calls finished
   // comes to be holding one of this client's sends.
   if (hasPendingSend) {
-    const liveSnapshot = statusType === "idle" || statusType === "awaiting";
+    const liveSnapshot = LIVE_SNAPSHOT_STATUSES.has(statusType);
     return liveSnapshot && capabilities.queue === false ? BOTH_UNAVAILABLE : QUEUE_MODE;
   }
 

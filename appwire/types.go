@@ -998,9 +998,10 @@ type ThreadCapabilities struct {
 	// ChangeVisionModel advertises support for thread/vision-model/set. True for
 	// a live evener session whose daemon wires a vision-model hook.
 	ChangeVisionModel bool `json:"changeVisionModel"`
-	// Queue advertises support for turn/queue (kata 111a). True when a turn
-	// is currently in flight and the session can accept enqueued user
-	// messages for processing after the active turn completes.
+	// Queue advertises harness support for turn/queue (kata 111a, #1375): true
+	// when the daemon wires a queue seam and the thread is not closed, not when
+	// a turn happens to be in flight. The client applies the status, so
+	// turn/queue is still meaningful only mid-turn.
 	Queue bool `json:"queue"`
 	// Goal advertises support for goal/set (the /goal objective engine). True
 	// for a evener session that can accept a goal; false for sources that do not
@@ -2530,14 +2531,14 @@ type ThreadStatusChangedParams struct {
 	AskPending *bool `json:"askPending,omitempty"`
 	// Capabilities carries the action set that goes WITH the status being
 	// announced (see EvenerThread.Capabilities), for the same reason the failure
-	// count rides along above: it is otherwise snapshot-only, and three of its
-	// entries — Send, Steer, Queue — are defined by whether a turn is in
-	// flight. A client that read the thread while it was idle therefore holds
-	// steer=false/queue=false for the whole turn that follows, and renders a
-	// session it KNOWS is active with no Steer, no Stop and a dead Send until
-	// the page is reloaded (kata 06t8). A status transition is exactly when
-	// those flip, so the set refreshes there and nowhere else — no polling, no
-	// re-read of the transcript.
+	// count rides along above: it is otherwise snapshot-only, and Send is the
+	// entry defined by whether a turn is in flight (Steer, Interrupt and Queue
+	// advertise harness support and do not move with the status, #1363/#1375).
+	// A client that read the thread while it was idle therefore holds send=true
+	// for the whole turn that follows, and renders a session it KNOWS is active
+	// with a Send it must not offer until the page is reloaded (kata 06t8). A
+	// status transition is exactly when Send flips, so the set refreshes there
+	// and nowhere else — no polling, no re-read of the transcript.
 	//
 	// ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
 	// threads may omit capabilities their source does not advertise. A client
