@@ -12,15 +12,36 @@ export interface NativePreferenceDraftBackend {
 	get(key: string): unknown;
 	set(key: string, value: unknown): void;
 	delete(key: string): void;
-	deleteIf(
+	/** Removes the record at `key` only if it is still named by `identity`;
+	 * reports whether it did. `identity` is usually a checkpoint this
+	 * backend itself produced, but the unreadable-record recovery also hands
+	 * it the RAW value get() returned - typed `unknown`, not either
+	 * checkpoint shape, so a conforming backend never assumes it can decode
+	 * what it is given. */
+	deleteIf(key: string, identity: unknown): boolean;
+}
+
+/** The keybindings draft port settles atomically (a save that adopts a
+ * checkpoint replaced under it): replaceIf is that port's own requirement,
+ * not every NativePreferenceDraftBackend's - nativeTranscriptDrafts' backend
+ * never calls it (the pre-migration transcript design never settles
+ * atomically), so it stays on this narrower interface instead of widening
+ * the shared one for a method only one consumer needs. */
+export interface NativeKeybindingDraftBackend extends NativePreferenceDraftBackend {
+	/** Inserts `checkpoint` at `key` only if nothing is stored there; reports
+	 * whether it did. The atomic twin of replaceIf for a record that does not
+	 * exist yet - see DraftPort.insertIfAbsent's own comment. */
+	insertIfAbsent(key: string, checkpoint: KeybindingDraftCheckpoint): boolean;
+	replaceIf(
 		key: string,
-		checkpoint: TranscriptDraftCheckpoint | KeybindingDraftCheckpoint,
-	): void;
+		expected: unknown,
+		next: KeybindingDraftCheckpoint,
+	): boolean;
 }
 
 export function nativeKeybindingDrafts(
 	hubId: string,
-	backend: NativePreferenceDraftBackend,
+	backend: NativeKeybindingDraftBackend,
 ): KeybindingDraftStorage {
 	if (!hubId.trim())
 		throw new Error("A hub id is required for preference drafts.");
@@ -29,7 +50,9 @@ export function nativeKeybindingDrafts(
 		createId: () => backend.createId(),
 		load: () => backend.get(key) ?? null,
 		save: (checkpoint) => backend.set(key, checkpoint),
+		insertIfAbsent: (checkpoint) => backend.insertIfAbsent(key, checkpoint),
 		removeIf: (checkpoint) => backend.deleteIf(key, checkpoint),
+		replaceIf: (expected, next) => backend.replaceIf(key, expected, next),
 	};
 }
 
