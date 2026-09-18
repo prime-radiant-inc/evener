@@ -350,9 +350,10 @@ function draftStorage() {
 			values.delete(key);
 		},
 		createId: () => String(++id),
-		deleteIf: (key: string, value: TranscriptDraftCheckpoint) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
+		deleteIf: (key: string, value: TranscriptDraftCheckpoint): boolean => {
+			if (JSON.stringify(values.get(key)) !== JSON.stringify(value)) return false;
+			values.delete(key);
+			return true;
 		},
 	};
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
