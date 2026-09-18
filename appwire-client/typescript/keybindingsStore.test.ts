@@ -359,6 +359,31 @@ describe("the checkpointed draft editor", () => {
     expect(drafts.stored()).toBeNull();
   });
 
+  test.each<[string, KeybindingsOverrides]>([
+    ["carries a loadError", { ...payload(4, rules), loadError: "boom" }],
+    ["reports a revision below the one requested", payload(2, rules)],
+  ])(
+    "a post-rename durable failure whose carried applied payload %s is not settled as a confirmed outcome",
+    async (_name, applied) => {
+      const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+      const client = clientServing(3);
+      client.on(patchMethod, () => {
+        throw new WireError("sync keybindings state directory: boom", -32603, {
+          evenerErrorInfo: "keybindingsPostRename",
+          applied,
+        });
+      });
+      const store = await readyStore(client, { drafts: drafts.storage });
+
+      await expect(store.getState().saveDraft(rules)).rejects.toThrow();
+
+      // Left uncertain (the "no reply" posture), never reported applied: the
+      // same semantic check the confirmed-reply path runs on its own reply.
+      expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true, draftConflict: true });
+      expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules, writeUncertain: true });
+    },
+  );
+
   // Both rejection branches below apply their payload through
   // applyHubOverridesSettling, the same as the main post-reply sequence: a
   // reconciler throw (a wedged registry that has already rolled back) still
@@ -540,6 +565,26 @@ describe("the checkpointed draft editor", () => {
     reply.resolve(payload(1, []));
     await refresh;
     expect(store.getState()).toMatchObject({ hubLoading: false, loaded: false, revision: 0 });
+  });
+
+  test("patchOverrides is refused while a checkpointed save is in flight", async () => {
+    const client = clientServing(3);
+    const reply = deferred<KeybindingsOverrides>();
+    client.on(patchMethod, () => reply.promise);
+    const store = await readyStore(client, { drafts: memoryDraftStorage<KeybindingDraftCheckpoint>().storage });
+
+    const save = store.getState().saveDraft(rules);
+    await vi.waitFor(() => expect(store.getState().saving).toBe(true));
+
+    // Both write paths take the same write token: starting a direct write
+    // here would claim a new one, fence the checkpointed save's own reply
+    // out as superseded, and leave `saving` stuck true - nothing else would
+    // ever clear it.
+    await expect(store.getState().patchOverrides(rules)).rejects.toThrow("unavailable");
+
+    reply.resolve(payload(4, rules));
+    await save;
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: false });
   });
 
   test("discardDraft removes the checkpoint editDraft saved through a port that compares JSON bytes", async () => {

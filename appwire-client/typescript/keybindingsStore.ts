@@ -1068,7 +1068,13 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // so a write QUEUED while supported can reach this point, as can one
       // composed while unsupported. Both throw without hubError.
       if (state.hubSupport === "unsupported") throw new Error(UNAVAILABLE_MESSAGE);
-      if (state.hubSupport !== "supported" || state.loaded !== true || state.hubLoading) {
+      if (
+        state.hubSupport !== "supported" ||
+        state.loaded !== true ||
+        state.hubLoading ||
+        state.saving ||
+        state.writeUncertain
+      ) {
         // `loaded` is the defense-in-depth half of the editor's gate: the UI
         // is not the store's contract, and a patch composed from a STALE
         // generation's raw set (client replaced, refresh not yet landed) would
@@ -1076,6 +1082,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
         // `hubLoading` is the same race WITHIN one generation: an in-flight
         // refresh is about to land a payload whose revision may differ from
         // the one a concurrent PATCH would send as expectedRevision.
+        // `saving`/`writeUncertain` are the checkpointed editor's own write in
+        // flight (or left with an unknown outcome): both write paths share
+        // one write token, so starting here would claim a new one, fence the
+        // checkpointed write's own reply out as superseded, and strand
+        // `saving` true forever - nothing else would ever clear it.
         setState({ hubError: UNAVAILABLE_MESSAGE });
         throw new Error(UNAVAILABLE_MESSAGE);
       }
@@ -1177,11 +1188,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * `newerExternal` re-marks it settled in place (persistDraft) instead of
    * removing it, because the proposal stays for review against a revision
    * that landed while this write was out. `settled` is the caller's own
-   * publish alongside the apply: the post-rename caller deliberately omits
-   * draftConflict so applyHubOverrides' own staleDraft check decides it,
-   * while the confirmed-reply caller forces it (true for newerExternal,
-   * false otherwise) - the draft it is judging against has not been
-   * cleared yet at that point, so staleDraft alone would misread the very
+   * publish alongside the apply: BOTH callers force draftConflict from their
+   * own newerExternal (true for newerExternal, false otherwise) rather than
+   * leaving it to applyHubOverrides' own staleDraft check, which reads
+   * state.draft BEFORE this call clears it and would misread the very
    * revision this write just confirmed as a conflict. Returns the
    * reconciler's own throw, if any, for the caller to re-throw once this
    * has run. */
@@ -1241,8 +1251,15 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // every client) - the same known-outcome rule patchOverrides follows.
       // Apply locally and report success: surfacing writeUncertain here
       // would leave editing disabled over bindings that are already live.
+      // Semantic validation matches the confirmed-reply path below: a
+      // structurally valid payload the hub could never actually send for
+      // THIS write (loadError, or a revision below the one requested) is
+      // hub-sourced malformation, not a confirmed outcome - settling onto it
+      // would report a version-skewed or load-failed payload as a
+      // successful save. Falling through leaves the checkpoint uncertain
+      // (the "no reply" branch below) rather than reporting it applied.
       const applied = rejectionPayload(error, "keybindingsPostRename", "applied");
-      if (applied !== undefined) {
+      if (applied !== undefined && applied.loadError === undefined && applied.revision >= revision) {
         // Same posture as the confirmed-reply path below: draftConflict is
         // forced from newerExternal rather than left to applyHubOverrides'
         // own staleDraft check, which reads state.draft BEFORE settleWrite
