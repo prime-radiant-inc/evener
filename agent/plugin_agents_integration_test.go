@@ -507,8 +507,8 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 
 	// The subagent should only have read_file, grep, the recovery reader required
 	// by those generically limited text tools, and the tools every subagent always
-	// keeps: task_list, compact_context, and communicate.
-	allowed := map[string]bool{"read_file": true, "grep": true, "read_transcript": true, "task_list": true, "compact_context": true, "communicate": true}
+	// keeps: task_list, compact_context, use_skill, and communicate.
+	allowed := map[string]bool{"read_file": true, "grep": true, "read_transcript": true, "task_list": true, "compact_context": true, "use_skill": true, "communicate": true}
 
 	// Check tool names against the allowed set.
 	// Note: OpenAI profile maps tool names (shell->exec_command, etc.), so we
@@ -524,7 +524,7 @@ func TestSpawnAgent_PluginAgentType_RestrictsTools(t *testing.T) {
 	regNames := sub.sess.reg.Names()
 	for _, name := range regNames {
 		if !allowed[name] {
-			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, read_transcript, task_list, compact_context, communicate)", name)
+			t.Errorf("unexpected tool %q in restricted subagent (allowed: read_file, grep, read_transcript, task_list, compact_context, use_skill, communicate)", name)
 		}
 	}
 	// Ensure the allowed tools are present
