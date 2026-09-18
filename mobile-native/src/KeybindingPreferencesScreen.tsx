@@ -185,7 +185,22 @@ export function KeybindingPreferencesScreen({
 									!!domain.loading || !!domain.saving || !!domain.writeUncertain
 								}
 								onPress={() => {
-									if (model) run(() => model.discardKeybindingsDraft());
+									if (model) {
+										run(() => model.discardKeybindingsDraft());
+										return;
+									}
+									// No live model (offline, or the connection dropped after
+									// this record was shown): the store-free path
+									// discardStoredKeybindingDraft documents for exactly this
+									// case, so the action still works instead of silently
+									// doing nothing.
+									try {
+										preferences.discardUnreadableKeybindingsDraft();
+									} catch {
+										setError(
+											"The change could not be completed. Check current shortcuts and review your changes.",
+										);
+									}
 								}}
 							>
 								Discard unreadable draft

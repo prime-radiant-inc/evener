@@ -7,6 +7,7 @@ import {
 	useEffect,
 	useState,
 } from "react";
+import { discardStoredKeybindingDraft } from "@evener/appwire-client";
 import type { AppwireClient, TranscriptDisplayConfigV1 } from "@evener/appwire-client";
 import { bindNativePreferences } from "./bindNativePreferences";
 import { useConnection } from "./ConnectionProvider";
@@ -25,6 +26,13 @@ interface Preferences {
 	snapshot: NativePreferencesSnapshot | null;
 	config: TranscriptDisplayConfigV1 | null;
 	connected: boolean;
+	/** Clears an unreadable keybindings draft record with no live model
+	 * required - the store-free path discardStoredKeybindingDraft documents
+	 * for a host with no connection to build one from (offline, or the
+	 * connection dropped after the record was shown). Returns whether
+	 * anything was actually removed; null when there is no hub to discard
+	 * for. */
+	discardUnreadableKeybindingsDraft(): boolean | null;
 }
 const Context = createContext<Preferences | null>(null);
 /** Synchronous compare cannot interleave with a newer model's checkpoint,
@@ -116,6 +124,31 @@ export function NativePreferencesProvider({
 		};
 	}, [client, hubId]);
 	const selected = bound?.hubId === hubId ? bound : null;
+	const discardUnreadableKeybindingsDraft = (): boolean | null => {
+		if (!hubId) return null;
+		const removed = discardStoredKeybindingDraft(nativeKeybindingDrafts(hubId, backend));
+		// No live model to publish through (offline, or the connection
+		// dropped after the record was shown) - the stale snapshot
+		// NativePreferencesProvider otherwise keeps showing is updated here
+		// directly, same fields restoreDraft would publish on a live store.
+		if (removed)
+			setBound((previous) =>
+				previous?.hubId === hubId
+					? {
+							...previous,
+							snapshot: {
+								...previous.snapshot,
+								keybindings: {
+									...previous.snapshot.keybindings,
+									draftUnreadable: false,
+									storageUnavailable: false,
+								},
+							},
+						}
+					: previous,
+			);
+		return removed;
+	};
 	return (
 		<Context.Provider
 			value={{
@@ -124,6 +157,7 @@ export function NativePreferencesProvider({
 				snapshot: selected?.snapshot ?? null,
 				config: selected?.config ?? null,
 				connected: !!client && state === "ready" && selected?.client === client,
+				discardUnreadableKeybindingsDraft,
 			}}
 		>
 			{children}
