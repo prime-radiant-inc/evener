@@ -242,7 +242,16 @@ load_aware_cgroup_hierarchy_cores() {
 	_law_version=${3-v2}
 
 	_law_relpath="$(load_aware_cgroup_relpath "$_law_cg" "$_law_version")"
-	_law_mpoint="$(load_aware_cgroup_mount "$_law_mi" "$_law_version")"
+	# Command substitution strips trailing newlines, and a decoded mountinfo
+	# path can genuinely end in one (a mount point ending in the escape \012).
+	# Carry such a path out of its capture with a trailing sentinel and remove
+	# exactly one byte: appending one and stripping one preserves the value
+	# whether or not it ends in a newline, and whether or not the path itself
+	# ends in the sentinel. Producers that emit a line terminator (awk, sed,
+	# dirname) need none: the stripped newline there is the terminator, and the
+	# field itself cannot hold one.
+	_law_mpoint="$(load_aware_cgroup_mount "$_law_mi" "$_law_version"; printf X)"
+	_law_mpoint=${_law_mpoint%X}
 	if [ -z "$_law_relpath" ] || [ -z "$_law_mpoint" ]; then
 		printf ''
 		return 0
@@ -261,7 +270,8 @@ load_aware_cgroup_hierarchy_cores() {
 	# the part the mount's root field already covers is not beneath the mount
 	# point and must be stripped before joining. A root of "/" is the hierarchy
 	# root, where the two readings coincide and this one adds nothing.
-	_law_root="$(load_aware_cgroup_mount_root "$_law_mi" "$_law_version")"
+	_law_root="$(load_aware_cgroup_mount_root "$_law_mi" "$_law_version"; printf X)"
+	_law_root=${_law_root%X}
 	_law_root=${_law_root%/}
 	_law_absolute=
 	case "$_law_root" in

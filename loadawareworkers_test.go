@@ -419,6 +419,79 @@ func TestLoadAwareCgroupMountDecodesEscapes(t *testing.T) {
 	}
 }
 
+// TestLoadAwareCgroupTrailingNewlinePaths covers a mountinfo path that ends in
+// a newline (escaped as \012). Command substitution strips trailing newlines,
+// so a decoded path must be carried with a sentinel through every capture or
+// the newline is dropped, the directory it names cannot be read, and the walk
+// climbs past the quota the mount actually declares.
+//
+// The membership path cannot express a trailing newline the same way: the
+// kernel writes /proc/self/cgroup one path per line, so a newline inside that
+// path is not parseable by any line-oriented reader. The mount point and root
+// are the fields mountinfo escapes for exactly this reason.
+func TestLoadAwareCgroupTrailingNewlinePaths(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		dir    string
+		root   string
+		member string
+		files  map[string]string
+		want   string
+	}{
+		{
+			name:   "newline at the end of the mount point",
+			dir:    "cg\n",
+			root:   "/",
+			member: "/",
+			files:  map[string]string{"": "200000 100000\n"},
+			want:   "2",
+		},
+		{
+			name:   "newline at the end of the mount point with an absolute membership",
+			dir:    "cg\n",
+			root:   "/delegated",
+			member: "/delegated/child",
+			files: map[string]string{
+				"":      "max 100000\n",
+				"child": "100000 100000\n",
+			},
+			want: "1",
+		},
+		{
+			name:   "newline mount point survives the walk up to the mount point",
+			dir:    "cg\n",
+			root:   "/",
+			member: "/leaf",
+			files: map[string]string{
+				"":     "400000 100000\n",
+				"leaf": "100000 100000\n",
+			},
+			want: "1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			mount := filepath.Join(root, tc.dir)
+			for rel, content := range tc.files {
+				writeFixtureFile(t, filepath.Join(mount, rel, "cpu.max"), content)
+			}
+			membership := filepath.Join(root, "self-cgroup")
+			writeFixtureFile(t, membership, "0::"+tc.member+"\n")
+			mountinfo := filepath.Join(root, "mountinfo")
+			writeFixtureFile(t, mountinfo, fmt.Sprintf("29 23 0:26 %s %s rw - cgroup2 cgroup2 rw\n",
+				tc.root, mountinfoEscaped(mount)))
+
+			got := runLoadAwareHelper(t, `load_aware_cgroup_cores_from "$@"`, membership, mountinfo)
+			if got != tc.want {
+				t.Errorf("load_aware_cgroup_cores_from = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestRunModuleTestsUsesLoadAwareBudgets guards the wiring: the Go gate's
 // parallelism budgets must size to spare capacity through this library rather
 // than a fixed number, or the helper is dead code and a fleet of concurrent
