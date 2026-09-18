@@ -118,6 +118,8 @@
     "keybindingRegistry.ts",
     "keybindingValidation.ts",
     "keybindingsStore.ts",
-    "readyGenerationFence.ts"
+    "readyGenerationFence.ts",
+    "draftCheckpointPort.ts",
+    "settingsHubGeneration.ts"
   ]
 }
