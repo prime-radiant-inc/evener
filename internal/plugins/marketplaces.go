@@ -321,8 +321,9 @@ func (m *Manager) RemoveMarketplace(ctx context.Context, name string) error {
 	// git->directory re-source failed to remove, say. Sweep it whatever the
 	// recorded kind, or it outlives the marketplace under a name nothing
 	// records and blocks that name for a later rename.
-	if err := marketplaceRemoveAll(m.marketplaceDir(name)); err != nil {
-		_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", m.marketplaceDir(name), err)
+	clone := m.marketplaceDir(name)
+	if err := marketplaceRemoveAll(clone); err != nil {
+		_, _ = fmt.Fprintf(m.stderr(), "warning: removing marketplace clone %s: %v\n", clone, err)
 	}
 	delete(mk, name)
 	return m.saveMarketplaces(mk)
