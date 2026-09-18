@@ -109,6 +109,7 @@ func FuzzHubcoreScenarios(f *testing.F) {
 		fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold,
 		fuzzScenarioPastIndex_FoldReplacesStalerIndexedRow,
 		fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename,
+		fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowWithoutTimestampChange,
 		fuzzScenarioPastIndex_IncrementalPublishLeavesUnchangedRows,
 		fuzzScenarioPastIndex_IncrementalPublishRecoversFromLostDB,
 		fuzzScenarioPastIndex_IncrementalPublishRemovesRows,

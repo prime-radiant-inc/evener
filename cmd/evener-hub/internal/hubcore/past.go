@@ -9,6 +9,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -93,6 +94,10 @@ type PastIndex struct {
 	// fingerprint is the content hash from the most recent Rebuild (see
 	// contentFingerprint), used to gate onChange against no-op rebuilds.
 	fingerprint uint64
+	// afterFindProbe, when non-nil, runs in Find after a miss's probe and before
+	// foldOne folds the row. Instance-scoped test seam for interleaving a
+	// concurrent writer that indexes a newer row first; nil in production.
+	afterFindProbe func()
 }
 
 // NewPastIndex returns a PastIndex configured to glob projectGlob.
@@ -1093,11 +1098,6 @@ func (i *PastIndex) RecentProjectDirs(limit int) []string {
 	return out
 }
 
-// pastAfterFindProbe, when non-nil, runs in Find after a miss's probe and before
-// foldOne folds the row. It is a deterministic test seam for interleaving a
-// concurrent writer that indexes a newer row first; nil in production.
-var pastAfterFindProbe func()
-
 // Find returns the entry for a given session_id.
 func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if identifier.ValidateSessionID(sessionID) != nil {
@@ -1113,8 +1113,8 @@ func (i *PastIndex) Find(sessionID string) (PastEntry, bool) {
 	if !found {
 		return PastEntry{}, false
 	}
-	if pastAfterFindProbe != nil {
-		pastAfterFindProbe()
+	if i.afterFindProbe != nil {
+		i.afterFindProbe()
 	}
 	i.foldOne(entry)
 	// foldOne may have kept a strictly newer indexed row — a concurrent Rebuild
@@ -1205,11 +1205,12 @@ func (i *PastIndex) foldOne(entry PastEntry) {
 	i.publishAndSignal(all, gen)
 }
 
-// metaNewer reports whether a is a newer revision of the same session than b,
-// by the fields the writers version with: UpdatedAt for content/activity, and
-// NameUpdatedAt for renames. The rename path (and SaveSessionMeta) preserves
-// UpdatedAt and stamps NameUpdatedAt instead, so UpdatedAt alone would judge a
-// rename-only update "not newer".
+// metaNewer reports whether a is a newer revision of the same session than b.
+// UpdatedAt orders content/activity and NameUpdatedAt orders renames, but
+// several mutations re-save metadata without advancing either — a fork tag
+// sets ForkLabel, AppendSessionObservedBy unions ObservedBy — so when the
+// timestamps tie, differing content means the probe read a newer re-save and
+// must win over the possibly-stale indexed row.
 func metaNewer(a, b schema.SessionMeta) bool {
 	if a.UpdatedAt.After(b.UpdatedAt) {
 		return true
@@ -1217,5 +1218,11 @@ func metaNewer(a, b schema.SessionMeta) bool {
 	if b.UpdatedAt.After(a.UpdatedAt) {
 		return false
 	}
-	return a.NameUpdatedAt.After(b.NameUpdatedAt)
+	if a.NameUpdatedAt.After(b.NameUpdatedAt) {
+		return true
+	}
+	if b.NameUpdatedAt.After(a.NameUpdatedAt) {
+		return false
+	}
+	return !reflect.DeepEqual(a, b)
 }

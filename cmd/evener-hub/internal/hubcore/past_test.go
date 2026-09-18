@@ -104,6 +104,67 @@ func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowOnRename(t *testing.T) {
 	}
 }
 
+// fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowWithoutTimestampChange pins
+// that freshness is not gated on timestamps alone: a fork tag (ForkLabel) and an
+// observer append (ObservedBy) re-save the meta without advancing UpdatedAt or
+// NameUpdatedAt, so a probe that read the re-saved meta must still replace the
+// stale indexed row.
+func fuzzScenarioPastIndex_FoldReplacesStalerIndexedRowWithoutTimestampChange(t *testing.T) {
+	const id = "02wMz5Txv1C3Hut0M8GCeB"
+	base := time.Unix(1_700_000_000, 0).UTC()
+	cases := []struct {
+		name  string
+		newer schema.SessionMeta
+		check func(t *testing.T, got schema.SessionMeta)
+	}{
+		{
+			name:  "fork label",
+			newer: schema.SessionMeta{ID: id, Name: "s", UpdatedAt: base, NameUpdatedAt: base, ForkLabel: "child"},
+			check: func(t *testing.T, got schema.SessionMeta) {
+				if got.ForkLabel != "child" {
+					t.Fatalf("fold dropped the fork label: ForkLabel=%q, want %q", got.ForkLabel, "child")
+				}
+			},
+		},
+		{
+			name:  "observer append",
+			newer: schema.SessionMeta{ID: id, Name: "s", UpdatedAt: base, NameUpdatedAt: base, ObservedBy: []string{"02wMz5Txv8Vo4rqb3QYZuV"}},
+			check: func(t *testing.T, got schema.SessionMeta) {
+				if !slices.Contains(got.ObservedBy, "02wMz5Txv8Vo4rqb3QYZuV") {
+					t.Fatalf("fold dropped the observer append: ObservedBy=%v", got.ObservedBy)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			proj := filepath.Join(root, "projects", "project-x-0123456789")
+			if err := os.MkdirAll(proj, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "s", UpdatedAt: base, NameUpdatedAt: base})
+			idx := NewPastIndex(filepath.Join(root, "projects", "*"))
+			if _, err := idx.Rebuild(); err != nil {
+				t.Fatal(err)
+			}
+
+			writeMeta(t, proj, tc.newer)
+			probe, ok := idx.probeOne(id)
+			if !ok {
+				t.Fatal("expected probeOne to read the session")
+			}
+			idx.foldOne(probe)
+
+			got, ok := idx.findCached(id)
+			if !ok {
+				t.Fatal("session missing from the index after the fold")
+			}
+			tc.check(t, got.Meta)
+		})
+	}
+}
+
 // fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold pins that Find returns the
 // row the index actually holds after foldOne, not the probe's. A concurrent
 // writer can index a strictly newer row for the id between this Find's cache
@@ -120,8 +181,7 @@ func fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold(t *testing.T) {
 	writeMeta(t, proj, schema.SessionMeta{ID: id, Name: "probed-v1", UpdatedAt: base})
 	idx := NewPastIndex(filepath.Join(root, "projects", "*"))
 
-	prev := pastAfterFindProbe
-	pastAfterFindProbe = func() {
+	idx.afterFindProbe = func() {
 		// A concurrent writer indexed a newer row for the same id first.
 		idx.foldOne(PastEntry{
 			ID:       id,
@@ -129,7 +189,7 @@ func fuzzScenarioPastIndex_FindReturnsLiveRowAfterFold(t *testing.T) {
 			StateDir: proj,
 		})
 	}
-	defer func() { pastAfterFindProbe = prev }()
+	defer func() { idx.afterFindProbe = nil }()
 
 	got, ok := idx.Find(id)
 	if !ok {
