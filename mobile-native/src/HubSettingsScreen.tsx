@@ -25,7 +25,13 @@ import {
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
 import { ConnectionStatus } from "./ConnectionStatus";
-import { isReady, useConnectionDisplay, useRenderClient, whenReady } from "./connectionDisplay";
+import {
+	isReady,
+	useConnectionDisplay,
+	useReconnectRecovery,
+	useRenderClient,
+	whenReady,
+} from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -35,11 +41,12 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
 export function HubSettingsScreen({ route, navigation }: Props) {
 	const { activeProfile, client, state, fatal, retry } = useConnection();
-	const display = useConnectionDisplay(state, fatal);
+	const display = useConnectionDisplay(route.params.hubId, state, fatal);
 	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set
 	// already; only a manual retry's own token refetch clears it briefly, and
-	// the last client this screen had covers that gap too.
-	const renderClient = useRenderClient(client);
+	// the last client this screen had covers that gap too. Scoped to the hub:
+	// see useRenderClient's own doc.
+	const renderClient = useRenderClient(client, route.params.hubId);
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
@@ -164,6 +171,16 @@ function HubSettings({
 			void upgrade.reconcileAfterReconnect();
 		}, [model, upgrade]),
 	);
+	// createHubOverviewStore has no connectionChanged of its own (no push
+	// notification exists to tell it a flap happened - hubOverview.ts's
+	// module doc), so a passive flap needs its own recovery: refresh both it
+	// and the upgrade controller on every transition back to "ready", the way
+	// useFocusEffect above already does once on focus.
+	const recoverAfterReconnect = useCallback(() => {
+		void model.getState().refresh();
+		void upgrade.reconcileAfterReconnect();
+	}, [model, upgrade]);
+	useReconnectRecovery(connectionState, recoverAfterReconnect);
 	const data = state.data;
 	const hub = data?.hub;
 	return (

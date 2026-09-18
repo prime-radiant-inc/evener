@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import type { AppwireClient, ConnectionState } from "@evener/appwire-client";
 
 /** What a ready-only screen shows for its connection: nothing ("ready"), a
@@ -38,12 +38,23 @@ export function connectionDisplay(
  * derives its display from the current state. `everReady` is a ref, not
  * state: it mutates during render (the ForkScreen.tsx `owner.current`
  * pattern), never causes its own re-render, and only ever needs to be read
- * alongside the state that already re-renders the screen when it changes. */
+ * alongside the state that already re-renders the screen when it changes.
+ *
+ * `hubId` scopes it to the hub the screen is showing: a navigator can reuse
+ * one screen instance across a hub change without unmounting it (its route
+ * params change in place), and `everReady` for the PREVIOUS hub says nothing
+ * about the new one - it is reset the moment `hubId` moves. */
 export function useConnectionDisplay(
+	hubId: string,
 	state: ConnectionState,
 	fatal: boolean,
 ): ConnectionDisplay {
 	const everReady = useRef(false);
+	const scope = useRef(hubId);
+	if (scope.current !== hubId) {
+		scope.current = hubId;
+		everReady.current = false;
+	}
 	if (state === "ready") everReady.current = true;
 	return connectionDisplay(state, everReady.current, fatal);
 }
@@ -67,12 +78,46 @@ export function whenReady<A extends unknown[]>(
  * brief client-null window of a manual retry (hubConnection.ts clears
  * `client` while it dials a fresh one; a passive flap never does - its own
  * generation guard keeps the same client object through the whole flap).
- * Shared by every ready-only screen that needs the fallback, in place of each
- * keeping its own identical ref. */
+ * Scoped to `hubId` for the same reason `useConnectionDisplay` is: a reused
+ * screen instance must not go on rendering the previous hub's client once
+ * `hubId` has moved past it. */
 export function useRenderClient(
 	client: AppwireClient | null,
+	hubId: string,
 ): AppwireClient | null {
 	const lastClient = useRef<AppwireClient | null>(null);
+	const scope = useRef(hubId);
+	if (scope.current !== hubId) {
+		scope.current = hubId;
+		lastClient.current = null;
+	}
 	if (client) lastClient.current = client;
 	return client ?? lastClient.current;
+}
+
+/** Whether a transition from `previous` to `current` is a return to "ready"
+ * after having been away - never true for the render that STARTS "ready"
+ * (that one is the screen's own mount fetch, not a recovery). */
+export function reconnected(
+	previous: ConnectionState,
+	current: ConnectionState,
+): boolean {
+	return current === "ready" && previous !== "ready";
+}
+
+/** Fires `onReconnect` the moment `state` moves back to "ready", for a store
+ * with no `connectionChanged` of its own to wire (createHubOverviewStore -
+ * see hubOverview.ts's module doc: "callers decide when to fetch() or
+ * refresh()", and there is no push notification that could tell it a flap
+ * happened). Mirrors the `hasBeenReady`/`away` bookkeeping
+ * createStoreLifecycle keeps for stores that do have one. */
+export function useReconnectRecovery(
+	state: ConnectionState,
+	onReconnect: () => void,
+): void {
+	const previous = useRef(state);
+	useEffect(() => {
+		if (reconnected(previous.current, state)) onReconnect();
+		previous.current = state;
+	}, [state, onReconnect]);
 }
