@@ -2565,12 +2565,14 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 			thread := appwireThread(hubTreeNode{
 				Ref: "local:01SEND", SessionID: "01SEND", Title: "send task", State: "idle", Model: "gpt-5", Project: "evener", Live: true,
 			}, "/tmp/evener")
-			// The hub's idle set: send on, queue off, and steer on, because the
-			// hub advertises steer as harness support rather than "a turn is
-			// running" (server/appwire_runtime.go appCapabilitiesLocked, #1363).
+			// The hub's idle set: send on, and steer/interrupt/queue on because
+			// the hub advertises them as harness support rather than "a turn is
+			// running" (server/appwire_runtime.go appCapabilitiesLocked, #1363,
+			// #1375).
 			thread.Evener.Capabilities.Send = true
-			thread.Evener.Capabilities.Queue = false
+			thread.Evener.Capabilities.Queue = true
 			thread.Evener.Capabilities.Steer = true
+			thread.Evener.Capabilities.Interrupt = true
 			return appwire.ThreadReadResponse{Thread: thread}, nil
 		})
 	})
@@ -2606,16 +2608,34 @@ func TestHubModelStatusIdleRefreshesSessionCapabilities(t *testing.T) {
 	if !strings.Contains(view, "send: ready") {
 		t.Fatalf("session view did not show send-ready after refresh:\n%s", view)
 	}
-	// Steer stays advertised at idle; with nothing queued there is nothing to
-	// drain, so no ctrl+s hint and the binding is a silent no-op.
+	// Steer, Interrupt and Queue stay advertised at idle -- they are harness
+	// support -- while the TUI applies the status: no turn is running, so the
+	// controls withdraw stop and queue.
 	if !got.detail.Capabilities.Steer {
 		t.Fatalf("idle session on a steering harness lost steer: %+v", got.detail.Capabilities)
+	}
+	if !got.detail.Capabilities.Interrupt {
+		t.Fatalf("idle session on an interrupting harness lost interrupt: %+v", got.detail.Capabilities)
+	}
+	if !got.detail.Capabilities.Queue {
+		t.Fatalf("idle session on a queuing harness lost queue: %+v", got.detail.Capabilities)
+	}
+	if c := got.sessionControls(); c.stop || c.queue || c.steer {
+		t.Fatalf("idle controls = %+v, want stop/queue/steer all withheld by the status", c)
 	}
 	if strings.Contains(view, "ctrl+s") {
 		t.Fatalf("idle composer offered the force-steer hint:\n%s", view)
 	}
 	if _, cmd := got.handleSessionForceSteer(); cmd != nil {
 		t.Fatal("ctrl+s at idle with nothing queued produced a command; it must be a silent no-op")
+	}
+	// ctrl+c is the stop binding: with no active turn it must not interrupt.
+	after, cmd := got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("ctrl+c at idle produced an interrupt command; it must be a silent no-op")
+	}
+	if msgs := after.(hubModel).session.messages; len(msgs) > 0 && strings.Contains(msgs[len(msgs)-1].Text, "Interrupting") {
+		t.Fatalf("ctrl+c at idle announced an interrupt: %q", msgs[len(msgs)-1].Text)
 	}
 }
 

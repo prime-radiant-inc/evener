@@ -75,6 +75,46 @@ func TestAppCapabilities_SteerAdvertisesHarnessSupport(t *testing.T) {
 	}
 }
 
+// Interrupt and Queue advertise harness support, exactly as Steer does: an
+// armed cancel or a wired queue seam means "this harness can stop a turn" and
+// "this harness can queue work", not "a turn is running right now". Clients
+// apply the status themselves; only a closed thread withholds either. Folding
+// `active` in left one struct carrying two semantics, so every client had to
+// know which flags were pre-gated (#1375).
+func TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		state       string
+		processing  bool
+		wired       bool
+		wantSupport bool
+	}{
+		{"processing, harness wired", "active", true, true, true},
+		{"idle, harness wired", "idle", false, true, true},
+		{"awaiting, harness wired", "awaiting", false, true, true},
+		{"closed, harness wired", "closed", false, true, false},
+		{"processing, harness unwired", "active", true, false, false},
+		{"idle, harness unwired", "idle", false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := NewServer(ServerConfig{})
+			if tc.wired {
+				s.SetCancelFunc(func() {})
+				s.SetQueueFunc(func(string) error { return nil })
+			}
+			got := s.appCapabilities(tc.state, tc.processing)
+			if got.Interrupt != tc.wantSupport {
+				t.Fatalf("Interrupt = %v, want %v (harness support, closed withholds)", got.Interrupt, tc.wantSupport)
+			}
+			if got.Queue != tc.wantSupport {
+				t.Fatalf("Queue = %v, want %v (harness support, closed withholds)", got.Queue, tc.wantSupport)
+			}
+		})
+	}
+}
+
 func TestAppCapabilities_AdvertisesClearWhenConfiguredAndSettled(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
@@ -118,7 +158,9 @@ func TestAppCapabilities_AdvertisesClearWhenConfiguredAndSettled(t *testing.T) {
 // appCapabilities now derives `active` and `closed` from appStatus's result, so
 // there is one decision and the two cannot drift. This test is the guard on
 // that, not on either value: it asserts only that they answer the same
-// question the same way.
+// question the same way. What each flag folds in has since narrowed: Steer,
+// Interrupt and Queue advertise harness support and fold in `closed` alone,
+// while Send alone stays the complement of `active` (#1363, #1375).
 func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -152,14 +194,17 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 			caps := s.appCapabilities(tc.state, tc.processing)
 			working := status == appwire.ThreadStatusActive
 
-			if caps.Interrupt != working {
-				t.Fatalf("status=%q (working=%v) but interrupt=%v: one frame, two threads", status, working, caps.Interrupt)
-			}
-			// Steer is harness support, withheld only by closed: it does not
-			// follow `working` (see TestAppCapabilities_SteerAdvertisesHarnessSupport).
+			// Steer and Interrupt are harness support, withheld only by
+			// closed: they do not follow `working`, and here the harness is
+			// wired for both (see
+			// TestAppCapabilities_SteerAdvertisesHarnessSupport and
+			// TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport).
 			wantSteer := status != appwire.ThreadStatusClosed
 			if caps.Steer != wantSteer {
 				t.Fatalf("status=%q but steer=%v, want %v (harness support, closed withholds)", status, caps.Steer, wantSteer)
+			}
+			if caps.Interrupt != wantSteer {
+				t.Fatalf("status=%q but interrupt=%v, want %v (harness support, closed withholds)", status, caps.Interrupt, wantSteer)
 			}
 			// Send is the complement, and closed removes it outright.
 			wantSend := !working && status != appwire.ThreadStatusClosed
@@ -184,11 +229,12 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 // interrupt=false for an active thread -- and a composer applying it draws Steer
 // and Send with no Stop, which is the shape Jesse reported.
 //
-// Deriving Interrupt from `active` (the status) rather than the cancelFunc
-// makes the disagreement unrepresentable rather than merely unlikely, which
-// matters because the set is PUSHED: a client keeps it until the next status
-// change, so a frame stamped inside that window takes Stop away for the whole
-// turn that follows.
+// Interrupt now advertises harness support (interruptWired && !closed, #1375),
+// so on a harness that stops turns at all -- this one has armed a cancel -- it
+// is true for every status but closed and the disagreement is unrepresentable
+// rather than merely unlikely. That matters because the set is PUSHED: a client
+// keeps it until the next status change, so a frame stamped inside the window
+// used to take Stop away for the whole turn that follows.
 //
 // The state below is the drain path's, in its own order.
 func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {

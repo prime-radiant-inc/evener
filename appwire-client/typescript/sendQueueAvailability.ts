@@ -22,11 +22,11 @@
 // IS live: thread/status/changed carries the set that goes with the status it
 // announces (kata 06t8), so the two always describe the same moment - and for
 // that fresh set, this table already computes exactly what reading it would.
-// The hub gates Send on "no turn in flight" and Queue on "a turn in flight"
-// (server/appwire_runtime.go's appCapabilities), which is tiers 4 and 5; the
-// one thing the status alone cannot say is whether the harness wired a queue
-// at all, and that is tier 3. A tier 2 would restate the table, not correct
-// it.
+// The hub advertises Send as "no turn in flight" and Queue as harness support
+// (server/appwire_runtime.go's appCapabilities); tiers 4 and 5 are that pair
+// with the status supplying the "turn in flight" half, and tier 3 reads the
+// harness-support bit for whether a queue is wired at all. A tier 2 would
+// restate the table, not correct it.
 //
 // Capability booleans are therefore still consulted ONLY in tier 3, which is
 // also where the legacy code treated them as authoritative (the "explicitly
@@ -115,18 +115,16 @@ export function deriveSendQueueAvailability({
   // only for the input this flag is documented to take - see its contract on
   // SendQueueAvailabilityInput, which no code here can enforce.
   //
-  // It is a tier of its own, ABOVE the capability veto rather than inside the
-  // active branch, and that placement is the whole point. The capabilities in
-  // hand during this window are the IDLE ones, and an idle thread advertises
-  // queue:false (server/appwire_runtime.go's appCapabilities gates Queue on
-  // `active`, which is `processing || appReservedTurnID != ""`). Letting the
-  // veto see them turns this rule into BOTH_UNAVAILABLE and DISABLES the
-  // composer in exactly the window it exists to serve - worse than the bounce,
-  // which at least left a recovery row the user could resend from. An idle
-  // queue:false means "no turn to queue behind", not "this harness has no
-  // queue"; nothing in that snapshot distinguishes the two, so this tier does
-  // not consult it. A harness with no queue at all answers turn/queue with
-  // Unavailable, and the user sees that.
+// It is a tier of its own, ABOVE the capability veto rather than inside the
+// active branch, and that placement is the whole point. The capabilities in
+// hand during this window are the IDLE ones. Queue there advertises harness
+// support alone (#1375), so an idle snapshot's false bit now means the harness
+// has no queue seam, not that there is no turn to queue behind. Letting the
+// veto see it still turns this rule into BOTH_UNAVAILABLE and DISABLES the
+// composer in exactly the window it exists to serve - worse than the bounce,
+// which at least left a recovery row the user could resend from. A harness
+// with no queue at all answers turn/queue with Unavailable, and the user sees
+// that.
   //
   // The queue lands with no turn id because there is no turn id to send:
   // appwire v3 dropped expectedTurnId from turn/queue outright (appwire/

@@ -65,15 +65,15 @@ const (
 // wire's alone -- the optimistic processing flag routes Enter (sessionTurnRunning)
 // but never a control, and the transcript's turn id never enters.
 //
-//	stop   active && interrupt
-//	steer  active && steer   (the hub advertises steer as harness support)
+//	stop   active && interrupt  (the hub advertises interrupt as harness support)
+//	steer  active && steer      (the hub advertises steer as harness support)
 //	drain  steer && (active || idle with a non-empty queue, the one a Stop parked),
 //	       and not while the queue revision is stale after a partial drain
-//	queue  active && queue
-//	send   !active && send   (the status is applied here as the SDK does, on top
-//	                          of the hub folding it into the flag: a source that
-//	                          advertises send while a turn runs is not composed
-//	                          into, since turn/start would be refused)
+//	queue  active && queue      (the hub advertises queue as harness support)
+//	send   !active && send      (the hub folds the status into send; the status is
+//	                             applied here too, so a source that advertises send
+//	                             while a turn runs is not composed into, since
+//	                             turn/start would be refused)
 type sessionControls struct {
 	stop, steer, drain, queue, send bool
 	// drainReason says why drain is false: the harness, the status, or the

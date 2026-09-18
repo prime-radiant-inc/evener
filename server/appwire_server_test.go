@@ -2373,42 +2373,50 @@ func TestServerAppWireThreadReadDoesNotSubscribeByDefault(t *testing.T) {
 	}
 }
 
-// TestServerAppWireQueueCapabilityFlipsWithProcessing verifies that the
-// appwire Capabilities.queue bit is gated on the session being mid-turn
-// (kata 111a).
-func TestServerAppWireQueueCapabilityFlipsWithProcessing(t *testing.T) {
+// TestServerAppWireQueueCapabilityAdvertisesHarnessSupport verifies that the
+// appwire Capabilities.queue bit means "this harness can queue work", not "a
+// turn is running to queue behind" (kata 111a folded the status in; #1375
+// unfolded it, matching steer). The client applies the status -- turn/queue is
+// meaningful only mid-turn -- and the handler keeps its own quiescence
+// precondition, so the bit no longer flips with processing.
+func TestServerAppWireQueueCapabilityAdvertisesHarnessSupport(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	srv.SetQueueFunc(func(string) error { return nil })
 
-	// Idle: capabilities.queue must be false even with QueueFunc set.
+	// Idle: capabilities.queue is true with QueueFunc wired, exactly as steer
+	// and interrupt are. The harness supports queuing; nothing is in flight.
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
-	caps := srv.appCapabilities("idle", false)
-	if caps.Queue {
-		t.Fatalf("Queue should be false when idle")
+	if caps := srv.appCapabilities("idle", false); !caps.Queue {
+		t.Fatalf("Queue should be true when idle: it advertises harness support, not a turn in flight")
 	}
 
-	// Processing: capabilities.queue flips to true.
+	// Processing: still true.
 	srv.SetProcessing(true)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "active"})
-	caps = srv.appCapabilities("active", true)
-	if !caps.Queue {
+	if caps := srv.appCapabilities("active", true); !caps.Queue {
 		t.Fatalf("Queue should be true mid-turn")
 	}
 
 	// Reserved active turn: turn/start has returned an active turn ID, but
-	// the input loop has not necessarily flipped processing yet.
+	// the input loop has not necessarily flipped processing yet. Queue no
+	// longer reads the reservation, and Send still does.
 	srv.SetProcessing(false)
 	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle"})
 	srv.appActiveTurnID = "turn_reserved"
 	srv.appReservedTurnID = "turn_reserved"
-	caps = srv.appCapabilities("idle", false)
+	caps := srv.appCapabilities("idle", false)
 	if !caps.Queue {
 		t.Fatalf("Queue should be true while an active turn is reserved")
 	}
 	if caps.Send {
 		t.Fatalf("Send should be false while an active turn is reserved")
+	}
+
+	// Closed: withheld outright, like steer and interrupt.
+	if caps := srv.appCapabilities("closed", false); caps.Queue {
+		t.Fatalf("Queue should be false on a closed thread")
 	}
 
 	// No QueueFunc registered: Queue stays false.
