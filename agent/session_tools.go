@@ -327,7 +327,12 @@ type visionSideChannelStats struct {
 const (
 	visionSideChannelStatsOpen  = "<evener:vision_side_channel_stats>"
 	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
-	visionRequestContract       = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text or bytes; use OCR or the source when exactness matters."
+	// visionStructuralClaims is the shared non-text hazard clause (#486): the
+	// vision caveats must cover exact structural claims — piece placement, axis
+	// values, wire connections — not rendered text alone.
+	visionStructuralClaims = "structural claims (such as piece placement, axis values, or connections)"
+	visionRequestContract  = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text, bytes, or " + visionStructuralClaims + "; use OCR or inspect the source when exactness matters."
+	visionConsumerReminder = "Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text, and may misread exact " + visionStructuralClaims + ", even when asked to transcribe them. Do not treat it as authoritative for exact-match, byte-exact transcription, or exact " + visionStructuralClaims + "; use a real OCR tool or inspect the source instead."
 )
 
 func visionUnavailableSteering(path string) string {

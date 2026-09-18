@@ -299,7 +299,7 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				}
 				var steerErr error
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					steerErr = s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
+					steerErr = s.SteerKind(label+": "+desc+"\n"+systemReminder(visionConsumerReminder),
 						events.SteeringKindImageDescription)
 				}); abortErr != nil {
 					return abortErr
