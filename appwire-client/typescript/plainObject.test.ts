@@ -1,10 +1,8 @@
 // @vitest-environment node
-// The package's one plain-object guard, shared by the four sites that used to
-// carry private copies (#1425). It is the strict variant the recursive activity
-// parser used: a non-null, non-array object whose prototype is Object.prototype
-// or null. JSON-derived values (the wire shapes the other three sites read) are
-// always plain, so the prototype check is a no-op there while keeping the
-// parser's original guarantee.
+// Contract for the shared plain-object guard: a non-null, non-array object
+// whose prototype is Object.prototype or null. The prototype check is the
+// strict behaviour the recursive activity parser relies on and is a no-op for
+// JSON-derived values; class instances and dates are rejected.
 import { describe, expect, test } from "vitest";
 import { isPlainObject } from "./plainObject";
 
