@@ -1205,6 +1205,16 @@ export function foldWarningParams(params: WarningParams): WarningFold {
   };
 }
 
+// Joins whichever WarningFold parts a caller has (title/text/hint, in
+// whatever order it passes them) into one display string, filtering out
+// blanks - the one composition rule every surface that renders a fold as a
+// single string shares, so mobile's canonical projector (title, text, hint)
+// and its live row (text, hint; title stays its own field there) never
+// drift into two different join implementations.
+export function joinWarningParts(parts: readonly (string | undefined)[]): string {
+  return parts.filter(hasWarningText).join(" — ");
+}
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe

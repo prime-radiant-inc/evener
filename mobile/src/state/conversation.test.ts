@@ -7235,7 +7235,28 @@ describe("ConversationStore", () => {
       expect(failureRow?.kind).toBe("failure");
       if (failureRow?.kind === "failure") {
         expect(failureRow.id.length).toBeLessThan(30);
-        expect(failureRow.id.startsWith("warning:Warning:")).toBe(true);
+        expect(failureRow.id.startsWith("warning:")).toBe(true);
+      }
+    });
+
+    // The live id used to embed the sanitized title directly
+    // (`warning:${title}:${serial}`), which foldWarningParams only bounds to
+    // 2000 code points — far short of "short", and still enough to bloat
+    // this row's timeline id and the ownership keys it feeds. The serial
+    // alone is already unique, so the id never needs the title at all.
+    it("keeps the live row id short even for an oversized title", async () => {
+      const store = await openProjectedThread(makeThread());
+      store.getState().applyNotification({
+        method: "warning",
+        params: { ...target, title: "T".repeat(2000) },
+      } as AnyNotification);
+      const failureRow = store
+        .getState()
+        .conversation?.items.find((row) => row.kind === "failure");
+      expect(failureRow?.kind).toBe("failure");
+      if (failureRow?.kind === "failure") {
+        expect(failureRow.id.length).toBeLessThan(30);
+        expect(failureRow.id.startsWith("warning:")).toBe(true);
       }
     });
   });

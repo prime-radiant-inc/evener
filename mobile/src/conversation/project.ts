@@ -31,10 +31,10 @@ import type {
 
 import {
   hasItemFailure,
-  hasWarningText,
   isActiveItem,
   isInProgressStatus,
   joinedReasoningParagraphs,
+  joinWarningParts,
   liveAskQuestions,
   parseAskUserQuestions,
   pendingTextJoined,
@@ -530,23 +530,26 @@ function projectItem(
         label: "Activity",
         family: "unknown",
         state: activityState(item, turn.status),
-        detail: { ...activityDetail(item), output: item.text || warningFallbackText(item) || item.output },
+        detail: { ...activityDetail(item), output: warningFallbackText(item) || item.text || item.output },
       },
     },
   };
 }
 
-// A message-less warning frame (a title or hint alone, no top-level message)
-// folds to text: "" on the wire side (reducer.ts's warning fold): web's
-// WarningItem.tsx reads item.warning directly, but this generic fallback
-// only ever reads item.text/item.output, so a title/hint-only warning became
-// a blank row here. Joins whatever non-blank parts item.warning carries so
-// the phone shows the same content the web renders, without needing a
-// dedicated warning display path.
+// Composes a warning item's displayable text: title, message, and hint
+// together, the same parts the web (WarningItem.tsx) renders (title as a
+// chip, message as the body, hint below) and the live warning row
+// (conversation.ts's case "warning") carries (title as its own field,
+// message+hint as detail) - this canonical row has no separate title slot,
+// so title has to join the rest of the string instead of being dropped
+// whenever there's also a message. A message-less frame folds to text: ""
+// on the wire side (reducer.ts's warning fold; joinWarningParts filters it
+// out), leaving just title+hint, the same content the web renders via
+// item.warning directly.
 function warningFallbackText(item: ItemModel): string | undefined {
   if (item.type !== "warning" || !item.warning) return undefined;
-  const parts = [item.warning.title, item.warning.hint].filter(hasWarningText);
-  return parts.length > 0 ? parts.join(" — ") : undefined;
+  const joined = joinWarningParts([item.warning.title, item.text, item.warning.hint]);
+  return joined === "" ? undefined : joined;
 }
 
 function activityDescription(item: ItemModel): string | undefined {
