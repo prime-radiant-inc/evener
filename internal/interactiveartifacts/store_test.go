@@ -79,7 +79,8 @@ func TestStorePrivateIdentityAndNamespaceRecovery(t *testing.T) {
 }
 
 func TestStoreRefusesFutureSchema(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "future.sqlite")
+	path := filepath.Join(t.TempDir(), "private", "future.sqlite")
+	requireNoError(t, os.MkdirAll(filepath.Dir(path), 0700))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	requireNoError(t, err)
 	requireNoError(t, f.Close())
