@@ -25,9 +25,13 @@ func (s *Store) Read(ctx context.Context, hash [32]byte, raw []byte) (ReadResult
 		return ReadResult{}, err
 	}
 	request := parsed.(*ReadRequest)
+	return s.readArtifact(ctx, hash, "artifact_read", request, 0, 0)
+}
+
+func (s *Store) readArtifact(ctx context.Context, hash [32]byte, method string, request *ReadRequest, knownSource, knownState Version) (ReadResult, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	scope, err := s.authorize(ctx, hash, "artifact_read", request.ArtifactID)
+	scope, err := s.authorize(ctx, hash, method, request.ArtifactID)
 	if err != nil {
 		return ReadResult{}, err
 	}
@@ -41,7 +45,7 @@ func (s *Store) Read(ctx context.Context, hash [32]byte, raw []byte) (ReadResult
 		return ReadResult{}, err
 	}
 	result := ReadResult{ArtifactMetadata: metadata}
-	if slices.Contains(request.Include, "source") {
+	if slices.Contains(request.Include, "source") && knownSource != metadata.SourceRevision {
 		result.Source, err = readSource(ctx, tx, metadata.ArtifactID, metadata.SourceRevision)
 		if err != nil {
 			return ReadResult{}, err
@@ -63,8 +67,14 @@ func (s *Store) Read(ctx context.Context, hash [32]byte, raw []byte) (ReadResult
 			result.Source.EndLine = end
 		}
 	}
-	if slices.Contains(request.Include, "state") {
+	if slices.Contains(request.Include, "state") && knownState != metadata.StateVersion {
 		if err := tx.QueryRowContext(ctx, "SELECT state_json FROM artifacts WHERE artifact_id=?", request.ArtifactID).Scan(&result.State); err != nil {
+			return ReadResult{}, err
+		}
+	}
+	if slices.Contains(request.Include, "diagnostics") {
+		result.Diagnostics, err = readDiagnostics(ctx, tx, metadata.ArtifactID, metadata.SourceRevision)
+		if err != nil {
 			return ReadResult{}, err
 		}
 	}
@@ -77,4 +87,29 @@ func readSource(ctx context.Context, tx *sql.Tx, id string, revision Version) (*
 	result := &SourceBody{}
 	err := tx.QueryRowContext(ctx, "SELECT html_utf8,source_sha256 FROM artifact_revisions WHERE artifact_id=? AND revision=?", id, revision).Scan(&result.HTML, &result.SourceSHA256)
 	return result, err
+}
+
+func (s *Store) GetView(ctx context.Context, hash [32]byte, raw []byte) (GetViewResult, error) {
+	parsed, err := ParseRequest("artifact_get_view", raw, false)
+	if err != nil {
+		return GetViewResult{}, err
+	}
+	request := parsed.(*GetViewRequest)
+	result, err := s.readArtifact(ctx, hash, "artifact_get_view", &ReadRequest{ArtifactID: request.ArtifactID, Include: []Include{"source", "state"}}, request.KnownSourceRevision, request.KnownStateVersion)
+	if err != nil {
+		return GetViewResult{}, err
+	}
+	return GetViewResult{ArtifactMetadata: result.ArtifactMetadata, Source: result.Source, State: result.State}, nil
+}
+func (s *Store) Open(ctx context.Context, hash [32]byte, raw []byte) (OpenResult, error) {
+	parsed, err := ParseRequest("artifact_open", raw, false)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	request := parsed.(*OpenRequest)
+	result, err := s.readArtifact(ctx, hash, "artifact_open", &ReadRequest{ArtifactID: request.ArtifactID}, 0, 0)
+	if err != nil {
+		return OpenResult{}, err
+	}
+	return OpenResult{ArtifactMetadata: result.ArtifactMetadata, Launch: LaunchData{ArtifactID: request.ArtifactID}}, nil
 }

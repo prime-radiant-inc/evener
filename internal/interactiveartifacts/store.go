@@ -42,14 +42,15 @@ type Scope struct {
 // its read lock so authorization and the selected snapshot share that ordering.
 // Only hashed grant identifiers enter this object, and no grants enter SQLite.
 type Store struct {
-	hooks    storeHooks
-	mu       sync.RWMutex
-	db       *sql.DB
-	clock    func() time.Time
-	quota    int64
-	identity string
-	grants   map[[32]byte]Scope
-	closed   bool
+	cursorKey [32]byte
+	hooks     storeHooks
+	mu        sync.RWMutex
+	db        *sql.DB
+	clock     func() time.Time
+	quota     int64
+	identity  string
+	grants    map[[32]byte]Scope
+	closed    bool
 }
 
 func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
@@ -104,6 +105,7 @@ func OpenStore(path string, options StoreOptions) (_ *Store, resultErr error) {
 	db.SetMaxOpenConns(options.ReaderConnections + 1)
 	db.SetMaxIdleConns(options.ReaderConnections + 1)
 	s := &Store{db: db, clock: options.Clock, quota: options.QuotaBytes, grants: make(map[[32]byte]Scope), hooks: options.hooks}
+	_, _ = rand.Read(s.cursorKey[:])
 	if err := s.initialize(context.Background()); err != nil {
 		return nil, err
 	}
@@ -168,6 +170,8 @@ const storeSchema = `
  CREATE INDEX artifacts_by_namespace ON artifacts(namespace_id,artifact_id);
  CREATE TABLE artifact_revisions(artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id), revision INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, html_utf8 TEXT NOT NULL, source_sha256 TEXT NOT NULL, created_by_principal_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(artifact_id,revision));
  CREATE TABLE artifact_mutations(realm_id TEXT NOT NULL,principal_id TEXT NOT NULL,operation TEXT NOT NULL,mutation_id TEXT NOT NULL,request_fingerprint TEXT NOT NULL,namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id),artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),outcome_code TEXT NOT NULL,result_json BLOB,PRIMARY KEY(realm_id,principal_id,operation,mutation_id));
+ CREATE TABLE artifact_diagnostics(id INTEGER PRIMARY KEY,artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),revision INTEGER NOT NULL,message TEXT NOT NULL,kind TEXT NOT NULL,reported_at INTEGER NOT NULL);
+ CREATE INDEX diagnostics_by_artifact ON artifact_diagnostics(artifact_id,revision,id);
  PRAGMA user_version=1;
 `
 
@@ -222,6 +226,7 @@ func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombston
 	}
 	if tombstone {
 		for _, statement := range []string{
+			"DELETE FROM artifact_diagnostics WHERE artifact_id IN (SELECT artifact_id FROM artifacts WHERE namespace_id=?)",
 			"DELETE FROM artifact_revisions WHERE artifact_id IN (SELECT artifact_id FROM artifacts WHERE namespace_id=?)",
 			"UPDATE artifacts SET state_json=NULL WHERE namespace_id=?",
 			"UPDATE artifact_mutations SET outcome_code='DELETED',result_json=NULL WHERE namespace_id=?",
