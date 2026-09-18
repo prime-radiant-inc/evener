@@ -8,17 +8,16 @@ import (
 	"primeradiant.com/evener/internal/appserver"
 )
 
-// A live image change is in the value every thread/read clones. The read's cut
-// is taken inside the projection gate (appThreadReadSnapshot), and the turns it
-// returns come from Server.appLatestItemTurns -- LatestItemCandidates windowed
-// and regrouped -- reading the same materialized snapshot (Server.appTurns:
-// "Every turn read -- thread/read, the latest window, an older page -- clones
-// or windows this and nothing else"), so an item-bearing frame a client folded
-// before the response is already reflected in the response. Measured here
-// through a real Server and the actual read path, for images the way the delta
-// cases measure text: an item/started that carries input images, then an
-// item/completed that says nothing about them, and the read response still has
-// them, decoded, after that regrouping.
+// A live image change is in the value every thread/read clones. This test
+// exercises the snapshot read path: handleAppThreadRead -> appLatestItemTurns ->
+// LatestItemCandidates -> RegroupTurnFragments -> mergeAppThreadItem, reading the
+// same materialized snapshot (Server.appTurns: "Every turn read -- thread/read,
+// the latest window, an older page -- clones or windows this and nothing else"),
+// so an item-bearing frame a client folded before the response is already
+// reflected in the response. Measured here through a real Server and the actual
+// read path, for images the way the delta cases measure text: an item/started
+// that carries input images, then an item/completed that says nothing about them,
+// and the read response still has them, decoded, after that regrouping.
 func TestAppThreadReadKeepsLiveInputImages(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "01T")
