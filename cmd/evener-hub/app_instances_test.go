@@ -605,6 +605,9 @@ func TestInstances_EditRejectsUnknownInstance(t *testing.T) {
 
 // TestInstances_RemoveRefusesImplicitInstance: an instance that exists from
 // the environment has no entry to delete, so the refusal says what to unset.
+// The name is the caller's to fix and the refusal is the same class as
+// Remove's invalid-name and not-found refusals (#717/#748): InvalidParams,
+// not a generic wire error.
 func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	f := newInstancesFixture(t, map[string]string{"GROQ_API_KEY": "gk"})
 	err := f.ctl.Remove(appwire.InstanceRemoveParams{Name: "groq"})
@@ -613,6 +616,10 @@ func TestInstances_RemoveRefusesImplicitInstance(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "GROQ_API_KEY") {
 		t.Fatalf("the refusal names the variable that creates the instance: %v", err)
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("Remove = %v, want an InvalidParams wire error", err)
 	}
 }
 
@@ -3271,8 +3278,8 @@ func TestInstances_EditRenameReportsTheMoveFailureOverAFailedReload(t *testing.T
 // A rename whose credentials moved cleanly and whose final reload failed is
 // as persisted as one that succeeded outright: providers.toml and the
 // credentials both carry the new name, and only the hub's own view is behind.
-// So it is a renamePersistedError too, which is what has the handler announce
-// it to the clients whose lists that file just made stale. The unreadable
+// So it is an applied write too, which is what has the handler announce it to
+// the clients whose lists that file just made stale. The unreadable
 // config is written from the loadAuth seam for the reason the sibling test
 // above gives: it is the one point between the move and the reload a test can
 // reach.
@@ -3295,8 +3302,8 @@ func TestInstances_EditRenameThatOnlyFailedItsReloadStillPersisted(t *testing.T)
 	if err == nil {
 		t.Fatal("Edit(rename) = nil, want the failed reload reported")
 	}
-	if _, persisted := errors.AsType[renamePersistedError](err); !persisted {
-		t.Fatalf("Edit(rename) = %v (%T), want a renamePersistedError so the rename is still broadcast", err, err)
+	if !writeDidApply(err) {
+		t.Fatalf("Edit(rename) = %v (%T), want an applied write so the rename is still broadcast", err, err)
 	}
 	// The move itself ran, which is what makes this the persisted case rather
 	// than one with a credential left behind.

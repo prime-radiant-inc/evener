@@ -209,7 +209,6 @@ func (s *WebServer) liveWorkspaceSnapshot(id string, fallback hubapi.SessionCapa
 		return fallback, ""
 	}
 	caps := hubCapabilitiesFromAppwire(resp.Thread.Evener.Capabilities)
-	caps.Resume = fallback.Resume
 	return caps, activeTurnIDFromAppwireThread(resp.Thread)
 }
 

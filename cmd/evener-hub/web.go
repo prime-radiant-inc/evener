@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 // WebServer wires routes and middleware.
@@ -124,6 +125,18 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 			cfg.ResumeLocks, recoveryStoreErr = hubcore.NewPersistentResumeLocks(cfg.HubStateRoot)
 		}
 	}
+	// The one *plugins.Manager the appRPC server and every consumer reached
+	// through cfg.PluginManager share: the plugin CRUD handlers and a
+	// launch's plugin-inventory resolution (thread/start,
+	// evener/spawn/slashCatalog) all reach this same instance instead of
+	// each minting its own, unwired one. The three background maintenance
+	// paths in main_background.go (hubStartUpgrade, seedHubMarketplaces,
+	// startHubPluginMaintenance's GC) build their own wired manager over the
+	// default plugin root instead of reusing this field; #1780 tracks
+	// unifying them.
+	if cfg.PluginManager == nil {
+		cfg.PluginManager = plugins.NewManager(cfg.PluginRoot)
+	}
 	fHash, _ := frontendDistHash(distFS())
 	web := &WebServer{
 		cfg:                       cfg,
@@ -146,6 +159,10 @@ func newWebServer(cfg hubcore.WebConfig, appwireTrace *appserver.WebSocketTrace)
 	server, hostAdmin := newHubAppServerWithNavigationAndTrace(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef, appwireTrace)
 	web.appRPC = server
 	web.hostAdmin = hostAdmin
+	// Wired here, after the server exists, rather than inside the
+	// constructor: this is the one place that both built cfg.PluginManager
+	// and now has a broadcaster to give it.
+	wirePluginStoreBroadcast(web.cfg.PluginManager, server)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)

@@ -131,6 +131,24 @@ func writeTempAgentsDoc(tmp *os.File, content string) (err error) {
 	return tmp.Sync()
 }
 
+// saveAgentsDoc writes content and reads the file back, and classifies the
+// two failures apart. A write that never landed returns plain: nothing
+// changed, so there is nothing to announce. A write that landed and then
+// failed its read back is the applied-then-failed state (writeApplied), so
+// the response describes what was just put on disk - the write is byte for
+// byte, so that is the file - while the error still goes back to the
+// requester that asked rather than a success fabricated from the input.
+func saveAgentsDoc(path, content string) (appwire.AgentsDocResponse, error) {
+	if err := writeAgentsDoc(path, content); err != nil {
+		return appwire.AgentsDocResponse{}, err
+	}
+	resp, err := readAgentsDoc(path)
+	if err != nil {
+		return appwire.AgentsDocResponse{Path: path, Exists: true, Content: content}, writeApplied(err)
+	}
+	return resp, nil
+}
+
 // registerAgentsDocHandlers serves evener/settings/agentsDoc/{get,set}. Writes
 // serialize on one mutex so a save's rename, read back and broadcast land as
 // one unit: two clients saving at once could otherwise rename in one order
@@ -156,23 +174,12 @@ func registerAgentsDocHandlers(server *appserver.Server, path string) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if err := writeAgentsDoc(path, params.Content); err != nil {
-				return appwire.AgentsDocResponse{}, err
+			resp, err := saveAgentsDoc(path, params.Content)
+			// Announce only a save that applied: writeDidApply is false for
+			// one that never reached the file.
+			if writeDidApply(err) {
+				server.BroadcastAll(appwire.NotifyEvenerSettingsAgentsDocChanged, resp)
 			}
-			resp, err := readAgentsDoc(path)
-			if err != nil {
-				// The rename landed, so the save APPLIED. Surfacing the
-				// re-read failure would tell the requester its write was
-				// rejected and leave every other client on the old content,
-				// so describe what was just put on disk instead - the write
-				// is byte for byte, so this is the file (same reasoning as
-				// the post-rename path in registerKeybindingsHandlers). The
-				// response says nothing went wrong, so the log is the only
-				// place the failure is visible at all.
-				server.Logf("AGENTS.md read back after write failed: %v", err)
-				resp = appwire.AgentsDocResponse{Path: path, Exists: true, Content: params.Content}
-			}
-			server.BroadcastAll(appwire.NotifyEvenerSettingsAgentsDocChanged, resp)
-			return resp, nil
+			return resp, err
 		})
 }

@@ -33,31 +33,23 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 . "$script_dir/../lib/private-go-home.sh"
 . "$script_dir/../lib/scratch-lib.sh"
 
-# The load-aware budgets below degrade to their historical fixed values when
-# the helper is unreadable or answers with nothing. An unguarded source would
-# abort this script outright, and an unguarded call would leave a budget empty,
-# which the -p guards read as "pass no flag" and widen to go's GOMAXPROCS.
-have_load_aware=0
-load_aware_helper="$script_dir/../lib/load-aware-workers.sh"
-if [ -r "$load_aware_helper" ]; then
-	. "$load_aware_helper"
-	have_load_aware=1
+# The load-aware budgets, and the effective -p/-parallel flags they become,
+# live in scripts/lib/gate-budgets.sh so the wiring can be exercised directly
+# instead of matched as script text. That library is part of this script's own
+# commit, so failing to source it is a broken checkout and refusing is better
+# than running the whole gate unbudgeted — and the source status is checked
+# rather than just readability, because a failure while sourcing would otherwise
+# leave the budget functions undefined and the flags silently empty. The helper
+# it sizes through is guarded inside gate_source_helper: an unreadable helper
+# degrades the budgets to their historical fixed values, and a budget left empty
+# would be read by the -p guards as "pass no flag" and widened to go's
+# GOMAXPROCS.
+gate_budgets_lib="$script_dir/../lib/gate-budgets.sh"
+if ! . "$gate_budgets_lib"; then
+	printf 'run-module-tests.sh: cannot source %s; refusing to run unbudgeted\n' "$gate_budgets_lib" >&2
+	exit 2
 fi
-
-# gate_budget CAP DEFAULT — the load-aware worker count for CAP, or DEFAULT
-# when the helper is absent or its answer is not a positive integer.
-gate_budget() {
-	_gb_cap=$1
-	_gb_default=$2
-	_gb_value=
-	if [ "$have_load_aware" -eq 1 ]; then
-		_gb_value="$(load_aware_workers "$_gb_cap" 2>/dev/null)" || _gb_value=
-	fi
-	case "$_gb_value" in
-	''|*[!0-9]*) _gb_value=$_gb_default ;;
-	esac
-	printf '%s' "$_gb_value"
-}
+gate_source_helper "$script_dir/../lib/load-aware-workers.sh"
 
 MODULES=${MODULES:-". agent llm auth envvars invariant identifier"}
 ROOT_FULL=${ROOT_FULL:-0}
@@ -140,15 +132,12 @@ export AGENT_SHARD_COUNT=${AGENT_SHARD_COUNT:-8}
 # sessions, CI, and a hand-run `make test` all reach here, and a fixed budget
 # let each of them claim the whole machine. An explicit environment override
 # still wins, so test-race's AGENT_PARALLEL=6 is honored as written.
-ROOT_P=${ROOT_P-$(gate_budget 6 6)}
-AGENT_PARALLEL=${AGENT_PARALLEL-$(gate_budget 6 6)}
-AGENT_P=${AGENT_P-$(gate_budget 4 4)}
+#
 # The agent-shards runner does the agent module's real work and reads its own
 # parallelism from the environment; AGENT_PARALLEL never reaches it. Without
 # these the dominant agent workload stayed at a fixed width under load. The
 # caps are the runner's own defaults, and a set value still wins.
-export AGENT_SHARD_PARALLEL=${AGENT_SHARD_PARALLEL-$(gate_budget 3 3)}
-export AGENT_SHARD_SURVEY_PARALLEL=${AGENT_SHARD_SURVEY_PARALLEL-$(gate_budget 6 6)}
+gate_init_budgets
 # Modules with no explicit -p are deliberately left alone. Go's default -p is
 # GOMAXPROCS, which is cgroup-quota aware; an explicit -p derived from the
 # host's online CPUs would oversubscribe a CPU-limited container and override a
@@ -383,32 +372,13 @@ run_module() {
 
 # run_wave <module...> — run the modules concurrently, wait, and report each
 # one's result; records failures in the global $fail.
-module_extra() {
-	case "$1" in
-		.)
-			local extra=""
-			[ -n "$ROOT_P" ] && extra="$extra -p $ROOT_P"
-			printf '%s' "$extra"
-			;;
-		agent)
-			local extra=""
-			[ -n "$AGENT_P" ] && extra="$extra -p $AGENT_P"
-			[ -n "$AGENT_PARALLEL" ] && extra="$extra -parallel $AGENT_PARALLEL"
-			printf '%s' "$extra"
-			;;
-		*)
-			printf ''
-			;;
-	esac
-}
-
 run_wave() {
 	[ "$#" -eq 0 ] && return 0
 	local -a names=() pids=()
 	local m log extra tmp
 	for m in "$@"; do
 		log="$(logpath "$m")"
-		extra="$(module_extra "$m")"
+		extra="$(gate_module_flags "$m")"
 		tmp="$(tmppath "$m")"
 		( mkdir -p "$tmp" && export TMPDIR="$tmp" && evener_prepare_private_go_home "$tmp" && cd "$m" && run_module "$m" "$extra" ) >"$log" 2>&1 &
 		pids+=("$!"); names+=("$m"); active_pids+=("$!")

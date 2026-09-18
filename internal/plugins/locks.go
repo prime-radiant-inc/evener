@@ -69,16 +69,36 @@ func (m *Manager) acquireStoreLock(ctx context.Context, acquire lockAcquirer, lo
 // to fix, which evener-doctor reports too. The bundled lock and Doctor's
 // read-only wait on this lock are the two acquisitions that do not come
 // through here.
+//
+// The returned release also reports this session's accumulated StoreChanged
+// (store_changed.go) to the installed OnStoreChanged callback, whether or not
+// migrateMarketplaceNames itself failed, after the lock is released so a slow
+// broadcast never serializes behind the file lock.
 func (m *Manager) lockStore(ctx context.Context, acquire lockAcquirer, timeout time.Duration) (func(), error) {
 	release, err := m.acquireStoreLock(ctx, acquire, m.lockPath(), timeout)
 	if err != nil {
 		return nil, err
 	}
+	release = m.reportingRelease(release)
 	if err := m.migrateMarketplaceNames(); err != nil {
 		release()
 		return nil, err
 	}
 	return release, nil
+}
+
+// reportingRelease wraps release so that, in order: this session's
+// accumulated change is captured and cleared, the store lock is let go, and
+// only then — outside the lock — the installed callback (if any) is told
+// what changed. A session that changed nothing invokes no callback at all.
+func (m *Manager) reportingRelease(release func()) func() {
+	return func() {
+		changed, cb := m.takeStoreChanged()
+		release()
+		if (changed.Plugins || changed.Marketplaces) && cb != nil {
+			cb(changed)
+		}
+	}
 }
 
 // migrateStore takes the store lock for nothing but the migration lockStore

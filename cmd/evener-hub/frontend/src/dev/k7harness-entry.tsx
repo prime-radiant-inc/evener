@@ -15,8 +15,15 @@ import { SessionChrome } from "../panes/session/chrome/SessionChrome";
 import { ClientProvider } from "../shell/clientContext";
 import "../styles/tokens.css";
 import "../styles/global.css";
+import { initActivitySummary } from "../stores/activitySummary";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
+
+// This harness renders SessionChrome - and with it ActivityPanel - outside the
+// app shell that wires the activity stores, so the panel's continuation control
+// needs the summary link registered here, the same way AppShell.tsx and
+// dev/surface-sections/chrome.tsx do.
+initActivitySummary();
 
 const params = new URLSearchParams(window.location.search);
 const theme = params.get("theme");

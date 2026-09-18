@@ -1,10 +1,12 @@
 import { expect, test } from "vitest";
 import {
   AT_BOTTOM_THRESHOLD_PX,
+  contentGrewBelowViewport,
   isAtBottom,
   isNearTop,
   NEAR_TOP_THRESHOLD_PX,
   readScrollMetrics,
+  type ScrollMetrics,
 } from "./scrollMetrics";
 
 // isAtBottom: "at the bottom" means the reader is at the TRUE end of the
@@ -35,6 +37,47 @@ test("isAtBottom: false when scrolled far up", () => {
 test("isAtBottom: accepts a custom threshold, overriding the 4px default", () => {
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 100)).toBe(true); // gap = 100
   expect(isAtBottom({ scrollTop: 800, scrollHeight: 1000, clientHeight: 100 }, 4)).toBe(false);
+});
+
+// contentGrewBelowViewport: the geometry half of the bottom-hold correction,
+// shared by the scroll listener and the no-scroll-event re-anchor paths so the
+// two cannot drift.
+const AT_BOTTOM_BEFORE: ScrollMetrics = { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 };
+
+test("contentGrewBelowViewport: true when content grew below a pinned offset in the same box", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1021, clientHeight: 50 })).toBe(
+    true,
+  );
+});
+
+test("contentGrewBelowViewport: false when the offset already moved to the new bottom", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 971, scrollHeight: 1021, clientHeight: 50 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false when the port itself changed size", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1100, clientHeight: 100 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false when the content did not grow", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1000, clientHeight: 50 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false when the offset moved backwards (the reader left)", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 900, scrollHeight: 1021, clientHeight: 50 })).toBe(
+    false,
+  );
+});
+
+test("contentGrewBelowViewport: false within the at-bottom threshold (nothing to correct)", () => {
+  expect(contentGrewBelowViewport(AT_BOTTOM_BEFORE, { scrollTop: 950, scrollHeight: 1003, clientHeight: 50 })).toBe(
+    false,
+  );
 });
 
 test("AT_BOTTOM_THRESHOLD_PX is the 4px default (rounding-safe, smaller than one line of text)", () => {

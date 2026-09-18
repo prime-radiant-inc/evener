@@ -1,7 +1,6 @@
 // Pure helpers for the reasoning ("think block") item type. See
 // ThinkBlock.tsx for the component that consumes these.
 
-import { pendingTextJoined } from "@evener/appwire-client";
 import type { Token, Tokens } from "marked";
 import { markdownLexer } from "../../../../widgets/markdown/lexer";
 
@@ -11,22 +10,11 @@ import { markdownLexer } from "../../../../widgets/markdown/lexer";
 
 const ISO_TIMESTAMP = /^(\d{4}|[+-]\d{6})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/;
 
-// joinedReasoningParagraphs turns ItemModel.reasoningSummaries (string[][] -
-// per-summaryIndex chunk lists, protocol/model.ts) into one string per
-// summaryIndex, dropping any paragraph that joins to nothing (or
-// whitespace-only) - "empty thoughts removed" per the wave-4 T2 scope, at
-// both the whole-item level (settle finds zero paragraphs -> render
-// nothing, see ThinkBlock) and the per-paragraph level.
-//
-// Each per-summary join goes through pendingTextJoined (protocol/reducer.ts):
-// live chunk views carry a brand-cached join text, so a per-render read over a
-// view is O(1) rather than the O(n) element-by-element Proxy walk this path
-// used to pay on every render of a streaming think block. Plain arrays (tests,
-// hydrate) fall back to a plain join inside the same helper.
-export function joinedReasoningParagraphs(summaries: string[][] | undefined): string[] {
-  if (!summaries) return [];
-  return summaries.map((chunks) => pendingTextJoined(chunks)).filter((text) => text.trim() !== "");
-}
+// joinedReasoningParagraphs is the package's (protocol/reducer.ts): one string
+// per summaryIndex, empty paragraphs dropped, each join reading a live chunk
+// view's cached text. Re-exported here so this file stays the one import for
+// the think block's formatting helpers.
+export { joinedReasoningParagraphs } from "@evener/appwire-client";
 
 // thoughtDurationMs computes elapsed milliseconds from two REAL ISO timestamps
 // - never a client wall clock ("never synthesized from the client's wall

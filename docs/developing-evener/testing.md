@@ -183,9 +183,10 @@ assumptions.
 
 ### `scripts/web/web-preflight.sh`
 
-A setup prerequisite for the web, build, and browser gates rather than a gate
-in its own right: `make web-preflight` runs it directly, and `make build-web`,
-`make test-web` and `make test-web-browser` all reach it.
+A setup prerequisite for the web, build, browser, and lint gates rather than a
+gate in its own right: `make web-preflight` runs it directly, and `make
+build-web`, `make test-web`, `make test-web-browser`, and `make lint` (through
+`lint-biome`) all reach it.
 
 What it proves, what it may run, and how it fails live in the `make
 web-preflight` row of [building.md's target table](building.md#targets).

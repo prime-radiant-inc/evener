@@ -6075,11 +6075,10 @@ test("a non-active turn/completed settles only the FIRST turn matching a duplica
 // is followed by its own status frame: the agent's failure exit
 // (agent/session_lifecycle.go endInputAtTurnFailure, kata hen0) emits
 // EventSessionEnd with Reason "turn_failed", announced as
-// thread/status/changed(idle). The reducer's self-settle on the failed frame
-// is a redundant safety net kept pending #1432; this pins it while it stays.
-// A completed turn is different: the status frame that follows it (idle at
-// session end, active at an inline boundary) is the authority.
-test("a failed active turn settles the session idle ahead of its status frame", () => {
+// thread/status/changed(idle) with the capabilities inline. Like a completed
+// turn's, that frame is the status's authority; the failed stamp settles the
+// turn alone.
+test("a failed active turn leaves the status to the frame that follows it", () => {
   const initial = hydrateThread(
     {
       thread: testThread({
@@ -6103,8 +6102,19 @@ test("a failed active turn settles the session idle ahead of its status frame", 
     },
     2000,
   );
-  expect(failed.status.type).toBe("idle");
+  // The turn ended; its status frame has not arrived.
   expect(failed.activeTurnId).toBeUndefined();
+  expect(failed.status.type).toBe("active");
+
+  const settled = applyNotification(
+    failed,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, capabilities: CAPABILITIES },
+    },
+    3000,
+  );
+  expect(settled.status.type).toBe("idle");
 });
 
 test("a completed active turn leaves the status to the frame that follows it (inline boundary)", () => {
@@ -6133,9 +6143,9 @@ test("a completed active turn leaves the status to the frame that follows it (in
 // The status is authoritative and the transcript's id can be absent while the
 // session is active (a hydrate cut between turns, or the gap after
 // turn/completed at an inline boundary). A failed completion arriving then is
-// still the session's own failure; its status frame follows (kata hen0), and
-// the settle here is the redundant safety net kept pending #1432.
-test("a failed turn/completed with no active turn id still settles an active session idle", () => {
+// still the session's own failure, but its status frame follows (kata hen0)
+// and owns the settle.
+test("a failed turn/completed with no active turn id leaves the settle to its status frame", () => {
   const initial = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "ref_t", 1000);
   expect(initial.activeTurnId).toBeUndefined();
   const failed = applyNotification(
@@ -6150,13 +6160,25 @@ test("a failed turn/completed with no active turn id still settles an active ses
     },
     2000,
   );
-  expect(failed.status.type).toBe("idle");
+  expect(failed.status.type).toBe("active");
+
+  const settled = applyNotification(
+    failed,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, capabilities: CAPABILITIES },
+    },
+    3000,
+  );
+  expect(settled.status.type).toBe("idle");
 });
 
-// The same settle drops the work-clock anchor with the status: a hydrate can
-// carry a live anchor with no turn id, and StatusRow clocks now-minus-anchor
-// for as long as the model holds one.
-test("a failed turn/completed with no active turn id clears the work-clock anchor", () => {
+// The work-clock anchor goes with the status, and thread/status/changed drops
+// a live anchor on any non-active transition: a hydrate can carry a live
+// anchor with no turn id, and StatusRow clocks now-minus-anchor for as long as
+// the model holds one. The failed stamp leaves both alone; the status frame
+// that follows ends them together.
+test("a failed turn/completed with no active turn id leaves the work-clock anchor to its status frame", () => {
   const initial = hydrateThread(
     { thread: testThread({ status: { type: "active" }, evener: { activeTurnStartedAt: 900 } }) },
     "ref_t",
@@ -6176,8 +6198,19 @@ test("a failed turn/completed with no active turn id clears the work-clock ancho
     },
     2000,
   );
-  expect(failed.status.type).toBe("idle");
-  expect(failed.activeTurnStartedAt).toBeUndefined();
+  expect(failed.status.type).toBe("active");
+  expect(failed.activeTurnStartedAt).toBeDefined();
+
+  const settled = applyNotification(
+    failed,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" }, capabilities: CAPABILITIES },
+    },
+    3000,
+  );
+  expect(settled.status.type).toBe("idle");
+  expect(settled.activeTurnStartedAt).toBeUndefined();
 });
 
 // A failed completion for a turn that another turn has since superseded is
@@ -6348,7 +6381,7 @@ test("an absent outputImages field keeps the images the other page carries", () 
   expect(itemAt(turnAt(merged, 0), 0).outputImages).toEqual([{ src: "kept-image", source: "tool-result" }]);
 });
 
-// Output images: see appwire.MergeOutputImages; input images keep the length rule.
+// Output images: see appwire.MergeOutputImages; input images: see appwire.MergeInputImages.
 test("an empty input images list never erases the images an older page carries", () => {
   const thread = testThread({
     turns: [
@@ -6402,11 +6435,9 @@ test("an empty input images list never erases the images an older page carries",
 // #1656: a settle says nothing about images unless it carries them. The wire has
 // no "the input images are gone" signal — an item's images are what the user
 // sent — so the hub keeps whatever list it already had whenever the incoming one
-// is empty (`len(incoming.Images) == 0` → `incoming.Images = existing.Images`,
-// server/appwire_turns.go:884-886, and its twin at
-// internal/apptranscript/logical_turn.go:309), and mergePageItem already reads an
-// empty list the same way (imagesToItemImagesForSession answers undefined for
-// it). item/completed rebuilt the item from its payload and layered only
+// is empty (appwire.MergeInputImages), and mergePageItem already reads an empty
+// list the same way (imagesToItemImagesForSession answers undefined for it).
+// item/completed rebuilt the item from its payload and layered only
 // text/reasoning/arguments/timing off the old one, so a settle that named no
 // images — or an empty list, which reads the same — cleared the attachment row
 // the reader was looking at. mergeItemImages gives the settle the hub's rule.
@@ -6719,4 +6750,153 @@ test("item/completed carrying an explicit empty outputImages list clears the ima
   // An explicit empty list removes them.
   model = settle([], 1004, model);
   expect(itemAt(turnAt(model, 0), 0).outputImages).toEqual([]);
+});
+
+// applyNotification is generic over the model: a caller whose model is a
+// ThreadModel plus its own fields (native's MobileConversation = ThreadModel
+// & { items }, say) gets that SAME type back, extra fields intact — at runtime
+// and in the type. The WrappedModel annotations are the compile-time half of
+// this test: if applyNotification returned ThreadModel again, these assignments
+// would not typecheck, and `npm run typecheck` (the frontend's tsc program,
+// which includes the package's test files) is what fails then.
+type WrappedModel = ThreadModel & { wrapperMarker: number };
+
+test("applyNotification keeps a wrapper model's extra fields and type through every fold shape", () => {
+  const wrapped: WrappedModel = { ...testHydrate(), wrapperMarker: 7 };
+
+  // turn/started builds its result from `{ ...model, ... }` — the case the
+  // wrapper used to need a cast for.
+  const started: WrappedModel = applyNotification(
+    wrapped,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  expect(started.wrapperMarker).toBe(7);
+  expect(started.activeTurnId).toBe("turn_1");
+
+  // A scalar patch spreads the same way.
+  const status: WrappedModel = applyNotification(
+    started,
+    { method: "thread/status/changed", params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" } } },
+    1002,
+  );
+  expect(status.wrapperMarker).toBe(7);
+  expect(status.status).toEqual({ type: "active" });
+
+  // A frame for another thread is the same-reference no-op; the extra field
+  // rides along because the object is the same one.
+  const untouched: WrappedModel = applyNotification(
+    status,
+    { method: "thread/status/changed", params: { threadId: "thr_other", ref: "ref_other", status: { type: "idle" } } },
+    1003,
+  );
+  expect(untouched).toBe(status);
+  expect(untouched.wrapperMarker).toBe(7);
+
+  // The modelRetry-clearing branch rebuilds the model without its retry field;
+  // the wrapper field survives that rebuild too, and the cleared key is gone
+  // rather than present-and-undefined.
+  const retrying: WrappedModel = applyNotification(
+    started,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 1000,
+        errorClass: "rate_limit",
+        statusCode: 429,
+        groupElapsedMs: 500,
+        attemptCap: 3,
+      },
+    },
+    1004,
+  );
+  expect(retrying.modelRetry).toBeDefined();
+  const cleared: WrappedModel = applyNotification(
+    retrying,
+    {
+      method: "item/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "completed", text: "done" },
+      },
+    },
+    1005,
+  );
+  expect(cleared.wrapperMarker).toBe(7);
+  expect(cleared.modelRetry).toBeUndefined();
+  expect("modelRetry" in cleared).toBe(false);
+});
+
+// The generic preserves the caller's OWN extra fields, not a narrowing of
+// ThreadModel's. The reducer owns and rewrites lastFrameAt/modelRetry/status,
+// so its return types those as ThreadModel's — a caller that intersects one to
+// a narrower type must not read the narrowed type back off the result.
+type NarrowedRetryModel = ThreadModel & { modelRetry: NonNullable<ThreadModel["modelRetry"]> };
+
+test("applyNotification returns ThreadModel's type for the fields the fold owns, not the caller's narrowing", () => {
+  const narrowed: NarrowedRetryModel = {
+    ...testHydrate(),
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 1000,
+      groupElapsedMs: 0,
+      attemptCap: 3,
+      receivedAt: 1000,
+    },
+  };
+  // turn/started is a turn boundary: the fold clears modelRetry.
+  const folded = applyNotification(
+    narrowed,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  // @ts-expect-error the fold owns modelRetry: the return types it as ThreadModel["modelRetry"] (possibly undefined), not the caller's required narrowing.
+  const stillRequired: NonNullable<ThreadModel["modelRetry"]> = folded.modelRetry;
+  expect(stillRequired).toBeUndefined();
+});
+
+// ModelExtras must DISTRIBUTE over a union M. A plain Omit collapses
+// Omit<A | B, keyof ThreadModel> to the members' common keys, so the return
+// would degrade to bare ThreadModel and drop each member's own extra field.
+type WrappedA = ThreadModel & { extraA: number };
+type WrappedB = ThreadModel & { extraB: string };
+
+// Widening through a declared union return defeats control-flow narrowing:
+// `const u: WrappedA | WrappedB = <a WrappedA literal>` is narrowed to
+// WrappedA at its use, so the argument would never be the union the review
+// asked about.
+function asUnion(model: WrappedA): WrappedA | WrappedB {
+  return model;
+}
+
+test("applyNotification distributes a union model's extra fields member by member", () => {
+  const folded = applyNotification(
+    asUnion({ ...testHydrate(), extraA: 1 }),
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  // The compile-time half: the return is
+  // (ThreadModel & { extraA }) | (ThreadModel & { extraB }), so it is assignable
+  // to that distributive union. A non-distributive Omit types it as bare
+  // ThreadModel and this assignment does not typecheck.
+  const distributed: (ThreadModel & { extraA: number }) | (ThreadModel & { extraB: string }) = folded;
+  expect(distributed).toBe(folded);
+  expect("extraA" in folded && folded.extraA).toBe(1);
 });

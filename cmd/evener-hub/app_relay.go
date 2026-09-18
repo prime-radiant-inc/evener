@@ -241,6 +241,24 @@ func stampClosedThreadCapabilities(notification appwire.Notification, allowFork 
 	return notification
 }
 
+// relayGaveUpCapabilities is the action set the relay advertises beside the
+// idle status it synthesizes when a mid-turn daemon stops answering. It is the
+// hub's own answer, so it applies the same gate stampClosedThreadCapabilities
+// uses: only a local thread is this hub's to answer for, because only a local
+// session is the past index's to resume. A non-local (federated) source keeps
+// the masked set it sent — nil means "no update", and advertising a resume
+// story the hub cannot honour would offer actions it would refuse. The fork
+// field is resolved through the same ownership fence a past read uses, so the
+// pushed set and the read that follows it cannot drift.
+func relayGaveUpCapabilities(cfg hubcore.WebConfig, relayKey string, thread appwire.Thread) *appwire.ThreadCapabilities {
+	if !strings.HasPrefix(relayKey, "local:") {
+		return nil
+	}
+	set := pastThreadCapabilities()
+	set.ForkFromTurn = applyHubForkCapability(cfg, thread).Evener.Capabilities.ForkFromTurn
+	return &set
+}
+
 // stampResyncTarget names the route a fanned-out daemon-gone resync is being
 // delivered to. The relay publishes that frame with no target so it reaches
 // every route the relay serves (a read-only child alias shares the root's
@@ -1761,6 +1779,20 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 			// per stall: clearing activeTurnID makes every later call in the same
 			// stall a no-op, so continued backoff never re-broadcasts the same
 			// failure.
+			//
+			// Both frames name the relay's target. The synthesized failure is the
+			// turn's; the session STATUS is thread/status/changed's, never
+			// turn/completed's — the daemon's real failure exit emits the same
+			// pair (agent/session_lifecycle.go's endInputAtTurnFailure announces
+			// EventSessionEnd{Reason:"turn_failed"} as
+			// thread/status/changed(idle)). Without the status frame a client
+			// that leaves the status to the status frame, as the shared web and
+			// mobile reducer now does, would keep the session active with Stop
+			// and Steer still showing and Send withheld — the exact stall this
+			// synthesis exists to end. The capabilities are the hub's own answer
+			// for a session whose daemon is gone (relayGaveUpCapabilities, the set
+			// a past read returns), because the departing daemon's set describes
+			// the turn that is over.
 			giveUpOnActiveTurn := func(cause error) {
 				if activeTurnID == "" {
 					return
@@ -1771,8 +1803,10 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 				if cause != nil {
 					message += ": " + cause.Error()
 				}
-				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, map[string]any{
-					"turn": appwire.Turn{
+				server.Broadcast(relayKey, appwire.NotifyTurnCompleted, appwire.TurnCompletedParams{
+					ThreadID: threadID,
+					Ref:      subscribeParams.Ref,
+					Turn: appwire.Turn{
 						ID:     turnID,
 						Status: appwire.TurnStatusFailed,
 						Error: &appwire.TurnError{
@@ -1780,6 +1814,12 @@ func newHubRelayFunctions(server *appserver.Server, cfg hubcore.WebConfig, sourc
 							Source:  "hub",
 						},
 					},
+				})
+				server.Broadcast(relayKey, appwire.NotifyThreadStatusChanged, appwire.ThreadStatusChangedParams{
+					ThreadID:     threadID,
+					Ref:          subscribeParams.Ref,
+					Status:       appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+					Capabilities: relayGaveUpCapabilities(cfg, relayKey, thread),
 				})
 			}
 			recordFailure := func(cause error) {

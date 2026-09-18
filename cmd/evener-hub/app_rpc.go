@@ -370,6 +370,14 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	return server
 }
 
+// newHubAppServerWithNavigationAndTrace builds the RPC server and registers
+// every handler. cfg.PluginManager, when set, is the one every plugin
+// handler here uses (newWebServer constructs it and wires it, after this
+// function returns, to the very server it built, so it wires nothing here);
+// nil falls back to a fresh plugins.NewManager(cfg.PluginRoot), wired to this
+// server directly, for a caller that never builds through newWebServer
+// (most tests, and any embedder calling this constructor's exported
+// wrappers directly).
 func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver, appwireTrace *appserver.WebSocketTrace) (*appserver.Server, *hubHostAdminController) {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
@@ -498,6 +506,23 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 			auth:                authController,
 		}
 	}
+	// cfg.PluginManager, when the caller (newWebServer) already set it, is the
+	// one Manager every plugin surface below shares: this controller,
+	// registerPluginAutoUpgradeHandlers, and — via cfg, which
+	// registerThreadHandlers below captures by value — hubThreadStart and
+	// hubSpawnSlashCatalog's ResolveForLaunch. A caller that never builds
+	// through newWebServer (most tests, and any embedder calling
+	// newHubAppServer/newHubAppServerWithNavigation directly) leaves it nil:
+	// this constructs one and wires it to this server itself, the same way
+	// newWebServer wires cfg.PluginManager, so plugin/marketplace mutations
+	// and checkNow on this server still broadcast rather than going silent.
+	mgr := cfg.PluginManager
+	if mgr == nil {
+		mgr = plugins.NewManager(cfg.PluginRoot)
+		wirePluginStoreBroadcast(mgr, server)
+	}
+	cfg.PluginManager = mgr
+	pluginsController := &hubPluginsController{mgr: mgr, launchConfigRoot: hubLaunchConfigRoot(cfg)}
 	relayFunctions := newHubRelayFunctions(server, cfg, sources)
 	if observeHubRelayFunctions != nil {
 		observeHubRelayFunctions(relayFunctions)
@@ -510,7 +535,6 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// root, not HubStateRoot (machine-generated state).
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg), cfg.APILogDefault)
 	registerLaunchHandlers(server, launchController)
-	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)
@@ -524,7 +548,7 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	// trigger. It wraps the Ensure-backed dialing seam and is the only method
 	// that may dial a remote host on the user's behalf.
 	registerHostAttachHandler(server, cfg, sources)
-	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
+	registerPluginAutoUpgradeHandlers(server, pluginsController.mgr)
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	registerKeybindingsHandlers(server, cfg.KeybindingsStore)
 	registerAgentsDocHandlers(server, hubAgentsDocPath(cfg))
@@ -1127,49 +1151,43 @@ func registerAuthHandlers(server *appserver.Server, authController *hubAuthContr
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLoginComplete, func(ctx context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
 		resp, err := authLoginComplete(authController, ctx, params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
-		}
+		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthLogout, func(ctx context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
 		resp, err := authController.Logout(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
-		}
+		notifyAuthWrite(server, err, resp.Status, params.OriginClientId)
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthList, func(_ context.Context, params appwire.EmptyParams) (appwire.AuthListResponse, error) {
 		return authController.List(params)
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.ApiKeySet(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
+	// ApiKeySet, ApiKeyClear and CredentialJsonSet all answer with a bare
+	// AuthStatusResponse, so one closure covers the broadcast every one of
+	// them owes evener/auth/updated when its write applied.
+	authStatusWrite := func(originClientID string, call func() (appwire.AuthStatusResponse, error)) (appwire.AuthStatusResponse, error) {
+		resp, err := call()
+		notifyAuthWrite(server, err, resp, originClientID)
 		return resp, err
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeySet, func(ctx context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeySet(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthApiKeyClear, func(ctx context.Context, params appwire.AuthApiKeyClearParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.ApiKeyClear(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
-		return resp, err
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.ApiKeyClear(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthCredentialJsonSet, func(ctx context.Context, params appwire.AuthCredentialJsonSetParams) (appwire.AuthStatusResponse, error) {
-		resp, err := authController.CredentialJsonSet(params)
-		if err == nil {
-			notifyAuthUpdated(server, resp.Provider, resp.ActiveSource, params.OriginClientId)
-		}
-		return resp, err
+		return authStatusWrite(params.OriginClientId, func() (appwire.AuthStatusResponse, error) { return authController.CredentialJsonSet(params) })
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDeviceStart, func(ctx context.Context, params appwire.AuthDeviceStartParams) (appwire.AuthDeviceStartResponse, error) {
 		return authController.DeviceStart(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerAuthDevicePoll, func(ctx context.Context, params appwire.AuthDevicePollParams) (appwire.AuthDevicePollResponse, error) {
 		resp, err := authDevicePoll(authController, ctx, params)
-		if err == nil && resp.State == "authorized" {
-			notifyAuthUpdated(server, resp.Status.Provider, resp.Status.ActiveSource, params.OriginClientId)
+		// A pending poll wrote nothing, which the state says; an authorized one
+		// wrote the record, whether or not the status read after it failed.
+		if resp.State == "authorized" {
+			notifyAuthWrite(server, err, *resp.Status, params.OriginClientId)
 		}
 		return resp, err
 	})
@@ -1187,55 +1205,37 @@ func registerInstanceHandlers(server *appserver.Server, instancesController *hub
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceList, func(_ context.Context, _ appwire.EmptyParams) (appwire.InstanceListResponse, error) {
 		return instancesController.List(), nil
 	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Create(params); err != nil {
-			return appwire.InstanceListResponse{}, err
+	// Every instance write answers the same way: a write that applied is
+	// announced, whether or not the step after it failed (writeDidApply), and
+	// the error still goes back to the client that asked, which is the only
+	// one that can act on what was left behind.
+	instanceWrite := func(apply func() error) (appwire.InstanceListResponse, error) {
+		err := apply()
+		if writeDidApply(err) {
+			notifyInstanceUpdated(server)
 		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Edit(params); err != nil {
-			// A rename that persisted before it failed leaves every other
-			// client's list as stale as a clean one does, so it is announced
-			// too; the error still goes back to the client that asked, which
-			// is the only one that can act on the leftover credential.
-			if _, persisted := errors.AsType[renamePersistedError](err); persisted {
-				notifyInstanceUpdated(server)
-			}
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.Remove(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.SetDefault(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
-		if err := instancesController.SetModelDisabled(params); err != nil {
-			return appwire.InstanceListResponse{}, err
-		}
-		notifyInstanceUpdated(server)
-		return instancesController.List(), nil
-	})
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
-		resp, err := instancesController.RefreshModels(ctx, params)
 		if err != nil {
 			return appwire.InstanceListResponse{}, err
 		}
-		notifyInstanceUpdated(server)
-		return resp, nil
+		return instancesController.List(), nil
+	}
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, params appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Create(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, params appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Edit(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, params appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.Remove(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, params appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.SetDefault(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceSetModelDisabled, func(_ context.Context, params appwire.InstanceSetModelDisabledParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.SetModelDisabled(params) })
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerInstanceRefreshModels, func(ctx context.Context, params appwire.InstanceRefreshModelsParams) (appwire.InstanceListResponse, error) {
+		return instanceWrite(func() error { return instancesController.RefreshModels(ctx, params) })
 	})
 }
 
@@ -1253,14 +1253,14 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchSetLayer, func(ctx context.Context, params appwire.LaunchConfigSetLayerParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchController.SetLayer(ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, params.Layer)
 		}
 		return resp, err
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerLaunchTrustRepo, func(ctx context.Context, params appwire.LaunchConfigTrustRepoParams) (appwire.LaunchConfigResolved, error) {
 		resp, err := launchTrustRepo(launchController, ctx, params)
-		if err == nil {
+		if writeDidApply(err) {
 			notifyLaunchUpdated(server, params.CWD, "repo")
 		}
 		return resp, err
@@ -1268,41 +1268,27 @@ func registerLaunchHandlers(server *appserver.Server, launchController *hubLaunc
 }
 
 // registerPluginHandlers registers the evener/marketplace/* and evener/plugin/*
-// RPC handlers, routed to the plugins controller. Mutations broadcast
-// evener/marketplace/updated or evener/plugin/updated.
+// RPC handlers, routed to the plugins controller. Every mutation here runs
+// through pluginsController.mgr, which newWebServer wires (wirePluginStoreBroadcast)
+// to broadcast evener/marketplace/updated and/or evener/plugin/updated for
+// whatever its own lockStore session actually wrote — the sole notification
+// path for this surface; no handler below calls
+// notifyMarketplaceUpdated/notifyPluginUpdated itself.
 func registerPluginHandlers(server *appserver.Server, pluginsController *hubPluginsController) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceList, func(ctx context.Context, _ appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 		return pluginsController.ListMarketplaces(ctx)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceAdd, func(ctx context.Context, params appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.AddMarketplace(ctx, params)
-		if err == nil {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return pluginsController.AddMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRemove, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RemoveMarketplace(ctx, params)
-		if err == nil {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return pluginsController.RemoveMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceRefresh, func(ctx context.Context, params appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.RefreshMarketplace(ctx, params)
-		if err == nil {
-			notifyMarketplaceUpdated(server)
-		}
-		return resp, err
+		return pluginsController.RefreshMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceEdit, func(ctx context.Context, params appwire.MarketplaceEditParams) (appwire.MarketplaceListResponse, error) {
-		resp, err := pluginsController.EditMarketplace(ctx, params)
-		if err == nil {
-			// An edit can re-key installed plugins, so both lists refresh.
-			notifyMarketplaceUpdated(server)
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.EditMarketplace(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerMarketplaceBrowse, func(ctx context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
 		return pluginsController.Browse(ctx, params)
@@ -1314,59 +1300,71 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 		return pluginsController.Preview(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Install(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Install(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginUpgrade, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Upgrade(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Upgrade(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginRemove, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Remove(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Remove(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginEnable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Enable(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Enable(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginDisable, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.Disable(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.Disable(ctx, params)
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(ctx context.Context, params appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
-		resp, err := pluginsController.SetAutoUpgrade(ctx, params)
-		if err == nil {
-			notifyPluginUpdated(server)
-		}
-		return resp, err
+		return pluginsController.SetAutoUpgrade(ctx, params)
 	})
 }
 
 // notifyMarketplaceUpdated broadcasts a evener/marketplace/updated notification
 // to all connected clients.
-func notifyMarketplaceUpdated(server *appserver.Server) {
+func notifyMarketplaceUpdated(server hostNotificationBroadcaster) {
 	server.BroadcastAll(appwire.NotifyEvenerMarketplaceUpdated, map[string]string{})
 }
 
 // notifyPluginUpdated broadcasts a evener/plugin/updated notification to all
 // connected clients.
-func notifyPluginUpdated(server *appserver.Server) {
+func notifyPluginUpdated(server hostNotificationBroadcaster) {
 	server.BroadcastAll(appwire.NotifyEvenerPluginUpdated, map[string]string{})
+}
+
+// wirePluginStoreBroadcast installs an OnStoreChanged callback (issue #1634)
+// on mgr that broadcasts evener/marketplace/updated and/or
+// evener/plugin/updated for whatever a lockStore session actually wrote —
+// the sole path that broadcasts a plugin-store write reaching every Manager
+// this package constructs: the RPC handlers above, the auto-upgrade daemon
+// and its checkNow handler, hubSeedDefaults, hubPluginGC, and the resolver
+// path a launch reaches through cfg.PluginManager, without any of them
+// needing to call notify*/know this happened.
+//
+// server takes hostNotificationBroadcaster (app_host_admin.go), the same
+// *appserver.Server-shaped seam the host-admin fan-out tests drive with a
+// recorder, rather than *appserver.Server itself, so a test can assert on
+// the real broadcasts this sends without standing up a connection.
+func wirePluginStoreBroadcast(mgr *plugins.Manager, server hostNotificationBroadcaster) {
+	mgr.OnStoreChanged(func(changed plugins.StoreChanged) {
+		if changed.Marketplaces {
+			notifyMarketplaceUpdated(server)
+		}
+		if changed.Plugins {
+			notifyPluginUpdated(server)
+		}
+	})
+}
+
+// newWiredPluginManager constructs a *plugins.Manager rooted at root and
+// wires it to broadcaster in one step, for a caller that already has a live
+// broadcaster to hand it (main_background.go's three background-maintenance
+// sites, each with web.appRPC in hand): the construct-then-wire pair
+// wirePluginStoreBroadcast's own doc comment describes, without repeating it
+// at every call site.
+func newWiredPluginManager(root string, broadcaster hostNotificationBroadcaster) *plugins.Manager {
+	mgr := plugins.NewManager(root)
+	wirePluginStoreBroadcast(mgr, broadcaster)
+	return mgr
 }
 
 // recentProjectDirsLimit is the session creation flows' path-dropdown option
@@ -1453,7 +1451,7 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
 func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
-	resolution, err := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(ctx, cfg.PluginDirs, nil)
+	resolution, err := hubResolvePlugins(ctx, cfg.PluginRoot, cfg.PluginDirs, nil, cfg.PluginManager)
 	if err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "warning: listing plugins: %v\n", err)
 	}
@@ -1470,7 +1468,15 @@ func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.Command
 			Source:       cmd.Source,
 		})
 	}
-	sort.Slice(commands, func(i, j int) bool {
+	sortCommandDescriptors(commands)
+	return appwire.CommandListResponse{Commands: commands}, nil
+}
+
+// sortCommandDescriptors orders command rows by (Name, PluginName, Source).
+// It is stable so rows with equal keys keep their discovery order instead of
+// shuffling nondeterministically under sort.Slice's unstable pdqsort.
+func sortCommandDescriptors(commands []appwire.CommandDescriptor) {
+	sort.SliceStable(commands, func(i, j int) bool {
 		if commands[i].Name != commands[j].Name {
 			return commands[i].Name < commands[j].Name
 		}
@@ -1479,7 +1485,6 @@ func hubCommandList(ctx context.Context, cfg hubcore.WebConfig) (appwire.Command
 		}
 		return commands[i].Source < commands[j].Source
 	})
-	return appwire.CommandListResponse{Commands: commands}, nil
 }
 
 // notifyAuthUpdated broadcasts a evener/auth/updated notification to all connected clients.
@@ -1504,6 +1509,24 @@ func notifyAuthUpdated(server *appserver.Server, provider, activeSource, originC
 		payload["originClientId"] = originClientId
 	}
 	server.BroadcastAll(appwire.NotifyEvenerAuthUpdated, payload)
+}
+
+// notifyAuthWrite broadcasts what a credential or OAuth write actually
+// knows. A clean read (err == nil) has the real provider and active source,
+// so it broadcasts those. A write that applied but whose status read failed
+// (writeApplied's shape) has neither: status is the read's own zero-value
+// fallback (AuthStatusResponse{Provider: name}, ActiveSource == ""), and
+// broadcasting that would announce "nothing active" as fact when the truth
+// was never read. That case broadcasts the no-data form notifyInstanceUpdated
+// uses instead, so clients refetch rather than adopt a fabricated
+// activeSource. A write that never applied broadcasts nothing.
+func notifyAuthWrite(server *appserver.Server, err error, status appwire.AuthStatusResponse, originClientID string) {
+	switch {
+	case err == nil:
+		notifyAuthUpdated(server, status.Provider, status.ActiveSource, originClientID)
+	case writeDidApply(err):
+		notifyInstanceUpdated(server)
+	}
 }
 
 // notifyInstanceUpdated broadcasts a evener/auth/updated notification to all

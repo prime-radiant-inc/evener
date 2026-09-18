@@ -15,7 +15,7 @@ import type { AppwireClientLike, UpdateCheckResponse } from "@evener/appwire-cli
 import { ConnectionClosedError, friendlyErrorMessage, WireError } from "@evener/appwire-client";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
-import { connectionStore } from "./connection";
+import { connectedClientPort } from "./connection";
 
 export type UpdateChannel = "release" | "snapshot";
 
@@ -63,13 +63,7 @@ let deps: Deps = { fetchImpl: (...args) => fetch(...args), reload: () => window.
 // setChannel bumps it too, which retires any check still in flight.
 let checkSequence = 0;
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("hubUpdate store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
-  return client;
-}
+const { requireClient } = connectedClientPort("hubUpdate");
 
 // healthVersion gives up after timeoutMs so a hub that accepts the
 // connection and then never answers cannot outlive RESTART_TIMEOUT_MS.

@@ -20,6 +20,7 @@
 import { create } from "zustand";
 import {
   applyNotification,
+  isActiveItem,
   isStaleCursorError,
   notificationTargetsThread,
   sessionControls,
@@ -40,7 +41,6 @@ import type {
 import {
   activityState,
   clusterActivities,
-  isActiveItem,
   projectItemAttachments,
 } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
@@ -864,7 +864,7 @@ export function createConversationStore() {
     conversation: MobileConversation,
     n: AnyNotification,
   ): MobileConversation {
-    return applyNotification(conversation, n, Date.now()) as MobileConversation;
+    return applyNotification(conversation, n, Date.now());
   }
   // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
   // (page-owned history). On rehydrate page-race merge, only these items are

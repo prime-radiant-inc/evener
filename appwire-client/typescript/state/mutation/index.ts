@@ -1,15 +1,20 @@
 // The mutation state layer, published as
 // `@evener/appwire-client/state/mutation`: the durable record shapes both
 // apps' outboxes store, the provenance rule their projections ask, the
-// discovery half of the outbox itself over a storage port, the pure
-// reconciliation that turns durable records plus a live model into the rows
-// a composer's queue renders, and the pending-turns projection store built
-// on that reconciliation. The storage adapter, the dispatcher's scheduling
-// and every React binding stay in the apps — this subpath is what a record
-// IS, how waiting work gets noticed, how it reconciles, and what a host's
-// own store of them tracks, not where any of it lives.
+// discovery half of the outbox itself over a storage port, the dispatcher
+// that turns a stored record into one attempt at a time with no blind
+// replay, the pure reconciliation that turns durable records plus a live
+// model into the rows a composer's queue renders, and the pending-turns
+// projection store built on that reconciliation. The storage adapter and
+// every React binding stay in the apps — this subpath is what a record IS,
+// how waiting work gets noticed, what may be done about it, how it
+// reconciles, and what a host's own store of them tracks, not where any of
+// it lives.
 
+export type { MutationDispatchClientLookup, MutationDispatcherOptions } from "./dispatcher";
+export { MutationDispatcher, validConsumedClientMutationIds } from "./dispatcher";
 export type {
+  MutationClientLookup,
   MutationDiscoveryReason,
   MutationLifecycleTarget,
   MutationOutboxChannel,
@@ -17,9 +22,16 @@ export type {
   MutationOutboxStorage,
   MutationVisibilityTarget,
 } from "./outbox";
-export { MutationOutbox } from "./outbox";
+export { isClientReady, MutationOutbox } from "./outbox";
 export type { PendingMethod, PendingTurnEntry, PendingTurnState } from "./pendingEntries";
-export { reconcilePendingEntries } from "./pendingEntries";
+export {
+  imagePlaceholder,
+  normalizeText,
+  queueEntryPreviewText,
+  reconcilePendingEntries,
+  skillMarkers,
+  truncateForDisplay,
+} from "./pendingEntries";
 export type {
   PendingTurnsDraftPort,
   PendingTurnsState,
@@ -28,7 +40,9 @@ export type {
   PendingTurnsThreadsPort,
   SubmittedDraft,
 } from "./pendingTurns";
-export { createPendingTurnsStore } from "./pendingTurns";
+export { awaitingFirstFrameSend, blockedEntries, createPendingTurnsStore, recoveryEntries } from "./pendingTurns";
+export type { MutationPersistencePort, MutationPersistenceSnapshot } from "./projection";
+export { replaceTargetRecords } from "./projection";
 export type {
   ClientIdentity,
   ClientIdentityStorage,

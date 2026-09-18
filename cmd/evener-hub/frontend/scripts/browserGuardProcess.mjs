@@ -395,6 +395,12 @@ function signalProcessGroup(processGroupId, signal) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    // EPERM means the group still exists but we are not allowed to signal a
+    // member (a survivor re-parented out from under us, as macOS does). The
+    // liveness probe reads that same errno as "still running", so mirror it
+    // here: report the signal as delivered-but-unconfirmed instead of throwing
+    // out of teardown and failing a guard whose checks all passed (#1429).
+    if (error?.code === "EPERM") return true;
     throw error;
   }
 }
@@ -425,6 +431,9 @@ function signalProfileProcess(processIdentity, signal) {
     return true;
   } catch (error) {
     if (error?.code === "ESRCH") return false;
+    // Same as signalProcessGroup: a refused signal is "still here", not a
+    // teardown failure. The ps-based running check decides when it is gone.
+    if (error?.code === "EPERM") return true;
     throw error;
   }
 }
@@ -535,6 +544,8 @@ export function profileProcessIdentityRunning(
 function waitForProcessTargetExit({
   targetRunning,
   signalTarget,
+  targetName,
+  profileDir,
   subscribeToExit = null,
   unsubscribeFromExit = null,
   pollTarget,
@@ -550,11 +561,13 @@ function waitForProcessTargetExit({
     let gracefulDeadline = null;
     let processCheck = null;
     let killEscalation = null;
+    let exitDeadline = null;
     let settled = false;
     let termStarted = false;
     const cancelScheduled = () => {
       if (gracefulDeadline !== null) cancelEscalation(gracefulDeadline);
       if (killEscalation !== null) cancelEscalation(killEscalation);
+      if (exitDeadline !== null) cancelEscalation(exitDeadline);
       if (processCheck !== null) cancelCheck(processCheck);
     };
     const targetExitListener = () => finish();
@@ -590,11 +603,33 @@ function waitForProcessTargetExit({
       if (gracefulDeadline !== null) cancelEscalation(gracefulDeadline);
       killEscalation = scheduleEscalation(() => {
         try {
-          if (targetRunning() && signalTarget("SIGKILL") === false) finish();
+          if (targetRunning() && signalTarget("SIGKILL") === false) {
+            finish();
+            return;
+          }
         } catch (error) {
           if (error?.code === "ESRCH") finish();
           else fail(error);
+          return;
         }
+        // Signaling is exhausted (SIGTERM, then SIGKILL). The poll above must
+        // not run unbounded: a group that answers EPERM to every signal exists
+        // but can never be killed, so waiting forever would hang the guard
+        // until the CI job timeout. Keep polling for one more grace, then give
+        // up and report the leak by name (#1429), mirroring the helper path's
+        // "did not exit" deadline.
+        if (!pollTarget) return;
+        exitDeadline = scheduleEscalation(() => {
+          try {
+            if (!targetRunning()) {
+              finish();
+              return;
+            }
+            fail(new Error(`${targetName} did not exit after SIGKILL; private profile retained at ${profileDir}`));
+          } catch (error) {
+            fail(error);
+          }
+        }, CHILD_EXIT_GRACE_MS);
       }, CHILD_EXIT_GRACE_MS);
 
       try {
@@ -639,11 +674,16 @@ function waitForChildExit(
   signalGroup,
   scheduleGroupCheck,
   cancelGroupCheck,
+  profileDir,
 ) {
   if (!child) return Promise.resolve();
   return waitForProcessTargetExit({
     targetRunning: () => (processGroupId === null ? !childHasExited(child) : isProcessGroupRunning(processGroupId)),
     signalTarget: (signal) => (processGroupId === null ? child.kill(signal) : signalGroup(processGroupId, signal)),
+    // Neutral: this waits for the Vite dev server as well as Chrome, so a
+    // "browser" prefix would point an operator at the wrong child.
+    targetName: processGroupId === null ? `process ${child.pid}` : `process group ${processGroupId}`,
+    profileDir,
     subscribeToExit: processGroupId === null ? (listener) => child.once("exit", listener) : null,
     unsubscribeFromExit: processGroupId === null ? (listener) => child.removeListener("exit", listener) : null,
     pollTarget: processGroupId !== null,
@@ -832,6 +872,7 @@ export function createBrowserProcessCleanup({
               signalGroup,
               scheduleGroupCheck,
               cancelGroupCheck,
+              profileDir,
             ),
           ),
         );

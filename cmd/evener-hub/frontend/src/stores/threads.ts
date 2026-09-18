@@ -2,7 +2,7 @@
 // refcounted across panes sharing the same ref, and routes live wire
 // notifications into the reducer for whichever tracked model(s) they target.
 // It rides the single AppwireClientLike connection.ts wires via
-// useConnectionStore.getState().connect(client) — this store has no
+// connectionStore.getState().connect(client) — this store has no
 // connect() of its own — and reactively re-attaches its onNotification/onReady
 // handlers to whatever client connectionStore currently holds, via a
 // connectionStore.subscribe() wired at module load (see rewireClient).
@@ -40,11 +40,12 @@ import { createStore } from "zustand/vanilla";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { resetActivitySummaryStoreForTests } from "./activitySummary";
-import { connectionStore } from "./connection";
+import { connectedClientPort, connectionStore } from "./connection";
 import { acknowledgeHumanNote, canWriteHumanNote, resetHumanNoteDrafts } from "./humanNoteDrafts";
-import { MutationDispatcher } from "./mutationDispatcher";
+import { MutationDispatcher, validConsumedClientMutationIds } from "./mutationDispatcher";
 import {
   type MutationAttachment,
+  type MutationClientLookup,
   type MutationIntent,
   type MutationOptimisticRecord,
   MutationOutbox,
@@ -53,6 +54,7 @@ import {
   type MutationRecoveryRecord,
 } from "./mutationOutbox";
 import { MutationOutboxIndexedDB } from "./mutationOutboxIndexedDB";
+import { createReadyGenerationCallback } from "./readyGenerationCallback";
 import { createSecureUUID } from "./secureUUID";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 
@@ -603,6 +605,11 @@ let wiredClient: AppwireClientLike | null = null;
 let readyEpoch = 0;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
+
+// This store's own guard: keybindings.ts and transcriptDisplay.ts wire the
+// same connectionStore client through their own instances, so the three never
+// contend over one shared registration slot.
+const readyGenerationCallback = createReadyGenerationCallback();
 let dispatchReadyClient: AppwireClientLike | null = null;
 let dispatchReadyEpoch = -1;
 const pinnedMutationRefs = new Set<string>();
@@ -620,7 +627,8 @@ const wireSubscribedRefs = new Set<string>();
 
 interface MutationRuntime {
   storage: MutationOutboxIndexedDB;
-  dispatcher: MutationDispatcher;
+  // Bound to the attachment shape this host stages, like the outbox above.
+  dispatcher: MutationDispatcher<MutationAttachment>;
   // The web's attachments carry bytes, so its outbox is the shared class bound
   // to the record shape with a Blob in it.
   outbox: MutationOutbox<MutationAttachment>;
@@ -810,8 +818,14 @@ function getMutationRuntime(): MutationRuntime | null {
         if (isCurrentMutationRuntime(runtime)) threadsStore.setState({ mutationWriteStalled: waiting });
       },
     });
+  // One client lookup for both halves of the mutation runtime: the dispatcher
+  // asks it per target ref, and the outbox asks it ref-less for "is any client
+  // ready right now". Wiring them from one function is what keeps the
+  // dispatcher's readiness and the outbox's from drifting apart.
+  const getClient: MutationClientLookup = (targetRef) =>
+    isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null;
   const dispatcher = new MutationDispatcher(storage, {
-    getClient: (targetRef) => (isCurrentMutationRuntime(runtime) ? currentDispatchClient(targetRef) : null),
+    getClient,
     onStorageChange: (targetRefs) => {
       if (isCurrentMutationRuntime(runtime)) notifyMutationPersistence(targetRefs);
     },
@@ -861,7 +875,7 @@ function getMutationRuntime(): MutationRuntime | null {
     },
   });
   const outbox = new MutationOutbox(storage, {
-    isReady: () => isCurrentMutationRuntime(runtime) && currentDispatchClient() !== null,
+    getClient,
     onDiscover: (targetRefs) => {
       if (runtime) handleDiscoveredMutations(runtime, targetRefs);
     },
@@ -1411,7 +1425,18 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 }
 
 function notificationMutationIdentities(n: AnyNotification): string[] {
-  if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
+  if (n.method === "thread/queueChanged") {
+    // consumedClientMutationIds names entries THIS push's own transition (a
+    // drain) just took out of the queue (issue #1704): the daemon knows
+    // exactly which ids it consumed, so those settle by the same positive-
+    // evidence rule as the remaining, still-queued ids below. Validated the
+    // same way the receipt path validates it: anything not an array of
+    // non-empty strings settles nothing, never guessed at by spreading it.
+    return [
+      ...(n.params.queue.clientMutationIds ?? []),
+      ...validConsumedClientMutationIds(n.params.consumedClientMutationIds),
+    ];
+  }
   if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
   }
@@ -2232,19 +2257,25 @@ function rewireClient(client: AppwireClientLike): void {
   unwireReady?.();
   wiredClient = client;
   unwireNotification = client.onNotification(handleNotification);
-  unwireReady = client.onReady(() => {
-    readyEpoch += 1;
-    threadsStore.setState({ mutationAuthorityRefs: new Set() });
-    // onReady is the SAME client reconnecting: its old connection's
-    // subscriptions are server-side gone too, even though the client object
-    // survives. handleReady re-subscribes the still-tracked refs.
-    wireSubscribedRefs.clear();
-    retireAllOwnedHydrations();
-    dispatchReadyClient = null;
-    dispatchReadyEpoch = -1;
-    dispatchableMutationRefs.clear();
-    void handleReady(client, readyEpoch);
-  });
+  unwireReady = client.onReady(
+    readyGenerationCallback(
+      client,
+      () => wiredClient,
+      () => {
+        readyEpoch += 1;
+        threadsStore.setState({ mutationAuthorityRefs: new Set() });
+        // onReady is the SAME client reconnecting: its old connection's
+        // subscriptions are server-side gone too, even though the client object
+        // survives. handleReady re-subscribes the still-tracked refs.
+        wireSubscribedRefs.clear();
+        retireAllOwnedHydrations();
+        dispatchReadyClient = null;
+        dispatchReadyEpoch = -1;
+        dispatchableMutationRefs.clear();
+        void handleReady(client, readyEpoch);
+      },
+    ),
+  );
   // onReady only fires on a FUTURE transition into "ready" (AppwireClient/
   // FakeClient both dispatch it from within setState/emitStateChange) — it
   // does NOT fire retroactively for a client that is already ready by the
@@ -2270,14 +2301,16 @@ connectionStore.subscribe((state) => {
 });
 
 // requireClient reads the client connection.ts wired via
-// useConnectionStore.getState().connect(client) — threads.ts has no
+// connectionStore.getState().connect(client) — threads.ts has no
 // connect() of its own in the locked interface, so it rides connection.ts's
-// single wiring point.
+// single wiring point. The one thing that is threads-specific is the
+// defensive rewireClient() call (see above), so it takes only the shared
+// resolver and routes every client read through this rewire-aware wrapper -
+// nothing here hands out a bare port whose request/onNotification would
+// silently skip the rewire.
+const { requireClient: resolveCurrentClient } = connectedClientPort("threads");
 function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error("threads store: no client connected; call useConnectionStore.getState().connect(client) first");
-  }
+  const client = resolveCurrentClient();
   rewireClient(client);
   return client;
 }

@@ -7,31 +7,13 @@
 // without rebuilding the store - which is also what keeps the schema cache
 // alive across the session, since the schema is server-global.
 
-import {
-  type AppwireClientLike,
-  createLaunchConfigStore,
-  type LaunchConfigClient,
-  type LaunchConfigStoreState,
-} from "@evener/appwire-client";
+import { createLaunchConfigStore, type LaunchConfigStoreState } from "@evener/appwire-client";
 import { useStore } from "zustand";
-import { connectionStore } from "./connection";
+import { connectedClientPort } from "./connection";
 
-function requireClient(): AppwireClientLike {
-  const client = connectionStore.getState().client;
-  if (!client) {
-    throw new Error(
-      "launchConfig store: no client connected; call useConnectionStore.getState().connect(client) first",
-    );
-  }
-  return client;
-}
-
-const connectedClient: LaunchConfigClient = {
-  // async so a call before connect() rejects, as a real client's would, rather
-  // than throwing at the call site.
-  request: async (method, params, opts) => requireClient().request(method, params, opts),
-  onNotification: (cb) => requireClient().onNotification(cb),
-};
+// The port's `request` is async so a call before connect() rejects, as a real
+// client's would, rather than throwing at the call site.
+const connectedClient = connectedClientPort("launchConfig");
 
 export type { LaunchConfigStoreState };
 

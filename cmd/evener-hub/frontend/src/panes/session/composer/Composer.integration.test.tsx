@@ -1669,7 +1669,7 @@ test("the composer un-hides once the pending ask resolves through the normal sen
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
 
   await act(async () => {
-    await askDockStore.getState().sendBatch("ref_a", batchId);
+    await askDockStore.sendBatch("ref_a", batchId);
     await turnStarted;
     await flushPendingTurnsProjectionForTests();
   });
@@ -1713,7 +1713,7 @@ test("resolving the pending ask announces the composer's restoration via this co
   const batchId = askDockStore.getState().byRef.get("ref_a")?.batches[0]?.id;
   if (batchId === undefined) throw new Error("pending ask batch did not reconcile");
   await act(async () => {
-    await askDockStore.getState().sendBatch("ref_a", batchId);
+    await askDockStore.sendBatch("ref_a", batchId);
   });
 
   expect(await screen.findByText("Message composer ready.")).toBeTruthy();

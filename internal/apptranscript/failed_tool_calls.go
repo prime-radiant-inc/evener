@@ -2,8 +2,6 @@ package apptranscript
 
 import (
 	"encoding/json"
-	"fmt"
-	"os"
 
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
@@ -53,34 +51,12 @@ var ShellToolNames = transcript.ShellToolNames
 // legacy format_version 1 file, a missing one) is unknown, and that arrives as
 // an error rather than a fabricated zero.
 func (c *TurnCache) FailedToolCallsFromFile(path string, maxLineBytes int, fromEntryOrdinal int) (int, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return 0, fmt.Errorf("stat transcript: %w", err)
-	}
-	identity := scanMemoIdentity(info, fromEntryOrdinal)
-
-	c.mu.Lock()
-	if entry, ok := c.entries[path]; ok && entry.failedToolCalls != nil && entry.failedToolCalls.key == identity {
-		count := entry.failedToolCalls.count
-		c.touch(path)
-		c.mu.Unlock()
-		return count, nil
-	}
-	c.mu.Unlock()
-
-	count, err := scanFailedToolCalls(path, maxLineBytes, fromEntryOrdinal)
-	if err != nil {
-		return 0, err
-	}
-
-	c.mu.Lock()
-	entry := c.entries[path]
-	entry.failedToolCalls = &failedToolCallsMemo{key: identity, count: count}
-	c.entries[path] = entry
-	c.touch(path)
-	c.evictLocked()
-	c.mu.Unlock()
-	return count, nil
+	return memoizeScan(c, path, fromEntryOrdinal,
+		func(entry *turnCacheEntry) *scanMemo[int] { return entry.failedToolCalls },
+		func(entry *turnCacheEntry, memo *scanMemo[int]) { entry.failedToolCalls = memo },
+		nil,
+		func() (int, error) { return scanFailedToolCalls(path, maxLineBytes, fromEntryOrdinal) },
+	)
 }
 
 // scanFailedToolCalls reads the transcript once, decoding only the tool calls
@@ -88,32 +64,17 @@ func (c *TurnCache) FailedToolCallsFromFile(path string, maxLineBytes int, fromE
 // rejection, unknown-field strictness, header validation) is exactly the one
 // every other reader in this package applies.
 func scanFailedToolCalls(path string, maxLineBytes int, fromEntryOrdinal int) (int, error) {
-	count := 0
-	ordinal := 0
-	// toolNames resolves a result whose own record omits its name, mirroring
-	// ProjectTurn's map of the same name. It is filled from EVERY assistant
-	// entry, including ones before the divergence cut: a fork child's own
-	// result can answer a call the inherited prefix announced.
-	toolNames := map[string]string{}
-	if _, err := scanSemanticTranscript(path, maxLineBytes, func(raw json.RawMessage) error {
-		ordinal++
-		var record failedToolCallEntry
-		if err := json.Unmarshal(raw, &record); err != nil {
-			// Unreachable for any line scanSemanticTranscript admits: it has
-			// already strictly decoded the whole entry into transcript.Entry,
-			// of which this is a field-for-field subset. A failure here means
-			// this struct has drifted from schema.Turn, and skipping the record
-			// would silently undercount — reporting a wrong count is worse than
-			// reporting none, so surface it.
-			return fmt.Errorf("decode transcript entry tool calls: %w", err)
-		}
-		count += tallyFailedToolCalls(record.Turn.Message.Content, ordinal >= fromEntryOrdinal, toolNames)
-		return nil
-	}); err != nil {
+	failures := newFailureCounter()
+	if err := narrowScan(path, maxLineBytes, 1,
+		decodeNarrowEntry[failedToolCallEntry]("tool calls"),
+		func(record failedToolCallEntry, ordinal int) error {
+			failures.observe(record.Turn.Message.Content, ordinal >= fromEntryOrdinal)
+			return nil
+		}); err != nil {
 		return 0, err
 	}
 	observeIndexRead(ReadStats{failureScans: 1})
-	return count, nil
+	return failures.count, nil
 }
 
 // failedToolResult applies the shared failure rule to this package's narrow
@@ -129,24 +90,37 @@ func failedToolResult(result *failedToolCallResult, toolNames map[string]string)
 	return transcript.FailedToolResult(name, result.IsError, result.ToolState)
 }
 
-// tallyFailedToolCalls applies the failure rule to one entry's narrow content
-// decode: it learns tool names from EVERY call — a fork child's own result can
-// answer a call the inherited prefix announced — and, when counting, counts
-// the failing results. Shared by scanFailedToolCalls and scanDerivedTotals so
-// the two scans apply one rule.
-func tallyFailedToolCalls(parts []toolScanPart, counting bool, toolNames map[string]string) int {
-	count := 0
+// failureCounter tallies the failing tool results across a transcript's
+// entries. It learns every call's name so a result whose own record omits one
+// can be resolved from the call that announced it, mirroring ProjectTurn's map
+// of the same name — filled from EVERY entry, including ones before the
+// divergence cut, because a fork child's own result can answer a call the
+// inherited prefix announced. Shared by scanFailedToolCalls and
+// scanDerivedTotals so both scans apply one rule over one bookkeeping.
+type failureCounter struct {
+	names map[string]string
+	count int
+}
+
+func newFailureCounter() *failureCounter {
+	return &failureCounter{names: map[string]string{}}
+}
+
+// observe applies the failure rule to one entry's narrow content decode.
+// counting reports whether the entry is inside the session's own span (at or
+// after the divergence cut); names are learned from every call regardless, for
+// the reason above.
+func (f *failureCounter) observe(parts []toolScanPart, counting bool) {
 	for _, part := range parts {
 		switch {
 		case part.ToolCall != nil && part.Kind == llm.ContentToolCall:
-			toolNames[part.ToolCall.ID] = part.ToolCall.Name
+			f.names[part.ToolCall.ID] = part.ToolCall.Name
 		case part.ToolResult != nil && part.Kind == llm.ContentToolResult:
-			if counting && failedToolResult(part.ToolResult, toolNames) {
-				count++
+			if counting && failedToolResult(part.ToolResult, f.names) {
+				f.count++
 			}
 		}
 	}
-	return count
 }
 
 // failedToolCallEntry decodes the few fields the count needs.
@@ -185,9 +159,4 @@ type failedToolCallResult struct {
 	Name       string          `json:"name"`
 	IsError    bool            `json:"is_error"`
 	ToolState  json.RawMessage `json:"tool_state"`
-}
-
-type failedToolCallsMemo struct {
-	key   scanMemoKey
-	count int
 }

@@ -192,21 +192,28 @@ Besides the root, `package.json` `exports` publishes these subpaths:
   in the app), announces a commit to sibling clients, and re-scans when a host
   says a scan is worth doing. Every host-shaped capability is an option - the
   channel, the lifecycle and visibility targets, the timer - and none defaults
-  to a browser global, so no DOM type lives here. Its pure reconciliation
-  (`reconcilePendingEntries`) turns those durable records plus a live
-  `ThreadModel` into the `PendingTurnEntry` rows a composer's queue renders -
-  identity-based, so an authoritative projection replaces the same outbox entry
-  rather than duplicating it - and the pending-turns projection store built on
-  that reconciliation: `createPendingTurnsStore({ threads, draft, identity })`
-  is a framework-free store holding a host's own outbox/optimistic/recovery
-  records plus the submission bookkeeping (`submittingRefs`, `submittedHere`)
-  over a `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
+  to a browser global, so no DOM type lives here. It carries
+  `MutationDispatcher` too: one attempt at a time per target ref over the same
+  port, a receipt reconciled into storage before the next attempt, a refusal
+  turned into a recovery record with the daemon's own reason, and an outcome
+  nobody can vouch for left `blockedUnknown` rather than replayed - the rule a
+  client must not break after a lost connection. Every reaction to an outcome (a
+  blocked mutation, a clear's response, a shared note's authority) is a callback
+  the app supplies. Its pure reconciliation (`reconcilePendingEntries`) turns
+  those durable records plus a live `ThreadModel` into the `PendingTurnEntry`
+  rows a composer's queue renders - identity-based, so an authoritative
+  projection replaces the same outbox entry rather than duplicating it - and
+  the pending-turns projection store built on that reconciliation:
+  `createPendingTurnsStore({ threads, draft, identity })` is a framework-free
+  store holding a host's own outbox/optimistic/recovery records plus the
+  submission bookkeeping (`submittingRefs`, `submittedHere`) over a
+  `PendingTurnsThreadsPort` (a ref's current `ThreadModel`), a
   `PendingTurnsDraftPort` (a ref's composer-draft revision, content and
   clear) and the host's own `ClientIdentity` (`isOwnMutationRecord`),
   generic over the attachment type like the records above. No storage
-  adapter, scheduling policy or DOM type lives here - just the shapes, the
-  identity, the rules, the reconciliation and the store built on them.
-  Resolves to `state/mutation/index.ts`, a barrel.
+  adapter lives here either - just the shapes, the identity, the rules, the
+  attempts, the reconciliation and the store built on them. Resolves to
+  `state/mutation/index.ts`, a barrel.
 
 A module is a root export when it is part of the client surface a consumer
 takes to talk to a hub: the client, the wire types, the errors, and the pure

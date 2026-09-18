@@ -30,6 +30,12 @@ export interface ArchiveParams {
   id: string;
   workingDir?: string;
   archived: boolean;
+  /**
+   * Source names the registered source (host) that owns the project. Empty
+   * and "local" both address the controller's own projects; a configured host
+   * name addresses that host's project, so two hosts' projects with the same
+   * ID (or path) keep separate archive decisions.
+   */
   source?: string;
 }
 
@@ -60,27 +66,75 @@ export interface AttentionSummary {
 
 export interface AuthApiKeyClearParams {
   provider: string;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Provider (InstanceEntry.endpointFingerprint), checked the way
+   * AuthApiKeySetParams's is. The clear was confirmed for the row the client
+   * listed, so a name another client has re-pointed since must not have its
+   * replacement instance's key removed. Empty asserts nothing.
+   */
   expectedEndpointFingerprint?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this clear triggers, so the originator can
+   * recognize its own echo by id instead of by provider plus timing.
+   * Optional: empty (an older build, the TUI) leaves the broadcast without
+   * an id and consumers on the provider-plus-timing fallback.
+   */
   originClientId?: string;
 }
 
 export interface AuthApiKeySetParams {
   provider: string;
   value: string;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Provider (InstanceEntry.endpointFingerprint). The hub refuses the
+   * write when the name resolves to a different endpoint by the time it
+   * lands: the client's own comparison reads a listing a concurrent change
+   * can outdate, so only the hub can make the check and the write one step.
+   * Empty asserts nothing, which is what a client that never saw an endpoint
+   * sends.
+   */
   expectedEndpointFingerprint?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this write triggers, so the originator can
+   * recognize its own echo by id instead of by provider plus timing.
+   * Optional: empty (an older build, the TUI) leaves the broadcast without
+   * an id and consumers on the provider-plus-timing fallback.
+   */
   originClientId?: string;
 }
 
 export interface AuthCredentialJsonSetParams {
   provider: string;
   value: string;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Provider, checked the same way as AuthApiKeySetParams's.
+   */
   expectedEndpointFingerprint?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this write triggers, so the originator can
+   * recognize its own echo by id instead of by provider plus timing.
+   * Optional: empty (an older build, the TUI) leaves the broadcast without
+   * an id and consumers on the provider-plus-timing fallback.
+   */
   originClientId?: string;
 }
 
 export interface AuthDevicePollParams {
   provider: string;
   flowId: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast an authorized poll triggers, so the
+   * originator can recognize its own echo by id instead of by provider plus
+   * timing. Optional: empty (an older build, the TUI) leaves the broadcast
+   * without an id and consumers on the provider-plus-timing fallback.
+   */
   originClientId?: string;
 }
 
@@ -110,6 +164,13 @@ export interface AuthLoginCompleteParams {
   provider: string;
   flowId: string;
   redirectUrl: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this login completion triggers, so the
+   * originator can recognize its own echo by id instead of by provider plus
+   * timing. Optional: empty (an older build, the TUI) leaves the broadcast
+   * without an id and consumers on the provider-plus-timing fallback.
+   */
   originClientId?: string;
 }
 
@@ -129,7 +190,23 @@ export interface AuthLoginStartResponse {
 
 export interface AuthLogoutParams {
   provider: string;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Provider (InstanceEntry.endpointFingerprint). The hub refuses the
+   * logout when the name resolves to a different endpoint by the time it
+   * lands: the sign-out was confirmed for the row the client listed, and a
+   * name another client has re-pointed since belongs to a different
+   * instance. Empty asserts nothing, which is what a client that never saw
+   * an endpoint sends.
+   */
   expectedEndpointFingerprint?: string;
+  /**
+   * OriginClientId is the client identity the hub echoes into the
+   * evener/auth/updated broadcast this logout triggers, so the originator
+   * can recognize its own echo by id instead of by provider plus timing.
+   * Optional: empty (an older build, the TUI) leaves the broadcast without
+   * an id and consumers on the provider-plus-timing fallback.
+   */
   originClientId?: string;
 }
 
@@ -149,8 +226,20 @@ export interface AuthStatusResponse {
   activeSource: string;
   authModes?: string[];
   hasStoredOAuth: boolean;
+  /**
+   * HasStoredFile is true when a key exists in credentials.toml.
+   */
   hasStoredFile?: boolean;
+  /**
+   * EnvVar is the name of the env var that supplies a key, when present.
+   */
   envVar?: string;
+  /**
+   * ShadowedEnvVar names an environment variable that is set but loses to
+   * a higher-precedence credential (api_key, credential_headers, or
+   * store, spec §10); empty when no such variable is set, including when
+   * an env source is itself what resolves.
+   */
   shadowedEnvVar?: string;
   email?: string;
   storedEmail?: string;
@@ -163,6 +252,14 @@ export interface AuthStatusResponse {
 
 export interface AuthTestParams {
   provider: string;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client reviewed Provider
+   * against (InstanceEntry.endpointFingerprint), when it captured one. The hub
+   * validates it against the configuration the probe will dial and refuses the
+   * check rather than send the stored credential to an endpoint the client
+   * never showed. Empty asserts nothing, which is what the TUI's credential
+   * panel always sends.
+   */
   expectedEndpointFingerprint?: string;
 }
 
@@ -187,6 +284,11 @@ export interface CommandDescriptor {
   pluginName?: string;
   description?: string;
   argumentHint?: string;
+  /**
+   * Source is "plugin", "user", or "project". "project" is returned by the
+   * spawn-scoped catalog (project commands are cwd-dependent); it never
+   * appears in the hub-wide catalog.
+   */
   source?: string;
 }
 
@@ -282,6 +384,16 @@ export interface EmptyResponse {
 export interface EvenerAuthUpdatedParams {
   provider?: string;
   activeSource?: string;
+  /**
+   * OriginClientId is the echoed OriginClientId of the auth mutation that
+   * caused this broadcast - the identity of the client whose change it
+   * announces, so that client can recognize its own echo by id instead of
+   * by provider plus timing. Optional: a mutation from a client that sends
+   * none (an older build, the TUI) leaves the broadcast without an id, and
+   * a consumer matching a broadcast against its own mutation then falls
+   * back to provider-plus-timing correlation. Absent for a
+   * provider-instance broadcast, which echoes no auth mutation.
+   */
   originClientId?: string;
 }
 
@@ -353,7 +465,24 @@ export interface EvenerDiagnostics {
   watches?: EvenerWatchInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
+  /**
+   * DelegateDiagnostics carries delegate-SUBSYSTEM diagnostics that are
+   * not about any one delegate -- e.g. the shared delegates.jsonl itself
+   * being unreadable (delegatestore.ErrLineTooLong), which yields zero
+   * delegates to attach a per-delegate diagnostic to. Delegates[].Diagnostics
+   * (EvenerDelegateInfo) is per-delegate and can only ever be populated
+   * when at least one delegate exists, so a diagnostic about the shared
+   * journal itself needs a vessel that does not depend on any delegate
+   * surviving to carry it.
+   */
   delegateDiagnostics?: string[];
+  /**
+   * SkillDiagnostics carries skill-discovery diagnostics copied from the
+   * Stage 1 catalog (collisions, unreadable sources, invalid metadata or
+   * controls). Skills stays the path-free completion catalog;
+   * SkillDiagnostics is the explicit source-detail view, so the two never
+   * borrow each other's identity.
+   */
   skillDiagnostics?: EvenerSkillDiagnostic[];
 }
 
@@ -378,6 +507,12 @@ export interface EvenerJobInfo {
   fromWatch?: boolean;
   background?: boolean;
   command?: string;
+  /**
+   * Intent is the tool call's `intent` argument (see WithIntentParameter):
+   * the model's own one-line statement of why the command is being run.
+   * Captured on the job record at launch so job surfaces (the sidebar rail,
+   * the activity panel) can show it alongside the command.
+   */
   intent?: string;
   parentDelegateId?: string;
   delegateId?: string;
@@ -426,6 +561,14 @@ export interface EvenerSkillDiagnostic {
 export interface EvenerSkillInfo {
   name: string;
   description?: string;
+  /**
+   * DisableModelInvocation, UserInvocable, and Available copy the Stage 1
+   * invocation controls and availability verdict verbatim; AppWire adds no
+   * policy of its own. The two control booleans serialize without omission
+   * so an unwired source reads as a concrete false rather than an implied
+   * one. Composer completion uses Available && UserInvocable, and still
+   * requires the target's SkillInput capability before submission.
+   */
   disableModelInvocation: boolean;
   userInvocable: boolean;
   available: boolean;
@@ -433,6 +576,9 @@ export interface EvenerSkillInfo {
 }
 
 export interface EvenerSteeringInjectedParams {
+  /**
+   * StartedAt is the server event timestamp in epoch milliseconds.
+   */
   startedAt?: number;
   threadId: string;
   ref: string;
@@ -455,12 +601,20 @@ export interface EvenerSubagentPreviewResponse {
 }
 
 export interface EvenerThread {
+  /**
+   * ResumeRequired means recovery stopped this session and automatic actions
+   * must wait for an explicit thread/resume. Saved transcripts remain readable.
+   */
   resumeRequired?: boolean;
   ref: string;
   instanceId?: string;
   parentRef?: string;
   kind?: string;
   profile?: string;
+  /**
+   * TurnCount is the daemon's total completed model-response count. It stays
+   * independent of Turns so a bounded metadata read never loads the transcript.
+   */
   turnCount?: number;
   activeTurnId?: string;
   contextPressure?: number;
@@ -469,24 +623,146 @@ export interface EvenerThread {
   contextRemaining?: number;
   capabilities: ThreadCapabilities;
   diagnostics?: EvenerDiagnostics;
+  /**
+   * Queue carries authoritative queue depth + preview for the per-session
+   * input queue (kata r80p). Both UIs derive their queue-preview chrome
+   * from this field rather than mirroring queue mutations locally, which
+   * fixes multi-client incoherence and post-reload state. The empty zero
+   * value (Depth==0, Preview==nil) means "no queued messages".
+   */
   queue: QueueState;
   pendingMutations?: PendingMutation[];
+  /**
+   * MutationStateAuthoritative identifies a daemon snapshot that can settle
+   * uncertain sends. Saved transcript data cannot prove a mutation absent.
+   */
   mutationStateAuthoritative?: boolean;
+  /**
+   * Tasks carries the task-list progress for a session snapshot. It is nil
+   * when the source cannot authoritatively read task state, including an old
+   * daemon or a missing persisted task file; a present zero is real zero.
+   */
   tasks?: TaskAggregate;
+  /**
+   * Goal carries the session's /goal state when a goal is set, else nil.
+   * It powers `/goal status` and a future status-bar indicator without a
+   * bespoke transport — like Queue, it is structured per-session state read
+   * from the already-fetched thread snapshot.
+   */
   goal?: GoalState;
+  /**
+   * HumanNote carries the human's one-paragraph session whiteboard when set,
+   * else empty. It powers the shared-notes display without a bespoke
+   * transport — like Goal, it is structured per-session state read from the
+   * already-fetched thread snapshot.
+   */
   humanNote?: string;
+  /**
+   * AgentNote carries the agent's one-paragraph session whiteboard when set,
+   * else empty. It is read from the already-fetched thread snapshot like
+   * HumanNote.
+   */
   agentNote?: string;
+  /**
+   * SessionURLs carries the session's shared-notes URL list when set, else
+   * nil. Empty/nil means no links. It is read from the already-fetched
+   * thread snapshot like HumanNote.
+   */
   sessionUrls?: SessionURL[];
+  /**
+   * Usage, WorkMillis, and ActiveTurnStartedAt are the daemon's live
+   * working-state/token metrics (WS2), served from the daemon's materialized
+   * thread envelope, which is refreshed at the turn boundaries that move
+   * them. Usage is a pointer
+   * (unlike the other two scalars) because EvenerUsage is a value struct whose
+   * omitempty would never omit — nil is how a fresh thread, an old daemon, or a
+   * source-backed thread that omits the field signals "no token data" rather
+   * than rendering ↑0 ↓0.
+   * ActiveTurnStartedAt is Unix epoch MILLISECONDS (matching WorkMillis's
+   * scale, and the web reducer's epoch-ms read), 0 when no turn is running.
+   * Emitting seconds here would mix units with the consumer's ms clock.
+   */
   usage?: EvenerUsage;
   workMillis?: number;
   activeTurnStartedAt?: number;
+  /**
+   * Cost is the session's cumulative estimated dollar total — the "~$X.XX"
+   * string EstimateCost derives from Usage at the registry row's cost, the
+   * session-scope sibling of the per-turn Turn.Cost (same shape, same "~"
+   * estimate marker). Empty (omitted) when Usage is nil or the row carries
+   * no cost: an honest "unknown" that renders no chip, never a
+   * misleading "~$0.00" — the only "~$0.00" a consumer sees is a genuinely
+   * sub-cent priced session. Derived from the authoritative full-session
+   * cumulative Usage (the same total the token cluster trusts), never a
+   * page of client-loaded turns, so it is pagination-proof by construction.
+   * Stamped beside Usage at each EvenerThread producer (the server's live
+   * appThread and the hub's past-entry hydrate), so it stays current across
+   * snapshots exactly as WorkMillis/Usage do. The whole cumulative Usage is
+   * priced at the thread's CURRENT model: after a mid-session model switch,
+   * earlier turns are repriced at current rates (the flat CumulativeUsage
+   * carries no per-model breakdown; identical to the legacy computation).
+   */
   cost?: string;
+  /**
+   * FailedToolCalls is how many of this session's tool calls failed — the
+   * session-scale count of exactly what the transcript marks with a failure
+   * glyph (a tool result carrying an error, or a shell command that ran and
+   * exited nonzero). It answers "did anything go wrong in here" without
+   * reading the transcript, which a client cannot answer for itself: a
+   * windowed thread/read hands it a fraction of the session, and a count over
+   * that fraction would report a comforting "0 failed" for a session full of
+   * failures nobody has scrolled to.
+   *
+   * TWO PRODUCERS, one rule and one scope. A running session's count comes
+   * from the daemon, which counts failures as it writes them to the transcript
+   * and seeds from the file on resume — complete for a live session, where
+   * re-reading the file would return a floor (it is still being appended to)
+   * and counting in-memory history would shed whatever compaction summarized
+   * away. A cold session's count comes from the hub scanning the finished
+   * transcript. Both apply agent/transcript.FailedToolResult over the
+   * session's own span, so the figure does not move when a session goes cold.
+   *
+   * A pointer, because 0 and unknown are different claims and only one of
+   * them is good news. Zero means the whole session was counted and nothing
+   * failed. Nil means nobody counted: the transcript is unreadable (a legacy
+   * format_version 1 file, or a missing one), the session has no transcript,
+   * or the producer does not derive the figure at all — an old daemon, a
+   * source-backed thread that omits the field, or the hub's per-entry list
+   * sweeps, which cannot afford a scan per session. Consumers render nil as
+   * nothing, never as a fabricated zero.
+   */
   failedToolCalls?: number;
+  /**
+   * AskPending is true while an ask_user question is unanswered. Additive:
+   * absent on old daemons and source-backed threads that omit the field,
+   * decoding as false.
+   */
   askPending?: boolean;
+  /**
+   * PendingEscalations is the M7 surface-on-entry snapshot: the redacted approval
+   * cards for any sandbox-exemption escalations currently blocked on this session,
+   * so a client entering / reconnecting to / not-having-seen-live this session
+   * surfaces the card(s). It is a HUMAN-CLIENT field only — it is never part of the
+   * model's transcript or any model-visible projection. Absent on old daemons
+   * and source-backed threads that omit the field.
+   */
   pendingEscalations?: SandboxEscalationRequested[];
+  /**
+   * ReasoningEffort, ReasoningEffortLevels, and SupportsReasoning are the
+   * live reasoning-effort settings for the session's current profile, so a
+   * cold-attached client can render both settings and populate pickers
+   * with no prior thread/model/changed or thread/reasoning-effort/changed
+   * notification. ModelProvider (on Thread, not here) stays the model field.
+   */
   reasoningEffort?: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  /**
+   * VisionModel is the session's vision side-channel setting: "" describes
+   * with the session model, "off" disables the side-channel, anything else is
+   * a model ref. Snapshot-only like the effort fields beside it; live updates
+   * arrive as thread/vision-model/changed.
+   */
   visionModel?: string;
 }
 
@@ -512,8 +788,29 @@ export interface EvenerUsage {
 export interface EvenerWatchCadence {
   kind: string;
   seconds?: number;
+  /**
+   * DerivedNextFireAt is the next instant this clock-driven cadence is
+   * expected to fire, derived at the daemon from the install instant and the
+   * newest CLOCK fire (a repeating cadence advances from whichever of the two
+   * is later; a one-shot from the install instant alone). The delivery ring is
+   * display-only and is deliberately not consulted, because it mixes every
+   * delivery kind and an output match would move a progress cadence's date. It
+   * is approximate (the runtime keeps a ticker the scheduler can delay) and
+   * can slide later, so consumers word it with a "~". Absent for output and
+   * event cadences, which have no schedule.
+   */
   derivedNextFireAt?: string;
+  /**
+   * Every is the fire-every-Nth-matching-event throttle on an "events"
+   * cadence; absent (zero) means fire on every matching event. Only the
+   * events kind carries it.
+   */
   every?: number;
+  /**
+   * Filter is the events-kind watch's event filter in the model-facing
+   * condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+   * absent when the watch filters nothing. Only the events kind carries it.
+   */
   filter?: string;
 }
 
@@ -528,6 +825,11 @@ export interface EvenerWatchInfo {
   events?: string[];
   wildcardEvents?: boolean;
   deliveries: number;
+  /**
+   * DeliveryTimes is the bounded, oldest-first ring of this watch's most
+   * recent delivery instants, formatted like CreatedAt. Absent when the
+   * watch has not delivered.
+   */
   deliveryTimes?: string[];
   createdAt: string;
   active: boolean;
@@ -538,6 +840,12 @@ export interface FavoriteSetParams {
   kind: string;
   id: string;
   favorited: boolean;
+  /**
+   * Source names the registered source (host) that owns the project. Empty
+   * and "local" both address the controller's own projects; a configured host
+   * name addresses that host's project, so two hosts' projects with the same
+   * ID keep separate favorites.
+   */
   source?: string;
 }
 
@@ -565,6 +873,12 @@ export interface FeatureSet {
 
 export interface GitHeadParams {
   cwd: string;
+  /**
+   * IncludeOrigin asks the hub to also report the repo's sanitized "origin"
+   * remote URL. It is opt-in because the method's other caller (the Spawn
+   * pane's branch chip) renders only the branch: without it the hub neither
+   * runs the origin lookup nor sends the remote anywhere.
+   */
   includeOrigin?: boolean;
 }
 
@@ -700,17 +1014,45 @@ export interface InstanceEditParams {
 
 export interface InstanceEntry {
   name: string;
+  /**
+   * Base is the registry id an explicitly-named instance is built on;
+   * empty when the instance name is itself the registry id.
+   */
   base?: string;
   providerId: string;
   protocol: string;
   surface?: string;
   auth: string;
   baseUrl?: string;
+  /**
+   * EndpointFingerprint is a digest of the complete endpoint this instance
+   * resolves, including what BaseURL deliberately leaves out (query
+   * parameters and userinfo). A client compares it to notice that the
+   * destination changed without the secret-bearing parts crossing the wire.
+   */
   endpointFingerprint?: string;
   vars?: Record<string, string>;
+  /**
+   * APIKeyEnv and CredentialHeader are the AUTHORED api_key_env (its first
+   * entry) and credential header (as NAME=VALUE) from providers.toml, so
+   * the sheet's form can prefill them. Never the registry's own defaults
+   * for an implicit instance, and never a secret: the loader accepts a
+   * hand-written literal that both authoring surfaces would refuse
+   * (registry.CheckCredentialHeaderValue guards those, not the file). That
+   * rule takes $VARIABLE references with at most one auth scheme word
+   * ahead of them, and the entry omits any header it refuses.
+   */
   apiKeyEnv?: string;
   credentialHeader?: string;
+  /**
+   * Implicit is true for an instance that exists from the environment
+   * alone: it has no entry in providers.toml, so it cannot be removed.
+   */
   implicit: boolean;
+  /**
+   * Hidden marks a provider with no resolvable base URL in this
+   * environment (its *_BASE_URL variable is unset).
+   */
   hidden?: boolean;
   isDefault: boolean;
   authModes?: string[];
@@ -718,10 +1060,33 @@ export interface InstanceEntry {
   hasStoredFile?: boolean;
   hasStoredOAuth: boolean;
   envVar?: string;
+  /**
+   * ShadowedEnvVar names an environment variable that is set but loses to
+   * a higher-precedence credential (api_key, credential_headers, or
+   * store, spec §10); empty when no such variable is set, including when
+   * an env source is itself what resolves.
+   */
   shadowedEnvVar?: string;
   storedEmail?: string;
+  /**
+   * CredentialRequired is false when this instance has no credential to
+   * look for at all — auth = none or optional-bearer — so an absent
+   * credential is not a missing one. It is never omitted: false is the
+   * meaningful value, and a client reading an absent field as false would
+   * call every instance optional.
+   */
   credentialRequired: boolean;
+  /**
+   * Warnings are the registry's own notes about this instance, chiefly
+   * what is missing and how to supply it.
+   */
   warnings?: string[];
+  /**
+   * Models is the instance's known models with their effective
+   * disabled state, for the sheet's per-model toggles: exact catalog
+   * rows plus cached live ids, alias rows included. Empty for an
+   * instance with no rows.
+   */
   models?: InstanceModelEntry[];
 }
 
@@ -744,6 +1109,13 @@ export interface InstanceRefreshModelsParams {
 
 export interface InstanceRemoveParams {
   name: string;
+  /**
+   * ExpectedEndpointFingerprint is the endpoint this client showed the user
+   * for Name (InstanceEntry.endpointFingerprint), checked the way
+   * AuthApiKeySetParams's is. The removal was confirmed for the row the
+   * client listed, so a name another client has re-pointed since must not
+   * have its replacement instance removed. Empty asserts nothing.
+   */
   expectedEndpointFingerprint?: string;
 }
 
@@ -762,6 +1134,23 @@ export interface ItemLifecycleParams {
   ref: string;
   turnId: string;
   item: ThreadItem;
+  /**
+   * FailedToolCalls carries the session's running failure count (kata 895d),
+   * same field and meaning as ThreadStatusChangedParams.FailedToolCalls —
+   * only ever populated on item/completed (never item/started: a failure
+   * lands at completion), and only on the item whose completion actually
+   * moved the figure since the last one that carried it. thread/status/
+   * changed already carries the count unconditionally at every turn
+   * boundary, but a live watcher on a long turn sees nothing move however
+   * many tool calls fail inside it; this rides the finer-grained
+   * per-item notification instead so the count moves the instant a failure
+   * lands. Gating on "changed since last stamp" is what keeps this from
+   * resending an unchanged figure on the many item/completed notifications
+   * a turn with no new failures still produces.
+   *
+   * Absent means "no change" here, same as on ThreadStatusChangedParams —
+   * never "nobody counted".
+   */
   failedToolCalls?: number;
 }
 
@@ -829,6 +1218,10 @@ export interface JobActivityDelegate {
   turns: JobActivityJob[];
   child?: JobActivitySession;
   branch: JobActivityBranchState;
+  /**
+   * Usage is the child session's cumulative self-only token totals. Nil when
+   * the child has no token data (fresh session, old daemon, shell-only work).
+   */
   usage?: EvenerUsage;
 }
 
@@ -857,6 +1250,11 @@ export interface JobActivityJob {
   endedAt?: string;
   exitCode?: number;
   outputBytes: number;
+  /**
+   * LastOutputAt is the RFC3339 timestamp of the job's most recent
+   * parent-observable output/activity. Live-only: retained jobs omit it, and
+   * clients fall back to startedAt (or hide quiet time for terminal rows).
+   */
   lastOutputAt?: string;
 }
 
@@ -919,6 +1317,14 @@ export interface KeybindingsOverrides {
   version: number;
   revision: number;
   rules: KeybindingsRule[];
+  /**
+   * LoadError is set only by GET when the persisted state failed to load:
+   * Rules then carries the shipped-default fallback (what is actually in
+   * effect) while the diagnostic tells the client to keep editing read-only
+   * - PATCH rejects in this state, so a client that treated the fallback as
+   * writable would fail every save (roborev PR #884 round 6). Absent from
+   * broadcasts and patch responses, which only exist post-load.
+   */
   loadError?: string;
 }
 
@@ -1114,6 +1520,12 @@ export interface MobilePairingResponse {
 export interface ModelDescriptor {
   provider: string;
   model: string;
+  /**
+   * The remaining fields are optional because daemon and remote-source model
+   * lists may know only the launchable identity. Hub responses fill these from
+   * the embedded catalog when available. Pointer scalars preserve an explicit
+   * false/zero from a live provider instead of treating it as unknown.
+   */
   displayName?: string;
   contextWindow?: number;
   maxInputTokens?: number;
@@ -1125,6 +1537,11 @@ export interface ModelDescriptor {
   inputCostPerMillion?: number;
   outputCostPerMillion?: number;
   reasoningEffortLevels?: string[];
+  /**
+   * Warnings carries the registry's resolved-row notes (e.g. a global-only
+   * model under a regional Vertex location) so the model picker can flag a
+   * row the resolver itself warns about.
+   */
   warnings?: string[];
 }
 
@@ -1144,6 +1561,13 @@ export interface ModelListParams {
 export interface ModelListResponse {
   data: ModelDescriptor[];
   diagnostics?: ModelListDiagnostic[];
+  /**
+   * Recent carries the model picker's "Recent" group: the last N distinct
+   * models across all sessions, globally by recency (not scoped to the
+   * currently selected harness/project), derived from the Past index. Empty
+   * on a fresh install with no session history. A struct field, not a new
+   * appwire method — no dual-router catalog change required.
+   */
   recent?: ModelDescriptor[];
 }
 
@@ -1155,6 +1579,16 @@ export interface MutationReceipt {
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+  /**
+   * ConsumedClientMutationIDs names the client mutation ids a drain's OWN
+   * transition consumed (currently the only mutation that folds other
+   * queued entries into itself). It rides the durable mutation result, so
+   * a replayed disposition carries the same ids the first execution did —
+   * unlike queueChanged's own copy of this fact, a replay needs no live
+   * push to settle those records (issue #1704). Absent on every receipt
+   * that is not a drain's.
+   */
+  consumedClientMutationIds?: string[];
 }
 
 export interface NavigationCapability {
@@ -1212,7 +1646,18 @@ export interface NavigationJobSummary {
   command?: string;
   task?: string;
   reason?: string;
+  /**
+   * Intent is the tool call's `intent` argument: why the command is being
+   * run, in the model's own words. Surfaces in the rail row's tooltip.
+   */
   intent?: string;
+  /**
+   * FullCommand carries the command when it exceeds the label bound
+   * (maxNavigationLabelRunes), so a tooltip can show more of what was
+   * actually executed. Still bounded by maxNavigationFullCommandRunes:
+   * a pathological command cannot dominate the response's byte budget.
+   * Absent when the command fits the label bound (no truncation).
+   */
   full_command?: string;
 }
 
@@ -1291,6 +1736,17 @@ export interface NavigationProjectSummary {
   worktrees?: number;
   is_archived?: boolean;
   favorite?: boolean;
+  /**
+   * Sources names every source that owns sessions in this project: the
+   * literal "local" for the controller's own sessions and a configured host
+   * name for a remote host's. The field is omitted when every session belongs
+   * to the controller, which is the same default the decision readers apply
+   * to an empty list. A project merged across hosts (the same canonical ID
+   * and path, e.g. a local checkout and a remote host's clone) carries
+   * "local" alongside every host name, so a caller that must name exactly one
+   * owner — a delete, or a per-source favorite/archive decision — can refuse
+   * or address each owner instead of guessing which host a mutation means.
+   */
   sources?: string[];
   session_count: number;
 }
@@ -1373,10 +1829,28 @@ export interface NavigationSessionSummary {
   updated_at?: string;
   more_subagents?: number;
   omitted_descendants?: number;
+  /**
+   * OmittedWatches counts live-watch rows this session's summary does not
+   * carry: rows beyond the projector's per-session cap, rows it could not
+   * represent, and rows the byte-budget fitter shed. It mirrors
+   * OmittedDescendants so the rail and the activity panel can say "+N more"
+   * instead of silently undercounting a session's watches.
+   */
   omitted_watches?: number;
+  /**
+   * OmittedArmedWatches is the armed subset of OmittedWatches: of the rows
+   * this summary does not carry, how many were still armed. The retained rows
+   * alone cannot answer that once an armed watch falls past the per-session
+   * cap, so the rail and the activity panel read this to report the true
+   * armed total. It is never greater than OmittedWatches.
+   */
   omitted_armed_watches?: number;
   running_jobs?: NavigationJobSummary[];
   completed_jobs?: NavigationJobSummary[];
+  /**
+   * Watches carries this session's own live watches. Absent on an older
+   * daemon (or a past-index entry) and therefore absent-able for consumers.
+   */
   watches?: NavigationWatchSummary[];
   children: NavigationSessionSummary[];
 }
@@ -1395,8 +1869,24 @@ export interface NavigationTier {
 export interface NavigationWatchCadence {
   kind: string;
   seconds?: number;
+  /**
+   * DerivedNextFireAt is the next instant this clock-driven cadence is
+   * expected to fire, derived at the daemon (see appwire.EvenerWatchCadence).
+   * Approximate and able to slide later; consumers word it with a "~". Absent
+   * for output and event cadences, which have no schedule.
+   */
   derived_next_fire_at?: string;
+  /**
+   * Every is the fire-every-Nth-matching-event throttle on an "events"
+   * cadence; absent (zero) means fire on every matching event. Only the
+   * events kind carries it.
+   */
   every?: number;
+  /**
+   * Filter is the events-kind watch's event filter in the model-facing
+   * condition summary's own vocabulary (e.g. "tool_name=Bash, status=error");
+   * absent when the watch filters nothing. Only the events kind carries it.
+   */
   filter?: string;
 }
 
@@ -1411,6 +1901,11 @@ export interface NavigationWatchSummary {
   events?: string[];
   wildcard_events?: boolean;
   deliveries: number;
+  /**
+   * DeliveryTimes is the bounded, oldest-first ring of this watch's most
+   * recent delivery instants, formatted like CreatedAt. Absent (and so
+   * absent-able, like Watches) when the watch has not delivered.
+   */
   delivery_times?: string[];
   created_at: string;
   active: boolean;
@@ -1580,6 +2075,14 @@ export interface PluginSetAutoUpgradeParams {
 export interface ProjectDeleteParams {
   key: string;
   workingDir: string;
+  /**
+   * Source names the registered source (host) that owns the project row.
+   * Deletion is local-only in v1: empty and "local" both address the
+   * controller's own projects, and any other source is refused before
+   * anything is resolved or removed, so a remote row's delete can never be
+   * answered with a controller-local removal of a project that merely shares
+   * its ID or path.
+   */
   source?: string;
 }
 
@@ -1612,6 +2115,12 @@ export interface ProviderDescriptor {
   apiKeyEnv?: string[];
   implicit: boolean;
   authModes?: string[];
+  /**
+   * Setup is safe discovery metadata for an addressable implicit provider
+   * or existing instance, not membership in InstanceListResponse.Instances.
+   * Hidden implicit providers retain setup even before their destination is
+   * configured; nil means the ID is not yet addressable as an instance.
+   */
   setup?: InstanceEntry;
 }
 
@@ -1622,6 +2131,14 @@ export interface QueueState {
   ids?: string[];
   clientMutationIds?: string[];
   texts?: string[];
+  /**
+   * SkillNames is FIFO-aligned with Preview and carries each entry's
+   * canonical skill selections (empty slice for an entry with none), so
+   * editing or returning a queued entry restores its chips instead of
+   * silently dropping them. Absent on old daemons; clients must treat a
+   * missing SkillNames as "selections unavailable", never as "no
+   * selections".
+   */
   skillNames?: string[][];
 }
 
@@ -1642,6 +2159,12 @@ export interface RepoLaunchConfigStatus {
 }
 
 export interface SandboxEscalationRequested {
+  /**
+   * ThreadID/Ref identify the SESSION this escalation belongs to, so a client can
+   * route it by session (enqueue for a non-viewed session, answer the right one)
+   * rather than assuming the currently-viewed session — like every other
+   * thread-scoped notification.
+   */
   threadId: string;
   ref: string;
   escalationId: string;
@@ -1662,6 +2185,10 @@ export interface SandboxEscalationResolveParams {
 }
 
 export interface SandboxEscalationResolved {
+  /**
+   * ThreadID/Ref identify the SESSION this escalation belongs to, exactly like
+   * SandboxEscalationRequested above.
+   */
   threadId: string;
   ref: string;
   escalationId: string;
@@ -1743,18 +2270,66 @@ export interface SessionURL {
 
 export interface SettingsAgentEntry {
   name: string;
+  /**
+   * EditPath is an editor:// deep link to the agent's definition file. Always
+   * empty today: built-in agents have no on-disk file to open. Kept for
+   * shape parity with web_settings.go's agentDisplay.EditPath in case a
+   * future on-disk agent source populates it.
+   */
   editPath?: string;
 }
 
 export interface SettingsHubOverview {
+  /**
+   * Version is the running hub's version string.
+   * Source: web_settings.go settingsData.HubVersion (the package Version constant).
+   */
   version?: string;
+  /**
+   * Commit is the git commit the binary was built from; empty in dev builds.
+   * Source: web_settings.go settingsData.HubCommit (buildinfo.GitSHA).
+   */
   commit?: string;
+  /**
+   * BuildChannel is buildinfo.BuildChannel(): release, snapshot, or dev.
+   */
   buildChannel?: string;
+  /**
+   * ListenAddr is the hub HTTP server's bind address.
+   * Source: web_settings.go settingsData.HubAddr (cfg.HubAddr).
+   */
   listenAddr?: string;
+  /**
+   * RunDir is the per-PID rendezvous directory the hub watches for live daemons.
+   * Source: web_settings.go settingsData.RunDir (cfg.RunDir).
+   */
   runDir?: string;
+  /**
+   * SpawnTimeout is how long the hub waits for a daemon to report ready after
+   * spawn. Source: web_settings.go settingsData.SpawnTimeout — today a
+   * hardcoded "30s" literal, not derived from live spawner config (there is
+   * no configurable spawn timeout yet).
+   */
   spawnTimeout?: string;
+  /**
+   * BearerTokenAge is a human-readable age of the hub's auth-token file (e.g.
+   * "created 3d ago" / "just now"), empty if unavailable.
+   * Source: web_settings.go settingsData.BearerTokenAge (fileAgeHuman over
+   * hubedge.TokenFileName under HubStateRoot).
+   */
   bearerTokenAge?: string;
+  /**
+   * PastIndex is nil only when no past-session index is configured
+   * (cfg.Past == nil) — e.g. a minimal/test hub config.
+   */
   pastIndex?: SettingsPastIndexOverview;
+  /**
+   * DaemonIdleTimeoutMillis is the Hub's configured idle-retirement deadline
+   * for spawned daemons, in integer milliseconds; zero means automatic
+   * retirement is disabled. No omitempty: zero is a real configured state,
+   * not "unknown". Source: cfg.DaemonIdleTimeout (hub.toml
+   * daemon_idle_timeout, default 1h).
+   */
   daemonIdleTimeoutMillis: number;
 }
 
@@ -1778,13 +2353,39 @@ export interface SettingsOverviewResponse {
 }
 
 export interface SettingsPastIndexOverview {
+  /**
+   * Path is the past-index SQLite file path, tilde-shortened against $HOME.
+   * Source: web_settings.go tildeHome(cfg.PastIndexPath).
+   */
   path?: string;
+  /**
+   * Size is a human-readable file size (e.g. "48 MB"), empty if the file
+   * does not exist yet. Source: web_settings.go fileSizeHuman(cfg.PastIndexPath).
+   */
   size?: string;
+  /**
+   * PerPage is the configured /past results-per-page.
+   * Source: web_settings.go settingsData.PastPerPage (cfg.PastPerPage).
+   */
   perPage?: number;
+  /**
+   * Count is the total number of indexed session metas, all-time — NOT a
+   * count of currently-live/running sessions. The legacy storage.html
+   * template's own copy calls this "currently tracking N sessions", which is
+   * this same all-time indexed total. A genuine live-daemon count exists
+   * (cfg.Roster) but is intentionally not surfaced here: no legacy settings
+   * template ever rendered one.
+   * Source: web_settings.go settingsData.PastCount (len(cfg.Past.AllMetas())).
+   */
   count?: number;
 }
 
 export interface SettingsStorageOverview {
+  /**
+   * StateDir is the root directory for hub state: auth token, credentials,
+   * and project sub-directories.
+   * Source: web_settings.go settingsData.StateDir (cfg.StateDir).
+   */
   stateDir?: string;
 }
 
@@ -1840,6 +2441,14 @@ export interface TaskUpdatedParams {
 export interface Thread {
   id: string;
   sessionId: string;
+  /**
+   * ProjectID and ProjectPath are hub-resolved identity fields. They are
+   * intentionally separate from CWD: a linked worktree may have a different
+   * working directory while still belonging to the same canonical project.
+   * Empty values mean the source could not resolve a local project (for
+   * example, a pathless external thread), which clients must treat as
+   * presentation-only.
+   */
   projectId?: string;
   projectPath?: string;
   forkedFromId?: string;
@@ -1871,11 +2480,45 @@ export interface ThreadCapabilities {
   forkFromTurn: boolean;
   shutdown: boolean;
   changeModel: boolean;
+  /**
+   * ChangeVisionModel advertises support for thread/vision-model/set. True for
+   * a live evener session whose daemon wires a vision-model hook.
+   */
   changeVisionModel: boolean;
+  /**
+   * Queue advertises support for turn/queue (kata 111a). True when a turn
+   * is currently in flight and the session can accept enqueued user
+   * messages for processing after the active turn completes.
+   */
   queue: boolean;
+  /**
+   * Goal advertises support for goal/set (the /goal objective engine). True
+   * for a evener session that can accept a goal; false for sources that do not
+   * advertise the capability, so goal/set is gated like every other thread action.
+   */
   goal: boolean;
+  /**
+   * SharedNotes advertises support for the shared-notes surface. Only two of
+   * its verbs are hub RPCs — notes/human/set and urls/remove. The other two,
+   * notes/agent/set and urls/add, are agent tools the daemon handles in
+   * session and are deliberately absent from the RPC method catalog. True for
+   * a live evener session whose daemon wires them; false for sources that do
+   * not advertise the capability, so the notes verbs are gated like every
+   * other thread action.
+   */
   sharedNotes: boolean;
+  /**
+   * Rename advertises support for evener/thread/name/set. True for a live evener
+   * session (the daemon method) and for ended local sessions (the hub edits
+   * meta); false for non-local/source-backed threads that do not advertise it.
+   */
   rename: boolean;
+  /**
+   * SkillInput advertises support for canonical {type:"skill", name} input
+   * items on the input-bearing turn mutations. False everywhere until
+   * runtime consumption is wired per endpoint; ValidateSkillInputSupport
+   * keeps skill items rejected wherever this capability is false.
+   */
   skillInput?: boolean;
 }
 
@@ -1903,22 +2546,55 @@ export interface ThreadCompactStartParams {
 
 export interface ThreadForceStopParams {
   ref: string;
+  /**
+   * ExpectedDaemon carries the exact ownership evidence the resident UI
+   * resolved for this daemon; nil preserves existing ref-only callers.
+   */
   expectedDaemon?: DaemonIdentity;
 }
 
 export interface ThreadForkParams {
   ref: string;
+  /**
+   * SourceTurnID names the divergence position as a 1-based index into the
+   * parent transcript's ENTRY list — every entry, not just the ones that
+   * opened a turn — optionally spelled with a "turn_" prefix. Despite the
+   * name it is NOT a turn id: the hub parses it with parseSourceTurnID and
+   * hands the number straight to agent.ForkSessionAtUserTurn. Send
+   * ThreadItem.TranscriptEntryIndex, never Turn.ID; the two coincide only on
+   * a transcript replayed from disk, because every live turn minter numbers
+   * turns off its own counter (kata 0jhh).
+   */
   sourceTurnId: string;
   editedInput?: string;
   label?: string;
   modelProvider?: string;
   model?: string;
+  /**
+   * DeferInput forks at the source turn WITHOUT appending a replacement
+   * message: the child thread holds only the entries before the turn, and
+   * the turn's original text comes back in ThreadForkResponse.OriginalInput
+   * so the client can stage it for editing and explicit submission (the
+   * fork never auto-runs the message). Mutually exclusive with EditedInput
+   * and Aside.
+   */
   deferInput?: boolean;
+  /**
+   * Aside forks a local evener thread at its tip instead of at a source turn:
+   * the child is a complete copy of the parent session (same permissions and
+   * config via the inherited session meta) and opens as a side thread. Aside
+   * is mutually exclusive with SourceTurnID, EditedInput, DeferInput, and
+   * Label, and is only supported for local evener threads.
+   */
   aside?: boolean;
 }
 
 export interface ThreadForkResponse {
   thread: Thread;
+  /**
+   * OriginalInput is the source turn's original user text, set only when
+   * the fork was requested with DeferInput.
+   */
   originalInput?: string;
 }
 
@@ -1938,16 +2614,70 @@ export interface ThreadItem {
   description?: string;
   output?: string;
   error?: string;
+  /**
+   * OutputImages is omitzero; see the nil-vs-empty rule in output_images.go.
+   * Images stays omitempty: nothing removes an item's input images.
+   */
   outputImages?: OutputImage[];
   status?: string;
+  /**
+   * PrevalOnly is true when Error came from a pre-dispatch rejection (an
+   * unknown tool name, or arguments that failed schema validation even
+   * after repair) rather than the tool's own execution - the call never
+   * reached ExecuteCall (kata hgm1). A client uses this to tell a
+   * self-corrected malformed-call bounce apart from a real execution
+   * failure or denial: same non-empty Error, different meaning. False (the
+   * default) for a real execution failure, and meaningless when Error is
+   * empty.
+   */
   prevalOnly?: boolean;
+  /**
+   * StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil when unset),
+   * matching DurationMS's scale and the web reducer's epoch-ms read; stamped
+   * by the appprojector/apptranscript producers via time.Time.UnixMilli.
+   */
   startedAt?: number;
   completedAt?: number;
+  /**
+   * DurationMS is the item's real server-measured runtime in milliseconds
+   * (tool-call items only). Stamped live from the event stream's own
+   * timestamps; nil when no honest span was recorded (issue #37: the web
+   * hover meta shows real times or nothing).
+   */
   durationMs?: number;
+  /**
+   * ExitCode is the exit status of the process behind this item, on the two
+   * item kinds that have one:
+   *
+   *   - a shell tool call's process, promoted onto the settled
+   *     commandExecution item from the ToolState JSON snapshot the
+   *     projector/transcript already hold (the "exit_code" field of
+   *     shellToolResult, agent/session_tools_shell.go:483; wire-honesty
+   *     spec Part A);
+   *   - a hook's process, on a systemMessage item with EventKind
+   *     ThreadItemEventKindHookCompleted, from events.HookEndData.ExitCode.
+   *     Clients split "show every hook exit" from "show clean exits only"
+   *     on this number instead of re-parsing the "... exit N" announcement
+   *     prose, so rewording that text cannot change what a reader sees.
+   *
+   * Nil on every other item, and on any of the above whose source carries
+   * no exit code — never fabricated as zero.
+   */
   exitCode?: number;
   raw?: unknown;
   eventKind?: ThreadItemEventKind;
+  /**
+   * Source carries item provenance for steering items: "user" for
+   * human-sent steering (rendered as a user message), empty for
+   * daemon/system steering (issue #24).
+   */
   source?: string;
+  /**
+   * SteeringKind names what a daemon-originated steering item was
+   * (events.SteeringKind*), set at the injection site so a client labels it
+   * from ground truth instead of guessing from Text's prose. Empty on
+   * non-steering items and on steering items the daemon didn't classify.
+   */
   steeringKind?: string;
   clientMutationId?: string;
 }
@@ -2020,6 +2750,7 @@ export interface ThreadQueueChangedParams {
   threadId: string;
   ref: string;
   queue: QueueState;
+  consumedClientMutationIds?: string[];
 }
 
 export interface ThreadReadParams {
@@ -2034,6 +2765,11 @@ export interface ThreadReadParams {
 
 export interface ThreadReadResponse {
   thread: Thread;
+  /**
+   * OlderCursor is set when itemLimit truncated the returned items; pass it
+   * to thread/turns/list to fetch the page just before the window. Empty means
+   * the response already includes the oldest item.
+   */
   olderCursor?: string;
 }
 
@@ -2068,6 +2804,11 @@ export interface ThreadShutdownParams {
 
 export interface ThreadStartParams {
   harness?: string;
+  /**
+   * Source names the registered source that should spawn this thread, e.g. a
+   * remote host's host name. It is a bare source ID, not a ref. Empty falls
+   * back to the harness/default routing (local).
+   */
   source?: string;
   cwd: string;
   input?: InputItem[];
@@ -2099,8 +2840,61 @@ export interface ThreadStatusChangedParams {
   threadId: string;
   ref: string;
   status: ThreadStatus;
+  /**
+   * FailedToolCalls carries the session's running failure count (see
+   * EvenerThread.FailedToolCalls) so a client WATCHING a session sees it move.
+   * The figure is otherwise snapshot-only, refreshed by thread/read — which
+   * means a session that was clean when the client attached and failed later
+   * would keep saying nothing, which is precisely the reader the count was
+   * built for. Every status transition is a turn boundary, so riding along
+   * here refreshes it exactly when it can have changed, with no polling.
+   *
+   * ABSENT MEANS "NO UPDATE", not "nobody counted" — an old daemon omits it,
+   * and a client that cleared its count on absence would blank a figure the
+   * hydrate legitimately gave it. Absence at HYDRATE is where "nobody
+   * counted" is expressed.
+   */
   failedToolCalls?: number;
+  /**
+   * AskPending carries EvenerThread.AskPending — "this session is waiting on
+   * a human answer" — for the reason the failure count rides along above: it
+   * is otherwise snapshot-only, so after the user answers, every OTHER
+   * client keeps showing "question waiting" until its next read (#1613). The
+   * pending set clears only at a turn boundary (a resolving user turn, an
+   * interrupted turn: agent/session_tools_ask.go), which is exactly when a
+   * status change is announced, so this refreshes it when it can have moved
+   * and never polls.
+   *
+   * ABSENT MEANS "NO UPDATE" (an old daemon omits it), never "no question
+   * waiting": a client that cleared the flag on absence would stop showing a
+   * question the hydrate legitimately gave it.
+   */
   askPending?: boolean;
+  /**
+   * Capabilities carries the action set that goes WITH the status being
+   * announced (see EvenerThread.Capabilities), for the same reason the failure
+   * count rides along above: it is otherwise snapshot-only, and three of its
+   * entries — Send, Steer, Queue — are defined by whether a turn is in
+   * flight. A client that read the thread while it was idle therefore holds
+   * steer=false/queue=false for the whole turn that follows, and renders a
+   * session it KNOWS is active with no Steer, no Stop and a dead Send until
+   * the page is reloaded (kata 06t8). A status transition is exactly when
+   * those flip, so the set refreshes there and nowhere else — no polling, no
+   * re-read of the transcript.
+   *
+   * ABSENT MEANS "NO UPDATE", same as the count. Non-local/source-backed
+   * threads may omit capabilities their source does not advertise. A client
+   * that cleared its set on absence would strip a session of every action its
+   * hydrate legitimately advertised.
+   *
+   * A CLOSE frame is the one status a daemon does not fill in: what a thread
+   * can still be asked to do once its daemon is gone is the hub's answer, not
+   * the departing daemon's. The hub stamps that frame as it relays it
+   * (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
+   * still arrives carrying a set — the same one the next thread/read returns.
+   * A client that read the daemon's own all-false set there would lose the
+   * follow-up composer for a session the hub would happily resume (kata pk2d).
+   */
   capabilities?: ThreadCapabilities;
 }
 
@@ -2235,11 +3029,28 @@ export interface Turn {
   itemsView: string;
   status: string;
   error?: TurnError;
+  /**
+   * HasEarlierItems and HasLaterItems describe completeness at the item
+   * boundaries of a fragment. They are omitted by legacy/full responses.
+   */
   hasEarlierItems?: boolean;
   hasLaterItems?: boolean;
+  /**
+   * StartedAt and CompletedAt are Unix epoch MILLISECONDS (nil/0 when unset),
+   * the same scale as DurationMS and the web reducer's epoch-ms read. The
+   * appprojector/apptranscript producers stamp them via time.Time.UnixMilli.
+   */
   startedAt?: number;
   completedAt?: number;
   durationMs?: number;
+  /**
+   * Usage and Cost are the turn's own (not cumulative-session) token totals
+   * and estimated dollar cost — nil/empty when not computable (no usage
+   * data for this turn, or a registry row with no cost). Populated live by
+   * summing EventAssistantTextEnd's per-round usage across the turn
+   * (internal/appprojector), and for ended sessions by reading the
+   * persisted per-round schema.Turn.Usage (internal/apptranscript).
+   */
   usage?: EvenerUsage;
   cost?: string;
 }

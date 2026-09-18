@@ -97,8 +97,8 @@ func TestMergeAppThreadItemKeepsOutputImages(t *testing.T) {
 		t.Fatalf("OutputImages=%+v, want the frame's explicit empty list", merged.OutputImages)
 	}
 
-	// Input images keep the length rule: nothing removes them and the field is
-	// omitempty, so an empty incoming list falls back like an absent one.
+	// Input images: see appwire.MergeInputImages. Nothing removes them and the
+	// field is omitempty, so an empty incoming list falls back like an absent one.
 	withInput := appwire.ThreadItem{
 		Type: "userMessage", ID: "item_1",
 		Images: []appwire.InputItem{{Type: "image", Name: "in.png"}},
