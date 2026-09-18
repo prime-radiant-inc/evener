@@ -185,7 +185,7 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	}
 	// The layer is on disk from here on, so every later failure is an applied
 	// write: the resolution only reads it back, and every other client's launch
-	// config is stale whatever it answers (#1543's rule).
+	// config is stale whatever it answers.
 	resolved, err := c.resolveWithHubDefaults(cwd, launchconfig.Layer{})
 	if err != nil {
 		return appwire.LaunchConfigResolved{}, writeApplied(err)

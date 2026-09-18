@@ -878,8 +878,7 @@ func (c *hubInstancesController) Create(params appwire.InstanceCreateParams) err
 		// refusal names what could not load.
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The entry this call wrote is still in the file, so the change
-			// stands and every other client's list is stale: an applied write,
-			// which the handler still broadcasts (#1543).
+			// stands and every other client's list is stale: an applied write.
 			return writeApplied(fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr))
 		}
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
@@ -1297,7 +1296,7 @@ func (c *hubInstancesController) Remove(params appwire.InstanceRemoveParams) err
 			// of this file produces, and writing is what is broken, not loading.
 			// The removal stands in the file, so it is an applied write
 			// however this call ends: the other clients are still listing an
-			// instance that is gone (#1543). Unconditional: unlike the other
+			// instance that is gone. Unconditional: unlike the other
 			// call sites, this one applies to the config regardless of
 			// whether the credential restore below also fails, so it wraps
 			// its own result rather than relying on restoreFailedRemoval's.
@@ -1509,7 +1508,7 @@ func (c *hubInstancesController) writeAndReload(before, l *registry.Layer, name,
 	if err := c.reg.Reload(); err != nil {
 		if restoreErr := c.write(before); restoreErr != nil {
 			// The layer this call wrote is still in the file, like Create's
-			// failed rollback: an applied write, still broadcast (#1543).
+			// failed rollback: an applied write, still broadcast.
 			return writeApplied(fmt.Errorf("%w (and restoring the previous config failed: %w)", err, restoreErr))
 		}
 		_ = c.reg.Reload() // best-effort: put the last-good registry view back
