@@ -6,6 +6,7 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
@@ -18,11 +19,14 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import {
+	type AppwireClient,
 	createHubOverviewStore,
 	friendlyErrorMessage,
 } from "@evener/appwire-client";
 import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useConnection } from "./ConnectionProvider";
+import { ConnectionStatus } from "./ConnectionStatus";
+import { useConnectionDisplay } from "./connectionDisplay";
 import { HubUpgradeSection } from "./HubUpgradeSection";
 import { createHubUpgradeController } from "./hubUpgrade";
 import { nativeHubUpgradeStorage } from "./nativeHubUpgrade";
@@ -31,12 +35,19 @@ import { Action, Copy, ErrorMessage, styles, useColors } from "./ui";
 
 type Props = NativeStackScreenProps<Routes, "HubSettings">;
 export function HubSettingsScreen({ route, navigation }: Props) {
-	const { activeProfile, client, state, retry } = useConnection();
+	const { activeProfile, client, state, fatal, retry } = useConnection();
+	const display = useConnectionDisplay(state, fatal);
+	// See PluginsScreen.tsx's identical comment: a flap keeps `client` set
+	// already; only a manual retry's own token refetch clears it briefly, and
+	// the last client this screen had covers that gap too.
+	const lastClient = useRef<AppwireClient | null>(null);
+	if (client) lastClient.current = client;
+	const renderClient = client ?? lastClient.current;
 	if (activeProfile?.id !== route.params.hubId)
 		return (
 			<Copy>This hub is no longer selected. Return to Hubs to reconnect.</Copy>
 		);
-	if (!client || state !== "ready")
+	if (display === "wall" || !renderClient)
 		return (
 			<View style={{ padding: 20 }}>
 				<Copy>Connect to {activeProfile.name} to view hub settings.</Copy>
@@ -44,30 +55,33 @@ export function HubSettingsScreen({ route, navigation }: Props) {
 			</View>
 		);
 	return (
-		<HubSettings
-			client={client}
-			hubId={activeProfile.id}
-			hubName={activeProfile.name}
-			openTranscript={() =>
-				navigation.navigate("TranscriptPreferences", {
-					hubId: activeProfile.id,
-				})
-			}
-			openKeybindings={() =>
-				navigation.navigate("KeybindingPreferences", {
-					hubId: activeProfile.id,
-				})
-			}
-			openProviders={() =>
-				navigation.navigate("Providers", { hubId: activeProfile.id })
-			}
-			openLaunchSettings={() =>
-				navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
-			}
-			openPlugins={() =>
-				navigation.navigate("Plugins", { hubId: activeProfile.id })
-			}
-		/>
+		<>
+			{display === "banner" ? <ConnectionStatus /> : null}
+			<HubSettings
+				client={renderClient}
+				hubId={activeProfile.id}
+				hubName={activeProfile.name}
+				openTranscript={() =>
+					navigation.navigate("TranscriptPreferences", {
+						hubId: activeProfile.id,
+					})
+				}
+				openKeybindings={() =>
+					navigation.navigate("KeybindingPreferences", {
+						hubId: activeProfile.id,
+					})
+				}
+				openProviders={() =>
+					navigation.navigate("Providers", { hubId: activeProfile.id })
+				}
+				openLaunchSettings={() =>
+					navigation.navigate("LaunchSettings", { hubId: activeProfile.id })
+				}
+				openPlugins={() =>
+					navigation.navigate("Plugins", { hubId: activeProfile.id })
+				}
+			/>
+		</>
 	);
 }
 

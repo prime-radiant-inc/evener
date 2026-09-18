@@ -44,6 +44,7 @@ it("mounts on a ready client and issues and publishes the listing read", async (
 		activeProfile: { id: "hub-1", name: "Work hub" },
 		client: hub.client,
 		state: "ready",
+		fatal: false,
 		retry: () => {},
 	};
 	const props = {
@@ -59,4 +60,88 @@ it("mounts on a ready client and issues and publishes the listing read", async (
 	const text = renderedText(tree);
 	expect(text).toContain("work");
 	expect(text).toContain("from the hub");
+});
+
+it("ready -> reconnecting keeps the screen tree mounted and shows the banner", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("work");
+	expect(renderedText(tree)).not.toContain("Reconnect");
+
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	const text = renderedText(tree);
+	// The list stayed mounted through the flap (never replaced by the wall) ...
+	expect(text).toContain("work");
+	// ... behind a banner announcing it.
+	expect(text).toContain("reconnecting");
+	expect(text).toContain("Reconnect");
+});
+
+it("reconnecting -> ready removes the banner", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	harness.connection = { ...harness.connection, state: "reconnecting" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	expect(renderedText(tree)).toContain("Reconnect");
+
+	harness.connection = { ...harness.connection, state: "ready" };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	const text = renderedText(tree);
+	expect(text).toContain("work");
+	expect(text).not.toContain("Reconnect");
+});
+
+it("a fatal (protocol) close replaces the mounted list with the wall", async () => {
+	const hub = scriptedClient(rows);
+	harness.connection = {
+		activeProfile: { id: "hub-1", name: "Work hub" },
+		client: hub.client,
+		state: "ready",
+		fatal: false,
+		retry: () => {},
+	};
+	const props = {
+		route: { params: { hubId: "hub-1" } },
+	} as unknown as ComponentProps<typeof ProvidersScreen>;
+	const tree = render(<ProvidersScreen {...props} />);
+	await act(async () => {});
+	expect(renderedText(tree)).toContain("work");
+
+	harness.connection = { ...harness.connection, client: null, state: "closed", fatal: true };
+	await act(async () => {
+		tree.update(<ProvidersScreen {...props} />);
+	});
+	const text = renderedText(tree);
+	expect(text).not.toContain("work");
+	expect(text).toContain("Connect to");
+	expect(text).toContain("to manage providers.");
 });
