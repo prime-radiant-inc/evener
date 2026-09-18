@@ -226,6 +226,18 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 			m.detail.SupportsReasoning = params.SupportsReasoning
 			m.updateDashboardRowModel(params.Ref, params.Model)
 		}
+	case appwire.NotifyThreadNameChanged:
+		// The session's display name changed (a user rename, or the auto-namer
+		// naming the session / refreshing the name after a compaction). Fold it
+		// onto the cached detail so the session header and the terminal title
+		// (hub_window_title.go, emitted by the Update wrapper) both follow the
+		// frame. An absent or blank name is not a name: leave the current one.
+		var params appwire.ThreadNameChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			if name := strings.TrimSpace(params.Name); name != "" {
+				m.detail.Title = name
+			}
+		}
 	case appwire.NotifyThreadReasoningEffortChanged:
 		var params appwire.ThreadReasoningEffortChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {

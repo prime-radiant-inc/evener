@@ -2103,8 +2103,10 @@ func TestHubDashboardSpawnWaitsForSlowHubSpawn(t *testing.T) {
 	}
 
 	updated, cmd = model.Update(cmd())
-	if cmd != nil {
-		t.Fatal("session detail returned unexpected command")
+	// Entering the session now also titles the terminal; anything else would be
+	// an unexpected follow-up command.
+	if title, ok := windowTitleFromCmd(cmd); !ok || title != "spawned session" {
+		t.Fatalf("session detail returned unexpected command: title=(%q, %v)", title, ok)
 	}
 	model = updated.(hubModel)
 	if model.mode != hubModeSession || model.detail.SessionID != "02SLOW" {

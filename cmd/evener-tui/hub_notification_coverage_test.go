@@ -18,7 +18,6 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyEvenerNavigationInvalidated,
 	appwire.NotifyThreadStarted,
 	appwire.NotifyThreadClosed,
-	appwire.NotifyThreadNameChanged,
 	// The TUI has no Activity-tree surface. Its existing job rows consume the
 	// concrete job-started/job-finished pushes, so the Web UI's root-tree cache
 	// invalidation notification has no TUI state to update.
