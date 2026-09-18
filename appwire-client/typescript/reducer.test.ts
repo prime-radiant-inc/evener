@@ -4786,18 +4786,19 @@ test("turn/completed for an active turn outside the loaded window leaves turns b
   expect(applied.lastFrameAt).toBe(2000);
 });
 
-// A warning frame that carries no message anywhere leaves the item's text
-// empty. The frame itself is not a message: it is the routing envelope
-// (threadId, ref) plus whatever shape the producer sent, and a renderer that
-// prints the item's text would show the reader that envelope — which is also
-// what makes the web's "a warning with no title, text or hint renders
-// nothing" case unreachable (WarningItem.test.tsx).
+// A warning frame that carries no message anywhere renders the frame itself,
+// not a blank row — the same contract appwire/warning.go's EffectiveMessage/
+// DecodeWarningParams enforces server-side (cmd/evener-tui/hub_notifications_test.go's
+// "no message anywhere renders the frame itself, not a bare title"): a
+// malformed or message-less warning must stay visible, or a producer's typo
+// vanishes silently instead of surfacing as the diagnosis it is. Bounded
+// because the frame's shape is unknown on the wire and can carry anything.
 test.each([
   ["blank string warning", ""],
   ["object warning with no message field", { source: "x" }],
   ["object warning with non-string message", { message: 42 }],
   ["number warning", 42],
-])("warning with no message anywhere (%s) leaves the text empty", (_case, warning) => {
+])("warning with no message anywhere (%s) renders the frame itself, bounded", (_case, warning) => {
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -4812,7 +4813,51 @@ test.each([
   model = applyNotification(model, { method: "warning", params }, 1002);
 
   const item = itemAt(turnAt(model, 0), 0);
-  expect(item.text).toBe("");
+  expect(item.text).toBe(JSON.stringify(params));
+});
+
+// The wire-shaped fixture RoboRev's round-20 review of #1580 named directly:
+// a warning frame that is nothing but `{"warning":42}` — no threadId/ref
+// wrapping at all — still renders its own JSON rather than a blank item.
+test('warning with only {"warning":42} and no routing envelope renders that frame itself', () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42 };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text).toBe(JSON.stringify(params));
+});
+
+// A raw-frame fallback that is itself oversized must not paste an unbounded
+// blob into ItemModel.text: this is package-level code feeding both hosts,
+// and neither host's own display bound can be assumed to run before
+// something else reads item.text (a test, a notification log).
+test("an oversized warning frame's fallback text stays bounded", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: "x".repeat(10_000) };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeLessThan(JSON.stringify(params).length);
+  expect(item.text.length).toBeGreaterThan(0);
 });
 
 // Settled tool calls keep their arguments: the live projector's

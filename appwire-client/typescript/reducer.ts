@@ -1190,6 +1190,19 @@ function warningMessage(params: WarningParams): string {
   return "";
 }
 
+// A frame with no message anywhere is surfaced as the frame itself
+// (appwire/warning.go's DecodeWarningParams: "a malformed warning is visible
+// instead of silent" — cmd/evener-tui/hub_notifications_test.go pins the same
+// contract server-side). Bounded because params is unknown on the wire and
+// can carry anything; this is package-level code feeding both hosts, and
+// neither host's own display bound can be assumed to run before something
+// else reads item.text.
+const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+
+function rawWarningFrame(params: WarningParams): string {
+  return JSON.stringify(params).slice(0, RAW_WARNING_FRAME_MAX_CHARS);
+}
+
 // Folds one live wire notification into model. Most notifications carry
 // ref/threadId and are matched via notificationTargetsThread — routing those
 // to the right ThreadModel is the caller's job (or not: a mismatch is a safe
@@ -1666,11 +1679,9 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
             id: `item_warning_live_${activeTurnId}_${warningCount}`,
             turnId: activeTurnId,
             type: "warning",
-            // No message means no message: the params are the routing
-            // envelope, not prose, and a renderer that prints the item's text
-            // would show the reader that envelope. An empty text is what the
-            // web's warning row treats as "nothing to show".
-            text: warningMessage(params),
+            // A real message wins; a message-less frame falls back to itself
+            // (rawWarningFrame's own comment) rather than a blank row.
+            text: warningMessage(params) || rawWarningFrame(params),
             status: "completed",
             warning: { source: params.source, title: params.title, hint: params.hint },
           };

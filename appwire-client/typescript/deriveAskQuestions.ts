@@ -21,7 +21,7 @@
 
 import type { AskUserOption } from "./askShared";
 import { parseAskUserQuestions } from "./askShared";
-import type { ItemModel, ThreadModel } from "./model";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
 
 // AskQuestionRef is one flattened, individually-addressable question -
 // mirrors legacy's pendingAsk item shape (renderer.js:5832-5844). `key` is
@@ -64,30 +64,52 @@ function isAckedAskUserItem(item: ItemModel): boolean {
 // of that boundary - "the user is demonstrably present") and an accepted
 // user steer (which enters the drain loop as EntryUserInput, the same
 // accepted-turn path that clears askPending for a plain user message; its
-// item carries source "user", the wire's SteeringSourceUser, never a
-// steeringKind). A daemon-originated steer with neither marker is not the
-// user speaking and resolves nothing.
+// item carries source "user", the wire's SteeringSourceUser - it can ALSO
+// carry a steeringKind, human-note being the one live case
+// (session_notes_rpc.go's SteeringKindHumanNote, web layoutRoles.ts's own
+// steeringKind !== "human-note" check), so `source === "user"` alone is
+// still the resolving half of this OR). A daemon-originated steer with
+// neither marker is not the user speaking and resolves nothing.
 function isResolutionItem(item: ItemModel): boolean {
   if (item.type === "userMessage") return true;
   return item.type === "steering" && (item.steeringKind === "interrupted" || item.source === "user");
 }
 
-// lastResolutionIndex finds the position of the most recent resolution item
-// in transcript order. -1 when none exists yet (a fresh thread, or one that
-// has never had a user turn). Written as forEach-over-index rather than a
-// reverse indexed loop so `noUncheckedIndexedAccess` never needs an
-// unnecessary bounds guard.
-function lastResolutionIndex(items: readonly ItemModel[]): number {
+// A turn with no items at all, but an error, is the SAME accepted-turn clear
+// with nothing else to mark it: processOneInput clears askPending
+// unconditionally on entry (session_lifecycle.go's "Pending asks resolve with
+// this accepted turn" comment), before the turn's own model call ever runs -
+// so a steering carrier that fails outright before posting anything (it
+// "carries no content of its own", session_lifecycle.go) has already resolved
+// the ask server-side even though it left no userMessage/steering item behind.
+// A turn that DID post items resolves (or not) by those items instead, same
+// as always - this only covers the item-less case.
+function isResolutionTurn(turn: TurnModel): boolean {
+  return turn.items.length === 0 && turn.error !== undefined;
+}
+
+// lastResolutionIndex finds the position of the most recent resolution
+// boundary in transcript order, over the model's turns rather than a
+// pre-flattened item list: an item-less resolution turn (isResolutionTurn)
+// contributes no item of its own, so it can only be found by walking turns.
+// -1 when no boundary exists yet (a fresh thread, or one that has never had a
+// user turn).
+function lastResolutionIndex(turns: readonly TurnModel[]): number {
   let last = -1;
-  items.forEach((item, i) => {
-    if (isResolutionItem(item)) last = i;
-  });
+  let index = 0;
+  for (const turn of turns) {
+    if (isResolutionTurn(turn)) last = index - 1;
+    for (const item of turn.items) {
+      if (isResolutionItem(item)) last = index;
+      index++;
+    }
+  }
   return last;
 }
 
 export function liveAskQuestions(model: ThreadModel): AskQuestionRef[] {
   const items = model.turns.flatMap((turn) => turn.items);
-  const boundary = lastResolutionIndex(items);
+  const boundary = lastResolutionIndex(model.turns);
   const refs: AskQuestionRef[] = [];
   items.slice(boundary + 1).forEach((item) => {
     if (!isAckedAskUserItem(item)) return;

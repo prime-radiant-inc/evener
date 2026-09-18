@@ -180,6 +180,25 @@ test("a daemon steering item with neither steeringKind interrupted nor source us
   expect(liveAskQuestions(m).map((q) => q.key)).toEqual(["call_1:0"]);
 });
 
+// A user steer reaches processOneInput as EntryUserInput, which clears
+// askPending unconditionally on entry (session_lifecycle.go's "Pending asks
+// resolve with this accepted turn" comment, before the turn's own model call
+// ever runs) - so even a steer whose turn then fails outright already
+// resolved the ask server-side. The steering carrier "carries no content of
+// its own" (session_lifecycle.go), so a carrier that fails before posting
+// anything leaves no item at all to mark the boundary with - only the empty
+// turn's own error.
+test("a turn with no items and an error AFTER an ask_user ack resolves it", () => {
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1")]), turn("t2", [], { error: { message: "failed" } })]);
+  expect(liveAskQuestions(m)).toEqual([]);
+});
+
+test("a turn with items stays live by its items, even if the turn also errors", () => {
+  const m = model([turn("t1", [askItem("i1", "t1", "call_1")], { error: { message: "failed" } })]);
+  const result = liveAskQuestions(m);
+  expect(result.map((q) => q.key)).toEqual(["call_1:0"]);
+});
+
 test("an ask_user call acked AFTER the last userMessage stays live", () => {
   const m = model([
     turn("t1", [

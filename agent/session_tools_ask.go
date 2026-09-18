@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
@@ -354,6 +355,29 @@ func deriveRestoredAskPending(history []schema.Turn) (pending []askQuestion, isA
 		turn := history[i]
 		switch turn.Kind {
 		case schema.TurnUserInput:
+			return nil, false
+		case schema.TurnSteering:
+			// The client re-derives this same boundary from transcript shape
+			// alone (deriveAskQuestions.ts's isResolutionItem): an interrupt
+			// or an accepted user steer resolves the pending set exactly like
+			// a plain reply, because the runtime already cleared askPending
+			// on that path (session_lifecycle.go: the interrupt branch calls
+			// clearAskPending directly; a user steer enters processOneInput
+			// as EntryUserInput, which clears askPending unconditionally on
+			// entry). An ordinary daemon-authored steer (a task-nudge, a
+			// notification reminder) carries neither marker and is not
+			// decisive — matches deriveRestoredState's scan past it.
+			if turn.SteeringKind == events.SteeringKindInterrupted || turn.SteeringSource == events.SteeringSourceUser {
+				return nil, false
+			}
+		case schema.TurnFailure:
+			// The turn that just failed was accepted (and cleared askPending)
+			// before its model call ever ran — the same processOneInput entry
+			// clear above, surfacing here because a steering carrier that
+			// fails outright ("it carries no content of its own",
+			// session_lifecycle.go) leaves no steering/user turn behind, only
+			// this marker (TurnFailure's own doc comment: the persisted
+			// counterpart of a live turn with an error and no items).
 			return nil, false
 		case schema.TurnAssistant:
 			if len(assistantToolCalls(turn.Message)) == 0 {
