@@ -1,22 +1,20 @@
-// D25d-1a: the write half of the phone's implementation of the package's
-// MutationOutboxStorage port (appwire-client/typescript/state/mutation/
-// outbox.ts) - the 13 calls the outbox's discovery and the dispatcher make -
-// over expo-sqlite, the same storage draftRepository.ts already persists
-// drafts through. No host global is named in the package; this adapter is
-// where the sqlite handle lives.
-//
-// Stacked on this: D25d-1b adds the read half (getOutbox, getOptimistic,
-// listOptimistic, getRecovery, nextDispatchable, listTargetRefs,
-// restoreProvenAbsent) to this same class, which is what makes it satisfy
-// the full port. Until then this class is real, tested and unused - dead
-// code by construction, not a WIP method left unfinished.
+// D25d-1: the phone's implementation of the package's MutationOutboxStorage
+// port (appwire-client/typescript/state/mutation/outbox.ts) - the 13 calls
+// the outbox's discovery and the dispatcher make - over expo-sqlite, the
+// same storage draftRepository.ts already persists drafts through. No host
+// global is named in the package; this adapter is where the sqlite handle
+// lives. Landed as two stacked PRs (1a the write path, 1b the read path)
+// once the whole port measured over the ~150-line target for one PR.
 //
 // Oracle: cmd/evener-hub/frontend/src/stores/mutationOutbox.test.ts's
 // describe("MutationOutboxIndexedDB", ...) block. This mirrors its
-// write-side contracts (gap-free per-target sequencing, settleReceipt's
+// contracts (gap-free per-target sequencing, settleReceipt's
 // pending-input-carrying-record-becomes-optimistic rule, markUnknown's
-// onlyAttempted guard) without the web's Blob handling, cross-tab identity
-// or shared-notes recovery-superseding, none of which the port declares.
+// onlyAttempted guard, nextDispatchable blocked by an earlier blockedUnknown
+// on the same target only, restoreProvenAbsent reopening only what the
+// authoritative snapshot omits) without the web's Blob handling, cross-tab
+// identity or shared-notes recovery-superseding, none of which the port
+// declares.
 import * as Crypto from "expo-crypto";
 import type {
 	MutationAttachmentRef,
@@ -53,7 +51,8 @@ function changedRows(result: MutationOutboxRunResult): number {
 // The synchronous SQLite surface this adapter needs: expo-sqlite's
 // openDatabaseSync in production, node:sqlite's DatabaseSync in tests
 // (mirroring draftRepository.ts's DraftDatabase port), extended with
-// getAllSync for the multi-row scans D25d-1b's read methods need.
+// getAllSync for the multi-row scans nextDispatchable/listOptimistic/
+// listTargetRefs/restoreProvenAbsent all need.
 export interface MutationOutboxDatabase {
 	execSync(sql: string): void;
 	runSync(sql: string, ...params: (string | number | null)[]): MutationOutboxRunResult;
@@ -325,6 +324,70 @@ export class MutationOutboxSQLite<A extends MutationAttachmentRef = MutationAtta
 			this.delete(TABLES.outbox, clientMutationId);
 			return recovery;
 		});
+	}
+
+	// D25d-1b: the read path.
+
+	async listTargetRefs(): Promise<string[]> {
+		const rows = this.db.getAllSync<{ target_ref: string }>(
+			`SELECT DISTINCT target_ref FROM ${TABLES.outbox} UNION SELECT DISTINCT target_ref FROM ${TABLES.optimistic}`,
+		);
+		return rows.map((row) => row.target_ref).sort();
+	}
+
+	async getOutbox(clientMutationId: string): Promise<MutationOutboxRecord<A> | undefined> {
+		return this.get<MutationOutboxRecord<A>>(TABLES.outbox, clientMutationId);
+	}
+
+	async getOptimistic(clientMutationId: string): Promise<MutationOptimisticRecord<A> | undefined> {
+		return this.get<MutationOptimisticRecord<A>>(TABLES.optimistic, clientMutationId);
+	}
+
+	async listOptimistic(targetRef?: string): Promise<MutationOptimisticRecord<A>[]> {
+		return this.list<MutationOptimisticRecord<A>>(TABLES.optimistic, targetRef);
+	}
+
+	async getRecovery(clientMutationId: string): Promise<MutationRecoveryRecord<A> | undefined> {
+		return this.get<MutationRecoveryRecord<A>>(TABLES.recovery, clientMutationId);
+	}
+
+	// The lowest-sequence outbox record for this target, or undefined if that
+	// record is not (or no longer) submitting - a blockedUnknown record at the
+	// head of the sequence blocks every later one on the SAME target, never
+	// another target's.
+	async nextDispatchable(targetRef: string): Promise<MutationOutboxRecord<A> | undefined> {
+		const first = this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef)[0];
+		return first?.state === "submitting" ? first : undefined;
+	}
+
+	// Reopens every blockedUnknown record for this target the authoritative
+	// read does NOT name - a missing id is not proof of non-delivery (a
+	// bounded transcript can omit older work), so only an id the snapshot
+	// explicitly confirms stays settled. Returns the ids restored. Wrapped in
+	// the same savepoint as every other compound write here: a throw partway
+	// through the loop must not leave some blockedUnknown records reopened
+	// and others not.
+	async restoreProvenAbsent(targetRef: string, authoritativeIds: ReadonlySet<string>): Promise<string[]> {
+		return this.transaction("mutation_outbox_restore_absent", () => {
+			const blocked = this.list<MutationOutboxRecord<A>>(TABLES.outbox, targetRef).filter(
+				(record) => record.state === "blockedUnknown" && !authoritativeIds.has(record.clientMutationId),
+			);
+			for (const record of blocked) {
+				this.db.runSync(
+					`UPDATE ${TABLES.outbox} SET state = 'submitting' WHERE client_mutation_id = ?`,
+					record.clientMutationId,
+				);
+			}
+			return blocked.map((record) => record.clientMutationId);
+		});
+	}
+
+	protected list<T extends MutationRecord<A>>(table: string, targetRef?: string): T[] {
+		const rows =
+			targetRef === undefined
+				? this.db.getAllSync<Row>(`SELECT * FROM ${table} ORDER BY intent_sequence`)
+				: this.db.getAllSync<Row>(`SELECT * FROM ${table} WHERE target_ref = ? ORDER BY intent_sequence`, targetRef);
+		return rows.map((row) => fromRow<A, T>(row));
 	}
 
 	// Below: shared plumbing D25d-1a's write methods above call (D25d-1b's
