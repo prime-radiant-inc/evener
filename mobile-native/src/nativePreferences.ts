@@ -35,6 +35,11 @@ export interface PreferenceState<T> {
 	conflict: boolean;
 	writeUncertain: boolean;
 	storageUnavailable: boolean;
+	/** The port answered but what it held could not be read - see
+	 * keybindingsStore's own field of the same name. Always false for
+	 * transcriptMobile: the pre-migration transcript design has no
+	 * unreadable-record recovery path of its own. */
+	draftUnreadable: boolean;
 }
 
 /** The confirmed payload as the shared store holds it: its rule list is the
@@ -61,6 +66,7 @@ const initialDomain = <T>(): PreferenceState<T> => ({
 	conflict: false,
 	writeUncertain: false,
 	storageUnavailable: false,
+	draftUnreadable: false,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -134,6 +140,7 @@ function keybindingsDomain(
 		conflict: state.draftConflict,
 		writeUncertain: state.writeUncertain,
 		storageUnavailable: state.storageUnavailable,
+		draftUnreadable: state.draftUnreadable,
 	};
 }
 
