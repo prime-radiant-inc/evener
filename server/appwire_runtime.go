@@ -2832,25 +2832,27 @@ func (s *Server) appCapabilitiesLocked(state string, processing bool) appwire.Th
 		// running to stop right now": clients apply the status themselves (the
 		// web's showStop is busy && interrupt, the SDK's `stop` requires an
 		// active status), the same uniform rule Steer and Queue follow (#1375).
-		// It is deliberately NOT the ambient cancelFunc.
+		// It reads the retry-safe handler because that is the seam
+		// handleAppTurnInterrupt dispatches through: a server whose only
+		// interrupt wiring is the ambient cancel answers the RPC with
+		// Unavailable, so advertising Stop would offer a control that can only
+		// fail. It is deliberately NOT the ambient cancelFunc.
 		//
-		// That field is armed and cleared once per turn by the session loop, on
-		// a different goroutine and a different clock from the reservation the
-		// status reads, and cmd/evener/serve.go's drain path published processing
-		// before arming it. Reading it here let this set say steer=true
-		// interrupt=false: a turn is running and cannot be stopped. The set is
-		// PUSHED on thread/status/changed and a client keeps it until the status
-		// changes again, so a frame stamped inside that window takes Stop away
-		// for the whole turn that follows (kata 5gdv).
-		//
-		// interruptWired keeps the honesty the cancelFunc read also carried: a
-		// harness that never arms a cancel does not advertise Stop. It is
-		// sticky where cancelFunc is per-turn, which is the whole difference.
+		// That field is also per-turn -- armed and cleared once per turn by the
+		// session loop, on a different goroutine and a different clock from the
+		// reservation the status reads, and cmd/evener/serve.go's drain path
+		// published processing before arming it. Reading it here let this set
+		// say steer=true interrupt=false: a turn is running and cannot be
+		// stopped. The set is PUSHED on thread/status/changed and a client keeps
+		// it until the status changes again, so a frame stamped inside that
+		// window takes Stop away for the whole turn that follows (kata 5gdv).
+		// The startup-installed handler has no such window: it is durable from
+		// before the first turn, which is also why a fresh idle daemon
+		// advertises Stop instead of understating itself until its first turn.
 		// Whether a cancel is armed at the instant the request arrives stays the
-		// business of the typed interrupt handler. InterruptClientMutation has
-		// its own
-		// quiescence precondition (kata vewa).
-		Interrupt:         s.interruptWired && !closed,
+		// business of the typed interrupt handler; InterruptClientMutation has
+		// its own quiescence precondition (kata vewa).
+		Interrupt:         s.retrySafeTurns.Interrupt != nil && !closed,
 		Compact:           s.compactFunc != nil && !closed,
 		Clear:             clearAvailable,
 		ForkFromTurn:      false,

@@ -1572,8 +1572,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// context that is wired into the server's interrupt handler so POST
 	// /interrupt actually cancels the in-flight turn. Clearing it after the
 	// turn finishes answers "is a cancel armed right now" and nothing more:
-	// capabilities.interrupt reports the harness's support (the sticky
-	// interruptWired, #1375), so a cleared cancel does not withdraw Stop.
+	// capabilities.interrupt reports the harness's support (the retry-safe
+	// turn/interrupt handler installed at startup, #1375), so a cleared cancel
+	// does not withdraw Stop.
 	inputLoopDone := make(chan struct{})
 	go func() {
 		defer close(inputLoopDone)

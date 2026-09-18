@@ -121,8 +121,9 @@ func TestAppCapabilities_IgnoresTheLegacySettersNoHandlerReads(t *testing.T) {
 	s.SetSteerWithImagesFunc(func(string, []ImageAttachment) error { return nil })
 	s.SetQueueFunc(func(string) error { return nil })
 	s.SetQueueWithImagesFunc(func(string, []ImageAttachment) error { return nil })
+	s.SetCancelFunc(func() {})
 	caps := s.appCapabilities(appwire.ThreadStatusIdle, false)
-	if caps.Steer || caps.Queue {
+	if caps.Steer || caps.Queue || caps.Interrupt {
 		t.Fatalf("legacy-only wiring advertised actions the RPC cannot serve: %+v", caps)
 	}
 }
@@ -158,26 +159,27 @@ func TestAppCapabilities_InterruptWiredByTheStartupHandler(t *testing.T) {
 	}
 }
 
-// Interrupt and Queue advertise harness support, exactly as Steer does: an
-// armed cancel or a wired queue seam means "this harness can stop a turn" and
-// "this harness can queue work", not "a turn is running right now". Clients
+// Interrupt and Queue advertise harness support, exactly as Steer does: a
+// wired interrupt handler or queue seam means "this harness can stop a turn"
+// and "this harness can queue work", not "a turn is running right now". Clients
 // apply the status themselves; only a closed thread withholds either. Folding
 // `active` in left one struct carrying two semantics, so every client had to
 // know which flags were pre-gated (#1375).
 func TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name          string
-		state         string
-		processing    bool
-		cancelWired   bool
-		queueWired    bool
-		wantInterrupt bool
-		wantQueue     bool
+		name           string
+		state          string
+		processing     bool
+		interruptWired bool
+		queueWired     bool
+		wantInterrupt  bool
+		wantQueue      bool
 	}{
-		// cancelWired and queueWired vary independently: a swap of the two
-		// seams (Interrupt reading queueFunc, Queue reading the cancel) has to
-		// fail here, not pass on a case where both are true together.
+		// interruptWired and queueWired vary independently: a swap of the two
+		// seams (Interrupt reading the queue callback, Queue reading the
+		// interrupt handler) has to fail here, not pass on a case where both are
+		// true together.
 		{"processing, both wired", "active", true, true, true, true, true},
 		{"idle, both wired", "idle", false, true, true, true, true},
 		{"awaiting, both wired", "awaiting", false, true, true, true, true},
@@ -192,16 +194,20 @@ func TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport(t *testing.T) 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := NewServer(ServerConfig{})
-			if tc.cancelWired {
-				s.SetCancelFunc(func() {})
+			// One registration, because SetRetrySafeTurnFunctions replaces the
+			// whole set: two calls would leave only the second seam wired.
+			functions := RetrySafeTurnFunctions{}
+			if tc.interruptWired {
+				functions.Interrupt = func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+					return appwire.TurnInterruptResponse{}, nil
+				}
 			}
 			if tc.queueWired {
-				s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
-					Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-						return appwire.TurnQueueResponse{}, nil
-					},
-				})
+				functions.Queue = func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+					return appwire.TurnQueueResponse{}, nil
+				}
 			}
+			s.SetRetrySafeTurnFunctions(functions)
 			got := s.appCapabilities(tc.state, tc.processing)
 			if got.Interrupt != tc.wantInterrupt {
 				t.Fatalf("Interrupt = %v, want %v (harness support, closed withholds)", got.Interrupt, tc.wantInterrupt)
@@ -210,6 +216,22 @@ func TestAppCapabilities_InterruptAndQueueAdvertiseHarnessSupport(t *testing.T) 
 				t.Fatalf("Queue = %v, want %v (harness support, closed withholds)", got.Queue, tc.wantQueue)
 			}
 		})
+	}
+}
+
+// An armed cancel is not evidence the RPC can interrupt: handleAppTurnInterrupt
+// dispatches through the retry-safe handler alone and answers Unavailable when
+// there is none, so a cancel-only harness must not advertise Stop (#1375
+// review).
+func TestAppCapabilities_ArmedCancelDoesNotAdvertiseInterrupt(t *testing.T) {
+	t.Parallel()
+	s := NewServer(ServerConfig{})
+	s.SetCancelFunc(func() {})
+	if s.cancelFunc == nil {
+		t.Fatal("precondition: the cancel is armed")
+	}
+	if caps := s.appCapabilities(appwire.ThreadStatusIdle, false); caps.Interrupt {
+		t.Fatalf("cancel-only harness advertised interrupt: %+v", caps)
 	}
 }
 
@@ -330,18 +352,22 @@ func TestAppStatusAndCapabilitiesAreOneDecision(t *testing.T) {
 // interrupt=false for an active thread -- and a composer applying it draws Steer
 // and Send with no Stop, which is the shape Jesse reported.
 //
-// Interrupt now advertises harness support (interruptWired && !closed, #1375),
-// so on a harness that stops turns at all -- this one has armed a cancel -- it
-// is true for every status but closed and the disagreement is unrepresentable
+// Interrupt now advertises harness support (the retry-safe interrupt handler
+// installed at startup, #1375), so on a harness that stops turns at all it is
+// true for every status but closed and the disagreement is unrepresentable
 // rather than merely unlikely. That matters because the set is PUSHED: a client
 // keeps it until the next status change, so a frame stamped inside the window
 // used to take Stop away for the whole turn that follows.
+//
+// The fixtures wire the retry-safe seams, which is what the capabilities read;
+// wiring only the legacy setters would leave steer and interrupt both false and
+// make the guard below vacuous.
 //
 // The state below is the drain path's, in its own order.
 func TestAppCapabilities_StopIsOfferedWheneverSteerIs(t *testing.T) {
 	t.Parallel()
 	s := NewServer(ServerConfig{})
-	s.SetSteerFunc(func(string) error { ; return nil })
+	wireRetrySafeCapabilities(s)
 	s.SetCancelFunc(func() {})
 
 	// End of a turn: the loop clears processing and the cancel together.

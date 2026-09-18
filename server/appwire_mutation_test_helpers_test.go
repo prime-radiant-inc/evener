@@ -7,12 +7,12 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
-// wireRetrySafeCapabilities installs the retry-safe steer and queue seams the
-// AppWire handlers actually dispatch through (handleAppTurnSteer and
-// handleAppTurnQueue). Capabilities follow those registrations; the legacy
-// SetSteerFunc/SetQueueFunc pair is wired alongside them and read by no
-// handler, so a fixture that sets only the legacy pair advertises an action the
-// RPC would answer Unavailable.
+// wireRetrySafeCapabilities installs the retry-safe steer, queue and interrupt
+// seams the AppWire handlers actually dispatch through (handleAppTurnSteer,
+// handleAppTurnQueue, handleAppTurnInterrupt). Capabilities follow those
+// registrations; the legacy SetSteerFunc/SetQueueFunc/SetCancelFunc setters are
+// wired alongside them and read by no RPC handler, so a fixture that sets only
+// the legacy pair advertises an action the RPC would answer Unavailable.
 func wireRetrySafeCapabilities(s *Server) {
 	s.SetRetrySafeTurnFunctions(RetrySafeTurnFunctions{
 		Steer: func(appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
@@ -20,6 +20,9 @@ func wireRetrySafeCapabilities(s *Server) {
 		},
 		Queue: func(appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 			return appwire.TurnQueueResponse{}, nil
+		},
+		Interrupt: func(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+			return appwire.TurnInterruptResponse{}, nil
 		},
 	})
 }
