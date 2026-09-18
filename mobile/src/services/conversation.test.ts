@@ -2901,6 +2901,63 @@ describe("observed queue guards", () => {
       /ConversationService/,
     );
   });
+  // A receipt may carry an additive key a shipped build does not know. Jesse's
+  // 2026-09-17 ruling keeps additive AppWire changes on the current
+  // ProtocolVersion, so an older peer must read a new optional key as no
+  // information; rejecting an unknown key would turn every additive wire field
+  // into a hard failure for phone builds already in testers' hands (issue
+  // #1759). The decoder validates the keys it knows and ignores the rest.
+  it("ignores an additive receipt key the decoder does not know", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/drainAsSteer",
+      () =>
+        ({
+          receipt: makeReceipt("steer", {
+            futureAdditiveField: "ignored",
+          } as Partial<MutationReceipt>),
+        }) as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    const receipt = await service.steer(textInput("steer this"), 4);
+    expect(receipt).toMatchObject({
+      clientMutationId: "cmid-1",
+      disposition: "applied",
+      threadId: "thread-1",
+      projectionState: "pending",
+      turnId: "turn-1",
+    });
+    expect(receipt).not.toHaveProperty("futureAdditiveField");
+  });
+  it("ignores an additive receipt key on a mutation other than drain", async () => {
+    const { client, service } = setup();
+    client.on(
+      "turn/queue",
+      () =>
+        ({
+          receipt: makeReceipt("queue", {
+            futureAdditiveField: "ignored",
+          } as Partial<MutationReceipt>),
+        }) as TurnQueueResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.queue(textInput("queued"))).resolves.toMatchObject({
+      clientMutationId: "cmid-1",
+      queueEntryIds: ["queue-1"],
+    });
+  });
+  it("still rejects a receipt missing a key the decoder requires", async () => {
+    const { client, service } = setup();
+    const { threadId: _omitted, ...withoutThreadId } = makeReceipt("steer");
+    client.on(
+      "turn/drainAsSteer",
+      () => ({ receipt: withoutThreadId }) as unknown as TurnDrainAsSteerResponse,
+    );
+    await service.open("ref-1");
+    await expect(service.steer(textInput("steer this"), 4)).rejects.toThrow(
+      /ConversationService/,
+    );
+  });
 });
 
 describe("bound conversation model catalog", () => {

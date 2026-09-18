@@ -304,6 +304,48 @@ function nonemptyString(raw: unknown, label: string): string {
   return raw;
 }
 
+// The receipt keys this decoder knows across every mutation kind. A key from
+// this vocabulary that a kind does not expect is a malformed receipt and is
+// still rejected; a key outside it is an additive field no shipped build has
+// seen, and is ignored. Jesse's 2026-09-17 ruling keeps additive AppWire
+// changes on the current ProtocolVersion, so an older peer must read a new
+// optional key as no information -- rejecting it would turn every additive
+// wire field into a hard failure for a phone build already in testers' hands
+// (issue #1759). The result envelope around a receipt stays exact.
+const KNOWN_RECEIPT_KEYS: ReadonlySet<string> = new Set([
+  "clientMutationId",
+  "disposition",
+  "threadId",
+  "instanceId",
+  "turnId",
+  "queueEntryIds",
+  "projectionState",
+  "consumedClientMutationIds",
+]);
+
+function decodedReceipt(
+  raw: unknown,
+  expectedKeys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`ConversationService: ${label} is not an object`);
+  }
+  const receipt = raw as Record<string, unknown>;
+  const expected = new Set(expectedKeys);
+  for (const key of Object.keys(receipt)) {
+    if (!expected.has(key) && KNOWN_RECEIPT_KEYS.has(key)) {
+      throw new Error(`ConversationService: ${label} has unexpected keys`);
+    }
+  }
+  for (const key of expected) {
+    if (!(key in receipt)) {
+      throw new Error(`ConversationService: ${label} is missing ${key}`);
+    }
+  }
+  return receipt;
+}
+
 function decodeMutationResult(
   kind: MutationKind,
   raw: unknown,
@@ -380,7 +422,7 @@ function decodeMutationResult(
   ) {
     requiredReceiptKeys.push("instanceId");
   }
-  const receipt = exactObject(
+  const receipt = decodedReceipt(
     result.receipt,
     requiredReceiptKeys,
     `${kind} receipt`,
