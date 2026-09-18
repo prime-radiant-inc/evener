@@ -512,6 +512,16 @@ func newHubAppServerWithNavigationAndTrace(cfg hubcore.WebConfig, sources *appso
 	registerLaunchHandlers(server, launchController)
 	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
 	wirePluginStoreBroadcast(pluginsController.mgr, server)
+	// Offer pluginsController's own wired Manager to hubResolvePlugins
+	// (app_threadlifecycle.go) for the same root, so thread/start and
+	// evener/spawn/slashCatalog's ResolveForLaunch resolves through it
+	// instead of a second, unwired Manager (issue #1734).
+	setHubResolvePluginManagerFor(func(pluginRoot string) *plugins.Manager {
+		if pluginRoot == cfg.PluginRoot {
+			return pluginsController.mgr
+		}
+		return nil
+	})
 	registerPluginHandlers(server, pluginsController)
 	registerMobilePairingHandler(server, cfg)
 	registerNavigationReadHandler(server, navigation)

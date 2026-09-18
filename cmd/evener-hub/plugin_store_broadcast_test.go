@@ -13,9 +13,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/plugins"
 )
@@ -161,4 +163,30 @@ func TestHubPluginGC_MigratesALegacyNameAndBroadcasts(t *testing.T) {
 		t.Fatalf("broadcasts = %+v, want both %s and %s (the migration's saveRename writes both files)",
 			got, appwire.NotifyEvenerMarketplaceUpdated, appwire.NotifyEvenerPluginUpdated)
 	}
+}
+
+// TestNewWebServer_ConcurrentConstructionDoesNotRaceResolvePluginManager
+// reproduces the race the CI race gate caught in cmd/evener-hub: many
+// existing tests build a hub server (NewWebServer) with t.Parallel(), and
+// registerRPCHandlers wired hubResolvePluginManagerFor with a plain
+// assignment on every construction — a real data race under -race, not a
+// theoretical one, since the write races the read inside a concurrently
+// running hubResolvePlugins call as well as every other construction's own
+// write.
+func TestNewWebServer_ConcurrentConstructionDoesNotRaceResolvePluginManager(t *testing.T) {
+	const n = 8
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			root := t.TempDir()
+			web := NewWebServer(hubcore.WebConfig{PluginRoot: root})
+			if _, err := hubResolvePlugins(context.Background(), root, nil, nil); err != nil {
+				t.Errorf("hubResolvePlugins: %v", err)
+			}
+			_ = web
+		}(i)
+	}
+	wg.Wait()
 }

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -42,9 +43,50 @@ var (
 	hubForkSessionAt   = agent.ForkSessionAtUserTurn
 	hubAsideSession    = agent.AsideSession
 	hubResolvePlugins  = func(ctx context.Context, pluginRoot string, dirs []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-		return plugins.NewManager(pluginRoot).ResolveForLaunch(ctx, dirs, enabled)
+		return hubPluginResolveManager(pluginRoot).ResolveForLaunch(ctx, dirs, enabled)
 	}
 )
+
+// hubResolvePluginManagerMu guards hubResolvePluginManagerFor:
+// registerRPCHandlers sets it once per hub server construction, and many
+// tests build servers concurrently (t.Parallel()), so an unsynchronized
+// assignment here is a real data race under -race — found running the CI
+// race gate locally on this PR, not a theoretical concern.
+var (
+	hubResolvePluginManagerMu  sync.RWMutex
+	hubResolvePluginManagerFor func(pluginRoot string) *plugins.Manager
+)
+
+// setHubResolvePluginManagerFor installs fn as hubResolvePlugins' Manager
+// selector (see hubPluginResolveManager), offering up the hub's own
+// already-wired pluginsController.mgr for the matching root, so a migration
+// ResolveForLaunch triggers from thread/start or evener/spawn/slashCatalog
+// still broadcasts (issue #1734) instead of writing through a second,
+// unwired Manager. Called once per server construction
+// (registerRPCHandlers); tests that override hubResolvePlugins directly
+// never touch this at all.
+func setHubResolvePluginManagerFor(fn func(pluginRoot string) *plugins.Manager) {
+	hubResolvePluginManagerMu.Lock()
+	defer hubResolvePluginManagerMu.Unlock()
+	hubResolvePluginManagerFor = fn
+}
+
+// hubPluginResolveManager is hubResolvePlugins' default Manager selection:
+// the installed selector for pluginRoot if one is set and recognizes it,
+// otherwise a fresh, unwired Manager — exactly the behavior before
+// setHubResolvePluginManagerFor existed, which is what every test that never
+// builds a server still gets (hubResolvePluginManagerFor stays nil).
+func hubPluginResolveManager(pluginRoot string) *plugins.Manager {
+	hubResolvePluginManagerMu.RLock()
+	selector := hubResolvePluginManagerFor
+	hubResolvePluginManagerMu.RUnlock()
+	if selector != nil {
+		if mgr := selector(pluginRoot); mgr != nil {
+			return mgr
+		}
+	}
+	return plugins.NewManager(pluginRoot)
+}
 
 func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
 	if err := validateAppWireInputItems(params.Input); err != nil {

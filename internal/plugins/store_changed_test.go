@@ -208,7 +208,7 @@ func TestMigrateMarketplaceNames_PersistentPreWriteFailureNeverReportsChange(t *
 	marketplaceAtomicWriteFile = func(string, []byte, os.FileMode) error { return errors.New("boom") }
 	t.Cleanup(func() { marketplaceAtomicWriteFile = orig })
 
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := m.ListMarketplaces(context.Background()); err == nil {
 			t.Fatalf("call %d: expected ListMarketplaces to fail", i)
 		}
@@ -246,7 +246,7 @@ func TestManager_ConcurrentLockSessionsDoNotRaceStoreChanged(t *testing.T) {
 	})
 
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
