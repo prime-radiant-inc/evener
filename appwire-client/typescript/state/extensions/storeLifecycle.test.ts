@@ -13,9 +13,10 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ConnectionState } from "../../client";
 import { createFrameworkFreeStore, type FrameworkFreeStore } from "../../frameworkFreeStore";
-import { answerRequests, callsTo, FakeClient, failRequests, gateRequests } from "../../testing/fakeClient";
+import { answerRequests, callsTo, FakeClient, failRequests, gateSettlements } from "../../testing/fakeClient";
 import type { MethodName } from "../../types.gen";
 import { createLaunchLayerStore, LAUNCH_LAYER_REFETCH_DEBOUNCE_MS, type LaunchLayerState } from "./launchLayer";
+import { createListRevision } from "./listRevision";
 import { createMarketplacesStore, MARKETPLACE_REFETCH_DEBOUNCE_MS, type MarketplacesState } from "./marketplaces";
 import { createPluginsStore, PLUGIN_REFETCH_DEBOUNCE_MS, type PluginsState } from "./plugins";
 import { createStoreLifecycle, type StoreLifecycle } from "./storeLifecycle";
@@ -149,30 +150,23 @@ function createLifecycleKit<S>(lifecycle: LifecycleCase<S>): LifecycleKit<S> {
     fake,
     store,
     async gatedRead() {
-      const releases = gateRequests(fake, lifecycle.listMethod);
+      const settlements = gateSettlements(fake, lifecycle.listMethod);
       const promise = lifecycle.fetch(store.getState());
       await Promise.resolve();
-      const release = releases[0];
-      if (!release) throw new Error("the read must be in flight");
-      return { promise, land: (response: unknown = lifecycle.listResponse) => release(response) };
+      const settle = settlements[0];
+      if (!settle) throw new Error("the read must be in flight");
+      return { promise, land: (response: unknown = lifecycle.listResponse) => settle.resolve(response) };
     },
     async gatedWrite() {
-      let settle: { resolve(response: unknown): void; reject(error: Error): void } | undefined;
-      fake.on(
-        lifecycle.mutationMethod,
-        (() =>
-          new Promise((resolve, reject) => {
-            settle = { resolve, reject };
-          })) as never,
-      );
+      const settlements = gateSettlements(fake, lifecycle.mutationMethod);
       const promise = lifecycle.mutate(store.getState());
       await Promise.resolve();
+      const settle = settlements[0];
       if (!settle) throw new Error("the write must be in flight");
-      const { resolve, reject } = settle;
       return {
         promise,
-        land: (response: unknown = lifecycle.mutationResponse) => resolve(response),
-        fail: (message = "write refused") => reject(new Error(message)),
+        land: (response: unknown = lifecycle.mutationResponse) => settle.resolve(response),
+        fail: (message = "write refused") => settle.reject(new Error(message)),
       };
     },
     rejectWrite(message) {
@@ -372,8 +366,9 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
     // The converse of the case above: nothing has read the list, but a
     // mutation is in flight - so nothing in the store's OWN data (the fields
     // wantsList reads) marks the list as wanted, yet the intent is real. The
-    // seam readRevisioned and writeRevisioned share (listRevision.ts's
-    // hasLive) is what carries it.
+    // lifecycle reads it off the listRevision the store hands it (its revision
+    // option): the seam readRevisioned and writeRevisioned share
+    // (listRevision.ts's hasLive).
     test("a write issued before any read still recovers a replaced connection's list", async () => {
       const { fake, store, gatedWrite, fence } = createLifecycleKit(lifecycle);
       store.connectionChanged(fake, "ready");
@@ -651,6 +646,55 @@ function runLifecycleSuite<S>(name: string, lifecycle: LifecycleCase<S>): void {
 runLifecycleSuite("marketplaces", MARKETPLACES);
 runLifecycleSuite("plugins", PLUGINS);
 runLifecycleSuite("launch layer", LAUNCH_LAYER);
+
+// The optional revision: when a store hands the lifecycle its listRevision,
+// the lifecycle - not the store - owns the hasLive OR into wantsList and the
+// fence. Both halves are asserted here on a lifecycle of its own, because a
+// store's options no longer reach either by hand.
+describe("a lifecycle given a list revision", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test("reads a live request into wantsList and fences the revision with everything else", async () => {
+    const revisions = createListRevision();
+    const client = new FakeClient("ready");
+    let reads = 0;
+    // The store's OWN wantsList says no throughout: only the revision can make
+    // it want the list.
+    const lifecycle = createStoreLifecycle<{ marker: number }>(client, {
+      method: "evener/plugin/updated",
+      debounceMs: 250,
+      store: () => store,
+      refetch: () => {
+        reads += 1;
+      },
+      revision: revisions,
+      wantsList: () => false,
+    });
+    const store = createFrameworkFreeStore<{ marker: number }>((publish) => {
+      void lifecycle.guard(publish);
+      return { marker: 0 };
+    });
+
+    // A request on the wire issues a live revision but writes no state field.
+    // The recovery read a ready connection schedules is what proves the
+    // lifecycle saw it.
+    revisions.next();
+    lifecycle.connectionChanged(client, "reconnecting");
+    lifecycle.connectionChanged(client, "ready");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reads).toBe(1);
+
+    // And a fence settles that revision with everything else it cancels.
+    revisions.next();
+    lifecycle.reset();
+    expect(revisions.hasLive()).toBe(false);
+  });
+});
 
 // dispose() unsubscribes, but unsubscribing is only the cooperative half: a
 // dispatcher that snapshots its handler set - AppwireClient.setState does,

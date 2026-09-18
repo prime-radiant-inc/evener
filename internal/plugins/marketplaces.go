@@ -91,7 +91,11 @@ func (m *Manager) saveMarketplaces(mk Marketplaces) error {
 	if err != nil {
 		return fmt.Errorf("marshalling marketplaces: %w", err)
 	}
-	return marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644)
+	if err := marketplaceAtomicWriteFile(path, append(body, '\n'), 0o644); err != nil {
+		return err
+	}
+	m.markStoreChanged(StoreChanged{Marketplaces: true})
+	return nil
 }
 
 // fetchMarketplaceContainer clones/references src into destDir and returns the
