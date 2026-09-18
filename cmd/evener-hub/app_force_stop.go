@@ -65,26 +65,23 @@ func forceStopThread(ctx context.Context, cfg hubcore.WebConfig, params appwire.
 	// admissions stay fenced across the drain by the stop fence itself.
 	if stopAliases := cfg.ResumeLocks.ActiveResumeStopAliases(ref.ThreadID); stopAliases != nil {
 		reservationsHeld := tryLockForceStopReservations(cfg.ResumeLocks, stopAliases)
-		for _, alias := range stopAliases {
-			if err := deletionFenceError(cfg, "", alias, ""); err != nil {
-				if reservationsHeld {
-					unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
-				}
-				return err
+		releaseReservations := func() {
+			if reservationsHeld {
+				unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
 			}
+		}
+		if err := deletionFenceErrorForGroup(cfg, stopAliases); err != nil {
+			releaseReservations()
+			return err
 		}
 		if stop := cfg.ResumeLocks.BeginActiveResumeStop(ref.ThreadID); stop != nil {
 			defer stop.Release()
 			if err := stop.Wait(ctx); err != nil {
-				if reservationsHeld {
-					unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
-				}
+				releaseReservations()
 				return forceStopResumeStopError(err)
 			}
 		}
-		if reservationsHeld {
-			unlockForceStopReservations(cfg.ResumeLocks, stopAliases)
-		}
+		releaseReservations()
 	}
 	recoveryTarget := cfg.ResumeLocks.RecoveryState(ref.ThreadID).ResumeSessionID
 	entry, err := forceStopEntry(cfg.RunDir, ref.ThreadID, cfg.DaemonProcesses, nil, recoveryTarget, params.ExpectedDaemon)
