@@ -855,6 +855,89 @@ describe("the two write paths serialize through one queue", () => {
     expect(store.getState()).toMatchObject({ saving: false, draftConflict: true, storageUnavailable: true });
     expect(store.getState().draftError).not.toBeNull();
   });
+
+  test("a save queued across detachHub does not dispatch to the replacement hub", async () => {
+    const drafts = memoryKeybindingDraftStorage();
+    const client = clientServing(3, [applied]);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const save = store.getState().saveDraft(proposed);
+    // The save is expected to be refused at detach; keep that rejection handled
+    // across the awaits below.
+    const saveSettled = save.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    // The host replaces the hub: detachHub retires the payload but does NOT end
+    // the generation, so `callGeneration` alone would still look current.
+    expect(store.detachHub()).toBe(true);
+    // The replacement hub refreshes with the SAME revision.
+    client.on(getMethod, () => payload(3, [applied]));
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ loaded: true, revision: 3 });
+
+    // The preceding write settles; the queued save must not send the old hub's
+    // draft to the replacement hub.
+    settlements[0]!.resolve(payload(3, [applied]));
+    await first.then(
+      () => undefined,
+      () => undefined,
+    );
+    // Let the queued save reach its dispatch decision.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(callsTo(client, patchMethod)).toBe(1);
+    await expect(save).rejects.toThrow();
+    await saveSettled;
+  });
+
+  test("a direct PATCH queued across detachHub does not dispatch to the replacement hub", async () => {
+    const client = clientServing(3, [applied]);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const queued = store.getState().patchOverrides([applied]);
+    const queuedSettled = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    expect(store.detachHub()).toBe(true);
+    client.on(getMethod, () => payload(3, [applied]));
+    await store.getState().refreshOverrides();
+    expect(store.getState()).toMatchObject({ loaded: true, revision: 3 });
+
+    settlements[0]!.resolve(payload(3, [applied]));
+    await first.then(
+      () => undefined,
+      () => undefined,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(callsTo(client, patchMethod)).toBe(1);
+    await expect(queued).rejects.toThrow();
+    await queuedSettled;
+  });
+
+  test("detachHub drains a write queued behind a never-settling request", async () => {
+    const client = clientServing(3);
+    const settlements = gateSettlements(client, patchMethod);
+    const store = await readyStore(client);
+
+    const first = store.getState().patchOverrides([applied]);
+    await vi.waitFor(() => expect(settlements).toHaveLength(1));
+    const second = store.getState().patchOverrides([applied]);
+
+    expect(store.detachHub()).toBe(true);
+    // The queued write drains through its retirement fence instead of waiting
+    // on a request that will never answer.
+    await expect(second).rejects.toThrow();
+    void first;
+  });
 });
 
 describe("payload rules shared by both apps", () => {

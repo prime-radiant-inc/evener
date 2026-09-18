@@ -609,6 +609,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * calls it so writes queued behind an abandoned request drain through their
    * dead-generation fence even when that request never settles. */
   let releaseHeadTail: (() => void) | null = null;
+  /** Bumped on every payload retirement (generation end, support drop, hub
+   * detach). A write captures it at call time: its intent was composed against
+   * the retired hub/payload, so a replacement hub that happens to serve the
+   * same revision must not receive it. */
+  let payloadSerial = 0;
 
   /** Serializes one write behind the previous write's full settlement (success
    * OR failure): a failed write must not block the queue, and the next write
@@ -716,6 +721,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * same publish. */
   function retirePayload(extra: Partial<KeybindingsStoreFields> = {}): void {
     fence.supersede();
+    // Fence every write whose intent was composed against this payload: the
+    // generation may not change (detachHub, support drop), so a queued write's
+    // `callGeneration` can still look current even though the hub/payload it
+    // was made for is gone.
+    payloadSerial += 1;
     const state = getState();
     setState({
       loaded: false,
@@ -1036,9 +1046,11 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // (applyHubOverrides clears hubError) or re-fails the reconcile against
       // the same wedge and surfaces its own hubError.
       retirePayload({ hubError: UNAPPLY_ROLLED_BACK_MESSAGE, conflict: null });
+      releaseAbandonedHead();
       return false;
     }
     retirePayload({ overrides: [], rawOverrides: [], warnings: [], loadError: null, hubError: null, conflict: null });
+    releaseAbandonedHead();
     return true;
   }
 
@@ -1073,6 +1085,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // rejects with the same unavailable-class error instead, before any
     // wire request.
     const callGeneration = fence.generation;
+    const callPayloadSerial = payloadSerial;
     const run = async (): Promise<KeybindingsOverrides> => {
       // Compose at EXECUTION time: a thunk reads the raw set as the
       // previous write left it, folding its confirmed payload into this
@@ -1088,6 +1101,12 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       // unavailable" plus the round-3 editing gate would read the new hub
       // read-only until something cleared it. Throw only.
       if (!fence.liveHub(callGeneration)) throw new Error(UNAVAILABLE_MESSAGE);
+      // The payload this write was composed against was retired (detachHub, a
+      // support drop) WITHOUT ending the generation, so `callGeneration` can
+      // still be current while the hub it belonged to is gone. A replacement
+      // hub serving the same revision must not receive the old hub's edit:
+      // throw without hubError, exactly like the dead-generation case above.
+      if (callPayloadSerial !== payloadSerial) throw new Error(UNAVAILABLE_MESSAGE);
       // Support resolved to UNSUPPORTED is the same hygiene class as the
       // fence (finding 26): the unsupported state is deliberately clean -
       // the section says the built-in defaults are in effect - and the
@@ -1218,11 +1237,14 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // The durable intent must exist before the request can leave the device.
     const checkpoint = persistDraft({ baseRevision: revision, rules: checked, writeUncertain: true });
     const callGeneration = fence.generation;
+    const callPayloadSerial = payloadSerial;
     setState({ saving: true, draft: { version: 1, revision, rules: checked }, draftError: null });
     // Chain behind the previous write's SETTLEMENT, exactly as patchOverrides
     // does: a failed write must not block the queue, and the next write
     // composes against whatever state the failure left.
-    return enqueueWrite((waited) => runQueuedSave(callGeneration, revision, checked, checkpoint, waited));
+    return enqueueWrite((waited) =>
+      runQueuedSave(callGeneration, callPayloadSerial, revision, checked, checkpoint, waited),
+    );
   }
 
   /** The queued half of saveDraft: the request and its post-reply sequence,
@@ -1230,18 +1252,22 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * against the state that write settled before anything leaves the device. */
   async function runQueuedSave(
     callGeneration: number,
+    callPayloadSerial: number,
     revision: number,
     checked: KeybindingsRule[],
     checkpoint: KeybindingDraftCheckpoint,
     waited: boolean,
   ): Promise<KeybindingsOverrides> {
     const state = getState();
-    if (!fence.liveHub(callGeneration)) {
-      // A generation end / support drop / disposal retired the payload while
-      // this save waited in the queue. retirePayload already published
+    if (!fence.liveHub(callGeneration) || callPayloadSerial !== payloadSerial) {
+      // A generation end / support drop / detach / disposal retired the payload
+      // while this save waited in the queue. retirePayload already published
       // writeUncertain from `saving`, and the call-time checkpoint is its
       // durable record, so nothing leaves the device. Reject as the call-time
-      // guard would have, one tick later.
+      // guard would have, one tick later. The payload serial is checked
+      // separately from the generation because detachHub/support drop retire
+      // the payload WITHOUT ending the generation, and a replacement hub
+      // serving the same revision must not receive the old hub's draft.
       throw new Error("Shortcut save was cancelled.");
     }
     if (revision !== state.revision) {
