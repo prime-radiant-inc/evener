@@ -287,9 +287,15 @@ func (m *Manager) saveFailed(name, fileName string, saveErr error) error {
 // Both cause's and rollbackErr's own text can carry this
 // machine's absolute plugin-store path (atomicWriteFile, os.RemoveAll and
 // os.Rename all name it directly), so both go to the hub's log instead of
-// the RPC caller.
+// the RPC caller. cause wrapping errStoreBetweenNames (EditMarketplace's
+// rename reaching this branch: saveRename's own between-names failure, whose
+// directory rollback then also failed) keeps that identity through %w - the
+// sentinel's own text carries no path.
 func (m *Manager) storeChangeRollbackFailed(name string, cause, rollbackErr error) error {
 	_, _ = fmt.Fprintf(m.stderr(), "warning: marketplace %q: %v; rolling back failed too: %v\n", name, cause, rollbackErr)
+	if errors.Is(cause, errStoreBetweenNames) {
+		return fmt.Errorf("marketplace %q's change could not be rolled back; see the hub's log for detail: %w", name, errStoreBetweenNames)
+	}
 	return fmt.Errorf("marketplace %q's change could not be rolled back; see the hub's log for detail", name)
 }
 

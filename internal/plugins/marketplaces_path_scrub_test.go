@@ -412,6 +412,75 @@ func TestEditMarketplaceRenameBetweenNamesErrorSurvivesIdentity(t *testing.T) {
 	}
 }
 
+// EditMarketplace's fail closure preserves errStoreBetweenNames when the
+// outer directory rollback succeeds (the test above); this covers the other
+// branch, where the outer rollback (undoSwap here) ALSO fails and fail
+// returns storeChangeRollbackFailed instead of the scrubbed cause directly -
+// that helper has to re-attach the sentinel itself, or the identity the
+// first branch preserves is lost the moment a second thing goes wrong.
+func TestEditMarketplaceRenameBetweenNamesRollbackFailureSurvivesIdentity(t *testing.T) {
+	if !gitAvailable() {
+		t.Skip("git not available")
+	}
+	repoA := makeMarketplaceRepoWithPlugin(t, "acme", "widget")
+	repoB := makeMarketplaceRepoWithPlugin(t, "acme", "gadget")
+	m := NewManager(t.TempDir())
+	m.Stderr = io.Discard
+	ctx := context.Background()
+	if _, err := m.AddMarketplace(ctx, "", Source{Kind: SourceURL, URL: repoA}); err != nil {
+		t.Fatalf("AddMarketplace: %v", err)
+	}
+	if _, err := m.Install(ctx, "widget", "acme"); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	path := m.marketplacesFile()
+	swappedIn := m.marketplaceDir("beta")
+	origWrite := marketplaceAtomicWriteFile
+	origRemove := marketplaceRemoveAll
+	t.Cleanup(func() {
+		marketplaceAtomicWriteFile = origWrite
+		marketplaceRemoveAll = origRemove
+	})
+	marketplaceAtomicWriteFile = func(p string, b []byte, mode os.FileMode) error {
+		if p == path {
+			return &fs.PathError{Op: "write", Path: path, Err: errors.New("permission denied")}
+		}
+		return origWrite(p, b, mode)
+	}
+	marketplaceRemoveAll = func(p string) error {
+		if p == swappedIn {
+			return &fs.PathError{Op: "remove", Path: swappedIn, Err: errors.New("permission denied")}
+		}
+		return origRemove(p)
+	}
+
+	origSave := installSaveRegistry
+	saveCalls := 0
+	t.Cleanup(func() { installSaveRegistry = origSave })
+	installSaveRegistry = func(p string, reg Registry) error {
+		saveCalls++
+		if saveCalls == 1 {
+			// The rekeyed registry saveRename writes before the marketplaces
+			// file - lets that one land so the restore below is a real
+			// second write, not a no-op.
+			return origSave(p, reg)
+		}
+		return &fs.PathError{Op: "write", Path: p, Err: errors.New("permission denied")}
+	}
+
+	_, err := m.EditMarketplace(ctx, "acme", "beta", &Source{Kind: SourceURL, URL: repoB})
+	if err == nil {
+		t.Fatal("expected the marketplaces save, the registry restore, and the swap rollback to all fail")
+	}
+	if !errors.Is(err, errStoreBetweenNames) {
+		t.Fatalf("err = %v, want errors.Is(err, errStoreBetweenNames)", err)
+	}
+	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), swappedIn) {
+		t.Fatalf("err = %v, want no absolute path in the client-facing error", err)
+	}
+}
+
 // A ListMarketplaces call that finds a legacy-named marketplace reaches
 // saveRename through the migration barrier (migrateMarketplaceName), not
 // through EditMarketplace - and its error surfaces to an RPC caller just as
