@@ -37,7 +37,7 @@ export type ContentSelection =
   | { readonly kind: "preset"; readonly level: ContentLevel }
   | ({ readonly kind: "custom" } & ContentVector);
 
-export interface TranscriptDisplayAdvanced {
+export interface TranscriptDisplayAdvancedV1 {
   readonly roundTimings: boolean;
   readonly tokenCounts: boolean;
   readonly estimatedCost: boolean;
@@ -49,7 +49,7 @@ export interface TranscriptDisplayAdvanced {
 export interface TranscriptDisplayConfigV1 {
   readonly version: 1;
   readonly content: ContentSelection;
-  readonly advanced: Readonly<TranscriptDisplayAdvanced>;
+  readonly advanced: Readonly<TranscriptDisplayAdvancedV1>;
 }
 
 export type TranscriptDisplayConfig = TranscriptDisplayConfigV1;
@@ -70,7 +70,7 @@ const CONTENT_VECTORS: Readonly<Record<ContentLevel, ContentVector>> = {
   full: { toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: true },
 };
 
-const ADVANCED_DEFAULTS: TranscriptDisplayAdvanced = {
+const ADVANCED_DEFAULTS: TranscriptDisplayAdvancedV1 = {
   roundTimings: false,
   tokenCounts: false,
   estimatedCost: false,
@@ -88,7 +88,7 @@ function cloneVector(vector: ContentVector): ContentVector {
   };
 }
 
-function cloneAdvanced(advanced: TranscriptDisplayAdvanced): TranscriptDisplayAdvanced {
+function cloneAdvanced(advanced: TranscriptDisplayAdvancedV1): TranscriptDisplayAdvancedV1 {
   return {
     roundTimings: advanced.roundTimings,
     tokenCounts: advanced.tokenCounts,
@@ -194,7 +194,7 @@ export function normalizeConfig(config: TranscriptDisplayConfigV1): TranscriptDi
 
 export function makeTranscriptDisplayConfig(
   content: ContentSelection = { kind: "preset", level: "chat" },
-  advanced: Partial<TranscriptDisplayAdvanced> = {},
+  advanced: Partial<TranscriptDisplayAdvancedV1> = {},
 ): TranscriptDisplayConfigV1 {
   return normalizeConfig({
     version: 1,
@@ -296,7 +296,7 @@ function wireContent(content: ContentSelection): WireContent {
   return { kind: "custom", custom: cloneVector(content) };
 }
 
-function wireAdvanced(advanced: TranscriptDisplayAdvanced): WireAdvanced {
+function wireAdvanced(advanced: TranscriptDisplayAdvancedV1): WireAdvanced {
   return {
     roundTimings: advanced.roundTimings,
     tokenCounts: advanced.tokenCounts,
@@ -329,7 +329,7 @@ function readWireContent(value: unknown): ContentSelection | undefined {
   return undefined;
 }
 
-function readWireAdvanced(value: unknown): TranscriptDisplayAdvanced | undefined {
+function readWireAdvanced(value: unknown): TranscriptDisplayAdvancedV1 | undefined {
   if (
     !isRecord(value) ||
     !hasExactKeys(value, [
