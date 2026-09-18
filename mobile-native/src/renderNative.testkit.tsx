@@ -15,6 +15,8 @@ import {
 	type ReactTestRenderer,
 	type ReactTestRendererJSON,
 } from "react-test-renderer";
+import type { AnyNotification, InstanceListResponse } from "@evener/appwire-client";
+import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 
 // React 19's act() only drives effects when it is told it is inside a test
 // environment; vitest is not jest, so nothing sets this for us.
@@ -63,13 +65,32 @@ export function nativeModuleMock() {
 		Pressable: "Pressable",
 		ScrollView: "ScrollView",
 		SectionList,
-		StyleSheet: { create: <T,>(styles: T): T => styles, flatten: (style: unknown) => style },
+		StyleSheet: { create: <T,>(styles: T): T => styles },
 		Text: "Text",
 		TextInput: "TextInput",
 		View: "View",
 		useColorScheme: () => "light" as const,
 		useWindowDimensions: () => ({ fontScale: 1, scale: 2, width: 390, height: 844 }),
 	};
+}
+
+/** The client a test hands the credential store: every request method it is
+ * asked for is recorded in `methods`, every answer is `rows`, and
+ * `unsubscribes()` counts the times the store released its notification
+ * subscription - the observable behind binding and closing a connection. */
+export function scriptedClient(rows: InstanceListResponse) {
+	const methods: string[] = [];
+	let unsubscribes = 0;
+	const client = {
+		request: async (method: string) => {
+			methods.push(method);
+			return rows;
+		},
+		onNotification: (_handler: (n: AnyNotification) => void) => () => {
+			unsubscribes += 1;
+		},
+	} as ConversationClientLike;
+	return { client, methods, unsubscribes: () => unsubscribes };
 }
 
 /** Mounts `element` and flushes its effects, returning the test renderer. */

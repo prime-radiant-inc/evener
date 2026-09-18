@@ -7,11 +7,10 @@
 import { useEffect } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { AnyNotification, InstanceListResponse } from "@evener/appwire-client";
+import type { InstanceListResponse } from "@evener/appwire-client";
 import type { CredentialInstancesStore } from "@evener/appwire-client/state/credentials";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
 import { useCredentialStore } from "./credentialStore";
-import { render, renderHook } from "./renderNative.testkit";
+import { render, renderHook, scriptedClient } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("expo-crypto", () => ({ randomUUID: () => "fixture-uuid" }));
@@ -19,19 +18,9 @@ vi.mock("./ConnectionProvider", () => ({ useConnection: () => harness.connection
 
 const rows: InstanceListResponse = { instances: [], availableProviders: [] };
 
-function scriptedClient(methods: string[], onUnsubscribe: () => void = () => {}) {
-	return {
-		request: async (method: string) => {
-			methods.push(method);
-			return rows;
-		},
-		onNotification: (_handler: (n: AnyNotification) => void) => onUnsubscribe,
-	} as ConversationClientLike;
-}
-
 it("binds the store before a child's mount effect reads through it", async () => {
-	const methods: string[] = [];
-	harness.connection = { client: scriptedClient(methods), state: "ready" };
+	const hub = scriptedClient(rows);
+	harness.connection = { client: hub.client, state: "ready" };
 	const applied: boolean[] = [];
 	function Child({ store }: { store: CredentialInstancesStore }) {
 		useEffect(() => {
@@ -50,42 +39,30 @@ it("binds the store before a child's mount effect reads through it", async () =>
 	// true means the read was answered by the client the layout effect bound;
 	// a store bound from a passive effect would still be unbound here.
 	expect(applied).toEqual([true]);
-	expect(methods).toEqual(["evener/instance/list"]);
+	expect(hub.methods).toEqual(["evener/instance/list"]);
 });
 
 it("closes the store on unmount only, releasing the connection's listener", async () => {
-	const methods: string[] = [];
-	let unsubscribes = 0;
-	harness.connection = {
-		client: scriptedClient(methods, () => {
-			unsubscribes += 1;
-		}),
-		state: "ready",
-	};
+	const hub = scriptedClient(rows);
+	harness.connection = { client: hub.client, state: "ready" };
 	const hook = renderHook(() => useCredentialStore());
-	expect(unsubscribes).toBe(0);
+	expect(hub.unsubscribes()).toBe(0);
 	hook.unmount();
-	expect(unsubscribes).toBe(1);
+	expect(hub.unsubscribes()).toBe(1);
 	await expect(hook.result.current.getState().fetch()).rejects.toThrow(/no client connected/);
 });
 
 it("moves to a replacement client after mount without closing the store", async () => {
-	const firstMethods: string[] = [];
-	let firstUnsubscribes = 0;
-	const secondMethods: string[] = [];
-	harness.connection = {
-		client: scriptedClient(firstMethods, () => {
-			firstUnsubscribes += 1;
-		}),
-		state: "ready",
-	};
+	const first = scriptedClient(rows);
+	const second = scriptedClient(rows);
+	harness.connection = { client: first.client, state: "ready" };
 	const hook = renderHook(() => useCredentialStore());
 	const store = hook.result.current;
-	harness.connection = { client: scriptedClient(secondMethods), state: "ready" };
+	harness.connection = { client: second.client, state: "ready" };
 	hook.rerender();
-	expect(firstUnsubscribes).toBe(1);
+	expect(first.unsubscribes()).toBe(1);
 	await act(async () => {
 		expect(await store.getState().fetch()).toBe(true);
 	});
-	expect(secondMethods).toEqual(["evener/instance/list"]);
+	expect(second.methods).toEqual(["evener/instance/list"]);
 });

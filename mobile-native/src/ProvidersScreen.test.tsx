@@ -7,10 +7,9 @@
 import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
-import type { AnyNotification, InstanceListResponse } from "@evener/appwire-client";
-import type { ConversationClientLike } from "../../mobile/src/services/conversation";
+import type { InstanceListResponse } from "@evener/appwire-client";
 import { ProvidersScreen } from "./ProvidersScreen";
-import { render, renderedText } from "./renderNative.testkit";
+import { render, renderedText, scriptedClient } from "./renderNative.testkit";
 
 // What useConnection answers with. vi.hoisted because vi.mock's factory is
 // hoisted above every module import and may not close over a module-level let.
@@ -39,21 +38,11 @@ const rows: InstanceListResponse = {
 	diagnostics: ["from the hub"],
 };
 
-function scriptedClient(methods: string[]): ConversationClientLike {
-	return {
-		request: async (method: string) => {
-			methods.push(method);
-			return rows;
-		},
-		onNotification: (_handler: (n: AnyNotification) => void) => () => {},
-	} as ConversationClientLike;
-}
-
 it("mounts on a ready client and issues and publishes the listing read", async () => {
-	const methods: string[] = [];
+	const hub = scriptedClient(rows);
 	harness.connection = {
 		activeProfile: { id: "hub-1", name: "Work hub" },
-		client: scriptedClient(methods),
+		client: hub.client,
 		state: "ready",
 		retry: () => {},
 	};
@@ -63,7 +52,7 @@ it("mounts on a ready client and issues and publishes the listing read", async (
 	const tree = render(<ProvidersScreen {...props} />);
 	// The read is issued from the list's mount effect and answered asynchronously.
 	await act(async () => {});
-	expect(methods).toEqual(["evener/instance/list"]);
+	expect(hub.methods).toEqual(["evener/instance/list"]);
 	// Published: the row the store applied, and the listing's diagnostics, are
 	// what the screen renders. Before the D9 fix this read ran on an unbound
 	// store, threw, and left the screen on its empty state.
