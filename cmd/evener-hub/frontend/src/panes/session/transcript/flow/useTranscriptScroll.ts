@@ -1476,17 +1476,41 @@ export function useTranscriptScroll({
     // reader is left a few pixels short of the true bottom with wasAtBottomRef
     // still true: no pill, nothing to click. Re-pin to the new true bottom
     // from live geometry, so a prepend or a scroll-away is never yanked.
+    let reanchorRetryFrame: number | null = null;
+    // Re-run once the frame boundary clears a pending gesture marker (the same
+    // frame markGesture schedules its own clear on). Only armed for a growth
+    // the gesture actually vetoed, so it is not a poll: for a drag or wheel the
+    // marker is gone by the next frame, and for the one unbounded case (a
+    // stationary middle-button hold) it stops the moment the hold does.
+    function scheduleReanchorRetry() {
+      if (reanchorRetryFrame !== null) return;
+      reanchorRetryFrame = requestAnimationFrame(() => {
+        reanchorRetryFrame = null;
+        reanchorIfContentGrew();
+      });
+    }
     function reanchorIfContentGrew() {
       if (!el) return;
       const previous = lastScrollGeometryRef.current;
       const m = measure(el);
-      lastScrollGeometryRef.current = m;
       // The same gesture veto the scroll listener applies, but READ rather than
       // consumed: this is not the event a pending gesture caused (content
       // growth fires none), so the marker must survive for the scroll event
       // that the gesture's own movement still delivers.
       const gestured = gesturePendingRef.current || middleButtonHeldRef.current;
-      if (wasAtBottomRef.current && !gestured && contentGrewBelowViewport(previous, m)) {
+      const grew = contentGrewBelowViewport(previous, m);
+      // A vetoed correction MUST NOT consume the growth as the new baseline:
+      // the marker can outlive this trigger with no further resize or font
+      // event (a stationary middle-button hold, a selection drag), and a
+      // consumed baseline would leave the reader permanently short of the
+      // bottom with wasAtBottomRef still true and no pill to recover with.
+      // Hold `previous` until the correction actually lands.
+      if (wasAtBottomRef.current && grew && gestured) {
+        scheduleReanchorRetry();
+        return;
+      }
+      lastScrollGeometryRef.current = m;
+      if (wasAtBottomRef.current && grew) {
         el.scrollTop = Math.max(0, m.scrollHeight - m.clientHeight);
       }
     }
@@ -1526,6 +1550,7 @@ export function useTranscriptScroll({
     document.addEventListener("visibilitychange", forgetGesturesWhenHidden, { passive: true });
     return () => {
       disposed = true;
+      if (reanchorRetryFrame !== null) cancelAnimationFrame(reanchorRetryFrame);
       contentObserver?.disconnect();
       el.removeEventListener("scroll", handleScroll);
       el.removeEventListener("wheel", markWheel);

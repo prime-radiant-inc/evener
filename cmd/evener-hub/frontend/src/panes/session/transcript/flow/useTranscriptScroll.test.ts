@@ -1892,6 +1892,49 @@ describe("late content growth with no scroll event", () => {
       raf.mockRestore();
     }
   });
+
+  // A gesture that never produces a scroll event (a selection drag, a
+  // stationary middle-button hold) must not consume the growth as the new
+  // baseline, or the correction is permanently missed and the reader is
+  // stranded with no pill. The frame boundary that clears the marker is also
+  // when the deferred retry runs, so recovery needs no further resize/font
+  // event. This queue is driven by hand to stage that exact ordering.
+  function controllableFrames() {
+    const scheduled: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      scheduled.push(callback);
+      return scheduled.length;
+    });
+    return {
+      runAll() {
+        for (const callback of scheduled.splice(0)) callback(0);
+      },
+      restore: () => raf.mockRestore(),
+    };
+  }
+
+  test("a growth vetoed by a gesture re-anchors once the gesture's frame clears, with no later resize/font event", () => {
+    const frames = controllableFrames();
+    const resizeObserver = installResizeObserver();
+    try {
+      const { el, set } = mountWithContent();
+      act(() => el.dispatchEvent(new WheelEvent("wheel", { deltaY: -120, bubbles: true })));
+
+      definePort(el, GREW_AT_BOTTOM);
+      set(GREW_AT_BOTTOM);
+      act(() => resizeObserver.trigger());
+      expect(el.scrollTop).toBe(MOUNTED_AT_BOTTOM.scrollTop);
+
+      // The frame boundary clears the gesture marker, then the deferred retry
+      // (still holding the uncorrected baseline) re-anchors to the true bottom.
+      act(() => frames.runAll());
+
+      expect(el.scrollTop).toBe(TRUE_BOTTOM_AFTER_GROWTH);
+    } finally {
+      resizeObserver.restore();
+      frames.restore();
+    }
+  });
 });
 
 // The error anchor (contracts-transcript-scroll-liveness.md §5, lines
