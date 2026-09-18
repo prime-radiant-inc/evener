@@ -10510,4 +10510,74 @@ describe("Stop cancellation durability across reload, tabs, and resume", () => {
     );
     expect(await storage.getOutbox(canceled.clientMutationId)).toBeUndefined();
   });
+
+  // RoboRev PR #1873 medium, the press half: a clear's discard of canceled
+  // rows is best-effort (a storage failure keeps them visible for exactly
+  // this moment), so the press itself must refuse what the discard could not
+  // remove. A row whose enqueue-time instance the clear already replaced has
+  // no honest release: the daemon would fence the stale send, and releasing it
+  // lets it dispatch against a thread the user just cleared.
+  test("Retry refuses a row whose instance a clear already replaced, even when the clear-time discard failed", async () => {
+    const storage = new MutationOutboxIndexedDB({
+      // The design's own best-effort boundary, staged at the commit seam: the
+      // clear's discard write fails, so the canceled row stays durable past
+      // the clear (stop-cancellation-outbox §6).
+      beforeCommit: (operation) => {
+        if (operation === "discardCanceled") throw new Error("discard commit failed");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    const canceled = await storage.enqueueIntent(queueIntent("canceled before the clear"));
+    await storage.cancelUnattempted("ref_a");
+
+    fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [], id: "thr_cleared" })));
+    await threadsStore.getState().clearThread("ref_a");
+    expect(threadsStore.getState().threads.get("ref_a")?.threadId).toBe("thr_cleared");
+
+    // The press the finding stages: the cleared thread is published, the
+    // canceled row is still durable, and the user hits Retry. It must refuse.
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    expect(await retryBlockedMutation(canceled.clientMutationId)).toBe(false);
+    expect((await storage.getOutbox(canceled.clientMutationId))?.state).toBe("canceled");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+    expect(fake.calls.filter((call) => call.method === "turn/queue")).toEqual([]);
+  });
+
+  // RoboRev PR #1873 medium, the ordering half: the cleared model must not
+  // publish while the ref's canceled rows are still durable. Publish first and
+  // every reader of the published state - a Retry press, a discovery scan -
+  // faces a thread that claims to be cleared but still holds live canceled
+  // rows in storage.
+  test("the cleared model publishes only after the clear's canceled-row discard commits", async () => {
+    const events: string[] = [];
+    const storage = new MutationOutboxIndexedDB({
+      beforeCommit: (operation) => {
+        if (operation === "discardCanceled") events.push("discard-committed");
+      },
+    });
+    setMutationStorageForTests(storage);
+    const fake = connectMutationClient();
+    await ensureActiveMutationTarget(fake, "ref_a");
+    await storage.enqueueIntent(queueIntent("canceled before the clear"));
+    await storage.cancelUnattempted("ref_a");
+
+    const unsubscribe = threadsStore.subscribe((state) => {
+      if (state.threads.get("ref_a")?.threadId === "thr_cleared") events.push("cleared-published");
+    });
+    try {
+      fake.on("thread/clear", (params) => clearResponse(params, testThread("ref_a", { turns: [], id: "thr_cleared" })));
+      await threadsStore.getState().clearThread("ref_a");
+    } finally {
+      unsubscribe();
+    }
+
+    // The discard reached its commit boundary before the cleared model first
+    // published, never after. (The store's clear path publishes through two
+    // setStates, so "cleared-published" can legitimately appear more than
+    // once; the ordering is the assertion.)
+    expect(events.indexOf("discard-committed")).toBeGreaterThan(-1);
+    expect(events.indexOf("discard-committed")).toBeLessThan(events.indexOf("cleared-published"));
+  });
 });

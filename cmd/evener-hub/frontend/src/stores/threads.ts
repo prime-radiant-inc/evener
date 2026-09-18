@@ -666,9 +666,15 @@ function notifyMutationPersistence(targetRefs: Iterable<string>, committed?: Mut
   }
 }
 
-function applyClearResponse(targetRef: string, response: ThreadClearResponse): void {
+async function applyClearResponse(targetRef: string, response: ThreadClearResponse): Promise<void> {
   invalidateGoalResponseFallback(targetRef);
-  discardCanceledMutations(targetRef);
+  // The cleared model must never publish while the ref's canceled rows are
+  // still durable: a Retry pressed against the published state, or a
+  // discovery scan, would otherwise face a thread that claims to be cleared
+  // but still holds live canceled rows in storage. The discard stays
+  // best-effort - a failed write keeps the rows and publishes anyway - and
+  // retryBlockedMutation's press-time refusal is what closes that residue.
+  await discardCanceledMutations(targetRef);
   const now = Date.now();
   const model = hydrateThread({ thread: response.thread }, targetRef, now);
   // A clear response is a newer authoritative cut than any thread/read that
@@ -1034,6 +1040,17 @@ export async function retryBlockedMutation(
   if (mode === "backgroundNote" && record.method !== "notes/human/set") return false;
   if (record.method === "notes/human/set" && !canWriteHumanNote(trackedThreadModel(record.targetRef))) return false;
   const state = threadsStore.getState();
+  // A Retry is a press-time verdict on a ref this tab can still vouch for.
+  // The hub's deletion fence (deletedRefs) and a clear's replacement model are
+  // the two states that say the world the row knew is gone: the discard that
+  // should have removed the row is best-effort and may have failed, so the
+  // press itself must refuse rather than release a row whose instance the
+  // daemon would fence as stale anyway.
+  if (state.deletedRefs.has(record.targetRef)) return false;
+  const pressModel = state.threads.get(record.targetRef) ?? state.watchedThreads.get(record.targetRef);
+  if (record.threadId !== undefined && pressModel !== undefined && pressModel.threadId !== record.threadId) {
+    return false;
+  }
   if (
     retryBlockedBySnapshot(
       state.threads.get(record.targetRef)?.status.type,
@@ -1321,10 +1338,10 @@ function markThreadDeletedIfFenced(ref: string, err: unknown): void {
 // the hub proves it deleted, its canceled rows leave with it. Best-effort —
 // a storage failure keeps the rows visible for an explicit Retry, and the
 // next clear/delete retries the removal.
-function discardCanceledMutations(targetRef: string): void {
+function discardCanceledMutations(targetRef: string): Promise<void> {
   const runtime = getMutationRuntime();
-  if (!runtime) return;
-  void runtime.storage
+  if (!runtime) return Promise.resolve();
+  return runtime.storage
     .discardCanceled(targetRef)
     .then((discarded) => {
       if (discarded.length > 0 && isCurrentMutationRuntime(runtime)) notifyMutationPersistence([targetRef]);
