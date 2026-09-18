@@ -20,8 +20,10 @@
 // the same unbroken text it always did.
 //
 // Facts come from the hub's evener/git/head method keyed on the session's cwd,
-// resolved once per cwd and cached by state, failing soft to "no branch shown"
-// (see shell/gitLocation.ts). This is display metadata only: nothing here is
+// resolved per cwd and cached by state, failing soft to "no branch shown"
+// (see shell/gitLocation.ts). A soft failure is retried when the connection
+// recovers, since a dropped hub leaves the line bare for as long as the pane
+// lives otherwise (issue #1355). This is display metadata only: nothing here is
 // sent anywhere, and a slow or failed lookup simply renders the cwd alone.
 //
 // The lookup runs only for a session whose cwd is on THIS hub's filesystem
@@ -133,11 +135,30 @@ export const RepoLocation = memo(function RepoLocation({ cwd, local }: RepoLocat
   useEffect(() => {
     if (!local || cwd.trim() === "") return undefined;
     let active = true;
-    void resolveGitLocation(client, cwd).then((location) => {
-      if (active) setResolved({ client, cwd, ...location });
+    // Fences a retry's response against an earlier lookup's in the same mount.
+    // A retry can start while the pre-drop lookup is still in flight, and both
+    // carry the same client/cwd tag, so only this order token can keep the
+    // older answer from overwriting the newer one.
+    let generation = 0;
+    const resolve = () => {
+      const mine = ++generation;
+      void resolveGitLocation(client, cwd).then((location) => {
+        if (active && mine === generation) setResolved({ client, cwd, ...location });
+      });
+    };
+    resolve();
+    // A lookup that failed while the hub was down fails soft to "no branch",
+    // and neither `client` nor `cwd` changes when the SAME client reconnects -
+    // so this effect would never re-run and the line would stay bare for
+    // the life of the pane (issue #1355). Retry on each transition of this
+    // client into "ready". The client is the connection the lookup actually
+    // uses, so its recovery is observed exactly when a retry can succeed.
+    const unwatch = client.onStateChange((state) => {
+      if (state === "ready") resolve();
     });
     return () => {
       active = false;
+      unwatch();
     };
   }, [client, cwd, local]);
 

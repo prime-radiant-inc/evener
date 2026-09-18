@@ -796,7 +796,6 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 		Interrupt:   caps.Interrupt,
 		Compact:     caps.Compact,
 		Clear:       caps.Clear,
-		Fork:        caps.ForkFromTurn,
 		Shutdown:    caps.Shutdown,
 		ChangeModel: caps.ChangeModel,
 		Queue:       caps.Queue,
@@ -1177,14 +1176,11 @@ func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionC
 	if s.cfg.Past != nil {
 		_, pastExists = s.cfg.Past.Find(id)
 	}
-	caps := hubapi.SessionCapabilities{
-		Fork:   pastExists,
-		Resume: pastExists,
-	}
+	var caps hubapi.SessionCapabilities
 	if !live && s.cfg.Spawner != nil && pastExists {
 		caps.Send = true
 	}
-	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Fork && !caps.Resume && !caps.Shutdown && !caps.ChangeModel {
+	if !caps.Send && !caps.Steer && !caps.Interrupt && !caps.Compact && !caps.Clear && !caps.Shutdown && !caps.ChangeModel {
 		if live {
 			caps.ReadOnlyReason = "live session source is unavailable"
 		} else {
