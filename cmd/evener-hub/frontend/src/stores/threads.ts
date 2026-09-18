@@ -1411,7 +1411,13 @@ function notificationThreadId(n: AnyNotification): string | undefined {
 }
 
 function notificationMutationIdentities(n: AnyNotification): string[] {
-  if (n.method === "thread/queueChanged") return n.params.queue.clientMutationIds ?? [];
+  if (n.method === "thread/queueChanged") {
+    // ConsumedClientMutationIDs names entries THIS push's own transition (a
+    // drain) just took out of the queue (issue #1704): the daemon knows
+    // exactly which ids it consumed, so those settle by the same positive-
+    // evidence rule as the remaining, still-queued ids below.
+    return [...(n.params.queue.clientMutationIds ?? []), ...(n.params.consumedClientMutationIds ?? [])];
+  }
   if (n.method === "evener/steering/injected") {
     return n.params.clientMutationId ? [n.params.clientMutationId] : [];
   }

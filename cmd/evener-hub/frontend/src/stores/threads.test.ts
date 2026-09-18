@@ -4265,6 +4265,50 @@ describe("useThreadsStore.drainAsSteer", () => {
       input: [],
     });
   });
+
+  // A drain's own thread/queueChanged push names the client mutation ids it
+  // consumed (issue #1704), so the client settles those optimistic turn/queue
+  // records by positive evidence -- never by inferring consumption from
+  // sequence order (the #1452 heuristic #1705 was built, then closed, to
+  // replace).
+  test("a queueChanged naming consumed ids settles the matching optimistic queue record", async () => {
+    const fake = connectMutationClient();
+    fake.on("turn/queue", (params) => ({
+      receipt: {
+        clientMutationId: params.clientMutationId,
+        disposition: "applied",
+        threadId: "thr_ref_a",
+        projectionState: "pending",
+      },
+    }));
+
+    await threadsStore.getState().queue("ref_a", "queued");
+    await flushIndexedDBUntil(() => fake.calls.some((call) => call.method === "turn/queue"));
+
+    const inspector = new MutationOutboxIndexedDB();
+    let record: Awaited<ReturnType<typeof inspector.listOptimistic>>[number] | undefined;
+    for (let attempt = 0; attempt < 20 && !record; attempt += 1) {
+      [record] = await inspector.listOptimistic("ref_a");
+    }
+    if (!record) throw new Error("queued record never reached the optimistic store");
+
+    fake.emitNotification({
+      method: "thread/queueChanged",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        queue: { revision: 8 },
+        consumedClientMutationIds: [record.clientMutationId],
+      },
+    });
+
+    let settled = false;
+    for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+      settled = (await inspector.getOptimistic(record.clientMutationId)) === undefined;
+    }
+    expect(settled).toBe(true);
+    inspector.close();
+  });
 });
 
 describe("useThreadsStore.promoteQueuedAsSteer / cancelQueued", () => {
