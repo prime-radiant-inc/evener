@@ -1922,6 +1922,17 @@ function SpawnForm({
         // the empty query regardless).
         const scopedEffortLevels = scopeMismatch ? [] : (scopedKnownEffortLevels ?? FALLBACK_EFFORT_LEVELS);
         const scopedEffortCurrent = scopeMismatch ? "" : reasoningEffort;
+        // A model value cannot be validated against a catalog that never
+        // committed for the current scope: during the ~250ms CATALOG_SETTLE_MS
+        // window after mount - or after a failed refresh - resolveSpawnModelItems
+        // resolves zero items for EVERY value, known or not, so fail-closing
+        // here toasts a spurious "unknown value" for a model the scope does
+        // offer. Treat it as "don't know" and forward the typed value as the
+        // launch scalar, letting the start call's own check decide. Only PROVEN
+        // staleness (a stamp for another scope/loader) and a scope-matched
+        // catalog that omits the value still fail closed.
+        const modelCatalogUnknown =
+          builtinMatch.command.id === "model" && scopedModelCatalog === null && !scopeMismatch;
         const items =
           builtinMatch.command.id === "model"
             ? resolveSpawnModelItems(scopedModelCatalog)
@@ -1936,7 +1947,7 @@ function SpawnForm({
           builtinMatch.command.id === "reasoning-effort" && value === ""
             ? undefined
             : findBuiltinArgument(items, builtinMatch.argsText);
-        if (!matched) {
+        if (!matched && !modelCatalogUnknown) {
           const message = value
             ? `/${builtinMatch.command.id}: unknown value "${value}"`
             : `/${builtinMatch.command.id} needs a value`;
@@ -1946,8 +1957,21 @@ function SpawnForm({
           setBusyStartedAt(null);
           return;
         }
-        if (builtinMatch.command.id === "model" && matched) {
-          const { provider, model: modelId } = splitModelId(matched.id);
+        if (builtinMatch.command.id === "model") {
+          // A forwarded-but-unvalidated value (modelCatalogUnknown) is RAW user
+          // text, not a provider/model catalog id: "foo" splits to provider
+          // "foo" with an empty model, and the launch would carry no model at
+          // all. Refuse the same way the remote path above does rather than
+          // silently drop the request - this is a shape check, not a catalog
+          // judgment, so it holds even while the catalog is unknown.
+          const { provider, model: modelId } = splitModelId(matched ? matched.id : value);
+          if (provider === "" || modelId === "") {
+            toasts.push("error", `/${builtinMatch.command.id}: unknown value "${value}"`);
+            busyRef.current = false;
+            setBusy(false);
+            setBusyStartedAt(null);
+            return;
+          }
           slashScalars = { modelProvider: provider, model: modelId };
         } else if (builtinMatch.command.id === "reasoning-effort" && matched) {
           slashScalars = { reasoningEffort: matched.id };

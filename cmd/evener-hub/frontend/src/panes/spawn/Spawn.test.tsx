@@ -5757,6 +5757,33 @@ test("an unknown /model value toasts, starts nothing, and leaves Start usable", 
   expect(button.textContent).toBe("Start");
 });
 
+test("a known /model value starts before the pane catalog lands instead of fail-closing", async () => {
+  const user = userEvent.setup();
+  window.history.pushState({}, "", "/new");
+  // The pane catalog settles 250ms after mount (CATALOG_SETTLE_MS). A deferred
+  // model/list holds it null for the whole test, so this reproduces that window
+  // deterministically: pre-fix, resolveSpawnModelItems(null) is [] and a known
+  // value fail-closes with a spurious "unknown value" toast.
+  const catalog = deferred<ModelListResponse>();
+  const fake = readyClient((f) => f.on("model/list", () => catalog.promise));
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+
+  await user.type(promptField(), "/model openai/gpt-5");
+  await user.keyboard("{Escape}");
+  await user.click(screen.getByTestId("spawn-submit"));
+
+  await waitFor(() => expect(window.location.pathname).toBe("/s/local%3Aabc123"));
+  const start = fake.calls.find((c) => c.method === "thread/start");
+  expect(start?.params).toMatchObject({
+    input: [],
+    modelProvider: "openai",
+    model: "gpt-5",
+  });
+  expect(getToasts()).toEqual([]);
+});
+
 test("a bare /goal toasts, starts nothing, and leaves Start usable", async () => {
   const user = userEvent.setup();
   const fake = readyClient((f) => {
