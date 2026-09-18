@@ -53,12 +53,12 @@ func TestStoreMutationReceiptsSurviveRenewalAndLaterHeads(t *testing.T) {
 	s, hash, path := setupStore(t, StoreOptions{})
 	ctx := context.Background()
 	create := createJSON("create")
-	first, err := s.Publish(ctx, hash, create)
+	first, err := s.Publish(ctx, hash, create, PublicationOrigin{})
 	requireNoError(t, err)
 	if first.ArtifactID == "" || first.SourceRevision != 1 || first.StateVersion != 1 || first.Status != StatusCommitted {
 		t.Fatalf("bad first receipt %+v", first)
 	}
-	duplicate, err := s.Publish(ctx, hash, create)
+	duplicate, err := s.Publish(ctx, hash, create, PublicationOrigin{})
 	requireNoError(t, err)
 	if duplicate != first {
 		t.Fatal("duplicate created a new artifact")
@@ -76,7 +76,7 @@ func TestStoreMutationReceiptsSurviveRenewalAndLaterHeads(t *testing.T) {
 	if saved.SourceRevision != 1 || saved.StateVersion != 2 {
 		t.Fatalf("wrong checkpoint counters %+v", saved)
 	}
-	published, err := s.Publish(ctx, hash, publishJSON(first.ArtifactID, "publish", 1, 2))
+	published, err := s.Publish(ctx, hash, publishJSON(first.ArtifactID, "publish", 1, 2), PublicationOrigin{})
 	requireNoError(t, err)
 	if published.SourceRevision != 2 || published.StateVersion != 2 {
 		t.Fatalf("wrong publication counters %+v", published)
@@ -113,7 +113,7 @@ func TestStoreMutationReceiptsSurviveRenewalAndLaterHeads(t *testing.T) {
 func TestStoreFingerprintAndCreationScope(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	raw := saveJSON(created.ArtifactID, "save", 1, 1, `{"x":1,"y":["a","c"]}`)
 	saved, err := s.SaveState(ctx, hash, raw)
@@ -129,20 +129,20 @@ func TestStoreFingerprintAndCreationScope(t *testing.T) {
 		requireCode(t, err, MutationIDReused)
 	}
 	withDefault := strings.Replace(string(createJSON("create")), `"title"`, `"initialState":{},"title"`, 1)
-	_, err = s.Publish(ctx, hash, []byte(withDefault))
+	_, err = s.Publish(ctx, hash, []byte(withDefault), PublicationOrigin{})
 	requireCode(t, err, MutationIDReused)
 	scope := testScope()
 	scope.ArtifactID = "other"
 	restricted := sha256.Sum256([]byte("restricted"))
 	requireNoError(t, s.InstallGrant(ctx, restricted, scope))
-	_, err = s.Publish(ctx, restricted, createJSON("create"))
+	_, err = s.Publish(ctx, restricted, createJSON("create"), PublicationOrigin{})
 	requireCode(t, err, NotFoundOrForbidden)
-	_, err = s.Publish(ctx, restricted, createJSON("new"))
+	_, err = s.Publish(ctx, restricted, createJSON("new"), PublicationOrigin{})
 	requireCode(t, err, NotFoundOrForbidden)
 	scope.ArtifactID = created.ArtifactID
 	restricted = sha256.Sum256([]byte("matching restricted"))
 	requireNoError(t, s.InstallGrant(ctx, restricted, scope))
-	again, err = s.Publish(ctx, restricted, createJSON("create"))
+	again, err = s.Publish(ctx, restricted, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	if again != created {
 		t.Fatal("scoped exact receipt changed")
@@ -154,7 +154,7 @@ func TestStoreConflictsRemainTerminal(t *testing.T) {
 		t.Run(strconv.FormatBool(saveFirst), func(t *testing.T) {
 			s, hash, _ := setupStore(t, StoreOptions{})
 			ctx := context.Background()
-			created, err := s.Publish(ctx, hash, createJSON("create"))
+			created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 			requireNoError(t, err)
 			save := saveJSON(created.ArtifactID, "save", 1, 1, `{"selected":["a"]}`)
 			publish := publishJSON(created.ArtifactID, "publish", 1, 1)
@@ -162,11 +162,11 @@ func TestStoreConflictsRemainTerminal(t *testing.T) {
 			if saveFirst {
 				_, err = s.SaveState(ctx, hash, save)
 				requireNoError(t, err)
-				_, firstErr = s.Publish(ctx, hash, publish)
+				_, firstErr = s.Publish(ctx, hash, publish, PublicationOrigin{})
 				requireCode(t, firstErr, StateConflict)
-				_, err = s.Publish(ctx, hash, publishJSON(created.ArtifactID, "later", 1, 2))
+				_, err = s.Publish(ctx, hash, publishJSON(created.ArtifactID, "later", 1, 2), PublicationOrigin{})
 			} else {
-				_, err = s.Publish(ctx, hash, publish)
+				_, err = s.Publish(ctx, hash, publish, PublicationOrigin{})
 				requireNoError(t, err)
 				_, firstErr = s.SaveState(ctx, hash, save)
 				requireCode(t, firstErr, SourceConflict)
@@ -175,7 +175,7 @@ func TestStoreConflictsRemainTerminal(t *testing.T) {
 			requireNoError(t, err)
 			var retryErr error
 			if saveFirst {
-				_, retryErr = s.Publish(ctx, hash, publish)
+				_, retryErr = s.Publish(ctx, hash, publish, PublicationOrigin{})
 			} else {
 				_, retryErr = s.SaveState(ctx, hash, save)
 			}
@@ -195,7 +195,7 @@ func TestStoreMutationAuthorizationAndTombstone(t *testing.T) {
 	now := fixedClock()
 	s, hash, path := setupStore(t, StoreOptions{Clock: func() time.Time { return now }})
 	ctx := context.Background()
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	methods := []string{"artifact_read"}
 	scope := testScope()
@@ -203,7 +203,7 @@ func TestStoreMutationAuthorizationAndTombstone(t *testing.T) {
 	readOnly := sha256.Sum256([]byte("read only"))
 	requireNoError(t, s.InstallGrant(ctx, readOnly, scope))
 	methods[0] = "artifact_publish"
-	_, err = s.Publish(ctx, readOnly, createJSON("create"))
+	_, err = s.Publish(ctx, readOnly, createJSON("create"), PublicationOrigin{})
 	requireCode(t, err, NotFoundOrForbidden)
 	_, err = s.Read(ctx, readOnly, readJSON(created.ArtifactID))
 	requireNoError(t, err)
@@ -213,11 +213,11 @@ func TestStoreMutationAuthorizationAndTombstone(t *testing.T) {
 	_, err = s.Read(ctx, hash, readJSON("absent"))
 	requireCode(t, err, NotFoundOrForbidden)
 	now = testScope().ExpiresAt
-	_, err = s.Publish(ctx, hash, createJSON("create"))
+	_, err = s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireCode(t, err, NotFoundOrForbidden)
 	now = fixedClock()
 	requireNoError(t, s.TombstoneNamespace(ctx, "namespace", "realm", "owner"))
-	_, err = s.Publish(ctx, hash, createJSON("create"))
+	_, err = s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireCode(t, err, NotFoundOrForbidden)
 	requireNoError(t, s.Close())
 	s = openTestStore(t, path, StoreOptions{Clock: fixedClock})
@@ -238,10 +238,10 @@ func TestStoreRejectsMalformedMutationAtBoundary(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
 	for _, raw := range []string{`{"mutationId":"M","title":"T","summary":"S","html":""}`, `{"mutationId":"M","title":"T","summary":"S","html":"H","principalId":"forged"}`} {
-		_, err := s.Publish(ctx, hash, []byte(raw))
+		_, err := s.Publish(ctx, hash, []byte(raw), PublicationOrigin{})
 		requireCode(t, err, InvalidSource)
 	}
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	for _, state := range []string{`{"n":1e400}`, `{"n":9007199254740993}`, `{"n":1,"n":2}`, `null`} {
 		_, err := s.SaveState(ctx, hash, saveJSON(created.ArtifactID, "invalid", 1, 1, state))
@@ -257,7 +257,7 @@ func TestStoreRejectsMalformedMutationAtBoundary(t *testing.T) {
 func TestStoreReceiptIdentityAndNamespaceAuthority(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
-	first, err := s.Publish(ctx, hash, createJSON("same"))
+	first, err := s.Publish(ctx, hash, createJSON("same"), PublicationOrigin{})
 	requireNoError(t, err)
 	// Operation is part of receipt identity even for the same authenticated actor.
 	saved, err := s.SaveState(ctx, hash, saveJSON(first.ArtifactID, "same", 1, 1, `{}`))
@@ -269,7 +269,7 @@ func TestStoreReceiptIdentityAndNamespaceAuthority(t *testing.T) {
 	scope.PrincipalID = "another principal"
 	other := sha256.Sum256([]byte("another principal"))
 	requireNoError(t, s.InstallGrant(ctx, other, scope))
-	second, err := s.Publish(ctx, other, createJSON("same"))
+	second, err := s.Publish(ctx, other, createJSON("same"), PublicationOrigin{})
 	requireNoError(t, err)
 	if second.ArtifactID == first.ArtifactID {
 		t.Fatal("principal identity collided")
@@ -279,7 +279,7 @@ func TestStoreReceiptIdentityAndNamespaceAuthority(t *testing.T) {
 	scope.NamespaceID = "elsewhere"
 	elsewhere := sha256.Sum256([]byte("elsewhere"))
 	requireNoError(t, s.InstallGrant(ctx, elsewhere, scope))
-	_, err = s.Publish(ctx, elsewhere, createJSON("same"))
+	_, err = s.Publish(ctx, elsewhere, createJSON("same"), PublicationOrigin{})
 	requireCode(t, err, NotFoundOrForbidden)
 	_, err = s.Read(ctx, elsewhere, readJSON(first.ArtifactID))
 	requireCode(t, err, NotFoundOrForbidden)

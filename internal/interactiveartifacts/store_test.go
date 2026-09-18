@@ -35,7 +35,7 @@ func openTestStore(t *testing.T, path string, options StoreOptions) *Store {
 	return s
 }
 func testScope() Scope {
-	return Scope{RealmID: "realm", PrincipalID: "principal", NamespaceID: "namespace", Methods: []string{"artifact_publish", "artifact_save_state", "artifact_read", "artifact_get_view", "artifact_list", "artifact_open", "artifact_report_diagnostic"}, ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), Generation: 1}
+	return Scope{OriginatingThreadID: "parent-thread", RealmID: "realm", PrincipalID: "principal", NamespaceID: "namespace", Methods: []string{"artifact_publish", "artifact_save_state", "artifact_read", "artifact_get_view", "artifact_list", "artifact_open", "artifact_report_diagnostic"}, ExpiresAt: time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC), Generation: 1}
 }
 func fixedClock() time.Time { return time.Date(2026, 9, 18, 0, 0, 0, 0, time.UTC) }
 

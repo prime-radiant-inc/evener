@@ -11,11 +11,15 @@ import (
 	"time"
 )
 
-func (s *Store) Publish(ctx context.Context, hash [32]byte, raw []byte) (MutationReceipt, error) {
-	return s.mutate(ctx, hash, "artifact_publish", raw)
+// PublicationOrigin is trusted invocation metadata, separate from tool arguments.
+// ToolCallID is optional; an empty value means the caller supplied no correlation.
+type PublicationOrigin struct{ ToolCallID string }
+
+func (s *Store) Publish(ctx context.Context, hash [32]byte, raw []byte, origin PublicationOrigin) (MutationReceipt, error) {
+	return s.mutate(ctx, hash, "artifact_publish", raw, origin)
 }
 func (s *Store) SaveState(ctx context.Context, hash [32]byte, raw []byte) (MutationReceipt, error) {
-	return s.mutate(ctx, hash, "artifact_save_state", raw)
+	return s.mutate(ctx, hash, "artifact_save_state", raw, PublicationOrigin{})
 }
 
 func (s *Store) authorize(ctx context.Context, hash [32]byte, method, artifact string) (Scope, error) {
@@ -29,7 +33,7 @@ func (s *Store) authorize(ctx context.Context, hash [32]byte, method, artifact s
 	return scope, nil
 }
 
-func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw []byte) (MutationReceipt, error) {
+func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw []byte, origin PublicationOrigin) (MutationReceipt, error) {
 	if len(raw) > MaxRequestBytes {
 		return MutationReceipt{}, &DomainError{Code: TooLarge}
 	}
@@ -98,16 +102,17 @@ func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw
 	if err != nil {
 		return MutationReceipt{}, err
 	}
+	acceptedAt := s.clock().UTC().Format(time.RFC3339Nano)
 	if outcome == nil {
 		switch request := parsed.(type) {
 		case *PublishRequest:
-			receipt, err = s.applyPublication(ctx, tx, scope, request, head)
+			receipt, err = s.applyPublication(ctx, tx, scope, request, head, origin, acceptedAt)
 		case *SaveStateRequest:
 			if head.StateVersion >= Version(MaxSafeInteger) {
 				return MutationReceipt{}, &DomainError{Code: TooLarge}
 			}
 			receipt = MutationReceipt{Status: StatusCommitted, MutationID: id, ArtifactID: artifact, SourceRevision: head.SourceRevision, StateVersion: head.StateVersion + 1}
-			_, err = tx.ExecContext(ctx, "UPDATE artifacts SET state_version=?,state_json=?,updated_at=? WHERE artifact_id=?", receipt.StateVersion, []byte(request.State), s.clock().UTC().Format(time.RFC3339Nano), artifact)
+			_, err = tx.ExecContext(ctx, "UPDATE artifacts SET state_version=?,state_json=?,updated_at=? WHERE artifact_id=?", receipt.StateVersion, []byte(request.State), acceptedAt, artifact)
 		}
 		if err != nil {
 			return MutationReceipt{}, err
@@ -125,7 +130,7 @@ func (s *Store) mutate(ctx context.Context, hash [32]byte, operation string, raw
 	if err != nil {
 		return MutationReceipt{}, err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_mutations(realm_id,principal_id,operation,mutation_id,request_fingerprint,namespace_id,artifact_id,outcome_code,result_json) VALUES(?,?,?,?,?,?,?,?,?)`, scope.RealmID, scope.PrincipalID, operation, id, fingerprint, scope.NamespaceID, artifact, code, encoded)
+	_, err = tx.ExecContext(ctx, `INSERT INTO artifact_mutations(realm_id,principal_id,operation,mutation_id,request_fingerprint,namespace_id,artifact_id,outcome_code,result_json,committed_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, scope.RealmID, scope.PrincipalID, operation, id, fingerprint, scope.NamespaceID, artifact, code, encoded, acceptedAt)
 	if err != nil {
 		return MutationReceipt{}, err
 	}
@@ -179,14 +184,13 @@ func lookupReceipt(ctx context.Context, tx *sql.Tx, scope Scope, operation, id, 
 	return MutationReceipt{}, &domain, true, err
 }
 
-func (s *Store) applyPublication(ctx context.Context, tx *sql.Tx, scope Scope, request *PublishRequest, head ArtifactMetadata) (MutationReceipt, error) {
+func (s *Store) applyPublication(ctx context.Context, tx *sql.Tx, scope Scope, request *PublishRequest, head ArtifactMetadata, origin PublicationOrigin, acceptedAt string) (MutationReceipt, error) {
 	id := request.ArtifactID
 	source, state := head.SourceRevision, head.StateVersion
-	now := s.clock().UTC().Format(time.RFC3339Nano)
 	if id == "" {
 		id = randomID()
 		source, state = 1, 1
-		if _, err := tx.ExecContext(ctx, "INSERT INTO artifacts(artifact_id,namespace_id,source_revision,state_version,state_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", id, scope.NamespaceID, source, state, []byte(request.InitialState), now, now); err != nil {
+		if _, err := tx.ExecContext(ctx, "INSERT INTO artifacts(artifact_id,namespace_id,source_revision,state_version,state_json,created_at,updated_at) VALUES(?,?,?,?,?,?,?)", id, scope.NamespaceID, source, state, []byte(request.InitialState), acceptedAt, acceptedAt); err != nil {
 			return MutationReceipt{}, err
 		}
 	} else {
@@ -194,12 +198,12 @@ func (s *Store) applyPublication(ctx context.Context, tx *sql.Tx, scope Scope, r
 			return MutationReceipt{}, &DomainError{Code: TooLarge}
 		}
 		source++
-		if _, err := tx.ExecContext(ctx, "UPDATE artifacts SET source_revision=?,updated_at=? WHERE artifact_id=?", source, now, id); err != nil {
+		if _, err := tx.ExecContext(ctx, "UPDATE artifacts SET source_revision=?,updated_at=? WHERE artifact_id=?", source, acceptedAt, id); err != nil {
 			return MutationReceipt{}, err
 		}
 	}
 	sum := sha256.Sum256([]byte(request.HTML))
-	_, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions(artifact_id,revision,title,summary,html_utf8,source_sha256,created_by_principal_id,created_at) VALUES(?,?,?,?,?,?,?,?)`, id, source, request.Title, request.Summary, request.HTML, hex.EncodeToString(sum[:]), scope.PrincipalID, now)
+	_, err := tx.ExecContext(ctx, `INSERT INTO artifact_revisions(artifact_id,revision,title,summary,html_utf8,source_sha256,created_by_principal_id,originating_thread_id,originating_tool_call_id,format,format_version,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, id, source, request.Title, request.Summary, request.HTML, hex.EncodeToString(sum[:]), scope.PrincipalID, scope.OriginatingThreadID, sql.NullString{String: origin.ToolCallID, Valid: origin.ToolCallID != ""}, request.Format, request.FormatVersion, acceptedAt)
 	if err != nil {
 		return MutationReceipt{}, err
 	}

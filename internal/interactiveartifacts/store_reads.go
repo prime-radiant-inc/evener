@@ -10,12 +10,10 @@ import (
 
 func artifactMetadata(ctx context.Context, tx *sql.Tx, scope Scope, id string) (ArtifactMetadata, error) {
 	var result ArtifactMetadata
-	err := tx.QueryRowContext(ctx, `SELECT a.artifact_id,r.title,r.summary,a.source_revision,a.state_version,a.created_at,a.updated_at FROM artifacts a JOIN artifact_revisions r ON r.artifact_id=a.artifact_id AND r.revision=a.source_revision WHERE a.artifact_id=? AND a.namespace_id=?`, id, scope.NamespaceID).Scan(&result.ArtifactID, &result.Title, &result.Summary, &result.SourceRevision, &result.StateVersion, &result.CreatedAt, &result.UpdatedAt)
+	err := tx.QueryRowContext(ctx, `SELECT a.artifact_id,r.title,r.summary,r.format,r.format_version,a.source_revision,a.state_version,a.created_at,a.updated_at FROM artifacts a JOIN artifact_revisions r ON r.artifact_id=a.artifact_id AND r.revision=a.source_revision WHERE a.artifact_id=? AND a.namespace_id=?`, id, scope.NamespaceID).Scan(&result.ArtifactID, &result.Title, &result.Summary, &result.Format, &result.FormatVersion, &result.SourceRevision, &result.StateVersion, &result.CreatedAt, &result.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ArtifactMetadata{}, &DomainError{Code: NotFoundOrForbidden}
 	}
-	result.Format = "html"
-	result.FormatVersion = 1
 	return result, err
 }
 

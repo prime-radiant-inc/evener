@@ -28,7 +28,7 @@ func (s *Store) List(ctx context.Context, hash [32]byte, raw []byte) (ListResult
 			return ListResult{}, err
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT a.artifact_id,r.title,r.summary,a.source_revision,a.state_version,a.created_at,a.updated_at FROM artifacts a JOIN artifact_revisions r ON r.artifact_id=a.artifact_id AND r.revision=a.source_revision WHERE a.namespace_id=? AND a.artifact_id>? AND (?='' OR a.artifact_id=?) ORDER BY a.artifact_id LIMIT ?`, scope.NamespaceID, last, scope.ArtifactID, scope.ArtifactID, int64(request.Limit)+1)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.artifact_id,r.title,r.summary,r.format,r.format_version,a.source_revision,a.state_version,a.created_at,a.updated_at FROM artifacts a JOIN artifact_revisions r ON r.artifact_id=a.artifact_id AND r.revision=a.source_revision WHERE a.namespace_id=? AND a.artifact_id>? AND (?='' OR a.artifact_id=?) ORDER BY a.artifact_id LIMIT ?`, scope.NamespaceID, last, scope.ArtifactID, scope.ArtifactID, int64(request.Limit)+1)
 	if err != nil {
 		return ListResult{}, err
 	}
@@ -36,11 +36,9 @@ func (s *Store) List(ctx context.Context, hash [32]byte, raw []byte) (ListResult
 	result := ListResult{Artifacts: make([]ArtifactMetadata, 0)}
 	for rows.Next() {
 		var item ArtifactMetadata
-		if err := rows.Scan(&item.ArtifactID, &item.Title, &item.Summary, &item.SourceRevision, &item.StateVersion, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ArtifactID, &item.Title, &item.Summary, &item.Format, &item.FormatVersion, &item.SourceRevision, &item.StateVersion, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return ListResult{}, err
 		}
-		item.Format = "html"
-		item.FormatVersion = 1
 		if len(result.Artifacts) == int(request.Limit) {
 			result.NextCursor = s.encodeCursor(scope.NamespaceID, result.Artifacts[len(result.Artifacts)-1].ArtifactID)
 			break

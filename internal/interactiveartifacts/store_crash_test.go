@@ -47,7 +47,7 @@ func TestStoreCrashChild(t *testing.T) {
 	hash := sha256.Sum256([]byte("child grant"))
 	requireNoError(t, s.InstallGrant(context.Background(), hash, testScope()))
 	if config.Operation == "create" {
-		_, err = s.Publish(context.Background(), hash, config.Raw)
+		_, err = s.Publish(context.Background(), hash, config.Raw, PublicationOrigin{})
 	} else {
 		_, err = s.SaveState(context.Background(), hash, config.Raw)
 	}
@@ -111,7 +111,7 @@ func TestStoreProcessCrashRecovery(t *testing.T) {
 				raw := createJSON("creation in child")
 				var artifact string
 				if operation == "save" {
-					created, err := s.Publish(ctx, hash, createJSON("create"))
+					created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 					requireNoError(t, err)
 					artifact = created.ArtifactID
 					raw = saveJSON(artifact, "save in child", 1, 1, `{"selection":"a"}`)
@@ -144,13 +144,13 @@ func TestStoreProcessCrashRecovery(t *testing.T) {
 				var first, again MutationReceipt
 				var err error
 				if operation == "create" {
-					first, err = s.Publish(ctx, hash, raw)
+					first, err = s.Publish(ctx, hash, raw, PublicationOrigin{})
 				} else {
 					first, err = s.SaveState(ctx, hash, raw)
 				}
 				requireNoError(t, err)
 				if operation == "create" {
-					again, err = s.Publish(ctx, hash, raw)
+					again, err = s.Publish(ctx, hash, raw, PublicationOrigin{})
 				} else {
 					again, err = s.SaveState(ctx, hash, raw)
 				}

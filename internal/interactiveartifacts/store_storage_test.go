@@ -16,7 +16,7 @@ import (
 func TestStoreLogicalQuotaRetainsReceipts(t *testing.T) {
 	s, hash, path := setupStore(t, StoreOptions{QuotaBytes: 3000})
 	ctx := context.Background()
-	original, err := s.Publish(ctx, hash, createJSON("create"))
+	original, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	var saved MutationReceipt
 	var savedRaw, deniedRaw []byte
@@ -38,7 +38,7 @@ func TestStoreLogicalQuotaRetainsReceipts(t *testing.T) {
 	if savedRaw == nil {
 		t.Fatal("fixture never accepted a checkpoint")
 	}
-	duplicate, err := s.Publish(ctx, hash, createJSON("create"))
+	duplicate, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	if duplicate != original {
 		t.Fatal("quota evicted creation receipt")
@@ -64,7 +64,7 @@ func TestStoreLogicalQuotaRetainsReceipts(t *testing.T) {
 func TestStoreCoherentBackupRestoresIdentityAndReceipt(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
-	original, err := s.Publish(ctx, hash, createJSON("create"))
+	original, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	raw := saveJSON(original.ArtifactID, "save", 1, 1, `{"n":1}`)
 	saved, err := s.SaveState(ctx, hash, raw)
@@ -100,7 +100,7 @@ func TestStoreCoherentBackupRestoresIdentityAndReceipt(t *testing.T) {
 func TestStoreSQLiteFullDoesNotAcknowledgeMutation(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
-	original, err := s.Publish(ctx, hash, createJSON("create"))
+	original, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	// max_page_count makes the actual SQLite writer fail with SQLITE_FULL. This
 	// exercises database write failure, not a claim of physical filesystem ENOSPC.
@@ -109,7 +109,7 @@ func TestStoreSQLiteFullDoesNotAcknowledgeMutation(t *testing.T) {
 	var capped int
 	requireNoError(t, s.db.QueryRowContext(ctx, fmt.Sprintf("PRAGMA max_page_count=%d", pages)).Scan(&capped))
 	raw := fmt.Appendf(nil, `{"artifactId":%q,"mutationId":"full","expectedSourceRevision":1,"expectedStateVersion":1,"title":"T","summary":"S","html":%q}`, original.ArtifactID, strings.Repeat("large source ", 60000))
-	_, err = s.Publish(ctx, hash, raw)
+	_, err = s.Publish(ctx, hash, raw, PublicationOrigin{})
 	var dbError *sqlite.Error
 	if !errors.As(err, &dbError) || dbError.Code() != 13 {
 		t.Fatalf("want real SQLITE_FULL, got %v", err)
@@ -123,7 +123,7 @@ func TestStoreSQLiteFullDoesNotAcknowledgeMutation(t *testing.T) {
 		t.Fatal("failed write persisted receipt")
 	}
 	requireNoError(t, s.db.QueryRowContext(ctx, "PRAGMA max_page_count=10000").Scan(&capped))
-	receipt, err := s.Publish(ctx, hash, raw)
+	receipt, err := s.Publish(ctx, hash, raw, PublicationOrigin{})
 	requireNoError(t, err)
 	if receipt.SourceRevision != 2 {
 		t.Fatal("failed request cannot be retried")
@@ -135,14 +135,14 @@ func TestStoreQuotaCountsRetainedSourceRevisions(t *testing.T) {
 	ctx := context.Background()
 	source := strings.Repeat("a", 4000)
 	raw := fmt.Appendf(nil, `{"mutationId":"first","title":"T","summary":"S","html":%q}`, source)
-	created, err := s.Publish(ctx, hash, raw)
+	created, err := s.Publish(ctx, hash, raw, PublicationOrigin{})
 	requireNoError(t, err)
 	next := func(id string, revision int) []byte {
 		return fmt.Appendf(nil, `{"artifactId":%q,"mutationId":%q,"expectedSourceRevision":%d,"expectedStateVersion":1,"title":"T","summary":"S","html":%q}`, created.ArtifactID, id, revision, source)
 	}
-	_, err = s.Publish(ctx, hash, next("second", 1))
+	_, err = s.Publish(ctx, hash, next("second", 1), PublicationOrigin{})
 	requireNoError(t, err)
-	_, err = s.Publish(ctx, hash, next("third", 2))
+	_, err = s.Publish(ctx, hash, next("third", 2), PublicationOrigin{})
 	requireCode(t, err, QuotaExceeded)
 	var firstSource string
 	requireNoError(t, s.db.QueryRowContext(ctx, "SELECT html_utf8 FROM artifact_revisions WHERE artifact_id=? AND revision=1", created.ArtifactID).Scan(&firstSource))

@@ -13,7 +13,7 @@ import (
 func TestStoreViewBodiesAndSourceRange(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	view, err := s.GetView(ctx, hash, fmt.Appendf(nil, `{"artifactId":%q}`, created.ArtifactID))
 	requireNoError(t, err)
@@ -49,7 +49,7 @@ func TestStoreListIsBoundedAndNamespaceScoped(t *testing.T) {
 	ctx := context.Background()
 	ids := make(map[string]bool)
 	for i := range 23 {
-		created, err := s.Publish(ctx, hash, createJSON(strconv.Itoa(i)))
+		created, err := s.Publish(ctx, hash, createJSON(strconv.Itoa(i)), PublicationOrigin{})
 		requireNoError(t, err)
 		ids[created.ArtifactID] = true
 	}
@@ -106,7 +106,7 @@ func TestStoreDiagnosticsBoundHistoryAndRateWithoutMutatingContent(t *testing.T)
 	now := fixedClock()
 	s, hash, _ := setupStore(t, StoreOptions{Clock: func() time.Time { return now }})
 	ctx := context.Background()
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	before := readState(t, s, hash, created.ArtifactID)
 	for i := range 21 {

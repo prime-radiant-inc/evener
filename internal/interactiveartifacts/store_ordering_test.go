@@ -17,7 +17,7 @@ func TestStoreExpiryAtCommitRollsBackReceipt(t *testing.T) {
 		return fixedClock()
 	}})
 	ctx := context.Background()
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	s.hooks.beforeCommit = func() { expires.Store(true) }
 	request := saveJSON(created.ArtifactID, "save", 1, 1, `{"n":1}`)
@@ -47,7 +47,7 @@ func awaitSignal(t *testing.T, signal <-chan struct{}) {
 func TestStoreRevocationOrdersBeforePendingWrite(t *testing.T) {
 	s, hash, _ := setupStore(t, StoreOptions{})
 	ctx := context.Background()
-	created, err := s.Publish(ctx, hash, createJSON("create"))
+	created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 	requireNoError(t, err)
 	entered, release := make(chan struct{}), make(chan struct{})
 	var paused atomic.Bool
@@ -89,7 +89,7 @@ func TestStoreConcurrentPublicationCheckpointOrderings(t *testing.T) {
 		t.Run(map[bool]string{true: "publication wins", false: "checkpoint wins"}[publishWins], func(t *testing.T) {
 			s, hash, _ := setupStore(t, StoreOptions{})
 			ctx := context.Background()
-			created, err := s.Publish(ctx, hash, createJSON("create"))
+			created, err := s.Publish(ctx, hash, createJSON("create"), PublicationOrigin{})
 			requireNoError(t, err)
 			second := sha256.Sum256([]byte("second client"))
 			requireNoError(t, s.InstallGrant(ctx, second, testScope()))
@@ -107,13 +107,13 @@ func TestStoreConcurrentPublicationCheckpointOrderings(t *testing.T) {
 				if publishWins {
 					_, err = s.SaveState(ctx, hash, saveJSON(created.ArtifactID, "save", 1, 1, `{"n":1}`))
 				} else {
-					_, err = s.Publish(ctx, hash, publishJSON(created.ArtifactID, "publish", 1, 1))
+					_, err = s.Publish(ctx, hash, publishJSON(created.ArtifactID, "publish", 1, 1), PublicationOrigin{})
 				}
 				done <- err
 			}()
 			awaitSignal(t, entered)
 			if publishWins {
-				_, err = s.Publish(ctx, second, publishJSON(created.ArtifactID, "publish", 1, 1))
+				_, err = s.Publish(ctx, second, publishJSON(created.ArtifactID, "publish", 1, 1), PublicationOrigin{})
 			} else {
 				_, err = s.SaveState(ctx, second, saveJSON(created.ArtifactID, "save", 1, 1, `{"n":1}`))
 			}
@@ -150,7 +150,7 @@ func TestStoreTombstoneOrdersBeforePendingCreation(t *testing.T) {
 		}
 	}
 	done := make(chan error, 1)
-	go func() { _, err := s.Publish(ctx, hash, createJSON("queued")); done <- err }()
+	go func() { _, err := s.Publish(ctx, hash, createJSON("queued"), PublicationOrigin{}); done <- err }()
 	awaitSignal(t, entered)
 	requireNoError(t, s.TombstoneNamespace(ctx, "namespace", "realm", "owner"))
 	close(release)

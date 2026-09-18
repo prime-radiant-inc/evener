@@ -33,8 +33,11 @@ type StoreOptions struct {
 
 // Scope is trusted control-plane authority, never decoded from tool arguments.
 // An empty ArtifactID permits the namespace; a nonempty ID narrows it to one object.
+// OriginatingThreadID binds publications to the actual publishing conversation,
+// which may be a child of the namespace owner. Publication grants require it.
 // Generation identifies the issuing host's lease; it is not receipt identity.
 type Scope struct {
+	OriginatingThreadID                           string
 	RealmID, PrincipalID, NamespaceID, ArtifactID string
 	Methods                                       []string
 	ExpiresAt                                     time.Time
@@ -171,8 +174,8 @@ const storeSchema = `
  CREATE TABLE artifact_namespaces(namespace_id TEXT PRIMARY KEY, realm_id TEXT NOT NULL, owner_thread_id TEXT NOT NULL, created_at TEXT NOT NULL, tombstoned INTEGER NOT NULL DEFAULT 0 CHECK(tombstoned IN(0,1)));
  CREATE TABLE artifacts(artifact_id TEXT PRIMARY KEY, namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id), source_revision INTEGER NOT NULL CHECK(source_revision>=1), state_version INTEGER NOT NULL CHECK(state_version>=1), state_json BLOB, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
  CREATE INDEX artifacts_by_namespace ON artifacts(namespace_id,artifact_id);
- CREATE TABLE artifact_revisions(artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id), revision INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, html_utf8 TEXT NOT NULL, source_sha256 TEXT NOT NULL, created_by_principal_id TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(artifact_id,revision));
- CREATE TABLE artifact_mutations(realm_id TEXT NOT NULL,principal_id TEXT NOT NULL,operation TEXT NOT NULL,mutation_id TEXT NOT NULL,request_fingerprint TEXT NOT NULL,namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id),artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),outcome_code TEXT NOT NULL,result_json BLOB,PRIMARY KEY(realm_id,principal_id,operation,mutation_id));
+ CREATE TABLE artifact_revisions(artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id), revision INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, html_utf8 TEXT NOT NULL, source_sha256 TEXT NOT NULL, created_by_principal_id TEXT NOT NULL, originating_thread_id TEXT NOT NULL, originating_tool_call_id TEXT, format TEXT NOT NULL CHECK(format='html'), format_version INTEGER NOT NULL CHECK(format_version=1), created_at TEXT NOT NULL, PRIMARY KEY(artifact_id,revision));
+ CREATE TABLE artifact_mutations(realm_id TEXT NOT NULL,principal_id TEXT NOT NULL,operation TEXT NOT NULL,mutation_id TEXT NOT NULL,request_fingerprint TEXT NOT NULL,namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id),artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),outcome_code TEXT NOT NULL,result_json BLOB,committed_at TEXT NOT NULL,PRIMARY KEY(realm_id,principal_id,operation,mutation_id));
  CREATE TABLE artifact_diagnostics(id INTEGER PRIMARY KEY,artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),revision INTEGER NOT NULL,message TEXT NOT NULL,kind TEXT NOT NULL,reported_at INTEGER NOT NULL);
  CREATE INDEX diagnostics_by_artifact ON artifact_diagnostics(artifact_id,revision,id);
  PRAGMA user_version=1;
@@ -255,7 +258,7 @@ func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombston
 func (s *Store) InstallGrant(ctx context.Context, hash [32]byte, scope Scope) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if hash == ([32]byte{}) || scope.PrincipalID == "" || scope.Generation == 0 || !s.clock().Before(scope.ExpiresAt) || len(scope.Methods) == 0 {
+	if (slices.Contains(scope.Methods, "artifact_publish") && scope.OriginatingThreadID == "") || hash == ([32]byte{}) || scope.PrincipalID == "" || scope.Generation == 0 || !s.clock().Before(scope.ExpiresAt) || len(scope.Methods) == 0 {
 		return &DomainError{Code: NotFoundOrForbidden}
 	}
 	if err := s.checkNamespace(ctx, scope); err != nil {
