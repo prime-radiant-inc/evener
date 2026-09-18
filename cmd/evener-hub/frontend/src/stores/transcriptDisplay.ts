@@ -617,20 +617,21 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       } catch (error) {
         const applied = postApplyDefault(error, layout);
         if (applied !== undefined) {
+          if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
+            return transcriptDisplayStore.getState().hub[layout] ?? confirmed;
+          }
           // The patch APPLIED before a follow-up durable step failed: the hub
           // already published applied and will broadcast it to every other
-          // client. Reconcile from it the same way the success path below
+          // client. Reconcile from it the same way the success path above
           // does, rather than treating this write as rejected.
           applyHubDefault(layout, applied);
-          if (patchTokens.get(layout) === token && isCurrentReady(client, generation)) {
-            const drafts = { ...transcriptDisplayStore.getState().drafts };
-            delete drafts[layout];
-            transcriptDisplayStore.setState({
-              drafts,
-              hubError: null,
-              hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
-            });
-          }
+          const drafts = { ...transcriptDisplayStore.getState().drafts };
+          delete drafts[layout];
+          transcriptDisplayStore.setState({
+            drafts,
+            hubError: null,
+            hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
+          });
           return applied;
         }
         const canonical = conflictCurrent(error, layout);
