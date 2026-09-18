@@ -680,19 +680,21 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
    * whose PATCH rejects. The revision advances ONLY after a successful
    * reconcile: a failed apply leaves the previous revision in place so the
    * payload stays retryable and a later `changed` with the same revision is
-   * not eaten by the stale guard. `extra` lands in the same publish as the
-   * confirmed state. Returns false for an ignored payload. */
+   * not eaten by the stale guard. `extra` lands in the same publish
+   * regardless of whether the payload is applied or ignored. `settle` is
+   * resolved, and lands in that same publish, ONLY once the reconcile has
+   * succeeded: a settling side effect (settledWrite's checkpoint
+   * reclassification) must never run for a payload the stale guard is about
+   * to ignore, nor for a reconcile that then throws before this can publish
+   * it. Returns false for an ignored payload. */
   function applyHubOverrides(
     payload: KeybindingsOverrides,
-    extra: Partial<KeybindingsStoreFields> | (() => Partial<KeybindingsStoreFields>) = {},
+    extra: Partial<KeybindingsStoreFields> = {},
+    settle?: () => Partial<KeybindingsStoreFields>,
   ): boolean {
     const state = getState();
     if (payload.revision < state.revision && payload.loadError === undefined) {
-      // A thunk's own side effect (settledWrite's checkpoint reclassification)
-      // must never run for a payload this guard is about to ignore: never
-      // resolve it here. A plain object carries no side effect and applies
-      // as always.
-      if (typeof extra !== "function" && Object.keys(extra).length > 0) setState(extra);
+      if (Object.keys(extra).length > 0) setState(extra);
       return false;
     }
     const rules = cloneRules(payload.rules);
@@ -700,14 +702,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
     // The reconcile succeeded, so any rolled-back un-apply's wedge is cleared
     // with it: the rollback hubError is now stale and may clear normally.
     unapplyRolledBack = false;
-    // `extra` is resolved only now, after the reconcile has succeeded: a
-    // settling extra (settledWrite) reclassifies the draft repository as
-    // part of computing itself, and a thunk defers that reclassification
-    // past the one point above that can still throw - a throwing reconcile
-    // never reaches this line, so the repository is never reclassified for a
-    // settle that then fails to publish. Both effects land in the same
-    // setState call below, whether `extra` is a thunk or a plain object.
-    const resolved = typeof extra === "function" ? extra() : extra;
+    const resolved = settle?.() ?? {};
     // A successful apply supersedes any earlier apply failure's hubError AND
     // any earlier patch's revision-race conflict - the store is now confirmed
     // at this payload either way. Clearing one without the other was the
@@ -740,6 +735,7 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       loadError: payload.loadError ?? null,
       conflict: null,
       draftConflict: staleDraft(state.draft, payload.revision),
+      ...extra,
       ...resolved,
     });
     return true;
@@ -964,15 +960,10 @@ export function createKeybindingsStore(deps: KeybindingsStoreDeps): KeybindingsS
       if (!stillMine()) return;
       const payload = fromWireOverrides(result);
       if (payload === undefined) throw new Error(MALFORMED_MESSAGE);
-      // hubLoading is cleared unconditionally, not only through the thunk:
-      // applyHubOverrides never resolves `extra` for a stale payload (its
-      // side effect must not run for a payload it is about to ignore), so a
-      // stale GET would otherwise leave hubLoading true forever.
-      const applied = applyHubOverrides(payload, () => ({
-        hubLoading: false,
-        ...settledWrite(payload, writeSerialAtStart),
-      }));
-      if (!applied) setState({ hubLoading: false });
+      // hubLoading clears in the same publish whether the payload applies or
+      // is ignored (`extra`); settledWrite's checkpoint reclassification
+      // (`settle`) runs only once the reconcile has actually succeeded.
+      applyHubOverrides(payload, { hubLoading: false }, () => settledWrite(payload, writeSerialAtStart));
       if (missedChangeNotification) {
         // A changed-notification was dropped while this generation had no
         // confirmed state (finding 25) and THIS get's response may predate
