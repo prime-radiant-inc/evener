@@ -7,6 +7,7 @@ import type { KeybindingsRegistry } from "./keybindingRegistry";
 import {
   createKeybindingsStore,
   fromWireOverrides,
+  isReadableKeybindingDraft,
   type KeybindingDraftCheckpoint,
   type KeybindingsStore,
   type KeybindingsStoreDeps,
@@ -377,6 +378,39 @@ describe("the checkpointed draft editor", () => {
     await store.getState().refreshOverrides();
     expect(store.getState().writeUncertain).toBe(false);
     expect(drafts.stored()).toMatchObject({ baseRevision: 3, rules: [], writeUncertain: false });
+  });
+
+  test("a refresh already reading while a draft write is in flight never settles that write's uncertainty", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    const store = await readyStore(client, { drafts: drafts.storage });
+    const patchReplies = gateSettlements(client, patchMethod);
+    const getReplies = gateSettlements(client, getMethod);
+
+    // The draft write starts and claims the write token first.
+    const save = store.getState().saveDraft([]);
+    await vi.waitFor(() => expect(patchReplies).toHaveLength(1));
+
+    // A refresh's own read starts WHILE the write is still in flight - its
+    // snapshot began before the write's outcome was known.
+    const refresh = store.getState().refreshOverrides();
+    await vi.waitFor(() => expect(getReplies).toHaveLength(1));
+
+    // The write's own request comes back with no usable reply: the outcome
+    // is unknown (writeUncertain), and `saving` clears - but the fence's
+    // write token never moves (nothing superseded it).
+    replyAt(patchReplies, 0).reject(new Error("disconnected"));
+    await expect(save).rejects.toThrow("disconnected");
+    expect(store.getState()).toMatchObject({ saving: false, writeUncertain: true });
+
+    // The STALE refresh, which started before that failure landed, now
+    // replies. Its snapshot says nothing about the write it raced - it must
+    // not settle the uncertainty the write just left, even though `saving`
+    // is false and the write token is unchanged by the time it checks.
+    replyAt(getReplies, 0).resolve(payload(3, rules));
+    await refresh;
+    expect(store.getState().writeUncertain).toBe(true);
+    expect(drafts.stored()).toMatchObject({ writeUncertain: true });
   });
 
   test("a refresh's stale reply does not reclassify the checkpoint the settle would have adopted", async () => {
@@ -858,15 +892,113 @@ describe("the checkpointed draft editor", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
     drafts.corrupt();
 
-    expect(discardStoredKeybindingDraft(drafts.storage)).toBe(true);
+    expect(discardStoredKeybindingDraft(drafts.storage)).toBe("removed");
 
     expect(drafts.stored()).toBeNull();
   });
 
-  test("discardStoredKeybindingDraft reports false when nothing is stored to remove", () => {
+  test("discardStoredKeybindingDraft reports absent when nothing is stored to remove", () => {
     const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
 
-    expect(discardStoredKeybindingDraft(drafts.storage)).toBe(false);
+    expect(discardStoredKeybindingDraft(drafts.storage)).toBe("absent");
+  });
+
+  test("discardStoredKeybindingDraft, given isReadableKeybindingDraft, refuses a record a concurrent writer replaced with a valid one", () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.storage.save({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+
+    expect(discardStoredKeybindingDraft(drafts.storage, isReadableKeybindingDraft)).toBe("refused");
+
+    expect(drafts.stored()).toEqual({ id: "d1", baseRevision: 3, rules, writeUncertain: false });
+  });
+
+  test("an unreadable stored record never locks the section", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+
+    // The RECORD is unreadable, not the port, and the hub is not implicated.
+    expect(store.getState()).toMatchObject({
+      draft: null,
+      storageUnavailable: true,
+      draftUnreadable: true,
+      loaded: true,
+    });
+    expect(store.getState().revision).toBe(3);
+
+    // Discarding is allowed and is what clears the record.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toBeNull();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+    expect(() => store.getState().editDraft(rules)).not.toThrow();
+  });
+
+  test("a record that becomes unreadable while a write is uncertain clears the stale uncertainty, unblocking discard", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    const client = clientServing(3, rules);
+    client.on(patchMethod, () => {
+      throw new Error("token secret");
+    });
+    const store = await readyStore(client, { drafts: drafts.storage });
+
+    await expect(store.getState().saveDraft([])).rejects.toThrow();
+    expect(store.getState().writeUncertain).toBe(true);
+
+    // The stored checkpoint becomes unreadable (a newer app version wrote a
+    // shape this build cannot decode) while the write's outcome is still
+    // unknown.
+    drafts.corrupt();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+    // The record is unreadable - there is nothing left to be "uncertain"
+    // about and nothing to review a "conflict" against. Both must clear, or
+    // discardDraft (the one recovery this state allows) is refused too.
+    expect(store.getState().writeUncertain).toBe(false);
+    expect(store.getState().draftConflict).toBe(false);
+    expect(store.getState().draft).toBeNull();
+    expect(() => store.getState().discardDraft()).not.toThrow();
+    expect(store.getState()).toMatchObject({ storageUnavailable: false, draftUnreadable: false });
+  });
+
+  test("a discard refuses and re-classifies when the unreadable record has been replaced", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(store.getState().draftUnreadable).toBe(true);
+
+    // Another store or app version replaces the SAME record with a valid,
+    // newer checkpoint before the user ever taps discard.
+    const newer: KeybindingDraftCheckpoint = { id: "d1", baseRevision: 3, rules, writeUncertain: false };
+    drafts.storage.save(newer);
+
+    // The discard must name the record it classified, not whatever is
+    // stored right now: it refuses (the bytes it names are gone), and the
+    // newer checkpoint survives.
+    store.getState().discardDraft();
+    expect(drafts.stored()).toEqual(newer);
+
+    // Refusing is not silence: the state re-classifies against what is
+    // actually there now, which is readable.
+    expect(store.getState().draftUnreadable).toBe(false);
+    expect(store.getState().storageUnavailable).toBe(false);
+    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+  });
+
+  test("a genuine storage-read failure never erases an earlier unreadable-record recovery", async () => {
+    const drafts = memoryDraftStorage<KeybindingDraftCheckpoint>();
+    drafts.corrupt();
+    const store = await readyStore(clientServing(3), { drafts: drafts.storage });
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
+
+    // The PORT itself now fails to read - a genuine disk error, not merely
+    // an unreadable record. restoreDraft has no idea what is actually
+    // stored, so it must leave draftUnreadable as it was rather than clear
+    // it, which would silently hide the "Discard unreadable draft" action.
+    drafts.failLoad();
+    await store.getState().refreshOverrides();
+
+    expect(store.getState()).toMatchObject({ storageUnavailable: true, draftUnreadable: true });
   });
 
   test("a discard refuses and re-classifies when the record has been replaced", async () => {
