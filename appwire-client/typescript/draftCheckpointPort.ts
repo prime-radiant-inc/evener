@@ -77,17 +77,26 @@ export function createDraftRepository<Checkpoint extends object>(
 ): DraftRepository<Checkpoint> {
   const rawFrom = new WeakMap<object, unknown>();
   let lastClassified: unknown;
-  let hasLastClassified = false;
+  let hasClassified = false;
+  // Distinct from hasClassified: load() classifying an EMPTY store is still a
+  // classification (of absence), not "nothing classified yet". Without this,
+  // discardClassified() read an empty load() the same as never having
+  // classified at all, took the fresh-reload fallback, and removed a record
+  // an external writer saved AFTER this repository classified the store as
+  // empty - a record it never classified.
+  let classifiedAbsent = false;
   return {
     createId: () => storage.createId(),
     load(): Checkpoint | null {
       const value = storage.load();
       if (value === null || value === undefined) {
-        hasLastClassified = false;
+        hasClassified = true;
+        classifiedAbsent = true;
         return null;
       }
       lastClassified = value;
-      hasLastClassified = true;
+      hasClassified = true;
+      classifiedAbsent = false;
       const checkpoint = decode(value);
       rawFrom.set(checkpoint as object, value);
       return checkpoint;
@@ -98,9 +107,14 @@ export function createDraftRepository<Checkpoint extends object>(
       // What was just written IS now the classified record: no raw bytes to
       // recover (this build built it), so the decoded value is its own
       // identity, the same fallback removeIf already uses for a checkpoint
-      // load() never produced.
+      // load() never produced. If `checkpoint` itself came from an earlier
+      // load(), its own rawFrom entry now points at the bytes THIS call
+      // wrote - otherwise a removeIf on that same reference would still
+      // name the pre-save bytes, which save() already overwrote.
       lastClassified = decoded;
-      hasLastClassified = true;
+      hasClassified = true;
+      classifiedAbsent = false;
+      rawFrom.set(checkpoint as object, decoded);
     },
     removeIf(checkpoint: Checkpoint): void {
       storage.removeIf((rawFrom.get(checkpoint as object) ?? decode(checkpoint)) as Checkpoint);
@@ -108,14 +122,16 @@ export function createDraftRepository<Checkpoint extends object>(
     /** Removes the record load() most recently classified, readable or not,
      * by the identity of the bytes it was classified from - never a fresh
      * reload, which could name a record another writer has since replaced.
-     * Falls back to discardStoredDraft's fresh-reload behavior only when
-     * nothing has been classified yet (defensive: a store never calls this
-     * without classifying first). */
+     * A load() that classified the store as EMPTY removes nothing (there is
+     * no record this repository classified to discard); the fresh-reload
+     * fallback runs only when nothing has been classified at all (defensive:
+     * a store never calls this without classifying first). */
     discardClassified(): void {
-      if (!hasLastClassified) {
+      if (!hasClassified) {
         discardStoredDraft(storage);
         return;
       }
+      if (classifiedAbsent) return;
       storage.removeIf(lastClassified as Checkpoint);
     },
   };
