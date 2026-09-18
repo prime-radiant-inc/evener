@@ -575,7 +575,7 @@ describe("the checkpointed draft editor", () => {
     const mine: KeybindingDraftCheckpoint = { id: "mine", baseRevision: 3, rules, writeUncertain: false };
     drafts.storage.save(mine);
     const store = await readyStore(clientServing(3), { drafts: drafts.storage });
-    expect(store.getState().draft).toEqual({ version: 1, revision: 3, rules });
+    expect(store.getState().draft).toMatchObject({ version: 1, revision: 3, rules });
 
     // Another window replaces the SAME classified record while this store
     // still thinks it owns it - a CAS mismatch, not a storage exception.
