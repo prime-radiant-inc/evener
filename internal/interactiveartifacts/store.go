@@ -171,7 +171,7 @@ func (s *Store) initialize(ctx context.Context) error {
 
 const storeSchema = `
  CREATE TABLE store_identity(service_id TEXT NOT NULL);
- CREATE TABLE artifact_namespaces(namespace_id TEXT PRIMARY KEY, realm_id TEXT NOT NULL, owner_thread_id TEXT NOT NULL, created_at TEXT NOT NULL, tombstoned INTEGER NOT NULL DEFAULT 0 CHECK(tombstoned IN(0,1)));
+ CREATE TABLE artifact_namespaces(namespace_id TEXT PRIMARY KEY, realm_id TEXT NOT NULL, owner_thread_id TEXT NOT NULL, created_at TEXT NOT NULL, tombstoned_at TEXT);
  CREATE TABLE artifacts(artifact_id TEXT PRIMARY KEY, namespace_id TEXT NOT NULL REFERENCES artifact_namespaces(namespace_id), source_revision INTEGER NOT NULL CHECK(source_revision>=1), state_version INTEGER NOT NULL CHECK(state_version>=1), state_json BLOB, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
  CREATE INDEX artifacts_by_namespace ON artifacts(namespace_id,artifact_id);
  CREATE TABLE artifact_revisions(artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id), revision INTEGER NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL, html_utf8 TEXT NOT NULL, source_sha256 TEXT NOT NULL, created_by_principal_id TEXT NOT NULL, originating_thread_id TEXT NOT NULL, originating_tool_call_id TEXT, format TEXT NOT NULL CHECK(format='html'), format_version INTEGER NOT NULL CHECK(format_version=1), created_at TEXT NOT NULL, PRIMARY KEY(artifact_id,revision));
@@ -213,19 +213,20 @@ func (s *Store) namespace(ctx context.Context, id, realm, owner string, tombston
 	}
 	defer func() { _ = tx.Rollback() }()
 	var storedRealm, storedOwner string
-	var deleted bool
-	err = tx.QueryRowContext(ctx, "SELECT realm_id,owner_thread_id,tombstoned FROM artifact_namespaces WHERE namespace_id=?", id).Scan(&storedRealm, &storedOwner, &deleted)
+	var deleted sql.NullString
+	err = tx.QueryRowContext(ctx, "SELECT realm_id,owner_thread_id,tombstoned_at FROM artifact_namespaces WHERE namespace_id=?", id).Scan(&storedRealm, &storedOwner, &deleted)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		_, err = tx.ExecContext(ctx, "INSERT INTO artifact_namespaces(namespace_id,realm_id,owner_thread_id,created_at,tombstoned) VALUES(?,?,?,?,?)", id, realm, owner, s.clock().UTC().Format(time.RFC3339Nano), tombstone)
+		now := s.clock().UTC().Format(time.RFC3339Nano)
+		_, err = tx.ExecContext(ctx, "INSERT INTO artifact_namespaces(namespace_id,realm_id,owner_thread_id,created_at,tombstoned_at) VALUES(?,?,?,?,?)", id, realm, owner, now, sql.NullString{String: now, Valid: tombstone})
 	case err != nil:
 		return err
 	case storedRealm != realm || storedOwner != owner:
 		return &DomainError{Code: NotFoundOrForbidden}
-	case deleted && !tombstone:
+	case deleted.Valid && !tombstone:
 		return &DomainError{Code: Deleted}
-	case tombstone:
-		_, err = tx.ExecContext(ctx, "UPDATE artifact_namespaces SET tombstoned=1 WHERE namespace_id=?", id)
+	case tombstone && !deleted.Valid:
+		_, err = tx.ExecContext(ctx, "UPDATE artifact_namespaces SET tombstoned_at=? WHERE namespace_id=?", s.clock().UTC().Format(time.RFC3339Nano), id)
 	}
 	if err != nil {
 		return err
@@ -273,7 +274,7 @@ func (s *Store) InstallGrant(ctx context.Context, hash [32]byte, scope Scope) er
 }
 func (s *Store) checkNamespace(ctx context.Context, scope Scope) error {
 	var exists int
-	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifact_namespaces WHERE namespace_id=? AND realm_id=? AND tombstoned=0", scope.NamespaceID, scope.RealmID).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, "SELECT 1 FROM artifact_namespaces WHERE namespace_id=? AND realm_id=? AND tombstoned_at IS NULL", scope.NamespaceID, scope.RealmID).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return &DomainError{Code: NotFoundOrForbidden}
 	}
