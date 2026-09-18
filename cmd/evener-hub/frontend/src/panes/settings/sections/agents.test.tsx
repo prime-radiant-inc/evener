@@ -15,6 +15,7 @@ import { AgentsSection } from "./agents";
 const css = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "agents.module.css"), "utf8");
 
 afterEach(() => {
+  resetSettingsOverviewStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   cleanup();
 });
@@ -96,7 +97,6 @@ describe("AgentsSection", () => {
 
 describe("AgentsSection default overview hook", () => {
   test("reads the real settingsOverview store: fetches evener/settings/overview and renders its agents", async () => {
-    resetSettingsOverviewStoreForTests();
     const fake = new FakeClient("ready");
     connectionStore.getState().connect(fake);
     const data: SettingsOverviewResponse = { agents: [{ name: "store-agent" }] };
