@@ -1234,17 +1234,58 @@ export function hasWarningText(value: unknown): value is string {
 // neither host's own display bound can be assumed to run before something
 // else reads item.text.
 const RAW_WARNING_FRAME_MAX_CHARS = 2000;
+// Generous bounds for the pre-stringify prune below: comfortably above what
+// any real warning frame carries, but small enough that a transport-sized
+// (up to 128 MiB) malformed frame can never make JSON.stringify walk more
+// than a tiny fraction of it.
+const RAW_WARNING_FRAME_MAX_FIELD_CHARS = RAW_WARNING_FRAME_MAX_CHARS;
+const RAW_WARNING_FRAME_MAX_ARRAY_ITEMS = 50;
+const RAW_WARNING_FRAME_MAX_DEPTH = 6;
+
+// Prunes a value to a small bound before it ever reaches JSON.stringify:
+// every string truncated to RAW_WARNING_FRAME_MAX_FIELD_CHARS UTF-16 units,
+// every array to its first 50 items, nesting cut off at 6 levels. Without
+// this, JSON.stringify(params) itself walks the WHOLE frame — up to the
+// transport's 128 MiB limit — before rawWarningFrame gets a chance to slice
+// anything; bounding the input, not just the output, is what keeps that
+// walk small regardless of how large the wire frame actually is.
+function prunedForStringify(value: unknown, depth: number): unknown {
+  if (typeof value === "string") {
+    return value.length > RAW_WARNING_FRAME_MAX_FIELD_CHARS
+      ? `${value.slice(0, RAW_WARNING_FRAME_MAX_FIELD_CHARS)}…`
+      : value;
+  }
+  if (depth >= RAW_WARNING_FRAME_MAX_DEPTH) {
+    return Array.isArray(value) || (typeof value === "object" && value !== null) ? "…" : value;
+  }
+  if (Array.isArray(value)) {
+    return value.slice(0, RAW_WARNING_FRAME_MAX_ARRAY_ITEMS).map((item) => prunedForStringify(item, depth + 1));
+  }
+  if (typeof value === "object" && value !== null) {
+    const pruned: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      pruned[key] = prunedForStringify(val, depth + 1);
+    }
+    return pruned;
+  }
+  return value;
+}
 
 function rawWarningFrame(params: WarningParams): string {
-  const json = JSON.stringify(params);
-  // Bound the allocation before expanding to code points: params is unknown
-  // on the wire and the transport allows frames up to 128 MiB, so
-  // Array.from()-ing the whole JSON string is an O(frame-size) temporary
-  // just to keep the first 2000 code points. A UTF-16 prefix twice the
-  // code-point limit always contains at least that many code points (every
-  // code point is at most two UTF-16 units), so slicing the string first —
-  // a cheap view, no per-character array — never drops real content.
-  const bounded = json.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
+  const json = JSON.stringify(prunedForStringify(params, 0));
+  // Bound the allocation before expanding to code points: a UTF-16 prefix
+  // twice the code-point limit always contains at least that many code
+  // points (every code point is at most two UTF-16 units), so slicing the
+  // string first — a cheap view, no per-character array — never drops real
+  // content. (prunedForStringify above already keeps `json` itself small;
+  // this bound is what protects the code-point expansion specifically.)
+  let bounded = json.slice(0, RAW_WARNING_FRAME_MAX_CHARS * 2);
+  // A UTF-16 slice can end mid-surrogate-pair, leaving a lone high surrogate
+  // as the last unit of `bounded`. Array.from would treat that lone unit as
+  // its own broken "character" rather than dropping it; strip it before
+  // expanding so the final bounded frame never ends on one.
+  const lastUnit = bounded.charCodeAt(bounded.length - 1);
+  if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) bounded = bounded.slice(0, -1);
   // Array.from splits a string into code points, not UTF-16 units, so a
   // surrogate pair (an emoji, or anything outside the BMP) straddling the
   // bound is kept or dropped whole - a plain String#slice(0, N) can instead

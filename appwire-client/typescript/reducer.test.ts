@@ -4832,6 +4832,78 @@ test("an oversized warning frame's fallback bounds its input before Array.from, 
   }
 });
 
+// rawWarningFrame's own JSON.stringify(params) call walks the whole object
+// graph before this file gets a chance to slice anything — a transport-sized
+// (up to 128 MiB) malformed warning can still make that ONE call allocate
+// proportional to the whole frame even though the code-point bound above
+// only ever touches its output. The frame must be pruned (strings truncated,
+// arrays capped, depth capped) before it reaches JSON.stringify at all.
+test("an oversized warning frame's fallback bounds the frame before JSON.stringify walks it, not just its output", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  const originalStringify = JSON.stringify;
+  const outputLengths: number[] = [];
+  const spy = vi.spyOn(JSON, "stringify").mockImplementation((...args: Parameters<typeof JSON.stringify>) => {
+    const result = originalStringify(...args);
+    if (typeof result === "string") outputLengths.push(result.length);
+    return result;
+  });
+
+  const HUGE = 5_000_000; // a 5 MB single string field
+  const params = {
+    threadId: "thr_t",
+    ref: "ref_t",
+    warning: 42,
+    extra: "z".repeat(HUGE),
+  };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+  spy.mockRestore();
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  expect(outputLengths.length).toBeGreaterThan(0);
+  for (const len of outputLengths) {
+    // Nowhere near the 5 MB field: JSON.stringify itself never walks more
+    // than the pruned (small-string, capped-array, depth-capped) frame.
+    expect(len).toBeLessThan(10_000);
+  }
+});
+
+test("an oversized warning frame's fallback prunes deep nesting before JSON.stringify walks it", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+
+  // A deeply nested structure well past the prune's depth cap — without
+  // pruning, JSON.stringify still walks every level.
+  let deep: unknown = "leaf";
+  for (let i = 0; i < 50; i++) deep = { nested: deep };
+
+  const params = { threadId: "thr_t", ref: "ref_t", warning: 42, extra: deep };
+  model = applyNotification(model, { method: "warning", params }, 1002);
+
+  const item = itemAt(turnAt(model, 0), 0);
+  expect(item.text.length).toBeGreaterThan(0);
+  // The pruned representation replaces anything past the depth cap with a
+  // short placeholder, so "leaf" never survives 50 levels of nesting into
+  // the bounded output.
+  expect(item.text).not.toContain("leaf");
+});
+
 // A message-less frame that DOES carry a title or hint is something to show:
 // the fold leaves ItemModel.text blank rather than duplicating title/hint
 // with the raw JSON envelope (WarningItem.tsx renders title/hint directly;
