@@ -151,6 +151,26 @@ describe("NativePreferences", () => {
 		).toHaveLength(1);
 	});
 
+	it("projects the keybindings draft without the store's internal generation stamp", async () => {
+		const client = fakeClient();
+		client.handlers.set("evener/settings/keybindings/get", () => keybindings);
+		client.handlers.set(
+			"evener/settings/transcriptDisplay/get",
+			() => transcript,
+		);
+		const model = new NativePreferences(client, features);
+		await model.refresh();
+		const rules = [{ action: "composer.focus", chord: "Meta+P" }];
+		await model.editKeybindings(rules);
+		const draft = model.getSnapshot().keybindings.draft;
+		expect(draft).toMatchObject({ version: 1, revision: 3, rules });
+		// The store's own KeybindingsDraft carries a `generation` stamp
+		// (staleness bookkeeping - see readyGenerationFence); the projected
+		// PreferenceState<ConfirmedKeybindings> type has no such field, and
+		// the projection must not leak it through structurally.
+		expect(draft).not.toHaveProperty("generation");
+	});
+
 	it("ignores stale reads and notifications after disposal", async () => {
 		const client = fakeClient();
 		let resolve!: (value: KeybindingsOverrides) => void;
@@ -335,26 +355,11 @@ it("does not overwrite the fallback rules when hub settings failed to load", asy
 	);
 });
 
+import { fakeDraftBackend } from "./draftBackend.testkit";
 import { nativeTranscriptDrafts } from "./nativePreferenceDrafts";
-import type { TranscriptDraftCheckpoint } from "./preferenceDraftRepository";
 
 function draftStorage() {
-	const values = new Map<string, unknown>();
-	let id = 0;
-	const backend = {
-		get: (key: string) => values.get(key),
-		set: (key: string, value: unknown) => {
-			values.set(key, structuredClone(value));
-		},
-		delete: (key: string) => {
-			values.delete(key);
-		},
-		createId: () => String(++id),
-		deleteIf: (key: string, value: TranscriptDraftCheckpoint) => {
-			if (JSON.stringify(values.get(key)) === JSON.stringify(value))
-				values.delete(key);
-		},
-	};
+	const backend = fakeDraftBackend();
 	return { backend, storage: nativeTranscriptDrafts("hub", backend) };
 }
 function persistedPreferences(storage = draftStorage().storage) {

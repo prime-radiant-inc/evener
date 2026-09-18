@@ -35,6 +35,27 @@ export interface ReadyGenerationFence {
   claimRead(): number;
   /** Claims this write's token, superseding every earlier write. */
   claimWrite(): number;
+  /** No authoritative read has confirmed state for the ACTIVE generation yet,
+   * so the next payload it applies is the generation's first and is
+   * authoritative at ANY revision: revision numbering is the hub's, and a
+   * reconnect can be a hub restart numbering from its own 1. Per generation,
+   * and independent of what the store currently presents - a payload
+   * RETAINED across a transient disconnect still presents, and a broadcast
+   * relayed before the read went out still merges, but neither is this
+   * generation's confirmation. */
+  readonly awaitingFirstPayload: boolean;
+  /** This generation's first authoritative read has applied. */
+  firstPayloadApplied(): void;
+  /** WHY a write's reply is not its own to land, because the two answers
+   * call for opposite things. LOST-HUB: the write's own claim is still
+   * intact and only support went away (the unknown window keeps the state
+   * and the in-flight work), so nothing else will ever settle this write
+   * and the editor must not be left mid-write. SUPERSEDED: a later write, or
+   * a payload retirement, has taken over - whoever took over owns `saving`
+   * now, and this reply must touch nothing. `stillClaimed` is the caller's
+   * own check (keybindingsStore.ts's store-wide write token) - this fence
+   * knows only whether the generation itself is still current. */
+  lostHub(generation: number, stillClaimed: boolean): boolean;
   /** Supersedes every read and write in flight, leaving the generation
    * active: a payload retirement calls this before publishing its own state. */
   supersede(): void;
@@ -56,6 +77,7 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
   let disposed = false;
   let readSerial = 0;
   let writeSerial = 0;
+  let awaitingFirstPayload = true;
 
   function isCurrent(generation: number): boolean {
     return !disposed && generation >= 0 && activeEpoch === generation;
@@ -86,6 +108,13 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
     writeStillMine: (generation, token) => liveHub(generation) && token === writeSerial,
     claimRead: () => ++readSerial,
     claimWrite: () => ++writeSerial,
+    lostHub: (generation, stillClaimed) => stillClaimed && isCurrent(generation),
+    get awaitingFirstPayload() {
+      return awaitingFirstPayload;
+    },
+    firstPayloadApplied() {
+      awaitingFirstPayload = false;
+    },
     supersede() {
       readSerial += 1;
       writeSerial += 1;
@@ -93,6 +122,7 @@ export function createReadyGenerationFence(isSupported: () => boolean): ReadyGen
     begin() {
       if (disposed) return -1;
       activeEpoch = ++epoch;
+      awaitingFirstPayload = true;
       return activeEpoch;
     },
     end,
