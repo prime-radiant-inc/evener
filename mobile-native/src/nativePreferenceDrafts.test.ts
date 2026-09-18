@@ -340,6 +340,25 @@ describe("matchesStoredBytes", () => {
 	it("does not match a genuinely different value", () => {
 		expect(matchesStoredBytes(JSON.stringify({ id: "d1" }), { id: "d2" })).toBe(false);
 	});
+
+	it("does not let a legitimately stored value shaped like the unparseable marker collide with a genuinely unparseable record", () => {
+		// parseDraftBytes("{not json") throws and returns the tagged
+		// UnparseableDraftBytes marker for THOSE bytes. If a newer write
+		// replaces the record with different, well-formed JSON that happens
+		// to have that exact shape (a legitimately parsed value, not a parse
+		// failure), matching by shape alone would treat it as the SAME record
+		// the earlier read saw - a CAS delete/replace must refuse instead,
+		// since the underlying bytes actually changed.
+		const identity = parseDraftBytes("{not json");
+		const collidingStoredBytes = JSON.stringify(identity);
+		expect(matchesStoredBytes(collidingStoredBytes, identity)).toBe(false);
+	});
+
+	it("does not let a legitimately stored value shaped like the stored-null marker collide with an actual stored JSON null", () => {
+		const identity = parseDraftBytes("null");
+		const collidingStoredBytes = JSON.stringify(identity);
+		expect(matchesStoredBytes(collidingStoredBytes, identity)).toBe(false);
+	});
 });
 
 describe("parseDraftBytes", () => {
